@@ -7,6 +7,16 @@
 
 - Brief summary of the most important changes in this release.
 
+## Supported (validated)
+
+<!-- Auto-populated by scripts/release_gate.py from the feature manifest:
+     features whose tier_a/b validation passed on this release. Guaranteed. -->
+
+## Preview (present, unguaranteed)
+
+<!-- Auto-populated: features whose code is on main but is NOT guaranteed to work.
+     See docs/developer/guides/release-process.md for what these labels mean. -->
+
 ## New Features
 
 - Feature description (PR #NN)

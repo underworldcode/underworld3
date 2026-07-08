@@ -132,6 +132,63 @@ def test_xdmf_compat_2d(tmp_path):
     del mesh
 
 
+def test_write_timestep_mesh_keeps_restart_and_viz_topology(tmp_path):
+    """write_timestep mesh output keeps restart data plus XDMF topology."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
+    s_var.data[:, 0] = mesh._coords[:, 0]
+
+    mesh.write_timestep(
+        "viztopo", index=0, outputPath=str(tmp_path), meshVars=[s_var]
+    )
+
+    mesh_h5 = os.path.join(str(tmp_path), "viztopo.mesh.00000.h5")
+    xdmf_file = os.path.join(str(tmp_path), "viztopo.mesh.00000.xdmf")
+
+    with h5py.File(mesh_h5, "r") as h5f:
+        assert "labels" in h5f
+        assert "topology/cells" in h5f
+        assert "topology/cones" in h5f
+        assert "viz/topology/cells" in h5f
+        cells = h5f["viz/topology/cells"]
+        assert len(cells.shape) == 2
+        assert cells.shape[1] > 1
+
+    with open(xdmf_file, "r") as f:
+        xdmf_text = f.read()
+    assert "&MeshData;:/viz/topology/cells" in xdmf_text
+    assert "&MeshData;:/topology/cells" not in xdmf_text
+    assert 'ItemType="HyperSlab"' not in xdmf_text
+
+    del mesh
+
+
+def test_write_checkpoint_mesh_uses_petsc_topology(tmp_path):
+    """write_checkpoint keeps PETSc DMPlex topology for restart output."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    s_var = uw.discretisation.MeshVariable("s", mesh, 1, degree=1)
+    s_var.data[:, 0] = mesh._coords[:, 0]
+
+    with pytest.warns(FutureWarning, match="write_checkpoint\\(\\) is deprecated"):
+        mesh.write_checkpoint(
+            "restart",
+            outputPath=str(tmp_path),
+            meshUpdates=True,
+            meshVars=[s_var],
+            index=0,
+        )
+
+    mesh_h5 = os.path.join(str(tmp_path), "restart.mesh.00000.h5")
+
+    with h5py.File(mesh_h5, "r") as h5f:
+        assert "topologies/uw_mesh/topology" in h5f
+        assert "viz/topology/cells" not in h5f
+
+    del mesh
+
+
 # ---------------------------------------------------------------------------
 # Test: 3D mesh
 # ---------------------------------------------------------------------------
@@ -163,6 +220,19 @@ def test_xdmf_compat_3d(tmp_path):
     # Verify XDMF
     xdmf_file = os.path.join(str(tmp_path), "test3d.mesh.00000.xdmf")
     _check_xdmf_refs(xdmf_file, str(tmp_path))
+
+    mesh_h5 = os.path.join(str(tmp_path), "test3d.mesh.00000.h5")
+    with h5py.File(mesh_h5, "r") as h5f:
+        assert "viz/topology/cells" in h5f
+        cells = h5f["viz/topology/cells"]
+        assert len(cells.shape) == 2
+        assert cells.shape[1] > 1
+
+    with open(xdmf_file, "r") as f:
+        xdmf_text = f.read()
+    assert "&MeshData;:/viz/topology/cells" in xdmf_text
+    assert "&MeshData;:/topology/cells" not in xdmf_text
+    assert f'Dimensions="{s_compat.shape[0]}"' in xdmf_text
 
     del mesh
 
@@ -286,5 +356,83 @@ def test_tensor_variable_repacking(tmp_path):
     # Verify XDMF
     xdmf_file = os.path.join(str(tmp_path), "tensor.mesh.00000.xdmf")
     _check_xdmf_refs(xdmf_file, str(tmp_path))
+
+    del mesh
+
+
+# ---------------------------------------------------------------------------
+# Test: Valid /viz/topology connectivity generation
+# ---------------------------------------------------------------------------
+
+
+def test_xdmf_viz_topology_written_correctly(tmp_path):
+    """write_timestep uses PETSc-native viz topology and valid geometry."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(3, 3))
+    
+    # Write just the mesh (no vars needed to test mesh topology)
+    mesh.write_timestep("test_topo", index=0, outputPath=str(tmp_path))
+
+    mesh_h5 = os.path.join(str(tmp_path), "test_topo.mesh.00000.h5")
+    assert _check_h5_group_exists(mesh_h5, "viz/topology/cells"), (
+        "Mesh HDF5 must contain the /viz/topology/cells dataset"
+    )
+    assert _check_h5_group_exists(mesh_h5, "geometry/vertices"), (
+        "Mesh HDF5 must contain the /geometry/vertices dataset"
+    )
+
+    # Validate cell-to-vertex connectivity bounds
+    cells = _read_h5_dataset(mesh_h5, "viz/topology/cells")
+    vertices = _read_h5_dataset(mesh_h5, "geometry/vertices")
+    
+    num_vertices = vertices.shape[0]
+    assert cells.max() < num_vertices, (
+        f"Invalid topology: cells max ({cells.max()}) must be < numVertices ({num_vertices})"
+    )
+    assert cells.min() >= 0, "Invalid topology: cells indices cannot be negative"
+
+    # Validate XDMF actually points to the viz group, not the raw DMPlex group
+    xdmf_file = os.path.join(str(tmp_path), "test_topo.mesh.00000.xdmf")
+    assert os.path.exists(xdmf_file), "XDMF file should exist"
+    
+    with open(xdmf_file, "r") as f:
+        xdmf_content = f.read()
+    
+    assert "/viz/topology/cells" in xdmf_content, (
+        "XDMF file should explicitly point to /viz/topology/cells"
+    )
+    assert "/geometry/vertices" in xdmf_content, (
+        "XDMF file should explicitly point to /geometry/vertices"
+    )
+
+    del mesh
+
+
+def test_xdmf_viz_topology_3d_written_correctly(tmp_path):
+    """write_timestep uses PETSc-native viz topology for 3D meshes."""
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2, 2))
+    
+    # Write just the mesh
+    mesh.write_timestep("test_topo_3d", index=0, outputPath=str(tmp_path))
+
+    mesh_h5 = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.h5")
+    assert _check_h5_group_exists(mesh_h5, "viz/topology/cells"), (
+        "3D Mesh HDF5 must contain the /viz/topology/cells dataset"
+    )
+
+    # Validate connectivity
+    cells = _read_h5_dataset(mesh_h5, "viz/topology/cells")
+    vertices = _read_h5_dataset(mesh_h5, "geometry/vertices")
+    
+    num_vertices = vertices.shape[0]
+    assert cells.max() < num_vertices, "Invalid 3D topology bounds"
+    
+    xdmf_file = os.path.join(str(tmp_path), "test_topo_3d.mesh.00000.xdmf")
+    assert os.path.exists(xdmf_file)
+    with open(xdmf_file, "r") as f:
+        xdmf_content = f.read()
+    assert "/viz/topology/cells" in xdmf_content
+    assert "/geometry/vertices" in xdmf_content
 
     del mesh

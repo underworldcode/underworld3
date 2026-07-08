@@ -1,5 +1,19 @@
 #include "petsc.h"
 
+// Version-compatible wrapper for DMPlexFilter.
+// PETSc 3.25 added an MPI_Comm argument before the SF pointer.
+static inline PetscErrorCode UW_DMPlexFilter(DM dm, DMLabel label, PetscInt value,
+                                             PetscBool useClosure, PetscBool ignoreClosure,
+                                             DM *subdm)
+{
+#if PETSC_VERSION_GE(3, 25, 0)
+    return DMPlexFilter(dm, label, value, useClosure, ignoreClosure,
+                        PetscObjectComm((PetscObject)dm), NULL, subdm);
+#else
+    return DMPlexFilter(dm, label, value, useClosure, ignoreClosure, NULL, subdm);
+#endif
+}
+
 // Add 1 boundary condition at a time (1 boundary, 1 component etc etc)
 
 PetscErrorCode PetscDSAddBoundary_UW(DM dm,
@@ -29,6 +43,39 @@ PetscErrorCode PetscDSAddBoundary_UW(DM dm,
 PetscErrorCode DMSetAuxiliaryVec_UW(DM dm, DMLabel label, PetscInt value, PetscInt part, Vec aux)
 {
     return DMSetAuxiliaryVec(dm, label, value, part, aux);
+}
+
+PetscErrorCode UW_PetscDSGetBoundaryWeakForm(PetscDS ds, PetscInt bd, PetscWeakForm *wf)
+{
+    PetscCall(PetscDSGetBoundary(ds, bd, wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
+    return PETSC_SUCCESS;
+}
+
+PetscErrorCode UW_DMPlexComputeResidualByKeyVolumeOnly(DM dm, PetscFormKey key, IS cellIS, PetscReal time, Vec locX, Vec locX_t, PetscReal t, Vec locF, void *ctx)
+{
+    DM vdm = NULL;
+    PetscSection section = NULL;
+    PetscSection global_section = NULL;
+    PetscDS ds = NULL;
+    PetscDS vds = NULL;
+    Vec aux = NULL;
+
+    PetscCall(DMClone(dm, &vdm));
+    PetscCall(DMGetLocalSection(dm, &section));
+    PetscCall(DMSetLocalSection(vdm, section));
+    PetscCall(DMGetGlobalSection(dm, &global_section));
+    PetscCall(DMSetGlobalSection(vdm, global_section));
+    PetscCall(DMCopyFields(dm, PETSC_DETERMINE, PETSC_DETERMINE, vdm));
+    PetscCall(DMCreateDS(vdm));
+    PetscCall(DMGetDS(dm, &ds));
+    PetscCall(DMGetDS(vdm, &vds));
+    PetscCall(PetscDSCopyConstants(ds, vds));
+    PetscCall(PetscDSCopyEquations(ds, vds));
+    PetscCall(DMGetAuxiliaryVec(dm, key.label, key.value, key.part, &aux));
+    if (aux) PetscCall(DMSetAuxiliaryVec(vdm, key.label, key.value, key.part, aux));
+    PetscCall(DMPlexComputeResidualByKey(vdm, key, cellIS, time, locX, locX_t, t, locF, ctx));
+    PetscCall(DMDestroy(&vdm));
+    return PETSC_SUCCESS;
 }
 
 // copy paste function signitures from $PETSC_DIR/include/petscds.h - would be nice to automate this.
@@ -129,6 +176,57 @@ PetscErrorCode UW_PetscDSViewBdWF(PetscDS ds, PetscInt bd)
     return 1;
 }
 
+// Issue #96 fix: Force coordinate field creation on a DM and strip
+// boundary labels from the coordinate DM so they don't cause MPI errors
+// in DMCompleteBCLabels_Internal during lazy coordinate field recreation.
+//
+// Must be called AFTER createCoordinateSpace and AFTER labels are added.
+// The coordinate field is created NOW (while we can clean the coord DM)
+// and cached, preventing PETSc from lazily recreating it later.
+PetscErrorCode UW_DMForceCoordinateField(DM dm)
+{
+    DMField        coordField;
+    DM             cdm;
+    PetscInt       numLabels, i;
+
+    PetscFunctionBeginUser;
+
+    // Force coordinate field creation (triggers DMCreateCoordinateField_Plex)
+    PetscCall(DMGetCoordinateField(dm, &coordField));
+
+    // Now strip non-essential labels from the coordinate DM
+    // (DMClone copied all of mesh.dm's labels, including boundary labels)
+    PetscCall(DMGetCoordinateDM(dm, &cdm));
+    PetscCall(DMGetNumLabels(cdm, &numLabels));
+    for (i = numLabels - 1; i >= 0; --i) {
+        const char *name;
+        PetscBool   isDepth, isCelltype;
+        PetscCall(DMGetLabelName(cdm, i, &name));
+        PetscCall(PetscStrcmp(name, "depth", &isDepth));
+        PetscCall(PetscStrcmp(name, "celltype", &isCelltype));
+        if (!isDepth && !isCelltype) {
+            PetscCall(DMRemoveLabel(cdm, name, NULL));
+        }
+    }
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Set the time value on a DM. This is passed as `petsc_t` to all
+// pointwise residual and Jacobian functions during assembly.
+// PETSc stores this internally but petsc4py doesn't expose it.
+PetscErrorCode UW_DMSetTime(DM dm, PetscReal time)
+{
+    // DMSetOutputSequenceNumber stores (step, time) on the DM.
+    // The time component is what DMPlexComputeResidual_Internal
+    // passes as petsc_t to the pointwise functions.
+    PetscInt step;
+    PetscReal old_time;
+    PetscCall(DMGetOutputSequenceNumber(dm, &step, &old_time));
+    PetscCall(DMSetOutputSequenceNumber(dm, step, time));
+    return PETSC_SUCCESS;
+}
+
 PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 {
 
@@ -144,6 +242,12 @@ PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 //
 // PETSc's DMPlexComputeBdIntegral returns only the local contribution (no MPI
 // reduction), so this wrapper adds an Allreduce to produce the global integral.
+//
+// IMPORTANT: DMPlexComputeBdIntegral is collective (it calls DMGlobalToLocal
+// internally). All ranks MUST call it, even if their local boundary stratum is
+// empty — PETSc handles empty strata gracefully (skips the per-face loop).
+// Skipping the call on empty ranks causes a deadlock because the other ranks
+// block inside DMGlobalToLocal waiting for the missing participants.
 //
 // Ghost facet filtering is handled by our PETSc patch
 // (plexfem-internal-boundary-ownership-fix.patch) which filters SF leaves
@@ -164,12 +268,10 @@ PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
     PetscCall(DMGetLocalSection(dm, &section));
     PetscCall(PetscSectionGetNumFields(section, &Nf));
 
-    // If label is NULL (boundary not present on this rank), contribute 0
-    // but still participate in the MPI Allreduce to avoid hangs.
+    // NULL label means no boundary was found at all — no rank has work.
+    // Safe to return early since no rank enters the collective PETSc call.
     if (!label) {
-        PetscScalar zero = 0.0;
-        PetscCallMPI(MPIU_Allreduce(&zero, result, 1, MPIU_SCALAR, MPIU_SUM,
-                                    PetscObjectComm((PetscObject)dm)));
+        *result = 0.0;
         PetscFunctionReturn(PETSC_SUCCESS);
     }
 
@@ -181,6 +283,8 @@ PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
     PetscScalar *integral;
     PetscCall(PetscCalloc1(Nf, &integral));
 
+    // All ranks must call DMPlexComputeBdIntegral — it is collective.
+    // Ranks with empty local strata will simply contribute 0.
     // PETSc changed DMPlexComputeBdIntegral signature in v3.22.0:
     //   <= 3.21.x: void (*func)(...)     — single function pointer
     //   >= 3.22.0: void (**funcs)(...)    — array of Nf function pointers
@@ -199,5 +303,66 @@ PetscErrorCode UW_DMPlexComputeBdIntegral(DM dm, Vec X,
     PetscCall(PetscFree(funcs));
     PetscCall(PetscFree(integral));
 
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Create a sandbox DM for BdIntegral that won't contaminate the
+// original DM's shared DM_Plex caches.
+//
+// DMClone shares DM_Plex by refcount, and DMPlexComputeBdIntegral
+// lazily initialises height-trace FE caches on the shared struct.
+// This corrupts any solver DM cloned from the same mesh.
+//
+// Strategy: DMClone (cheap, shares topology) then rebuild the
+// coordinate field from scratch.  The fresh coordinate field has its
+// own DMField_DS with empty height-trace caches, so the lazy init
+// during BdIntegral writes to the sandbox's caches, not the original's.
+PetscErrorCode UW_DMCreateBdIntegralSandbox(DM src, DM *sandbox)
+{
+    DM            sdm;
+    PetscInt      Nf, i;
+    PetscSection  srcSec;
+    Vec           auxVec;
+
+    PetscFunctionBeginUser;
+
+    // DMClone shares DM_Plex topology, point SF, and labels by reference.
+    // The topology itself is read-only — the problem is the coordinate
+    // DMField's lazily-cached height-trace FEs.  We replace the coordinate
+    // field below so those caches are independent.
+    PetscCall(DMClone(src, &sdm));
+
+    // Rebuild coordinate space from scratch — creates a new coordinate
+    // DMField_DS with empty height-trace caches, independent of src's.
+    // Degree 1 (P1/Q1) matches UW3's mesh coordinate convention.
+    // Signature changed in PETSc 3.25: (dm, degree, localized, project)
+    // vs 3.24: (dm, degree, project, snapFunc)
+#if PETSC_VERSION_GE(3, 25, 0)
+    PetscCall(DMPlexCreateCoordinateSpace(sdm, 1, PETSC_FALSE, PETSC_TRUE));
+#else
+    PetscCall(DMPlexCreateCoordinateSpace(sdm, 1, PETSC_FALSE, NULL));
+#endif
+    PetscCall(UW_DMForceCoordinateField(sdm));
+
+    // Replicate the field layout and section from src so that the
+    // solution vector is compatible with the sandbox's DS.
+    PetscCall(DMGetLocalSection(src, &srcSec));
+    PetscCall(PetscSectionGetNumFields(srcSec, &Nf));
+    for (i = 0; i < Nf; ++i) {
+        PetscObject obj;
+        DMLabel     label;
+        PetscCall(DMGetField(src, i, &label, &obj));
+        PetscCall(DMSetField(sdm, i, label, obj));
+    }
+    PetscCall(DMCreateDS(sdm));
+    PetscCall(DMSetLocalSection(sdm, srcSec));
+
+    // Copy auxiliary data (viscosity, etc.) — just a pointer, no mutation
+    PetscCall(DMGetAuxiliaryVec(src, NULL, 0, 0, &auxVec));
+    if (auxVec) {
+        PetscCall(DMSetAuxiliaryVec(sdm, NULL, 0, 0, auxVec));
+    }
+
+    *sandbox = sdm;
     PetscFunctionReturn(PETSC_SUCCESS);
 }

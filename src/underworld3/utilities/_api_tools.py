@@ -97,14 +97,6 @@ class SymbolicProperty:
 
     def __set__(self, obj, value):
         """Set the value, with automatic unwrapping."""
-        # Mark solver as needing setup when property changes
-        if hasattr(obj, "is_setup"):
-            obj.is_setup = False
-
-        # Check None constraint
-        if value is None and not self.allow_none:
-            raise ValueError(f"Cannot set {self.attr_name[1:]} to None")
-
         # Auto-unwrap objects with _sympify_() protocol
         if value is not None and hasattr(value, "_sympify_"):
             value = value._sympify_()
@@ -116,6 +108,15 @@ class SymbolicProperty:
             # Only wrap if not already a Matrix
             if not isinstance(value, sympy.matrices.MatrixBase):
                 value = sympy.Matrix([value])
+
+        # Mark solver as needing setup ONLY when property actually changes
+        if hasattr(obj, "is_setup"):
+            old_value = getattr(obj, self.attr_name, None)
+            # Use 'is not' check first for speed
+            if old_value is not value:
+                # Check for mathematical inequality (handles SymPy expressions)
+                if old_value != value:
+                    obj.is_setup = False
 
         # Store the value
         setattr(obj, self.attr_name, value)

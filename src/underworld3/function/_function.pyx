@@ -359,6 +359,7 @@ def global_evaluate_nd(   expr,
                 check_extrapolated=False,
                 force_l2=False,
                 smoothing=1e-6,
+                local_fallback=True,
             ):
 
     """
@@ -367,6 +368,21 @@ def global_evaluate_nd(   expr,
     This is the low-level Cython implementation for MPI-parallel evaluation.
     Users should typically use :func:`underworld3.function.global_evaluate`
     which provides automatic unit handling and a cleaner interface.
+
+    Contract: this is a faithful *parallel* counterpart of :func:`evaluate` —
+    a query point is interpolated wherever in the mesh it lands (on any rank),
+    a point just outside the mesh is extrapolated from its nearest cell (the
+    globally nearest by a centroid-distance heuristic, with the lowest rank as
+    the tie-break in parallel),
+    and ``check_extrapolated`` returns an inside/outside flag per point. The
+    result is independent of the number of ranks (up to the rank-local
+    extrapolation residual near partition seams). Points that no rank can
+    locate in-cell are resolved by a best-claim reduction over ranks (see the
+    out-of-domain block below); pass ``local_fallback=False`` to restore the
+    legacy behaviour where such points returned silently-wrong values. The
+    ``GE_LOCAL_FALLBACK`` environment variable, if set, overrides the kwarg
+    (an operator escape hatch retained from the parallel-deadlock debugging
+    history; the kwarg is the supported control surface).
 
     Note it is not efficient to call this function to evaluate an expression at
     a single coordinate. Instead the user should provide a numpy array of all
@@ -484,13 +500,15 @@ def global_evaluate_nd(   expr,
 
     index = original_index.array[:,0,0]
     ranks = original_rank.array[:,0,0]
+    n_input_points = coords_array.shape[0]
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
-    local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.dim)
+    local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.cdim)
     values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
 
-    data_container.array[...] = values[...]
-    is_extrapolated.array[:,0,0] = extrapolated[:]
+    if local_coords.shape[0] > 0:
+        data_container.array[...] = values[...]
+        is_extrapolated.array[:,0,0] = extrapolated[:]
 
     # set rank to old values and migrate back
     evaluation_swarm._rank_var.array[...] = original_rank.array[...]
@@ -504,18 +522,122 @@ def global_evaluate_nd(   expr,
 
     # Invalidate cached data after bare-bones dm.migrate —
     # particle count and values changed but Swarm.migrate() was bypassed.
-    evaluation_swarm._particle_coordinates._canonical_data = None
-    for var in evaluation_swarm._vars.values():
-        if hasattr(var, "_canonical_data"):
-            var._canonical_data = None
+    evaluation_swarm._invalidate_canonical_data()
 
-    index = original_index.array[:,0,0]
+    # Pre-allocate with NaN so the shape is always correct. If any points
+    # are lost during the migration round-trip, they remain NaN rather than
+    # causing a shape mismatch or returning uninitialised data.
+    return_value = np.full((n_input_points,) + expr_shape, np.nan, dtype=np.double)
+    return_mask = np.full((n_input_points, 1, 1), True, dtype=bool)
 
-    return_value = np.empty_like(data_container.array[...])
-    return_value[index,:,:] =  data_container.array[:,:,:]
+    n_returned = original_index.array.shape[0]
+    if n_returned > 0:
+        index = original_index.array[:, 0, 0].astype(int)
+        return_value[index, :, :] = data_container.array[:, :, :]
+        return_mask[index] = is_extrapolated.array[:]
 
-    return_mask = np.empty_like(is_extrapolated.array[...], dtype=bool)
-    return_mask[index] =  is_extrapolated.array[:]
+    # ------------------------------------------------------------------
+    # Out-of-domain extrapolation — keep the parallel result a faithful
+    # match for the serial ``evaluate()`` contract: interpolate a point
+    # wherever it lands across ranks, extrapolate a point just outside the
+    # mesh, and flag inside/outside.
+    #
+    # After the migrate round-trip, a query point that NO rank could locate
+    # in one of its cells returns flagged-extrapolated but valued from
+    # whichever rank the bare dm.migrate happened to strand it on — typically
+    # a geometrically far, WRONG cell (the classic symptom is an annulus
+    # boundary point reading a value from the opposite side of the domain).
+    # Serial ``evaluate()`` instead extrapolates from the TRUE nearest cell.
+    # Restore that contract with a "best-claim" reduction over the (small,
+    # boundary-layer) stranded set:
+    #
+    #   1. allgather the extrapolated points so every rank holds the SAME
+    #      global set;
+    #   2. each rank reports, per point, its nearest-local-cell distance and
+    #      its LOCAL rbf extrapolation of the field there;
+    #   3. Allreduce(MIN distance) + Allreduce(MIN rank) tie-break picks the
+    #      rank whose nearest cell is globally closest, and Allreduce(SUM of
+    #      the winner-only value/flag) scatters that rank's extrapolation back.
+    #
+    # A point some rank actually contains (distance ~ 0) naturally wins, so
+    # only genuinely-stranded points are corrected. Cost is O(boundary points)
+    # — no dense global tree, no exhaustive search.
+    #
+    # DEADLOCK SAFETY — read before editing. Every collective here (allgather,
+    # Allreduce) runs unconditionally on the IDENTICAL global set on every
+    # rank, so all ranks stay in lockstep (n_ext_total is itself a reduced
+    # value, so the `> 0` guard is taken identically everywhere). The per-rank
+    # value MUST come from the LOCAL rbf path (rbf=True): the FE interpolation
+    # path (petsc_interpolate / DMInterpolation) is itself collective and would
+    # desync here, because each rank classifies the same global set against its
+    # own domain (different interior-point counts) → hang. Never route the
+    # fallback value through FE interpolation.
+    #
+    # Serial is left untouched (the serial path above already extrapolates from
+    # the true nearest cell). Escape hatch: GE_LOCAL_FALLBACK=0 restores the
+    # legacy (silently-wrong out-of-domain) behaviour; default on.
+    # ------------------------------------------------------------------
+    import os
+    # The kwarg is the supported control; an explicitly-set env var overrides
+    # it (operator escape hatch — see DEADLOCK SAFETY / contract docstring).
+    _env_fallback = os.environ.get("GE_LOCAL_FALLBACK")
+    if _env_fallback is not None:
+        _local_fallback = _env_fallback.strip().lower() not in ("0", "off", "false", "no", "")
+    else:
+        _local_fallback = bool(local_fallback)
+    if uw.mpi.size > 1 and _local_fallback:
+        from mpi4py import MPI
+
+        comm = uw.mpi.comm
+        ext_idx = np.where(return_mask[:, 0, 0])[0]
+        ext_coords = np.ascontiguousarray(coords_array[ext_idx], dtype=np.double)
+
+        counts = np.array(comm.allgather(ext_coords.shape[0]), dtype=int)
+        n_ext_total = int(counts.sum())
+
+        if n_ext_total > 0:
+            parts = comm.allgather(ext_coords)
+            all_ext = np.concatenate(
+                [p for p in parts if p.size], axis=0).reshape(n_ext_total, -1)
+
+            # This rank's local rbf extrapolation of the global set. NON-collective
+            # value path — see DEADLOCK SAFETY above (must be rbf=True, never FE).
+            ext_vals, ext_flag = evaluate_nd(
+                expr, all_ext, rbf=True, evalf=False, verbose=False,
+                check_extrapolated=True,)
+            ext_vals = np.ascontiguousarray(
+                np.asarray(ext_vals, dtype=np.double).reshape((n_ext_total,) + expr_shape))
+            ext_flag = np.asarray(ext_flag).reshape(n_ext_total).astype(np.int32)
+
+            # Nearest-local-cell distance for every point (local kd-tree query).
+            mesh._build_kd_tree_index()
+            dist2, _ = mesh._centroid_index.query(all_ext, k=1, sqr_dists=True)
+            dist2 = np.ascontiguousarray(np.asarray(dist2, dtype=np.double).ravel())
+
+            # Globally-nearest cell per point, lowest rank as the tie-break.
+            min_dist2 = np.empty(n_ext_total, dtype=np.double)
+            comm.Allreduce([dist2, MPI.DOUBLE], [min_dist2, MPI.DOUBLE], op=MPI.MIN)
+            my_claim = np.where(dist2 <= min_dist2 * (1.0 + 1e-12) + 1e-300,
+                                comm.rank, comm.size).astype(np.int32)
+            win_rank = np.empty(n_ext_total, dtype=np.int32)
+            comm.Allreduce([my_claim, MPI.INT], [win_rank, MPI.INT], op=MPI.MIN)
+            i_win = (win_rank == comm.rank)
+
+            # Winner contributes value+flag, everyone else zero; SUM selects it.
+            contrib_val = np.ascontiguousarray(
+                np.where(i_win[:, None, None], ext_vals, 0.0))
+            best_val = np.empty_like(contrib_val)
+            comm.Allreduce([contrib_val, MPI.DOUBLE], [best_val, MPI.DOUBLE], op=MPI.SUM)
+            contrib_flag = np.where(i_win, ext_flag, 0).astype(np.int32)
+            best_flag = np.empty(n_ext_total, dtype=np.int32)
+            comm.Allreduce([contrib_flag, MPI.INT], [best_flag, MPI.INT], op=MPI.SUM)
+
+            # Scatter this rank's segment of the global set back to its points.
+            offset = int(counts[:comm.rank].sum())
+            seg = slice(offset, offset + ext_coords.shape[0])
+            if ext_idx.size:
+                return_value[ext_idx, :, :] = best_val[seg]
+                return_mask[ext_idx, 0, 0] = best_flag[seg].astype(bool)
 
     if not check_extrapolated:
         return return_value
@@ -546,38 +668,73 @@ def _project_to_work_variable(expr, mesh, smoothing=1e-6):
         Work variable containing projected nodal values
     """
     import underworld3 as uw
+    import sympy
 
-    # Handle matrix expressions - need multi-component work variable
+    # Handle matrix/tensor expressions — need a multi-component projection.
+    # Implementation: project the (rows, cols) expression into a flat
+    # (1, Nc) MATRIX work variable using SNES_MultiComponent_Projection
+    # (one solve, shared DM), then fan the result out into a (rows, cols)
+    # shaped work variable so the caller's ``work_var.sym`` preserves the
+    # original tensor shape.
     if hasattr(expr, 'shape') and expr.shape != (1, 1):
         rows, cols = expr.shape
         n_components = rows * cols
 
-        # Get or create multi-component work variable
-        cache_key = f'_eval_work_{n_components}'
+        shape_key = f'{rows}x{cols}'
+        cache_key = f'_eval_work_{shape_key}'
+        flat_key = f'{cache_key}_flat'
+        projector_key = f'{cache_key}_projector'
+
         if not hasattr(mesh, cache_key):
+            # Tensor-shaped result variable that the caller sees via .sym
+            if rows == mesh.dim and cols == mesh.dim:
+                vtype_out = uw.VarType.TENSOR
+            else:
+                vtype_out = uw.VarType.MATRIX
             work_var = uw.discretisation.MeshVariable(
-                cache_key, mesh, num_components=n_components, degree=1
+                cache_key,
+                mesh,
+                (rows, cols),
+                vtype=vtype_out,
+                degree=1,
             )
             setattr(mesh, cache_key, work_var)
-            # Create projectors for each component
-            projectors = []
-            for c in range(n_components):
-                proj = uw.systems.Projection(mesh, work_var, scalar_component=c)
-                proj.petsc_options["snes_rtol"] = 1e-6
-                projectors.append(proj)
-            setattr(mesh, f'{cache_key}_projectors', projectors)
+
+            # Flat (1, Nc) target for the multi-component projector
+            flat_var = uw.discretisation.MeshVariable(
+                flat_key,
+                mesh,
+                (1, n_components),
+                vtype=uw.VarType.MATRIX,
+                degree=1,
+            )
+            setattr(mesh, flat_key, flat_var)
+
+            projector = uw.systems.MultiComponent_Projection(
+                mesh,
+                u_Field=flat_var,
+                n_components=n_components,
+                degree=1,
+            )
+            projector.petsc_options["snes_rtol"] = 1e-6
+            setattr(mesh, projector_key, projector)
 
         work_var = getattr(mesh, cache_key)
-        projectors = getattr(mesh, f'{cache_key}_projectors')
+        flat_var = getattr(mesh, flat_key)
+        projector = getattr(mesh, projector_key)
 
-        # Project each component
-        idx = 0
-        for i in range(rows):
-            for j in range(cols):
-                projectors[idx].uw_function = expr[i, j]
-                projectors[idx].smoothing = smoothing
-                projectors[idx].solve(zero_init_guess=False)
-                idx += 1
+        # Build flat row-matrix source: [[expr[0,0], expr[0,1], ..., expr[r-1,c-1]]]
+        flat_source = sympy.Matrix(
+            [[expr[i, j] for i in range(rows) for j in range(cols)]]
+        )
+        projector.uw_function = flat_source
+        projector.smoothing = smoothing
+        projector.solve(zero_init_guess=False)
+
+        # Fan flat result back to the tensor work variable
+        for idx in range(n_components):
+            i, j = divmod(idx, cols)
+            work_var.array[:, i, j] = flat_var.array[:, 0, idx]
 
         return work_var
 
@@ -839,6 +996,20 @@ def evaluate_nd(   expr,
                             )
 
     else:
+        # CRITICAL: update_lvec() calls dm.globalToLocal() which is COLLECTIVE.
+        # It MUST be called by ALL ranks before any rank enters petsc_interpolate,
+        # because ranks with zero interior points would skip petsc_interpolate
+        # (and its internal update_lvec call), deadlocking the ranks that do enter.
+        mesh.update_lvec()
+
+        # Interior (FE) vs exterior (RBF) classification. points_in_domain()
+        # itself defers to the bulletproof barycentric locator on parallel
+        # simplex/manifold meshes (mesh._eval_use_robust_location()), so on-
+        # face / partition-seam / domain-boundary node points are classified
+        # interior (FE path) rather than being rejected to rank-local RBF — the
+        # same fix that lets swarm migration claim them. Serial / non-simplex
+        # keep the cell-wall test (bit-identical). See
+        # parallel-repeated-solve-corruption.md.
         in_or_not = mesh.points_in_domain(coords_array, strict_validation=False)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
@@ -979,18 +1150,11 @@ def petsc_interpolate(   expr,
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
 
-    # Early return for empty coordinate arrays (SECOND CHECK - top-level function)
-    # CRITICAL: Avoid lambdify errors with LaTeX variable names when coords is empty
-    # This handles cases where empty arrays pass through from evaluate_nd
-    if len(coords) == 0:
-        # Determine output shape based on expression type
-        try:
-            expr_shape = expr.shape
-            # Return empty array with correct shape: (0, rows, cols)
-            return np.empty([0] + list(expr_shape), dtype=np.double)
-        except AttributeError:
-            # Scalar expression - return (0,) shaped array
-            return np.empty([0], dtype=np.double)
+    # NOTE: Do NOT early-return for empty coords here. petsc_interpolate
+    # calls DMLocatePoints which is COLLECTIVE on the mesh DM communicator.
+    # If some ranks skip it (empty coords) while others enter it, MPI deadlocks.
+    # Empty coords are handled inside interpolate_vars_on_mesh after the
+    # collective operations complete.
 
     ## Substitute any UWExpressions for their values before calculation
     ## NOTE: We use _unwrap_expressions directly (not fn_substitute_expressions) to avoid
@@ -1088,11 +1252,9 @@ def petsc_interpolate(   expr,
         # Make coords contiguous for caching and C access
         coords = np.ascontiguousarray(coords)
 
-        # Early return for empty coordinate arrays
-        # CRITICAL: Avoid DMInterpolation setup with zero points
-        if len(coords) == 0:
-            # Return empty array with correct shape: (0, dofcount)
-            return np.empty([0, dofcount], dtype=np.double)
+        # NOTE: No early return for empty coords here. DMLocatePoints
+        # (inside DMInterpolationSetUp_UW) is COLLECTIVE on the mesh DM
+        # communicator. All ranks must participate, even with zero points.
 
         # === DMInterpolation CACHING ===
         # Declare variables at function scope (Cython requirement)
@@ -1116,11 +1278,24 @@ def petsc_interpolate(   expr,
             # CACHE MISS - Create structure and cache it
             cached_info = CachedDMInterpolationInfo()
 
-            # Get cell hints
-            # coords is already np.ndarray type (function signature ensures this)
-            cells = mesh.get_closest_cells(coords)
+            # Get cell hints.
+            # In PARALLEL use the bulletproof barycentric locator (the swarm-
+            # migration locator): get_closest_cells (first-pass kd-tree-nearest)
+            # can hand back a non-containing cell for on-face/seam node points,
+            # and that wrong cell is what the DMInterpolation recovery uses when
+            # DMLocatePoints drops the point -> a value from the wrong region.
+            # _robust_owning_cells returns the true containing cell (or a valid
+            # adjacent cell for on-face points). When the bypass is active
+            # (mesh._eval_use_robust_location()) this hint is trusted directly;
+            # otherwise it is the first-pass guess as before. Same single policy
+            # switch as the classifier and the DMInterpolation wrapper.
+            if mesh._eval_use_robust_location():
+                cells = mesh._robust_owning_cells(coords)
+            else:
+                cells = mesh.get_closest_cells(coords)
 
             # Create and set up DMInterpolation structure (EXPENSIVE)
+            # This calls DMLocatePoints which is COLLECTIVE — all ranks must enter.
             try:
                 # coords is already np.ndarray type (function signature ensures this)
                 cached_info.create_structure(mesh, coords, cells, dofcount)

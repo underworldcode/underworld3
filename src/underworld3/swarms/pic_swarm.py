@@ -223,7 +223,7 @@ class PICSwarm(Stateful, uw_object):
             )
 
         self._X0_uninitialised = True
-        self._index = None
+        self._kdtree = None
         self._nnmapdict = {}
 
         super().__init__()
@@ -987,7 +987,7 @@ class PICSwarm(Stateful, uw_object):
                     self.em_swarm.dm.migrate(remove_sent_points=True)
 
                     # void these things too
-                    self.em_swarm._index = None
+                    self.em_swarm._kdtree = None
                     self.em_swarm._nnmapdict = {}
 
                 # do var updates
@@ -1042,12 +1042,21 @@ class PICSwarm(Stateful, uw_object):
         if self.vtype == uw.VarType.MATRIX:
             return i + j * self.shape[0]
 
+    def _get_kdtree(self):
+        """
+        Return a cached KDTree for the swarm particle coordinates.
+        Invalidated automatically whenever particles migrate or positions change.
+        """
+        if not hasattr(self, "_kdtree") or self._kdtree is None:
+            with self.access():
+                self._kdtree = uw.kdtree.KDTree(self._coord_var.data)
+
+        return self._kdtree
+
     @timing.routine_timer_decorator
     def _get_map(self, var):
         # generate tree if not avaiable
-        if not self._index:
-            with self.access():
-                self._index = uw.kdtree.KDTree(self.data)
+        kd = self._get_kdtree()
 
         # get or generate map
         meshvar_coords = var._meshVar.coords
@@ -1061,8 +1070,8 @@ class PICSwarm(Stateful, uw_object):
         h.update(meshvar_coords)
         digest = h.intdigest()
         if digest not in self._nnmapdict:
-            # self._nnmapdict[digest] = self._index.find_closest_point(meshvar_coords)[0]
-            self._nnmapdict[digest] = self._index.query(meshvar_coords, k=1, sqr_dists=False)[0]
+            # self._nnmapdict[digest] = self._kdtree.find_closest_point(meshvar_coords)[0]
+            self._nnmapdict[digest] = kd.query(meshvar_coords, k=1, sqr_dists=False)[1]
         return self._nnmapdict[digest]
 
     @timing.routine_timer_decorator

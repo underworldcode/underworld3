@@ -1,0 +1,82 @@
+version: 1
+
+project:
+  title: "Lagrangian Particles and Surface Tracking in Underworld3: Symbolic Integration of Material History"
+  description: >
+    Describes the particle (swarm) and surface-tracking implementation in
+    Underworld3 — parallel DMSwarm management, proxy mesh variables via RBF
+    projection, boundary and internal surface integrals, and how particle
+    data participates in the symbolic expression framework.
+  keywords:
+    - geodynamics
+    - particles
+    - Lagrangian methods
+    - surface tracking
+    - parallel computing
+    - PETSc
+    - Python
+  license: CC-BY-4.0
+  open_access: true
+  bibliography:
+    - references.bib
+  authors:
+    - name: Louis Moresi
+      orcid: 0000-0003-3685-174X
+      corresponding: true
+      affiliations:
+        - anu-rses
+    - name: John Mansour
+      orcid: 0000-0001-5865-1664
+      affiliations:
+        - monash
+    - name: Julian Giordani
+      orcid: 0000-0003-4515-9296
+      affiliations:
+        - usyd
+    # Add other authors as appropriate
+  affiliations:
+    - id: anu-rses
+      institution: Australian National University
+      department: Research School of Earth Sciences
+      ror: https://ror.org/019wvm592
+      city: Canberra
+      country: Australia
+    - id: monash
+      institution: Monash University
+      department: School of Earth, Atmospheric & Environmental Science
+      city: Melbourne
+      country: Australia
+    - id: usyd
+      institution: University of Sydney
+      city: Sydney
+      country: Australia
+
+  exports:
+    # Draft / preprint (Typst — fast, no TeX needed)
+    - format: typst
+      template: lapreprint-typst
+      output: exports/paper-preprint.pdf
+
+    # GMD submission (LaTeX — required by Copernicus)
+    - format: pdf
+      template: egu_copernicus
+      journal_name: gmd
+      running_author: "Moresi et al."
+      output: exports/paper-gmd.pdf
+
+    # EarthArXiv preprint
+    - format: pdf
+      template: eartharxiv
+      output: exports/paper-eartharxiv.pdf
+
+    # LaTeX source bundle for arXiv upload
+    - format: tex
+      template: arxiv_two_column
+      output: exports/arxiv-submission.zip
+
+    # Word for collaborators
+    - format: docx
+      output: exports/paper.docx
+
+site:
+  template: article-theme

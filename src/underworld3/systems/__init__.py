@@ -23,6 +23,10 @@ NavierStokes : class
     Navier-Stokes equations with inertia.
 Diffusion : class
     Pure diffusion (no advection).
+TransientDarcy : class
+    Transient groundwater flow with constant storage.
+Richards : class
+    Richards equation for variably-saturated flow.
 
 Time Derivative Schemes
 -----------------------
@@ -38,15 +42,18 @@ from underworld3.cython.generic_solvers import (
     SNES_Scalar,
     SNES_Vector,
     SNES_Stokes_SaddlePt,
+    SNES_MultiComponent,
 )
 
 from .solvers import SNES_Poisson as Poisson
 from .solvers import SNES_Darcy as SteadyStateDarcy
 from .solvers import SNES_Stokes as Stokes
+from .solvers import SNES_Stokes_Constrained as Stokes_Constrained
 from .solvers import SNES_VE_Stokes as VE_Stokes
 from .solvers import SNES_Projection as Projection
 from .solvers import SNES_Vector_Projection as Vector_Projection
 from .solvers import SNES_Tensor_Projection as Tensor_Projection
+from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 
 # from .solvers import SNES_Solenoidal_Vector_Projection as Solenoidal_Vector_Projection  ## WIP / maybe some issues
 # from .solvers import (
@@ -60,6 +67,10 @@ from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
 
 # import diffusion-only solver
 from .solvers import SNES_Diffusion as Diffusion
+
+# Transient Darcy and Richards solvers
+from .solvers import SNES_TransientDarcy as TransientDarcy
+from .solvers import SNES_Richards as Richards
 
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_NavierStokes as NavierStokesSwarm

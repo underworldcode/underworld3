@@ -33,6 +33,10 @@ feature/Z ────────────────────┘
 ### `main` — stable releases
 
 - Receives merges from `development` at release time (quarterly, or when ready).
+  The quarterly merge brings over the **whole** stable state of `development` —
+  it is *not* a surgical cherry-pick of one feature. Which features are *announced
+  as working* is decided by the release notes, not by branch surgery
+  (see [Maturity-gated promotion](#maturity-gated-promotion) below).
 - Critical bug fixes are cherry-picked from `development` between releases.
 - Every merge is tagged: `v3.0.0`, `v3.0.1` (patch), `v3.1.0` (quarterly).
 - Binder launcher tracks the latest release tag.
@@ -118,6 +122,28 @@ Bug found
 
 Version numbers are managed by setuptools-scm from git tags — see `version-management.md`.
 
+### Maturity-gated promotion
+
+The quarterly `development → main` merge brings over everything stable on
+`development`. The hard part is not *which commits* move — it is being able to say
+"feature X is released and **works**" without claiming the same for half-finished
+work that rode along.
+
+The project solves this with **release notes, not branch surgery**. A declarative
+manifest (`docs/release-notes/feature-manifest.yaml`) lists each shippable feature
+and the tests that validate it. At release time a gate runs each feature's tests
+and sorts it into:
+
+- **Supported (validated)** — `tier_a`/`tier_b` tests pass; guaranteed.
+- **Preview (present, unguaranteed)** — code is on `main` but not guaranteed.
+
+So the MMPDE mover's code can be on `main` while the release announces only the
+validated features as supported — the mover stays "preview" until its validation
+is trusted. Run the gate any time with `./uw dev release-check`, and drive the
+whole promotion with `./uw dev release`.
+
+**Full guide**: `release-process.md`.
+
 ## CI Requirements
 
 For this strategy to work, CI must be reliable:
@@ -154,6 +180,35 @@ one set of dependencies and one (expensive) PETSc compilation.
 - **Quick context switching**: Jump between features without stashing or committing
   half-finished work.
 - **Clean PRs**: Each worktree has its own branch, so commits stay focused.
+
+### Branch policy: worktrees are always on a side branch
+
+**Worktrees must never be on `development` or `main` directly.**
+
+In this repo, `main` is the *release* branch (tagged quarterly, essentially
+read-only history) and `development` is the integration trunk where active
+work converges. The default repository checkout
+(`~/+Underworld/underworld3-pixi`) should usually sit on `development` — that's
+where you read the current working state and pull updates.
+
+All work — including work intended to land on `development` — happens on a
+side branch (`feature/...`, `bugfix/...`, `docs/...`) in a worktree, then
+merges to `development` via PR.
+
+`./uw worktree create` enforces this for new worktrees: it creates the
+worktree on `<prefix>/<name>` and resets to `origin/development`, never
+checking out `development` itself in the new worktree.
+
+**Don't break it manually:**
+
+- Never `git checkout development` (or `main`) inside a worktree
+- Never `git worktree add ... development` to put a worktree directly on
+  `development`
+- If you find a worktree on `development` (e.g. from older tooling), branch
+  off immediately (`git switch -c bugfix/whatever`) before committing
+
+The default repo checkout is the *only* place that should be on
+`development`. Worktrees are *always* on side branches.
 
 ### Lifecycle
 

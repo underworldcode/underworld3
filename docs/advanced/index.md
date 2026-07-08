@@ -18,10 +18,22 @@ Profile, optimize, and scale your simulations.
 
 **[→ Performance Guide](performance.md)**
 
+### Multigrid Preconditioning (FMG vs GAMG)
+Robust, anisotropy-tolerant solves on adapted meshes — build a mesh with
+`refinement` and the solver uses geometric Full Multigrid automatically.
+
+**[→ Multigrid Preconditioning](multigrid-preconditioning.md)**
+
 ### Complex Rheologies
 Implement advanced material models and constitutive laws.
 
 **[→ Complex Rheologies](complex-rheologies.md)**
+
+### VEP with Transverse Isotropy for Fault Mechanics
+Viscoelastic-plastic rheology with anisotropic weak planes and resolved
+fault-plane yield for modelling fault zones.
+
+**[→ VEP + Transverse Isotropy](vep-transverse-isotropy-faults.md)**
 
 ### Custom Meshes
 Create complex geometries with gmsh for research problems.
@@ -37,6 +49,25 @@ Accurate free-slip and Neumann conditions on elliptical and non-planar boundarie
 Dynamic remeshing and adaptive refinement strategies.
 
 **[→ Mesh Adaptation](mesh-adaptation.md)**
+
+### Semi-Lagrangian Time Integration (SLCN / SL-BDF2)
+How `AdvDiffusionSLCN` discretizes advection–diffusion in time: the BDF
+time-derivative and Adams-Moulton/θ flux knobs, and how to pair them
+(SLCN vs SL-BDF2).
+
+**[→ Semi-Lagrangian Time Integration](semi-lagrangian-time-integration.md)**
+
+### Porous Media Flow
+Darcy flow, Richards equation, and variably-saturated groundwater modelling.
+
+**[→ Porous Media Flow](porous-flow.md)**
+
+### State Snapshots & Restore
+A "stash for timesteps": snapshot the full model state, try a step,
+restore exactly if you don't like it. For backtracking, adaptive Δt,
+and predictor–corrector workflows.
+
+**[→ State Snapshots & Restore](snapshot-restore.md)**
 
 ### Troubleshooting
 Common issues, debugging strategies, and solutions.
@@ -68,10 +99,16 @@ Ready to contribute to Underworld3?
 
 parallel-computing
 performance
+multigrid-preconditioning
+solver-iteration-callbacks
 complex-rheologies
+vep-transverse-isotropy-faults
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
+semi-lagrangian-time-integration
+porous-flow
+snapshot-restore
 troubleshooting
 api-patterns
 SWARM-INTEGRATION-STATISTICS

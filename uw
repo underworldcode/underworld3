@@ -42,24 +42,57 @@ get_env() {
     fi
 }
 
+petsc_version_short() {
+    # Read active PETSc version from .petsc-version, or detect from checkout.
+    local ver_file="$SCRIPT_DIR/petsc-custom/.petsc-version"
+    if [ -f "$ver_file" ]; then
+        cat "$ver_file" | tr -d '[:space:]'
+        return
+    fi
+    # Detect from git tag
+    if [ -d "$PETSC_CUSTOM/.git" ]; then
+        local tag
+        tag=$(cd "$PETSC_CUSTOM" && git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -n "$tag" ]; then
+            echo "$tag" | sed -E 's/^v([0-9]+)\.([0-9]+).*/\1\2/'
+            return
+        fi
+    fi
+    echo "324"  # default
+}
+
 petsc_arch_for_env() {
-    # Derive the PETSC_ARCH from the environment name.
-    # Primary AMR envs (amr, amr-runtime, amr-dev) use platform-default MPI.
-    # Override envs (amr-mpich*, amr-openmpi*) force a specific MPI.
+    # Derive the PETSC_ARCH from the environment name and active PETSc version.
+    # Format: petsc-{version}-uw-{mpi}  (e.g. petsc-324-uw-openmpi)
     local env="$1"
+    local ver=$(petsc_version_short)
+    local mpi=""
+
     case "$env" in
-        amr-mpich*)   echo "petsc-4-uw-mpich" ;;
-        amr-openmpi*) echo "petsc-4-uw-openmpi" ;;
+        amr-mpich*)   mpi="mpich" ;;
+        amr-openmpi*) mpi="openmpi" ;;
         amr*)
             # Platform-default MPI
             if [[ "$(uname -s)" == "Darwin" ]]; then
-                echo "petsc-4-uw-openmpi"
+                mpi="openmpi"
             else
-                echo "petsc-4-uw-mpich"
+                mpi="mpich"
             fi
             ;;
-        *)            echo "" ;;  # conda-forge, no custom PETSc
+        *)            echo ""; return ;;  # conda-forge, no custom PETSc
     esac
+
+    # Check for versioned arch first, fall back to legacy unversioned
+    local versioned="petsc-${ver}-uw-${mpi}"
+    local legacy="petsc-4-uw-${mpi}"
+    if [ -d "$PETSC_CUSTOM/${versioned}" ]; then
+        echo "${versioned}"
+    elif [ -d "$PETSC_CUSTOM/${legacy}" ]; then
+        echo "${legacy}"
+    else
+        # No build exists yet — return the versioned name for new builds
+        echo "${versioned}"
+    fi
 }
 
 petsc_built() {
@@ -126,8 +159,7 @@ run_build() {
         # Step 2: Check/build petsc4py
         if ! petsc4py_installed "$env"; then
             echo "  Installing petsc4py for $env..."
-            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && \
-             $PIXI run -e "$env" pip install . --no-build-isolation) || {
+            $PIXI run -e "$env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation --no-cache-dir || {
                 echo -e "${YELLOW}petsc4py build failed${NC}"
                 exit 1
             }
@@ -168,11 +200,38 @@ run_build() {
     echo "$current_target" > "$petsc_marker"
 
     echo "  Building underworld3..."
+    # Determine the ACTUAL site-packages that Python will search.
+    # pip may resolve a different path (e.g. through worktree symlinks),
+    # so we ask Python directly and install with --target.
+    local site_packages
+    site_packages=$($PIXI run -e "$env" python -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+    if [ -z "$site_packages" ]; then
+        echo -e "${YELLOW}Could not determine site-packages path${NC}"
+        exit 1
+    fi
+
+    # Remove any stale editable install markers (pip install -e leaves .pth files
+    # that redirect imports to the source tree, breaking environment isolation)
+    find "$site_packages" -maxdepth 1 -name "__editable__*underworld*" -delete 2>/dev/null
+
+    # Remove any stale .so from the source tree (left by editable installs)
+    find "$SCRIPT_DIR/src/underworld3" -name "*.so" -delete 2>/dev/null
+
     # --no-cache-dir: UW3 is always version 0.0.0, so pip's wheel cache
     # treats every build as "already cached" and silently reuses stale code.
-    # This flag forces pip to rebuild from source every time.
-    $PIXI run -e "$env" pip install . --no-build-isolation --no-cache-dir || {
+    # --target: install to where Python ACTUALLY looks, not where pip thinks.
+    # NEVER use -e (editable) — it breaks worktree and environment isolation.
+    $PIXI run -e "$env" pip install . --no-build-isolation --no-cache-dir \
+        --upgrade --target="$site_packages" || {
         echo -e "${YELLOW}underworld3 build failed${NC}"
+        exit 1
+    }
+
+    # Verify the install is importable
+    $PIXI run -e "$env" python -c "import underworld3" 2>/dev/null || {
+        echo -e "${YELLOW}underworld3 installed but cannot be imported!${NC}"
+        echo "  site-packages: $site_packages"
+        echo "  Check for stale .pth files or .so mismatches."
         exit 1
     }
 
@@ -213,11 +272,98 @@ run_build() {
         fi
     fi
 
+    # JIT cache env-fingerprint check.
+    #
+    # The on-disk JIT cache (~/.cache/underworld3/jit/) holds compiled .so
+    # files keyed by C-source hash + (PETSc, UW3) version salt. Anything
+    # outside that salt — compiler identity, CFLAGS, Python ABI, pixi env —
+    # could silently invalidate cached binaries (e.g. switching pixi env
+    # from default to amr-dev links against different libc++ shims).
+    #
+    # We detect such changes by writing an env fingerprint to the cache dir
+    # and wiping the cache on mismatch.
+    local jit_cache_dir="${UW_JIT_CACHE_DIR:-$HOME/.cache/underworld3/jit}"
+    local fp_file="$jit_cache_dir/.env-fingerprint"
+    local cc_id python_id pixi_env_id
+    cc_id=$(${CC:-cc} --version 2>/dev/null | head -1)
+    python_id=$($PIXI run -e "$env" python -c "import sys; print(sys.implementation.name, sys.version)" 2>/dev/null)
+    pixi_env_id="$env"
+    local fp
+    fp=$(printf '%s\nCC=%s\nCFLAGS=%s\nPYTHON=%s\nPIXI_ENV=%s\n' \
+            "fingerprint-v1" "$cc_id" "${CFLAGS:-}" "$python_id" "$pixi_env_id" \
+            | shasum -a 256 | cut -c1-32)
+    if [ -f "$fp_file" ]; then
+        local prev_fp
+        prev_fp=$(cat "$fp_file" 2>/dev/null)
+        if [ "$prev_fp" != "$fp" ]; then
+            echo "  Compiler / Python / pixi env changed; wiping JIT cache..."
+            find "$jit_cache_dir" -maxdepth 1 \
+                \( -name '*.so' -o -name '*.manifest.json' -o -name '.*.lock' \
+                   -o -name '.inprogress_*' \) -delete 2>/dev/null
+        fi
+    fi
+    mkdir -p "$jit_cache_dir"
+    echo "$fp" > "$fp_file"
+
     echo ""
     echo -e "${GREEN}${BOLD}Build complete!${NC}"
     echo ""
     echo "Next: ./uw test    (run tests)"
     echo "      ./uw doctor  (check configuration)"
+}
+
+run_petsc_cmd() {
+    local petsc_cmd="${1:-versions}"
+    local arg="$2"
+    case "$petsc_cmd" in
+        versions|list)
+            $PIXI run -e "$(get_env)" "$SCRIPT_DIR/petsc-custom/build-petsc.sh" versions
+            ;;
+        switch)
+            if [ -z "$arg" ]; then
+                echo "Usage: ./uw petsc switch <version-tag>"
+                echo "  e.g.: ./uw petsc switch v3.25.0"
+                exit 1
+            fi
+            $PIXI run -e "$(get_env)" "$SCRIPT_DIR/petsc-custom/build-petsc.sh" checkout "$arg"
+
+            # Nuke stale build artifacts and petsc4py. The next ./uw build's
+            # target-change detection can't fire because the still-installed
+            # petsc4py reports the OLD arch, so we force a full rebuild here.
+            # (run_build already passes --no-cache-dir to pip install . so we
+            # don't need a global pip cache purge — only petsc4py's local-path
+            # install needs its own --no-cache-dir.)
+            echo ""
+            echo "Clearing stale build artifacts for clean rebuild..."
+            rm -rf "$SCRIPT_DIR"/build/lib.* "$SCRIPT_DIR"/build/temp.* "$SCRIPT_DIR"/build/bdist.* 2>/dev/null
+            rm -f "$SCRIPT_DIR/build/.petsc_target"
+            if is_amr_env "$(get_env)"; then
+                echo "Uninstalling old petsc4py (linked to previous PETSc build)..."
+                $PIXI run -e "$(get_env)" pip uninstall -y petsc4py 2>/dev/null || true
+            fi
+
+            echo ""
+            echo "To complete the switch, rebuild PETSc then underworld3:"
+            echo "  ./uw petsc build"
+            echo "  ./uw build"
+            ;;
+        active)
+            local ver=$(petsc_version_short)
+            local arch=$(petsc_arch_for_env "$(get_env)")
+            echo "Active PETSc: ${ver} (arch: ${arch})"
+            ;;
+        build)
+            $PIXI run -e "$(get_env)" "$SCRIPT_DIR/petsc-custom/build-petsc.sh"
+            ;;
+        *)
+            echo "Usage: ./uw petsc [versions|switch <tag>|active|build]"
+            echo ""
+            echo "  versions     List available PETSc builds"
+            echo "  switch <tag> Checkout a PETSc version (e.g. v3.25.0)"
+            echo "  active       Show active PETSc version and arch"
+            echo "  build        Build PETSc for the active version"
+            ;;
+    esac
 }
 
 # Standalone diagnostics (works even if underworld3 not built)
@@ -633,7 +779,7 @@ run_setup() {
         if petsc_built; then
             echo -e "${GREEN}✓ Custom PETSc already built${NC}"
             echo "Installing petsc4py..."
-            (cd "$PETSC_CUSTOM/src/binding/petsc4py" && $PIXI run -e "$new_env" python setup.py install) 2>/dev/null
+            $PIXI run -e "$new_env" pip install "$PETSC_CUSTOM/src/binding/petsc4py" --no-build-isolation 2>/dev/null
         else
             echo -e "${YELLOW}Custom PETSc needs to be built (~1 hour)${NC}"
             read -p "Build now? [y/N]: " build_now
@@ -717,6 +863,26 @@ run_setup() {
         fi
     fi
 
+    # Optional: Install the Claude Code CLI (only meaningful for the Developer feature,
+    # which brings nodejs into the env). Reuses the install-claude pixi task.
+    if [ "$feature_choice" = "3" ]; then
+        echo ""
+        echo -e "${BOLD}Claude Code CLI (Optional)${NC}"
+        echo "  Install the Claude Code CLI globally via the dev environment's npm:"
+        echo "    pixi run -e $new_env install-claude"
+        echo "  (equivalent to: npm install -g @anthropic-ai/claude-code)"
+        echo ""
+        read -p "Install Claude Code CLI now? [y/N]: " install_claude_cli
+        install_claude_cli=${install_claude_cli:-n}
+
+        if [ "$install_claude_cli" = "y" ] || [ "$install_claude_cli" = "Y" ]; then
+            $PIXI run -e "$new_env" install-claude
+            echo -e "  ${GREEN}✓${NC} Claude Code CLI installed"
+        else
+            echo "  Skipped. Run later with: ./uw install-claude"
+        fi
+    fi
+
     # Optional: Configure Claude Code permissions for unattended monitoring
     echo ""
     echo -e "${BOLD}Claude Code Permissions (Optional)${NC}"
@@ -737,6 +903,7 @@ run_setup() {
     echo "Usage:"
     echo "  ./uw build          Build underworld3"
     echo "  ./uw test           Run tests"
+    echo "  ./uw shell          Open a shell in this env ($new_env)"
 
     # Show Jupyter info
     case "$new_env" in
@@ -751,11 +918,16 @@ run_setup() {
             ;;
     esac
     echo ""
+    echo "Note: a bare 'pixi shell' / 'pixi run' uses pixi's lightweight 'default'"
+    echo "      env, which lacks dev tools (nodejs, claude, linters, docs)."
+    echo "      Use './uw shell' (or 'pixi shell -e $new_env') to activate this env."
+    echo ""
     echo "For VS Code / IDE Jupyter kernels, set pixi environment to: $new_env"
 }
 
 # Show comprehensive help
 show_help() {
+    local verbose="${1:-0}"
     cat << 'EOF'
 UNDERWORLD3 ENVIRONMENT WRAPPER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -801,6 +973,7 @@ COMMANDS
     set-env NAME        Change environment directly
     ai-tools            Configure external AI instruction paths
     claude-perms        Configure Claude Code permissions (safe defaults)
+    install-claude      Install Claude Code CLI into the dev pixi env (run via ./uw claude)
 
   Building:
     build               Build underworld3
@@ -826,13 +999,11 @@ COMMANDS
       ./uw test --help              Show all test options
 
   Development:
-    shell               Interactive pixi shell
+    shell               Interactive pixi shell in the configured env (avoid bare 'pixi shell')
     jupyter [args]      Run jupyter (add --worktree NAME to open a worktree)
-    format              Run black
-    type-check          Run mypy
 
   Worktrees:
-    worktree create <name> [prefix]   Create worktree (symlinks .pixi + PETSc)
+    worktree create <name> [prefix]   Create worktree (own .pixi, shared PETSc)
     worktree shell <name>             Start shell in worktree directory
     worktree list                     List worktrees with status
     worktree remove <name>            Remove worktree and branch
@@ -844,6 +1015,29 @@ COMMANDS
     doctor              Check for configuration issues (PETSc mismatch, etc.)
     status              Check for updates on GitHub (without pulling)
     update              Pull latest changes and rebuild
+EOF
+    if [ "$verbose" = "1" ]; then
+        cat << 'EOF'
+
+  Developer / maintenance  (./uw dev <tool>):
+    dev release [opts]       Orchestrate development -> main promotion
+                             (--version vX.Y.Z  --rc N  --yes  --dry-run)
+    dev release-check [lvl]  Per-feature validation gate (dry-run; default 1,2)
+    dev branch-hygiene       Report/prune branches merged to development
+    dev feature-audit        List feature merges available to release
+    dev format               Run black
+    dev type-check           Run mypy
+
+    See docs/developer/guides/release-process.md  (or ./uw dev --help)
+EOF
+    else
+        cat << 'EOF'
+
+  Developer tools live under ./uw dev — reveal them with:
+    ./uw --help all          (shown by default on *-dev environments)
+EOF
+    fi
+    cat << 'EOF'
 
   Any command not listed is passed to: pixi run -e $ENV <command>
 
@@ -852,6 +1046,42 @@ FILES
   .pixi-env             Your environment choice (git-ignored)
   pixi.toml             Environment definitions (versioned)
   petsc-custom/petsc/   Custom PETSc build (git-ignored)
+
+EOF
+}
+
+show_dev_help() {
+    cat << 'EOF'
+UNDERWORLD3 DEVELOPER TOOLS  —  ./uw dev <command>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Maintainer and contributor tooling. These run in any environment, but the
+runtime/default envs are deliberately stripped down for beginners, demos and
+binder — so on those envs ./uw --help hides this section (reveal it with
+./uw --help all). On a *-dev environment it is shown by default.
+
+  Releasing (development -> main):
+    dev release [opts]       Orchestrate the quarterly promotion: tag an RC on
+                             development, run full validation + the per-feature
+                             gate, scaffold release notes, open the dev->main PR.
+                             Stops before the production tag (review gate intact).
+                             Options: --version vX.Y.Z  --rc N  --yes  --dry-run
+    dev release-check [lvl]  Per-feature validation gate, dry-run (default 1,2).
+                             Tells you which features pass — i.e. are announceable
+                             as "supported". Run on development.
+    dev branch-hygiene       Report branches merged into development, branches
+                             with open PRs, and stale branches. Add --prune to
+                             delete merged branches (confirms each).
+    dev feature-audit        List feature-branch PR merges into development since
+                             the last release — the pool of features available to
+                             announce. Map these to entries in the manifest.
+                             [--all also lists bugfix/docs; --since <ref> overrides]
+
+  Code quality:
+    dev format               Run black over src/ and tests/
+    dev type-check           Run mypy over src/
+
+  Guide: docs/developer/guides/release-process.md
 
 EOF
 }
@@ -977,9 +1207,9 @@ run_update() {
 
 # ── Worktree management ──────────────────────────────────────────────
 #
-# Worktrees share the main repo's pixi environment and PETSc build
-# via symlinks.  `./uw build` from inside a worktree installs the
-# worktree's source into the shared env.
+# Each worktree gets its OWN pixi environment (isolated site-packages).
+# Only PETSc is shared via symlink (non-relocatable, expensive to rebuild).
+# `./uw build` from inside a worktree installs into that worktree's env.
 
 WORKTREE_ROOT="$SCRIPT_DIR/.claude/worktrees"
 
@@ -1002,6 +1232,29 @@ worktree_create() {
         echo "Examples:"
         echo "  ./uw worktree create viscoelasticity"
         echo "  ./uw worktree create mesh-fix bugfix"
+        exit 1
+    fi
+
+    # Policy: worktrees must NEVER be on `development` or `main` directly.
+    # `main` is the release branch (tagged history); `development` is the
+    # integration trunk and lives in the default repo checkout. All work
+    # happens on side branches. Refuse misleading prefixes.
+    if [ "$branch_prefix" = "development" ] || [ "$branch_prefix" = "main" ]; then
+        local main_repo
+        main_repo=$(get_main_repo)
+        echo -e "${YELLOW}Refusing to use '$branch_prefix' as a branch prefix.${NC}"
+        echo ""
+        echo "Worktrees in this repo are always on a side branch:"
+        echo "  feature/<name>   bugfix/<name>   docs/<name>   ..."
+        echo ""
+        echo "If you wanted a checkout of '$branch_prefix' to read code from,"
+        echo "use the main repo at:"
+        echo "  $main_repo"
+        echo ""
+        echo "If you wanted to do work that will merge to development,"
+        echo "use a regular prefix:"
+        echo "  ./uw worktree create $name           # → feature/$name"
+        echo "  ./uw worktree create $name bugfix    # → bugfix/$name"
         exit 1
     fi
 
@@ -1037,20 +1290,28 @@ worktree_create() {
     # 3. Rename branch to follow convention
     git -C "$wt_path" branch -m "worktree-$name" "$branch_name" 2>/dev/null || true
 
-    # 4. Symlink shared resources
-    echo "  Linking shared environment..."
+    # 4. Set up isolated environment
+    #
+    # Each worktree gets its OWN pixi environment (not a symlink to the main
+    # repo's .pixi). This prevents Cython binary incompatibilities when
+    # worktrees have different source code. Only PETSc is shared (it's
+    # non-relocatable and expensive to rebuild).
+    echo "  Setting up isolated environment..."
 
-    # .pixi → main repo's .pixi (shared conda/pip packages)
-    if [ -d "$main_repo/.pixi" ]; then
-        rm -rf "$wt_path/.pixi"
-        ln -s "$main_repo/.pixi" "$wt_path/.pixi"
-        echo -e "    ${GREEN}✓${NC} .pixi → main repo"
-    fi
-
-    # petsc-custom/petsc → main repo's PETSc build (read-only, not relocatable)
+    # petsc-custom/petsc → main repo's PETSc build (read-only, shared)
     if [ -d "$main_repo/petsc-custom/petsc" ]; then
         ln -sf "$main_repo/petsc-custom/petsc" "$wt_path/petsc-custom/petsc"
-        echo -e "    ${GREEN}✓${NC} petsc-custom/petsc → main repo"
+        echo -e "    ${GREEN}✓${NC} petsc-custom/petsc → main repo (shared)"
+    fi
+
+    # .petsc-version — copy (not symlink) so each worktree can select a
+    # different already-built PETSC_ARCH (e.g. petsc-324-uw-openmpi vs
+    # petsc-325-uw-openmpi).  Built arch directories coexist in the
+    # shared PETSc source tree; .petsc-version just picks which one
+    # the activation script uses for PETSC_ARCH.
+    if [ -f "$main_repo/petsc-custom/.petsc-version" ]; then
+        cp "$main_repo/petsc-custom/.petsc-version" "$wt_path/petsc-custom/.petsc-version"
+        echo -e "    ${GREEN}✓${NC} .petsc-version copied ($(cat "$main_repo/petsc-custom/.petsc-version"))"
     fi
 
     # .pixi-env — copy so ./uw knows which environment to use
@@ -1059,9 +1320,33 @@ worktree_create() {
         echo -e "    ${GREEN}✓${NC} .pixi-env copied ($(cat "$main_repo/.pixi-env"))"
     fi
 
-    # 5. Exclude symlinks from git tracking in this worktree.
-    # Without this, "git add -A" or "git add ." can accidentally commit
-    # these machine-local symlinks, breaking CI.
+    # Install pixi environment (own copy — NEVER symlink)
+    local env=$(cat "$wt_path/.pixi-env" 2>/dev/null || echo "runtime")
+    echo "  Installing pixi environment ($env) — this may take a moment..."
+    (cd "$wt_path" && $PIXI install -e "$env" 2>/dev/null) && \
+        echo -e "    ${GREEN}✓${NC} .pixi/ installed (isolated)" || {
+        echo -e "    ${RED}pixi install failed for worktree${NC}"
+        echo -e "    The worktree requires its own pixi environment."
+        echo -e "    Fix the pixi install error above, then run:"
+        echo -e "      cd $wt_path && pixi install -e $env"
+        exit 1
+    }
+
+    # 4b. Install petsc4py for AMR environments
+    # petsc4py is built from source (not a conda package), so pixi install
+    # doesn't include it. We install from the shared PETSc build.
+    # IMPORTANT: Don't cd into the petsc source dir — pixi resolves the
+    # project from the real working directory, so cd'ing through a symlink
+    # into the main repo makes pixi install into the wrong environment.
+    if is_amr_env "$env" && [ -d "$wt_path/petsc-custom/petsc/src/binding/petsc4py" ]; then
+        echo "  Installing petsc4py for $env..."
+        (cd "$wt_path" && $PIXI run -e "$env" pip install \
+            "$wt_path/petsc-custom/petsc/src/binding/petsc4py" --no-build-isolation 2>/dev/null) && \
+            echo -e "    ${GREEN}✓${NC} petsc4py installed" || \
+            echo -e "    ${YELLOW}⚠${NC} petsc4py install failed — run ./uw build from the worktree"
+    fi
+
+    # 5. Exclude local files from git tracking in this worktree.
     local git_dir
     git_dir=$(git -C "$wt_path" rev-parse --git-dir)
     local exclude_file="$git_dir/info/exclude"
@@ -1071,7 +1356,7 @@ worktree_create() {
             echo "$entry" >> "$exclude_file"
         fi
     done
-    echo -e "    ${GREEN}✓${NC} git exclude updated (symlinks won't be committed)"
+    echo -e "    ${GREEN}✓${NC} git exclude updated"
 
     echo ""
     echo -e "${GREEN}${BOLD}Worktree ready!${NC}"
@@ -1142,11 +1427,17 @@ worktree_list() {
         if [ -f "$d/.git" ]; then
             local branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
             local status=$(git -C "$d" status --short 2>/dev/null | wc -l | tr -d ' ')
-            local linked=$( [ -L "$d/.pixi" ] && echo "linked" || echo "standalone" )
+            local linked=$( [ -L "$d/.pixi" ] && echo "shared env" || echo "isolated" )
             local dirty=""
             [ "$status" -gt 0 ] && dirty="  ${YELLOW}($status modified)${NC}"
 
-            echo -e "  ${GREEN}${wt_name}${NC}  [$branch]  ($linked)$dirty"
+            # Policy advisory: worktrees should never be on development or main
+            local policy=""
+            if [ "$branch" = "development" ] || [ "$branch" = "main" ]; then
+                policy="  ${YELLOW}⚠ on '$branch' — branch off to a side branch${NC}"
+            fi
+
+            echo -e "  ${GREEN}${wt_name}${NC}  [$branch]  ($linked)$dirty$policy"
             echo "    $d"
         else
             echo -e "  ${YELLOW}${wt_name}${NC}  (not a git worktree)"
@@ -1181,11 +1472,18 @@ worktree_remove() {
     fi
 
     local branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-    local status=$(git -C "$wt_path" status --short 2>/dev/null | wc -l | tr -d ' ')
+
+    # Filter out symlinks we created (.pixi, petsc-custom/petsc) from the dirty check
+    local status=$(git -C "$wt_path" status --short 2>/dev/null \
+        | grep -v '^?? \.pixi$' \
+        | grep -v '^?? petsc-custom/petsc$' \
+        | wc -l | tr -d ' ')
 
     if [ "$status" -gt 0 ]; then
-        echo -e "${YELLOW}Worktree has $status uncommitted change(s):${NC}"
-        git -C "$wt_path" status --short
+        echo -e "${YELLOW}Worktree has $status uncommitted change(s) (excluding setup symlinks):${NC}"
+        git -C "$wt_path" status --short \
+            | grep -v '^?? \.pixi$' \
+            | grep -v '^?? petsc-custom/petsc$'
         echo ""
         read -p "Remove anyway? [y/N]: " confirm
         [ "$confirm" != "y" ] && [ "$confirm" != "Y" ] && exit 1
@@ -1209,6 +1507,330 @@ worktree_remove() {
     fi
 
     echo -e "${GREEN}✓${NC} Worktree '$name' removed"
+}
+
+# ── Release tooling ─────────────────────────────────────────────────────────
+# Maturity-gated quarterly promotion of development -> main.
+# See docs/developer/guides/release-process.md
+
+# Small y/N confirm helper. Returns 0 on yes. Honours an assume-yes flag.
+_confirm() {
+    local prompt="$1" assume_yes="${2:-0}"
+    [ "$assume_yes" -eq 1 ] && return 0
+    read -p "$prompt [y/N]: " _c
+    [ "$_c" = "y" ] || [ "$_c" = "Y" ]
+}
+
+# ./uw dev release-check [levels]
+# Dry-run of the per-feature validation gate against the current checkout.
+# Read-only; tells you which features currently pass (announceable as supported).
+run_release_check() {
+    local levels="${1:-1,2}"
+    cd "$SCRIPT_DIR"
+    local branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    echo -e "${BOLD}Release validation gate${NC}  (branch: $branch, levels: $levels)"
+    if [ "$branch" != "development" ]; then
+        echo -e "  ${YELLOW}note:${NC} normally run on 'development'; you are on '$branch'."
+    fi
+    $PIXI run -e "$(get_env)" python "$SCRIPT_DIR/scripts/release_gate.py" \
+        --levels "$levels" report
+}
+
+# ./uw dev branch-hygiene [--prune]
+# Report (and optionally delete) branches that are merged into development.
+# Never touches branches with an open PR. Targets the "dangling branches" pileup.
+run_branch_hygiene() {
+    local do_prune=0
+    [ "$1" = "--prune" ] && do_prune=1
+    cd "$SCRIPT_DIR"
+
+    if [ ! -d "$SCRIPT_DIR/.git" ]; then
+        echo "Not a git repository"; exit 1
+    fi
+
+    echo -e "${BOLD}Fetching and pruning remote-tracking refs...${NC}"
+    git fetch --prune --quiet origin 2>/dev/null || git fetch --prune origin
+
+    # Head branches of open PRs — never prune these.
+    # gh_ok is set only when the open-PR query genuinely succeeds. An empty list
+    # from a *successful* query means "no open PRs" (safe). An empty list from a
+    # failed/unauth'd query must NOT be treated as "no open PRs" — otherwise
+    # --prune could delete branches that actually have open PRs.
+    local open_pr_branches="" gh_ok=0
+    if command -v gh >/dev/null 2>&1; then
+        if open_pr_branches=$(gh pr list --state open --limit 200 \
+            --json headRefName --jq '.[].headRefName' 2>/dev/null); then
+            gh_ok=1
+        else
+            echo -e "  ${YELLOW}gh could not list open PRs (auth/access?) — pruning disabled.${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}gh not found — cannot cross-check open PRs; pruning disabled.${NC}"
+    fi
+
+    # Remote branches merged into development (prune candidates), minus the trunks.
+    local merged
+    merged=$(git branch -r --merged origin/development 2>/dev/null \
+        | sed 's/^[* ]*//' \
+        | grep '^origin/' \
+        | grep -vE 'origin/(HEAD|development|main)$' \
+        | sed 's#^origin/##' \
+        | sort -u)
+
+    echo ""
+    echo -e "${BOLD}Merged into development (safe to delete):${NC}"
+    local prunable=()
+    if [ -z "$merged" ]; then
+        echo "  (none)"
+    else
+        while IFS= read -r b; do
+            [ -z "$b" ] && continue
+            if echo "$open_pr_branches" | grep -qx "$b"; then
+                echo -e "  ${YELLOW}$b${NC}  (has open PR — keeping)"
+            else
+                echo -e "  ${GREEN}$b${NC}"
+                prunable+=("$b")
+            fi
+        done <<< "$merged"
+    fi
+
+    echo ""
+    echo -e "${BOLD}Open PRs (do NOT prune):${NC}"
+    if [ -z "$open_pr_branches" ]; then
+        echo "  (none)"
+    else
+        echo "$open_pr_branches" | sed 's/^/  /'
+    fi
+
+    # Stale: not merged, no open PR, last commit older than 90 days.
+    echo ""
+    echo -e "${BOLD}Stale branches (unmerged, no open PR, >90 days):${NC}"
+    local now=$(date +%s)
+    local cutoff=$(( 90 * 24 * 3600 ))
+    local found_stale=0
+    while IFS='|' read -r b ts; do
+        [ -z "$b" ] && continue
+        b=${b#origin/}
+        case "$b" in HEAD|development|main) continue ;; esac
+        echo "$merged" | grep -qx "$b" && continue
+        echo "$open_pr_branches" | grep -qx "$b" && continue
+        local age=$(( now - ts ))
+        if [ "$age" -gt "$cutoff" ]; then
+            echo -e "  ${YELLOW}$b${NC}  ($(( age / 86400 ))d)"
+            found_stale=1
+        fi
+    done <<< "$(git for-each-ref --format='%(refname:short)|%(committerdate:unix)' refs/remotes/origin)"
+    [ "$found_stale" -eq 0 ] && echo "  (none)"
+
+    echo ""
+    if [ "$do_prune" -eq 0 ]; then
+        echo "Report only. Re-run with --prune to delete merged branches:"
+        echo "  ./uw dev branch-hygiene --prune"
+        return
+    fi
+
+    if [ "$gh_ok" -eq 0 ]; then
+        echo -e "${YELLOW}Refusing to --prune: the open-PR cross-check is unavailable,${NC}"
+        echo "so a branch with an open PR could be deleted by mistake."
+        echo "Authenticate gh ('gh auth login') and retry."
+        return
+    fi
+
+    if [ "${#prunable[@]}" -eq 0 ]; then
+        echo "Nothing to prune."
+        return
+    fi
+
+    echo -e "${BOLD}Prune merged branches:${NC}"
+    local b
+    for b in "${prunable[@]}"; do
+        read -p "  Delete origin/$b (and local if present)? [y/N]: " confirm
+        if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+            git push origin --delete "$b" 2>/dev/null \
+                && echo -e "    ${GREEN}✓${NC} deleted origin/$b" \
+                || echo -e "    ${YELLOW}!${NC} could not delete origin/$b"
+            git branch -D "$b" 2>/dev/null \
+                && echo -e "    ${GREEN}✓${NC} deleted local $b" || true
+        fi
+    done
+}
+
+# ./uw dev feature-audit [--all] [--since <ref>]
+# List feature-branch PR merges into development since the last release, so you
+# know what is available to announce. Candidates for the release manifest.
+run_feature_audit() {
+    local show_all=0 since=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --all)   show_all=1; shift ;;
+            --since) since="$2"; shift 2 ;;
+            *) echo "Usage: ./uw dev feature-audit [--all] [--since <ref>]"; exit 1 ;;
+        esac
+    done
+    cd "$SCRIPT_DIR"
+    git fetch --tags --quiet origin 2>/dev/null
+
+    # Baseline: explicit --since, else the last release tag if it is on
+    # development, else the point where development last diverged from main.
+    local base base_label
+    if [ -n "$since" ]; then
+        base="$since"; base_label="$since"
+    else
+        local last_tag=$(git tag --list 'v*' --sort=-v:refname | head -1)
+        if [ -n "$last_tag" ] && git merge-base --is-ancestor "$last_tag" origin/development 2>/dev/null; then
+            base="$last_tag"; base_label="release $last_tag"
+        else
+            base=$(git merge-base origin/main origin/development)
+            base_label="$(git rev-parse --short "$base") (main divergence point)"
+        fi
+    fi
+    local base_date=$(git log -1 --format=%cd --date=short "$base" 2>/dev/null)
+
+    echo -e "${BOLD}Feature merges into development since ${base_label}, ${base_date}:${NC}"
+    echo "  candidates for docs/release-notes/feature-manifest.yaml"
+    echo ""
+
+    local pattern='from [^ ]*/feature/'
+    [ "$show_all" -eq 1 ] && pattern='from [^ ]*/(feature|bugfix|docs)/'
+
+    local count=0
+    while IFS='|' read -r d s; do
+        [ -z "$s" ] && continue
+        local pr=$(echo "$s" | grep -oE '#[0-9]+' | head -1)
+        local br=$(echo "$s" | sed -E 's#.*from [^/ ]+/##')
+        printf "  ${GREEN}%-12s${NC} %-7s %s\n" "$d" "$pr" "$br"
+        count=$((count + 1))
+    done <<< "$(git log "$base"..origin/development --merges --first-parent \
+        --date=short --format='%cd|%s' 2>/dev/null | grep -E "$pattern")"
+
+    local listed=$(grep -c '^  - key:' docs/release-notes/feature-manifest.yaml 2>/dev/null || echo 0)
+    echo ""
+    echo "  $count merge(s) found. Manifest currently lists $listed feature(s)."
+    echo "  Note: only PR-merge commits are detected; squash-merged PRs won't appear."
+    echo "  Validated-test coverage:  python scripts/check_manifest_coverage.py"
+}
+
+# ./uw dev release [--version vX.Y.Z] [--rc N] [--yes] [--dry-run]
+# Orchestrate the quarterly development -> main promotion. Every state-changing
+# step is confirmed. Stops BEFORE the production tag push so main's branch
+# protection (PR + review) stays intact; CI release.yml owns the GitHub release.
+run_release() {
+    local version="" rc="1" assume_yes=0 dry_run=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --version) version="$2"; shift 2 ;;
+            --rc) rc="$2"; shift 2 ;;
+            --yes|-y) assume_yes=1; shift ;;
+            --dry-run) dry_run=1; shift ;;
+            *) echo "Unknown option: $1"; echo "Usage: ./uw dev release [--version vX.Y.Z] [--rc N] [--yes] [--dry-run]"; exit 1 ;;
+        esac
+    done
+
+    cd "$SCRIPT_DIR"
+
+    echo -e "${BOLD}[1/7] Preflight${NC}"
+    local branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ "$branch" != "development" ]; then
+        echo -e "  ${YELLOW}Release must be cut from 'development' in the main checkout (you are on '$branch').${NC}"
+        exit 1
+    fi
+    if [ -n "$(git status --porcelain)" ]; then
+        echo -e "  ${YELLOW}Working tree is not clean. Commit or stash first.${NC}"
+        exit 1
+    fi
+    git fetch --quiet origin 2>/dev/null || git fetch origin
+    local behind=$(git rev-list --count HEAD..origin/development 2>/dev/null || echo 0)
+    if [ "$behind" -gt 0 ]; then
+        echo -e "  ${YELLOW}Local development is $behind commit(s) behind origin. Pull first.${NC}"; exit 1
+    fi
+    local unpushed=$(git rev-list --count origin/development..HEAD 2>/dev/null || echo 0)
+    if [ "$unpushed" -gt 0 ]; then
+        echo -e "  ${YELLOW}Local development has $unpushed unpushed commit(s). Push first so the RC tag matches what reviewers and CI see on origin.${NC}"; exit 1
+    fi
+    local ahead=$(git rev-list --count origin/main..origin/development 2>/dev/null || echo 0)
+    echo -e "  ${GREEN}✓${NC} on development, clean, in sync with origin, $ahead commit(s) ahead of main"
+
+    echo ""
+    echo -e "${BOLD}[2/7] Version${NC}"
+    if [ -z "$version" ]; then
+        local last_tag=$(git tag --list 'v*' --sort=-v:refname | head -1)
+        echo "  Last release tag: ${last_tag:-none}"
+        read -p "  Release version (e.g. v3.1.0): " version
+    fi
+    [ -z "$version" ] && { echo "No version given."; exit 1; }
+    case "$version" in v*) ;; *) version="v$version" ;; esac
+    local rc_tag="${version}rc${rc}"
+    echo "  Release:  $version"
+    echo "  RC tag:   $rc_tag  (pushed to development now; production tag is manual after merge)"
+
+    echo ""
+    echo -e "${BOLD}[3/7] Tag release candidate on development${NC}"
+    if [ "$dry_run" -eq 1 ]; then
+        echo "  (dry-run) would: git tag $rc_tag && git push origin $rc_tag"
+    elif _confirm "  Tag and push $rc_tag on development?" "$assume_yes"; then
+        git tag "$rc_tag" && git push origin "$rc_tag" \
+            && echo -e "  ${GREEN}✓${NC} pushed $rc_tag (CI builds a prerelease)"
+    else
+        echo "  Skipped RC tag."
+    fi
+
+    echo ""
+    echo -e "${BOLD}[4/7] Full validation + per-feature gate${NC}"
+    local results_json="${TMPDIR:-/tmp}/uw_release_gate_${version}.json"
+    if [ "$dry_run" -eq 1 ]; then
+        echo "  (dry-run) would run: ./scripts/test_levels.sh 1,2,3 --isolation"
+        echo "  (dry-run) would run: release_gate.py --levels 1,2,3 run > $results_json"
+    else
+        echo "  Running full test suite (levels 1,2,3, isolated)..."
+        $PIXI run -e "$(get_env)" ./scripts/test_levels.sh 1,2,3 --isolation || \
+            echo -e "  ${YELLOW}! Test suite reported failures — review before publishing.${NC}"
+        echo "  Running per-feature maturity gate..."
+        $PIXI run -e "$(get_env)" python "$SCRIPT_DIR/scripts/release_gate.py" \
+            --levels 1,2,3 run > "$results_json"
+        $PIXI run -e "$(get_env)" python "$SCRIPT_DIR/scripts/release_gate.py" \
+            --results "$results_json" report
+    fi
+
+    echo ""
+    echo -e "${BOLD}[5/7] Release notes${NC}"
+    local notes_file="docs/release-notes/${version}.md"
+    if [ "$dry_run" -eq 1 ]; then
+        echo "  (dry-run) would render notes to $notes_file"
+    elif [ -f "$notes_file" ]; then
+        echo -e "  ${YELLOW}$notes_file already exists — not overwriting.${NC}"
+    elif _confirm "  Generate $notes_file from the gate results?" "$assume_yes"; then
+        $PIXI run -e "$(get_env)" python "$SCRIPT_DIR/scripts/release_gate.py" \
+            --results "$results_json" render-notes "$version" > "$notes_file"
+        echo -e "  ${GREEN}✓${NC} wrote $notes_file — edit Highlights & Contributors, then commit it."
+    fi
+
+    echo ""
+    echo -e "${BOLD}[6/7] Open development -> main PR${NC}"
+    if [ "$dry_run" -eq 1 ]; then
+        echo "  (dry-run) would: gh pr create --base main --head development ..."
+    elif ! command -v gh >/dev/null 2>&1; then
+        echo -e "  ${YELLOW}gh not found — open the development->main PR manually.${NC}"
+    elif _confirm "  Create the development -> main PR now?" "$assume_yes"; then
+        if [ -f "$notes_file" ]; then
+            gh pr create --base main --head development \
+                --title "Release $version" --body-file "$notes_file" \
+                && echo -e "  ${GREEN}✓${NC} PR opened"
+        else
+            gh pr create --base main --head development \
+                --title "Release $version" --body "Release $version" \
+                && echo -e "  ${GREEN}✓${NC} PR opened"
+        fi
+    fi
+
+    echo ""
+    echo -e "${BOLD}[7/7] Final tag (manual, after the PR merges to main)${NC}"
+    echo "  Once the development -> main PR is reviewed and merged:"
+    echo "    git checkout main && git pull"
+    echo "    git tag $version && git push origin $version"
+    echo "  CI (release.yml) then publishes the GitHub Release from $notes_file."
+    echo ""
+    echo -e "${GREEN}Done.${NC} The production tag is deliberately left for you to push"
+    echo "after the merge, so main's PR + review gate stays intact."
 }
 
 # Check if an environment is installed
@@ -1349,6 +1971,10 @@ case "${1:-}" in
         echo "Run './uw build' to rebuild underworld3"
         ;;
     shell)
+        # Activate the env stored in .pixi-env, not pixi's literal 'default'.
+        # Bare `pixi shell` ignores .pixi-env and falls back to the env named
+        # 'default' in pixi.toml, which is the lightweight conda-forge PETSc
+        # env without nodejs / dev tools — a common first-timer trap.
         shift
         exec $PIXI shell -e "$(get_env)" "$@"
         ;;
@@ -1429,6 +2055,10 @@ case "${1:-}" in
         rm -f "$SCRIPT_DIR/build/.petsc_target"
         echo -e "${GREEN}Done${NC}. Run './uw build' to rebuild."
         ;;
+    petsc)
+        # PETSc version management: ./uw petsc [versions|switch|active]
+        run_petsc_cmd "$2" "$3"
+        ;;
     doctor)
         run_doctor
         ;;
@@ -1444,8 +2074,68 @@ case "${1:-}" in
     claude-perms)
         configure_claude_permissions "$(get_env)"
         ;;
+    install-claude)
+        # The install-claude pixi task lives under [feature.dev.tasks], so it
+        # only resolves in dev-feature envs (dev, amr-dev, *-dev). Guard the
+        # call so users on default/runtime get a clear message instead of a
+        # raw "task not found" error from pixi.
+        env=$(get_env)
+        case "$env" in
+            *dev*)
+                $PIXI run -e "$env" install-claude
+                ;;
+            *)
+                echo -e "${YELLOW}install-claude needs a dev environment (current: $env).${NC}"
+                echo "Switch with one of:"
+                echo "  ./uw set-env dev          # conda-forge PETSc"
+                echo "  ./uw set-env amr-dev      # custom PETSc with AMR tools"
+                echo "  ./uw set-env mpich-dev    # MPICH override"
+                echo "  ./uw set-env openmpi-dev  # OpenMPI override"
+                exit 1
+                ;;
+        esac
+        ;;
+    dev)
+        shift
+        cmd="${1:-help}"
+        case "$cmd" in
+            help|--help|-h|"")
+                show_dev_help
+                ;;
+            *)
+                # Soft note, not a block: dev tools run in any environment, but
+                # runtime/default are the stripped-down beginner/binder/teaching
+                # envs, so flag when a developer tool is used there.
+                case "$(get_env)" in
+                    *dev*) ;;
+                    *) echo -e "${YELLOW}note:${NC} 'dev $cmd' is a developer tool; you're on '$(get_env)' (a user env). Running anyway." >&2 ;;
+                esac
+                shift
+                case "$cmd" in
+                    release)        run_release "$@" ;;
+                    release-check)  run_release_check "$@" ;;
+                    branch-hygiene) run_branch_hygiene "$@" ;;
+                    feature-audit)  run_feature_audit "$@" ;;
+                    format)         exec $PIXI run -e "$(get_env)" format "$@" ;;
+                    type-check)     exec $PIXI run -e "$(get_env)" type-check "$@" ;;
+                    *)
+                        echo "Unknown dev command: $cmd"
+                        echo ""
+                        show_dev_help
+                        exit 1
+                        ;;
+                esac
+                ;;
+        esac
+        ;;
     --help|-h|help)
-        show_help
+        shift
+        _help_verbose=0
+        case "$(get_env)" in *dev*) _help_verbose=1 ;; esac
+        for _a in "$@"; do
+            case "$_a" in all|--verbose|-v) _help_verbose=1 ;; esac
+        done
+        show_help "$_help_verbose"
         ;;
     *)
         exec $PIXI run -e "$(get_env)" "$@"

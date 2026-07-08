@@ -1,5 +1,75 @@
 # CHANGES: Underworld3
 
+## 2026-05-20
+
+  - **Snapshot toolkit (PRs #195, #196, #198)**: unified
+    state-capture mechanism for Underworld3 models.
+
+    User-facing API on `Model`:
+
+    ```python
+    token = model.save_state()                  # in-memory "stash for timesteps"
+    model.load_state(token)                     # exact restore from token
+
+    model.save_state(file="step42.snap.h5")     # persistent on-disk snapshot
+    model.load_state("step42.snap.h5")          # restore from disk
+    ```
+
+    Same call, two storage modes. Captures the full model — every
+    registered mesh and mesh-variable, every swarm with per-particle
+    data, every solver-internal state-bearer (`ModelTracker`, `DDt`
+    instances, anything exposing the `Snapshottable` contract). User
+    guide: `docs/advanced/snapshot-restore.md`.
+
+    - **In-memory mode** (#195): bit-exact discard-of-a-step
+      guarantee, proven through real PETSc solves; parallel-correct
+      under MPI at any fixed rank count (recovers from genuine
+      cross-rank particle loss); rebuild-on-restore semantics for
+      swarms (the discarded step *is* what restore exists to undo).
+    - **`Model.tracker`** (#196): model-dwelling, snapshot-managed
+      record of where a run is. Holds `time` / `step` / `dt` plus
+      any quantity the user parks on it (`model.tracker.foo = ...`)
+      — anything on the tracker reverts with the model. Solvers do
+      not depend on it; using it is optional. A loose Python
+      variable is not reverted by `load_state`; the same value on
+      the tracker is.
+    - **On-disk mode (v1.1, #198)**: HDF5 wrapper file + companion
+      `.bulk/` directory. Wrapper is `h5ls`-inspectable without UW3
+      in the loop (carries run name, schema version, sim time, step,
+      MPI rank count, mesh/swarm/variable inventories). Bulk data
+      uses PR #146's PETSc DMPlex primitives for mesh + meshvars;
+      swarms get per-rank h5py sidecars for parallel correctness.
+      Same-rank-count restart contract; clean errors on rank-count
+      mismatch.
+
+    Related API changes:
+
+    - `MeshVariable.read_timestep` is now format-aware: detects
+      whether the file is a legacy `write_timestep` per-variable
+      file or a v1.1 snapshot wrapper and dispatches internally.
+      Existing scripts that call `var.read_timestep(...)` work
+      transparently against new files via a KDTree bridge over
+      `MeshVariable.read_checkpoint` (#146).
+    - `mesh.write_timestep()` / `mesh.write_checkpoint()` (PR #146)
+      remain unchanged — they serve different use cases
+      (visualisation + flexible/cross-resolution restart;
+      memory-efficient same-rank PETSc reload for postprocessing).
+      See "Choosing between paths" in the user guide.
+
+    State-as-dataclass contract for solver helpers:
+    `docs/developer/guides/state-as-dataclass.md` — declare
+    mutable evolution state as a `SnapshottableState` dataclass
+    and the snapshot mechanism captures/restores it with no extra
+    plumbing. Retrofitted for all five DDt flavors in this work
+    (`Symbolic`, `Eulerian`, `SemiLagrangian`, `Lagrangian`,
+    `Lagrangian_Swarm`).
+
+  - **Fix(ddt): `Lagrangian.__init__` typo (`uw.swarm.UWSwarm` →
+    `uw.swarm.Swarm`)** (PR #184). Lagrangian DDt had been
+    unconstructible since commit `0778b7d` (2025-07-07) — typo
+    introduced during the unrelated `evalf` cleanup. Surfaced
+    during the snapshot toolkit's retrofit work.
+
 ## 2026-03-14
 
   - **Release v3.0.0**: Merged development (398 commits) to main, tagged v3.0.0

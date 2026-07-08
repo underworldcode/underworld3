@@ -681,8 +681,13 @@ class Surface:
         if symbol is not None:
             self._symbol = symbol
         else:
-            # Extract first letter, capitalize
-            self._symbol = name[0].upper() if name else "S"
+            # Default to the full (unique) name. The old `name[0].upper()`
+            # collapsed distinct surfaces sharing a first letter (e.g.
+            # "fault1"/"fault2" -> both "F") onto the IDENTICAL distance
+            # varsymbol `d_{F}`, so their (correctly distinct) distance fields
+            # silently aliased to one in `function.evaluate`. The full name is
+            # unique per surface; pass `symbol=` for compact LaTeX if desired.
+            self._symbol = name if name else "S"
 
         # Level 1: Control points (primary for evolving surfaces)
         self._control_points = None
@@ -699,6 +704,10 @@ class Surface:
 
         # Level 3: Cached proxy MeshVariable for distance
         self._distance_var: Optional[uw.discretisation.MeshVariable] = None
+        # Companion UNSIGNED (edge-clamped) distance field. influence_function()
+        # interpolates THIS rather than Abs() of the signed field — see
+        # _compute_distance_field for why the signed field is unsafe to abs.
+        self._abs_distance_var: Optional[uw.discretisation.MeshVariable] = None
 
         # Dimension (2 or 3) - detected from mesh or control points
         self._dim = None
@@ -754,6 +763,7 @@ class Surface:
             # If distance var exists, it needs to be recreated with new symbol
             if self._distance_var is not None:
                 self._distance_var = None
+                self._abs_distance_var = None
                 self._distance_stale = True
 
     def _dimensionalise_coords(self, coords: np.ndarray) -> np.ndarray:
@@ -1128,6 +1138,37 @@ class Surface:
 
         return self._distance_var
 
+    @property
+    def abs_distance(self) -> "uw.discretisation.MeshVariable":
+        """Unsigned (edge-clamped) distance from mesh nodes to the surface.
+
+        Unlike ``Abs(self.distance.sym[0])``, this field is safe to interpolate
+        near a surface edge. The signed ``distance`` field changes sign across
+        the surface, and its zero-contour extends along the surface's
+        infinite-line/plane PAST the finite edge; interpolating it (any
+        non-nodal evaluation) and taking ``Abs`` produces a spurious near-zero
+        valley beyond the edge. This unsigned field is ``>= 0`` everywhere and,
+        beyond the edge, is simply the radial distance to the endpoint, so its
+        interpolant never crosses zero there. Used by :meth:`influence_function`.
+
+        Returns:
+            MeshVariable with unsigned distance values at each mesh node.
+            Access ``.sym[0]`` for use in expressions.
+        """
+        if self.mesh is None:
+            raise RuntimeError(
+                f"Surface '{self.name}' requires a mesh to compute distance field. "
+                "Set mesh in constructor or via surface.mesh = mesh"
+            )
+
+        self._ensure_discretized()
+
+        if self._distance_stale:
+            self._compute_distance_field()
+            self._distance_stale = False
+
+        return self._abs_distance_var
+
     def _compute_distance_field(self) -> None:
         """Compute signed distance field from mesh nodes to surface.
 
@@ -1182,8 +1223,31 @@ class Surface:
             # Keep signed distance - helpers use sympy.Abs() when needed
             distances = dist_result.point_data["implicit_distance"]
 
+        # Companion UNSIGNED distance field. The per-node distance is already
+        # edge-clamped (the segment/surface distance falls back to the nearest
+        # ENDPOINT beyond the edge), so |distances| is the true, edge-aware
+        # distance to the FINITE surface at every node. We store it separately
+        # because the *signed* field is unsafe to interpolate near an edge:
+        # its zero-contour follows the surface's infinite-line/plane and so
+        # extends PAST the finite edge. A consumer that interpolates the signed
+        # field (any non-nodal evaluation) and then takes Abs() gets a spurious
+        # near-zero |distance| valley along that extension — i.e. the influence
+        # bleeds out beyond the end of the surface. The unsigned field is >= 0
+        # and beyond the edge it is just the radial distance to the endpoint,
+        # so its interpolant never crosses zero there. influence_function()
+        # therefore uses this field, not Abs(signed).
+        if self._abs_distance_var is None:
+            self._abs_distance_var = uw.discretisation.MeshVariable(
+                f"surf_{self.name}_absdistance",
+                self.mesh,
+                1,
+                degree=self.mesh.degree,
+                varsymbol=f"|d_{{{self._symbol}}}|",
+            )
+
         with uw.synchronised_array_update():
             self._distance_var.data[:, 0] = distances
+            self._abs_distance_var.data[:, 0] = np.abs(distances)
 
     # --- Influence function ---
 
@@ -1199,9 +1263,11 @@ class Surface:
         Creates a sympy expression that varies from value_near (at the surface)
         to value_far (far from the surface) based on the chosen profile.
 
-        Uses the absolute value of the signed distance field, so the influence
-        is symmetric on both sides of the surface. For asymmetric behavior,
-        access the signed distance directly via ``surface.distance.sym[0]``.
+        Uses the unsigned, edge-clamped distance field (:attr:`abs_distance`),
+        so the influence is symmetric on both sides of the surface AND decays
+        correctly beyond a finite edge (it does not bleed along the surface's
+        line/plane past the end). For asymmetric behaviour, access the signed
+        distance directly via ``surface.distance.sym[0]``.
 
         Parameters
         ----------
@@ -1243,8 +1309,12 @@ class Surface:
         # Accept quantities and convert to nondimensional mesh coordinates
         width = _to_nd_length(width)
 
-        # Use absolute distance - influence is symmetric about surface
-        d = sympy.Abs(self.distance.sym[0])
+        # Use the UNSIGNED (edge-clamped) distance FIELD, not Abs() of the signed
+        # field. The signed field's zero-contour extends past a finite edge, so
+        # Abs() of its interpolant lights up a spurious weak zone beyond the
+        # surface end; the unsigned field is edge-aware between nodes too. See
+        # abs_distance / _compute_distance_field.
+        d = self.abs_distance.sym[0]
 
         if profile == "step":
             return sympy.Piecewise(
@@ -1690,8 +1760,11 @@ class Surface:
 
         # --- Build 3D points for each depth layer ---
         if is_geographic:
-            a_km = ellipsoid["a"]
-            b_km = ellipsoid["b"]
+            # Extract km floats — ellipsoid["a"] is uw.quantity when units active
+            a_raw = ellipsoid["a"]
+            b_raw = ellipsoid["b"]
+            a_km = float(a_raw.to("km").magnitude) if hasattr(a_raw, "to") else float(a_raw)
+            b_km = float(b_raw.to("km").magnitude) if hasattr(b_raw, "to") else float(b_raw)
             from underworld3.coordinates import geographic_to_cartesian
 
             all_points_km = []
@@ -2342,3 +2415,508 @@ class SurfaceCollection:
         ]
         surfaces_repr = "\n".join(surface_strs) if surface_strs else "  (empty)"
         return f"SurfaceCollection(\n{surfaces_repr}\n)"
+
+
+# ---------------------------------------------------------------------------
+# Anisotropic fault metric tensor (for the supplied-tensor r-adapt mover)
+# ---------------------------------------------------------------------------
+def _fault_seg_distance_sym(X, a, b):
+    """Analytic point-to-segment distance (sympy) for the 2D segment a→b.
+
+    A pure function of the symbolic coordinates ``X`` and the FIXED segment
+    endpoints, so it re-evaluates exactly (Eulerian) wherever sampled — the
+    property the fault metric needs (a nodal distance field would bridge the
+    sub-cell dip and convect under iteration)."""
+    abx, aby = b[0] - a[0], b[1] - a[1]
+    ab2 = float(abx * abx + aby * aby)
+    if ab2 == 0.0:
+        return sympy.sqrt((X[0] - a[0]) ** 2 + (X[1] - a[1]) ** 2)
+    t = sympy.Min(1, sympy.Max(
+        0, ((X[0] - a[0]) * abx + (X[1] - a[1]) * aby) / ab2))
+    return sympy.sqrt((X[0] - (a[0] + t * abx)) ** 2
+                      + (X[1] - (a[1] + t * aby)) ** 2)
+
+
+def _fault_collect_polylines(faults):
+    """Group ``faults`` into a list of per-fault segment lists.
+
+    Returns ``[[(a,b), ...], ...]`` — one inner list per fault, holding the
+    consecutive segments of that fault's polyline. Preserving the per-fault
+    grouping matters for the comb metric, whose teeth are placed at distances
+    from each fault's MIN-distance (so a curved/polyline fault gets bands that
+    follow the curve, not a tangle of per-segment bands).
+
+    ``faults`` may be a single :class:`Surface`, a single segment / polyline
+    array, or a list mixing those. A :class:`Surface` contributes the segments
+    of its control-point polyline (model-space, matching ``mesh.X``); an
+    ``(N, 2)``/``(N, 3)`` array a polyline (``N≥2``)."""
+    if isinstance(faults, Surface) or hasattr(faults, "ndim"):
+        items = [faults]
+    else:
+        items = list(faults)
+
+    polylines = []
+    for item in items:
+        if isinstance(item, Surface):
+            cp = item._control_points        # model space ≡ mesh.X coords
+            if cp is None:
+                raise ValueError(
+                    f"Surface {item.name!r} has no control points")
+            pts = np.asarray(cp, dtype=float)[:, :2]
+        else:
+            pts = np.asarray(item, dtype=float)
+            if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] not in (2, 3):
+                raise ValueError(
+                    "fault segment must be an (N>=2, 2|3) array of points; "
+                    f"got shape {pts.shape}")
+            pts = pts[:, :2]
+        polylines.append([(pts[k], pts[k + 1]) for k in range(len(pts) - 1)])
+    return polylines
+
+
+def _fault_collect_segments(faults):
+    """Flatten ``faults`` into a single list of ``(a, b)`` 2D endpoint pairs
+    (segment grouping discarded — used by the anisotropic tensor builder,
+    where each segment contributes its own normal-aligned bump)."""
+    return [seg for poly in _fault_collect_polylines(faults) for seg in poly]
+
+
+def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
+    r"""Build the analytic, Eulerian **normal-aligned anisotropic metric
+    tensor** ``M(x)`` for refining a thin band of cells **across** one or more
+    codimension-1 faults, for the supplied-tensor r-adapt mover.
+
+    Pass the result straight to the mover::
+
+        M = uw.meshing.fault_metric_tensor(mesh, faults, refinement=3.0)
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=M, method="anisotropic", boundary_slip=False,
+            method_kwargs=dict(n_outer=12, relax=0.4))
+
+    Construction — summed over every fault segment ``i`` (normal ``n_i``,
+    point-to-segment distance ``d_i(x)``):
+
+    .. math::
+
+        M(x) = \mathtt{base}\,\Big[\,I
+             + (R^2 - 1)\textstyle\sum_i e^{-(d_i(x)/W)^2}\, n_i n_i^{\mathsf T}\Big].
+
+    At a fault the across-fault eigenvalue is ``base·R²`` (cell size ``h_0/R``)
+    and the along-fault eigenvalue is ``base`` (size ``h_0``): a thin strip
+    refined **only across** the fault, so there is no along-fault budget
+    competition and the band centres on the line. Used directly as the
+    mover's tensor ``D``; the overall ``base`` scale is irrelevant to the
+    mover (only the ``R²`` anisotropy ratio and the spatial variation matter).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        2D mesh (the anisotropic mover is 2D-only).
+    faults : Surface | array | list
+        The fault geometry, in **mesh coordinate space**: a :class:`Surface`
+        (uses its control-point polyline), an ``(N>=2, 2|3)`` polyline array,
+        or a list mixing those (each polyline segment contributes a bump with
+        its own normal — handles 1/2/3 faults, parallel or not, straight or
+        kinked).
+    refinement : float, default 3.0
+        ``R`` — the across-fault refinement ratio. Cells refine to ``≈ h_0/R``
+        across the fault (eigenvalue ratio ``R²:1``). Larger ``R`` ⇒ finer
+        across-fault cells (down to the fixed-node-budget floor).
+    width : float | quantity | "auto", default "auto"
+        ``W`` — the half-width (length-scale) of the refined strip. ``"auto"``
+        ≈ ``h_0/6`` (the mesh's mean cell size / 6 — resolvable yet tight).
+        **Smaller ``W`` centres the band more tightly** (the residual offset
+        scales with ``W``), but must stay resolvable by the (Eulerian-refined)
+        mesh — too thin (``≲ h_0/12``) and the strip under-resolves on the
+        starting mesh. ``h_0/4 … h_0/8`` is the sweet spot.
+    base : float, default 1.0
+        Overall isotropic scale (mover-irrelevant; kept for generality).
+
+    Returns
+    -------
+    sympy.Matrix
+        The ``2×2`` analytic metric tensor ``M(x)`` (a function of
+        ``mesh.CoordinateSystem.X``), to pass as ``metric=`` with
+        ``method="anisotropic"``.
+    """
+    cdim = mesh.cdim
+    if cdim != 2:
+        raise NotImplementedError(
+            "fault_metric_tensor is 2D only (matches the anisotropic mover)")
+    R = float(refinement)
+    if isinstance(width, str):
+        if width.strip().lower() != "auto":
+            raise ValueError(
+                f"width string must be 'auto'; got {width!r} (pass a number "
+                "or a uw.quantity length otherwise)")
+        from underworld3.meshing.smoothing import _edge_pairs
+        ep = _edge_pairs(mesh.dm)
+        Xc = np.asarray(mesh.X.coords)
+        if ep.shape[0]:
+            _el = np.linalg.norm(Xc[ep[:, 1]] - Xc[ep[:, 0]], axis=1)
+            _esum, _ecnt = float(_el.sum()), int(_el.shape[0])
+        else:
+            _esum, _ecnt = 0.0, 0
+        if uw.mpi.size > 1:
+            _esum = uw.mpi.comm.allreduce(_esum)
+            _ecnt = uw.mpi.comm.allreduce(_ecnt)
+        # TRUE global mean edge length (sum/count). Averaging per-rank means
+        # (allreduce(mean)/size) mis-weights ranks with unequal edge counts and
+        # lets an empty partition's sentinel 1.0 pollute the result.
+        h0 = (_esum / _ecnt) if _ecnt > 0 else 1.0
+        W = h0 / 6.0
+    else:
+        try:
+            W = float(uw.scaling.non_dimensionalise(width))
+        except Exception:
+            W = float(width)
+    if not (W > 0.0):
+        raise ValueError(f"width must be positive; got {W}")
+
+    segs = _fault_collect_segments(faults)
+    if not segs:
+        raise ValueError("fault_metric_tensor: no fault segments found")
+
+    X = mesh.CoordinateSystem.X
+    amp = base * (R ** 2 - 1.0)
+    M = base * sympy.eye(2)
+    for (a, b) in segs:
+        ab = np.asarray(b, dtype=float) - np.asarray(a, dtype=float)
+        seglen = float(np.linalg.norm(ab))
+        if seglen == 0.0:
+            continue
+        nx, ny = -ab[1] / seglen, ab[0] / seglen
+        d = _fault_seg_distance_sym(X, a, b)
+        bump = amp * sympy.exp(-(d / W) ** 2)
+        M = M + bump * sympy.Matrix([[nx * nx, nx * ny],
+                                     [nx * ny, ny * ny]])
+    return M
+
+
+def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
+                      tooth_width=None, combine="sum"):
+    r"""Build a scalar **comb** metric ``ρ(x)`` that refines a band of a
+    controlled number of roughly-**uniform** cells *across* one or more faults,
+    for the isotropic equidistribution mover (``method="ma"``).
+
+    Pass the result straight to the mover::
+
+        rho = uw.meshing.fault_comb_metric(mesh, faults, cell_size=0.006,
+                                           n_across=4)
+        uw.meshing.smooth_mesh_interior(
+            mesh, metric=rho, method="ma",
+            method_kwargs=dict(n_outer=1, n_picard=25))   # single-shot
+
+    Use the **single-shot** map (``n_outer=1``): one Caffarelli-clean
+    Monge–Ampère solve, untangled by construction (no folding), with no
+    outer-iteration compounding and nothing to tune — the most robust
+    configuration, and the comb's teeth give the single map all the row
+    structure it needs (~``n_across``−1 even layers, centred). ``n_outer=2``
+    realises a touch more of the requested ``n_across`` (the single map is
+    mildly node-budget-capped) at ~1.6× the cost; rarely needed.
+
+    **Why a comb.** An equidistribution mover places node density ∝ √ρ, so a
+    single peaked "refine-this-band" metric piles all the nodes at the maximum
+    (finest at the fault, coarsening out — *graded*, not uniform). The comb
+    instead places **discrete equal teeth at the exact distances where node
+    layers are wanted** — ``d = 0, dx, 2 dx, …`` — so the mover drops one node
+    **row at each tooth**: equal teeth ⇒ evenly-spaced rows ⇒ a roughly-uniform
+    band of cell size ``dx``. The ``d=0`` tooth sits on the fault, so a layer
+    is pinned to the line (this also *centres* the band, even for two close
+    faults). Per fault the distance is the **min over its segments**, so a
+    curved/polyline fault gets bands that follow the curve (offset curves), not
+    a tangle of per-segment bands. The realised band is ~2.5:1 in cell size
+    (the metric valleys between teeth still want to coarsen) — uniform *enough*
+    for a slip rheology; a perfectly uniform band needs added nodes (h-adapt).
+
+    .. math::
+
+        ρ(x) = 1 + A \sum_i \sum_{k=0}^{m} \exp\!\big(-((d_i(x) - k\,dx)/w)^2\big),
+
+    teeth ``k = 0…⌊n_across/2⌋``, ``d_i`` the distance to fault ``i``.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        2D mesh. (The isotropic equidistribution movers — ``ma``/``ot`` — are
+        2D-only; 3D would need a 3D equidistribution mover, which does not yet
+        exist, so this builder is 2D-only.)
+    faults : Surface | array | list
+        Fault geometry in mesh coordinate space — a :class:`Surface`, an
+        ``(N>=2, 2|3)`` polyline array, or a list mixing those. Each fault's
+        band is built from its own min-distance (handles 1/2/3 faults, any
+        orientation, straight or curved).
+    cell_size : float
+        ``dx`` — the tooth spacing = the target uniform across-fault cell size.
+    n_across : int, default 4
+        Number of elements across each band; teeth fill the half-width
+        ``(n_across/2)*cell_size`` on each side of the fault.
+    amplitude : float, default 6.0
+        ``A`` — how strongly each tooth attracts a node row (contrast vs the
+        unrefined background). ~6 is a good operating point.
+    tooth_width : float, optional
+        Gaussian half-width of each tooth. Default ``cell_size/4`` — narrow
+        enough for distinct rows, wide enough to be resolvable on the starting
+        mesh (``≲ cell_size/6`` can be sub-cell and fail to form a row).
+    combine : {"sum", "max"}, default "sum"
+        How to combine faults. ``"sum"`` (default) superposes the per-fault
+        combs (fine for separated faults); ``"max"`` takes the strongest comb
+        (cleaner when two faults are closer than a band width, avoiding
+        doubled teeth in the gap).
+
+    Returns
+    -------
+    sympy.Expr
+        The scalar comb metric ``ρ(x)``, to pass as ``metric=`` with
+        ``method="ma"``.
+    """
+    cdim = mesh.cdim
+    if cdim != 2:
+        raise NotImplementedError(
+            "fault_comb_metric is 2D only (the isotropic equidistribution "
+            "movers are 2D; 3D needs a 3D equidistribution mover)")
+    dx = float(cell_size)
+    if not (dx > 0.0):
+        raise ValueError(f"cell_size must be positive; got {cell_size}")
+    if combine not in ("sum", "max"):
+        raise ValueError(f"combine must be 'sum' or 'max'; got {combine!r}")
+    wn = float(tooth_width) if tooth_width is not None else dx / 4.0
+    nteeth = int(round(n_across / 2.0)) + 1
+    A = float(amplitude)
+
+    polylines = _fault_collect_polylines(faults)
+    if not polylines:
+        raise ValueError("fault_comb_metric: no faults found")
+
+    X = mesh.CoordinateSystem.X
+    per_fault = []
+    for segs in polylines:
+        d = None
+        for (a, b) in segs:
+            ds = _fault_seg_distance_sym(X, a, b)
+            d = ds if d is None else sympy.Min(d, ds)   # min-distance = the fault
+        comb_i = sum(sympy.exp(-((d - k * dx) / wn) ** 2)
+                     for k in range(nteeth))
+        per_fault.append(comb_i)
+
+    if combine == "sum":
+        total = sum(per_fault, sympy.Integer(0))
+    else:                                               # "max"
+        total = per_fault[0]
+        for ci in per_fault[1:]:
+            total = sympy.Max(total, ci)
+    return 1 + A * total
+
+
+def compose_metrics(metrics, compose="max"):
+    r"""Combine several scalar density metrics into one, for the
+    equidistribution mover (``method="ma"``).
+
+    Each item may be either a metric (a scalar sympy expression or
+    MeshVariable) or a ``(metric, weight)`` tuple. The default ``"max"``
+    composition is a **weighted maximum on the excess density**
+
+    .. math::
+
+        \rho_{\mathrm{combined}}(x) = 1 + \max_i\;
+            w_i\,\bigl(\rho_i(x) - 1\bigr),
+
+    so equal weights reduce to plain ``max(ρ_i)`` ("refine to the finest
+    demand from any feature") and larger ``w_i`` amplifies that feature's
+    relative demand (the way to e.g. make a fault "heavier" than a thermal
+    boundary layer in the same run). The result is itself a valid scalar
+    density (``≥ 1``).
+
+    Examples
+    --------
+    ::
+
+        rho_T = uw.meshing.metric_density_from_gradient(mesh, T,
+                                                       metric_choice="arc-length")
+        rho_F = uw.meshing.fault_comb_metric(mesh, faults, cell_size=0.008)
+        rho   = uw.meshing.compose_metrics([(rho_T, 1.0), (rho_F, 3.0)])  # fault heavier
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="ma",
+                                        method_kwargs=dict(n_outer=1, n_picard=25))
+
+    Parameters
+    ----------
+    metrics : sequence
+        Items are scalar metrics or ``(metric, weight)`` tuples.
+    compose : {"max"}, default "max"
+        Composition operator. Only ``"max"`` (weighted-max-on-excess) is
+        implemented; the kwarg exists to leave room for other strategies.
+
+    Returns
+    -------
+    sympy.Expr
+        The composed scalar density.
+    """
+    if compose != "max":
+        raise ValueError(
+            f"compose must be 'max' (got {compose!r}); other strategies "
+            "are not implemented yet")
+    pairs = []
+    for item in metrics:
+        if isinstance(item, tuple) and len(item) == 2:
+            m, w = item[0], float(item[1])
+        else:
+            m, w = item, 1.0
+        if isinstance(m, sympy.MatrixBase):
+            raise ValueError(
+                "compose_metrics: only scalar density metrics compose by "
+                "max; tensor metrics need metric intersection (not "
+                "implemented). Got a sympy Matrix.")
+        pairs.append((m, w))
+    if not pairs:
+        raise ValueError("compose_metrics: at least one metric required")
+    if len(pairs) == 1:
+        m, w = pairs[0]
+        return m if w == 1.0 else 1 + w * (m - 1)
+    excess = [w * (m - 1) for (m, w) in pairs]
+    return 1 + sympy.Max(*excess)
+
+
+def _mesh_h0(mesh):
+    """Mean undeformed edge length (parallel-safe) — the mesh's
+    characteristic cell size, used to translate an absolute ``cell_size``
+    into the anisotropic mover's relative refinement ratio."""
+    from underworld3.meshing.smoothing import _edge_pairs
+    ep = _edge_pairs(mesh.dm)
+    Xc = np.asarray(mesh.X.coords)
+    if ep.shape[0]:
+        _el = np.linalg.norm(Xc[ep[:, 1]] - Xc[ep[:, 0]], axis=1)
+        _esum, _ecnt = float(_el.sum()), int(_el.shape[0])
+    else:
+        _esum, _ecnt = 0.0, 0
+    if uw.mpi.size > 1:
+        _esum = uw.mpi.comm.allreduce(_esum)
+        _ecnt = uw.mpi.comm.allreduce(_ecnt)
+    # TRUE global mean edge length (sum/count), not a mean of per-rank means.
+    return (_esum / _ecnt) if _ecnt > 0 else 1.0
+
+
+def _fault_min_distance_np(P, polylines):
+    """Numpy min point-to-polyline distance from points ``P`` (k, 2) to all
+    segments of all faults — used to build the nodal MMG metric."""
+    d = np.full(P.shape[0], np.inf)
+    for segs in polylines:
+        for (a, b) in segs:
+            a = np.asarray(a, float); b = np.asarray(b, float)
+            ab = b - a; ab2 = float(ab @ ab)
+            if ab2 == 0.0:
+                dd = np.linalg.norm(P - a, axis=1)
+            else:
+                t = np.clip(((P - a) @ ab) / ab2, 0.0, 1.0)
+                dd = np.linalg.norm(P - (a + np.outer(t, ab)), axis=1)
+            d = np.minimum(d, dd)
+    return d
+
+
+def _fault_mmg_metric(mesh, faults, cell_size, n_across, h_far, name):
+    """Build the ``h⁻²`` isotropic metric MeshVariable for ``mesh.adapt``
+    (MMG): edge length ``cell_size`` in the band ``|d| < (n_across/2)·dx``,
+    ramping (smoothstep) to ``h_far`` outside. MMG *adds* nodes to honour
+    this absolute spacing, so the band is genuinely uniform."""
+    dx = float(cell_size)
+    D = (n_across / 2.0) * dx
+    h_far = float(h_far) if h_far is not None else _mesh_h0(mesh)
+    tau = max(D, 2.0 * dx)                       # transition width
+    metric = uw.discretisation.MeshVariable(
+        name, mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True)
+    polylines = _fault_collect_polylines(faults)
+    P = np.asarray(metric.coords)[:, :mesh.cdim]
+    d = _fault_min_distance_np(P, polylines)
+    xc = np.clip((d - D) / tau, 0.0, 1.0)
+    ramp = 3.0 * xc ** 2 - 2.0 * xc ** 3         # 0 in band -> 1 far
+    h = dx + (h_far - dx) * ramp
+    metric.data[:, 0] = 1.0 / h ** 2             # isotropic h^-2 metric
+    return metric
+
+
+def fault_metric(mesh, faults, method="ma", *, cell_size,
+                 n_across=4, h_far=None, name="fault_metric", **kwargs):
+    r"""Build the fault-refinement metric appropriate for the chosen
+    adaptation ``method``, from one shared physical intent: *resolve
+    ``n_across`` elements of size ``cell_size`` across a band around the
+    fault(s)*.
+
+    The three movers consume **different metric objects with different
+    semantics**, so this facade unifies the *intent* and emits the right
+    representation — it does not pretend they are interchangeable:
+
+    ===================  ============================  ===========================
+    ``method``           returns                       pass to
+    ===================  ============================  ===========================
+    ``"ma"`` (default)   scalar comb density (sympy)   ``smooth_mesh_interior(
+                                                       method="ma")``
+    ``"anisotropic"``    2×2 tensor (sympy Matrix)     ``smooth_mesh_interior(
+                                                       method="anisotropic")``
+    ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.adapt(...)``
+    ===================  ============================  ===========================
+
+    **``cell_size`` is honoured differently by each** — this is the key
+    distinction, not a detail:
+
+    * ``"adapt"`` (MMG) **adds nodes**, so ``cell_size`` is an *absolute*,
+      *exact* target: you get a genuinely uniform band of that spacing
+      (topology changes).
+    * ``"ma"`` / ``"anisotropic"`` only **redistribute a fixed node budget**
+      (topology preserved), so ``cell_size`` is a *target*: ``"ma"`` reaches
+      a roughly-uniform ~2.5:1 band near it; ``"anisotropic"`` grades (finest
+      at the fault), is the most node-efficient, and ``n_across`` is only
+      indicative.
+
+    Parameters
+    ----------
+    mesh : Mesh (2D)
+    faults : Surface | array | list
+        Fault geometry (``Surface``, polyline array, or a list); passed
+        through to the per-method builder.
+    method : {"ma", "anisotropic", "adapt"/"mmg"}, default "ma"
+    cell_size : float (keyword-only, required)
+        Target across-fault cell size. Exact for ``adapt``; a target for the
+        r-adapt methods.
+    n_across : int, default 4
+        Elements across the band → band half-width ``(n_across/2)·cell_size``.
+    h_far : float, optional
+        ``adapt`` only — far-field edge length (default ≈ mesh cell size).
+    name : str
+        ``adapt`` only — name for the metric MeshVariable.
+    **kwargs
+        Forwarded to the underlying builder (e.g. ``amplitude``,
+        ``tooth_width``, ``combine`` for ``ma``; ``base`` for
+        ``anisotropic``).
+
+    Returns
+    -------
+    sympy.Expr | sympy.Matrix | MeshVariable
+        The metric object for the chosen ``method`` (see table).
+
+    Examples
+    --------
+    ::
+
+        # uniform-ish band, fixed topology (the slip-rheology recipe)
+        rho = uw.meshing.fault_metric(mesh, faults, method="ma",
+                                      cell_size=0.006, n_across=4)
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="ma",
+                                        method_kwargs=dict(n_outer=1, n_picard=25))
+    """
+    if cell_size is None or not (float(cell_size) > 0.0):
+        raise ValueError("cell_size must be a positive number")
+    m = method.strip().lower()
+    if m in ("ma", "monge-ampere", "monge_ampere", "comb"):
+        return fault_comb_metric(mesh, faults, cell_size=cell_size,
+                                 n_across=n_across, **kwargs)
+    if m in ("anisotropic", "aniso", "tensor"):
+        # translate absolute intent -> relative refinement ratio + strip width
+        R = max(_mesh_h0(mesh) / float(cell_size), 1.0)
+        width = (n_across / 2.0) * float(cell_size)
+        return fault_metric_tensor(mesh, faults, refinement=R, width=width,
+                                   **kwargs)
+    if m in ("adapt", "mmg", "h-adapt", "h_adapt"):
+        return _fault_mmg_metric(mesh, faults, cell_size, n_across, h_far, name)
+    raise ValueError(
+        f"unknown method {method!r}; choose 'ma' (comb density, r-adapt), "
+        "'anisotropic' (tensor, r-adapt) or 'adapt'/'mmg' (h^-2 MeshVariable, "
+        "mesh.adapt, adds nodes)")

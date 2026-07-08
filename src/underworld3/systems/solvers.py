@@ -11,6 +11,10 @@ SNES_Poisson
     Poisson/diffusion equation: :math:`\nabla \cdot (k \nabla T) = f`
 SNES_Darcy
     Darcy flow: pressure-driven flow through porous media
+SNES_TransientDarcy
+    Transient groundwater flow with constant storage
+SNES_Richards
+    Richards equation for variably-saturated porous media flow
 
 Vector Equations
 ----------------
@@ -55,8 +59,10 @@ from typing import Optional, Callable, Union
 
 import underworld3 as uw
 from underworld3.systems import SNES_Scalar, SNES_Vector, SNES_Stokes_SaddlePt
+from underworld3.cython.generic_solvers import SNES_MultiComponent
 from underworld3 import VarType
 import underworld3.timing as timing
+from underworld3.utilities import memprobe
 from underworld3.utilities._api_tools import (
     uw_object,
     SymbolicProperty,
@@ -158,7 +164,7 @@ class SNES_Poisson(SNES_Scalar):
 
     .. math::
 
-        \nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
+        - \nabla \cdot \left[ \boldsymbol{\kappa} \nabla u \right] = f
 
     where :math:`\mathbf{F} = \boldsymbol{\kappa} \nabla u` relates the flux to
     gradients in the unknown :math:`u`.
@@ -224,7 +230,7 @@ class SNES_Poisson(SNES_Scalar):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: sympy.simplify(self.constitutive_model.flux.T),
+        lambda self: self.constitutive_model.flux.T,
         r"""Diffusive flux term for the Poisson equation (pointwise).
 
         The $\mathbf{F}_1$ vector represents the flux $k \nabla u$
@@ -251,7 +257,7 @@ class SNES_Poisson(SNES_Scalar):
         The source term :math:`f` appears on the right-hand side:
 
         .. math::
-            \nabla \cdot (\kappa \nabla u) = f
+            - \nabla \cdot (\kappa \nabla u) = f
 
         Returns
         -------
@@ -267,7 +273,7 @@ class SNES_Poisson(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the source term (handles units and scaling)."""
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         # Handle UWQuantity with units - enforce "units everywhere" principle
         if hasattr(value, "value") and hasattr(value, "units"):
@@ -341,16 +347,17 @@ class SNES_Darcy(SNES_Scalar):
     .. math::
 
         \underbrace{S_s \frac{\partial h}{\partial t}}_{\dot{u}}
-        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \nabla h
-        - \boldsymbol{s} \right]}_{\mathbf{F}}
+        - \nabla \cdot \underbrace{\left[ \boldsymbol{\kappa} \left(
+        \nabla h - \boldsymbol{s} \right) \right]}_{\mathbf{F}}
         = \underbrace{W}_{h}
 
-    The flux term :math:`\mathbf{F}` relates the effective velocity to
-    pressure gradients:
+    The physical Darcy velocity is minus the assembly flux
+    :math:`\mathbf{F} = \boldsymbol{\kappa}(\nabla h - \boldsymbol{s})`
+    (flow runs *down* the head gradient):
 
     .. math::
 
-        \boldsymbol{v} = \boldsymbol{\kappa} \nabla h - \boldsymbol{s}
+        \boldsymbol{v} = - \boldsymbol{\kappa} \left( \nabla h - \boldsymbol{s} \right)
 
     Parameters
     ----------
@@ -473,7 +480,7 @@ class SNES_Darcy(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -500,6 +507,7 @@ class SNES_Darcy(SNES_Scalar):
         timestep: float = None,
         verbose: bool = False,
         _force_setup: bool = False,
+        divergence_retries: int = 0,
     ):
         r"""Solve the Darcy flow system.
 
@@ -516,6 +524,9 @@ class SNES_Darcy(SNES_Scalar):
             If True, print solver progress information.
         _force_setup : bool, optional
             Force re-setup of solver even if already configured.
+        divergence_retries : int, optional
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
 
         Notes
         -----
@@ -530,13 +541,14 @@ class SNES_Darcy(SNES_Scalar):
 
         # Solve pressure
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
-        # Now solve flow field
+        # Now solve flow field: v = -flux = -K(grad(h) - s)
 
         # self._v_projector.petsc_options["snes_rtol"] = 1.0e-6
         # self._v_projector.petsc_options.delValue("ksp_monitor")
-        self._v_projector.uw_function = self.darcy_flux
+        self._v_projector.uw_function = -self.darcy_flux
         self._v_projector.solve(zero_init_guess)
 
         return
@@ -546,6 +558,462 @@ class SNES_Darcy(SNES_Scalar):
     #     self._v_projector.uw_function = self.darcy_flux
     #     self._v_projector._setup_terms()  # _setup_pointwise_functions()  #
     #     super()._setup_terms()
+
+
+class SNES_TransientDarcy(SNES_Darcy):
+    r"""
+    Transient Darcy flow solver for time-dependent groundwater problems.
+
+    Solves the transient groundwater flow equation:
+
+    .. math::
+
+        S_s \frac{\partial h}{\partial t}
+        - \nabla \cdot \left[ K (\nabla h - \mathbf{s}) \right] = f
+
+    where :math:`S_s` is the specific storage (constant), :math:`K` is the
+    hydraulic conductivity, :math:`\mathbf{s}` is the body force (gravity),
+    and :math:`f` is a source/sink term.
+
+    Inherits velocity projection from :class:`SNES_Darcy`.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    h_Field : MeshVariable, optional
+        Mesh variable for hydraulic head.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity.
+    order : int, default=1
+        Time integration order (BDF/Adams-Moulton history depth).
+    theta : float, default=0.5
+        Implicit time weighting (0=explicit, 0.5=Crank-Nicolson, 1=implicit).
+    degree : int, default=2
+        Polynomial degree for finite element discretization.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
+
+    Attributes
+    ----------
+    storage : sympy.Expr
+        Specific storage :math:`S_s` (default 1).
+    delta_t : UWexpression
+        Current timestep.
+
+    See Also
+    --------
+    SNES_Darcy : Steady-state parent solver.
+    SNES_Richards : Nonlinear extension for unsaturated flow.
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        h_Field: Optional[uw.discretisation.MeshVariable] = None,
+        v_Field: Optional[uw.discretisation.MeshVariable] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        degree: int = 2,
+        verbose=False,
+        DuDt=None,
+        DFDt=None,
+    ):
+        super().__init__(mesh, h_Field, v_Field, degree, verbose, DuDt=DuDt, DFDt=DFDt)
+
+        self.theta = theta
+        self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
+        self._storage = sympy.sympify(1)
+        self._needs_function_rewire = True
+
+        if DuDt is None:
+            self.Unknowns.DuDt = Eulerian_DDt(
+                self.mesh,
+                h_Field,
+                vtype=uw.VarType.SCALAR,
+                degree=h_Field.degree,
+                continuous=h_Field.continuous,
+                varsymbol=h_Field.symbol,
+                verbose=verbose,
+                order=order,
+                smoothing=0.0,
+            )
+        else:
+            if order is not None and DuDt.order < order:
+                raise RuntimeError(
+                    f"DuDt supplied is order {DuDt.order} but order requested is {order}"
+                )
+            self.Unknowns.DuDt = DuDt
+
+        if DFDt is None:
+            self.Unknowns.DFDt = Symbolic_DDt(
+                sympy.Matrix([[0] * self.mesh.dim]),
+                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+                theta=theta,
+                order=order,
+            )
+        else:
+            self.Unknowns.DFDt = DFDt
+
+    # --- Properties ---
+
+    @property
+    def storage(self):
+        """Specific storage coefficient :math:`S_s`."""
+        return self._storage
+
+    @storage.setter
+    def storage(self, value):
+        self._needs_function_rewire = True
+        self._storage = sympy.sympify(value)
+
+    @property
+    def delta_t(self):
+        """Current timestep."""
+        return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        self._needs_function_rewire = True
+        if hasattr(value, "value"):
+            self._delta_t.sym = value.value
+        elif hasattr(value, "magnitude"):
+            self._delta_t.sym = value.magnitude
+        else:
+            self._delta_t.sym = value
+
+    @property
+    def DuDt(self):
+        return self.Unknowns.DuDt
+
+    @property
+    def DFDt(self):
+        return self.Unknowns.DFDt
+
+    # --- Template expressions (override Darcy's steady-state Templates) ---
+
+    @property
+    def F0(self):
+        """Pointwise storage + source: :math:`S_s \\dot{h} / \\Delta t - f`."""
+        f0 = expression(
+            r"f_0(h)",
+            -self.f + self.storage * self.DuDt.bdf() / self.delta_t,
+            "Transient Darcy storage + source term",
+        )
+        self._f0 = f0
+        return f0
+
+    @property
+    def F1(self):
+        """Pointwise flux: Adams-Moulton time-weighted Darcy flux."""
+        F1_val = expression(
+            r"\mathbf{F}_1(h)",
+            self.DFDt.adams_moulton_flux(),
+            "Transient Darcy flux (time-weighted)",
+        )
+        self._f1 = F1_val
+        return F1_val
+
+    # --- Timestep estimation ---
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        r"""
+        Estimate a stable timestep based on diffusive CFL.
+
+        Returns
+        -------
+        float or pint.Quantity
+            Diffusive timestep :math:`\delta t = (\Delta x)^2 / K_{\max}`.
+        """
+        from mpi4py import MPI
+
+        K = self.constitutive_model.K
+
+        if isinstance(K, sympy.Expr) or hasattr(K, "sym"):
+            K_sym = K.sym if hasattr(K, "sym") else K
+            if uw.function.fn_is_constant_expr(K_sym):
+                diffusivity = uw.function.evaluate(
+                    K_sym, np.zeros((1, self.mesh.dim))
+                )
+            else:
+                diffusivity = uw.function.evaluate(
+                    sympy.sympify(K_sym), self.mesh._centroids, self.mesh.N
+                )
+                diffusivity = diffusivity.max()
+        else:
+            diffusivity = K
+
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            diffusivity = diffusivity.magnitude
+
+        diffusivity = float(np.asarray(diffusivity).max())
+
+        comm = uw.mpi.comm
+        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+
+        min_dx = self.mesh.get_min_radius()
+
+        if diffusivity_glob != 0.0:
+            dt_diff = (min_dx**2) / diffusivity_glob
+        else:
+            dt_diff = np.inf
+
+        return _apply_unit_aware_scaling(np.squeeze(dt_diff), self.u, self.mesh)
+
+    # --- Solve ---
+
+    @timing.routine_timer_decorator
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep=None,
+        _force_setup: bool = False,
+        verbose=False,
+        divergence_retries: int = 0,
+    ):
+        r"""
+        Solve the transient Darcy system for one timestep.
+
+        Parameters
+        ----------
+        zero_init_guess : bool, optional
+            Start from zero initial guess (default True).
+        timestep : float, optional
+            Timestep size. Updates ``self.delta_t`` if provided.
+        _force_setup : bool, optional
+            Force re-setup of solver.
+        verbose : bool, optional
+            Print solver progress.
+        divergence_retries : int, optional
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
+        """
+        if timestep is not None and timestep != self.delta_t:
+            self.delta_t = timestep
+
+        if not self.constitutive_model._solver_is_setup:
+            self._needs_function_rewire = True
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+
+        # Pre-solve: update history terms
+        self.DuDt.update_pre_solve(timestep, verbose=verbose)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose)
+
+        # Solve PDE (bypass SNES_Darcy.solve to avoid double setup/projection)
+        SNES_Scalar.solve(self, zero_init_guess, _force_setup,
+                          divergence_retries=divergence_retries)
+
+        # Invalidate cached data views
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
+
+        # Post-solve: shift history
+        self.DuDt.update_post_solve(timestep, verbose=verbose)
+        self.DFDt.update_post_solve(timestep, verbose=verbose)
+
+        # Velocity projection (inherited from Darcy). The physical Darcy
+        # velocity is v = -flux = -kappa(grad(h) - s); the assembly flux F1 =
+        # darcy_flux = +kappa(grad(h) - s), so project the NEGATED flux to match
+        # the steady SNES_Darcy.solve sign (UW3 issue #214: transient previously
+        # projected +darcy_flux, giving a sign-flipped velocity field).
+        self._v_projector.uw_function = -self.darcy_flux
+        self._v_projector.solve(zero_init_guess)
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+        return
+
+
+class SNES_Richards(SNES_TransientDarcy):
+    r"""
+    Richards equation solver for variably-saturated porous media flow.
+
+    Two formulations are supported:
+
+    **Mixed form** (mass-conservative, preferred) — set ``water_content``:
+
+    .. math::
+
+        \frac{\partial \theta}{\partial t}
+        - \nabla \cdot \left[ K(\psi) (\nabla \psi - \mathbf{s}) \right] = f
+
+    discretised as :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`,
+    which is exactly conservative by construction (Celia et al., 1990).
+
+    **Head-based form** (backward compatible) — set ``capacity``:
+
+    .. math::
+
+        C(\psi) \frac{\partial \psi}{\partial t}
+        - \nabla \cdot \left[ K(\psi) (\nabla \psi - \mathbf{s}) \right] = f
+
+    where :math:`C(\psi) = d\theta/d\psi` is the specific moisture capacity.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The computational mesh.
+    psi_Field : MeshVariable, optional
+        Mesh variable for pressure head :math:`\psi`.
+    v_Field : MeshVariable, optional
+        Mesh variable for Darcy velocity.
+    order : int, default=1
+        Time integration order.
+    theta : float, default=0.5
+        Implicit time weighting.
+    degree : int, default=2
+        Polynomial degree.
+    verbose : bool, default=False
+        Enable verbose output.
+    DuDt : optional
+        Time derivative operator for the unknown.
+    DFDt : optional
+        Time derivative operator for the flux.
+
+    Attributes
+    ----------
+    water_content : sympy.Expr or None
+        Water content function :math:`\theta(\psi)` for the mixed form.
+        When set, the storage term uses
+        :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`.
+        Takes precedence over ``capacity`` if both are set.
+    capacity : sympy.Expr
+        Specific moisture capacity :math:`C(\psi)` for the head-based form.
+        Used only when ``water_content`` is None.
+    psi : MeshVariable
+        Alias for ``self.u`` (pressure head).
+
+    See Also
+    --------
+    SNES_TransientDarcy : Linear parent solver.
+    underworld3.utilities.retention_curves : Van Genuchten and Gardner functions.
+
+    Examples
+    --------
+    Mixed form (preferred):
+
+    >>> from underworld3.utilities.retention_curves import (
+    ...     van_genuchten_theta, van_genuchten_K,
+    ... )
+    >>> richards = uw.systems.Richards(mesh, psi_Field=psi, v_Field=v)
+    >>> richards.constitutive_model = uw.constitutive_models.DarcyFlowModel
+    >>> richards.constitutive_model.Parameters.permeability = van_genuchten_K(
+    ...     psi.sym[0], Ks=1e-4, alpha=3.35, n=2.0,
+    ... )
+    >>> richards.water_content = van_genuchten_theta(
+    ...     psi.sym[0], theta_r=0.045, theta_s=0.43, alpha=3.35, n=2.0,
+    ... )
+
+    Head-based form (backward compatible):
+
+    >>> from underworld3.utilities.retention_curves import van_genuchten_C
+    >>> richards.capacity = van_genuchten_C(
+    ...     psi.sym[0], theta_r=0.045, theta_s=0.43, alpha=3.35, n=2.0,
+    ... )
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_Field: Optional[uw.discretisation.MeshVariable] = None,
+        v_Field: Optional[uw.discretisation.MeshVariable] = None,
+        order: int = 1,
+        theta: float = 0.5,
+        degree: int = 2,
+        verbose=False,
+        DuDt=None,
+        DFDt=None,
+    ):
+        super().__init__(
+            mesh, psi_Field, v_Field, order, theta, degree, verbose, DuDt, DFDt
+        )
+        self._capacity = sympy.sympify(1)
+        self._water_content = None  # None → head-based form; set → mixed form
+
+    @property
+    def water_content(self):
+        r"""Water content function :math:`\theta(\psi)` for the mixed form.
+
+        When set, the storage term uses
+        :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t`
+        instead of :math:`C(\psi) \cdot (\psi^{n+1} - \psi^n) / \Delta t`,
+        giving exact mass conservation (Celia et al., 1990).
+
+        The expression should be a SymPy function of ``psi.sym[0]``.
+        The Jacobian :math:`\partial\theta/\partial\psi = C(\psi)` is
+        computed automatically by PETSc (finite-difference colouring),
+        so there is no need to provide :math:`C(\psi)` separately.
+        """
+        return self._water_content
+
+    @water_content.setter
+    def water_content(self, value):
+        self._needs_function_rewire = True
+        self._water_content = sympy.sympify(value) if value is not None else None
+
+    @property
+    def capacity(self):
+        r"""Specific moisture capacity :math:`C(\psi) = d\theta/d\psi`.
+
+        Used only when ``water_content`` is None (head-based form).
+        Typically a nonlinear SymPy expression depending on ``psi.sym[0]``.
+        """
+        return self._capacity
+
+    @capacity.setter
+    def capacity(self, value):
+        self._needs_function_rewire = True
+        self._capacity = sympy.sympify(value)
+
+    @property
+    def psi(self):
+        """Alias for ``self.u`` (pressure head)."""
+        return self.u
+
+    @property
+    def F0(self):
+        r"""Pointwise storage + source term.
+
+        Mixed form: :math:`(\theta(\psi^{n+1}) - \theta(\psi^n)) / \Delta t - f`
+
+        Head-based form: :math:`C(\psi) (\psi^{n+1} - \psi^n) / \Delta t - f`
+        """
+        if self._water_content is not None:
+            # Mixed (mass-conservative) form:
+            # θ(ψ^{n+1}) is self._water_content (already in terms of psi.sym[0])
+            # θ(ψ^n) is water_content with psi.sym[0] → psi_star[0].sym[0]
+            psi_sym = self.psi.sym[0]
+            psi_star_sym = self.DuDt.psi_star[0].sym[0]
+            theta_new = self._water_content
+            theta_old = self._water_content.subs(psi_sym, psi_star_sym)
+            storage_term = sympy.Matrix([[theta_new - theta_old]]) / self.delta_t
+        else:
+            # Head-based form (backward compatible)
+            storage_term = self.capacity * self.DuDt.bdf() / self.delta_t
+
+        f0 = expression(
+            r"f_0(\psi)",
+            -self.f + storage_term,
+            "Richards storage + source term",
+        )
+        self._f0 = f0
+        return f0
 
 
 ## --------------------------------
@@ -681,11 +1149,276 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         )
 
         # this attrib records if we need to setup the problem (again)
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         self._constitutive_model = None
 
+        # Optional: alternative F1 expression to autodiff for the
+        # Jacobian.  When None, autodiff F1 itself (default).  Used for
+        # inexact-Newton tricks like a smooth-Jacobian / sharp-residual
+        # split at a VEP yield kink.  See ``set_jacobian_F1_source``.
+        self._F1_jacobian_source = None
+
         return
+
+    def set_jacobian_F1_source(self, F1_source, linesearch="cp"):
+        r"""Override the F1 expression used to build the Jacobian blocks.
+
+        By default, the Stokes Jacobian's uu / up G2, G3 blocks are
+        autodiff'd from the residual F1.  Some problems benefit from
+        differentiating a *different* but related expression — e.g. a
+        smooth (softmin) viscosity formula for the Jacobian while the
+        residual F1 keeps a sharp Min, so Newton sees a continuous
+        derivative even when the iterate sits exactly on the yield kink.
+
+        Setting ``F1_source`` triggers a JIT recompile (the Jacobian
+        symbols change).  Pass ``None`` to revert to autodiff of F1.
+
+        Parameters
+        ----------
+        F1_source : sympy.Matrix or None
+            Alternative expression of the same shape as ``F1.sym``.
+        linesearch : str or None, default ``"cp"``
+            SNES linesearch type to install when ``F1_source`` is set.
+            Defaults to ``"cp"`` (critical-point) because inexact-Newton
+            steps don't reliably reduce the residual norm and PETSc's
+            default ``bt`` (backtracking) consequently rejects useful
+            steps with ``DIVERGED_LINE_SEARCH``.  ``cp`` accepts the
+            predicted step at the optimum of the local linearisation and
+            converges cleanly on the same problems where ``bt`` flails.
+            Set to ``None`` to leave the linesearch type untouched (e.g.
+            if you've already configured one via ``petsc_options``).
+            Has no effect when ``F1_source is None``.
+        """
+        self._F1_jacobian_source = F1_source
+        self._needs_function_rewire = True
+        if F1_source is not None and linesearch is not None:
+            self.petsc_options["snes_linesearch_type"] = linesearch
+
+    def _create_stress_history_ddt(self, order=2):
+        """Create DFDt for stress history tracking (VE/VEP models).
+
+        Called automatically when a constitutive model with
+        ``requires_stress_history = True`` is assigned. Can also be called
+        explicitly to pre-create the DFDt with a specific order.
+
+        Constitutive models can inject extra SemiLagrangian kwargs via the
+        ``stress_history_ddt_kwargs`` property — used e.g. by
+        ``MaxwellExponentialFlowModel`` to set ``with_forcing_history=True``.
+        """
+        if self.Unknowns.DFDt is not None:
+            return  # already created
+
+        self._order = order
+        # Constitutive model may request extra SemiLagrangian kwargs (e.g.
+        # with_forcing_history for ETD-2 integration).
+        cm = getattr(self, "constitutive_model", None)
+        ddt_kwargs = {}
+        if cm is not None:
+            ddt_kwargs = dict(getattr(cm, "stress_history_ddt_kwargs", {}))
+
+        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+            self.mesh,
+            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+            self.u.sym,
+            vtype=uw.VarType.SYM_TENSOR,
+            degree=self.u.degree - 1,
+            continuous=True,
+            varsymbol=rf"{{F[ {self.u.symbol} ] }}",
+            verbose=self.verbose,
+            bcs=None,
+            order=order,
+            smoothing=0.0001,
+            **ddt_kwargs,
+        )
+        # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
+        # history term — without snapshot substitution the projection of
+        # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at
+        # yield admits the wrong fixed point under timestep change.
+        self.Unknowns.DFDt.enable_source_snapshot()
+
+    @timing.routine_timer_decorator
+    @memprobe.instrument("Stokes.solve")
+    def solve(
+        self,
+        zero_init_guess: bool = True,
+        timestep: float = None,
+        _force_setup: bool = False,
+        verbose: bool = False,
+        debug: bool = False,
+        debug_name: str = None,
+        evalf=False,
+        order=None,
+        picard: int = 0,
+        divergence_retries: int = 0,
+    ):
+        """Solve the Stokes system, with optional viscoelastic stress history.
+
+        When a constitutive model with stress history is active (DFDt is not None),
+        the solve includes pre/post hooks for advecting stress history, updating
+        BDF coefficients, and projecting the actual stress after the solve.
+
+        Parameters
+        ----------
+        zero_init_guess : bool
+            If True, use zero initial guess. Otherwise use current field values.
+        timestep : float, optional
+            Advection timestep. Required when stress history is active.
+        _force_setup : bool
+            Force rebuild of pointwise functions.
+        verbose : bool
+            Enable verbose output.
+        evalf : bool
+            Force numerical evaluation during history updates.
+        order : int, optional
+            Override the VE time integration order.
+        picard : int, default=0
+            Number of Picard iterations before switching to Newton.
+            Picard uses a simplified Jacobian and can help convergence
+            for strongly nonlinear problems like VEP at yield onset.
+        divergence_retries : int, default=0
+            If SNES returns a DIVERGED reason after the main solve, re-call
+            the underlying Newton up to this many times with a warm start
+            (``zero_init_guess=False``) to try to rescue. Each retry uses
+            the just-computed iterate plus the freshly-advected stress
+            history, which is often enough for VEP at yield onset (Min/softmin
+            kinks) to step off a bad Newton iterate. ``0`` preserves legacy
+            behaviour (divergence is terminal). Typical useful value is 1.
+            Only applies in the VE/VEP branch (``DFDt is not None``).
+        """
+
+        has_stress_history = self.Unknowns.DFDt is not None
+
+        if has_stress_history:
+            if timestep is None:
+                raise ValueError(
+                    "timestep is required for viscoelastic solve. "
+                    "Call stokes.solve(timestep=dt)"
+                )
+
+            # dt_elastic must always equal the solve timestep. The constitutive
+            # model's VE formulas (eta_eff, stress history terms) all reference
+            # Parameters.dt_elastic. If it differs from the actual timestep,
+            # the stress computation is inconsistent with the time integration.
+            self.constitutive_model.Parameters.dt_elastic = timestep
+
+            if order is None or order > self._order:
+                order = self._order
+
+            if _force_setup:
+                self._needs_function_rewire = True
+
+            # Re-setup when effective_order changes (DDt history ramp-up)
+            _current_eff_order = self.constitutive_model.effective_order
+            if not hasattr(self, '_prev_effective_order'):
+                self._prev_effective_order = None
+            if _current_eff_order != self._prev_effective_order:
+                self._needs_function_rewire = True
+                self.constitutive_model._solver_is_setup = False
+            self._prev_effective_order = _current_eff_order
+
+            if not self.constitutive_model._solver_is_setup:
+                self._needs_function_rewire = True
+                self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+            if not self.is_setup:
+                self._setup_pointwise_functions(verbose)
+                self._setup_discretisation(verbose)
+                self._setup_solver(verbose)
+
+            # 1. ADVECT stress history along characteristics
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - advect stress history", flush=True)
+
+            self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
+                                       store_result=False)
+            # Uniform pre-solve coefficient hook: VEP delegates to
+            # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
+            # α, φ on the DDt via _update_exp_coefficients(). No isinstance
+            # checks at the solver layer.
+            self.constitutive_model._update_history_coefficients()
+
+            # 2. SOLVE
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - solve", flush=True)
+
+            super().solve(
+                zero_init_guess,
+                _force_setup=_force_setup,
+                verbose=verbose,
+                picard=picard,
+                divergence_retries=divergence_retries,
+            )
+
+            # 3. PROJECT actual stress and SHIFT history
+            if uw.mpi.rank == 0 and verbose:
+                print(f"Stokes solver - store stress and shift history", flush=True)
+
+            import numpy as np
+
+            _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
+
+            if getattr(self.DFDt, '_psi_star_use_multicomponent', False):
+                # Multi-component projection of flux → psi_star[0].
+                #
+                # The DFDt's source-snapshot machinery (enabled once in
+                # _create_stress_history_ddt) intercepts psi_fn assignment
+                # to substitute psi_star[0] symbols with a frozen
+                # psi_snapshot variable, refreshed each step in
+                # update_pre_solve. So the projection's compiled source
+                # reads from psi_snapshot (not psi_star[0] itself) and is a
+                # true one-shot Galerkin projection — no implicit
+                # fixed-point iteration.
+                self.DFDt._psi_star_projection_solver.smoothing = 0.0
+                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+                # Fan flat result back to psi_star[0] tensor variable
+                for k, (i, j) in enumerate(self.DFDt._psi_star_indep_indices):
+                    vals = self.DFDt._psi_star_flat_var.array[:, 0, k]
+                    self.DFDt.psi_star[0].array[:, i, j] = vals
+                    if i != j:
+                        self.DFDt.psi_star[0].array[:, j, i] = vals
+            else:
+                self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
+                self.DFDt._psi_star_projection_solver.smoothing = 0.0
+                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
+
+            for i in range(self.DFDt.order - 1, 0, -1):
+                if i == 1:
+                    self.DFDt.psi_star[i].array[...] = _advected_sigma_star
+                else:
+                    self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
+
+            self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+            # Uniform post-solve hook for any extra integrator-state storage.
+            # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
+            # forcing_star with current ε̇^{n+1} so the next step's history
+            # term has access to ε̇ⁿ.
+            self.constitutive_model._update_history_post_solve()
+
+            self.is_setup = True
+            self.constitutive_model._solver_is_setup = True
+
+        else:
+            # Plain Stokes — no stress history
+            super().solve(
+                zero_init_guess,
+                _force_setup=_force_setup,
+                verbose=verbose,
+                divergence_retries=divergence_retries,
+            )
+
+    @property
+    def tau(self):
+        r"""Deviatoric stress from the most recent solve.
+
+        When stress history is active (VEP), returns ``psi_star[0]`` which
+        contains the actual projected stress. Otherwise falls through to the
+        base class lazy projection.
+        """
+        if self.Unknowns.DFDt is not None:
+            return self.DFDt.psi_star[0]
+        return super().tau
 
     # =========================================================================
     # PETSc Residual Templates
@@ -705,20 +1438,26 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: sympy.simplify(
-            self.stress + self.penalty * self.div_u * sympy.eye(self.mesh.dim)
+        lambda self: (
+            self.stress
+            + self.penalty * self.constitutive_model.K * self.div_u * sympy.eye(self.mesh.dim)
         ),
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
         combining deviatoric stress $\boldsymbol{\tau}$, pressure $p$,
-        and penalty term for weak incompressibility.
+        and the **viscosity-scaled** augmented-Lagrangian penalty term
+        $\lambda\,\mu\,(\nabla\cdot\mathbf{u})\,\mathbf{I}$ for weak
+        incompressibility. The penalty is multiplied by the local viscosity
+        $\mu$ (``constitutive_model.K``) so that, under spatially-variable
+        viscosity, the ratio penalty/$\mu$ stays uniform — a bare constant
+        would over-stiffen low-viscosity regions and lock the velocity there.
         """,
     )
 
     PF0 = Template(
         r"\mathbf{h}_0\left( \mathbf{p} \right)",
-        lambda self: sympy.simplify(sympy.Matrix((self.constraints))),
+        lambda self: sympy.Matrix((self.constraints)),
         r"""Pressure equation constraint term (continuity).
 
         The $h_0$ term enforces the incompressibility constraint
@@ -950,17 +1689,25 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @bodyforce.setter
     def bodyforce(self, value):
         """Set the body force vector (e.g., gravity, buoyancy)."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         if isinstance(value, uw.function.expressions.UWexpression):
             self._bodyforce.sym = value.sym
         else:
-            # Convert UWQuantity objects to SymPy expressions before Matrix creation
+            # Convert UWQuantity components to their NON-DIMENSIONAL value before
+            # Matrix creation — the body force feeds the non-dimensional solver
+            # (see the ND<->units boundary contract / #282). The component may be
+            # symbolic (e.g. a buoyancy ρα g (T − T_ref) carries the T field), so
+            # non_dimensionalise yields a (1×1) array/Matrix whose element we
+            # extract. (The previous code called item._sympify_(), which does not
+            # exist on UWQuantity; _sympy_ raises on a dimensional quantity.)
             converted_value = []
             for item in value:
                 if isinstance(item, uw.function.quantities.UWQuantity):
-                    sympified = item._sympify_()
-                    # If UWQuantity contains a Matrix, extract the scalar element
-                    if hasattr(sympified, "shape") and sympified.shape == (1, 1):
+                    nd = uw.non_dimensionalise(item)
+                    sympified = nd.magnitude if hasattr(nd, "magnitude") else nd
+                    # If the non-dimensional value is a 1x1 array/Matrix, extract
+                    # the scalar element.
+                    if hasattr(sympified, "shape") and tuple(sympified.shape) == (1, 1):
                         converted_value.append(sympified[0, 0])
                     else:
                         converted_value.append(sympified)
@@ -968,58 +1715,121 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                     converted_value.append(item)
             self._bodyforce.sym = sympy.Matrix(converted_value)
 
-    @property
-    def saddle_preconditioner(self):
-        r"""Preconditioner for the Schur complement in the saddle-point system.
+    def set_pressure_gauge(self, boundary, reference=0.0):
+        r"""Pin the pressure gauge by removing the surface-mean pressure each iteration.
 
-        For the Stokes system, the default preconditioner is :math:`1/\eta`
-        (inverse viscosity), which approximates the Schur complement
-        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T`.
+        On enclosed / all-Dirichlet-velocity problems the pressure is determined
+        only up to an additive constant (a constant null space). This registers a
+        per-iteration callback (see :meth:`add_update_callback`) that subtracts the
+        mean pressure over ``boundary`` from the whole pressure field at every
+        nonlinear iteration, fixing a *specific, physical* gauge:
+
+        .. math:: \frac{1}{|\Gamma|}\int_\Gamma p \, dS = \texttt{reference}
+
+        e.g. ``stokes.set_pressure_gauge("Top")`` makes the mean pressure on the
+        top surface zero. This is an alternative (or complement) to a constant
+        pressure null space when you want the gauge tied to a surface rather than
+        to an arbitrary constant chosen by the solver.
+
+        Parameters
+        ----------
+        boundary : str
+            Mesh boundary label over which the mean pressure is fixed.
+        reference : float, default 0.0
+            Target mean pressure on ``boundary``.
 
         Returns
         -------
-        sympy.Expr
-            Preconditioner expression (typically inverse viscosity).
+        the registered callback (so it can be identified/removed later).
+        """
+        p = self.Unknowns.p
+        area = uw.maths.BdIntegral(self.mesh, 1.0, boundary).evaluate()
+        p_surface_integral = uw.maths.BdIntegral(self.mesh, p.sym[0, 0], boundary)
+
+        def _pressure_gauge(solver, iteration):
+            mean = p_surface_integral.evaluate() / area
+            p.data[...] -= (mean - reference)
+
+        return self.add_update_callback(_pressure_gauge)
+
+    @property
+    def saddle_preconditioner(self):
+        r"""Pressure Schur-complement preconditioner — **usually leave unset**.
+
+        Approximates the Schur complement
+        :math:`\mathbf{S} \approx \mathbf{B}\mathbf{A}^{-1}\mathbf{B}^T \sim 1/\eta`
+        (inverse viscosity). When this is unset (the default, ``None``) the solver
+        automatically uses :math:`1/\eta = 1/`\ ``constitutive_model.K`` — the
+        correct local-viscosity scaling for any constitutive model. Setting it
+        explicitly to ``1/viscosity`` is therefore **redundant** (and only a chance
+        to supply an inconsistent viscosity); just leave it at the default.
+
+        Returns
+        -------
+        sympy.Expr or None
+            Preconditioner expression, or ``None`` to use the automatic
+            ``1/constitutive_model.K``.
 
         Notes
         -----
-        A good preconditioner significantly improves convergence of the
-        iterative solver. For variable viscosity, use the local viscosity.
+        This is an **advanced override**, useful only when the automatic
+        ``1/K`` is not the right Schur scaling — e.g. an anisotropic/tensorial
+        ``K``, or deliberate preconditioner tuning. (``Stokes_Constrained`` builds
+        its Schur preconditioner automatically and does not expose this property.)
         """
         return self._saddle_preconditioner
 
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
         """Set the Schur complement preconditioner."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         symval = sympify(value)
         self._saddle_preconditioner = symval
 
     @property
     def penalty(self):
-        r"""Augmented Lagrangian penalty parameter.
+        r"""Augmented Lagrangian penalty parameter (dimensionless, viscosity-scaled).
 
-        The penalty $\lambda$ adds a term to the weak form that
-        penalizes non-zero divergence:
+        The penalty adds a **viscosity-weighted** grad-div term to the weak form
+        that penalizes non-zero divergence:
 
         .. math::
-            \lambda \int (\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
+            \lambda \int \mu\,(\nabla \cdot \mathbf{u})(\nabla \cdot \mathbf{v}) \, dV
 
-        This improves convergence for incompressible flow without
-        changing the solution (since $\nabla \cdot \mathbf{u} = 0$
-        at convergence).
+        where :math:`\mu` is the local viscosity (``constitutive_model.K``). The
+        :math:`\mu`-weighting keeps the effective penalty proportional to the
+        local stress scale, so the ratio penalty/:math:`\mu` is uniform across a
+        spatially-variable viscosity field. (A bare *constant* penalty would be
+        huge relative to the stress in low-:math:`\mu` regions and negligible in
+        high-:math:`\mu` regions — over-stiffening the former into velocity
+        locking. See the design note ``CONSTRAINED_FREESLIP_MULTIPLIER``.) So the
+        parameter here is a **dimensionless** base of :math:`O(1)`.
 
         Returns
         -------
         UWexpression
-            Augmented Lagrangian penalty parameter (typically $O(1)$).
+            Dimensionless augmented-Lagrangian penalty base (typically :math:`O(1)`).
 
         Notes
         -----
-        Set to zero for standard Stokes without augmentation.
-        Unlike classical penalty methods that require very large values,
-        the Augmented Lagrangian approach uses modest penalties of $O(1)$
-        to improve solver convergence.
+        Set to zero (the default) for a standard saddle-point Stokes solve; the
+        ``saddle_preconditioner`` already conditions the pressure Schur, so the
+        penalty is usually unnecessary for convergence.
+
+        **Pressure correction.** This term is part of the *operator*, so when it
+        is non-zero the recovered pressure ``p`` is the Lagrange multiplier, not
+        the mechanical pressure. The total isotropic stress is
+        :math:`-p + \lambda\,\mu\,(\nabla\cdot\mathbf{u})`, so the mechanical
+        pressure is
+
+        .. math::
+            p_\text{mech} = p - \lambda\,\mu\,(\nabla\cdot\mathbf{u}).
+
+        At convergence :math:`\nabla\cdot\mathbf{u}\to 0` so the two agree, but
+        *pointwise* they differ by the penalty term (≈ a couple of percent of
+        :math:`|p|` at :math:`\lambda=O(1)`). For a pressure-dependent
+        constitutive law (yield, density, rheology), use :math:`p_\text{mech}`;
+        for visualisation or weak pressure dependence the raw ``p`` is adequate.
 
         References
         ----------
@@ -1032,7 +1842,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         """Set the augmented Lagrangian penalty parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._penalty.sym = value
 
     # @property
@@ -1126,72 +1936,39 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
 
 class SNES_VE_Stokes(SNES_Stokes):
-    r"""
-    Viscoelastic Stokes equation solver.
+    r"""Viscoelastic Stokes solver (backward-compatibility wrapper).
 
-    Provides a discrete representation of the Stokes flow equations with
-    incompressibility (or near-incompressibility) constraint and a flux
-    history term for viscoelastic modelling. Inherits from :class:`SNES_Stokes`.
+    .. deprecated::
+        Use ``uw.systems.Stokes`` directly with a
+        ``ViscoElasticPlasticFlowModel`` constitutive model. The Stokes
+        solver now creates stress history infrastructure automatically
+        when the constitutive model is assigned (the lazy-creation
+        pathway also reads ``stress_history_ddt_kwargs`` from the model
+        — required for ``integrator='etd'`` to allocate
+        ``forcing_star``). VE_Stokes pre-creates the DDt at solver
+        ``__init__`` time, before the model exists, so it can't see
+        those kwargs and is incompatible with ``integrator='etd'``.
 
-    Momentum equation:
+    Migration: replace::
 
-    .. math::
+        stokes = uw.systems.VE_Stokes(mesh, velocityField=v, pressureField=p, order=2)
+        stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
 
-        -\nabla \cdot \underbrace{\left[ \boldsymbol{\tau} - p \mathbf{I}
-        \right]}_{\mathbf{F}} = \underbrace{\mathbf{f}}_{\mathbf{h}}
+    with::
 
-    Continuity equation:
-
-    .. math::
-
-        \underbrace{\nabla \cdot \mathbf{u}}_{\mathbf{h}_p} = 0
-
-    The flux term is a deviatoric stress :math:`\boldsymbol{\tau}` related
-    to velocity gradients :math:`\nabla \mathbf{u}` through a viscosity
-    tensor :math:`\eta`, plus a volumetric (pressure) part :math:`p`:
-
-    .. math::
-
-        \mathbf{F}: \quad \boldsymbol{\tau} = \frac{\eta}{2}
-        \left( \nabla \mathbf{u} + \nabla \mathbf{u}^T \right)
-
-    The constraint equation :math:`\mathbf{h}_p = 0` is incompressible flow
-    by default but can be set to any function of :math:`\mathbf{u}` and
-    :math:`\nabla \cdot \mathbf{u}`.
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            stokes.Unknowns, order=2,
+        )
 
     Parameters
     ----------
     mesh : Mesh
         The computational mesh.
-    velocityField : MeshVariable, optional
-        Mesh variable for velocity. Created automatically if not provided.
-    pressureField : MeshVariable, optional
-        Mesh variable for pressure. Created automatically if not provided.
-    degree : int, default=2
-        Polynomial degree for velocity elements.
     order : int, default=2
-        Order parameter (typically same as degree).
-    p_continuous : bool, default=True
-        If False, use discontinuous pressure elements.
-    verbose : bool, default=False
-        Enable verbose output.
-    DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
-        Time derivative operator (may be used in child classes).
-
-    Notes
-    -----
-    - The viscosity tensor :math:`\boldsymbol{\eta}` is set via the
-      ``constitutive_model`` property
-    - For viscoelastic problems, the flux term contains stress history
-      tracked on a particle swarm
-    - Augmented Lagrangian approach adds :math:`\lambda \nabla \cdot \mathbf{u}`
-      to penalize incompressibility
-    - Pressure element order determines mixed FEM integration order
-
-    See Also
-    --------
-    SNES_Stokes : Base Stokes solver.
-    uw.constitutive_models.ViscoElasticPlasticFlowModel : Constitutive model for VE flow.
+        BDF time integration order for stress history.
+    **kwargs
+        All other arguments are passed to :class:`SNES_Stokes`.
     """
 
     instances = 0
@@ -1205,12 +1982,20 @@ class SNES_VE_Stokes(SNES_Stokes):
         order: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: Optional[bool] = False,
-        # DuDt Not used in VE, but may be in child classes
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
-
-        # Stokes is parent (will not build DuDt or DFDt)
+        import warnings
+        warnings.warn(
+            "VE_Stokes is deprecated. Use uw.systems.Stokes(...) directly and "
+            "assign the constitutive model afterwards — the Stokes solver creates "
+            "DDt infrastructure lazily when the model is assigned, and the lazy "
+            "path correctly forwards stress_history_ddt_kwargs from the model "
+            "(required for integrator='etd' to allocate forcing_star). "
+            "VE_Stokes pre-creates DDt at __init__ time, before the model exists, "
+            "so it cannot use ETD-2. See the class docstring for migration.",
+            DeprecationWarning, stacklevel=2,
+        )
         super().__init__(
             mesh,
             velocityField,
@@ -1222,22 +2007,8 @@ class SNES_VE_Stokes(SNES_Stokes):
             DFDt=DFDt,
         )
 
-        self._order = order  # VE time-order
-
-        if self.Unknowns.DFDt is None:
-            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
-                self.mesh,
-                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-                self.u.sym,
-                vtype=uw.VarType.SYM_TENSOR,
-                degree=self.u.degree - 1,
-                continuous=True,
-                varsymbol=rf"{{F[ {self.u.symbol} ] }}",
-                verbose=self.verbose,
-                bcs=None,
-                order=self._order,
-                smoothing=0.0001,
-            )
+        # Pre-create DFDt so it's available before constitutive model is set
+        self._create_stress_history_ddt(order=order)
 
         return
 
@@ -1246,74 +2017,502 @@ class SNES_VE_Stokes(SNES_Stokes):
         """Elastic timestep from the constitutive model."""
         return self.constitutive_model.Parameters.dt_elastic
 
-    ## Solver needs to update the stress history terms as well as call the SNES solve:
 
-    @timing.routine_timer_decorator
-    def solve(
+class _BlockConstraintBC:
+    """Bookkeeping for one in-saddle-point multiplier constraint.
+
+    Holds the multiplier field ``lam`` (a full-domain scalar MeshVariable
+    registered as an extra DM field), the prescribed normal velocity ``g``, the
+    (symbolic, row-vector) constraint normal, and the mutable PETSc bookkeeping
+    (``petsc_id``/``label_val``) plus the JIT-compiled boundary functions
+    (``fns``) populated during assembly. Mirrors the natural-BC namedtuple but
+    stays a mutable object so the Cython assembly can stamp ids onto it.
+    """
+
+    __slots__ = ("boundary", "g", "normal", "lam", "augmentation",
+                 "petsc_id_u", "petsc_id_h", "label_val", "fns")
+
+    def __init__(self, boundary, g, normal, lam, augmentation):
+        self.boundary = boundary
+        self.g = g
+        self.normal = normal
+        self.lam = lam
+        # Augmented-Lagrangian parameter r: a penalty r(n·u−g)·n added to the
+        # u-row, giving a uu boundary stiffness r·(n⊗n) that conditions the
+        # [p,h] Schur complement WITHOUT biasing the multiplier (the h-row is
+        # still the exact constraint). 0 disables it (bare KKT).
+        self.augmentation = augmentation
+        # PETSc needs ONE boundary entry per (boundary, test-field): each entry
+        # evaluates only its registered field's residual + that field's Jacobian
+        # row. So a constraint registers the boundary twice — for field 0 (the
+        # u-row traction h·n and the uh Jacobian) and for the multiplier field
+        # (the h-row constraint n·u−g and the hu Jacobian).
+        self.petsc_id_u = -1
+        self.petsc_id_h = -1
+        self.label_val = -1
+        self.fns = {}
+
+
+class SNES_Stokes_Constrained(SNES_Stokes):
+    r"""
+    Stokes solver that enforces :math:`\mathbf{u}\cdot\mathbf{n} = g` on a
+    boundary via a Lagrange multiplier living **inside** the saddle-point
+    system — a single coupled solve, not an outer loop.
+
+    A scalar multiplier field :math:`h` is added as a third DM field and grouped
+    with pressure into a 2-way :math:`\mathbf{u}\,|\,[p,h]` Schur split. The
+    coupled block system is
+
+    .. math::
+
+        \begin{bmatrix} A & B^{T} & C^{T} \\ B & 0 & 0 \\ C & 0 & \varepsilon M
+        \end{bmatrix}
+        \begin{bmatrix} \mathbf{u} \\ p \\ h \end{bmatrix} =
+        \begin{bmatrix} \mathbf{f} \\ 0 \\ g \end{bmatrix},
+
+    where :math:`C = \int_\Gamma (\mathbf{n}\cdot\mathbf{v})\,\psi` couples the
+    multiplier to the boundary normal velocity, and :math:`\varepsilon M =
+    \varepsilon\int_\Omega h\,\psi` is an interior screening mass that
+    de-singularises the otherwise-empty interior :math:`h` block (it does not
+    bias the boundary multiplier). At convergence :math:`h|_\Gamma = -\,
+    \mathbf{n}\cdot\boldsymbol{\sigma}\cdot\mathbf{n}` is the boundary normal
+    traction = dynamic topography; access it via :meth:`multiplier` /
+    :meth:`topography`.
+
+    The constraint is enforced in one coupled solve (no outer iteration). The
+    augmented-Lagrangian term conditions the :math:`[p,h]` Schur complement
+    without biasing the multiplier, and the interior multiplier DOFs are reduced
+    away so the solved block is boundary-sized.
+
+    Runs in parallel: the interior-multiplier reduction is rank-local section
+    surgery so the global system, velocity solve, and gauge-fixed topography are
+    partition-independent (validated in
+    ``tests/parallel/test_1063_constrained_freeslip_parallel.py``). On an
+    **enclosed** problem (a pressure null space is active) the constant pressure
+    and constant multiplier are gauge-free, and the solver lands on a
+    partition-dependent level for each. To keep the raw **pressure** reproducible
+    across ranks the solver pins the surface-mean pressure automatically (see
+    :attr:`auto_pressure_gauge`); the raw **multiplier** keeps its own gauge level,
+    so read dynamic topography through :meth:`topography` with ``reference="mean"``
+    (gauge-invariant). See
+    ``docs/developer/design/CONSTRAINED_FREESLIP_MULTIPLIER.md``.
+
+    See Also
+    --------
+    SNES_Stokes : The unconstrained saddle-point solver this extends.
+    """
+
+    def __init__(
         self,
-        zero_init_guess: bool = True,
-        timestep: float = None,
-        _force_setup: bool = False,
-        verbose=False,
-        evalf=False,
-        order=None,
+        mesh: uw.discretisation.Mesh,
+        velocityField: Optional[uw.discretisation.MeshVariable] = None,
+        pressureField: Optional[uw.discretisation.MeshVariable] = None,
+        degree: Optional[int] = 2,
+        p_continuous: Optional[bool] = True,
+        verbose: Optional[bool] = False,
+        DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
-        """
-        Generates solution to constructed system.
-
-        Params
-        ------
-        zero_init_guess:
-            If `True`, a zero initial guess will be used for the
-            system solution. Otherwise, the current values of `self.u` will be used.
-        """
-
-        if order is None or order > self._order:
-            order = self._order
-
-        if timestep is None:
-            timestep = self.delta_t.sym
-
-        if timestep != self.delta_t:
-            self._constitutive_model.Parameters.elastic_dt = timestep  # this will force an initialisation because the functions need to be updated
-
-        if _force_setup:
-            self.is_setup = False
-
-        if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
-
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VE Stokes solver - pre-solve DFDt update", flush=True)
-
-        # Update SemiLagrange Flux terms
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf)
-
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VE Stokes solver - solve Stokes flow", flush=True)
-
-        super().solve(
-            zero_init_guess,
-            _force_setup=_force_setup,
-            verbose=verbose,
-            picard=0,
+        super().__init__(
+            mesh,
+            velocityField,
+            pressureField,
+            degree,
+            p_continuous,
+            verbose,
+            DuDt=DuDt,
+            DFDt=DFDt,
         )
 
-        if uw.mpi.rank == 0 and verbose:
-            print(f"VEP Stokes solver - post-solve DFDt update", flush=True)
+        # In-saddle multiplier constraints (see add_constraint_bc). Empty for an
+        # ordinary Stokes solve, so the base assembly is unaffected.
+        self._block_constraint_bcs = []
 
-        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        # Guarded automatic pressure gauge (see _maybe_install_auto_gauge). On an
+        # enclosed constrained problem the constant pressure and constant
+        # multiplier are gauge-free; the solver lands on a partition-dependent
+        # level for each, so the raw fields are not reproducible across ranks.
+        # When a pressure null space is active we pin the surface-mean pressure,
+        # making the raw PRESSURE reproducible at zero cost to the velocity (the
+        # raw multiplier keeps its own gauge — read topography via reference="mean").
+        # Set to False to opt out.
+        self.auto_pressure_gauge = True
+        self._auto_gauge_callback = None
 
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
+        # Default the grouped [p, lambda] Schur preconditioner to `selfp` (the base
+        # Stokes default is `a11`). The constraint Schur complement
+        # S_lambda = C A^-1 C^T needs a preconditioner built from the actual operator
+        # blocks; selfp forms S ~ A11 - A10 diag(A00)^-1 A01, whose lambda-lambda corner
+        # is -C diag(A)^-1 C^T = the true constraint Schur, automatically. This cracks
+        # strong boundary-viscosity-contrast walls that the bare `a11` mass cannot, makes
+        # the augmentation optional on moderate contrast, and keeps the recovered
+        # multiplier (= dynamic topography) clean at small augmentation. Override via
+        # `solver.petsc_options["pc_fieldsplit_schur_precondition"] = "a11"` if desired.
+        self.petsc_options["pc_fieldsplit_schur_precondition"] = "selfp"
 
+        # Flexible outer Krylov (fgmres) is REQUIRED, not a tuning choice. The
+        # grouped [p, lambda] Schur preconditioner runs inner *iterative* sub-solves
+        # (velocity multigrid + the Schur KSP), so the preconditioner operator
+        # varies from one outer iteration to the next — a variable/nonlinear
+        # preconditioner. A non-flexible Krylov method (the base's gmres) is
+        # invalid for that: the preconditioned residual it minimises false-converges
+        # (it reported CONVERGED_RTOL in ~2 iterations while the TRUE residual
+        # ||r||/||b|| blew up to ~10^3), landing on a wrong, partition-dependent
+        # answer (the ~0.4% serial-vs-parallel velocity spread, and the failure to
+        # reproduce the Zhong response). fgmres handles the variable preconditioner
+        # correctly: the true residual converges and the solve is
+        # partition-independent. Override via petsc_options["ksp_type"] if needed.
+        self.petsc_options["ksp_type"] = "fgmres"
+
+        # Judge outer convergence on the TRUE (unpreconditioned) residual. With a
+        # variable preconditioner the preconditioned-residual norm is not a fixed
+        # inner product and false-converges (it can report convergence while the
+        # true residual is still large), so the default preconditioned-norm test
+        # would stop the solve early even with a tight rtol — re-introducing the
+        # partition-dependent velocity. The unpreconditioned norm costs one extra
+        # matvec per iteration and makes the stopping test honest.
+        self.petsc_options["ksp_norm_type"] = "unpreconditioned"
+
+        # Bound the outer iteration count. The well-set-up solve converges in a
+        # handful of outer iterations (~6 on the 3-D shell at cellSize 1/8); this
+        # generous cap just guarantees a pathological case fails loudly
+        # (DIVERGED_ITS) rather than silently grinding. Raise it for genuinely
+        # hard problems via petsc_options["ksp_max_it"].
+        self.petsc_options["ksp_max_it"] = 100
+
+        # Tighten the Eisenstat-Walker adaptive linear tolerance (the base saddle
+        # point enables snes_ksp_ew with the PETSc default initial/max rtol 0.3).
+        # EW's loose-early heuristic is right for a NONLINEAR Newton solve, but the
+        # constrained solver is normally run linear (snes_type=ksponly), where EW
+        # then caps the single outer solve at rtol 0.3 — one outer iteration, true
+        # residual ~1e-5 relative. The augmented saddle point is ill-conditioned
+        # (augmentation ~1e4), so that loose residual is amplified into a ~0.1%
+        # partition-dependent velocity (GAMG's per-partition aggregation makes the
+        # preconditioner partition-dependent, which only cancels once the TRUE
+        # residual is driven down). Pinning EW's initial = max rtol to the solver
+        # tolerance makes the outer fgmres iterate until genuinely converged, so
+        # the velocity is partition-independent to round-off. Kept in sync by the
+        # `tolerance` setter below.
+        self.petsc_options["snes_ksp_ew_rtol0"] = self._tolerance * 1.0e-1
+        self.petsc_options["snes_ksp_ew_rtolmax"] = self._tolerance * 1.0e-1
         return
+
+    @property
+    def tolerance(self):
+        """Solver tolerance (see :class:`SNES_Stokes_SaddlePt.tolerance`).
+
+        Overridden so that, in addition to ``snes_rtol`` / ``ksp_rtol`` /
+        ``ksp_atol``, the Eisenstat-Walker initial and max relative tolerances are
+        pinned to ``tolerance * 0.1`` — otherwise EW's default (0.3) under-solves
+        the ill-conditioned augmented constrained system on a linear solve and the
+        velocity becomes partition-dependent (see ``__init__``).
+        """
+        return self._tolerance
+
+    @tolerance.setter
+    def tolerance(self, value):
+        self._tolerance = value
+        self.petsc_options["snes_rtol"] = value
+        self.petsc_options["ksp_rtol"] = value * 1.0e-1
+        self.petsc_options["ksp_atol"] = value * 1.0e-6
+        self.petsc_options["snes_ksp_ew_rtol0"] = value * 1.0e-1
+        self.petsc_options["snes_ksp_ew_rtolmax"] = value * 1.0e-1
+
+    def solve(self, *args, **kwargs):
+        """Solve the constrained Stokes system (see :meth:`SNES_Stokes.solve`).
+
+        Installs the guarded automatic pressure gauge (if eligible) before
+        delegating to the base solve, so the raw pressure and multiplier are
+        partition-reproducible by construction on enclosed problems.
+        """
+        self._warn_if_monolithic_direct()
+        self._maybe_install_auto_gauge()
+        return super().solve(*args, **kwargs)
+
+    def _warn_if_monolithic_direct(self):
+        """Warn that a monolithic direct solve of the constrained system is a
+        serial diagnostic only.
+
+        Setting ``pc_type = lu``/``cholesky`` factorises the whole
+        :math:`[\\,u, p, h\\,]` saddle point as one block. On the constrained
+        system this is a KNOWN-BAD path: it does not reproduce the validated
+        grouped-Schur (``selfp``) velocity response (e.g. surface velocity ~4e-3
+        vs the ~1e-2 Zhong reference on the 3-D shell) AND it segfaults in
+        parallel (the indefinite KKT factorisation is not robust here). The
+        grouped :math:`\\mathbf{u}\\,|\\,[p,h]` field-split is the supported path;
+        use ``pc_type = lu`` only as a serial cross-check, knowing the response is
+        not the benchmark reference.
+        """
+        if not self._block_constraint_bcs:
+            return
+        try:
+            pc_type = self.petsc_options["pc_type"]
+        except KeyError:
+            return
+        if pc_type in ("lu", "cholesky"):
+            import warnings
+            warnings.warn(
+                "Stokes_Constrained: a monolithic direct solve "
+                f"(pc_type='{pc_type}') of the constrained saddle point is a "
+                "serial diagnostic only — it does not reproduce the validated "
+                "grouped-Schur velocity response and segfaults in parallel. Use "
+                "the default field-split (u | [p,h]) path for production runs.",
+                stacklevel=2,
+            )
+
+    def _maybe_install_auto_gauge(self):
+        """Pin the (p, h) gauge consistently on an enclosed constrained problem.
+
+        Conservative — installs ``set_pressure_gauge`` on the first constraint
+        boundary (``reference=0``) only when ALL of the following hold, otherwise
+        it is a no-op and the solve path is unchanged:
+
+        * ``auto_pressure_gauge`` is left True (the default),
+        * we have not already installed it (idempotent across re-solves),
+        * at least one multiplier constraint is registered,
+        * a pressure null space is active (``petsc_use_nullspace`` / enclosed) —
+          this is the gauge-freedom flag; with it off the pressure is determined
+          and must not be shifted,
+        * no pressure Dirichlet BC already pins the gauge,
+        * the user has registered no update callback of their own (e.g. an
+          explicit ``set_pressure_gauge`` or a smoother) — we never clobber it.
+
+        Pinning the surface-mean pressure makes the raw **pressure** field
+        partition-reproducible (measured: the enclosed-shell mean pressure goes
+        from a ~10% serial-vs-np8 spread to the assembly floor, ~0.4%). It is
+        physics-neutral: the velocity is bit-identical with and without the pin.
+        It does NOT fix the raw **multiplier** ``h`` — the constant multiplier is
+        an independent gauge freedom the pressure pin does not touch — so dynamic
+        topography must still be read with ``topography(..., reference="mean")``,
+        which is gauge-invariant by construction.
+        """
+        if not self.auto_pressure_gauge:
+            return
+        if self._auto_gauge_callback is not None:
+            return
+        if not self._block_constraint_bcs:
+            return
+        if not self._petsc_use_pressure_nullspace:
+            return
+        if self._pressure_dirichlet_bcs():
+            return
+        if self._snes_update_callbacks:
+            return
+        boundary = self._block_constraint_bcs[0].boundary
+        self._auto_gauge_callback = self.set_pressure_gauge(boundary, 0.0)
+
+    @property
+    def saddle_preconditioner(self):
+        """Not used by ``Stokes_Constrained`` — the Schur preconditioner is built
+        automatically.
+
+        The grouped :math:`[p,\\lambda]` Schur preconditioner is formed by
+        ``selfp`` from the operator blocks, and the pressure mass it needs is the
+        ``1/viscosity`` (``1/constitutive_model.K``) term supplied automatically.
+        There is nothing for the user to set; this property is inert and assigning
+        to it raises. (The base :class:`SNES_Stokes` keeps a settable
+        ``saddle_preconditioner`` as an advanced override.)
+        """
+        return None
+
+    @saddle_preconditioner.setter
+    def saddle_preconditioner(self, value):
+        raise AttributeError(
+            "Stokes_Constrained does not use `saddle_preconditioner`: the Schur "
+            "preconditioner is built automatically (selfp + the 1/viscosity mass "
+            "from constitutive_model.K). Remove this assignment."
+        )
+
+    def _viscosity_scale(self):
+        """A representative scalar viscosity, for sizing the interior screening."""
+        try:
+            mu = self.constitutive_model.Parameters.shear_viscosity_0
+            return float(mu)
+        except (TypeError, ValueError, AttributeError):
+            return 1.0
+
+    def add_constraint_bc(self, boundary, g=0.0, normal=None, screening=None,
+                          augmentation=None, augmentation_base=1.0e4, degree=None):
+        r"""Register a multiplier-enforced normal-velocity constraint on ``boundary``.
+
+        Adds a scalar multiplier field ``h`` coupled into the saddle-point system
+        so that :math:`\mathbf{u}\cdot\mathbf{n}=g` is enforced on ``boundary`` in
+        the coupled solve; at convergence ``h`` on the boundary is the normal
+        traction (dynamic topography), recoverable via :meth:`multiplier` /
+        :meth:`topography`.
+
+        Parameters
+        ----------
+        boundary : str
+            Mesh boundary label (e.g. ``"Upper"``).
+        g : float or sympy expression, default 0.0
+            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n} = g`.
+        normal : sympy matrix, optional
+            Row-vector constraint normal. Defaults to ``mesh.Gamma_P1``.
+        screening : float or sympy expression, optional
+            Interior screening coefficient :math:`\varepsilon` (de-singularises
+            the interior multiplier DOFs). Defaults to ``1e-6``.
+        augmentation : float or sympy expression, optional
+            Augmented-Lagrangian parameter :math:`r`. Adds a penalty
+            :math:`r(\mathbf{n}\cdot\mathbf{u}-g)\,\mathbf{n}` to the u-row,
+            giving a ``uu`` boundary stiffness :math:`r\,(\mathbf{n}\otimes
+            \mathbf{n})` that conditions the :math:`[p,h]` Schur complement
+            **without biasing the multiplier** (the h-row is still the exact
+            constraint). Defaults to ``augmentation_base · μ(x)`` (viscosity-
+            weighted, mesh-independent). Pass ``0`` for the bare KKT system.
+        augmentation_base : float, default 1e4
+            Base multiple used when ``augmentation`` is not given. Accuracy is
+            independent of this value (the multiplier carries the exact
+            constraint); larger values reduce the iteration count up to a broad
+            plateau, well below the roundoff limit.
+
+        Returns
+        -------
+        h : MeshVariable
+            The scalar multiplier field.
+        """
+        # Parallel-safe: the interior-multiplier reduction
+        # (_constrain_interior_multipliers_in_section) is rank-local section
+        # surgery (it uses the distributed boundary label IS and iterates the
+        # local chart), so the global system — and hence the velocity solve and
+        # the gauge-invariant boundary traction — are partition-independent.
+        # Validated bit-identical at np=1/2/4 (velocity L2 and mean-stripped
+        # boundary topography) in
+        # tests/parallel/test_1063_constrained_freeslip_parallel.py.
+        # NOTE: on enclosed problems the constant pressure and constant multiplier
+        # are gauge-free and land on a partition-dependent level. The automatic
+        # pressure gauge (auto_pressure_gauge, see _maybe_install_auto_gauge) pins
+        # the raw PRESSURE reproducibly, but the raw multiplier h keeps its own
+        # gauge level — read dynamic topography via topography(..., reference="mean"),
+        # which is gauge-invariant and partition-reproducible by construction.
+
+        if not hasattr(self.mesh.boundaries, boundary):
+            raise ValueError(
+                f"'{boundary}' is not a boundary of this mesh. "
+                f"Available: {[b.name for b in self.mesh.boundaries]}."
+            )
+
+        if normal is None:
+            normal = self.mesh.Gamma_P1
+        normal = sympy.Matrix(normal)
+        if normal.shape[0] != 1:
+            normal = normal.reshape(1, self.mesh.dim)
+
+        if screening is None:
+            # Small interior screening: de-singularises the interior h block
+            # without biasing the boundary multiplier. A viscosity-aware scale
+            # is chosen in a later milestone.
+            screening = 1.0e-6
+
+        g = sympy.sympify(g)
+
+        if augmentation is None:
+            # Viscosity-weighted augmentation r = augmentation_base · μ(x): keeps
+            # the conditioning ratio uniform across viscosity contrasts (same
+            # rationale as the outer-loop solver; r ∝ μ is mesh-independent).
+            try:
+                viscosity = self.constitutive_model.Parameters.shear_viscosity_0
+                augmentation = augmentation_base * viscosity
+            except (AttributeError, TypeError):
+                augmentation = augmentation_base * self._viscosity_scale()
+        augmentation = sympy.sympify(augmentation)
+
+        idx = len(self._block_constraint_bcs)
+        field_name = f"multiplier_{idx}"
+        # Multiplier degree defaults to the velocity degree so its trace reaches
+        # every velocity normal-trace DOF (no constraint floor on the P2 mid-edge
+        # component). A lower degree trades a little constraint accuracy for far
+        # fewer multiplier DOFs (cheaper [p,h] Schur block).
+        h_degree = self._degree if degree is None else degree
+        h = uw.discretisation.MeshVariable(
+            f"H{self.instance_number}_{idx}",
+            self.mesh,
+            1,
+            degree=h_degree,
+        )
+        h.data[:] = 0.0
+        h._solver_field_name = field_name
+
+        self._multipliers.append(h)
+        self._multiplier_screening.append(screening)
+        self.fields[field_name] = h
+        # New DM field → the discretisation and solver must be rebuilt.
+        self.is_setup = False
+        self._needs_function_rewire = True
+
+        cbc = _BlockConstraintBC(boundary, g, normal, h, augmentation)
+
+        self._block_constraint_bcs.append(cbc)
+        return h
+
+    def multiplier(self, boundary):
+        """Return the multiplier field for ``boundary`` (None if not constrained).
+
+        After :meth:`solve`, the multiplier's boundary trace is the normal
+        traction holding the constraint. Divide by :math:`\\Delta\\rho\\,g` for
+        dynamic topography (see :meth:`topography`).
+        """
+        for cbc in self._block_constraint_bcs:
+            if cbc.boundary == boundary:
+                return cbc.lam
+        return None
+
+    def topography(self, boundary, buoyancy_scale=1.0, reference=None):
+        r"""Dynamic topography expression :math:`h / (\Delta\rho\, g)` on ``boundary``.
+
+        For an **enclosed** problem (no net normal flow through any boundary) the
+        multiplier :math:`h` is determined only up to the :math:`[p,\lambda]` gauge
+        constant, and the solver lands on a **partition-dependent representative**
+        of it — the velocity and the *deviation* of :math:`h` are unaffected, but
+        the absolute level of :math:`h` is not reproducible across ranks. For such
+        problems pass ``reference="mean"`` to subtract the boundary mean and obtain
+        a gauge-fixed, partition-independent topography. The default
+        (``reference=None``) returns the raw multiplier — correct for problems with
+        **no** gauge freedom (e.g. an open boundary), where the mean of :math:`h` is
+        the physical mean traction and must NOT be removed.
+
+        Note that the automatic pressure gauge (:attr:`auto_pressure_gauge`) fixes
+        the raw *pressure* level but NOT the raw *multiplier* level (the constant
+        multiplier is an independent gauge freedom). So on an enclosed problem the
+        raw multiplier (``reference=None``) is still partition-dependent —
+        ``reference="mean"`` is the gauge-invariant, partition-reproducible read
+        for dynamic topography and is the recommended path.
+
+        Parameters
+        ----------
+        boundary : str
+            Constrained boundary label.
+        buoyancy_scale : float, default 1.0
+            Divide by :math:`\Delta\rho\,g` to convert traction to length.
+        reference : {None, "mean"}, default None
+            ``None`` returns the raw multiplier (correct when there is no gauge
+            freedom). ``"mean"`` subtracts the boundary mean (gauge-fixed,
+            reproducible) — use for enclosed problems.
+
+        Notes
+        -----
+        ``reference="mean"`` evaluates two ``BdIntegral`` reductions immediately
+        to compute the boundary mean, which are **collective** MPI operations —
+        in parallel it must be called on every rank (do not guard it behind a
+        single-rank branch). ``reference=None`` is a pure symbolic accessor with
+        no reduction.
+        """
+        lam = self.multiplier(boundary)
+        if lam is None:
+            raise ValueError(f"No constraint registered on boundary '{boundary}'.")
+        expr = lam.sym[0]
+        if reference == "mean":
+            # Subtract the boundary mean of h via parallel-safe surface integrals
+            # (BdIntegral handles the cross-rank reduction); this fixes the gauge.
+            blen = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=sympy.Integer(1), boundary=boundary).evaluate()
+            hbar = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=lam.sym[0], boundary=boundary).evaluate() / blen
+            expr = expr - hbar
+        elif reference is not None:
+            raise ValueError(
+                f"reference must be 'mean' or None, got {reference!r}")
+        return expr / buoyancy_scale
 
 
 class SNES_Projection(SNES_Scalar):
@@ -1328,15 +2527,75 @@ class SNES_Projection(SNES_Scalar):
     well-defined at mesh nodes (e.g., derivatives or flux components). More
     broadly, it is a projection from one basis to another.
 
-    The projection is implemented by solving:
+    Strong form (the screened-Poisson smoother)
+    -------------------------------------------
+
+    The projection is implemented by solving
 
     .. math::
 
-        -\nabla \cdot \underbrace{\left[ \alpha \nabla u \right]}_{\mathbf{F}}
-        - \underbrace{\left[ u - \tilde{f} \right]}_{\mathbf{h}} = 0
+        u - \nabla \cdot \left( \alpha \nabla u \right) = \tilde{f},
 
-    The term :math:`\mathbf{F}` provides optional smoothing regularization.
-    Setting :math:`\alpha = 0` gives a pure L2 projection.
+    or equivalently, in the more familiar Helmholtz form
+
+    .. math::
+
+        u - \alpha \, \nabla^{2} u \;=\; \tilde{f}.
+
+    With :math:`\alpha = 0` this is a pure pointwise L2 projection of
+    :math:`\tilde f` onto the discrete space of :math:`u`. With
+    :math:`\alpha > 0` it is a *screened-Poisson smoother*: the equation
+    enforces a balance between fidelity to :math:`\tilde f` and curvature of
+    :math:`u`. The natural length scale that emerges from this balance is
+
+    .. math::
+
+        L \;=\; \sqrt{\alpha},
+
+    so :math:`\alpha` has dimensions of **length squared**. The free-space
+    Green's function of the operator decays as
+    :math:`\exp(-r/L)` (in 2D it is
+    :math:`G(r) \propto K_{0}(r/L)/L^{2}`), so the solution behaves like a
+    Gaussian-like convolution of :math:`\tilde f` of width :math:`L` —
+    obtained implicitly by one elliptic solve, without ever assembling
+    the kernel. Features in :math:`\tilde f` of scale much smaller than
+    :math:`L` are attenuated; features much larger than :math:`L` pass
+    through essentially unchanged.
+
+    Weak form
+    ---------
+
+    Multiplying by a test function :math:`v` and integrating by parts gives
+    the symmetric weak form actually assembled by PETSc:
+
+    .. math::
+
+        \int_\Omega (u - \tilde f)\, v \; + \;
+        \int_\Omega \alpha \, \nabla u \cdot \nabla v
+        \;=\; 0,
+
+    which is exactly minimising
+    :math:`\tfrac{1}{2}\!\int (u-\tilde f)^2 + \tfrac{\alpha}{2}\!\int
+    |\nabla u|^2` — a Tikhonov-regularised L2 projection.
+
+    Setting the smoothing length
+    ----------------------------
+
+    Two equivalent accessors are provided:
+
+    * :attr:`smoothing` — set the coefficient :math:`\alpha` directly
+      (units of length²). Historically used with tiny values (e.g.
+      :math:`10^{-6}`) as a *numerical* regulariser, which corresponds to
+      a sub-grid :math:`L` and produces no physical smoothing.
+    * :attr:`smoothing_length` — set :math:`L` directly (length units,
+      unit-aware via :func:`underworld3.non_dimensionalise`). This is the
+      recommended path when you actually want the projection to act as
+      a low-pass filter of a chosen physical scale.
+
+    See Also
+    --------
+    SNES_Vector_Projection : Vector field projection.
+    SNES_Tensor_Projection : Tensor field projection.
 
     Parameters
     ----------
@@ -1352,11 +2611,6 @@ class SNES_Projection(SNES_Scalar):
         Name for the solver instance.
     verbose : bool, default=False
         Enable verbose output.
-
-    See Also
-    --------
-    SNES_Vector_Projection : Vector field projection.
-    SNES_Tensor_Projection : Tensor field projection.
     """
 
     @timing.routine_timer_decorator
@@ -1375,7 +2629,7 @@ class SNES_Projection(SNES_Scalar):
             verbose,
         )
 
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympy.sympify(0)
         self._uw_weighting_function = sympy.sympify(1)
         self._uw_function = sympy.Matrix([0])  # Default: project zero
@@ -1411,16 +2665,191 @@ class SNES_Projection(SNES_Scalar):
     # Use SymbolicProperty for automatic unwrapping
     uw_function = SymbolicProperty(matrix_wrap=True, doc="Function to project onto mesh")
 
+    def linear_solver(self, pc="jacobi", rtol=1.0e-10):
+        """Switch this projector to a lightweight *linear* (SPD) solve.
+
+        An L2 projection (and the screened-Poisson smoother) is a **linear,
+        symmetric-positive-definite** problem, so the inherited
+        ``newtonls / gmres / gamg`` default is unnecessarily heavy — GAMG
+        setup/repartition dominates cost and memory at MPI scale, which is the
+        bottleneck for repeated post-processing projections (UW3 issue #156).
+        This replaces it with ``ksponly + CG + a cheap preconditioner`` — the
+        right tool for the mass/Helmholtz matrix — and removes the now-unused
+        GAMG options.
+
+        Opt-in: the default ``SNES_Scalar`` solver stack is unchanged for code
+        that relies on it. Call this on a projector used purely for output /
+        post-processing.
+
+        Parameters
+        ----------
+        pc : str, default "jacobi"
+            Preconditioner. ``"jacobi"`` is fine for a well-conditioned mass
+            matrix; use ``"bjacobi"`` or ``"icc"`` if CG iteration counts climb
+            on distorted or high-degree meshes.
+        rtol : float, default 1e-10
+            KSP relative tolerance.
+
+        Returns
+        -------
+        self (so the call can be chained).
+        """
+        self.petsc_options["snes_type"] = "ksponly"
+        self.petsc_options["ksp_type"] = "cg"
+        self.petsc_options["pc_type"] = pc
+        self.petsc_options["ksp_rtol"] = rtol
+        # GAMG-specific options are now unused; remove them to avoid PETSc
+        # "unused option" warnings (and any stale AMG configuration).
+        for _k in (
+            "pc_gamg_type",
+            "pc_gamg_repartition",
+            "pc_gamg_agg_nsmooths",
+            "pc_mg_type",
+        ):
+            try:
+                self.petsc_options.delValue(_k)
+            except Exception:
+                pass
+        return self
+
     @property
     def smoothing(self):
-        """Smoothing regularization parameter for the projection."""
+        r"""Smoothing coefficient :math:`\alpha` of the screened-Poisson form.
+
+        The projection solves
+        :math:`u - \nabla\!\cdot\!(\alpha\,\nabla u) = \tilde f`, so
+        :math:`\alpha` has dimensions of **length²** and the implied
+        smoothing length is :math:`L = \sqrt{\alpha}`. The free-space
+        Green's function decays as :math:`\exp(-r/L)`, giving the
+        projection the action of a Gaussian-like convolution of width
+        :math:`L` — without ever forming the kernel.
+
+        See the class docstring for the full derivation.
+
+        Two usage patterns
+        ~~~~~~~~~~~~~~~~~~
+
+        * **Pure L2 projection** — ``smoothing = 0`` (or omit). No
+          regularisation; ``u`` is the best L2 fit to ``ũ``.
+        * **Genuine length-scale smoother** — set
+          :attr:`smoothing_length` to the desired physical length
+          (unit-aware), or equivalently
+          ``smoothing = L**2``. The output is ``ũ`` smoothed at
+          scale ``L``.
+
+        .. note::
+
+           Historical UW3 code occasionally sets ``smoothing`` to a
+           tiny number (e.g. ``1e-6``) as a *numerical* regulariser
+           against rank deficiency. That value corresponds to
+           :math:`L \approx 10^{-3}` in the problem's ND length
+           units — almost always well below the cell size, so it
+           does no useful smoothing. Use a true sub-grid value only
+           if you need that regularisation; for filtering, use
+           :attr:`smoothing_length`.
+        """
         return self._smoothing
 
     @smoothing.setter
     def smoothing(self, smoothing_factor):
         """Set the smoothing regularization parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympify(smoothing_factor)
+
+    @property
+    def smoothing_length(self):
+        r"""Smoothing length scale :math:`L` (length units, **unit-aware**).
+
+        L-valued view on :attr:`smoothing` with the convention
+        :math:`L = \sqrt{\alpha}`. Setting ``smoothing_length = L``
+        is equivalent to setting ``smoothing = L**2``, but is the
+        natural physical knob because :math:`L` is what the
+        smoother actually filters by.
+
+        Mathematical meaning
+        --------------------
+
+        The projection then solves the screened-Poisson equation
+
+        .. math::
+
+            u \;-\; L^{2}\,\nabla^{2} u \;=\; \tilde f,
+
+        whose Green's function decays as :math:`\exp(-r/L)`. In
+        practice this acts like a Gaussian convolution of width
+        :math:`L`:
+
+        * features in :math:`\tilde f` with spatial scale
+          :math:`\ll L` are damped (roughly as
+          :math:`1/(1+k^{2}L^{2})` for a wavenumber :math:`k`);
+        * features with scale :math:`\gg L` are preserved;
+        * features at :math:`\sim L` are attenuated by a factor
+          near ``1/2``.
+
+        Choosing :math:`L` smaller than the local mesh size has
+        essentially no effect (the field is already band-limited
+        by the discretisation). A useful default for *light*
+        de-noising is :math:`L \approx 1\!-\!2\,h`, where
+        :math:`h` is a representative cell size.
+
+        Units
+        -----
+
+        The setter accepts a plain number (assumed already
+        non-dimensional), a pint ``Quantity`` with length units,
+        or any unit-aware object understood by
+        :func:`underworld3.non_dimensionalise`. Internally the
+        squared non-dimensional value is stored in
+        ``self._smoothing`` (so ``smoothing`` and
+        ``smoothing_length`` stay consistent).
+
+        The getter returns a Pint ``Quantity`` with length units
+        when a scaling context is configured; otherwise the plain
+        non-dimensional float :math:`\sqrt{\alpha}`.
+        """
+        import sympy
+        s = self._smoothing
+        try:
+            sval = float(s)
+        except (TypeError, ValueError):
+            return sympy.sqrt(s)
+        if sval < 0:
+            raise ValueError(
+                f"smoothing is negative ({sval}); smoothing_length is undefined")
+        L_nd = sval ** 0.5
+        # Return a Pint Quantity only if the user set a dimensional value via
+        # the setter; plain-float input round-trips as a plain float so the
+        # meaning of the number the user passed is preserved.
+        if getattr(self, "_smoothing_is_dimensional", False):
+            return uw.scaling.dimensionalise(
+                L_nd, uw.scaling.units.meter)
+        return L_nd
+
+    @smoothing_length.setter
+    def smoothing_length(self, L):
+        """Set the smoothing length scale.
+
+        Accepts a Pint Quantity (with length units), a UnitAware
+        scalar, or a plain non-dimensional number. The value is
+        non-dimensionalised through the active scaling context
+        before being squared and stored as ``self._smoothing``.
+        """
+        self._needs_function_rewire = True
+        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
+        # non-dimensionalised through the active scaling context and reduced to
+        # a plain float (uw.non_dimensionalise returns a dimensionless
+        # UWQuantity, which sympify can't square); a plain number is taken as
+        # already non-dimensional.
+        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
+        if is_dim:
+            L_nd = uw.non_dimensionalise(L)
+            L_nd = float(getattr(L_nd, "magnitude", L_nd))
+        else:
+            L_nd = float(L)
+        if L_nd < 0:
+            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
+        self._smoothing_is_dimensional = is_dim
+        self._smoothing = sympify(L_nd) ** 2
 
     @property
     def uw_weighting_function(self):
@@ -1430,7 +2859,7 @@ class SNES_Projection(SNES_Scalar):
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
         """Set the weighting function for the projection."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._uw_weighting_function = user_uw_function
 
 
@@ -1448,23 +2877,39 @@ class SNES_Vector_Projection(SNES_Vector):
     r"""
     Vector projection solver for mapping vector functions to mesh variables.
 
-    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
-    is a vector function that can be evaluated within an element and
-    :math:`\mathbf{u}` is a vector mesh variable with associated shape functions.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where
+    :math:`\tilde{\mathbf{f}}` is a vector function that can be evaluated
+    within an element and :math:`\mathbf{u}` is a vector mesh variable
+    with associated shape functions.
 
-    Typically used to obtain a continuous representation of a vector function
-    not well-defined at mesh nodes (e.g., gradient or flux vectors).
+    Typically used to obtain a continuous representation of a vector
+    function not well-defined at mesh nodes (e.g., gradient or flux
+    vectors), or as a length-scale-aware smoother of an existing vector
+    field.
 
-    The projection is implemented by solving:
+    Strong form (screened-Poisson, vector-valued)
+    ---------------------------------------------
 
     .. math::
 
-        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
-        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
-        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
+        \mathbf{u} \;-\; \nabla \cdot \left( \alpha\, \nabla \mathbf{u}
+        \right)
+        \;+\; \lambda \left( \nabla \cdot \mathbf{u} \right) \mathbf{I}
+        \;=\; \tilde{\mathbf{f}} .
 
-    The term :math:`\mathbf{F}` provides optional smoothing regularization.
-    Setting :math:`\alpha = 0` gives a pure L2 projection.
+    The :math:`\alpha`-term is the same screened-Poisson smoother as
+    in :class:`SNES_Projection`, applied component-wise: it has the same
+    :math:`L = \sqrt{\alpha}` smoothing-length interpretation and the
+    same :math:`\exp(-r/L)` Green's function. The extra :math:`\lambda`
+    term is a divergence penalty (see :attr:`penalty`) — set it nonzero
+    when you want an approximately solenoidal projection of
+    :math:`\tilde{\mathbf{f}}`.
+
+    Setting :math:`\alpha = 0` (and :math:`\lambda = 0`) gives a pure
+    pointwise L2 projection. See :class:`SNES_Projection` for the full
+    mathematical context; the relationship between :attr:`smoothing`
+    (units length²) and :attr:`smoothing_length` (units length) is the
+    same as for the scalar projection.
 
     Parameters
     ----------
@@ -1479,7 +2924,7 @@ class SNES_Vector_Projection(SNES_Vector):
 
     See Also
     --------
-    SNES_Projection : Scalar field projection.
+    SNES_Projection : Scalar field projection (full mathematical detail).
     SNES_Tensor_Projection : Tensor field projection.
     """
 
@@ -1498,7 +2943,7 @@ class SNES_Vector_Projection(SNES_Vector):
             verbose,
         )
 
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = 0.0
         self._penalty = 0.0
         self._uw_weighting_function = 1.0
@@ -1518,7 +2963,7 @@ class SNES_Vector_Projection(SNES_Vector):
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
         lambda self: (
             self.smoothing * self.Unknowns.E
-            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
+            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.cdim)
         ),
         "Vector projection pointwise smoothing term: F_1(u)",
     )
@@ -1549,24 +2994,99 @@ class SNES_Vector_Projection(SNES_Vector):
 
     @property
     def smoothing(self):
-        """Smoothing regularization parameter for the projection."""
+        r"""Smoothing coefficient :math:`\alpha` (units **length²**).
+
+        Coefficient of the :math:`\nabla\!\cdot\!(\alpha\,\nabla
+        \mathbf u)` term in the vector screened-Poisson equation
+        (see the class docstring). Acts component-wise; the
+        smoothing length is :math:`L = \sqrt{\alpha}` and the
+        Green's function decays as :math:`\exp(-r/L)`.
+
+        Use :attr:`smoothing_length` for the L-valued, unit-aware
+        knob. See :attr:`SNES_Projection.smoothing` for the full
+        derivation and usage patterns.
+        """
         return self._smoothing
 
     @smoothing.setter
     def smoothing(self, smoothing_factor):
         """Set the smoothing regularization parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._smoothing = sympify(smoothing_factor)
 
     @property
+    def smoothing_length(self):
+        r"""Smoothing length :math:`L` (length units, **unit-aware**).
+
+        L-valued view on :attr:`smoothing`, with
+        :math:`L = \sqrt{\alpha}`. The projection then acts as a
+        component-wise screened-Poisson smoother
+        :math:`\mathbf u - L^{2}\,\nabla^{2}\mathbf u =
+        \tilde{\mathbf f}`, i.e. a Gaussian-like convolution of
+        width :math:`L` applied to each Cartesian component of
+        the input vector field.
+
+        Choose :math:`L \gtrsim h` (a cell size) for noticeable
+        smoothing; :math:`L < h` does essentially nothing because
+        the discretisation already band-limits at that scale.
+        See :attr:`SNES_Projection.smoothing_length` for the full
+        mathematical and units discussion.
+        """
+        import sympy
+        s = self._smoothing
+        try:
+            sval = float(s)
+        except (TypeError, ValueError):
+            return sympy.sqrt(s)
+        if sval < 0:
+            raise ValueError(
+                f"smoothing is negative ({sval}); smoothing_length is undefined")
+        L_nd = sval ** 0.5
+        # Return a Pint Quantity only if the user set a dimensional value via
+        # the setter; plain-float input round-trips as a plain float.
+        if getattr(self, "_smoothing_is_dimensional", False):
+            return uw.scaling.dimensionalise(
+                L_nd, uw.scaling.units.meter)
+        return L_nd
+
+    @smoothing_length.setter
+    def smoothing_length(self, L):
+        """Set the smoothing length scale (unit-aware)."""
+        self._needs_function_rewire = True
+        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
+        # non-dimensionalised through the active scaling context and reduced to
+        # a plain float (uw.non_dimensionalise returns a dimensionless
+        # UWQuantity, which sympify can't square); a plain number is taken as
+        # already non-dimensional.
+        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
+        if is_dim:
+            L_nd = uw.non_dimensionalise(L)
+            L_nd = float(getattr(L_nd, "magnitude", L_nd))
+        else:
+            L_nd = float(L)
+        if L_nd < 0:
+            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
+        self._smoothing_is_dimensional = is_dim
+        self._smoothing = sympify(L_nd) ** 2
+
+    @property
     def penalty(self):
-        """Divergence penalty parameter for incompressibility."""
+        r"""Divergence penalty :math:`\lambda` for (approx.) incompressibility.
+
+        Coefficient of the :math:`\lambda (\nabla\!\cdot\!\mathbf u)
+        \mathbf I` term in the vector projection. Large positive
+        values bias the projection toward
+        :math:`\nabla\!\cdot\!\mathbf u = 0`, i.e. a solenoidal
+        approximation of :math:`\tilde{\mathbf f}`. Has no length
+        interpretation — unlike :attr:`smoothing` it does not
+        introduce a filter scale.
+        """
         return self._penalty
 
     @penalty.setter
     def penalty(self, value):
         """Set the divergence penalty parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         symval = sympify(value)
         self._penalty = symval
 
@@ -1578,7 +3098,7 @@ class SNES_Vector_Projection(SNES_Vector):
     @uw_weighting_function.setter
     def uw_weighting_function(self, user_uw_function):
         """Set the weighting function for the projection."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._uw_weighting_function = user_uw_function
 
 
@@ -1586,23 +3106,33 @@ class SNES_Tensor_Projection(SNES_Projection):
     r"""
     Tensor projection solver for mapping tensor functions to mesh variables.
 
-    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where :math:`\tilde{\mathbf{f}}`
-    is a tensor-valued function that can be evaluated within an element and
-    :math:`\mathbf{u}` is a tensor mesh variable with associated shape functions.
+    Solves :math:`\mathbf{u} = \tilde{\mathbf{f}}` where
+    :math:`\tilde{\mathbf{f}}` is a tensor-valued function that can be
+    evaluated within an element and :math:`\mathbf{u}` is a tensor mesh
+    variable with associated shape functions.
 
-    Typically used to obtain a continuous representation of a tensor function
-    not well-defined at mesh nodes (e.g., stress or strain tensors).
+    Typically used to obtain a continuous representation of a tensor
+    function not well-defined at mesh nodes (e.g., stress or strain
+    tensors), with optional length-scale smoothing.
 
-    The projection is implemented by solving:
+    Strong form (screened-Poisson, applied component-wise)
+    ------------------------------------------------------
+
+    Internally the solve is decomposed into scalar sub-problems, one per
+    tensor component :math:`u_{ij}`; each sub-problem is
 
     .. math::
 
-        -\nabla \cdot \underbrace{\left[ \alpha \nabla \mathbf{u}
-        \right]}_{\mathbf{F}} - \underbrace{\left[ \mathbf{u}
-        - \tilde{\mathbf{f}} \right]}_{\mathbf{h}} = 0
+        u_{ij} \;-\; \nabla \cdot \left( \alpha\, \nabla u_{ij}
+        \right) \;=\; \tilde{f}_{ij},
 
-    The term :math:`\mathbf{F}` provides optional smoothing regularization.
-    Setting :math:`\alpha = 0` gives a pure L2 projection.
+    identical to :class:`SNES_Projection`. The smoothing length is
+    :math:`L = \sqrt{\alpha}` and the Green's function decays as
+    :math:`\exp(-r/L)`; setting :math:`\alpha = 0` gives a pure
+    pointwise L2 projection. See :class:`SNES_Projection` for the full
+    derivation, the choice between :attr:`smoothing` (length²) and
+    :attr:`smoothing_length` (length, unit-aware), and guidance on
+    picking :math:`L` relative to the cell size.
 
     Parameters
     ----------
@@ -1620,11 +3150,13 @@ class SNES_Tensor_Projection(SNES_Projection):
     Notes
     -----
     Currently implemented component-wise as there is no native solver
-    for tensor unknowns.
+    for tensor unknowns. Each component sees the same :math:`\alpha`,
+    so the effective smoothing length :math:`L` is uniform across the
+    tensor entries.
 
     See Also
     --------
-    SNES_Projection : Scalar field projection.
+    SNES_Projection : Scalar field projection (full mathematical detail).
     SNES_Vector_Projection : Vector field projection.
     """
 
@@ -1651,8 +3183,16 @@ class SNES_Tensor_Projection(SNES_Projection):
     ## Need to over-ride solve method to run over all components
 
     @timing.routine_timer_decorator
-    def solve(self, verbose=False):
-        """Solve by projecting each tensor component sequentially."""
+    def solve(self, verbose=False, divergence_retries: int = 0):
+        """Solve by projecting each tensor component sequentially.
+
+        Parameters
+        ----------
+        verbose : bool
+        divergence_retries : int, default=0
+            Forwarded to each per-component SNES solve. 0 preserves
+            legacy behaviour.
+        """
         # Loop over the components of the tensor. If this is a symmetric
         # tensor, we'll usually be given the 1d form to prevent duplication
 
@@ -1718,8 +3258,178 @@ class SNES_Tensor_Projection(SNES_Projection):
     @uw_scalar_function.setter
     def uw_scalar_function(self, user_uw_function):
         """Set the scalar component function for current tensor element."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._uw_scalar_function = user_uw_function
+
+
+class SNES_MultiComponent_Projection(SNES_MultiComponent):
+    r"""
+    Multi-component projection solver.
+
+    Projects an N-component row-matrix expression onto an N-component
+    mesh variable in a **single** SNES solve, sharing one DM across all
+    components. Replaces the per-component cycling used by
+    :class:`SNES_Tensor_Projection`, which tears down and rebuilds the
+    PETSc DM on every inner iteration.
+
+    Strong form (block-diagonal screened Poisson)
+    ---------------------------------------------
+
+    There is no cross-component coupling, so each component
+    :math:`u_k,\ k=1,\dots,N_c` satisfies the same scalar
+    screened-Poisson equation as :class:`SNES_Projection`,
+
+    .. math::
+
+        u_k \;-\; \nabla \cdot \left( \alpha\, \nabla u_k \right)
+        \;=\; \tilde f_k.
+
+    Setting :math:`\alpha = 0` gives a pure pointwise L2 projection per
+    component. The smoothing length is :math:`L = \sqrt{\alpha}` and the
+    Green's function decays as :math:`\exp(-r/L)` — the same Gaussian-like
+    convolution interpretation as the scalar case. All components share a
+    single :math:`\alpha`, so the smoothing scale :math:`L` is uniform
+    across the multi-component target. Use :attr:`smoothing` to set
+    :math:`\alpha` (units length²) or :attr:`smoothing_length` for the
+    L-valued, unit-aware knob. See :class:`SNES_Projection` for the full
+    derivation and guidance.
+
+    Parameters
+    ----------
+    mesh : Mesh
+    u_Field : MeshVariable, optional
+        Target ``(1, n_components)`` MATRIX variable. If ``None``, one is
+        created.
+    n_components : int, optional
+        Number of scalar components; required if ``u_Field`` is ``None``.
+    degree : int, default=2
+    verbose : bool, default=False
+
+    See Also
+    --------
+    SNES_Projection : Scalar projection (Nc=1) — full mathematical detail.
+    SNES_Tensor_Projection : Legacy per-component cycling projector.
+    """
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        u_Field: uw.discretisation.MeshVariable = None,
+        n_components: int = None,
+        degree=2,
+        verbose=False,
+    ):
+        super().__init__(
+            mesh,
+            u_Field=u_Field,
+            n_components=n_components,
+            degree=degree,
+            verbose=verbose,
+        )
+
+        self._needs_function_rewire = True
+        self._smoothing = sympify(0)
+        self._uw_weighting_function = sympify(1)
+        self._uw_function = sympy.zeros(1, self._n_components)
+        self._constitutive_model = uw.constitutive_models.Constitutive_Model(self.Unknowns)
+
+    F0 = Template(
+        r"f_0 \left( \mathbf{u} \right)",
+        lambda self: (self.u.sym - self.uw_function) * self.uw_weighting_function,
+        "Per-component projection misfit (row matrix shape (1, Nc)).",
+    )
+
+    F1 = Template(
+        r"\mathbf{F}_1 \left( \mathbf{u} \right)",
+        lambda self: self.smoothing * self.Unknowns.L,
+        "Per-component block-diagonal Laplacian smoothing (shape (Nc, dim)).",
+    )
+
+    uw_function = SymbolicProperty(
+        matrix_wrap=True,
+        doc="Row matrix (1, n_components) of expressions to project.",
+    )
+
+    @property
+    def smoothing(self):
+        r"""Smoothing coefficient :math:`\alpha` (units **length²**).
+
+        Coefficient of the :math:`\nabla\!\cdot\!(\alpha\,\nabla
+        u_k)` term in each component's screened-Poisson sub-problem
+        (see the class docstring). One :math:`\alpha` is shared
+        across all :math:`N_c` components, so the implied smoothing
+        length :math:`L = \sqrt{\alpha}` is uniform.
+
+        Use :attr:`smoothing_length` for the L-valued, unit-aware
+        knob. See :attr:`SNES_Projection.smoothing` for the full
+        derivation and the Gaussian-like convolution interpretation.
+        """
+        return self._smoothing
+
+    @smoothing.setter
+    def smoothing(self, value):
+        self._needs_function_rewire = True
+        self._smoothing = sympify(value)
+
+    @property
+    def smoothing_length(self):
+        r"""Smoothing length :math:`L` (length units, **unit-aware**).
+
+        L-valued view on :attr:`smoothing`, with
+        :math:`L = \sqrt{\alpha}`. Each component then satisfies
+        :math:`u_k - L^{2}\,\nabla^{2} u_k = \tilde f_k`, i.e. a
+        Gaussian-like convolution of width :math:`L` applied
+        independently to each component of the multi-component
+        target. See :attr:`SNES_Projection.smoothing_length` for the
+        full mathematical and units discussion.
+        """
+        import sympy
+        s = self._smoothing
+        try:
+            sval = float(s)
+        except (TypeError, ValueError):
+            return sympy.sqrt(s)
+        if sval < 0:
+            raise ValueError(
+                f"smoothing is negative ({sval}); smoothing_length is undefined")
+        L_nd = sval ** 0.5
+        # Return a Pint Quantity only if the user set a dimensional value via
+        # the setter; plain-float input round-trips as a plain float.
+        if getattr(self, "_smoothing_is_dimensional", False):
+            return uw.scaling.dimensionalise(
+                L_nd, uw.scaling.units.meter)
+        return L_nd
+
+    @smoothing_length.setter
+    def smoothing_length(self, L):
+        """Set the smoothing length scale (unit-aware)."""
+        self._needs_function_rewire = True
+        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
+        # non-dimensionalised through the active scaling context and reduced to
+        # a plain float (uw.non_dimensionalise returns a dimensionless
+        # UWQuantity, which sympify can't square); a plain number is taken as
+        # already non-dimensional.
+        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
+        if is_dim:
+            L_nd = uw.non_dimensionalise(L)
+            L_nd = float(getattr(L_nd, "magnitude", L_nd))
+        else:
+            L_nd = float(L)
+        if L_nd < 0:
+            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
+        self._smoothing_is_dimensional = is_dim
+        self._smoothing = sympify(L_nd) ** 2
+
+    @property
+    def uw_weighting_function(self):
+        """Weighting function applied during projection."""
+        return self._uw_weighting_function
+
+    @uw_weighting_function.setter
+    def uw_weighting_function(self, value):
+        self._needs_function_rewire = True
+        self._uw_weighting_function = value
 
 
 # #################################################
@@ -1760,7 +3470,34 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     V_fn : MeshVariable or sympy.Basic
         Velocity field for advection.
     order : int, default=1
-        Time integration order (1 or 2).
+        Time integration order. Note the scheme has **two** order knobs that
+        must be paired consistently (see ``theta``):
+
+        - the advective time-derivative ``DuDt`` carries the **BDF** order of
+          the backward difference along the characteristic;
+        - the diffusive flux ``DFDt`` carries the **Adams-Moulton/θ** flux
+          integrator.
+
+        When ``DuDt`` is built internally (``DuDt=None``) it is fixed at BDF
+        order 1, so this ``order`` raises only the *flux* AM order — i.e.
+        ``order=1, theta=0.5`` is the canonical **SLCN** (BDF1 difference +
+        Crank-Nicolson flux), the standard second-order scheme. To run
+        **SL-BDF2** (BDF2 difference + Backward-Euler-centred flux, second
+        order without CN's spurious resonance) supply an explicit order-2
+        ``DuDt`` and set ``theta=1.0`` on the flux:
+
+        .. code-block:: python
+
+           duDt = uw.systems.ddt.SemiLagrangian(
+               mesh, T.sym, V_fn, vtype=uw.VarType.SCALAR,
+               degree=T.degree, continuous=T.continuous, order=2)
+           adv = uw.systems.AdvDiffusionSLCN(mesh, T, V_fn, DuDt=duDt, order=1)
+           adv.DFDt.theta = 1.0   # flux implicit at n+1 (BDF2-consistent)
+
+        A BDF2 stencil with a Crank-Nicolson flux (``order=2`` + ``theta=0.5``)
+        centres the two sides at different times and is **not** a consistent
+        second-order scheme. See
+        ``docs/advanced/semi-lagrangian-time-integration.md``.
     restore_points_func : callable, optional
         Function to restore particles to valid domain.
     verbose : bool, default=False
@@ -1769,6 +3506,59 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         Time derivative operator for the unknown.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
+    monotone_mode : str or None, optional
+        Monotonicity limiter for the semi-Lagrangian trace-back.
+        Forwarded to the internally-constructed ``SemiLagrangian_DDt``
+        instances for ``DuDt`` and ``DFDt``.
+
+        - ``None`` (default): pure FE trace-back. Can overshoot at
+          non-nodal upstream points in cells with sharp gradients
+          (e.g. thin boundary layers in deformed cells); legacy
+          behaviour.
+        - ``"clamp"``: clip the FE trace-back result to
+          ``[nbr_min, nbr_max]`` of the ``k = dim + 1`` nearest
+          ``psi_star`` DOFs. Bit-identical to pure FE in smooth
+          regions; bounds overshoots where the FE interpolant would
+          otherwise leave the local data range.
+        - ``"pick"``: keep the FE result where in-bounds; for
+          out-of-bounds DOFs only, re-evaluate via Shepard's-method
+          RBF. More conservative than clamp at the catastrophe edge.
+
+        When a user supplies a pre-built ``DuDt``, this kwarg is
+        applied to the internally-constructed ``DFDt`` only — the
+        user's ``DuDt`` already encodes whatever ``monotone_mode``
+        it was constructed with.
+    theta : float, default=0.5
+        Adams-Moulton theta for the diffusive flux at order 1.
+        Forwarded to the internally-constructed
+        ``SemiLagrangian_DDt`` instances (same forwarding rule as
+        ``monotone_mode``).
+
+        - ``0.5`` (default): Crank-Nicolson, A-stable but not
+          L-stable. Second-order accurate. Rings on stiff modes
+          with sharp gradients (negative amplification factor).
+        - ``1.0``: Backward Euler, L-stable, monotone for the
+          diffusive flux. First-order accurate. Recommended when
+          SLCN+CN ringing dominates the discretisation error.
+        - ``0.0``: Forward Euler — unstable for stiff diffusion;
+          included for completeness.
+    old_frame_traceback : bool, default=False
+        Use the old-frame semi-Lagrangian reach-back for the advective
+        ``DuDt`` history on a moving mesh (free surface or interior-node
+        adaptation). Forwarded to the internally-constructed ``DuDt``
+        only — the diffusive ``DFDt`` keeps the standard ALE path
+        (validated sufficient at Ra=1e5; the unstable mode rides the
+        advective scalar, not the dissipative flux).
+
+        When ``True``, the trace-back computes the departure foot from
+        the PHYSICAL velocity and samples ``psi_star`` on the mesh
+        ephemerally restored to the previous-step geometry, instead of
+        the lossy ``v_mesh = Δx/dt`` fold on the new mesh. This cures the
+        high-Ra free-surface convection blow-up (T leaves [0,1] ~step 20
+        at Ra=1e5). **Contract:** pass the physical velocity as
+        ``V_fn`` (NOT ``v − v_mesh``) — the old-frame trace-back must not
+        double-compensate the mesh motion. See
+        ``docs/developer/design/lagged-clone-sl-history.md``.
 
     Notes
     -----
@@ -1781,6 +3571,11 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     algorithm for the numerical solution of advection-diffusion problems.
     *Geochemistry, Geophysics, Geosystems*, 7(4).
     https://doi.org/10.1029/2005GC001073
+
+    Bonaventura, L., Calzola, E., Carlini, E., & Ferretti, R. (2021). Second
+    order fully semi-Lagrangian discretizations of advection-diffusion-reaction
+    systems. *Journal of Scientific Computing*, 88, 23.
+    https://doi.org/10.1007/s10915-021-01518-8 (SL-BDF2 vs SL-CN).
 
     See Also
     --------
@@ -1809,6 +3604,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         verbose=False,
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
+        monotone_mode: Optional[str] = None,
+        theta: float = 0.5,
+        old_frame_traceback: bool = False,
     ):
         ## Parent class will set up default values etc
         super().__init__(
@@ -1832,7 +3630,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         # These are unique to the advection solver
         self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         self.restore_points_to_domain_func = restore_points_func
         ### Setup the history terms ... This version should not build anything
@@ -1854,6 +3652,9 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
                 bcs=self.essential_bcs,
                 order=1,
                 smoothing=0.0,
+                monotone_mode=monotone_mode,
+                theta=theta,
+                old_frame_traceback=old_frame_traceback,
             )
 
         else:
@@ -1869,9 +3670,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
             self.Unknowns.DuDt = DuDt
 
+        # Flux placeholder: cdim-sized to match the embedded-coord
+        # flux vector (volume meshes have dim==cdim so this is
+        # unchanged; manifold meshes have cdim > dim and need the
+        # extra component).
         self.Unknowns.DFDt = SemiLagrangian_DDt(
             self.mesh,
-            sympy.Matrix([[0] * self.mesh.dim]),  # Actual function is not defined at this point
+            sympy.Matrix([[0] * self.mesh.cdim]),  # Actual function is not defined at this point
             self._V_fn,
             vtype=uw.VarType.VECTOR,
             degree=u_Field.degree,
@@ -1885,7 +3690,25 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             bcs=None,
             order=order,
             smoothing=0.0,
+            monotone_mode=monotone_mode,
+            theta=theta,
         )
+
+        # Phase-2 remesh: the advected field must ride the mesh (CARRY)
+        # coherently with its own semi-Lagrangian history (psi_star,
+        # already CARRY + managed). Under the default REMAP it would be
+        # geometrically re-interpolated onto the new node positions AND
+        # then have v_mesh = Δx/dt subtracted in the next trace-back —
+        # a DOUBLE compensation for the mesh motion, inconsistent with
+        # the once-compensated CARRY'd history. Stamping it CARRY +
+        # managed-by-DuDt makes deform()/adapt transfer it on the single
+        # ALE trace-back path (and REMAP it correctly on an OT opt-out
+        # reset). Only meaningful when DuDt traces back (SemiLagrangian);
+        # Eulerian/Lagrangian fields keep the default policy.
+        if isinstance(self.Unknowns.DuDt, SemiLagrangian_DDt):
+            from underworld3.discretisation.remesh import RemeshPolicy
+            self.u.remesh_policy = RemeshPolicy.CARRY
+            self.u._remesh_managed_by = self.Unknowns.DuDt
 
         return
 
@@ -1947,7 +3770,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the volumetric source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -2007,7 +3830,17 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        self.is_setup = False
+        # Note: comparison must handle potential UWexpressions / UWQuantities
+        # Use .data or float() to get numeric values for stable comparison
+        try:
+            old_dt = float(self._delta_t.data)
+            new_dt = float(value.data) if hasattr(value, 'data') else float(value)
+            if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
+                return
+        except:
+            pass
+
+        self._needs_function_rewire = True
 
         # Handle Pint Quantities with time dimensions
         if hasattr(value, "dimensionality"):
@@ -2050,7 +3883,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self._delta_t.sym = value
 
     @timing.routine_timer_decorator
-    def estimate_dt(self):
+    def estimate_dt(self, direction_aware: bool = False, percentile: float = 0.0):
         r"""
         Estimate an appropriate timestep for the advection-diffusion solver.
 
@@ -2059,6 +3892,23 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         - :math:`\delta t_{\textrm{diff}}`: typical time for diffusion across an element
         - :math:`\delta t_{\textrm{adv}}`: typical element-crossing time for a fluid parcel
+
+        Parameters
+        ----------
+        direction_aware : bool, default False
+            If True, the advective dt uses the per-cell extent
+            *along the local velocity direction* — `h_eff_c =
+            max_i(s_i) - min_i(s_i)` where `s_i = (x_i -
+            centroid) · v̂` over the cell vertices. This is the
+            distance material actually traverses through the cell
+            per unit ``|v|``, and is **always ≥ the isotropic
+            mesh._radii estimate**, by 1.5–3× for equant cells
+            (geometric factor) and up to ~10× for cells that the
+            mover has stretched along the flow direction. On
+            adapted meshes the gain is substantial; on uniform
+            meshes it's the geometric factor only. Off by
+            default to preserve historical behaviour; safe to
+            enable everywhere once validated.
 
         Returns
         -------
@@ -2143,25 +3993,68 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ## dt_adv_i = h_i / |v_i| for advection
         ## dt_diff_i = h_i^2 / κ for diffusion (using global κ for now)
 
+        # Reduce per-element dt to one global value. Default (percentile=0) =
+        # strict global MINIMUM — one cell sets the limit. percentile>0 takes the
+        # Nth global percentile (50 = median) of the per-element dt instead, so a
+        # few anisotropic SLIVER cells (velocity ACROSS a thin cell) don't collapse
+        # dt. SLCN is unconditionally stable, and ``direction_aware`` already
+        # credits cells stretched ALONG the flow — together they give the
+        # orientation-aware + sliver-robust timestep.
+        def _reduce_dt(per_elem):
+            fin = per_elem[np.isfinite(per_elem)] if len(per_elem) else per_elem
+            if percentile and percentile > 0:
+                gathered = comm.allgather(np.ascontiguousarray(fin, dtype=float))
+                allv = (np.concatenate([a for a in gathered if a.size])
+                        if any(a.size for a in gathered) else np.empty(0))
+                return float(np.percentile(allv, percentile)) if allv.size else np.inf
+            loc = float(np.min(fin)) if len(fin) else np.inf
+            return comm.allreduce(loc, op=MPI.MIN)
+
         # Per-element diffusive timestep (all elements use same diffusivity)
         if diffusivity_glob > 0:
             dt_diff_per_element = (element_radii ** 2) / diffusivity_glob
-            min_dt_diff_local = np.min(dt_diff_per_element) if len(dt_diff_per_element) > 0 else np.inf
         else:
-            min_dt_diff_local = np.inf
+            dt_diff_per_element = np.array([np.inf])
 
-        # Per-element advective timestep
+        # Per-element advective timestep — either isotropic
+        # (mesh._radii / |v|) or direction-aware (v-aligned cell
+        # extent / |v|).
+        if direction_aware:
+            # Per-cell vertex indices (triangle / tet).
+            from underworld3.meshing.smoothing import _tri_cells
+            tris = _tri_cells(self.mesh.dm)
+            if tris is None:
+                # Fall back to isotropic for non-triangle meshes.
+                h_per_element = element_radii
+            else:
+                coords = np.asarray(self.mesh.X.coords)
+                centroids = coords[tris].mean(axis=1)
+                # v-hat per cell (use centroid v we already have)
+                vhat = np.where(
+                    vel_magnitudes[:, None] > 0,
+                    vel / np.maximum(vel_magnitudes[:, None],
+                                      1.0e-30),
+                    0.0)
+                D = coords[tris] - centroids[:, None, :]
+                # Signed projections along v̂ per cell vertex
+                s = np.einsum('cvd,cd->cv', D, vhat)
+                h_per_element = s.max(axis=1) - s.min(axis=1)
+                # Sanity-floor — for zero-velocity cells s=0
+                # ⇒ h_eff=0 ⇒ dt_adv=inf via the where below
+                h_per_element = np.maximum(
+                    h_per_element, 0.0)
+        else:
+            h_per_element = element_radii
+
         with np.errstate(divide='ignore', invalid='ignore'):
             dt_adv_per_element = np.where(
                 vel_magnitudes > 0,
-                element_radii / vel_magnitudes,
+                h_per_element / vel_magnitudes,
                 np.inf
             )
-        min_dt_adv_local = np.min(dt_adv_per_element) if len(dt_adv_per_element) > 0 else np.inf
-
-        # Get global minimum timesteps (parallel-safe)
-        min_dt_diff_glob = comm.allreduce(min_dt_diff_local, op=MPI.MIN)
-        min_dt_adv_glob = comm.allreduce(min_dt_adv_local, op=MPI.MIN)
+        # Global reduction — strict min (percentile=0) or Nth percentile (median).
+        min_dt_diff_glob = _reduce_dt(dt_diff_per_element)
+        min_dt_adv_glob = _reduce_dt(dt_adv_per_element)
 
         # Store for user inspection
         self.dt_adv = min_dt_adv_glob if not np.isinf(min_dt_adv_glob) else 0.0
@@ -2189,6 +4082,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         _force_setup: bool = False,
         _evalf=False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -2198,16 +4092,19 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if _force_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
 
         if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
 
         if not self.is_setup:
@@ -2221,7 +4118,8 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
 
         # Invalidate cached data views - PETSc may have replaced underlying buffers
         # This ensures .data and .array properties return fresh data from PETSc
@@ -2324,7 +4222,7 @@ class SNES_Diffusion(SNES_Scalar):
 
         # These are unique to the advection solver
         self._delta_t = expression(R"\Delta t", 0, "Physically motivated timestep")
-        self.is_setup = False
+        self._needs_function_rewire = True
 
         ### Setup the history terms ... This version should not build anything
         ### by default - it's the template / skeleton
@@ -2361,8 +4259,11 @@ class SNES_Diffusion(SNES_Scalar):
             self.Unknowns.DuDt = DuDt
 
         if DFDt is None:
+            # Flux placeholder must match the flux dimension (cdim — the
+            # embedded coordinate space), not the topological dim. On
+            # volume meshes dim==cdim so this is unchanged.
             self.Unknowns.DFDt = Symbolic_DDt(
-                sympy.Matrix([[0] * self.mesh.dim]),
+                sympy.Matrix([[0] * self.mesh.cdim]),
                 varsymbol=rf"{{F[ {self.u.symbol} ] }}",
                 theta=theta,
                 bcs=None,
@@ -2393,7 +4294,7 @@ class SNES_Diffusion(SNES_Scalar):
         """Pointwise source term including time derivative."""
         f0 = expression(
             r"f_0 \left( \mathbf{u} \right)",
-            -self.f + sympy.simplify(self.DuDt.bdf()) / self.delta_t,
+            -self.f + self.DuDt.bdf() / self.delta_t,
             "Diffusion pointwise force term: f_0(u)",
         )
 
@@ -2424,7 +4325,7 @@ class SNES_Diffusion(SNES_Scalar):
     @f.setter
     def f(self, value):
         """Set the volumetric source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -2435,7 +4336,17 @@ class SNES_Diffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        self.is_setup = False
+        # Note: comparison must handle potential UWexpressions / UWQuantities
+        # Use .data or float() to get numeric values for stable comparison
+        try:
+            old_dt = float(self._delta_t.data)
+            new_dt = float(value.data) if hasattr(value, 'data') else float(value)
+            if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
+                return
+        except:
+            pass
+
+        self._needs_function_rewire = True
 
         # Handle Pint Quantities with time dimensions
         if hasattr(value, "dimensionality"):
@@ -2560,6 +4471,7 @@ class SNES_Diffusion(SNES_Scalar):
         evalf: bool = False,
         _force_setup: bool = False,
         verbose=False,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -2569,16 +4481,19 @@ class SNES_Diffusion(SNES_Scalar):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if timestep is not None and timestep != self.delta_t:
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if _force_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
 
         if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
             # self._flux =  self.constitutive_model.flux.T
             # self._flux_star =  self._flux.copy()
@@ -2593,17 +4508,16 @@ class SNES_Diffusion(SNES_Scalar):
         self.DuDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_pre_solve(timestep, evalf=evalf, verbose=verbose)
 
-        super().solve(zero_init_guess, _force_setup)
+        super().solve(zero_init_guess, _force_setup,
+                      divergence_retries=divergence_retries)
+
+        # Invalidate cached data views - PETSc may have replaced underlying buffers
+        target_var = getattr(self.u, "_base_var", self.u)
+        if hasattr(target_var, "_canonical_data"):
+            target_var._canonical_data = None
 
         self.DuDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
-
-        # if isinstance(self.DFDt, Eulerian_DDt):
-        #     for i in range(order):
-        #         ### have to substitute the unknown history term into the symbolic flux term
-        #         self.DFDt.psi_star[i].subs({self.DuDt.psi_fn:self.DuDt.psi_star[i]})
-
-        # self._flux_star =  self._flux.copy()
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
@@ -2719,7 +4633,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # These are unique to the advection solver
         self._delta_t = expression(r"\Delta t", sympy.oo, "Navier-Stokes timestep")
 
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._rho = expression(R"{\uprho}", rho, "Density")
         self._first_solve = True
 
@@ -2833,7 +4747,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         f0 = expression(
             r"\mathbf{F}_1\left( \mathbf{p} \right)",
-            sympy.simplify(sympy.Matrix((self.constraints))),
+            sympy.Matrix((self.constraints)),
             "NStokes pointwise flux term: f_0(p)",
         )
 
@@ -2863,7 +4777,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep value."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._delta_t.sym = value
 
     @property
@@ -2874,7 +4788,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @rho.setter
     def rho(self, value):
         """Set the fluid density."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._rho.sym = value
 
     @property
@@ -2885,7 +4799,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @f.setter
     def f(self, value):
         """Set the volumetric source term."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._f = sympy.Matrix((value,))
 
     @property
@@ -2944,7 +4858,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @bodyforce.setter
     def bodyforce(self, value):
         """Set the body force vector."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._bodyforce = self.mesh.vector.to_matrix(value)
 
     @property
@@ -2955,7 +4869,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
         """Set the Schur complement preconditioner."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         symval = sympify(value)
         self._saddle_preconditioner = symval
 
@@ -2967,10 +4881,11 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @penalty.setter
     def penalty(self, value):
         """Set the augmented Lagrangian penalty parameter."""
-        self.is_setup = False
+        self._needs_function_rewire = True
         self._penalty.sym = value
 
     @timing.routine_timer_decorator
+    @memprobe.instrument("NavierStokes.solve")
     def solve(
         self,
         zero_init_guess: bool = True,
@@ -2979,6 +4894,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         verbose=False,
         _evalf=False,
         order=None,
+        divergence_retries: int = 0,
     ):
         """
         Generates solution to constructed system.
@@ -2988,6 +4904,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         zero_init_guess:
             If `True`, a zero initial guess will be used for the
             system solution. Otherwise, the current values of `self.u` will be used.
+        divergence_retries:
+            If SNES reports DIVERGED, retry with warm start up to this
+            many times. 0 preserves legacy behaviour.
         """
 
         if order is None or order > self._order:
@@ -2997,10 +4916,10 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self.delta_t = timestep  # this will force an initialisation because the functions need to be updated
 
         if _force_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
 
         if not self.constitutive_model._solver_is_setup:
-            self.is_setup = False
+            self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
 
         if not self.is_setup:
@@ -3029,6 +4948,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             _force_setup=_force_setup,
             verbose=verbose,
             picard=0,
+            divergence_retries=divergence_retries,
         )
 
         if uw.mpi.rank == 0 and verbose:

@@ -264,7 +264,7 @@ def QuarterAnnulus(
         Right = new_mesh.CoordinateSystem.unit_e_1
         Centre = None
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
 
     return new_mesh
 
@@ -536,7 +536,18 @@ def Annulus(
         Upper = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+
+    # Full annulus: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
+
+    # Bounding-surface objects for tangent slip: Upper/Lower are radial about the
+    # origin at the known radii (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_radial_surfaces
+    register_radial_surfaces(
+        new_mesh, centre=(0.0, 0.0),
+        label_radius={"Upper": radiusOuter, "Lower": radiusInner})
 
     return new_mesh
 
@@ -778,7 +789,7 @@ def SegmentofAnnulus(
         Upper = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
 
     return new_mesh
 
@@ -1108,7 +1119,11 @@ def AnnulusWithSpokes(
         )
         Centre = None
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+
+    # Full annulus with spokes: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
 
     return new_mesh
 
@@ -1218,6 +1233,10 @@ def AnnulusInternalBoundary(
         Upper = 3
         Centre = 10
 
+    class regions(Enum):
+        Inner = 101
+        Outer = 102
+
     if cellSize_Inner is None:
         cellSize_Inner = cellSize
 
@@ -1265,10 +1284,6 @@ def AnnulusInternalBoundary(
 
         cl2 = gmsh.model.geo.add_curve_loop([c3, c4], tag=boundaries.Internal.value)
 
-        ### adding this curve loop results in the mesh not being generated correctly
-        ### although the internal boundary is still defined in the mesh dm
-        # loops = [cl2] + loops
-
         # Outermost mesh
 
         p6 = gmsh.model.geo.add_point(radiusOuter, 0.0, 0.0, meshSize=cellSize_Outer)
@@ -1279,20 +1294,21 @@ def AnnulusInternalBoundary(
 
         cl3 = gmsh.model.geo.add_curve_loop([c5, c6], tag=boundaries.Upper.value)
 
-        loops = [cl3] + loops
+        # Create two surfaces sharing the internal boundary (no embed needed)
+        if radiusInner > 0.0:
+            s_inner = gmsh.model.geo.add_plane_surface([cl2, cl1])
+        else:
+            s_inner = gmsh.model.geo.add_plane_surface([cl2])
 
-        s = gmsh.model.geo.add_plane_surface(loops)
+        s_outer = gmsh.model.geo.add_plane_surface([cl3, cl2])
 
         gmsh.model.geo.synchronize()
 
         if radiusInner == 0.0:
-            gmsh.model.mesh.embed(0, [p1], 2, s)
+            gmsh.model.mesh.embed(0, [p1], 2, s_inner)
+            gmsh.model.geo.synchronize()
 
-        gmsh.model.geo.synchronize()
-        gmsh.model.mesh.embed(1, [c3, c4], 2, s)
-
-        gmsh.model.geo.synchronize()
-
+        # Boundary physical groups (1D)
         if radiusInner > 0.0:
             gmsh.model.addPhysicalGroup(
                 1, [c1, c2], boundaries.Lower.value, name=boundaries.Lower.name
@@ -1316,7 +1332,15 @@ def AnnulusInternalBoundary(
             name=boundaries.Upper.name,
         )
 
-        gmsh.model.addPhysicalGroup(2, [s], 666666, "Elements")
+        # Region physical groups (2D) — labels cells by region
+        gmsh.model.addPhysicalGroup(
+            2, [s_inner], tag=regions.Inner.value, name=regions.Inner.name
+        )
+        gmsh.model.addPhysicalGroup(
+            2, [s_outer], tag=regions.Outer.value, name=regions.Outer.name
+        )
+        gmsh.model.addPhysicalGroup(2, [s_inner, s_outer], 666666, "Elements")
+
         gmsh.model.geo.synchronize()
 
         gmsh.model.mesh.generate(2)
@@ -1390,7 +1414,12 @@ def AnnulusInternalBoundary(
         Internal = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    new_mesh.regions = regions
+
+    # Full annulus with internal boundary: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
 
     return new_mesh
 
@@ -1669,6 +1698,10 @@ def DiscInternalBoundaries(
         Internal = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+
+    # Full disc with internal boundaries: rigid rotation about z-axis
+    x, y = new_mesh.X
+    new_mesh._nullspace_rotations = [sympy.Matrix([-y, x])]
 
     return new_mesh

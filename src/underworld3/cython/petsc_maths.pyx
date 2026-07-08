@@ -3,7 +3,7 @@ import sympy
 
 import underworld3
 import underworld3.timing as timing
-from   underworld3.utilities._jitextension import getext
+from   underworld3.utilities._jitextension import getext, JITCallbackSet
 
 from petsc4py import PETSc
 
@@ -13,6 +13,22 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetObjective( PetscDS, PetscInt, PetscDSResidualFn )
     PetscErrorCode DMPlexComputeIntegralFEM( PetscDM, PetscVec, PetscScalar*, void* )
     PetscErrorCode DMPlexComputeCellwiseIntegralFEM( PetscDM, PetscVec, PetscVec, void* )
+
+
+def dm_force_coordinate_field(dm):
+    """Force coordinate field creation and strip boundary labels from the
+    coordinate DM.  Must be called after createCoordinateSpace and after
+    boundary labels have been added to mesh.dm.
+
+    Issue #96: DMClone (inside createCoordinateSpace) copies ALL labels from
+    mesh.dm to the coordinate DM.  When DMPlexComputeBdIntegral later lazily
+    recreates the coordinate field, DMCompleteBCLabels_Internal fails with
+    MPI errors on the boundary labels.  This function forces the coordinate
+    field to be created NOW and strips the labels so the cached field is used
+    instead of being lazily recreated.
+    """
+    cdef DM c_dm = dm
+    CHKERRQ(UW_DMForceCoordinateField(c_dm.dm))
 
 
 class Integral:
@@ -89,7 +105,8 @@ class Integral:
         self.dm = self.mesh.dm  # .clone()
         mesh=self.mesh
 
-        _getext_result = getext(self.mesh, [self.fn,], [], [], [], [], self.mesh.vars.values(), verbose=verbose)
+        _getext_result = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
+                                self.mesh.vars.values(), verbose=verbose)
         cdef PtrContainer ext = _getext_result.ptrobj
 
         # Pull out vec for variables, and go ahead with the integral
@@ -273,7 +290,8 @@ class CellWiseIntegral:
         elif isinstance(self.fn, sympy.vector.Dyadic):
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
-        cdef PtrContainer ext = getext(self.mesh, [self.fn,], [], [], [], [], self.mesh.vars.values()).ptrobj
+        cdef PtrContainer ext = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
+                                       self.mesh.vars.values()).ptrobj
 
         # Pull out vec for variables, and go ahead with the integral
         self.mesh.update_lvec()
@@ -282,10 +300,15 @@ class CellWiseIntegral:
         cdef Vec cgvec
         cgvec = a_global
 
-        ## Does this need to be consistent with everything else ?
-
+        # TODO(BUG): clone+createDefault+createDS gives dmc a single P1 field,
+        # but cgvec is packed for mesh.dm's multi-field layout — the integral
+        # reads the wrong DOFs and over-counts by ~2x on the unit square.
+        # Same bug as PR #172 (reverted in PR #173-followup). Tests in
+        # tests/test_0501_integrals.py::test_cellwise_integrate_* are xfail
+        # until this is rewritten to integrate against mesh.dm + getDS()
+        # directly (the pre-PR-172 Integral pattern).
         cdef DM dmc = self.mesh.dm.clone()
-        cdef FE fec = FE().createDefault(self.dim, 1, False, -1)
+        cdef FE fec = FE().createDefault(self.mesh.dim, 1, False, -1)
         dmc.setField(0, fec)
         dmc.createDS()
 
@@ -388,47 +411,50 @@ class BdIntegral:
 
         # Compile integrand using the boundary residual slot (includes petsc_n[] in signature)
         _getext_result = getext(
-            self.mesh, [], [], [], [self.fn,], [], self.mesh.vars.values(), verbose=verbose
-        )
+            self.mesh, JITCallbackSet(bd_residual=(self.fn,)),
+            self.mesh.vars.values(), verbose=verbose)
         cdef PtrContainer ext = _getext_result.ptrobj
 
-        # Prepare the solution vector
+        # Prepare the solution vector on the original mesh DM
         self.mesh.update_lvec()
         a_global = mesh.dm.getGlobalVec()
         mesh.dm.localToGlobal(self.mesh.lvec, a_global)
 
         cdef Vec cgvec = a_global
-        cdef DM dm_c = mesh.dm
 
-        # Get the DMLabel and label value for the named boundary
+        # Create a sandbox DM via DMClone + fresh coordinate space.
+        # DMPlexComputeBdIntegral lazily initialises height-trace FE caches
+        # on the coordinate DMField, which is shared via DMClone's refcount.
+        # This corrupts solver DMs cloned from the same mesh.  The sandbox
+        # gets its own coordinate field with empty caches, so the lazy init
+        # writes there instead of on the original mesh DM.
+        cdef PetscDM sandbox_dm = NULL
+        CHKERRQ(UW_DMCreateBdIntegralSandbox(
+            (<DM>mesh.dm).dm, &sandbox_dm))
+
+        # Get the boundary label from the sandbox (shared with mesh.dm via DMClone)
         boundary_enum = mesh.boundaries[self.boundary]
         cdef PetscInt label_val = boundary_enum.value
         cdef PetscInt num_vals = 1
+        cdef bytes boundary_bytes = self.boundary.encode('utf-8')
 
-        c_label = mesh.dm.getLabel(self.boundary)
+        cdef PetscDMLabel sandbox_label = NULL
+        CHKERRQ(DMGetLabel(sandbox_dm, boundary_bytes, &sandbox_label))
 
         # Output value
         cdef PetscScalar result = 0.0
 
-        # Label can be None if this boundary has no facets on this process
-        # (normal in parallel) or if the DM doesn't carry the label at all.
-        # The C wrapper handles NULL labels gracefully (contributes 0 to the
-        # MPI reduction so all ranks still participate).
-        cdef PetscDMLabel c_dmlabel = NULL
-        cdef DMLabel dmlabel
-        if c_label:
-            dmlabel = c_label
-            c_dmlabel = dmlabel.dmlabel
-
-        # Call the boundary integral
+        # Call the boundary integral on the SANDBOX DM
         ierr = UW_DMPlexComputeBdIntegral(
-            dm_c.dm, cgvec.vec,
-            c_dmlabel, num_vals, &label_val,
+            sandbox_dm, cgvec.vec,
+            sandbox_label, num_vals, &label_val,
             ext.fns_bd_residual[0],
             &result, NULL
         )
         CHKERRQ(ierr)
 
+        # Clean up sandbox
+        CHKERRQ(DMDestroy(&sandbox_dm))
         mesh.dm.restoreGlobalVec(a_global)
 
         cdef double vald = <double> result

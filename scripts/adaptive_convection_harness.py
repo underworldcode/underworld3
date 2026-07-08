@@ -1,0 +1,328 @@
+"""Adaptive-convection TEST HARNESS (scaffold for the next phase).
+
+Goal: does Ra=1e5 annulus convection on a coarse res-16 mesh that
+is *adaptively snuggled* on |∇T| reproduce the diagnostics of a
+uniform res-24 reference (the "truth") — at far fewer nodes?
+
+Structure
+  * reference  : uniform res-24, run N steps, record Nu/vrms(t).
+  * adaptive   : res-16, every ADAPT_EVERY steps call the locked-in
+                 API (metric_density_from_gradient +
+                 smooth_mesh_interior method="anisotropic"); record
+                 Nu/vrms(t).
+  * compare    : Nu(t), vrms(t) reference vs adaptive (matched
+                 physical time) + an error summary + a figure.
+
+THE OPEN PIECE (next phase): when the mover moves nodes mid-run,
+the mesh has a velocity ``v_mesh = Δx_adapt / Δt`` that the
+advection–diffusion system must see (ALE: effective transport
+velocity ``v_fluid − v_mesh``), or T must be conservatively
+remapped onto the moved nodes. Without it the adaptation injects a
+spurious advection. ``apply_adaptation_correction`` is the explicit
+hook: ``--correction none`` runs the *uncorrected* baseline (this
+is expected to drift — it is the thing the next phase fixes);
+``--correction ale`` raises with the precise spec to implement.
+
+Both runs' histories are cached to npz (never re-run).
+"""
+from __future__ import annotations
+import os
+import argparse
+import numpy as np
+import sympy
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import underworld3 as uw
+from underworld3.meshing import (
+    smooth_mesh_interior, metric_density_from_gradient)
+
+p = argparse.ArgumentParser()
+p.add_argument("--ref-res", type=int, default=24)
+p.add_argument("--adapt-res", type=int, default=16)
+p.add_argument("--n-steps", type=int, default=20)
+p.add_argument("--adapt-every", type=int, default=5)
+p.add_argument("--Ra", type=float, default=1.0e5)
+p.add_argument("--amp", type=float, default=8.0)
+p.add_argument("--correction", choices=["none", "interp", "ale"],
+               default="none")
+args = p.parse_args()
+r_inner, r_o = 0.5, 1.0
+CDIR = "/tmp/metric_mesh"
+SNAP = "/tmp/metric_mesh/harness_remap"
+os.makedirs(CDIR, exist_ok=True)
+os.makedirs(SNAP, exist_ok=True)
+
+
+def build(res, tag):
+    mesh = uw.meshing.Annulus(
+        radiusOuter=r_o, radiusInner=r_inner,
+        cellSize=1.0 / res, qdegree=3)
+    r, th = mesh.CoordinateSystem.R
+    v = uw.discretisation.MeshVariable(
+        f"V{tag}", mesh, vtype=uw.VarType.VECTOR, degree=2,
+        continuous=True)
+    P = uw.discretisation.MeshVariable(
+        f"P{tag}", mesh, vtype=uw.VarType.SCALAR, degree=1,
+        continuous=True)
+    T = uw.discretisation.MeshVariable(
+        f"T{tag}", mesh, vtype=uw.VarType.SCALAR, degree=3,
+        continuous=True)
+    stokes = uw.systems.Stokes(mesh, velocityField=v,
+                               pressureField=P)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.tolerance = 1.0e-5
+    stokes.penalty = 0.0
+    unit_r = mesh.CoordinateSystem.unit_e_0
+    # The validated benchmark config (trusted): no-slip inner,
+    # free-slip outer — no Stokes nullspace.
+    stokes.add_essential_bc((0.0, 0.0), mesh.boundaries.Lower.name)
+    stokes.add_natural_bc(1.0e6 * v.sym.dot(unit_r) * unit_r,
+                          mesh.boundaries.Upper.name)
+    T_cond = (r_o - r) / (r_o - r_inner)
+    stokes.bodyforce = args.Ra * (T.sym[0] - T_cond) * unit_r
+    adv = uw.systems.AdvDiffusionSLCN(
+        mesh, u_Field=T, V_fn=v.sym, verbose=False,
+        theta=0.5, monotone_mode="clamp")
+    adv.constitutive_model = uw.constitutive_models.DiffusionModel
+    adv.constitutive_model.Parameters.diffusivity = 1.0
+    adv.tolerance = 1.0e-4
+    adv.add_dirichlet_bc(1.0, mesh.boundaries.Lower.name)
+    adv.add_dirichlet_bc(0.0, mesh.boundaries.Upper.name)
+    init_t = (0.01 * sympy.sin(5.0 * th)
+              * sympy.sin(np.pi * (r - r_inner) / (r_o - r_inner))
+              + (r_o - r) / (r_o - r_inner))
+    T.data[...] = np.asarray(uw.function.evaluate(
+        init_t, T.coords)).reshape(-1, 1)
+    return mesh, v, P, T, stokes, adv, unit_r
+
+
+# Analytic steady-conduction flux through the annulus outer
+# boundary: true ∇²T=0 solution is LOGARITHMIC ⇒
+# Q_cond = 2π / ln(R_o/R_i).
+_Q_COND = 2.0 * np.pi / np.log(r_o / r_inner)
+
+
+_NU_CACHE = {}
+_R_MID = 0.5 * (r_inner + r_o)
+
+
+def nusselt(mesh, T, v=None, cellsize=None):
+    r"""Nu = total radial heat flow through the interior mid-shell
+    / conductive flow. q_r = v_r·T - ∂T/∂r projected to a nodal
+    field, integrated on r=(R_i+R_o)/2 — shell-independent at
+    steady state and immune to thermal-BL resolution (validated:
+    scripts/_nu_proper.py — analytic conduction ⇒ Nu=1.0000;
+    settled checkpoints shell-consistent and ≈ the boundary
+    method). Q_cond = 2π/ln(R_o/R_i) (annular log conduction).
+    Cached per mesh. v required for the advective term."""
+    key = id(mesh)
+    cache = _NU_CACHE.get(key)
+    if cache is None:
+        qf = uw.discretisation.MeshVariable(
+            f"nu_qr_{key:x}", mesh, vtype=uw.VarType.SCALAR,
+            degree=2, continuous=True)
+        proj = uw.systems.Projection(mesh, qf)
+        proj.smoothing = 0.0
+        X = mesh.CoordinateSystem.X
+        er = mesh.CoordinateSystem.unit_e_0
+        gradT_r = (T.sym[0].diff(X[0]) * er[0]
+                   + T.sym[0].diff(X[1]) * er[1])
+        vr = ((v.sym[0] * er[0] + v.sym[1] * er[1])
+              if v is not None else sympy.Integer(0))
+        proj.uw_function = vr * T.sym[0] - gradT_r
+        _NU_CACHE[key] = (qf, proj)
+    else:
+        qf, proj = cache
+    proj.solve()
+    th = np.linspace(0, 2 * np.pi, 720, endpoint=False)
+    pts = np.column_stack([_R_MID * np.cos(th),
+                           _R_MID * np.sin(th)])
+    q = np.asarray(uw.function.evaluate(
+        qf.sym[0], pts)).reshape(-1)
+    return float(q.mean() * _R_MID * 2.0 * np.pi) / _Q_COND
+
+
+def vrms(mesh, v):
+    a = np.asarray(uw.function.evaluate(
+        v.sym.dot(v.sym), mesh.X.coords))
+    return float(np.sqrt(np.mean(a)))
+
+
+def adapt_with_correction(mode, mesh, T, v, P, stokes, dt):
+    r"""Run one adaptation + the chosen field-handling correction.
+
+    The mover (`smooth_mesh_interior`) Lagrangian-carries the
+    fields: `_deform_mesh` only moves coordinates, DOF values are
+    untouched, so the field is rigidly transported by `Δx`.
+
+    * ``none`` — leave the Lagrangian carry as-is. Uncorrected
+      baseline: the mesh move is read by the next SLCN step as a
+      spurious advection (≈ v_mesh) — it drifts, by design.
+    * ``interp`` — **local FE remap, maximum fidelity.** This
+      adapter is topology-preserving: vector size, DOF ordering
+      and the parallel partition are invariant, and the pinned
+      boundary leaves the domain unchanged. So the correct remap
+      is the *old P3 field evaluated at the new node positions*
+      via the local FE evaluate (`uw.function.evaluate`, true P3
+      basis) — NOT `read_timestep`'s kd-tree/RBF path, which
+      exists for the decomposition-changing `mesh.adapt` case and
+      is diffusive (it made vrms error *worse* than uncorrected
+      here). Because the layout is invariant the snapshot/restore
+      are trivial same-shape array ops with no cross-rank
+      migration; because the domain is unchanged every new node is
+      in-domain (no extrapolation). Done by a brief
+      deform-back → evaluate → deform-forward around the mover
+      (the mover commits the move internally, so the old field is
+      reconstructed by restoring coords+values, evaluated at the
+      new positions, then the move is re-committed). Re-solve
+      Stokes so v is consistent with the new mesh + remapped T.
+    * ``ale`` — Lagrangian + `V_fn = v − v_mesh`. Requires the
+      adapter to be *bound* to this adv-diff solver (feed the mesh
+      velocity into its trace-back); a specialized optimization,
+      not the general path. Next-phase; raises for now.
+
+    The snapshot must happen BEFORE the mover, so the whole
+    adaptation step is orchestrated here.
+    """
+    rho = metric_density_from_gradient(mesh, T, amp=args.amp,
+                                       name="harness")
+    if mode == "interp":
+        old_X = np.asarray(mesh.X.coords).copy()
+        old_T = np.asarray(T.data).copy()
+    smooth_mesh_interior(
+        mesh, metric=rho, method="anisotropic",
+        method_kwargs=dict(aniso_cap=2.0, relax=0.2, n_outer=8))
+    if mode == "none":
+        return
+    if mode == "interp":
+        new_X = np.asarray(mesh.X.coords).copy()
+        new_Tx = np.asarray(T.coords).copy()   # new T-DOF coords
+        # reconstruct the OLD field (layout invariant ⇒ trivial)
+        mesh._deform_mesh(old_X)
+        T.data[...] = old_T
+        # local FE evaluate of the old P3 field at the new nodes
+        vals = np.asarray(uw.function.evaluate(
+            T.sym[0], new_Tx)).reshape(-1)
+        # re-commit the move + write the remapped field
+        mesh._deform_mesh(new_X)
+        T.data[:, 0] = vals
+        # refresh v on the new mesh + remapped T (next step's
+        # adv.solve uses v.sym for the SLCN trace-back).
+        stokes.solve(zero_init_guess=False)
+        return
+    raise NotImplementedError(
+        "ALE correction is a NEXT-PHASE, adapter-bound-to-advdiff "
+        "optimization: feed v_mesh = Δx/Δt into the SLCN "
+        "trace-back (V_fn = v − v_mesh). Use --correction interp "
+        "(the general, solver-agnostic remap) for now.")
+
+
+def run(mesh, v, P, T, stokes, adv, cellsize, adaptive, tag):
+    cache = f"{CDIR}/harness_{tag}_Ra{args.Ra:.0e}_n{args.n_steps}.npz"
+    if os.path.exists(cache):
+        print(f"  [{tag}] loading cached history {cache}")
+        z = np.load(cache)
+        return z["t"], z["Nu"], z["vrms"]
+    stokes.solve(zero_init_guess=True)
+    t_sim = 0.0
+    hist_t, hist_Nu, hist_v = [], [], []
+    for s in range(args.n_steps):
+        dt = adv.estimate_dt()
+        adv.solve(timestep=dt, zero_init_guess=False)
+        stokes.solve(zero_init_guess=False)
+        t_sim += dt
+        if adaptive and (s + 1) % args.adapt_every == 0:
+            adapt_with_correction(args.correction, mesh, T, v, P,
+                                  stokes, dt)
+        Nu = nusselt(mesh, T, v)
+        vr = vrms(mesh, v)
+        hist_t.append(t_sim)
+        hist_Nu.append(Nu)
+        hist_v.append(vr)
+        if (s + 1) % 5 == 0 or s == 0:
+            tt = T.data[:, 0]
+            print(f"  [{tag}] step {s+1:2d} t={t_sim:.4f} "
+                  f"Nu={Nu:+.3f} vrms={vr:.3e} "
+                  f"T=[{tt.min():+.2f},{tt.max():+.2f}]", flush=True)
+    t = np.array(hist_t)
+    Nu = np.array(hist_Nu)
+    vr = np.array(hist_v)
+    np.savez(cache, t=t, Nu=Nu, vrms=vr)
+    print(f"  [{tag}] cached → {cache}")
+    return t, Nu, vr
+
+
+print(f"=== adaptive-convection harness  Ra={args.Ra:.0e}  "
+      f"ref res-{args.ref_res} (uniform) vs adapt res-"
+      f"{args.adapt_res} (every {args.adapt_every}, "
+      f"correction={args.correction}) ===")
+print(f"reference (uniform res-{args.ref_res}):")
+m, v, P, T, st, ad, ur = build(args.ref_res, "ref")
+tR, NuR, vR = run(m, v, P, T, st, ad, 1.0 / args.ref_res,
+                  False, f"ref{args.ref_res}")
+print(f"adaptive (res-{args.adapt_res}, correction="
+      f"{args.correction}):")
+m, v, P, T, st, ad, ur = build(args.adapt_res, "ad")
+tA, NuA, vA = run(m, v, P, T, st, ad, 1.0 / args.adapt_res,
+                  True, f"adapt{args.adapt_res}_{args.correction}")
+
+# overlay the cached uncorrected baseline (to SEE what the
+# correction does relative to the Lagrangian-carry drift)
+base = None
+if args.correction != "none":
+    bpath = (f"{CDIR}/harness_adapt{args.adapt_res}_none_"
+             f"Ra{args.Ra:.0e}_n{args.n_steps}.npz")
+    if os.path.exists(bpath):
+        zb = np.load(bpath)
+        base = (zb["t"], zb["Nu"], zb["vrms"])
+        print(f"overlaying uncorrected baseline {bpath}")
+
+# compare on the overlapping physical-time window
+tmax = min(tR.max(), tA.max())
+tg = np.linspace(min(tR.min(), tA.min()), tmax, 60)
+NuR_i = np.interp(tg, tR, NuR)
+NuA_i = np.interp(tg, tA, NuA)
+vR_i = np.interp(tg, tR, vR)
+vA_i = np.interp(tg, tA, vA)
+nu_err = float(np.sqrt(np.mean((NuA_i - NuR_i) ** 2)))
+v_err = float(np.sqrt(np.mean((vA_i - vR_i) ** 2))
+              / max(np.mean(np.abs(vR_i)), 1e-30))
+print(f"\nrms ΔNu(adaptive-ref) = {nu_err:.4f}   "
+      f"rel rms Δvrms = {v_err:.4f}   "
+      f"(adaptive res-{args.adapt_res} vs ref res-{args.ref_res}; "
+      f"correction={args.correction})")
+
+fig, ax = plt.subplots(1, 2, figsize=(15, 5.4))
+ax[0].plot(tR, NuR, "o-", color="k", lw=1.6, ms=3,
+           label=f"ref uniform res-{args.ref_res}")
+ax[0].plot(tA, NuA, "s--", color="#1f4e8c", lw=1.6, ms=3,
+           label=f"adapt res-{args.adapt_res} ({args.correction})")
+if base is not None:
+    ax[0].plot(base[0], base[1], "^:", color="#c0392b", lw=1.3,
+               ms=3, label=f"adapt res-{args.adapt_res} (none)")
+ax[0].set_xlabel("sim time")
+ax[0].set_ylabel("Nu")
+ax[0].set_title("Nusselt(t)")
+ax[1].plot(tR, vR, "o-", color="k", lw=1.6, ms=3,
+           label=f"ref uniform res-{args.ref_res}")
+ax[1].plot(tA, vA, "s--", color="#1f4e8c", lw=1.6, ms=3,
+           label=f"adapt res-{args.adapt_res} ({args.correction})")
+if base is not None:
+    ax[1].plot(base[0], base[2], "^:", color="#c0392b", lw=1.3,
+               ms=3, label=f"adapt res-{args.adapt_res} (none)")
+ax[1].set_xlabel("sim time")
+ax[1].set_ylabel("vrms")
+ax[1].set_title("vrms(t)")
+for a in ax:
+    a.legend(fontsize=9)
+    a.grid(alpha=0.3)
+fig.suptitle(f"Adaptive-convection harness — Ra={args.Ra:.0e}  "
+             f"(rms ΔNu={nu_err:.3f}; correction="
+             f"{args.correction} — ALE correction is next-phase)",
+             fontsize=12)
+fig.tight_layout(rect=[0, 0, 1, 0.95])
+out = f"{CDIR}/adaptive_convection_harness.png"
+fig.savefig(out, dpi=130)
+print(f"saved {out}")

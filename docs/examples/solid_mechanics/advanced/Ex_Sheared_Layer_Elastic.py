@@ -202,19 +202,25 @@ x, y = mesh1.X
 
 # %% [markdown]
 """
-## VE_Stokes Solver with Viscoelastic Rheology
+## Stokes Solver with Viscoelastic Rheology
+
+The plain ``Stokes`` solver creates the stress-history infrastructure
+automatically when a ``ViscoElasticPlasticFlowModel`` is assigned —
+no need for the legacy ``VE_Stokes`` wrapper.
 """
 
 # %%
-stokes = uw.systems.VE_Stokes(
-    mesh1, velocityField=v_soln, pressureField=p_soln, verbose=False, order=1
+stokes = uw.systems.Stokes(
+    mesh1, velocityField=v_soln, pressureField=p_soln, verbose=False,
 )
 
 stokes.petsc_options["snes_monitor"] = None
 stokes.petsc_options["ksp_monitor"] = None
 
 # Viscoelastic-plastic constitutive model
-stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+    stokes.Unknowns, order=1,
+)
 
 stokes.constitutive_model.Parameters.shear_viscosity_0 = params.uw_shear_viscosity
 stokes.constitutive_model.Parameters.shear_modulus = params.uw_shear_modulus

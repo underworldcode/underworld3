@@ -16,16 +16,25 @@ This makes scripts portable between interactive development and HPC batch execut
 
 ## Basic Usage
 
+The recommended pattern is to define default values as **named constants** before
+the `uw.Params` block.  This separates "what are the defaults" (easy to find and
+edit in a notebook) from "how are they validated and overridden" (the `uw.Params`
+machinery).
+
 ```python
 import underworld3 as uw
 
-# Define parameters with defaults
+# --- Default values (edit these in a notebook) ---
+RESOLUTION  = 0.05     # cell size for mesh
+DIFFUSIVITY = 1.0      # material property
+MAX_STEPS   = 100      # solver iterations
+
 params = uw.Params(
-    uw_resolution = 0.05,    # Cell size for mesh
-    uw_diffusivity = 1.0,    # Material property
-    uw_max_steps = 100,      # Integer parameter
-    uw_verbose = True,       # Boolean flag
-    uw_solver = "mumps",     # String option
+    uw_resolution  = RESOLUTION,
+    uw_diffusivity = DIFFUSIVITY,
+    uw_max_steps   = MAX_STEPS,
+    uw_verbose     = True,        # Boolean flag
+    uw_solver      = "mumps",     # String option
 )
 
 # Use in your model
@@ -203,22 +212,30 @@ Example:
 ```python
 import underworld3 as uw
 
+# --- Default values (edit these in a notebook) ---
+CELL_SIZE      = 50.0   # km – target cell size
+DEPTH          = 660.0  # km – model depth
+VISCOSITY      = 1e21   # Pa·s – reference viscosity
+DENSITY_DIFF   = 50.0   # kg/m³ – density contrast
+MAX_ITERATIONS = 50
+TOLERANCE      = 1e-6
+
 # Define all configurable parameters at the top
 params = uw.Params(
     # Mesh parameters
-    uw_cell_size = uw.Param(50.0, units="km",
+    uw_cell_size = uw.Param(CELL_SIZE, units="km",
                             bounds=(10, 200),
                             description="Target cell size"),
-    uw_depth = uw.Param(660.0, units="km",
+    uw_depth = uw.Param(DEPTH, units="km",
                         description="Model depth"),
 
     # Physical properties
-    uw_viscosity = uw.Param(1e21, units="Pa*s"),
-    uw_density_diff = uw.Param(50.0, units="kg/m^3"),
+    uw_viscosity = uw.Param(VISCOSITY, units="Pa*s"),
+    uw_density_diff = uw.Param(DENSITY_DIFF, units="kg/m^3"),
 
     # Solver settings
-    uw_max_iterations = 50,
-    uw_tolerance = 1e-6,
+    uw_max_iterations = MAX_ITERATIONS,
+    uw_tolerance = TOLERANCE,
 )
 
 # Show help (useful at script start)

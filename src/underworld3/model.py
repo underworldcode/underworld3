@@ -112,9 +112,34 @@ class Model(PintNativeModelMixin, BaseModel):
     # Declare private attributes for Pydantic v2
     _meshes: Any = PrivateAttr(default_factory=dict)
     _primary_mesh_id: Optional[int] = PrivateAttr(default=None)
-    _swarms: Any = PrivateAttr(default_factory=dict)
+    # WeakValueDictionary so dropping the user's last reference to a swarm
+    # actually lets it be garbage-collected. Without this, transient swarms
+    # used inside functions (global expression evaluation, checkpoint reads,
+    # mesh-adapt transfers) accumulate forever via the registry's strong
+    # reference and ``Swarm.__del__`` never fires. Length and membership
+    # checks are dictionary-like; iteration is *not* stable in the way a
+    # plain dict's is, because entries can disappear asynchronously as
+    # their swarm value is collected. Call sites that need a stable
+    # traversal (summaries, snapshots) should iterate a copy such as
+    # ``list(self._swarms.items())``.
+    _swarms: Any = PrivateAttr(default_factory=weakref.WeakValueDictionary)
     _variables: Dict[str, Any] = PrivateAttr(default_factory=dict)
     _solvers: Dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    # State-bearing objects (DDt instances, parameter-history holders,
+    # any helper that exposes a .state dataclass per the Snapshottable
+    # protocol — see src/underworld3/checkpoint/snapshot.py). WeakSet so
+    # the registry does not pin objects past their natural lifetime.
+    # Snapshot capture and restore iterate this registry; consumers
+    # other than checkpoint may also walk it.
+    _state_bearers: Any = PrivateAttr(default_factory=weakref.WeakSet)
+
+    # Model-dwelling tracker: the snapshot-managed record of where a
+    # run is (time, step, dt) plus any user-registered quantities.
+    # Auto-registered as a state-bearer in __init__ so snapshot /
+    # restore manage it automatically. See
+    # src/underworld3/checkpoint/tracker.py.
+    _tracker: Any = PrivateAttr(default=None)
 
     def __init__(self, name: Optional[str] = None, **kwargs):
         """
@@ -132,6 +157,13 @@ class Model(PintNativeModelMixin, BaseModel):
             kwargs["name"] = name
 
         super().__init__(**kwargs)
+
+        # Model-dwelling tracker, auto-registered so snapshot/restore
+        # manage time/step/dt and any user-added quantities for free.
+        from underworld3.checkpoint.tracker import ModelTracker
+
+        self._tracker = ModelTracker()
+        self._register_state_bearer(self._tracker)
 
         # Set initial state if not provided
         if self.state == ModelState.CONFIGURED:
@@ -210,6 +242,31 @@ class Model(PintNativeModelMixin, BaseModel):
         swarm_id = id(swarm)
         self._swarms[swarm_id] = swarm
 
+    def _unregister_swarm(self, swarm):
+        """
+        Internal method to drop a swarm and all its variables from the registry.
+
+        Without this, transient swarms (used for global expression evaluation,
+        checkpoint reads, mesh adaptation transfers) accumulate in the registry
+        forever, leaking the underlying PETSc DMs and field storage. Called
+        from :meth:`Swarm.__del__`.
+        """
+        swarm_id = id(swarm)
+        self._swarms.pop(swarm_id, None)
+        # Drop any variables that belong to this swarm. Building the list of
+        # names first avoids mutating the dict during iteration.
+        try:
+            from .swarm import SwarmVariable
+        except ImportError:
+            return
+        names_to_drop = [
+            name for name, var in self._variables.items()
+            if isinstance(var, SwarmVariable) and getattr(var, "_swarm_ref", None) is not None
+            and var._swarm_ref() is swarm
+        ]
+        for name in names_to_drop:
+            self._variables.pop(name, None)
+
     def _register_variable(self, name, variable):
         """
         Internal method to register a variable with this model.
@@ -225,13 +282,15 @@ class Model(PintNativeModelMixin, BaseModel):
         variable : MeshVariable or SwarmVariable
             Variable instance to register
         """
-        # For SwarmVariables, ensure we keep strong reference to swarm to prevent garbage collection
+        # For SwarmVariables, make sure the parent swarm has been registered.
+        # Registration is via WeakValueDictionary, so it does not pin the
+        # swarm — when the user drops their last reference the swarm dies
+        # and ``Swarm.__del__`` cleans up the variable side of the registry.
         from .swarm import SwarmVariable
 
         if isinstance(variable, SwarmVariable):
             swarm = variable.swarm  # This will raise if swarm already garbage collected
             swarm_id = id(swarm)
-            # Ensure swarm is registered with strong reference
             if swarm_id not in self._swarms:
                 self._register_swarm(swarm)
 
@@ -527,6 +586,102 @@ class Model(PintNativeModelMixin, BaseModel):
     def get_solver(self, name: str):
         """Get a solver by name from the model registry"""
         return self._solvers.get(name)
+
+    @property
+    def tracker(self):
+        """Snapshot-managed record of where this run is.
+
+        Holds ``time`` / ``step`` / ``dt`` (pre-seeded conventions)
+        plus any quantity you assign — ``model.tracker.foo = ...``.
+        Everything on the tracker is captured by :meth:`snapshot` and
+        reverted by :meth:`restore`; loose Python variables are not.
+        Solvers do not depend on it; using it is optional.
+        """
+        return self._tracker
+
+    def _register_state_bearer(self, obj) -> None:
+        """Register a Snapshottable object with this model.
+
+        Called by helper classes (DDt, parameter-history holders, ...)
+        in their ``__init__``. ``obj`` should expose a ``.state``
+        attribute returning a dataclass with ``_schema_version``.
+        Membership is via WeakSet, so registration does not extend
+        ``obj``'s lifetime.
+        """
+        self._state_bearers.add(obj)
+
+    def save_state(self, *, file: Optional[str] = None):
+        """Save the model's current state — memory or disk, one entry point.
+
+        Without ``file``, captures an in-memory :class:`Snapshot`
+        token suitable for in-run backtracking ("stash for
+        timesteps"). The token is plain Python / numpy — fast to
+        produce, fast to restore, does not survive the process.
+
+        With ``file=<path>``, writes a persistent on-disk snapshot at
+        that path (plus a sibling ``.bulk/`` directory holding the
+        bulk PETSc + swarm sidecars). Survives the process; suitable
+        for same-model restart and postprocessing workflows.
+
+        Either way the captured state is the full model: all
+        registered meshes and mesh-variables, all swarms with
+        per-particle data, all solver-internal state-bearers
+        (:class:`ModelTracker`, ``DDt`` instances, anything else
+        exposing the ``Snapshottable`` contract).
+
+        Parameters
+        ----------
+        file : str, optional
+            Path to write a disk snapshot to. If omitted, an in-memory
+            token is returned instead.
+
+        Returns
+        -------
+        Snapshot
+            When called without ``file`` — pass to
+            :meth:`load_state` to restore.
+        str
+            When ``file`` is given — the path the snapshot was
+            written to (same as ``file``).
+        """
+        from underworld3.checkpoint import snapshot as _snapshot
+        from underworld3.checkpoint import write_snapshot as _write_snapshot
+
+        if file is None:
+            return _snapshot(self)
+        return _write_snapshot(self, file)
+
+    def load_state(self, source) -> None:
+        """Restore the model from a previously saved state — memory or disk.
+
+        ``source`` is either:
+
+          - a :class:`Snapshot` token returned by an earlier
+            ``save_state()`` call (in-memory restore — bit-exact),
+          - a path string to a disk-snapshot file (disk restore —
+            same-rank, same-model contract; mesh-rebuild on read is
+            v1.2 scope).
+
+        Raises
+        ------
+        TypeError
+            ``source`` is neither a :class:`Snapshot` nor a string.
+        :class:`SnapshotInvalidatedError`
+            The captured state no longer matches what is registered
+            (mesh adapted, state-bearer missing, ...).
+        """
+        from underworld3.checkpoint import Snapshot
+        from underworld3.checkpoint import restore as _restore
+        from underworld3.checkpoint import read_snapshot as _read_snapshot
+
+        if isinstance(source, Snapshot):
+            return _restore(self, source)
+        if isinstance(source, (str, os.PathLike)):
+            return _read_snapshot(self, str(source))
+        raise TypeError(
+            f"load_state expects a Snapshot token or a path string, "
+            f"got {type(source).__name__}"
+        )
 
     def define_parameter(self, name: str, ptype=None, **kwargs):
         """
@@ -4245,7 +4400,7 @@ class Model(PintNativeModelMixin, BaseModel):
         swarm_count = len(self._swarms)
         lines.append(f"**Swarms:** {swarm_count} registered")
         if swarm_count > 0 and verbose >= 1:
-            for swarm_id, swarm in self._swarms.items():
+            for swarm_id, swarm in list(self._swarms.items()):
                 try:
                     if hasattr(swarm, "data") and swarm.data is not None:
                         particle_count = len(swarm.data)

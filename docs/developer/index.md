@@ -113,7 +113,9 @@ guides/CODE-REVIEW-PROCESS
 guides/SPELLING_CONVENTION
 guides/version-management
 guides/branching-strategy
+guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
+guides/hpc-cluster-setup
 ```
 
 ```{toctree}
@@ -122,9 +124,11 @@ guides/BINDER_CONTAINER_SETUP
 :caption: Design Documents
 
 design/UNITS_SIMPLIFIED_DESIGN_2025-11
+design/ND_UNITS_BOUNDARY_CONTRACT
 design/WHY_UNITS_NOT_DIMENSIONALITY
 design/SYMBOL_DISAMBIGUATION_2025-12
 design/ADAPTIVE_MESHING_DESIGN
+design/mesh-adaptation-formulation
 design/ARCHITECTURE_ANALYSIS
 design/MATHEMATICAL_MIXIN_DESIGN
 design/COORDINATE_MIGRATION_GUIDE
@@ -154,6 +158,8 @@ CHANGELOG
 subsystems/meshing
 subsystems/discretisation
 subsystems/solvers
+subsystems/boundary-stress-and-projection-postprocessing
+subsystems/petsc-jacobian-layout
 subsystems/constitutive-models
 subsystems/constitutive-models-theory
 subsystems/constitutive-models-anisotropy
@@ -163,6 +169,7 @@ subsystems/expressions-functions
 subsystems/containers
 subsystems/checkpointing-system
 subsystems/model-orchestration
+subsystems/jit-cache
 ```
 
 ```{toctree}

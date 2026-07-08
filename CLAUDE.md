@@ -70,21 +70,6 @@ If something needs more than an annotation or simple addition, mention it in con
 
 ---
 
-## Pending Release Actions
-
-**⚠️ REMINDER: Tag v3.0.0 when `uw3-release-candidate` merges to `main`**
-
-The AI-friendly codebase with improved documentation, patterns, and tooling should be released as Underworld3 version 3.0.0. After merging the release candidate branch to main:
-
-```bash
-git tag -a v3.0.0 -m "Underworld3 Release 3.0.0"
-git push origin v3.0.0
-```
-
-See `docs/developer/guides/version-management.md` for details.
-
----
-
 ## Documentation Requests
 
 **⚠️ MANDATORY - READ BEFORE WRITING ANY DOCUMENTATION ⚠️**
@@ -155,22 +140,46 @@ This keeps feature branches independent and makes cross-pollination of fixes str
 **Use a worktree for any multi-file change** (docs cleanup, refactoring, features).
 Multiple Claude sessions sharing one working directory will overwrite each other's work.
 
-Worktrees share the main repo's pixi environment and PETSc build via symlinks —
-there is one set of dependencies, not one per worktree. `./uw build` from inside
-a worktree installs that worktree's source into the shared environment.
+Each worktree gets its **own pixi environment** (isolated site-packages, own
+compiled extensions). Only PETSc is shared via symlink (non-relocatable,
+expensive to rebuild). `./uw build` from inside a worktree installs that
+worktree's source into the worktree's own environment.
 
 **Full documentation**: `docs/developer/guides/branching-strategy.md` (Git Worktrees section)
+
+#### Worktree branch policy
+
+**Worktrees must NEVER be on `development` or `main` directly.**
+
+In this repo, `main` is the *release* branch (tagged quarterly, essentially
+read-only history) and `development` is the integration trunk where active
+work converges. The default repository checkout (`~/+Underworld/underworld3-pixi`)
+should usually sit on `development` — that's where you read the current
+working state and pull updates. All work — even work intended to land
+on `development` — happens on a side branch (`feature/...`, `bugfix/...`,
+`docs/...`) in a worktree, then merges to `development` via PR.
+
+`./uw worktree create` enforces this for new worktrees (always on a
+side branch, reset to `origin/development`). It's on you not to break
+it manually:
+
+- Never `git checkout development` (or `main`) inside a worktree
+- Never `git worktree add ... development` to put a worktree on
+  `development` directly
+- If you find a worktree on `development` (e.g. from older tooling),
+  branch off immediately (`git switch -c bugfix/whatever`) before
+  committing
 
 #### Creating and using a worktree
 
 ```bash
-# Create — resets to development, sets up symlinks, names the branch
+# Create — own .pixi env, shared PETSc, names the branch
 ./uw worktree create <name>              # → feature/<name>
 ./uw worktree create <name> bugfix       # → bugfix/<name>
 
 # Work — drops you into a shell cd'd to the worktree
 ./uw worktree shell <name>
-./uw build           # builds from THIS source into the shared env
+./uw build           # builds from THIS source into THIS worktree's env
 ./uw test            # runs tests
 exit                 # leave
 
@@ -190,9 +199,8 @@ git checkout origin/<branch> -- path/to/file
 
 #### Important: always build and run from inside the worktree
 
-Because there is one shared environment, `./uw build` installs whichever source
-tree you run it from. If you build from the main repo then run code expecting
-worktree changes, the worktree edits will not be active. Always:
+Each worktree has its own pixi environment. `./uw build` installs into the
+environment of whichever worktree (or main repo) you run it from. Always:
 
 1. `./uw worktree shell <name>` (or `cd` into the worktree)
 2. `./uw build`
@@ -226,12 +234,39 @@ Underworld development team with AI support from [Claude Code](https://claude.co
 ### Rebuild After Source Changes
 **After modifying source files, always run `./uw build`!**
 - Underworld3 is installed as a package in the pixi environment
-- Changes go to `.pixi/envs/default/lib/python3.12/site-packages/underworld3/`
-- Verify with `uw.model.__file__`
+- Changes go to `.pixi/envs/<env>/lib/python3.12/site-packages/underworld3/`
+- Verify with `uw.__file__` (should show site-packages path, NOT `src/`)
 
 **Note**: `./uw build` uses `--no-cache-dir` to prevent pip from reusing stale
 wheels (UW3 is always version `0.0.0`). If you still suspect stale code, clean
 the build directory: `rm -rf build/lib.* build/bdist.*` then rebuild.
+
+### NEVER Use Editable Installs
+**DO NOT use `pip install -e .` (editable/development mode)!**
+This is a hard rule — there are no exceptions.
+
+Editable installs create `.pth` files and `.so` symlinks in the source tree that:
+- **Contaminate all pixi environments** sharing the same source directory
+- **Break worktree isolation** (worktrees share pixi envs via symlinks)
+- **Persist after uninstall** — stale `.pth` files redirect Python imports to `src/`
+  even after a proper `./uw build`, causing import errors or wrong library loading
+- **Mix debug/release builds** — `.so` compiled against one PETSc arch get loaded
+  by environments expecting another, causing `dlopen` symbol errors
+
+Always use `./uw build` which runs `pip install .` (non-editable). If `./uw build`
+is not available, use `pixi run -e <env> pip install . --no-build-isolation --no-cache-dir`.
+
+**Recovery from editable install contamination:**
+```bash
+# Remove stale .pth files from ALL environments
+find .pixi/envs -name "__editable__*underworld*" -delete
+# Remove .so from source tree (they belong in site-packages)
+find src/underworld3 -name "*.so" -delete
+# Clean build cache
+rm -rf build/
+# Rebuild properly
+./uw build
+```
 
 ### Test Quality Principles
 **New tests must be validated before making code changes to fix them!**
@@ -244,84 +279,23 @@ the build directory: `rm -rf build/lib.* build/bdist.*` then rebuild.
 
 ---
 
-## Design Documents Reference
-
-**Location**: `docs/developer/design/`
-
-| Document | Status | Purpose |
-|----------|--------|---------|
-| `UNITS_SIMPLIFIED_DESIGN_2025-11.md` | **AUTHORITATIVE** | Current units architecture |
-| `PARALLEL_PRINT_SIMPLIFIED.md` | Implemented | `uw.pprint()` and `selective_ranks()` |
-| `RANK_SELECTION_SPECIFICATION.md` | Implemented | Rank selection syntax |
-| `mathematical_objects_plan.md` | Implemented | Mathematical objects design |
-
----
-
 ## Units System Principles
 
-### String Input, Pint Object Storage
-**Accept strings for convenience, store/return Pint objects internally.**
+**Authoritative design doc**: `docs/developer/design/UNITS_SIMPLIFIED_DESIGN_2025-11.md`
 
-```python
-# User creates with string (convenience)
-viscosity = uw.quantity(1e21, "Pa*s")
-
-# Internally stored as Pint object
-# .units returns Pint Unit object (NOT string!)
-viscosity.units  # <Unit('pascal * second')>
-
-# Arithmetic works correctly
-Ra = (rho0 * alpha * g * DeltaT * L**3) / (eta0 * kappa)
-```
-
-### Unit vs Quantity Distinction
-```python
-# Pint Quantity = value + units (can convert)
-qty = uw.quantity(2900, "km")
-qty.to("m")              # Returns new UWQuantity
-qty.to_base_units()      # Returns new UWQuantity
-
-# Pint Unit = just the unit (cannot convert!)
-qty.units                # <Unit('kilometer')>
-qty.units.to("m")        # AttributeError! Use qty.to("m") instead
-```
-
-### Transparent Container Principle
-**UWexpression is a container that derives properties from its contents.**
-- Atomic (UWQuantity): `.units` comes from stored value
-- Composite (SymPy tree): `.units` derived via `get_units(self._sym)`
-- No cached state on composites - eliminates sync issues
+- Accept strings for convenience, store/return Pint objects: `uw.quantity(1e21, "Pa*s")`
+- `.units` returns a Pint **Unit** (not string) — call `.to("m")` on the **Quantity**, not on `.units`
+- UWexpression derives `.units` from contents (atomic: stored value; composite: `get_units(self._sym)`)
 
 ---
 
 ## Parallel Computing Patterns
 
-### Key Understanding
-**Underworld3 rarely uses MPI directly - PETSc handles all parallel synchronization.**
-
-- PETSc manages parallelism for mesh operations, solvers, vector updates
-- UW3 API wraps PETSc collective operations correctly
-- Avoid direct mpi4py usage unless absolutely necessary
-
-### Current Parallel Safety API
-
-```python
-# OLD (deprecated) - DANGEROUS if stats() is collective
-if uw.mpi.rank == 0:
-    print(f"Stats: {var.stats()}")
-
-# NEW (safe) - All ranks execute, only selected ranks print
-uw.pprint(0, f"Stats: {var.stats()}")
-
-# For code blocks (visualization, etc.)
-with uw.selective_ranks(0) as should_execute:
-    if should_execute:
-        import pyvista as pv
-        plotter = pv.Plotter()
-```
+PETSc handles all parallel synchronization — avoid direct mpi4py unless necessary.
+Use `uw.pprint()` and `uw.selective_ranks()` for rank-safe output and code blocks.
 
 **Implementation**: `src/underworld3/mpi.py`
-**Documentation**: `docs/advanced/parallel-computing.qmd`
+**Documentation**: `docs/advanced/parallel-computing.md`
 
 ---
 
@@ -357,30 +331,7 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 | `with swarm.access(var):` | **Deprecated** | Direct: `var.data[...]` |
 | `mesh.data` (coordinates) | **Deprecated** | `mesh.X.coords` |
 
-### Current Patterns
-```python
-# Single variable - direct access
-var.data[...] = values
-var.array[:, 0, 0] = scalar_values   # Scalar
-var.array[:, 0, :] = vector_values   # Vector
-
-# Multiple variables - batch synchronization
-with uw.synchronised_array_update():
-    var1.data[...] = values1
-    var2.data[...] = values2
-
-# Coordinates
-mesh.X.coords    # Mesh vertex coordinates
-var.coords       # Variable DOF coordinates
-swarm.data       # Swarm particle positions
-```
-
-### Array Shapes
-- **array**: `(N, a, b)` where scalar=`(N,1,1)`, vector=`(N,1,dim)`, tensor=`(N,dim,dim)`
-- **data**: `(-1, num_components)` flat format for backward compatibility
-
-### Data Cache Safety
-The `.data` property caches an `NDArray_With_Callback` view into the PETSc local vector. This cache self-validates via `id(self._lvec)` tracking — if the underlying vector is replaced (DM rebuild, mesh adaptation), the cache auto-rebuilds on next access. See `docs/developer/subsystems/data-access.md` for details.
+See `docs/developer/UW3_Style_and_Patterns_Guide.md` and `docs/developer/subsystems/data-access.md` for full patterns, array shapes, and cache safety details.
 
 ---
 
@@ -398,8 +349,8 @@ if any_uwexpressions_in_expression:
 symbols = expr.atoms(...)
 ```
 
-**Safe locations**: JIT Compiler (`_jitextension.py`), `extract_expressions()`
-**Check if issues**: `is_pure_sympy_expression()`, `nondimensional.py`
+**Safe locations**: JIT Compiler (`utilities/_jitextension.py`), `extract_expressions()`
+**Check if issues**: `is_pure_sympy_expression()` in `function/pure_sympy_evaluator.py`, `utilities/nondimensional.py`
 
 ---
 
@@ -441,12 +392,7 @@ velocity.norm()         # Magnitude
 ## Coding Conventions
 
 ### Prefer Glob and Grep Over find
-**Use the Glob and Grep tools instead of `find` in Bash.**
-- `Glob` handles file pattern matching (e.g., `**/*.py`, `src/**/*.pyx`)
-- `Grep` handles content search (e.g., searching for class definitions, imports)
-- Both are faster, safer, and give the user better visibility than shell `find`
-- `find` with `-exec`, `-execdir`, or `-delete` can execute arbitrary commands — avoid it
-- Only fall back to `find` via Bash if Glob/Grep genuinely cannot express the query
+**Use Glob and Grep tools instead of `find` or `grep` in Bash.** They are safer (no `-exec`), faster, and don't require user approval. Only fall back to `find` via Bash if Glob/Grep genuinely cannot express the query.
 
 ### Desktop Notifications for Background Monitoring
 When using CronCreate for background monitoring (CI status, issues, etc.), use

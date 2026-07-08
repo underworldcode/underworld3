@@ -329,21 +329,6 @@ def RegionalSphericalBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
-    ## This needs a side-boundary capture routine as well
-
-    def sphere_return_coords_to_bounds(coords):
-        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
-
-        outside = Rsq > radiusOuter**2
-        inside = Rsq < radiusInner**2
-
-        ## Note these numbers should not be hard-wired
-
-        coords[outside, :] *= 0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
-        coords[inside, :] *= 1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
-
-        return coords
-
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -400,7 +385,7 @@ def RegionalSphericalBox(
             sympy.Piecewise((1.0, new_mesh.CoordinateSystem.R[0] > 0.99 * radiusOuter), (0.0, True))
         )
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
 
     return new_mesh
 
@@ -570,50 +555,27 @@ def RegionalGeographicBox(
             "Use str name, (a, b) tuple, True for WGS84, or False for sphere."
         )
 
-    # Get ellipsoid parameters (in km)
+    # Get ellipsoid parameters (raw km floats from ELLIPSOIDS dict)
     a_km = ellipsoid_dict["a"]
     b_km = ellipsoid_dict["b"]
 
-    # Nondimensionalize ellipsoid if units active
     if units_active:
-        # Get reference length in km
-        ref_length = model.get_fundamental_scales().get("length")
-        if ref_length is not None:
-            # Convert reference length to km
-            if hasattr(ref_length, "to"):
-                L_ref_km = float(ref_length.to("km").magnitude)
-            elif hasattr(ref_length, "magnitude"):
-                # Assume it's in base SI (meters)
-                L_ref_km = float(ref_length.magnitude) / 1000.0
-            else:
-                L_ref_km = float(ref_length) / 1000.0
+        # Store as quantities — the units system handles nondimensionalisation
+        # downstream (symbolic expressions via JIT, numeric via non_dimensionalise)
+        ellipsoid_dict["a"] = uw.quantity(a_km, "km")
+        ellipsoid_dict["b"] = uw.quantity(b_km, "km")
 
-            # Nondimensional ellipsoid parameters
-            a_nd = a_km / L_ref_km
-            b_nd = b_km / L_ref_km
-
-            # Store both in ellipsoid dict
-            ellipsoid_dict["a_nd"] = a_nd
-            ellipsoid_dict["b_nd"] = b_nd
-            ellipsoid_dict["L_ref_km"] = L_ref_km
-
-            # Use nondimensional values for mesh generation
-            a = a_nd
-            b = b_nd
-            depth_min = depth_min_nd
-            depth_max = depth_max_nd
-        else:
-            # No reference length available - use km
-            a = a_km
-            b = b_km
-            depth_min = depth_min_nd
-            depth_max = depth_max_nd
+        # For mesh generation (gmsh addPoint), use nondimensional floats
+        a = float(uw.non_dimensionalise(ellipsoid_dict["a"]))
+        b = float(uw.non_dimensionalise(ellipsoid_dict["b"]))
+        depth_min = float(depth_min_nd)
+        depth_max = float(depth_max_nd)
     else:
-        # No units - use km directly
+        # No units — keep as km floats
         a = a_km
         b = b_km
-        depth_min = depth_min_nd
-        depth_max = depth_max_nd
+        depth_min = float(depth_min_nd)
+        depth_max = float(depth_max_nd)
 
     # Unpack element counts (angles already processed above)
     numLon, numLat, numDepth = numElements
@@ -789,6 +751,42 @@ def RegionalGeographicBox(
         gmsh.write(uw_filename)
         gmsh.finalize()
 
+    def geographic_return_coords_to_bounds(coords):
+        """Clamp Cartesian coordinates to the geographic domain bounds.
+
+        Converts to geographic (lon, lat, depth), clamps each to the
+        mesh's known ranges, and converts back to Cartesian. Small
+        overshoot due to topography or mesh curvature is handled
+        gracefully by the interior/exterior split in evaluate_nd.
+
+        Coords must be in the mesh's internal coordinate system
+        (nondimensional if scaling is active, km otherwise).
+        """
+        from underworld3.coordinates import cartesian_to_geographic
+
+        # Work with raw numpy float arrays — coords may be UnitAwareArray
+        raw = np.asarray(coords, dtype=np.float64)
+
+        lon, lat, depth = cartesian_to_geographic(
+            raw[:, 0], raw[:, 1], raw[:, 2], float(a), float(b)
+        )
+
+        # Ensure plain float arrays for clip
+        lon = np.asarray(lon, dtype=np.float64)
+        lat = np.asarray(lat, dtype=np.float64)
+        depth = np.asarray(depth, dtype=np.float64)
+
+        np.clip(lon, lon_min, lon_max, out=lon)
+        np.clip(lat, lat_min, lat_max, out=lat)
+        np.clip(depth, float(depth_min) * 1.01, float(depth_max) * 0.99, out=depth)
+
+        x, y, z = geographic_to_cartesian(lon, lat, depth, a, b)
+        coords[:, 0] = x
+        coords[:, 1] = y
+        coords[:, 2] = z
+
+        return coords
+
     # Load mesh on all ranks
     new_mesh = Mesh(
         uw_filename,
@@ -802,6 +800,7 @@ def RegionalGeographicBox(
         refinement=refinement,
         coarsening=coarsening,
         coordinate_system_type=CoordinateSystemType.GEOGRAPHIC,
+        return_coords_to_bounds=geographic_return_coords_to_bounds,
         verbose=verbose,
     )
 
@@ -824,6 +823,6 @@ def RegionalGeographicBox(
         East = new_mesh.CoordinateSystem.geo.unit_east  # Eastward at east boundary
         West = new_mesh.CoordinateSystem.geo.unit_west  # Westward at west boundary
 
-    new_mesh.boundary_normals = boundary_normals
+    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
 
     return new_mesh

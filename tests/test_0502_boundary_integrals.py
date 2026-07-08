@@ -291,3 +291,142 @@ def test_bd_integral_annulus_internal_normal_tangential():
     value = bd_int.evaluate()
 
     assert abs(value) < 0.05, f"Expected ~0, got {value}"
+
+
+# --- Spherical shell internal boundary tests ---
+
+from underworld3.meshing import SphericalShellInternalBoundary
+
+_R_SHELL_INNER = 0.55
+_R_SHELL_INTERNAL = 0.775
+_R_SHELL_OUTER = 1.0
+_mesh_spherical_internal = None
+
+
+def _get_spherical_internal_mesh():
+    global _mesh_spherical_internal
+    if _mesh_spherical_internal is None:
+        _mesh_spherical_internal = SphericalShellInternalBoundary(
+            radiusOuter=_R_SHELL_OUTER,
+            radiusInternal=_R_SHELL_INTERNAL,
+            radiusInner=_R_SHELL_INNER,
+            cellSize=0.25,
+            degree=1,
+            qdegree=2,
+        )
+        uw.discretisation.MeshVariable(
+            "T_spherical_internal", _mesh_spherical_internal, 1, degree=1
+        )
+    return _mesh_spherical_internal
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_bd_integral_spherical_internal_boundary_areas():
+    """SphericalShellInternalBoundary preserves Lower/Internal/Upper labels.
+
+    Overrides the module-level level_1/tier_a marks: this builds a full 3D
+    gmsh+embed mesh (not a seconds-scale level_1 op), and the embed generator
+    is not yet production-soaked for tier_a. See PR #242 review.
+    """
+
+    mesh_spherical = _get_spherical_internal_mesh()
+    expected_areas = {
+        "Lower": 4.0 * np.pi * _R_SHELL_INNER**2,
+        "Internal": 4.0 * np.pi * _R_SHELL_INTERNAL**2,
+        "Upper": 4.0 * np.pi * _R_SHELL_OUTER**2,
+    }
+
+    for boundary, expected in expected_areas.items():
+        value = uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary=boundary).evaluate()
+        relative_error = abs(value - expected) / expected
+        assert relative_error < 0.06, (
+            f"{boundary} area should be close to {expected:.4f}; "
+            f"got {value:.4f} (relative error {relative_error:.3f})"
+        )
+
+
+def _build_spherical_shell_for_integrals():
+    from underworld3.meshing import SphericalShell
+
+    mesh_spherical = SphericalShell(
+        radiusOuter=1.0,
+        radiusInner=0.5,
+        cellSize=1.0 / 4.0,
+        degree=1,
+        qdegree=2,
+    )
+    uw.discretisation.MeshVariable("P_spherical_int", mesh_spherical, 1, degree=1, continuous=True)
+    return mesh_spherical
+
+
+def test_spherical_bd_then_integral_does_not_poison_volume_path():
+    """Boundary and volume integrals must not collide in the JIT cache."""
+
+    mesh_spherical = _build_spherical_shell_for_integrals()
+
+    boundary_before = float(uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary="Lower").evaluate())
+    volume = float(uw.maths.Integral(mesh_spherical, fn=1.0).evaluate())
+    boundary_after = float(uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary="Lower").evaluate())
+
+    assert boundary_before > 0.0
+    assert volume > 0.0
+    assert abs(boundary_after - boundary_before) < 1.0e-10
+
+
+def test_spherical_integral_then_bd_does_not_poison_boundary_path():
+    """Volume and boundary integrals must remain order-independent on spherical meshes."""
+
+    mesh_reference = _build_spherical_shell_for_integrals()
+    boundary_reference = float(uw.maths.BdIntegral(mesh_reference, fn=1.0, boundary="Lower").evaluate())
+
+    mesh_spherical = _build_spherical_shell_for_integrals()
+    volume = float(uw.maths.Integral(mesh_spherical, fn=1.0).evaluate())
+    boundary_after = float(uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary="Lower").evaluate())
+
+    assert volume > 0.0
+    assert boundary_reference > 0.0
+    assert abs(boundary_after - boundary_reference) < 1.0e-10
+
+
+def test_bd_integral_after_deform_matches_expected_areas():
+    """Boundary integrals must remain correct after mesh.deform().
+
+    Serial counterpart of
+    tests/parallel/test_0765_internal_boundary_integral_mpi.py::test_deformed_spherical_shell_boundary_area_parallel,
+    which only exercises this path under --parallel (MPI rank-ownership
+    edge case). Added 2026-06-25 after a regression in that MPI-only test
+    (an unmigrated mesh._deform_mesh() call tripped the new
+    _assert_coord_mutation_allowed() guard from commit f99c8aa2) went
+    unnoticed for over a week because nothing in the serial suite exercised
+    deformation + BdIntegral together. This test covers that basic
+    correctness path -- not the MPI-specific rank-ownership case, which
+    stays in the parallel-only test.
+    """
+
+    mesh_spherical = _build_spherical_shell_for_integrals()
+
+    coords = np.asarray(mesh_spherical.X.coords, dtype=np.float64).copy()
+    radii = np.linalg.norm(coords, axis=1)
+    thickness = 0.5
+    t = (radii - 0.5) / thickness
+    a = np.log(2.0)
+    mapped = (np.exp(a * t) - 1.0) / (np.exp(a) - 1.0)
+    new_radii = 0.5 + thickness * mapped
+    mesh_spherical.deform(coords * (new_radii / radii)[:, None])
+
+    expected_lower = 4.0 * np.pi * 0.5**2
+    expected_upper = 4.0 * np.pi * 1.0**2
+
+    lower = float(uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary="Lower").evaluate())
+    upper = float(uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary="Upper").evaluate())
+
+    rel_err_lower = abs(lower - expected_lower) / expected_lower
+    rel_err_upper = abs(upper - expected_upper) / expected_upper
+
+    assert rel_err_lower < 5.0e-2, (
+        f"Deformed lower area rel_err={rel_err_lower:.3e}, value={lower}, expected={expected_lower}"
+    )
+    assert rel_err_upper < 5.0e-2, (
+        f"Deformed upper area rel_err={rel_err_upper:.3e}, value={upper}, expected={expected_upper}"
+    )

@@ -111,6 +111,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         _register: bool = True,
         units: Optional[str] = None,
         units_backend: Optional[str] = None,
+        remesh_policy=None,
     ):
         """
         Create or return existing MeshVariable instance.
@@ -148,6 +149,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             "_register": _register,
             "units": units,
             "units_backend": units_backend,
+            "remesh_policy": remesh_policy,
         }
 
         return obj
@@ -165,6 +167,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         _register=True,
         units=None,
         units_backend=None,
+        remesh_policy=None,
     ):
         """
         Initialize MeshVariable (only called for NEW objects).
@@ -189,6 +192,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             _register = params["_register"]
             units = params["units"]
             units_backend = params["units_backend"]
+            remesh_policy = params.get("remesh_policy", remesh_policy)
         else:
             # Direct initialization (should not happen with __new__ pattern, but for safety)
             pass
@@ -230,14 +234,21 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
-        # Variable type inference
+        # Variable type inference. On a cd-1 mesh (dim < cdim, e.g.
+        # SphericalManifold), vector fields are stored with ``cdim``
+        # components — the natural embedded-Cartesian representation
+        # of a surface-tangent vector. We accept either dim or cdim
+        # as a vector match; on volume meshes dim == cdim and the
+        # two branches coincide.
         if vtype == None:
             if isinstance(num_components, int) and num_components == 1:
                 vtype = uw.VarType.SCALAR
-            elif isinstance(num_components, int) and num_components == mesh.dim:
+            elif (isinstance(num_components, int)
+                  and (num_components == mesh.dim or num_components == mesh.cdim)):
                 vtype = uw.VarType.VECTOR
             elif isinstance(num_components, tuple):
-                if num_components[0] == mesh.dim and num_components[1] == mesh.dim:
+                if ((num_components[0] == mesh.dim and num_components[1] == mesh.dim)
+                        or (num_components[0] == mesh.cdim and num_components[1] == mesh.cdim)):
                     vtype = uw.VarType.TENSOR
                 else:
                     vtype = uw.VarType.MATRIX
@@ -256,6 +267,25 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.shape = num_components
         self.degree = degree
         self.continuous = continuous
+
+        # Remesh transfer policy (see discretisation/remesh.py). Default
+        # REMAP: on a mesh adapt, the value is the old field evaluated at
+        # the new node positions — safe for any Eulerian quantity, and
+        # safe-by-default for forgotten variables. Operators / the
+        # framework can stamp REINIT (recomputed from a source) or CARRY
+        # (Lagrangian / operator-managed) on hidden vars they create.
+        from underworld3.discretisation.remesh import RemeshPolicy
+        if remesh_policy is None:
+            self._remesh_policy = RemeshPolicy.REMAP
+        elif isinstance(remesh_policy, RemeshPolicy):
+            self._remesh_policy = remesh_policy
+        else:
+            self._remesh_policy = RemeshPolicy(remesh_policy)
+        # Set to a weakref of an operator (e.g. a SemiLagrangian DDt)
+        # that owns this variable's transfer; the generic per-var pass
+        # in remesh_with_field_transfer skips it and the operator's
+        # on_remesh hook handles it instead. None = generic pass owns it.
+        self._remesh_managed_by = None
 
         # Store unit metadata for variable and initialize backend
         # Convert string units to pint.Unit using the global uw.units registry
@@ -280,19 +310,26 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             self._units = None
 
-        # Component and shape handling
+        # Component and shape handling.
+        # Vector / tensor fields are sized by ``cdim`` (the embedded
+        # coordinate space) rather than ``dim`` (topological). For
+        # volume meshes dim == cdim so this is unchanged; for manifold
+        # meshes (e.g. SphericalManifold: dim=2, cdim=3) vectors are
+        # 3-component (tangent-constrained) and rank-2 tensors are
+        # 3x3 — matching the gradient / flux dimensions the JIT and
+        # solver layers expect.
         if vtype == uw.VarType.SCALAR:
             self.shape = (1, 1)
             self.num_components = 1
         elif vtype == uw.VarType.VECTOR:
-            self.shape = (1, mesh.dim)
-            self.num_components = mesh.dim
+            self.shape = (1, mesh.cdim)
+            self.num_components = mesh.cdim
         elif vtype == uw.VarType.TENSOR:
-            self.num_components = mesh.dim * mesh.dim
-            self.shape = (mesh.dim, mesh.dim)
+            self.num_components = mesh.cdim * mesh.cdim
+            self.shape = (mesh.cdim, mesh.cdim)
         elif vtype == uw.VarType.SYM_TENSOR:
-            self.num_components = math.comb(mesh.dim + 1, 2)
-            self.shape = (mesh.dim, mesh.dim)
+            self.num_components = math.comb(mesh.cdim + 1, 2)
+            self.shape = (mesh.cdim, mesh.cdim)
         elif vtype == uw.VarType.MATRIX:
             self.num_components = self.shape[0] * self.shape[1]
 
@@ -313,8 +350,11 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._ijk = self._sym[0]
 
         elif vtype == uw.VarType.VECTOR:
-            self._sym = sympy.Matrix.zeros(1, mesh.dim)
-            for comp in range(mesh.dim):
+            # cdim components — embedded-coord vector. Volume meshes
+            # have dim==cdim so unchanged; manifold meshes get the
+            # extra component(s) the gradient/flux need.
+            self._sym = sympy.Matrix.zeros(1, mesh.cdim)
+            for comp in range(mesh.cdim):
                 self._sym[0, comp] = UnderworldFunction(
                     self.symbol,
                     self,
@@ -326,11 +366,12 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._ijk = sympy.vector.matrix_to_vector(self._sym, self.mesh.N)
 
         elif vtype == uw.VarType.TENSOR:
-            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
+            # cdim x cdim — embedded-coord rank-2 tensor.
+            self._sym = sympy.Matrix.zeros(mesh.cdim, mesh.cdim)
 
             # Matrix form (any number of components)
-            for i in range(mesh.dim):
-                for j in range(mesh.dim):
+            for i in range(mesh.cdim):
+                for j in range(mesh.cdim):
                     self._sym[i, j] = UnderworldFunction(
                         self.symbol,
                         self,
@@ -340,11 +381,12 @@ class _BaseMeshVariable(Stateful, uw_object):
                     )(*self.mesh.r)
 
         elif vtype == uw.VarType.SYM_TENSOR:
-            self._sym = sympy.Matrix.zeros(mesh.dim, mesh.dim)
+            # cdim x cdim symmetric.
+            self._sym = sympy.Matrix.zeros(mesh.cdim, mesh.cdim)
 
             # Matrix form (any number of components)
-            for i in range(mesh.dim):
-                for j in range(0, mesh.dim):
+            for i in range(mesh.cdim):
+                for j in range(0, mesh.cdim):
                     if j >= i:
                         self._sym[i, j] = UnderworldFunction(
                             self.symbol,
@@ -387,6 +429,18 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
+
+        # BUGFIX(#130): pre-populate the mesh's coordinate cache for this
+        # variable's basis. mesh._get_coords_for_basis contains MPI
+        # collectives (DMClone, createInterpolation, globalToLocal) that
+        # deadlock when triggered lazily from rank-local code paths (e.g.
+        # rbf_interpolate inside global_evaluate_nd's per-particle loop):
+        # ranks with no exterior points skip the call, while ranks with
+        # exterior points enter the collective and wait forever. Variable
+        # construction is collective, so filling the cache here ensures all
+        # ranks populate it together and subsequent rank-local lookups are
+        # cache hits.
+        self.mesh._get_coords_for_var(self)
 
         # Setup public view of data - using NDArray_With_Callback
         self._array_cache = None  # Will be created lazily when first accessed
@@ -452,6 +506,27 @@ class _BaseMeshVariable(Stateful, uw_object):
         except Exception:
             return None
 
+    @property
+    def remesh_policy(self):
+        """Per-variable transfer policy on a mesh adapt.
+
+        See :class:`underworld3.discretisation.remesh.RemeshPolicy`.
+        Default is :attr:`~underworld3.discretisation.remesh.RemeshPolicy.REMAP`
+        (the safe Eulerian default — evaluate the old field at the new
+        node positions). Set to ``REINIT`` for stateless work-vars
+        (gradient/Hessian projection targets, RBF proxies) and ``CARRY``
+        only for genuinely Lagrangian fields.
+        """
+        return self._remesh_policy
+
+    @remesh_policy.setter
+    def remesh_policy(self, value):
+        from underworld3.discretisation.remesh import RemeshPolicy
+        if isinstance(value, RemeshPolicy):
+            self._remesh_policy = value
+        else:
+            self._remesh_policy = RemeshPolicy(value)
+
     def _create_variable_array(self, initial_data=None):
         """
         Factory function to create NDArray_With_Callback for variable data.
@@ -480,36 +555,44 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Single callback function (following mesh_update_callback pattern)
         def variable_update_callback(array, change_context):
             """Callback to sync variable changes back to PETSc (like mesh.points)"""
+            var = array.owner
+            if var is None:
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or mesh rebuilds),
+                # where the owning Python variable has already been garbage
+                # collected but the NDArray proxy still exists.
+                return
+
             # Only act on data-changing operations (following mesh.points pattern)
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
 
             # Prevent recursion by checking if we're already in a callback
-            if hasattr(self, "_in_callback") and self._in_callback:
+            if hasattr(var, "_in_callback") and var._in_callback:
                 return
 
             # Set recursion guard
-            self._in_callback = True
+            var._in_callback = True
 
             try:
                 # Skip updates during mesh coordinate changes to prevent corruption
                 # Check if mesh is currently being updated
-                if hasattr(self.mesh, "_mesh_update_lock"):
+                if hasattr(var.mesh, "_mesh_update_lock"):
                     # Try to acquire lock without blocking - if we can't, skip update
-                    if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
                         return
                     try:
                         # Persist changes to PETSc (like mesh callback updates coordinates)
-                        self.pack_uw_data_to_petsc(array, sync=True)
+                        var.pack_uw_data_to_petsc(array, sync=True)
                     finally:
-                        self.mesh._mesh_update_lock.release()
+                        var.mesh._mesh_update_lock.release()
                 else:
                     # Fallback if no lock exists
-                    self.pack_uw_data_to_petsc(array, sync=True)
+                    var.pack_uw_data_to_petsc(array, sync=True)
             finally:
                 # Clear recursion guard
-                self._in_callback = False
+                var._in_callback = False
 
         # Register the callback (following mesh.points pattern)
         array_obj.add_callback(variable_update_callback)
@@ -544,34 +627,38 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Callback for flat data format
         def flat_data_update_callback(array, change_context):
             """Callback to sync flat data changes back to PETSc"""
+            var = array.owner
+            if var is None:
+                return
+
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
                 return
 
             # Prevent recursion by checking if we're already in a callback
-            if hasattr(self, "_in_flat_callback") and self._in_flat_callback:
+            if hasattr(var, "_in_flat_callback") and var._in_flat_callback:
                 return
 
             # Set recursion guard
-            self._in_flat_callback = True
+            var._in_flat_callback = True
 
             try:
                 # Skip updates during mesh coordinate changes to prevent corruption
-                if hasattr(self.mesh, "_mesh_update_lock"):
-                    if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                if hasattr(var.mesh, "_mesh_update_lock"):
+                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
                         return
                     try:
                         # Use pack_raw for flat data format
-                        self.pack_raw_data_to_petsc(array, sync=True)
+                        var.pack_raw_data_to_petsc(array, sync=True)
                     finally:
-                        self.mesh._mesh_update_lock.release()
+                        var.mesh._mesh_update_lock.release()
                 else:
                     # Fallback if no lock exists
-                    self.pack_raw_data_to_petsc(array, sync=True)
+                    var.pack_raw_data_to_petsc(array, sync=True)
             finally:
                 # Clear recursion guard
-                self._in_flat_callback = False
+                var._in_flat_callback = False
 
         # Register the callback
         array_obj.add_callback(flat_data_update_callback)
@@ -902,6 +989,22 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             return data_array_3d
 
+    def _get_kdtree(self):
+        """
+        Return a cached KDTree for this variable's DOF locations.
+        Rebuilds automatically if the parent mesh has deformed.
+        """
+        # Use non-dimensional coordinates for internal caching (avoids UnitAwareArray overhead)
+        if (
+            not hasattr(self, "_kdtree")
+            or self._kdtree is None
+            or getattr(self, "_kdtree_mesh_version", -1) != self.mesh._mesh_version
+        ):
+            self._kdtree = uw.kdtree.KDTree(self.coords_nd)
+            self._kdtree_mesh_version = self.mesh._mesh_version
+
+        return self._kdtree
+
     def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
         """Interpolate variable data to new coordinates using RBF.
 
@@ -942,10 +1045,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
 
-        # Use non-dimensional coordinates for internal RBF interpolation KDTree
-        mesh_kdt = uw.kdtree.KDTree(self.coords_nd)
-        values = mesh_kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
-        del mesh_kdt
+        # Use cached KDTree for interpolation
+        kdt = self._get_kdtree()
+        values = kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
 
         return values
 
@@ -1038,6 +1140,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
         Write variable data to the specified mesh hdf5
         data file. The file will be over-written.
+
+        Note: This is a low-level method intended to be called by wrapper
+        functions such as ``mesh.write_timestep()`` which handle output paths,
+        optional XDMF generation, optional PETSc reload metadata, and
+        multi-variable coordination. Prefer using ``mesh.write_timestep()`` for
+        mesh-variable output.
 
         Note: This is a COLLECTIVE operation - all MPI ranks must call it.
 
@@ -1137,91 +1245,209 @@ class _BaseMeshVariable(Stateful, uw_object):
         verbose=False,
     ):
         """
-        Read a mesh variable from an arbitrary vertex-based checkpoint file
-        and reconstruct/interpolate the data field accordingly. The data sizes / meshes can be
-        different and will be matched using a kd-tree / inverse-distance weighting
-        to the new mesh.
+        Read a mesh variable from ``Mesh.write_timestep()`` output using the
+        coordinate-remap path. The saved mesh and the live mesh may have
+        different sizes or decompositions; values are matched to the live mesh
+        nodes by nearest-neighbour KDTree interpolation.
 
+        This is the flexible remap reader. It is distinct from
+        ``read_checkpoint()``, which loads PETSc DMPlex section/vector metadata
+        for PETSc-native same-mesh reload.
+
+        Parallel-safe and memory-bounded. Two transient swarms route the
+        work without ever holding the full file on more than one rank:
+
+          1. **Source swarm** — rank 0 reads the file; saved
+             ``(coord, value)`` pairs migrate to whichever rank owns the
+             centroid-domain of each location.
+
+          2. **Query swarm** — each rank inserts *its own* live DOF
+             coordinates. They migrate using the same centroid logic, so
+             a live DOF and a saved point at the same coordinate land on
+             the same rank regardless of how PETSc partitioned the DM.
+             Each rank then runs a rank-local KDTree against the saved
+             data it received, and the interpolated values migrate back to
+             the live DOF's home rank.
+
+        Per-rank memory is bounded by ``file_size / n_ranks`` rather than
+        ``file_size`` per rank.
         """
 
-        # Fix this to match the write_timestep function
-
-        # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
-        # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
-
-        output_base_name = os.path.join(outputPath, data_filename)
-        data_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
-
-        # check if data_file exists
-        if os.path.isfile(os.path.abspath(data_file)):
-            pass
-        else:
-            raise RuntimeError(f"{os.path.abspath(data_file)} does not exist")
-
+        # Format dispatch: ``data_filename`` may be either the
+        # ``write_timestep`` filename base (in which case we reconstruct the
+        # per-variable file path the usual way) or a v1.1 snapshot wrapper path
+        # produced by
+        # ``model.save_state(file=…)``. The format-detection logic is
+        # hidden from the user — same call, both formats.
         import h5py
         import numpy as np
-
-        # Keep vector available for future access
-        pass
-
-        ## Sub functions that are used to read / interpolate the mesh.
-        def field_from_checkpoint(
-            data_file=None,
-            data_name=None,
-        ):
-            """Read the mesh data as a swarm-like value"""
-
-            if verbose and uw.mpi.rank == 0:
-                print(f"Reading data file {data_file}", flush=True)
-
-            h5f = h5py.File(data_file)
-            D = h5f["fields"][data_name][()].reshape(-1, self.shape[1])
-            X = h5f["fields"]["coordinates"][()].reshape(-1, self.mesh.dim)
-
-            h5f.close()
-
-            if len(D.shape) == 1:
-                D = D.reshape(-1, 1)
-
-            return X, D
-
-        def map_to_vertex_values(X, D, nnn=4, p=2, verbose=False):
-            # Map from "swarm" of points to nodal points
-            # This is a permutation if we building on the checkpointed
-            # mesh file
-
-            mesh_kdt = uw.kdtree.KDTree(X)
-
-            # Strip pint units from query coords — the KDTree was built
-            # from plain HDF5 floats (same physical units, no metadata).
-            query_coords = self.coords
-            if hasattr(query_coords, "magnitude"):
-                query_coords = query_coords.magnitude
-
-            return mesh_kdt.rbf_interpolator_local(query_coords, D, nnn, p, verbose)
-
-        def values_to_mesh_var(mesh_variable, Values):
-            mesh = mesh_variable.mesh
-
-            # This should be trivial but there may be problems if
-            # the kdtree does not have enough neighbours to allocate
-            # values for every point. We handle that here.
-
-            mesh_variable.data[...] = Values[...]
-
-            return
-
-        ## Read file information
-
-        X, D = field_from_checkpoint(
-            data_file,
-            data_name,
+        from underworld3.checkpoint.disk_snapshot import (
+            is_snapshot_wrapper as _is_snapshot_wrapper,
+            extract_var_via_bridge as _extract_var_via_bridge,
         )
 
-        remapped_D = map_to_vertex_values(X, D)
+        output_base_name = os.path.join(outputPath, data_filename)
+        legacy_file = output_base_name + f".mesh.{data_name}.{index:05}.h5"
 
-        # This is empty at the moment
-        values_to_mesh_var(self, remapped_D)
+        is_v1_1 = (
+            os.path.isfile(data_filename)
+            and not data_filename.endswith(
+                f".mesh.{data_name}.{index:05}.h5"
+            )
+            and _is_snapshot_wrapper(data_filename)
+        )
+
+        if is_v1_1:
+            data_file = data_filename
+        else:
+            data_file = legacy_file
+            if not os.path.isfile(os.path.abspath(data_file)):
+                raise RuntimeError(
+                    f"{os.path.abspath(data_file)} does not exist"
+                )
+
+        # ``self.num_components`` is correct for SCALAR (1), VECTOR (dim),
+        # TENSOR (dim**2) and SYM_TENSOR (dim*(dim+1)/2). ``self.shape[1]``
+        # would silently drop components for tensor types because shape is
+        # ``(N, dim, dim)`` and ``[1]`` returns just ``dim``.
+        n_components = self.num_components
+        dim = self.mesh.dim
+
+        # ---- Phase 1: source swarm carries saved (coord, value) pairs ----
+        source_swarm = uw.swarm.Swarm(self.mesh)
+        saved = uw.swarm.SwarmVariable(
+            "_read_timestep_saved",
+            source_swarm,
+            vtype=uw.VarType.MATRIX,
+            size=(1, n_components),
+            dtype=float,
+            _proxy=False,
+            varsymbol=r"\cal{S}",
+        )
+
+        if uw.mpi.rank == 0:
+            if verbose:
+                print(
+                    f"Reading data file {data_file} "
+                    f"(format: {'v1.1 snapshot' if is_v1_1 else 'legacy timestep'})",
+                    flush=True,
+                )
+            if is_v1_1:
+                X_src, D_src = _extract_var_via_bridge(data_file, data_name)
+                X_src = X_src.reshape(-1, dim)
+                D_src = D_src.reshape(-1, n_components)
+            else:
+                with h5py.File(data_file, "r") as h5f:
+                    X_src = h5f["fields"]["coordinates"][()].reshape(-1, dim)
+                    D_src = h5f["fields"][data_name][()].reshape(
+                        -1, n_components
+                    )
+        else:
+            X_src = np.empty((0, dim), dtype=np.double)
+            D_src = np.empty((0, n_components), dtype=np.double)
+
+        src_size_before = max(source_swarm.dm.getLocalSize(), 0)
+        source_swarm.add_particles_with_global_coordinates(X_src, migrate=False)
+        source_swarm._invalidate_canonical_data()
+        saved.array[src_size_before:, 0, :] = D_src[:, :]
+        # Deterministic centroid-distance routing: nearest rank-centroid
+        # owns the point. Both swarms (source + query below) use the same
+        # rule, so a saved point at coord X and a live-DOF query at the
+        # same X always land on the same rank — exact match restored.
+        # ``Swarm.migrate``'s ``points_in_domain`` test isn't enough on its
+        # own: at partition boundaries it can return True on multiple ranks
+        # (vertex DOFs are shared) and source/query end up apart.
+        source_swarm._route_by_nearest_centroid()
+
+        landed_X = source_swarm._particle_coordinates.array[...].reshape(-1, dim)
+        landed_D = saved.array[:, 0, :]
+
+        # ---- Phase 2: query swarm round-trips live DOFs to source rank ----
+        query_coords = self.coords
+        if hasattr(query_coords, "magnitude"):
+            query_coords = query_coords.magnitude
+        n_query_local = query_coords.shape[0]
+        original_index = np.arange(n_query_local).reshape(-1, 1, 1)
+
+        query_swarm = uw.swarm.Swarm(self.mesh)
+        origin_rank = uw.swarm.SwarmVariable(
+            "rank", query_swarm,
+            vtype=uw.VarType.SCALAR, dtype=int, _proxy=False,
+            varsymbol=r"\cal{R}_o",
+        )
+        origin_index_var = uw.swarm.SwarmVariable(
+            "index", query_swarm,
+            vtype=uw.VarType.SCALAR, dtype=int, _proxy=False,
+            varsymbol=r"\cal{I}",
+        )
+        result = uw.swarm.SwarmVariable(
+            "_read_timestep_result", query_swarm,
+            vtype=uw.VarType.MATRIX, size=(1, n_components),
+            dtype=float, _proxy=False, varsymbol=r"\cal{D}",
+        )
+
+        q_size_before = max(query_swarm.dm.getLocalSize(), 0)
+        query_swarm.add_particles_with_global_coordinates(query_coords, migrate=False)
+        query_swarm._invalidate_canonical_data()
+        origin_rank.array[q_size_before:, 0, 0] = uw.mpi.rank
+        origin_index_var.array[q_size_before:, 0, 0] = original_index[:, 0, 0]
+
+        # Forward: live DOF coords go to the rank whose centroid is
+        # closest — same deterministic rule as the source swarm above.
+        query_swarm._route_by_nearest_centroid()
+
+        local_query = query_swarm._particle_coordinates.array[...].reshape(-1, dim)
+
+        if landed_X.shape[0] > 0 and local_query.shape[0] > 0:
+            kdt = uw.kdtree.KDTree(landed_X)
+            # ``nnn=1`` — exact match for round-trip reads, sensible
+            # nearest-neighbour fallback for cross-mesh reads.
+            result.array[:, 0, :] = kdt.rbf_interpolator_local(
+                local_query, landed_D, 1, 2, verbose
+            )
+        elif local_query.shape[0] > 0:
+            # No saved data landed on this rank — leave query payload zero
+            # and warn; callers can detect via a missing-rank pattern.
+            if verbose:
+                print(
+                    f"[rank {uw.mpi.rank}] read_timestep: no saved points landed; "
+                    f"queries from this rank will receive zeros",
+                    flush=True,
+                )
+
+        # Reverse: stamp the destination rank from origin_rank and use the
+        # bare DMSwarm migrate to send each query particle back home.
+        query_swarm._rank_var.array[...] = origin_rank.array[...]
+        query_swarm.dm.migrate(remove_sent_points=True)
+        uw.mpi.barrier()
+        query_swarm._invalidate_canonical_data()
+
+        # Reorder by original_index and write into self.data
+        idx = origin_index_var.array[:, 0, 0]
+        out = np.zeros((n_query_local, n_components), dtype=np.double)
+        out[idx, :] = result.array[:, 0, :]
+        self.data[...] = out
+
+        # `self.data` is a view into the per-variable local PETSc vector
+        # (`_lvec`). Three follow-ups are required so the load is visible
+        # to anything reading the *mesh-level* vector:
+        #
+        # 1. Push the per-var local data into the per-var global vector
+        #    so other callers of `_gvec` see it.
+        # 2. Destroy the cached mesh-level lvec (and mark stale) so that
+        #    ``mesh.update_lvec()`` reconstructs it from scratch. Without
+        #    this, the existing mesh._lvec retains its pre-load contents
+        #    in any slot whose owning variable wasn't reloaded — and
+        #    even the freshly-loaded slots can be corrupted by subtle
+        #    ordering bugs in update_lvec's zip(self.vars.values(),
+        #    isets, dms) loop.
+        # 3. Mark the mesh-level lvec stale so update_lvec actually
+        #    rebuilds.
+        self._sync_lvec_to_gvec()
+        if self.mesh._lvec is not None:
+            self.mesh._lvec.destroy()
+            self.mesh._lvec = None
+        self.mesh._stale_lvec = True
 
         return
 
@@ -1252,6 +1478,91 @@ class _BaseMeshVariable(Stateful, uw_object):
         viewer.destroy()
         indexset.destroy()
         subdm.destroy()
+
+        return
+
+    @timing.routine_timer_decorator
+    @uw.collective_operation
+    def read_checkpoint(
+        self,
+        filename: str,
+        data_name: Optional[str] = None,
+    ):
+        """Load this mesh variable from PETSc reload output.
+
+        This is an exact PETSc DMPlex section/vector reload path. It does not
+        use the coordinate/KDTree remapping used by ``read_timestep()``. New
+        output should be written with ``Mesh.write_timestep(...,
+        petsc_reload=True)``; legacy ``Mesh.write_checkpoint()`` files are also
+        supported.
+        """
+
+        if data_name is None:
+            data_name = self.clean_name
+
+        if self._lvec is None:
+            self._set_vec(available=True)
+
+        indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
+        sectiondm = self.mesh.dm.clone()
+        viewer = PETSc.ViewerHDF5().create(filename, "r", comm=PETSc.COMM_WORLD)
+        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+
+        old_mesh_name = self.mesh.dm.getName()
+        old_lvec_name = self._lvec.getName()
+        old_vec_name = self._gvec.getName()
+
+        try:
+            self.mesh.dm.setName("uw_mesh")
+            subdm.setName(data_name)
+            sectiondm.setName(data_name)
+            self._lvec.setName(data_name)
+            self._gvec.setName(data_name)
+
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dmplex_load_local_vector,
+            )
+
+            loaded_lvec = petsc_dmplex_load_local_vector(
+                self.mesh.dm, viewer, sectiondm, self.mesh.sf, data_name
+            )
+
+            source_section = sectiondm.getSection()
+            target_section = subdm.getSection()
+            source_array = loaded_lvec.array_r
+            target_array = self._lvec.array
+            p_start, p_end = target_section.getChart()
+
+            for point in range(p_start, p_end):
+                target_dof = target_section.getDof(point)
+                if target_dof == 0:
+                    continue
+
+                source_dof = source_section.getDof(point)
+                if source_dof < target_dof:
+                    raise RuntimeError(
+                        f"Checkpoint section has {source_dof} dofs for point {point}, "
+                        f"but target variable requires {target_dof}."
+                    )
+
+                source_offset = source_section.getOffset(point)
+                target_offset = target_section.getOffset(point)
+                target_array[target_offset : target_offset + target_dof] = (
+                    source_array[source_offset : source_offset + target_dof]
+                )
+
+            loaded_lvec.destroy()
+            self._sync_lvec_to_gvec()
+        finally:
+            self._lvec.setName(old_lvec_name)
+            self._gvec.setName(old_vec_name)
+            if old_mesh_name is not None:
+                self.mesh.dm.setName(old_mesh_name)
+            viewer.popFormat()
+            viewer.destroy()
+            sectiondm.destroy()
+            indexset.destroy()
+            subdm.destroy()
 
         return
 
@@ -1629,6 +1940,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         subdm.localToGlobal(self._lvec, self._gvec, addv=False)
         indexset.destroy()
+        subdm.destroy()
 
     @property
     def old_data(self) -> numpy.ndarray:
@@ -2437,12 +2749,16 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         # Create NDArray_With_Callback with proper shape and data
         from underworld3.utilities import NDArray_With_Callback
-
-        array_obj = NDArray_With_Callback(flat_petsc_data)
+        array_obj = NDArray_With_Callback(flat_petsc_data, owner=self)
 
         # Single canonical callback for PETSc synchronization
+
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
+            var = array.owner
+            if var is None:
+                return
+
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
@@ -2458,26 +2774,26 @@ class _BaseMeshVariable(Stateful, uw_object):
 
             canonical_array = np.atleast_2d(array)
 
-            if canonical_array.shape != (canonical_array.shape[0], self.num_components):
+            if canonical_array.shape != (canonical_array.shape[0], var.num_components):
                 # Only reshape if we actually need to
-                canonical_array = canonical_array.reshape(-1, self.num_components)
+                canonical_array = canonical_array.reshape(-1, var.num_components)
 
             # Skip updates during mesh coordinate changes to prevent corruption
-            if hasattr(self.mesh, "_mesh_update_lock"):
-                if not self.mesh._mesh_update_lock.acquire(blocking=False):
+            if hasattr(var.mesh, "_mesh_update_lock"):
+                if not var.mesh._mesh_update_lock.acquire(blocking=False):
                     return
                 try:
                     # STEP 1: Sync to PETSc using established method with correct shape
-                    self.pack_raw_data_to_petsc(canonical_array, sync=True)
+                    var.pack_raw_data_to_petsc(canonical_array, sync=True)
                 finally:
-                    self.mesh._mesh_update_lock.release()
+                    var.mesh._mesh_update_lock.release()
             else:
                 # Fallback if no lock exists
-                self.pack_raw_data_to_petsc(canonical_array, sync=True)
+                var.pack_raw_data_to_petsc(canonical_array, sync=True)
 
             # STEP 2: Handle variable-specific updates (extensible like SwarmVariable)
-            if hasattr(self, "_on_data_changed"):
-                self._on_data_changed()
+            if hasattr(var, "_on_data_changed"):
+                var._on_data_changed()
 
         array_obj.add_callback(canonical_data_callback)
         return array_obj

@@ -236,6 +236,11 @@ def test_length_units_matches_coordinate_units():
 )
 def test_mesh_view_displays_length_scale():
     """Test that mesh.view() displays length scale information."""
+    pytest.importorskip("pyvista")
+    pytest.importorskip("trame_client")
+    pytest.importorskip("trame_server")
+    pytest.importorskip("trame_vtk")
+
     uw.reset_default_model()
     model = uw.get_default_model()
 

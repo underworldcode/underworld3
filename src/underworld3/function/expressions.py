@@ -284,6 +284,50 @@ def extract_expressions(fn):
     return atoms
 
 
+def extract_meshes(fn):
+    """Extract all meshes referenced by MeshVariable symbols in an expression.
+
+    Searches for UnderworldFunction (applied function) atoms and
+    coordinate BaseScalar atoms, collecting the meshes they belong to.
+
+    Parameters
+    ----------
+    fn : sympy.Expr, sympy.Matrix, or UWexpression
+        Expression to search.
+
+    Returns
+    -------
+    set
+        Set of Mesh objects referenced by the expression.
+    """
+    import underworld3
+
+    if isinstance(fn, underworld3.function.expression):
+        fn = fn.sym
+
+    if not hasattr(fn, 'atoms'):
+        return set()
+
+    meshes = set()
+
+    # Check applied functions (e.g., {Tf}(N.x, N.y)) — the function CLASS
+    # carries a weakref to the MeshVariable via 'meshvar'
+    for atom in fn.atoms(sympy.Function):
+        func_class = type(atom)
+        if hasattr(func_class, 'meshvar'):
+            ref = func_class.meshvar
+            var = ref() if callable(ref) else ref  # dereference weakref
+            if var is not None and hasattr(var, 'mesh') and var.mesh is not None:
+                meshes.add(var.mesh)
+
+    # Check coordinate base scalars (N.x, N.y, Gamma.x, etc.)
+    for atom in fn.atoms(sympy.vector.scalar.BaseScalar):
+        if hasattr(atom, 'mesh'):
+            meshes.add(atom.mesh)
+
+    return meshes
+
+
 def extract_expressions_and_functions(fn):
     """Extract all UWexpression, Function, and coordinate atoms.
 
@@ -585,6 +629,18 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     # Slot for unique ID used in _hashable_content (like sympy.Dummy)
     __slots__ = ('_uw_id',)
 
+    # Override the MathematicalMixin priority bump back to sympy's default.
+    # MathematicalMixin sets _op_priority = 11.5 to win dispatch over
+    # sympy.Matrix (10.01) for the bare-variable composition case (#137 —
+    # MeshVariable / SwarmVariable on the right of a sympified subexpression).
+    # UWexpression is itself a sympy.Symbol subclass with its own __rmul__ /
+    # __rtruediv__ that already handle the Matrix case; inheriting the high
+    # priority would route Matrix / UWexpression through UWexpression's
+    # __rtruediv__ (which falls back to Symbol.__rtruediv__ → fails on
+    # MutableDenseMatrix). Pin it back to 10.0 so sympy's standard
+    # Matrix-dispatch path keeps handling these.
+    _op_priority = 10.0
+
     def __new__(
         cls,
         name,
@@ -603,8 +659,13 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
         # Check both dicts for name collisions
         name_exists_persistent = name in UWexpression._expr_names
-        # Check ephemeral dict - need to look for any key starting with this name
-        name_exists_ephemeral = any(k[0] == name for k in UWexpression._ephemeral_expr_names)
+        # Check ephemeral dict - need to look for any key starting with this name.
+        # Snapshot keys via list(...) before iterating: the underlying dict can
+        # be mutated mid-iteration by weakref finalizers running asynchronously
+        # during cyclic GC, raising "dictionary changed size during iteration".
+        name_exists_ephemeral = any(
+            k[0] == name for k in list(UWexpression._ephemeral_expr_names)
+        )
 
         # Determine unique ID for disambiguation
         # When _unique_name_generation=True, ALWAYS use instance_no as _uw_id

@@ -255,4 +255,5 @@ docs/beginner/tutorials/html5/*.html
 .pixi-env
 # PETSc build (directory in main repo, symlink in worktrees)
 petsc-custom/petsc
+petsc-custom/.petsc-version
 Untitled*.ipynb

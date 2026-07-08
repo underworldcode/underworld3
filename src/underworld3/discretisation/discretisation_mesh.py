@@ -1,5 +1,6 @@
 from typing import Optional, Tuple, Union
 from enum import Enum
+from contextlib import contextmanager
 
 import os
 import weakref
@@ -25,6 +26,53 @@ import underworld3.timing as timing
 ## Introduce these two specific types of coordinate tracking vector objects
 
 from sympy.vector import CoordSys3D
+
+
+@contextmanager
+def _temporary_petsc_option(key, value):
+    opts = PETSc.Options()
+    try:
+        old_value = opts.getString(key)
+    except KeyError:
+        old_value = None
+    opts[key] = value
+    try:
+        yield
+    finally:
+        if old_value is None:
+            opts.delValue(key)
+        else:
+            opts[key] = old_value
+
+
+# The ``dm_plex_gmsh_*`` options configure how PETSc imports a Gmsh ``.msh``
+# file (coordinate space dimension, label handling, …). They are GLOBAL on the
+# PETSc options database and are *import-time scratch* — meaningful only for the
+# single import that follows. A mesh constructor that sets one (notably the
+# manifold-surface generators set ``dm_plex_gmsh_spacedim = 2``) and then raises
+# before cleanup leaks it, and the stale option silently corrupts the NEXT gmsh
+# import (e.g. a subsequent SphericalShell is read with spacedim=2 → a 2-D mesh
+# in a 3-D cdim → a "cannot reshape" crash, or a corrupt cache). ``_from_gmsh``
+# therefore clears the whole namespace after every import (see below).
+_GMSH_IMPORT_OPTION_KEYS = (
+    "dm_plex_gmsh_spacedim",
+    "dm_plex_gmsh_multiple_tags",
+    "dm_plex_gmsh_use_regions",
+    "dm_plex_gmsh_mark_vertices",
+)
+
+
+def _clear_gmsh_import_options():
+    """Remove all ``dm_plex_gmsh_*`` import-scratch options from the global
+    PETSc options database (idempotent)."""
+    opts = PETSc.Options()
+    for key in _GMSH_IMPORT_OPTION_KEYS:
+        try:
+            if opts.hasName(key):
+                opts.delValue(key)
+        except Exception:
+            pass
+
 
 ## Add the ability to inherit an Enum, so we can add standard boundary
 ## types to ones that are supplied by the users / the meshing module
@@ -84,29 +132,24 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
     # this process is more efficient done on the root process and then distributed
     # we do this by saving the mesh as h5 which is more flexible to re-use later
 
-    if uw.mpi.rank == 0:
-        plex_0 = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=PETSc.COMM_SELF)
+    try:
+        if uw.mpi.rank == 0:
+            plex_0 = PETSc.DMPlex().createFromFile(filename, interpolate=True, comm=PETSc.COMM_SELF)
 
-        plex_0.setName("uw_mesh")
-        plex_0.markBoundaryFaces("All_Boundaries", 1001)
+            plex_0.setName("uw_mesh")
+            plex_0.markBoundaryFaces("All_Boundaries", 1001)
 
-        viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
-        viewer(plex_0)
-        viewer.destroy()
-
-        # ## Now add some metadata to the mesh (not sure how to do this with the Viewer)
-
-        # import h5py, json
-
-        # f = h5py.File('filename + ".h5",'r+')
-
-        # boundaries_dict = {i.name: i.value for i in cs_mesh.boundaries}
-        # string_repr = json.dumps(boundaries_dict)
-
-        # g = f.create_group("metadata")
-        # g.attrs["boundaries"] = string_repr
-
-        # f.close()
+            viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
+            viewer(plex_0)
+            viewer.destroy()
+    finally:
+        # The gmsh import options are import-time scratch — meaningful only for
+        # the createFromFile above. Clear the whole namespace so a value set by
+        # the caller for THIS import (notably ``dm_plex_gmsh_spacedim`` for a
+        # manifold-surface generator) cannot leak into the next gmsh import and
+        # silently produce a wrong-dimension mesh (e.g. a later SphericalShell
+        # read as 2-D). Runs on success or failure.
+        _clear_gmsh_import_options()
 
     # Now we have an h5 file and we can hand this to _from_plexh5
 
@@ -129,21 +172,36 @@ def _from_plexh5(
         comm = PETSc.COMM_WORLD
 
     viewer = PETSc.ViewerHDF5().create(filename, "r", comm=comm)
-
-    # h5plex = PETSc.DMPlex().createFromFile(filename, comm=comm)
     h5plex = PETSc.DMPlex().create(comm=comm)
-    sf0 = h5plex.topologyLoad(viewer)
-    h5plex.coordinatesLoad(viewer, sf0)
-    h5plex.labelsLoad(viewer, sf0)
-
-    # Do this as well
     h5plex.setName("uw_mesh")
-    h5plex.markBoundaryFaces("All_Boundaries", 1001)
+    viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+    try:
+        sf0 = h5plex.topologyLoad(viewer)
+        h5plex.coordinatesLoad(viewer, sf0)
+        h5plex.labelsLoad(viewer, sf0)
+        h5plex.markBoundaryFaces("All_Boundaries", 1001)
+    finally:
+        viewer.popFormat()
+        viewer.destroy()
 
     if not return_sf:
         return h5plex
     else:
         return sf0, h5plex
+
+
+def _hierarchy_sidecar_name(mesh_filename, level):
+    """Filename for a coarse hierarchy sidecar of a mesh checkpoint.
+
+    The geometric-multigrid (FMG) hierarchy is persisted as a single extra
+    single-DM HDF5 file holding the **coarsest** level (``level=0``) beside the
+    main mesh checkpoint — PETSc's ``HDF5_PETSC`` format does not support several
+    DMPlex objects in one file. The intermediate coarse levels are rebuilt by
+    refinement on reload, so only ``mymesh.hierarchy.L0.h5`` is written. The
+    ``level`` argument is kept for forward-compatibility.
+    """
+    base, ext = os.path.splitext(mesh_filename)
+    return f"{base}.hierarchy.L{level}{ext}"
 
 
 class Mesh(Stateful, uw_object):
@@ -288,9 +346,16 @@ class Mesh(Stateful, uw_object):
         self._mesh_version = 0
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
+        self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
+
+        # _mesh_update_lock: Re-entrant lock to coordinate mesh deformation.
+        # Held by mesh_update_callback during _deform_mesh(). Checked by
+        # MeshVariable callbacks (blocking=False) to skip PETSc sync during
+        # sensitive coordinate changes.
         self._mesh_update_lock = threading.RLock()
 
         comm = PETSc.COMM_WORLD
+        regions = None  # May be set from h5 metadata or mesh generator
 
         if isinstance(plex_or_meshfile, PETSc.DMPlex):
             isDistributed = plex_or_meshfile.isDistributed()
@@ -359,12 +424,56 @@ class Mesh(Stateful, uw_object):
                 except KeyError:
                     pass
 
+                regions = None
+                try:
+                    json_str = f["metadata"].attrs["regions"]
+                    rgn_dict = json.loads(json_str)
+                    regions = Enum("Regions", rgn_dict)
+                except KeyError:
+                    pass
+
+                # Restore ellipsoid with quantities for geographic meshes
+                self._checkpoint_ellipsoid = None
+                try:
+                    json_str = f["metadata"].attrs["ellipsoid"]
+                    ellipsoid_raw = json.loads(json_str)
+                    for k, v in ellipsoid_raw.items():
+                        if isinstance(v, dict) and "value" in v and "unit" in v:
+                            ellipsoid_raw[k] = uw.quantity(v["value"], v["unit"])
+                    self._checkpoint_ellipsoid = ellipsoid_raw
+                except KeyError:
+                    pass
+
                 f.close()
 
-                # This needs to be done when reading a dm from a checkpoint
-                # or building from an imported mesh format
+                # Restore the geometric-multigrid (FMG) coarse hierarchy from the
+                # sidecar, if present. We keep the *undistributed* coarsest level
+                # and the refinement count; the hierarchy is rebuilt below exactly
+                # the way a fresh refinement mesh is built — distribute the
+                # coarsest, then refine() locally — which is robust in serial and
+                # at any parallel decomposition. (See the splice block.)
+                self._sidecar_coarsest = None
+                try:
+                    with h5py.File(plex_or_meshfile, "r") as fh:
+                        n_coarse = int(
+                            fh["metadata"].attrs.get("hierarchy_coarse_levels", 0)
+                        )
+                except (KeyError, OSError):
+                    n_coarse = 0
+                if n_coarse > 0:
+                    sidecar = _hierarchy_sidecar_name(plex_or_meshfile, 0)
+                    if os.path.isfile(sidecar):
+                        self._sidecar_coarsest = _from_plexh5(
+                            sidecar, PETSc.COMM_WORLD
+                        )
+                        self._sidecar_n_coarse = n_coarse
+                        self._sidecar_meshfile = plex_or_meshfile
 
-                self.dm.setFromOptions()
+                # Do not call setFromOptions() here. DMPlexTopologyLoad()
+                # returns the topology SF needed to reload checkpoint fields.
+                # setFromOptions() can repartition/reorder the DM before UW
+                # composes that SF with any later redistribution SF, leaving
+                # checkpoint field reloads mapped to stale point numbering.
 
             else:
                 raise RuntimeError(
@@ -394,7 +503,15 @@ class Mesh(Stateful, uw_object):
 
         self.filename = filename
         self.boundaries = boundaries
+        # Bounding-surface objects (tangent-slip + restore), keyed by boundary
+        # label. SEPARATE from self.boundaries (the persisted gmsh/DMPlex
+        # labelling, untouched). Populated by analytic-geometry constructors;
+        # see docs/developer/design/boundary-slip-strategy.md.
+        self._bounding_surfaces = {}
         self.boundary_normals = boundary_normals
+        self.regions = regions
+        self.parent = None       # Set by extract_region() for submeshes
+        self.subpoint_is = None  # IS mapping submesh points -> parent points
 
         # Wrapped imported DMPlex meshes may only expose generic Gmsh labels
         # such as "Face Sets". Rebuild named boundary labels from those sets so
@@ -473,12 +590,107 @@ class Mesh(Stateful, uw_object):
 
         uw.mpi.barrier()
 
-        if not refinement is None and refinement > 0:
+        # Default: no navigation-only auxiliary DM. Only the
+        # no-refinement / no-coarsening branch sets up a non-None
+        # _nav_dm on manifold meshes. Other branches leave it as None
+        # which means the navigation indices use self.dm directly.
+        self._nav_dm = None
+
+        if getattr(self, "_sidecar_coarsest", None) is not None:
+
+            # Reloaded mesh with a persisted FMG hierarchy. Rebuild the geometric
+            # multigrid hierarchy exactly as a fresh refinement mesh does:
+            # distribute the coarsest level, then refine() it locally. refine()
+            # never moves points across the decomposition (only distribute()
+            # does), so a coarse cell and all of its children are guaranteed
+            # co-resident on one rank — precisely what the nested interpolator
+            # needs, and robust at any np. (Independently distributing pre-built
+            # levels misaligns at uneven np and aborts inside
+            # DMPlexComputeInterpolatorNested.)
+            #
+            # The refine-built fine carries *reference* coordinates, so the saved
+            # (deformed) fine coordinates are stamped onto it afterwards. The
+            # reference geometry rebuilt here (refine-of-coarsest) is bit-identical
+            # to the one at save time, so every distributed fine vertex maps to
+            # exactly one canonical vertex by an *exact* nearest-reference lookup,
+            # and the deformed value is read straight from the saved fine's
+            # canonical-ordered coordinates. (See the checkpoint-hierarchy design
+            # note.)
+            n_coarse = self._sidecar_n_coarse
+            cdim = self._sidecar_coarsest.getCoordinateDim()
+
+            # --- canonical (reference, deformed) coordinate pair, on rank 0 ---
+            # BOTH arrays are built rank-locally on COMM_SELF so they share ONE
+            # canonical ordering (serial .h5 load order == serial refine order,
+            # verified). That shared ordering is what makes deformed_canon[k] and
+            # reference_canon[k] the *same physical vertex* — the stamp pairs them
+            # by that index. (Reading the deformed coords from the COMM_WORLD
+            # undistributed load instead can use a different vertex ordering and
+            # silently scrambles the stamp.) COMM_SELF work is rank-local, so it
+            # cannot perturb the collective distribute of self._sidecar_coarsest.
+            if uw.mpi.rank == 0:
+                _df = _from_plexh5(self._sidecar_meshfile, PETSc.COMM_SELF)
+                deformed_canon = (
+                    _df.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+                )
+                _cs = _from_plexh5(
+                    _hierarchy_sidecar_name(self._sidecar_meshfile, 0),
+                    PETSc.COMM_SELF,
+                )
+                for _ in range(n_coarse):
+                    _cs.setRefinementUniform()
+                    _cs = _cs.refine()
+                reference_canon = (
+                    _cs.getCoordinatesLocal().array.reshape(-1, cdim).copy()
+                )
+            else:
+                deformed_canon = None
+                reference_canon = None
+            deformed_canon = uw.mpi.comm.bcast(deformed_canon, root=0)
+            reference_canon = uw.mpi.comm.bcast(reference_canon, root=0)
+
+            # --- aligned hierarchy: distribute the coarsest, then local refine,
+            #     EXACTLY as the fresh refinement branch below does (proven to
+            #     build a correct nested geometric-MG hierarchy at any np):
+            #     setRefinementUniform() on the base before distribute(), then a
+            #     plain refine() loop. refine() flags the regular refinement
+            #     itself — setting it by hand on a non-uniformly-refined DM
+            #     instead corrupts the nested interpolator and the solve diverges.
+            self._sidecar_coarsest.setRefinementUniform()
+            if not self._sidecar_coarsest.isDistributed():
+                self.sf1 = self._sidecar_coarsest.distribute()
+            self.dm_hierarchy = [self._sidecar_coarsest]
+            for i in range(n_coarse):
+                dm_refined = self.dm_hierarchy[i].refine()
+                dm_refined.setCoarseDM(self.dm_hierarchy[i])
+                self.dm_hierarchy.append(dm_refined)
+
+            self.dm_h = self.dm_hierarchy[-1]
+            self.dm_h.setName("uw_hierarchical_dm")
+
+            # Working dm is a link-free clone of the finest level (mirrors the
+            # refinement branch). It must NOT carry a coarse-DM link or
+            # mesh.update_lvec()'s createFieldDecomposition recurses into the
+            # 0-field coarse levels and fails.
+            self.dm = self.dm_h.clone()
+
+            # Defer the deformed-coordinate stamp: the hierarchy and working dm
+            # are built with REFERENCE coordinates here, and the saved deformed
+            # coordinates are applied through the normal _deform_mesh() path at
+            # the END of __init__ (once self._coords and the rebuild machinery
+            # exist). A raw setCoordinatesLocal() at this point — before the
+            # coordinate cache/callbacks are set up — leaves the mesh in an
+            # inconsistent state and the geometric multigrid solve diverges. Stash
+            # the canonical (reference, deformed) pair for the deferred apply.
+            self._pending_hierarchy_stamp = (reference_canon, deformed_canon, cdim)
+            self._sidecar_coarsest = None
+
+        elif not refinement is None and refinement > 0:
 
             self.dm.setRefinementUniform()
 
             if not self.dm.isDistributed():
-                self.dm.distribute()
+                self.sf1 = self.dm.distribute()
 
             # self.dm_hierarchy = self.dm.refineHierarchy(refinement)
 
@@ -515,7 +727,7 @@ class Mesh(Stateful, uw_object):
             self.dm.setRefinementUniform()
 
             if not self.dm.isDistributed():
-                self.dm.distribute()
+                self.sf1 = self.dm.distribute()
 
             self.dm_hierarchy = [self.dm]
             for i in range(coarsening):
@@ -536,7 +748,22 @@ class Mesh(Stateful, uw_object):
 
         else:
             if not self.dm.isDistributed():
-                self.dm.distribute()
+                self.sf1 = self.dm.distribute()
+
+            # On manifold meshes (dim != cdim — e.g. SphericalManifold
+            # and future bounded-surface patches) we want each rank to
+            # see its neighbours' partition-boundary cells so that
+            # surface query points near the seam can be located by
+            # local navigation rather than ending up orphaned. Apply
+            # the 1-cell overlap on a *clone* of the DM and use that
+            # clone solely for the navigation kdtree / in-cell test.
+            # The solver / FE assembly DM stays non-overlapped — PETSc
+            # FE assembly with overlap double-counts contributions at
+            # the partition seam via LocalToGlobal+ADD_VALUES, breaking
+            # accuracy. Volume meshes don't enter this branch.
+            if uw.mpi.size > 1 and self.dm.getDimension() != self.dm.getCoordinateDim():
+                self._nav_dm = self.dm.clone()
+                self._nav_dm.distributeOverlap(1)
 
             self.dm_hierarchy = [self.dm]
             self.dm_h = self.dm.clone()
@@ -561,6 +788,26 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
+        # Validate that the DM's coordinate array is consistent with the
+        # coordinate dimension before reshaping. A mismatch here almost always
+        # means a STALE or CORRUPT cached mesh file — e.g. a cached .h5 that was
+        # written as a lower-dimension mesh (the classic symptom of a leaked
+        # ``dm_plex_gmsh_spacedim`` during generation; see _from_gmsh). Raise a
+        # clear, actionable error instead of an opaque numpy "cannot reshape"
+        # failure.
+        _coord_size = self.dm.getCoordinatesLocal().array.size
+        if self.cdim and _coord_size % self.cdim != 0:
+            _src = f" ('{self.filename}')" if getattr(self, "filename", None) else ""
+            raise RuntimeError(
+                f"Mesh coordinate array (size {_coord_size}) is not divisible by "
+                f"the coordinate dimension cdim={self.cdim}, so it cannot be a "
+                f"valid set of {self.cdim}-D node coordinates. This usually "
+                f"indicates a stale or corrupt cached mesh file{_src} (e.g. a "
+                f"cache written at a different space dimension). Delete the "
+                f"cached '.meshes/*.msh' and '.msh.h5' for this mesh and "
+                f"regenerate."
+            )
+
         # Expose mesh points through special numpy array class with a callback
         # on all setter operations
 
@@ -569,18 +816,54 @@ class Mesh(Stateful, uw_object):
             owner=self,
         )
 
+        # Navigation-only coord view. On manifold meshes the nav DM is
+        # a 1-cell-overlap clone with extra ghost vertices; navigation
+        # indices (kdtree, in-cell control points) read from these
+        # coords. On volume meshes _nav_dm is None and we reuse the
+        # main coords.
+        if self._nav_dm is not None:
+            self._nav_coords = numpy.array(
+                self._nav_dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
+            )
+        else:
+            self._nav_coords = self._coords
+
         # The callback is to rebuild the mesh data structures - we already have a routine
         # to handle that so we just wrap it here.
 
         def mesh_update_callback(array, change_context):
-            print(f"Mesh update callback - mesh deform")
-            coords = array.reshape(-1, array.owner.cdim)
-            self._deform_mesh(coords, verbose=True)
+            mesh = array.owner
+            if mesh is None:
+                # This guard handles cases where the array is accessed during
+                # object teardown (e.g. at application exit or during mesh
+                # replacement), where the owning Python mesh object has already
+                # been garbage collected but the NDArray proxy still exists.
+                return
+
+            # ``NDArray_With_Callback.__array_finalize__`` propagates this
+            # callback (and the owner) to every view / fancy-index copy of the
+            # coordinate array. Only the mesh's *canonical* coordinate array
+            # represents an actual coordinate update; a derived sub-array (e.g.
+            # a boundary subset built inside the tangent-slip / bounding-surface
+            # / mover machinery) that merely inherited this callback must NOT
+            # trigger a full-mesh deform. Identity-gate on the canonical
+            # ``_coords`` — note this is NOT a size filter, so a genuinely
+            # malformed full coordinate update still reaches ``_deform_mesh``
+            # and surfaces loudly rather than being silently dropped.
+            if array is not mesh._coords:
+                return
+
+            if verbose:
+                uw.pprint(0, f"Mesh update callback - mesh deform")
+
+            coords = array.reshape(-1, mesh.cdim)
+            mesh._deform_mesh(coords, verbose=verbose)
 
             # Increment mesh version to notify registered swarms of coordinate changes
-            with self._mesh_update_lock:
-                self._mesh_version += 1
-                print(f"Mesh version incremented to {self._mesh_version}")
+            with mesh._mesh_update_lock:
+                mesh._mesh_version += 1
+                if verbose:
+                    uw.pprint(0, f"Mesh version incremented to {mesh._mesh_version}")
 
             return
 
@@ -614,6 +897,11 @@ class Mesh(Stateful, uw_object):
 
         # Now add the appropriate coordinate system for the mesh's natural geometry
         # This step will usually over-write the defaults we just defined
+        # For geographic meshes loaded from checkpoint, pre-set the ellipsoid
+        # so the CoordinateSystem __init__ picks it up.
+        if hasattr(self, "_checkpoint_ellipsoid") and self._checkpoint_ellipsoid is not None:
+            self._checkpoint_ellipsoid_pending = self._checkpoint_ellipsoid
+
         self._CoordinateSystem = CoordinateSystem(self, coordinate_system_type)
 
         # This was in the _jit extension but ... if
@@ -628,6 +916,14 @@ class Mesh(Stateful, uw_object):
         self._Gamma.x._ccodestr = "petsc_n[0]"
         self._Gamma.y._ccodestr = "petsc_n[1]"
         self._Gamma.z._ccodestr = "petsc_n[2]"
+
+        # Time coordinate — PETSc passes this as petsc_t to all pointwise
+        # functions. Solvers set dm.time before each solve via solve(time=t).
+        # Users reference it as mesh.t in expressions (e.g. V0 * sympy.sin(omega * mesh.t))
+        from ..utilities.unit_aware_coordinates import TimeSymbol
+
+        self._t = TimeSymbol("t")
+        self._t._units = None  # patched below by _patch_time_units
 
         # Add unit awareness to coordinate symbols if mesh has units or model has scales
         from ..utilities.unit_aware_coordinates import patch_coordinate_units
@@ -648,6 +944,26 @@ class Mesh(Stateful, uw_object):
 
         self._equation_systems_register = []
 
+        # Operator on_remesh(ctx) hooks (SemiLagrangian / Lagrangian DDt,
+        # solver-coupled history transfers). Stored as weakrefs so a
+        # forgotten operator does not keep the mesh holding it alive.
+        # The adapt op (smooth_mesh_interior / OT_adapt / follow_metric)
+        # fires these after the generic per-variable REMAP pass; see
+        # discretisation/remesh.py.
+        self._remesh_hooks = []
+
+        # Capability gate for coordinate mutation. `_deform_mesh` (the raw
+        # primitive that moves nodes WITHOUT the field/SL-history transfer)
+        # is only permitted inside a sanctioned context: a remesh transaction
+        # (`_in_remesh_transfer`, set by remesh_with_field_transfer) or a
+        # `_coord_mutation()` scope (depth>0, opened by `deform`,
+        # `ephemeral_coords`, and trusted internal movers). Outside those,
+        # a bare call on a mesh that already carries variables/history raises
+        # with a pointer to the public methods — so the field/history transfer
+        # can never be silently skipped. See `deform`/`ephemeral_coords`.
+        self._in_remesh_transfer = getattr(self, "_in_remesh_transfer", False)
+        self._coord_mutation_depth = 0
+
         self._evaluation_hash = None
         self._evaluation_interpolated_results = None
         self._dm_initialized = False
@@ -655,6 +971,11 @@ class Mesh(Stateful, uw_object):
         self._stale_lvec = True
         self._lvec = None
         self.petsc_fe = None
+
+        # Rigid-body rotation null modes for this geometry.
+        # Mesh factories override this for closed surfaces (annulus, sphere).
+        # Each entry is a SymPy Matrix velocity field in mesh coordinates.
+        self._nullspace_rotations = []
 
         self.degree = degree
         self.qdegree = qdegree
@@ -699,6 +1020,37 @@ class Mesh(Stateful, uw_object):
 
         # Navigation / coordinates etc
         self.nuke_coords_and_rebuild(verbose)
+
+        # Apply a deferred FMG-hierarchy deformed-coordinate stamp (set in the
+        # reload/splice branch above). The hierarchy + working dm were rebuilt
+        # with reference coordinates; now the mesh is fully constructed we map
+        # each local vertex to its canonical twin by an EXACT reference-coordinate
+        # lookup and apply the saved deformed coordinates through _deform_mesh().
+        _pending = getattr(self, "_pending_hierarchy_stamp", None)
+        if _pending is not None:
+            self._pending_hierarchy_stamp = None
+            if os.environ.get("UW_NOSTAMP") != "1":
+                from underworld3 import kdtree as _kdtree
+
+                _ref_canon, _def_canon, _cdim = _pending
+                _ref_local = numpy.ascontiguousarray(
+                    self.dm.getCoordinatesLocal().array.reshape(-1, _cdim)
+                )
+                _tree = _kdtree.KDTree(numpy.ascontiguousarray(_ref_canon))
+                _tree.build_index()
+                _idx, _d2, _found = _tree.find_closest_point(_ref_local)
+                if _d2.size and float(numpy.sqrt(_d2.max())) > 1.0e-8:
+                    raise RuntimeError(
+                        "FMG hierarchy restore: deformed-coordinate stamp is not "
+                        f"exact (max lookup distance "
+                        f"{float(numpy.sqrt(_d2.max())):.2e}); the reloaded "
+                        "reference geometry does not match the saved fine."
+                    )
+                # Restoring saved deformed geometry; fields are reloaded
+                # separately from the checkpoint, so this is a sanctioned
+                # internal coordinate move (no live-state transfer needed).
+                with self._coord_mutation():
+                    self._deform_mesh(_def_canon[_idx].reshape(-1, _cdim))
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -824,6 +1176,156 @@ class Mesh(Stateful, uw_object):
         """
         return self._length_units
 
+    def quality(self, per_cell=False):
+        r"""Cell-quality diagnostics relevant to FE / solver conditioning.
+
+        Bulk volume ratios (min/mean) hide the handful of
+        near-degenerate cells that nonetheless dominate
+        stiffness-matrix conditioning — a Stokes / saddle-point
+        solve line-search-fails on the *worst* element, not the
+        mean. This reports the tail metrics that actually predict
+        that. For a 2-D simplex (triangle) mesh, per cell:
+
+        * shape quality ``q = 4√3·A / Σℓ²``  (1 = equilateral,
+          → 0 = sliver; folds skew + stretch into one number)
+        * largest interior angle (→ 180° is the conditioning killer)
+        * aspect ratio ``ℓ_max² / (2A)``  (longest edge / shortest
+          altitude)
+        * neighbour size-jump (adjacent-cell area ratio — the mesh
+          gradation the solver actually sees)
+
+        The conditioning-relevant numbers are the *worst* cell
+        (``q_min``, ``angle_max_deg``, ``aspect_max``) and the
+        poor-cell counts, not the means. Non-2-D-simplex meshes get
+        the dimension-agnostic cell-volume-spread subset only.
+
+        Parameters
+        ----------
+        per_cell : bool, default False
+            Also return per-cell arrays (``q``, ``angle_deg``,
+            ``aspect``, ``volume``) under ``"per_cell"`` — for
+            plotting or locating the bad cells.
+
+        Returns
+        -------
+        dict
+            Aggregate + tail stats. Headline scalars (min/max/counts)
+            are MPI-reduced so they are correct in parallel;
+            percentiles and the neighbour size-jump are rank-local
+            estimates (exact in serial — the convention for the
+            mesh-redistribution tooling).
+
+        Examples
+        --------
+        >>> q = mesh.quality()
+        >>> q["q_min"], q["n_q_lt_0p3"], q["aspect_max"]
+        >>> mesh.quality(per_cell=True)["per_cell"]["q"]  # to plot
+        """
+        import numpy as np
+
+        dm = self.dm
+        cdim = self.cdim
+        cStart, cEnd = dm.getHeightStratum(0)
+        pStart, pEnd = dm.getDepthStratum(0)
+        X = np.asarray(
+            dm.getCoordinatesLocal().array).reshape(-1, cdim)
+
+        def _reduce(val, op):
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                return uw.mpi.comm.allreduce(
+                    val, op=getattr(_MPI, op))
+            return val
+
+        tris = []
+        is_simplex2d = cdim == 2
+        if is_simplex2d:
+            for cc in range(cStart, cEnd):
+                cl = dm.getTransitiveClosure(cc)[0]
+                vs = [p - pStart for p in cl
+                      if pStart <= p < pEnd]
+                if len(vs) != 3:
+                    is_simplex2d = False
+                    break
+                tris.append(vs)
+
+        if not is_simplex2d or not tris:
+            try:
+                vol = np.abs(np.array(
+                    [dm.computeCellGeometryFVM(cc)[0]
+                     for cc in range(cStart, cEnd)]))
+            except Exception:
+                vol = np.array([1.0])
+            if not vol.size:
+                vol = np.array([1.0])
+            n = _reduce(int(vol.size), "SUM")
+            vmin = _reduce(float(vol.min()), "MIN")
+            vsum = _reduce(float(vol.sum()), "SUM")
+            res = dict(
+                n_cells=n, element="non-2D-simplex",
+                vol_min_over_mean=vmin / (vsum / max(n, 1)),
+                shape_metrics=None,
+                note="shape quality / angle / aspect need a 2-D "
+                     "triangle mesh; only volume spread reported")
+            if per_cell:
+                res["per_cell"] = dict(volume=vol)
+            return res
+
+        tri = np.asarray(tris, dtype=np.int64)
+        v0, v1, v2 = X[tri[:, 0]], X[tri[:, 1]], X[tri[:, 2]]
+        a = np.linalg.norm(v1 - v2, axis=1)
+        b = np.linalg.norm(v2 - v0, axis=1)
+        cl_ = np.linalg.norm(v0 - v1, axis=1)
+        A = np.maximum(
+            0.5 * np.abs(np.cross(v1 - v0, v2 - v0)), 1.0e-300)
+        q = 4.0 * np.sqrt(3.0) * A / (a * a + b * b + cl_ * cl_)
+
+        def _ang(o, p, r):
+            return np.degrees(np.arccos(np.clip(
+                (p * p + r * r - o * o) / (2.0 * p * r),
+                -1.0, 1.0)))
+        ang = np.maximum.reduce(
+            [_ang(a, b, cl_), _ang(b, cl_, a), _ang(cl_, a, b)])
+        Lmax = np.maximum.reduce([a, b, cl_])
+        aspect = Lmax * Lmax / (2.0 * A)
+        rel = A / A.mean()
+
+        et = {}
+        for ti, (i, j, k) in enumerate(tri):
+            for u, w in ((i, j), (j, k), (k, i)):
+                et.setdefault((min(u, w), max(u, w)),
+                              []).append(ti)
+        jr = np.array([max(A[t]) / min(A[t])
+                       for t in et.values() if len(t) == 2]
+                      or [1.0])
+
+        n = _reduce(int(tri.shape[0]), "SUM")
+        qsum = _reduce(float(q.sum()), "SUM")
+        Asum = _reduce(float(A.sum()), "SUM")
+        res = dict(
+            n_cells=n, element="2D-simplex",
+            q_min=_reduce(float(q.min()), "MIN"),
+            q_mean=qsum / max(n, 1),
+            q_p01=float(np.percentile(q, 1)),
+            q_p05=float(np.percentile(q, 5)),
+            n_q_lt_0p3=_reduce(int((q < 0.3).sum()), "SUM"),
+            n_q_lt_0p2=_reduce(int((q < 0.2).sum()), "SUM"),
+            angle_max_deg=_reduce(float(ang.max()), "MAX"),
+            n_angle_gt_150=_reduce(int((ang > 150).sum()), "SUM"),
+            n_angle_gt_165=_reduce(int((ang > 165).sum()), "SUM"),
+            aspect_max=_reduce(float(aspect.max()), "MAX"),
+            aspect_p99=float(np.percentile(aspect, 99)),
+            sizejump_max=float(jr.max()),
+            sizejump_p99=float(np.percentile(jr, 99)),
+            n_big_thin=_reduce(
+                int(((rel > 2.0) & (aspect > 4.0)).sum()), "SUM"),
+            vol_min_over_mean=(_reduce(float(A.min()), "MIN")
+                               / (Asum / max(n, 1))))
+        if per_cell:
+            res["per_cell"] = dict(
+                q=q, angle_deg=ang, aspect=aspect, volume=A)
+        return res
+
     def view(self, level=0):
         """
         Displays mesh information at different levels.
@@ -884,6 +1386,32 @@ class Mesh(Stateful, uw_object):
             num_cells = nend - nstart
 
             uw.pprint(f"Number of cells: {num_cells}\n")
+
+            # Cell-quality summary (the conditioning-relevant tail;
+            # full metrics + per-cell arrays via mesh.quality()).
+            try:
+                Q = self.quality()
+                if Q.get("element") == "2D-simplex":
+                    uw.pprint(
+                        f"Cell quality: q_min={Q['q_min']:.3f} "
+                        f"mean={Q['q_mean']:.2f} | poor(q<0.3): "
+                        f"{Q['n_q_lt_0p3']} | worst aspect "
+                        f"{Q['aspect_max']:.1f} | max size-jump "
+                        f"{Q['sizejump_max']:.1f}\n")
+                    if Q["n_q_lt_0p2"] > 0:
+                        uw.pprint(
+                            f"  ! {Q['n_q_lt_0p2']} cell(s) "
+                            f"q<0.2 (near-degenerate — solver "
+                            f"conditioning hazard)\n")
+                else:
+                    uw.pprint(
+                        f"Cell quality: vol_min/mean="
+                        f"{Q['vol_min_over_mean']:.3f} "
+                        f"(2-D triangle mesh needed for shape "
+                        f"metrics)\n")
+                uw.pprint("  (full metrics: mesh.quality())\n")
+            except Exception:
+                pass
 
             if len(self.vars) > 0:
                 uw.pprint(f"| Variable Name       | component | degree |     type        |")
@@ -1084,10 +1612,646 @@ class Mesh(Stateful, uw_object):
 
         return new_dm_hierarchy
 
+    def extract_region(self, label_name, label_value=None):
+        """Extract a submesh containing only cells with the given region label.
+
+        Uses ``DMPlexFilter`` to create a new mesh sharing exact node
+        positions with the parent. The submesh carries a ``subpoint_is``
+        mapping back to the parent for restrict/prolongate operations,
+        and a ``parent`` reference.
+
+        Boundary labels from the parent survive the filter. For example,
+        an "Internal" boundary on the parent becomes an exterior boundary
+        on the submesh and can be referenced by the same name.
+
+        Parameters
+        ----------
+        label_name : str
+            DM label name identifying the region (e.g., ``"Inner"``).
+        label_value : int, optional
+            Stratum value within the label. If ``None``, uses
+            ``mesh.regions.<label_name>.value`` when available.
+
+        Returns
+        -------
+        Mesh
+            A new mesh covering only the specified region.
+
+        Examples
+        --------
+        >>> full_mesh = uw.meshing.AnnulusInternalBoundary(...)
+        >>> rock_mesh = full_mesh.extract_region("Inner")
+        >>> rock_mesh.parent is full_mesh
+        True
+        """
+        from underworld3.cython.petsc_discretisation import petsc_dm_filter_by_label
+
+        # Resolve label value
+        if label_value is None:
+            if self.regions is not None:
+                try:
+                    label_value = self.regions[label_name].value
+                except KeyError:
+                    raise ValueError(
+                        f"Region '{label_name}' not found. "
+                        f"Available: {[r.name for r in self.regions]}"
+                    )
+            else:
+                raise ValueError(
+                    "No regions defined on this mesh. Provide label_value explicitly."
+                )
+
+        # Filter the DM
+        subdm = petsc_dm_filter_by_label(self.dm, label_name, label_value)
+        subdm.markBoundaryFaces("All_Boundaries", 1001)
+
+        # Build boundaries enum from labels that survived the filter
+        # (DMPlexFilter preserves parent labels on the submesh)
+        surviving = {}
+        if self.boundaries is not None:
+            for b in self.boundaries:
+                if b.name in ("Null_Boundary", "All_Boundaries"):
+                    continue
+                label = subdm.getLabel(b.name)
+                if label:
+                    sis = label.getStratumIS(b.value)
+                    if sis and sis.getSize() > 0:
+                        surviving[b.name] = b.value
+
+        if self.regions is not None:
+            for r in self.regions:
+                label = subdm.getLabel(r.name)
+                if label:
+                    sis = label.getStratumIS(r.value)
+                    if sis and sis.getSize() > 0:
+                        surviving[r.name] = r.value
+
+        sub_boundaries = Enum("Boundaries", surviving) if surviving else None
+
+        # Get the subpoint IS before wrapping (the Mesh constructor may modify the DM)
+        subpoint_is = subdm.getSubpointIS()
+
+        # Construct the submesh
+        sub_mesh = Mesh(
+            subdm,
+            degree=self.degree,
+            qdegree=self.qdegree,
+            boundaries=sub_boundaries,
+            coordinate_system_type=self.CoordinateSystemType,
+            verbose=False,
+        )
+
+        # Store lineage
+        sub_mesh.parent = self
+        sub_mesh.subpoint_is = subpoint_is
+        sub_mesh._parent_mesh_version = self._mesh_version
+        sub_mesh._extract_label_name = label_name
+        sub_mesh._extract_label_value = label_value
+
+        # Inherit regions from parent (for nested extraction)
+        sub_mesh.regions = self.regions
+
+        # Cache for DOF mappings (built lazily on first restrict/prolongate)
+        sub_mesh._dof_maps = {}
+
+        # Build and cache the vertex map now (before any deformation)
+        sub_mesh._build_vertex_map()
+
+        # Register with parent for coordinate sync notifications
+        self._registered_submeshes.add(sub_mesh)
+
+        return sub_mesh
+
+    def extract_surface(self, label_name, label_value=None, verbose=False):
+        """Extract the codimension-1 surface marked by ``label_name`` as a mesh.
+
+        The third submesh flavour (alongside :meth:`extract_region`, which
+        filters cells of the *same* dimension): a *surface submesh* is a real
+        :class:`Mesh` for the parent's codim-1 boundary stratum, sharing exact
+        vertex positions with the parent. On a 3D ``SphericalShell``,
+        ``shell.extract_surface("Upper")`` returns a 2-manifold embedded in
+        3-space (``dim = parent.dim - 1``, ``cdim = parent.cdim``).
+
+        Mechanism: ``DMPlexCreateSubmesh`` on the face label produces a cd-1
+        DM but retains an upward-DAG phantom stratum (one point per parent
+        volume cell) that breaks closure-based navigation; ``DMPlexFilter`` on
+        ``(depth, dim-1)`` strips it, leaving a clean standalone manifold. The
+        two subpoint IS's compose into a single surface→parent point map.
+
+        Parent ↔ submesh DOF transfer reuses :meth:`restrict` / :meth:`prolongate`
+        (the same KDTree coordinate-match-at-1e-10 path as ``extract_region``);
+        surface vertices are an *exact* subset of the parent's, so it is
+        bit-exact.
+
+        Parameters
+        ----------
+        label_name : str
+            Name of the parent boundary label whose marked faces become the
+            cells of the surface submesh (e.g. ``"Upper"``).
+        label_value : int, optional
+            Stratum value within the label. If ``None``, resolved from
+            ``self.boundaries[label_name].value``.
+
+        Returns
+        -------
+        Mesh
+            A surface mesh with ``parent`` set to this mesh and the standard
+            submesh lineage (``subpoint_is``, registration with
+            ``_registered_submeshes``).
+
+        Raises
+        ------
+        ValueError
+            If ``label_name`` is missing from the parent or its face stratum
+            is empty (loud-fail contract — no degenerate-mesh fallback).
+        """
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_create_submesh_from_label,
+            petsc_dm_filter_by_label,
+        )
+
+        # --- resolve the label value (from boundaries, not regions) ---
+        if label_value is None:
+            if self.boundaries is None:
+                raise ValueError(
+                    "No boundaries defined on this mesh. "
+                    "Provide label_value explicitly."
+                )
+            try:
+                label_value = self.boundaries[label_name].value
+            except KeyError:
+                raise ValueError(
+                    f"Boundary '{label_name}' not found on parent mesh. "
+                    f"Available: {[b.name for b in self.boundaries]}"
+                )
+
+        # --- loud-fail if the parent has no faces marked with this label ---
+        # NB: never call getStratumIS(v) for a value not in the live value set
+        # — that hard-aborts PETSc on some labels (cf. the "Centre" pseudo-
+        # label). Probe getValueIS() first.
+        label = self.dm.getLabel(label_name)
+        if label is None:
+            raise ValueError(
+                f"Parent DM has no label '{label_name}'. "
+                f"Cannot extract a surface submesh from it."
+            )
+        vals_is = label.getValueIS()
+        live_values = (
+            set(int(v) for v in vals_is.getIndices())
+            if vals_is is not None else set()
+        )
+        if int(label_value) not in live_values:
+            raise ValueError(
+                f"Label '{label_name}' has no stratum with value {label_value} "
+                f"on the parent (live values: {sorted(live_values)}). "
+                f"There is no surface to extract."
+            )
+        sis = label.getStratumIS(label_value)
+        if sis is None or sis.getSize() == 0:
+            raise ValueError(
+                f"Label '{label_name}' (value {label_value}) has an empty face "
+                f"stratum on the parent. There is no surface to extract."
+            )
+
+        # Stage 1: cd-1 DM (with the phantom upward-DAG stratum).
+        sub_with_phantoms = petsc_dm_create_submesh_from_label(
+            self.dm, label_name, label_value, marked_faces=True,
+        )
+        # Stage 2: strip the phantom — keep only the surface cells (height-0
+        # of the cd-1 chart, i.e. depth dim-1) and their downward closure.
+        surf_dm = petsc_dm_filter_by_label(
+            sub_with_phantoms, "depth", self.dim - 1,
+        )
+
+        # Compose the two subpoint maps (surf -> sub1 -> parent) BEFORE the
+        # Mesh constructor wraps the DM (constructor side-effects can
+        # invalidate cached IS handles).
+        stage1_sp = sub_with_phantoms.getSubpointIS()
+        stage2_sp = surf_dm.getSubpointIS()
+        composed_indices = stage1_sp.getIndices()[stage2_sp.getIndices()]
+        subpoint_is = PETSc.IS().createGeneral(
+            composed_indices, comm=surf_dm.getComm(),
+        )
+
+        # Surviving boundaries: enumerate the SUBMESH's labels by index
+        # (probing parent labels by name on a submesh DM can hard-abort), and
+        # get each label's live value set before asking for any stratum.
+        sub_boundaries = None
+        if self.boundaries is not None:
+            parent_by_name = {b.name: b.value for b in self.boundaries}
+            surviving = {}
+            for i in range(surf_dm.getNumLabels()):
+                name = surf_dm.getLabelName(i)
+                if name not in parent_by_name:
+                    continue  # internal PETSc label (celltype, depth)
+                if name in ("Null_Boundary", "All_Boundaries", "Centre"):
+                    continue
+                lab = surf_dm.getLabel(name)
+                if lab is None:
+                    continue
+                try:
+                    vis = lab.getValueIS()
+                    vals = (
+                        set(int(v) for v in vis.getIndices())
+                        if vis is not None else set()
+                    )
+                except Exception:
+                    continue
+                pv = parent_by_name[name]
+                if pv not in vals:
+                    continue
+                lsis = lab.getStratumIS(pv)
+                if lsis is not None and lsis.getSize() > 0:
+                    surviving[name] = pv
+            sub_boundaries = Enum("Boundaries", surviving) if surviving else None
+
+        # Construct the surface Mesh (dim = parent.dim - 1, cdim preserved).
+        surf_mesh = Mesh(
+            surf_dm,
+            degree=self.degree,
+            qdegree=self.qdegree,
+            boundaries=sub_boundaries,
+            coordinate_system_type=self.CoordinateSystemType,
+            verbose=verbose,
+        )
+
+        # Submesh lineage — same shape as extract_region
+        surf_mesh.parent = self
+        surf_mesh.subpoint_is = subpoint_is
+        surf_mesh._parent_mesh_version = self._mesh_version
+        surf_mesh._extract_label_name = label_name
+        surf_mesh._extract_label_value = label_value
+        surf_mesh._is_surface_submesh = True  # disambiguates from extract_region
+        surf_mesh.regions = self.regions
+        surf_mesh._dof_maps = {}
+
+        # Vertex map (sub_rows -> parent_rows for coincident verts). Inlined
+        # via a KDTree on the coordinate arrays rather than
+        # ``_build_vertex_map`` (which assumes ``X._get_kdtree`` — broken for
+        # both submesh flavours, UW3 issue #197). Surface vertices are an
+        # exact subset of the parent's, so the 1e-10 match is bit-exact.
+        import underworld3 as _uw
+        sub_coords = numpy.asarray(surf_mesh._coords)
+        parent_coords = numpy.asarray(self._coords)
+        tree = _uw.kdtree.KDTree(sub_coords)
+        dists, indices = tree.query(parent_coords, sqr_dists=False)
+        dists = numpy.asarray(dists).reshape(-1)
+        indices = numpy.asarray(indices).reshape(-1)
+        matched = dists < 1.0e-10
+        surf_mesh._vertex_map = (indices[matched], numpy.where(matched)[0])
+
+        # Register with parent for coordinate sync notifications
+        self._registered_submeshes.add(surf_mesh)
+
+        return surf_mesh
+
+    def _build_vertex_map(self):
+        """Build vertex index mapping between submesh and parent.
+
+        Uses coordinate matching at extraction time (before any
+        deformation). Cached permanently since topology doesn't change.
+        """
+        if hasattr(self, "_vertex_map") and self._vertex_map is not None:
+            return self._vertex_map
+
+        # Build a KDTree directly on the coordinate arrays rather than
+        # ``self.X._get_kdtree()`` — ``mesh.X`` is a CoordinateSystem, which has
+        # no ``_get_kdtree`` (that lives on MeshVariable/swarm vars), so the old
+        # call raised AttributeError on every extract_region (UW3 issue #197).
+        # This mirrors the proven inline path in ``extract_surface``: submesh
+        # vertices are an exact subset of the parent's, so the 1e-10 coincidence
+        # match is bit-exact.
+        import underworld3 as _uw
+
+        sub_coords = numpy.asarray(self._coords)
+        parent_coords = numpy.asarray(self.parent._coords)
+        tree = _uw.kdtree.KDTree(sub_coords)
+        dists, indices = tree.query(parent_coords, sqr_dists=False)
+        dists = numpy.asarray(dists).reshape(-1)
+        indices = numpy.asarray(indices).reshape(-1)
+        matched = dists < 1.0e-10
+
+        # parent_rows[i] -> sub_rows[i]: matched vertex pairs
+        parent_rows = numpy.where(matched)[0]
+        sub_rows = indices[matched]
+
+        self._vertex_map = (sub_rows, parent_rows)
+        return self._vertex_map
+
+    def sync_coordinates_from_parent(self):
+        """Update submesh coordinates from the parent mesh.
+
+        Called automatically when the parent mesh deforms. Uses the
+        cached vertex map to copy parent vertex positions to the
+        submesh, then calls ``_deform_mesh`` to rebuild geometry.
+
+        Raises
+        ------
+        ValueError
+            If this mesh has no parent.
+        """
+        if self.parent is None:
+            raise ValueError("sync_coordinates_from_parent requires a submesh")
+
+        sub_rows, parent_rows = self._build_vertex_map()
+
+        new_sub_coords = numpy.array(self.X.coords)
+        new_sub_coords[sub_rows] = self.parent.X.coords[parent_rows]
+
+        # Submesh follows its parent's geometry; this is a sanctioned
+        # internal coordinate move (the parent owns the transfer).
+        with self._coord_mutation():
+            self._deform_mesh(new_sub_coords)
+        self._parent_mesh_version = self.parent._mesh_version
+
+    def _re_extract_from_parent(self, verbose=False):
+        """Re-extract this submesh from the adapted parent mesh.
+
+        Called automatically when the parent mesh adapts. Replaces the
+        DM, rebuilds coordinates and vertex map, and reinitialises all
+        MeshVariables on the new submesh (reset to zero).
+
+        The Python object is updated in-place — external references
+        to this submesh remain valid.
+        """
+        import underworld3 as uw
+        from underworld3.cython.petsc_discretisation import petsc_dm_filter_by_label
+
+        if self.parent is None:
+            raise ValueError("_re_extract_from_parent requires a submesh")
+
+        # Find which region label this submesh was extracted from
+        # (stored at extraction time)
+        if not hasattr(self, '_extract_label_name') or not hasattr(self, '_extract_label_value'):
+            raise RuntimeError(
+                "Cannot re-extract: submesh doesn't know its extraction label. "
+                "Was it created with extract_region()?"
+            )
+
+        label_name = self._extract_label_name
+        label_value = self._extract_label_value
+
+        if verbose:
+            uw.pprint(0, f"Re-extracting submesh '{label_name}' from adapted parent...")
+
+        # Extract new DM
+        new_subdm = petsc_dm_filter_by_label(self.parent.dm, label_name, label_value)
+        new_subdm.markBoundaryFaces("All_Boundaries", 1001)
+
+        # Back up old variable data and coordinates for interpolation
+        old_vars = {}
+        old_var_backups = {}
+        for var_name, var in self._vars.items():
+            if var is not None:
+                old_vars[var_name] = var
+                try:
+                    if var._lvec is not None and var.data.size > 0:
+                        old_var_backups[var_name] = (
+                            numpy.array(var.coords),  # old DOF coords
+                            numpy.array(var.data),     # old DOF values
+                        )
+                except Exception:
+                    pass
+
+        # Update DM in-place
+        with self._mesh_update_lock:
+            self.dm = new_subdm
+            self.subpoint_is = new_subdm.getSubpointIS()
+
+            # Rebuild coordinates
+            self._coords = uw.utilities.NDArray_With_Callback(
+                numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
+                owner=self,
+            )
+
+            def mesh_update_callback(array, change_context):
+                mesh = array.owner
+                if mesh is None:
+                    return
+
+                coords = array.reshape(-1, mesh.cdim)
+                mesh._deform_mesh(coords, verbose=False)
+                with mesh._mesh_update_lock:
+                    mesh._mesh_version += 1
+                return
+
+            self._coords.add_callback(mesh_update_callback)
+
+            self._mesh_version += 1
+            self._topology_version += 1
+            self.nuke_coords_and_rebuild(verbose=False)
+
+        # Rebuild vertex map (for restrict/prolongate)
+        self._vertex_map = None
+        self._build_vertex_map()
+
+        # Invalidate DOF maps
+        self._dof_maps = {}
+
+        # Reinitialise variables on the new DM
+        for var_name, old_var in old_vars.items():
+            try:
+                if old_var._lvec is not None:
+                    old_var._lvec.destroy()
+                    old_var._lvec = None
+                if old_var._gvec is not None:
+                    old_var._gvec.destroy()
+                    old_var._gvec = None
+                if hasattr(old_var, '_canonical_data'):
+                    old_var._canonical_data = None
+                if hasattr(old_var, '_cached_data_array'):
+                    old_var._cached_data_array = None
+
+                old_var._setup_ds()
+                old_var._set_vec(available=True)
+
+                # Interpolate from backed-up data via kd-tree IDW
+                if var_name in old_var_backups:
+                    try:
+                        old_coords, old_data = old_var_backups[var_name]
+                        new_coords = old_var.coords
+
+                        tree = uw.kdtree.KDTree(old_coords)
+                        nnn = 3 if self.dim == 2 else 4
+                        dists, indices = tree.query(new_coords, k=nnn, sqr_dists=False)
+
+                        # Inverse distance weighting
+                        weights = 1.0 / (dists + 1e-30)
+                        weights /= weights.sum(axis=1, keepdims=True)
+                        new_data = numpy.zeros_like(old_var.data)
+                        for i in range(nnn):
+                            new_data += weights[:, i:i+1] * old_data[indices[:, i]]
+
+                        old_var.pack_raw_data_to_petsc(new_data, sync=True)
+                        if verbose:
+                            uw.pprint(0, f"  Submesh variable '{var_name}' transferred")
+                    except Exception as e2:
+                        if verbose:
+                            uw.pprint(0, f"  Submesh variable '{var_name}' reset (transfer failed: {e2})")
+                else:
+                    if verbose:
+                        uw.pprint(0, f"  Submesh variable '{var_name}' reset")
+            except Exception as e:
+                if verbose:
+                    uw.pprint(0, f"  Warning: failed to reinitialise '{var_name}': {e}")
+
+        # Mark solvers for rebuild
+        for solver in self._equation_systems_register:
+            if solver is not None and hasattr(solver, 'is_setup'):
+                solver.is_setup = False
+
+        # Clear caches
+        self._evaluation_hash = None
+        self._evaluation_interpolated_results = None
+        if hasattr(self, '_dminterpolation_cache'):
+            self._dminterpolation_cache.invalidate_all(reason="submesh_re_extraction")
+
+        self._parent_mesh_version = self.parent._mesh_version
+
+        if verbose:
+            uw.pprint(0, f"  Submesh re-extracted: {self.dm.getChart()}")
+
+    def _build_dof_map(self, parent_var, sub_var):
+        """Build a DOF-level index mapping between parent and submesh variables.
+
+        Uses coordinate matching on DOF coordinates (exact match from
+        DMPlexFilter shared nodes). Cached per variable pair.
+
+        Returns (sub_rows, parent_rows) — numpy arrays of matching DOF indices.
+        """
+        import numpy as np
+
+        key = (id(parent_var), id(sub_var))
+        if key in self._dof_maps:
+            return self._dof_maps[key]
+
+        tree = sub_var._get_kdtree()
+        dists, indices = tree.query(parent_var.coords_nd, sqr_dists=False)
+        matched = dists < 1.0e-10
+
+        # indices[matched] maps parent row → sub row
+        parent_rows = np.where(matched)[0]
+        sub_rows = indices[matched]
+
+        if len(sub_rows) != sub_var.data.shape[0]:
+            import warnings
+            warnings.warn(
+                f"DOF mapping: matched {len(sub_rows)} of "
+                f"{sub_var.data.shape[0]} submesh DOFs"
+            )
+
+        result = (sub_rows, parent_rows)
+        self._dof_maps[key] = result
+        return result
+
+    def restrict(self, parent_var, sub_var, mode="replace"):
+        """Copy data from a parent-mesh variable to a submesh variable.
+
+        Parameters
+        ----------
+        parent_var : MeshVariable
+            Source variable on the parent mesh.
+        sub_var : MeshVariable
+            Destination variable on this (sub)mesh.
+        mode : str
+            ``"replace"`` overwrites submesh values (INSERT_VALUES).
+            ``"add"`` adds parent values into submesh (ADD_VALUES).
+
+        Raises
+        ------
+        ValueError
+            If this mesh has no parent, or the variable meshes don't match.
+        """
+        if self.parent is None:
+            raise ValueError("restrict requires a submesh (parent is None)")
+        if parent_var.mesh is not self.parent:
+            raise ValueError("parent_var must be on this mesh's parent")
+        if sub_var.mesh is not self:
+            raise ValueError("sub_var must be on this mesh")
+
+        sub_rows, parent_rows = self._build_dof_map(parent_var, sub_var)
+
+        # Copy, modify, then write through pack_raw_data_to_petsc
+        # to properly sync the PETSc Vec without callback issues
+        new_data = numpy.array(sub_var.data)
+
+        if mode == "replace":
+            new_data[sub_rows] = parent_var.data[parent_rows]
+        elif mode == "add":
+            new_data[sub_rows] += parent_var.data[parent_rows]
+        else:
+            raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
+
+        sub_var.pack_raw_data_to_petsc(new_data, sync=True)
+
+    def prolongate(self, sub_var, parent_var, mode="replace"):
+        """Copy data from a submesh variable to a parent-mesh variable.
+
+        Parameters
+        ----------
+        sub_var : MeshVariable
+            Source variable on this (sub)mesh.
+        parent_var : MeshVariable
+            Destination variable on the parent mesh.
+        mode : str
+            ``"replace"`` overwrites parent values at submesh DOFs.
+            ``"add"`` adds submesh values into parent.
+
+        Raises
+        ------
+        ValueError
+            If this mesh has no parent, or the variable meshes don't match.
+        """
+        if self.parent is None:
+            raise ValueError("prolongate requires a submesh (parent is None)")
+        if parent_var.mesh is not self.parent:
+            raise ValueError("parent_var must be on this mesh's parent")
+        if sub_var.mesh is not self:
+            raise ValueError("sub_var must be on this mesh")
+
+        sub_rows, parent_rows = self._build_dof_map(parent_var, sub_var)
+
+        new_data = numpy.array(parent_var.data)
+
+        if mode == "replace":
+            new_data[parent_rows] = sub_var.data[sub_rows]
+        elif mode == "add":
+            new_data[parent_rows] += sub_var.data[sub_rows]
+        else:
+            raise ValueError(f"mode must be 'replace' or 'add', got '{mode}'")
+
+        parent_var.pack_raw_data_to_petsc(new_data, sync=True)
+
+        parent_var._data_is_dirty = True
+
     def nuke_coords_and_rebuild(
         self,
         verbose=False,
+        active_vars=None,
     ):
+        """Rebuild DM/DS, the kd-tree, mesh sizes, and per-variable DOF
+        coordinate caches after a coordinate change.
+
+        ``active_vars`` (optional set/list of MeshVariables): restrict
+        the per-variable DOF coordinate-cache recomputation to this set.
+        When ``None`` (default) every registered variable is
+        recomputed eagerly, matching the BUGFIX(#130) collective-safe
+        behaviour. Movers that thread their own work-vars through
+        ``_deform_mesh(..., active_vars=...)`` skip recomputing the
+        non-mover variables n_outer× during the inner sweep; the
+        wrapper does one final ``_deform_mesh`` (or a direct
+        ``nuke_coords_and_rebuild()``) with ``active_vars=None`` at
+        sweep exit to bring the full cache back into sync.
+
+        Naming note: "nuke and rebuild" historically referred to the
+        DS+DM tear-down/recreate; what was called "refill" of the
+        per-variable cache (line 1890 in the old code) is in fact
+        *recomputation* of each variable's DOF coordinates from the new
+        mesh coordinates — the storage is per-variable, the values are
+        derived. The ``active_vars`` whitelist controls which of those
+        recomputations runs now versus deferring to the next full
+        rebuild.
+        """
         # This is a reversion to the old version (3.15 compatible which seems to work in 3.16 too)
         #
         #
@@ -1131,11 +2295,25 @@ class Mesh(Stateful, uw_object):
 
         if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
             self.dm.projectCoordinates(self.petsc_fe)
+        elif hasattr(self.dm, "createCoordinateSpace"):
+            # Use createCoordinateSpace rather than setCoordinateDisc.
+            # setCoordinateDisc with a user-created FE leaves the coordinate
+            # dual space without proper point subspaces, causing
+            # DMPlexComputeBdIntegral to segfault/deadlock (issue #96).
+            # createCoordinateSpace builds the FE internally with correct
+            # subspace initialisation.
+            self.dm.createCoordinateSpace(self.degree, False, True)
+
+            # Issue #96 fix: Force coordinate field creation and strip
+            # boundary labels from the coordinate DM. createCoordinateSpace
+            # clears the coordinate field cache. Without this, BdIntegral
+            # lazily recreates the field by cloning mesh.dm (with boundary
+            # labels), causing DMCompleteBCLabels_Internal MPI errors.
+            from underworld3.cython.petsc_maths import dm_force_coordinate_field
+            dm_force_coordinate_field(self.dm)
         elif PETSc.Sys.getVersion() >= (3, 24, 0):
-            # PETSc 3.24+ added 'localized' parameter (for DG coordinate spaces)
             self.dm.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
         else:
-            # PETSc 3.21-3.23: older signature without localized parameter
             self.dm.setCoordinateDisc(disc=self.petsc_fe, project=False)
 
         if verbose and uw.mpi.rank == 0:
@@ -1180,7 +2358,89 @@ class Mesh(Stateful, uw_object):
             self._search_lengths,
         ) = self._get_mesh_sizes()
 
-        self.dm.copyDS(self.dm_hierarchy[-1])
+        # Skip self-copy when hierarchy is trivial (issue #96 investigation)
+        if self.dm is not self.dm_hierarchy[-1]:
+            self.dm.copyDS(self.dm_hierarchy[-1])
+
+        # Invalidate projected boundary normals (rebuilt lazily on access)
+        self._projected_normals = None
+        # Per-boundary deformation-tracking normals are stale now too. The
+        # variables persist (we keep the name->var map); their DATA is refilled
+        # eagerly by Mesh.deform() after the remesh completes, so BCs that
+        # captured boundary_normal(...).sym at setup read the new geometry.
+
+        # BUGFIX(#135): invalidate the per-cell face control-point arrays.
+        # These are populated lazily by _get_mesh_face_control_points, sized
+        # (num_faces, num_local_cells, dim). After mesh.adapt() the new mesh
+        # has a different cell count, so the stale arrays from the old mesh
+        # would be indexed with new-mesh cell IDs in
+        # _test_if_points_in_cells_internal — producing IndexError when the
+        # new cell count exceeds the old one (and silent corruption otherwise).
+        self.faces_outer_control_points = None
+        self.faces_inner_control_points = None
+
+        # BUGFIX (deformed-domain membership): also invalidate the boundary-
+        # skeleton kd-tree used by points_in_domain() (and the SL out-of-domain
+        # restore). It is cached from the boundary geometry and was only rebuilt
+        # on adapt. After a DEFORM the surface has moved, so the stale control
+        # points (at the OLD boundary) wrongly flag a bulged-out region (r>r_o
+        # on a free surface) as EXTERIOR — stranding semi-Lagrangian trace-back
+        # feet there and mis-locating evaluations, which injects the cold
+        # boundary value at the topographic highs (upwellings). Rebuilt lazily
+        # from the deformed boundary on next points_in_domain() access.
+        self.boundary_face_control_points_kdtree = None
+        self.boundary_face_control_points_sign = None
+        self._domain_radius_squared = float("inf")
+
+        # The navigation coords (used to build those control points and for
+        # point location) were captured as a reference to the ORIGINAL coords
+        # in __init__ and never refreshed here, so on a volume mesh they stayed
+        # at the undeformed geometry — the real reason a bulged-out region read
+        # as exterior. Re-point them at the current (deformed) DM coordinates.
+        if getattr(self, "_nav_dm", None) is None:
+            self._nav_coords = numpy.asarray(
+                self.dm.getCoordinatesLocal().array
+            ).reshape(-1, self.cdim)
+        else:
+            # manifold mesh: the nav clone carries its own (ghosted) coords;
+            # refresh them from the rebuilt main DM where possible.
+            try:
+                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
+                self._nav_coords = numpy.asarray(
+                    self._nav_dm.getCoordinatesLocal().array
+                ).reshape(-1, self.cdim)
+            except Exception:
+                pass
+
+        # BUGFIX(#130): recompute the DOF coordinate cache for every
+        # already-registered variable. Variables created before this
+        # rebuild would otherwise have their cache entry (from __init__)
+        # wiped above and recompute lazily from rank-local code paths
+        # (rbf_interpolate), which deadlocks when the collectives
+        # inside _get_coords_for_basis are reached by only a subset of
+        # ranks.
+        #
+        # ``active_vars`` (Phase-1 remesh redesign): when set, restrict
+        # the recompute to the listed variables. Movers in
+        # smoothing.py thread their work-vars during the inner sweep so
+        # the n_outer× recompute of user fields (T, V, P, every
+        # psi_star, ...) is paid only once at sweep exit. The collective
+        # safety property (#130) is preserved because the mover is
+        # itself collective — every rank passes the same active set —
+        # and the sweep wrapper does one full recompute at exit.
+        if active_vars is None:
+            _recompute = list(self.vars.values())
+        else:
+            # Map identity-equal lookup; tolerate either base or wrapper
+            # variables in the whitelist (mesh.vars stores base vars but
+            # callers commonly pass the user-visible wrapper).
+            _ids = set()
+            for v in active_vars:
+                _ids.add(id(v))
+                _ids.add(id(getattr(v, "_base_var", None)))
+            _recompute = [v for v in self.vars.values() if id(v) in _ids]
+        for _var in _recompute:
+            self._get_coords_for_var(_var)
 
         if verbose and uw.mpi.rank == 0:
             print(
@@ -1189,6 +2449,476 @@ class Mesh(Stateful, uw_object):
             )
 
         return
+
+    def _update_projected_normals(self):
+        """Project PETSc face normals (Gamma) onto a P1 field and normalise.
+
+        Creates ``_projected_normals`` on first call, updates in-place
+        thereafter. The result is a smooth, consistently-oriented unit
+        normal field that works well for penalty and Nitsche BCs on
+        curved boundaries.
+
+        NOTE: this GLOBAL field point-evaluates ``mesh.Gamma`` whose petsc_n
+        only exists in surface-integral kernels, so it falls back to the
+        coordinate (radial for a circle) and does NOT track a deformed
+        surface. For deformation-aware, corner-correct normals use the
+        per-boundary :meth:`boundary_normal` (which ``add_nitsche_bc`` now
+        uses). This global field is retained unchanged for back-compat.
+        """
+        import underworld3 as uw
+
+        Gamma = self.Gamma
+
+        if not hasattr(self, '_projected_normals') or self._projected_normals is None:
+            existing = self.vars.get("_n_proj")
+            if existing is not None:
+                self._projected_normals = existing
+            else:
+                self._projected_normals = uw.discretisation.MeshVariable(
+                    "_n_proj", self, self.cdim, degree=1,
+                    remesh_policy="reinit",
+                )
+
+        n = self._projected_normals
+        for i in range(self.cdim):
+            n.data[:, i] = uw.function.evaluate(Gamma[i], n.coords).flatten()
+
+        mag = numpy.sqrt(numpy.sum(n.data ** 2, axis=1))
+        nonzero = mag > 1.0e-30
+        n.data[nonzero] /= mag[nonzero, numpy.newaxis]
+
+    def boundary_normal(self, boundary):
+        """Outward unit normal of a single boundary, tracking deformation.
+
+        Assembles the EXACT, outward, area-weighted PETSc facet normals
+        (``dm.computeCellGeometryFVM``) from ONLY this boundary's facets onto
+        its P1 vertices. Because each boundary is assembled independently,
+        a vertex shared by two boundaries (a sharp corner) is NOT averaged
+        across the discontinuity — each boundary keeps its own normal. On a
+        smooth boundary (e.g. a free surface) the result is the smooth
+        deformed normal. Cached per boundary; rebuilt lazily after a deform.
+
+        Returns a sympy Matrix (row) of the P1 normal-field components, for
+        use as the constraint direction in Nitsche/penalty BCs.
+
+        Parameters
+        ----------
+        boundary : str or enum
+            Boundary label name (or a ``mesh.boundaries`` enum member).
+        """
+        import underworld3 as uw
+
+        name = getattr(boundary, "name", str(boundary))
+        if not hasattr(self, "_boundary_normal_vars") or self._boundary_normal_vars is None:
+            self._boundary_normal_vars = {}
+        var = self._boundary_normal_vars.get(name)
+        if var is None:
+            existing = self.vars.get(f"_n_bd_{name}")
+            var = existing if existing is not None else uw.discretisation.MeshVariable(
+                f"_n_bd_{name}", self, self.cdim, degree=1, remesh_policy="reinit")
+            self._boundary_normal_vars[name] = var
+        self._assemble_boundary_normal(var, name)
+        return var.sym
+
+    def _assemble_boundary_normal(self, var, name):
+        """Fill ``var`` with the area-weighted outward facet normal assembled
+        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
+        from scipy.spatial import cKDTree
+        cdim = self.cdim
+        dm = self.dm
+        coords = numpy.ascontiguousarray(var.coords)
+        accum = numpy.zeros((coords.shape[0], cdim))
+
+        # faces carrying this boundary label: DM label named after the boundary,
+        # stratum keyed by the boundary's value (same access the BC code uses).
+        bvalue = None
+        for b in (self.boundaries or []):
+            if b.name == name:
+                bvalue = b.value
+                break
+        face_pts = []
+        label = dm.getLabel(name) if dm.hasLabel(name) else None
+        if label is not None and bvalue is not None:
+            # NB: getStratumIS(value) for a value NOT in this rank's live value
+            # set can hard-abort the interpreter (e.g. a rank holding no faces
+            # of this boundary in parallel). Only query a live value.
+            try:
+                vis = label.getValueIS()
+                live = set(int(x) for x in vis.getIndices()) if vis.getSize() else set()
+            except Exception:
+                live = set()
+            if int(bvalue) in live:
+                pis = label.getStratumIS(bvalue)
+                if pis is not None and pis.getSize():
+                    fS, fE = dm.getHeightStratum(1)
+                    for p in pis.getIndices():
+                        if fS <= int(p) < fE:
+                            face_pts.append(int(p))
+
+        tree = cKDTree(coords)
+        # P1 vertices per facet, counted from the facet's own closure so this
+        # works for non-simplex facets too (2D edge=2, 3D tri=3, 3D quad=4).
+        vStart, vEnd = dm.getDepthStratum(0)
+        for f in face_pts:
+            if dm.getSupportSize(f) != 1:
+                continue
+            area, cent, nrm = dm.computeCellGeometryFVM(f)
+            nrm = numpy.asarray(nrm)[:cdim]
+            cell = dm.getSupport(f)[0]
+            _, ccent, _ = dm.computeCellGeometryFVM(cell)
+            if numpy.dot(nrm, numpy.asarray(cent)[:cdim]
+                         - numpy.asarray(ccent)[:cdim]) < 0:
+                nrm = -nrm
+            _clo = dm.getTransitiveClosure(f)[0]
+            nverts = int(numpy.count_nonzero((_clo >= vStart) & (_clo < vEnd))) or cdim
+            # Accumulate to the facet's P1 DOFs (its vertices) — found as the
+            # nearest DOFs to the facet centroid. This avoids indexing the local
+            # coordinate array by (vertex_point - vStart), which is only valid
+            # in serial (the parallel coordinate layout differs → out-of-range).
+            # Normalisation at the end makes the per-DOF weight (full vs share)
+            # irrelevant to the resulting direction.
+            _, idxs = tree.query(numpy.asarray(cent)[:cdim], k=nverts)
+            for idx in numpy.atleast_1d(idxs):
+                accum[idx] += area * nrm
+
+        # TODO(parallel): a boundary vertex on a partition interface should
+        # ADD-reduce the UNnormalised facet contributions from both ranks before
+        # normalising (DMLocalToGlobal ADD_VALUES on the variable's section),
+        # so its normal is the full-stencil average rather than this rank's
+        # partial stencil. This is parallel-SAFE as-is (rank-interior boundary
+        # vertices are exact; only the handful of partition-seam surface
+        # vertices get a slightly-rotated unit normal). A first ADD-reduce
+        # attempt SEGV'd on the lazily-built work variable's global vec; deferred
+        # to a focused follow-up with the right vec/section plumbing.
+        mag = numpy.sqrt(numpy.sum(accum ** 2, axis=1))
+        nonzero = mag > 1.0e-30
+        accum[nonzero] /= mag[nonzero, numpy.newaxis]
+        var.data[...] = accum
+
+    def cell_size(self):
+        """Local, per-cell characteristic mesh size as a scalar field symbol.
+
+        Returns the ``.sym`` of a cell-constant (degree-0, discontinuous)
+        scalar MeshVariable holding each cell's characteristic length (the
+        ``volume**(1/dim)`` equivalent radius, i.e. ``self._radii``). Unlike
+        the single *global* scalar from :meth:`get_min_radius` (the smallest
+        cell anywhere), this varies cell to cell, so a stabilisation that
+        scales as :math:`1/h` — e.g. the Nitsche free-slip penalty
+        :math:`\\gamma\\mu/h` — is correctly scaled on every facet of a
+        non-uniform or adaptively-refined mesh rather than using the global
+        minimum (which over-penalises coarse cells and drifts as refinement
+        changes the global min).
+
+        On a boundary integral the kernel sees the value of the cell adjacent
+        to the facet. The field is cached and rebuilt lazily; its data is
+        refreshed when the mesh deforms or is adapted (see :meth:`deform`),
+        so it tracks a moving / re-refined mesh — a stale size on a deformed
+        mesh would re-introduce the mis-scaling.
+
+        On a uniform mesh every cell is the same size, so this reduces to the
+        global ``get_min_radius`` value everywhere and existing behaviour is
+        preserved to tolerance.
+
+        Returns
+        -------
+        sympy scalar
+            The cell-size field symbol, for use in JIT-compiled residuals.
+        """
+        var = self._cell_size_var()
+        return var.sym[0]
+
+    def _cell_size_var(self):
+        """Lazily create / fetch the per-cell size MeshVariable (filled).
+
+        Mirrors the per-boundary normal machinery (:meth:`boundary_normal`):
+        a small ``reinit`` MeshVariable owned by the mesh, refreshed from the
+        current geometry. The reinit callback re-fills it during any remesh
+        transaction (deform / mover sweep), and :meth:`deform` / :meth:`adapt`
+        re-fill it explicitly so BCs that captured ``cell_size()`` at setup
+        read the new geometry at solve time.
+        """
+        import underworld3 as uw
+
+        if getattr(self, "_cell_size_variable", None) is None:
+            existing = self.vars.get("_h_cell")
+            var = existing if existing is not None else uw.discretisation.MeshVariable(
+                "_h_cell", self, 1, degree=0, continuous=False,
+                remesh_policy="reinit")
+            self._cell_size_variable = var
+
+            def _refresh():
+                try:
+                    self._assemble_cell_size(var)
+                except Exception:
+                    pass
+
+            var._remesh_reinit_callback = _refresh
+
+        self._assemble_cell_size(self._cell_size_variable)
+        return self._cell_size_variable
+
+    def _assemble_cell_size(self, var):
+        """Fill ``var`` (degree-0 scalar) with each cell's characteristic size.
+
+        Uses the per-cell characteristic lengths ``self._radii`` computed by
+        :meth:`_get_mesh_sizes` on the *current* geometry. A degree-0
+        discontinuous variable's local DOFs and ``self._radii`` are BOTH
+        indexed by this rank's cell-stratum order, so a direct assignment is
+        correct on every rank.
+
+        This is deliberately a purely RANK-LOCAL operation (no ``var.coords``
+        access, no collective): mixing a rank-local fast path with a
+        collective fallback would diverge across ranks and deadlock, because
+        ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
+        radii = numpy.asarray(self._radii).reshape(-1)
+        # Empty partition (no local cells): nothing to fill on this rank.
+        if radii.size == 0 or var.data.shape[0] == 0:
+            return
+        # Assign over the common length. In practice these match exactly (same
+        # local cell set / ordering); the slice only guards a stray off-by-ghost
+        # mismatch without ever taking a collective path on a subset of ranks.
+        n = min(var.data.shape[0], radii.shape[0])
+        var.data[:n, 0] = radii[:n]
+
+    @property
+    def Gamma_P1(self):
+        """Projected P1 boundary normals as a sympy Matrix.
+
+        Returns the normalised, vertex-averaged PETSc face normals
+        as a smooth P1 field. Preferred over :attr:`Gamma_N` for
+        penalty and Nitsche BCs on curved boundaries — gives
+        consistent orientation and better convergence in 3D.
+
+        Automatically updated when the mesh deforms.
+        """
+        if not hasattr(self, '_projected_normals') or self._projected_normals is None:
+            self._update_projected_normals()
+        return self._projected_normals.sym
+
+    # ===================================================================
+    #  Bounding surfaces — per-surface tangent-slip + restore.
+    #  See docs/developer/design/boundary-slip-strategy.md. SEPARATE from
+    #  self.boundaries (the persisted gmsh/DMPlex labelling, untouched).
+    # ===================================================================
+    @property
+    def bounding_surfaces(self):
+        """Mapping ``{label: BoundingSurface}`` of this mesh's registered
+        bounding-surface objects (tangent-slip + restore).
+
+        This is a NEW collection, separate from and additional to
+        :attr:`boundaries` (the persisted gmsh/DMPlex label ``Enum``, left
+        untouched). Populated by analytic-geometry constructors (Annulus,
+        SphericalShell, CubedSphere, box meshes); user-extendable via
+        :meth:`register_tangent_slip_provider`.
+        """
+        if not hasattr(self, "_bounding_surfaces") or self._bounding_surfaces is None:
+            self._bounding_surfaces = {}
+        return self._bounding_surfaces
+
+    def register_tangent_slip_provider(self, label, surface):
+        """Install a :class:`BoundingSurface` object for a boundary ``label``
+        (separate from the persisted ``mesh.boundaries`` labelling).
+
+        Lets a user declare a custom analytic surface (e.g. an ellipsoid) the
+        constructors don't know about, or replace one (free-surface release).
+        """
+        from underworld3.meshing.bounding_surface import BoundingSurface
+        if not isinstance(surface, BoundingSurface):
+            raise TypeError(
+                "surface must be a BoundingSurface; got "
+                f"{type(surface).__name__}")
+        self.bounding_surfaces[str(label)] = surface
+        return surface
+
+    def _resolve_slip_spec(self, slip_spec):
+        """Resolve a ``slip_spec`` to ``(slip_labels tuple, free_labels set)``.
+
+        Back-compatible forms: ``True``/``"all"``/``"ring"``/``"box"`` → all
+        geometric boundary labels; ``False``/``None`` → none; a label name; a
+        list of labels; a ``dict {label: snap_bool}`` (``False`` = free
+        surface, slip but do not restore).
+        """
+        from underworld3.meshing.smoothing import _auto_pinned_labels
+        geo = _auto_pinned_labels(self)
+        if slip_spec is None or slip_spec is False:
+            return (), set()
+        if slip_spec is True:
+            return tuple(geo), set()
+        if isinstance(slip_spec, dict):
+            return tuple(slip_spec.keys()), {k for k, v in slip_spec.items() if not v}
+        if isinstance(slip_spec, str):
+            s = slip_spec.strip().lower()
+            if s in ("true", "on", "1", "all", "ring", "box", "axes", "axis"):
+                return tuple(geo), set()
+            if s in ("false", "off", "0", "none", ""):
+                return (), set()
+            return (slip_spec,), set()
+        return tuple(slip_spec), set()
+
+    def restore_to_surface(self, coords, label):
+        """Snap ``coords`` onto the named bounding surface (delegates to the
+        surface object's ``restore``)."""
+        return self.bounding_surfaces[str(label)].restore(
+            numpy.asarray(coords, dtype=float))
+
+    def tangent_project(self, coords, label, reference):
+        """Tangent-slide ``coords`` (displacement measured from ``reference``)
+        on the named bounding surface (delegates to the surface object)."""
+        return self.bounding_surfaces[str(label)].tangent_project(
+            numpy.asarray(coords, dtype=float),
+            numpy.asarray(reference, dtype=float))
+
+    def boundary_slip(self, slip_spec=True, reference_coords=None,
+                      boundary_labels=None):
+        """Build ``(is_pinned, project)`` for tangent slip on this mesh's
+        bounding surfaces — the orchestrator the metric movers call.
+
+        See ``docs/developer/design/boundary-slip-strategy.md``. The mesh
+        classifies which vertices slip vs pin (the cross-surface concern); each
+        surface object owns its tangent-project + restore.
+
+        A vertex **slips** iff it lies on **exactly one** slip surface that has a
+        registered analytic :class:`BoundingSurface`; non-boundary, junction
+        (≥2 surfaces), unregistered-surface, or degenerate-normal vertices are
+        **pinned** (the step-1 safe default — ``facet`` restore is a follow-up).
+
+        Parameters
+        ----------
+        slip_spec :
+            See :meth:`_resolve_slip_spec`. Default ``True`` (all surfaces).
+        reference_coords : ndarray, optional
+            Fixed reference vertex positions (local-chart vertex order) that
+            displacements are measured from. Defaults to ``mesh.X.coords``.
+        boundary_labels : iterable of str, optional
+            Boundary labels defining the boundary (``is_bnd``). Defaults to all
+            geometric boundary labels; pass a mover's pinned set for parity.
+
+        Returns
+        -------
+        (is_pinned, project) : (ndarray[bool], callable)
+            ``is_pinned`` is the per-vertex pinned mask (local-chart order);
+            ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
+            and returns it.
+        """
+        from underworld3.meshing.smoothing import (
+            _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
+        from underworld3.meshing._ot_adapt import _boundary_facets
+        from underworld3.meshing.bounding_surface import BoundingSurface
+
+        dm = self.dm
+        cdim = self.cdim
+        pStart, pEnd = dm.getDepthStratum(0)
+        n_verts = pEnd - pStart
+        if reference_coords is None:
+            reference_coords = numpy.asarray(self.X.coords, dtype=float)
+        ref = numpy.asarray(reference_coords, dtype=float)
+
+        all_labels = (tuple(boundary_labels) if boundary_labels is not None
+                      else _auto_pinned_labels(self))
+        # TODO(follow-up): _pinned_mask expands labels through vertices/edges
+        # only, so a 3D boundary label that tags FACES alone (a mesh loaded with
+        # markVertices=False) leaves its boundary vertices unmarked. This is a
+        # pre-existing limitation of the shared helper used by every mover; the
+        # fix (close faces→edges→vertices) belongs with _pinned_mask itself.
+        is_bnd = _pinned_mask(dm, all_labels)
+
+        slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
+        # Per-label vertex masks (closure of each label's tagged facets).
+        masks = {lab: _pinned_mask(dm, (lab,)) for lab in slip_labels}
+
+        # Resolve a BoundingSurface for every slip label. Constructor-registered
+        # labels (radial / plane) restore analytically; a slip label with NO
+        # registered surface (a loaded mesh, an internal boundary) gets a
+        # *transient* ``facet`` surface built from THIS call's reference facets
+        # — nearest-reference-facet restore, matching the mover's
+        # ``_build_slip_projector`` facet fallback rather than pinning. FREE
+        # labels (dict ``False``) still slide-without-restore regardless of
+        # kind (handled in ``project`` below). A label with no boundary facets
+        # at all stays unusable → its vertices pin (the safe default).
+        surf = dict(self.bounding_surfaces)
+        unreg = [lab for lab in slip_labels if lab not in surf]
+        if unreg:
+            facets, _opp = _boundary_facets(self, cdim)
+            if facets is not None and facets.size:
+                for lab in unreg:
+                    fac_in = masks[lab][facets].all(axis=1)
+                    if fac_in.any():
+                        surf[lab] = BoundingSurface(
+                            self, lab, "facet",
+                            reference_facets=ref[facets[fac_in]])
+        usable = [lab for lab in slip_labels if lab in surf]
+        masks = {lab: masks[lab] for lab in usable}
+        count = numpy.zeros(n_verts, dtype=int)
+        for m in masks.values():
+            count += m.astype(int)
+        slip_mask = is_bnd & (count == 1)
+        is_pinned = is_bnd & ~slip_mask
+        vert_label = numpy.empty(n_verts, dtype=object)
+        for lab, m in masks.items():
+            vert_label[m & slip_mask] = lab
+
+        # Project only OWNED slip vertices: the movers halo-sync owned→ghost
+        # after calling project(), so a leaf/ghost receives its owner's
+        # projected value — modifying non-owned coordinates here is both
+        # wasteful and a parallel-safety hazard. (Serial: every vertex is
+        # owned, so this is a no-op.) is_pinned stays the full geometric
+        # classification, which is rank-consistent for shared vertices.
+        slip_b = numpy.nonzero(slip_mask & _owned_vertex_mask(dm))[0]
+        if slip_b.size == 0:
+            return is_pinned, (lambda Y: Y)
+        old_slip = ref[slip_b]
+        labels_b = vert_label[slip_b]
+
+        # Precompute each slip vertex's tangent-slide normal ONCE, at the fixed
+        # reference (see the re-solve-vs-cached trade-off in the DESIGN NOTE on
+        # ``BoundingSurface.normals``). The metric movers call ``project``
+        # repeatedly inside their line-search backtrack; re-deriving the
+        # projected normal (a ``Gamma_P1`` re-solve via ``_slip_normals``) on
+        # every call would be a severe regression. The normal is taken at the
+        # reference and is constant
+        # across the backtrack — matching ``_build_slip_projector``, which also
+        # fixes the normal per build. A slip vertex with a degenerate normal
+        # (``valid`` False — e.g. a corner the junction rule missed) keeps its
+        # reference position under the slide; the surface restore still applies.
+        normals_b = numpy.zeros((slip_b.size, cdim))
+        valid_b = numpy.zeros(slip_b.size, dtype=bool)
+        for lab in usable:
+            sel = labels_b == lab
+            if not sel.any():
+                continue
+            nrm, val = surf[lab].normals(old_slip[sel])
+            normals_b[sel] = nrm
+            valid_b[sel] = val
+
+        def project(Y):
+            Y = numpy.asarray(Y, dtype=float)
+            # tangent slide with the precomputed reference normals
+            disp = Y[slip_b] - old_slip
+            dn = (disp * normals_b).sum(axis=1, keepdims=True)
+            slid = numpy.where(valid_b[:, None],
+                               old_slip + (disp - dn * normals_b), old_slip)
+            for lab in usable:
+                sel = labels_b == lab
+                if not sel.any():
+                    continue
+                idx = slip_b[sel]
+                # FREE surfaces (dict spec False) slide but do not restore.
+                Y[idx] = (slid[sel] if lab in free_labels
+                          else surf[lab].restore(slid[sel]))
+            return Y
+
+        return is_pinned, project
+
+    def project_to_slip_surface(self, coords, slip_spec=True,
+                                reference_coords=None, boundary_labels=None):
+        """In-place convenience over :meth:`boundary_slip`: slide+restore the
+        slip vertices of ``coords`` (a full local-chart vertex array) and return
+        it. For callers that just want coordinates snapped back (a checkpoint
+        reload, a diagnostic, the free-surface module)."""
+        _is_pinned, project = self.boundary_slip(
+            slip_spec, reference_coords=reference_coords,
+            boundary_labels=boundary_labels)
+        return project(numpy.asarray(coords, dtype=float))
 
     @timing.routine_timer_decorator
     def update_lvec(self):
@@ -1243,20 +2973,259 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, "_lvec") and self._lvec:
             self._lvec.destroy()
 
-    def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False):
+    def register_remesh_hook(self, op):
+        """Register an operator's ``on_remesh(ctx)`` callback.
+
+        Called by the adapt op (``smooth_mesh_interior``, ``OT_adapt``,
+        ``follow_metric``) after the generic per-variable REMAP pass.
+        ``op`` must expose an ``on_remesh(ctx)`` method; ``ctx`` is a
+        :class:`~underworld3.discretisation.remesh.RemeshContext` with
+        the old/new coords, total displacement, ``dt``, and a scratch
+        dict for stashing things like ``v_mesh`` for the next solve.
+
+        Stored as a weak reference so operators that go out of scope are
+        cleaned up automatically. Idempotent: registering the same
+        operator twice is a no-op.
+        """
+        import weakref as _wr
+        # Drop any dead refs while we are here.
+        self._remesh_hooks = [r for r in self._remesh_hooks
+                              if (r() if isinstance(r, _wr.ReferenceType)
+                                  else r) is not None]
+        # De-dupe by identity.
+        for r in self._remesh_hooks:
+            cur = r() if isinstance(r, _wr.ReferenceType) else r
+            if cur is op:
+                return
+        try:
+            self._remesh_hooks.append(_wr.ref(op))
+        except TypeError:
+            # Some objects can't be weak-referenced (e.g. certain C
+            # extension types). Store strongly as a fallback — the
+            # caller takes responsibility for unregistering.
+            self._remesh_hooks.append(op)
+
+    def unregister_remesh_hook(self, op):
+        """Drop an operator's ``on_remesh`` registration. Idempotent."""
+        import weakref as _wr
+        kept = []
+        for r in self._remesh_hooks:
+            cur = r() if isinstance(r, _wr.ReferenceType) else r
+            if cur is None or cur is op:
+                continue
+            kept.append(r)
+        self._remesh_hooks = kept
+
+    # ------------------------------------------------------------------
+    # Coordinate-mutation capability gate + sanctioned entry points
+    # ------------------------------------------------------------------
+    def _assert_coord_mutation_allowed(self):
+        """Guard for :meth:`_deform_mesh`.
+
+        Moving coordinates with the raw primitive skips the field /
+        SL-DDt-history transfer. That is only safe (a) before the mesh
+        carries any variables/history (construction, restart-before-solvers)
+        or (b) inside a sanctioned scope — a remesh transaction
+        (``_in_remesh_transfer``) or a ``_coord_mutation()`` scope opened by
+        :meth:`deform`, :meth:`ephemeral_coords`, or a trusted internal mover.
+        Outside those, on a live mesh, raise with a pointer to the public API.
+        """
+        allowed = (getattr(self, "_in_remesh_transfer", False)
+                   or getattr(self, "_coord_mutation_depth", 0) > 0)
+        if allowed:
+            return
+        has_state = bool(getattr(self, "vars", None)) or bool(
+            getattr(self, "_remesh_hooks", None))
+        if not has_state:
+            return
+        raise RuntimeError(
+            "Mesh._deform_mesh() is an internal primitive — it moves nodes "
+            "WITHOUT transferring fields or solver/DDt history onto the new "
+            "layout, which corrupts the solution. This mesh already carries "
+            "variables, so a direct call (or an in-place write to "
+            "`mesh.X.coords`) is rejected.\n"
+            "  Use instead:\n"
+            "    • mesh.deform(new_coords, dt=…)        — impose an arbitrary "
+            "node displacement (free surface / prescribed motion)\n"
+            "    • mesh.adapt(metric) / mesh.OT_adapt(field)\n"
+            "    • uw.meshing.smooth_mesh_interior(…) / uw.meshing.follow_metric(…)\n"
+            "  These route the field + SL/DDt-history transfer "
+            "(remesh_with_field_transfer). For trusted scheme-internal trial "
+            "meshes that will be discarded, use `with mesh.ephemeral_coords(): …`."
+        )
+
+    @contextmanager
+    def _coord_mutation(self):
+        """Internal: sanction direct ``_deform_mesh`` calls within this scope.
+
+        Re-entrant. Does NOT itself transfer fields — callers either are the
+        transfer transaction (REMAP + ``on_remesh`` already run by
+        ``remesh_with_field_transfer``), restore saved state separately, or
+        intend an ephemeral trial (see :meth:`ephemeral_coords`).
+        """
+        self._coord_mutation_depth += 1
+        try:
+            yield
+        finally:
+            self._coord_mutation_depth -= 1
+
+    @contextmanager
+    def ephemeral_coords(self):
+        """Trusted scheme-internal trial coordinate moves, restored on exit.
+
+        For schemes (e.g. RK4 surface stages) that probe trial meshes to
+        compute velocities/increments and must NOT commit a transfer. The
+        coordinates are snapshotted on enter and restored on exit, so the
+        intermediate meshes are genuinely ephemeral — only the final
+        committed move (via :meth:`deform`) updates fields + history.
+        """
+        saved = numpy.asarray(self.X.coords).copy()
+        self._coord_mutation_depth += 1
+        try:
+            yield
+        finally:
+            try:
+                self._deform_mesh(saved)
+            finally:
+                self._coord_mutation_depth -= 1
+
+    def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
+        """Move the mesh to ``new_coords``, transferring all fields + history.
+
+        The public, foolproof way to impose an arbitrary node displacement
+        (free surface, prescribed mesh motion). Wraps the remesh transaction
+        so that REMAP variables are re-interpolated onto the new layout and
+        every registered ``on_remesh`` hook fires — in particular the
+        SemiLagrangian DDt's coherent ALE (carry its history stack + a
+        one-step ``v_mesh = Δx/dt`` correction consumed by the next solve).
+
+        Parameters
+        ----------
+        new_coords : ndarray
+            Target vertex coordinates (shape of ``mesh.X.coords``).
+        dt : float, optional
+            Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
+            SemiLagrangian history is present and the move is advective (a
+            free-surface step); omit for a pure geometric re-mesh.
+        zero : list of MeshVariable, optional
+            Variables to zero after the move (e.g. V, P for a cold restart).
+        verbose : bool
+
+        Returns
+        -------
+        bool
+            True if the mesh moved (geometry changed), False for a no-op.
+        """
+        from underworld3.discretisation.remesh import remesh_with_field_transfer
+
+        _nc = numpy.asarray(new_coords)
+
+        def _do_move():
+            self._deform_mesh(_nc)
+
+        result = remesh_with_field_transfer(
+            self, _do_move, dt=dt, extra_zero=zero, verbose=verbose)
+
+        # Refresh deformation-tracking per-boundary normals so Nitsche/penalty
+        # BCs that captured ``boundary_normal(...).sym`` at setup read the new
+        # geometry (the JIT reads the variable's .data, which would otherwise
+        # hold the setup-time normal). Re-assemble each cached boundary normal.
+        if getattr(self, "_boundary_normal_vars", None):
+            for _nm, _var in list(self._boundary_normal_vars.items()):
+                try:
+                    self._assemble_boundary_normal(_var, _nm)
+                except Exception:
+                    pass
+        # Likewise refresh the local cell-size field (Nitsche penalty scaling)
+        # so its cell-constant data tracks the deformed geometry.
+        if getattr(self, "_cell_size_variable", None) is not None:
+            try:
+                self._assemble_cell_size(self._cell_size_variable)
+            except Exception:
+                pass
+        return result
+
+    def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
+                     active_vars=None):
         """
         This method will update the mesh coordinates and reset any cached coordinates in
         the mesh and in equation systems that are registered on the mesh.
 
         The coord array that is passed in should match the shape of self.data
+
+        ``active_vars`` (optional): restrict the per-variable DOF
+        coordinate-cache recomputation in
+        :meth:`nuke_coords_and_rebuild` to this set of variables. The
+        default ``None`` preserves today's behaviour — every registered
+        variable's coord cache is recomputed eagerly, which is the
+        BUGFIX(#130) collective-safe path. Movers that opt in pass their
+        own work-vars during the inner sweep (skipping non-mover-var
+        recompute n_outer×); the wrapper does a full recompute once at
+        sweep exit by calling ``_deform_mesh`` again with
+        ``active_vars=None``.
+
+        .. warning::
+
+           This is the **internal** coordinate-mutation primitive. It moves
+           nodes WITHOUT transferring fields or solver/DDt history onto the
+           new layout. It may only be called inside a sanctioned coordinate-
+           mutation scope (see :meth:`deform`, :meth:`ephemeral_coords`, and
+           ``remesh_with_field_transfer``). A bare call on a mesh that already
+           carries variables raises — use the public methods instead.
         """
 
-        coord_vec = self.dm.getCoordinatesLocal()
-        coords = coord_vec.array.reshape(-1, self.cdim)
-        coords[...] = new_coords[...]
+        self._assert_coord_mutation_allowed()
 
-        self.dm.setCoordinatesLocal(coord_vec)
-        self.nuke_coords_and_rebuild()
+        with self._mesh_update_lock:
+            coord_vec = self.dm.getCoordinatesLocal()
+            coords = coord_vec.array.reshape(-1, self.cdim)
+            coords[...] = new_coords[...]
+
+            self.dm.setCoordinatesLocal(coord_vec)
+            self.nuke_coords_and_rebuild(active_vars=active_vars)
+
+            # Rebuild the _coords array view.  nuke_coords_and_rebuild may
+            # replace the coordinate vector internally (createCoordinateSpace),
+            # leaving self._coords as a stale numpy view of the old buffer.
+            import underworld3.utilities
+            old_callbacks = getattr(self._coords, "_callbacks", [])
+            self._coords = underworld3.utilities.NDArray_With_Callback(
+                numpy.ndarray.view(
+                    self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
+                ),
+                owner=self,
+            )
+            for cb in old_callbacks:
+                self._coords.add_callback(cb)
+
+            # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
+            # ("Trust JIT cache: skip DM rebuild on constant-only parameter
+            # changes") a solver with is_setup=True trusts its cached PETSc DM
+            # / SNES assembly and skips rebuild on the next solve(). After a
+            # coordinate change the cached DM still carries pre-deform
+            # coordinates, so F(v_prev) ≈ 0 and the solver converges in 0
+            # iterations without updating the solution. mesh.adapt() already
+            # does this; _deform_mesh must match.
+            for solver in self._equation_systems_register:
+                if solver is not None and hasattr(solver, "is_setup"):
+                    solver.is_setup = False
+
+            # Invalidate caches whose contents become stale when mesh
+            # coordinates change. Matches the cache hygiene already
+            # performed by mesh.adapt() and _legacy_access. Without
+            # these, uw.function.evaluate (and any user code that keys
+            # lookups off _topology_version) can return values
+            # computed against the pre-deform mesh.
+            self._evaluation_hash = None
+            self._evaluation_interpolated_results = None
+            if hasattr(self, '_dminterpolation_cache'):
+                self._dminterpolation_cache.invalidate_all(
+                    reason="mesh deformed")
+            self._topology_version += 1
+
+            # Propagate coordinate changes to registered submeshes
+            for submesh in self._registered_submeshes:
+                submesh.sync_coordinates_from_parent()
 
         return
 
@@ -1443,19 +3412,27 @@ class Mesh(Stateful, uw_object):
         return self._N
 
     @property
-    def Gamma_N(self) -> sympy.vector.CoordSys3D:
-        r"""SymPy coordinate system for boundary/surface coordinates.
+    def Gamma_N(self) -> sympy.Matrix:
+        r"""Normalised boundary/surface normal as a row matrix.
+
+        Returns ``Gamma / |Gamma|`` so that the result is a unit normal
+        regardless of element size. Use this for penalty and Nitsche BCs
+        where mesh-independent scaling is required.
 
         Returns
         -------
-        sympy.vector.CoordSys3D
-            The boundary coordinate system object.
+        sympy.Matrix
+            Row matrix of normalised boundary normal components.
         """
-        return self._Gamma
+        G = self.Gamma
+        return G / sympy.sqrt(G.dot(G))
 
     @property
-    def Gamma(self) -> sympy.vector.CoordSys3D:
-        r"""Boundary coordinate scalars as a row matrix.
+    def Gamma(self) -> sympy.Matrix:
+        r"""Raw (un-normalised) boundary coordinate scalars as a row matrix.
+
+        The magnitude scales with face edge length (2D) or face area (3D).
+        For a unit normal, use :attr:`Gamma_N` instead.
 
         Returns
         -------
@@ -1496,6 +3473,57 @@ class Mesh(Stateful, uw_object):
     def CoordinateSystem(self) -> CoordinateSystem:
         r"""Alias for :attr:`X` (the coordinate system object)."""
         return self._CoordinateSystem
+
+    @property
+    def t(self):
+        r"""Symbolic time coordinate.
+
+        PETSc passes a time value (``petsc_t``) to all pointwise residual
+        and Jacobian functions. Use ``mesh.t`` in expressions to reference
+        this time without forcing JIT recompilation each timestep.
+
+        The low-level PETSc solver accepts ``time=t`` to set the value
+        of ``petsc_t`` for pointwise functions. If not provided, ``petsc_t``
+        defaults to 0. Note: the high-level Python ``solve()`` wrappers
+        do not yet pass ``time=`` through — set it directly via
+        ``UW_DMSetTime`` at the Cython level if needed.
+
+        When the scaling system is active, ``mesh.t`` carries time units
+        (derived from the model's time scale) so that dimensional analysis
+        works correctly in expressions.
+
+        Examples
+        --------
+        >>> omega = 2 * np.pi / period
+        >>> stokes.add_dirichlet_bc((V0 * sympy.sin(omega * mesh.t), 0.0), "Top")
+        >>> stokes.solve(time=current_time)   # sets petsc_t before SNES
+        """
+        return self._t
+
+    @property
+    def nullspace_rotations(self):
+        """Symbolic velocity fields for rigid-body rotation null modes.
+
+        Returns a list of SymPy Matrix expressions in mesh Cartesian
+        coordinates. Empty for meshes with no rotation nullspace (boxes,
+        wedge segments with walls). Set by mesh factory functions for
+        closed surfaces (annulus, spherical shell, etc.).
+
+        Each entry represents a rigid rotation: v = omega x r.
+
+        Returns
+        -------
+        list of sympy.Matrix
+            Velocity fields for each independent rotation mode.
+
+        Examples
+        --------
+        >>> annulus = uw.meshing.Annulus(...)
+        >>> annulus.nullspace_rotations  # [Matrix([-y, x])]
+        >>> shell = uw.meshing.SphericalShell(...)
+        >>> shell.nullspace_rotations   # 3 rotation matrices
+        """
+        return self._nullspace_rotations
 
     @property
     def r(self) -> Tuple[sympy.vector.BaseScalar]:
@@ -1756,19 +3784,62 @@ class Mesh(Stateful, uw_object):
         swarmVars: Optional[list] = [],
         meshUpdates: bool = False,
         create_xdmf: bool = True,
+        petsc_reload: bool = False,
     ):
         """
-        Write mesh and selected variables for visualisation output.
+        Write mesh and selected variables for timestep output.
 
-        This writes:
-        - one mesh HDF5 file (shared/static or per-step, depending on ``meshUpdates``)
+        This is the standard mesh output method. It always writes:
+
+        - one mesh HDF5 file, shared across timesteps unless ``meshUpdates=True``
         - one HDF5 file per mesh variable
-        - optional proxy files for swarm variables
-        - optional XDMF file linking all output files
+        - raw coordinate/value datasets under ``/fields`` for coordinate-based
+          reload with ``MeshVariable.read_timestep()``
 
-        When ``create_xdmf=True`` (the default), variable files also include
-        ParaView-compatible groups (``/vertex_fields`` or ``/cell_fields``),
-        and an XDMF file is generated on rank 0.
+        The optional payloads are controlled explicitly:
+
+        - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
+          receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
+          and rank 0 writes the companion ``.xdmf`` file.
+        - ``petsc_reload=True`` writes PETSc DMPlex section/vector metadata into
+          the same per-variable HDF5 files. These files can then be loaded with
+          ``MeshVariable.read_checkpoint()`` for PETSc-native same-mesh reload.
+
+        Common choices are:
+
+        - visualisation/remap only:
+          ``create_xdmf=True, petsc_reload=False``
+        - PETSc-native reload only:
+          ``create_xdmf=False, petsc_reload=True``
+        - unified visualisation/remap and PETSc reload:
+          ``create_xdmf=True, petsc_reload=True``
+
+        With both flags enabled, the same variable HDF5 file can be used by
+        ``MeshVariable.read_timestep()`` for coordinate/KDTree remapping and by
+        ``MeshVariable.read_checkpoint()`` for exact PETSc-native reload.
+
+        Parameters
+        ----------
+        filename
+            Output filename base. Files are written as
+            ``<filename>.mesh.<index>.h5`` and
+            ``<filename>.mesh.<variable>.<index>.h5``.
+        index
+            Timestep/output index used in generated filenames.
+        outputPath
+            Directory where output files are written.
+        meshVars
+            Mesh variables to write.
+        swarmVars
+            Swarm variables to write as proxy fields.
+        meshUpdates
+            If ``False``, reuse ``<filename>.mesh.00000.h5`` when it already
+            exists. If ``True``, write an indexed mesh file for this timestep.
+        create_xdmf
+            Write ParaView/XDMF-compatible datasets and companion XDMF file.
+        petsc_reload
+            Write PETSc DMPlex section/vector metadata for reload with
+            ``MeshVariable.read_checkpoint()``.
 
         """
         options = PETSc.Options()
@@ -1806,17 +3877,25 @@ class Mesh(Stateful, uw_object):
             mesh_file = output_base_name + f".mesh.{index:05}.h5"
             self.write(mesh_file)
 
+        variables = []
         if meshVars is not None:
             for var in meshVars:
                 save_location = output_base_name + f".mesh.{var.clean_name}.{index:05}.h5"
                 var.write(save_location)
                 if create_xdmf:
                     _write_compat_groups(self, var, save_location)
+                variables.append((var, save_location))
 
         if swarmVars is not None:
             for svar in swarmVars:
                 save_location = output_base_name + f".proxy.{svar.clean_name}.{index:05}.h5"
                 svar.write_proxy(save_location)
+                if petsc_reload:
+                    variables.append((svar._meshVar, save_location))
+
+        if petsc_reload:
+            for var, save_location in variables:
+                self._write_petsc_reload_file(save_location, [var], mode="a")
 
         if create_xdmf and uw.mpi.rank == 0:
             checkpoint_xdmf(
@@ -1888,72 +3967,292 @@ class Mesh(Stateful, uw_object):
             create_xdmf=True,
         )
 
+    def _write_petsc_reload_variable(self, viewer, var):
+        """Write one variable's PETSc DMPlex reload metadata to ``viewer``."""
+
+        if var._lvec is None:
+            var._set_vec(available=True)
+
+        iset, subdm = self.dm.createSubDM(var.field_id)
+        subdm.setName(var.clean_name)
+        old_lvec_name = var._lvec.getName()
+
+        try:
+            var._lvec.setName(var.clean_name)
+            self.dm.sectionView(viewer, subdm)
+            self.dm.localVectorView(viewer, subdm, var._lvec)
+        finally:
+            var._lvec.setName(old_lvec_name)
+            iset.destroy()
+            subdm.destroy()
+
+    def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
+        """Write PETSc DMPlex section/vector reload metadata."""
+
+        old_dm_name = self.dm.getName()
+        self.dm.setName("uw_mesh")
+
+        viewer = PETSc.ViewerHDF5().create(
+            checkpoint_file, mode, comm=PETSc.COMM_WORLD
+        )
+        viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+        try:
+            self.dm.sectionView(viewer, self.dm)
+
+            for var in variables:
+                self._write_petsc_reload_variable(viewer, var)
+
+            uw.mpi.barrier()
+        finally:
+            viewer.popFormat()
+            viewer.destroy()
+            if old_dm_name is not None:
+                self.dm.setName(old_dm_name)
+
     @timing.routine_timer_decorator
     def write_checkpoint(
         self,
         filename: str,
+        outputPath: str = "",
         meshUpdates: bool = True,
         meshVars: Optional[list] = [],
         swarmVars: Optional[list] = [],
         index: Optional[int] = 0,
         unique_id: Optional[bool] = False,
+        separate_variable_files: bool = True,
+        create_xdmf: bool = False,
     ):
-        """Write data in a format that can be restored for restarting the simulation.
+        """Compatibility wrapper for PETSc DMPlex reload output.
 
-        The difference between this and the visualisation is 1) the parallel section needs
-        to be stored to reload the data correctly, and 2) the visualisation information (vertex form of fields)
-        is not stored. This routine uses dmplex VectorView and VectorLoad functionality.
+        This method is retained for existing callers. New code should use
+        ``write_timestep(..., petsc_reload=True)`` so all mesh-variable output
+        goes through the standard timestep writer. By default this compatibility
+        method writes PETSc DMPlex section/vector metadata required for exact
+        parallel reload and does not write XDMF or vertex-field visualisation
+        datasets. Use ``create_xdmf=True`` to route through the unified
+        timestep-style output path.
+
+        Parameters
+        ----------
+        filename
+            Checkpoint base filename. With ``outputPath`` unset, this may include
+            a directory. With ``outputPath`` set, it is joined to that directory.
+        outputPath
+            Optional output directory, matching the ``write_timestep()`` style.
+        meshUpdates
+            If ``False``, write the mesh checkpoint only when it does not already
+            exist. If ``True``, always write the indexed mesh checkpoint.
+        meshVars, swarmVars
+            Variables to write into checkpoint files.
+        index
+            Checkpoint index used in output filenames.
+        unique_id
+            Preserve existing unique-rank filename behaviour for checkpoint data.
+        separate_variable_files
+            If ``True`` (default), write one file per variable:
+            ``<base>.<variable>.<index>.h5``. If ``False``, write all variables
+            into one file: ``<base>.checkpoint.<index>.h5``.
+        create_xdmf
+            If ``True``, route through ``write_timestep()`` and write XDMF,
+            vertex/cell compatibility groups, coordinate/KDTree remap data,
+            and PETSc reload metadata. The output uses the timestep filename
+            convention ``<base>.mesh.<variable>.<index>.h5``. This mode does
+            not support ``unique_id=True`` or ``separate_variable_files=False``.
         """
+        import warnings
 
-        # The mesh checkpoint is the same as the one required for visualisation
+        warnings.warn(
+            "write_checkpoint() is deprecated and retained for compatibility. "
+            "Use write_timestep(..., petsc_reload=True) for PETSc reload output; "
+            "set create_xdmf=True when visualization/remap payloads are also "
+            "needed.",
+            FutureWarning,
+            stacklevel=2,
+        )
 
-        if not meshUpdates:
-            from pathlib import Path
+        if outputPath:
+            filename = os.path.join(outputPath, filename)
 
-            mesh_file = filename + ".mesh.0.h5"
-            path = Path(mesh_file)
-            if not path.is_file():
-                self.write(mesh_file)
+        if create_xdmf:
+            if unique_id:
+                raise RuntimeError(
+                    "write_checkpoint(create_xdmf=True) uses write_timestep() "
+                    "layout and does not support unique_id=True."
+                )
+            if not separate_variable_files:
+                raise RuntimeError(
+                    "write_checkpoint(create_xdmf=True) uses per-variable "
+                    "timestep files and does not support "
+                    "separate_variable_files=False."
+                )
+            output_dir = os.path.dirname(filename)
+            output_name = os.path.basename(filename)
+            self.write_timestep(
+                output_name,
+                index=index,
+                outputPath=output_dir,
+                meshVars=meshVars,
+                swarmVars=swarmVars,
+                meshUpdates=meshUpdates,
+                create_xdmf=True,
+                petsc_reload=True,
+            )
+            return
 
-        else:
-            self.write(filename + f".mesh.{index:05}.h5")
+        def _checkpoint_filename(var_name=None):
+            variable_part = f".{var_name}" if var_name is not None else ".checkpoint"
+            if unique_id:
+                return filename + f"{uw.mpi.unique}{variable_part}.{index:05}.h5"
+            return filename + f"{variable_part}.{index:05}.h5"
 
-        # Checkpoint file
-
-        if unique_id:
-            checkpoint_file = filename + f"{uw.mpi.unique}.checkpoint.{index:05}.h5"
-        else:
-            checkpoint_file = filename + f".checkpoint.{index:05}.h5"
-
+        old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")
-        viewer = PETSc.ViewerHDF5().create(checkpoint_file, "w", comm=PETSc.COMM_WORLD)
 
-        # Store the parallel-mesh section information for restoring the checkpoint.
-        self.dm.sectionView(viewer, self.dm)
+        try:
+            with _temporary_petsc_option("dm_plex_view_hdf5_storage_version", "3.0.0"):
+                # The mesh checkpoint is the same as the one required for visualisation
 
-        if meshVars is not None:
-            for var in meshVars:
-                var._sync_lvec_to_gvec()
-                iset, subdm = self.dm.createSubDM(var.field_id)
-                subdm.setName(var.clean_name)
-                self.dm.globalVectorView(viewer, subdm, var._gvec)
-                self.dm.sectionView(viewer, subdm)
-                # v._gvec.view(viewer) # would add viz information plus a duplicate of the data
+                if not meshUpdates:
+                    from pathlib import Path
 
-        if swarmVars is not None:
-            for svar in swarmVars:
-                var = svar._meshVar
-                var._sync_lvec_to_gvec()
-                iset, subdm = self.dm.createSubDM(var.field_id)
-                subdm.setName(var.clean_name)
-                self.dm.globalVectorView(viewer, subdm, var._gvec)
-                self.dm.sectionView(viewer, subdm)
+                    mesh_file = filename + f".mesh.{index:05}.h5"
+                    path = Path(mesh_file)
+                    if not path.is_file():
+                        self.write(mesh_file, petsc_format=True)
 
-        uw.mpi.barrier()  # should not be required
-        viewer.destroy()
+                else:
+                    self.write(filename + f".mesh.{index:05}.h5", petsc_format=True)
+
+                variables = []
+                if meshVars is not None:
+                    variables.extend(meshVars)
+                if swarmVars is not None:
+                    variables.extend(svar._meshVar for svar in swarmVars)
+
+                if separate_variable_files:
+                    for var in variables:
+                        self._write_petsc_reload_file(
+                            _checkpoint_filename(var.clean_name), [var], mode="w"
+                        )
+                else:
+                    self._write_petsc_reload_file(
+                        _checkpoint_filename(), variables, mode="w"
+                    )
+        finally:
+            if old_dm_name is not None:
+                self.dm.setName(old_dm_name)
+
+    # ----- Unitary snapshot / restore -----
+    #
+    # See ``src/underworld3/checkpoint/snapshot.py`` and
+    # ``docs/developer/design/in_memory_checkpoint_design.md``. v1
+    # captures deformed coords + per-MV global-vector DOFs; v1.2 will
+    # add topology / section capture so the DM can be rebuilt on
+    # restore after ``mesh.adapt()``.
+
+    def snapshot_payload(self) -> dict:
+        """Return a self-contained dict describing this mesh's state.
+
+        The returned dict is consumed by
+        :mod:`underworld3.checkpoint.snapshot` capture. Keys:
+
+        - ``name``: stable string identifier for the mesh.
+        - ``mesh_version``: current ``_mesh_version`` integer.
+        - ``coords``: deformed mesh coordinates (numpy array).
+        - ``vars``: ``{var.clean_name: gvec_array.copy()}`` for every
+          mesh variable on this mesh.
+
+        v1.2 will additionally populate a ``topology`` key with
+        section / DM-topology data sufficient to rebuild the DM on
+        restore.
+        """
+        coords = numpy.asarray(self.X.coords).copy()
+        var_arrays: Dict[str, numpy.ndarray] = {}
+        for var in self.vars.values():
+            var._sync_lvec_to_gvec()
+            # Variables created but never touched have _gvec=None (lazy
+            # allocation in MeshVariable). They carry no data so they
+            # contribute nothing to the snapshot — skip cleanly.
+            if var._gvec is None:
+                continue
+            var_arrays[var.clean_name] = numpy.asarray(var._gvec.array).copy()
+        return {
+            "name": self.name,
+            "mesh_version": int(getattr(self, "_mesh_version", 0)),
+            "coords": coords,
+            "vars": var_arrays,
+        }
+
+    def apply_snapshot_payload(self, payload: dict) -> None:
+        """Restore this mesh from a payload produced by :meth:`snapshot_payload`.
+
+        v1 implementation writes coordinates and per-variable DOFs
+        back in place. The captured DOF arrays must match the current
+        section, which means ``_mesh_version`` must equal the captured
+        value — mesh-adapt during the interval would have resized the
+        section and is detected as a v1 refusal here.
+
+        v1.2 will replace the ``_mesh_version`` refusal with a
+        rebuild-from-payload path: destroy the current DM, rebuild
+        from ``payload["topology"]``, allocate vectors, write DOFs,
+        and re-bind MeshVariable / Swarm wrappers. The interface stays
+        the same; only this method's body changes.
+        """
+        from underworld3.checkpoint.snapshot import SnapshotInvalidatedError
+
+        current_version = int(getattr(self, "_mesh_version", 0))
+        captured_version = int(payload["captured_mesh_version"])
+        if current_version != captured_version:
+            raise SnapshotInvalidatedError(
+                f"mesh {self.name!r}: _mesh_version moved from "
+                f"{captured_version} to {current_version} since snapshot. "
+                f"mesh.adapt() rebuild on restore is scheduled for v1.2; "
+                f"v1 refuses rather than corrupt the DOF arrays"
+            )
+
+        coords = numpy.asarray(payload["coords"])
+        expected_shape = numpy.asarray(self.X.coords).shape
+        if coords.shape != expected_shape:
+            raise SnapshotInvalidatedError(
+                f"mesh {self.name!r}: coordinate shape changed "
+                f"({coords.shape} vs current {expected_shape}); programming "
+                f"error since _mesh_version matched"
+            )
+        # Snapshot restore: variables are reloaded just below, so this is a
+        # sanctioned internal coordinate move (no live-state transfer needed).
+        with self._coord_mutation():
+            self._deform_mesh(coords)
+
+        current_vars = {var.clean_name: var for var in self.vars.values()}
+        for var_clean_name, saved_array in payload["vars"].items():
+            var = current_vars.get(var_clean_name)
+            if var is None:
+                raise SnapshotInvalidatedError(
+                    f"mesh {self.name!r}: variable {var_clean_name!r} "
+                    f"from snapshot is no longer present"
+                )
+            var._sync_lvec_to_gvec()
+            current_shape = numpy.asarray(var._gvec.array).shape
+            if saved_array.shape != current_shape:
+                raise SnapshotInvalidatedError(
+                    f"mesh {self.name!r}: variable {var_clean_name!r} gvec "
+                    f"shape changed ({saved_array.shape} vs current "
+                    f"{current_shape})"
+                )
+            var._gvec.array[...] = saved_array
+            iset, subdm = self.dm.createSubDM(var.field_id)
+            subdm.globalToLocal(var._gvec, var._lvec, addv=False)
+            iset.destroy()
+            subdm.destroy()
+            self._stale_lvec = True
 
     @timing.routine_timer_decorator
-    def write(self, filename: str, index: Optional[int] = None):
+    def write(
+        self,
+        filename: str,
+        index: Optional[int] = None,
+        petsc_format: Optional[bool] = None,
+    ):
         """
         Save mesh data to the specified hdf5 file.
 
@@ -1965,11 +4264,16 @@ class Mesh(Stateful, uw_object):
         index :
             Not yet implemented. An optional index which might
             correspond to the timestep (for example).
+        petsc_format :
+            If True, force PETSc DMPlex HDF5 checkpoint/restart topology.
+            If False, force PETSc HDF5_VIZ topology only.
+            If None, use PETSc's default HDF5 layout, which includes the
+            restart-style topology and labels as well as visualization
+            topology for XDMF.
 
         """
 
-        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
-        if index:
+        if index is not None:
             raise RuntimeError("Recording `index` not currently supported")
             ## JM:To enable timestep recording, the following needs to be called.
             ## I'm unsure if the corresponding xdmf functionality is enabled via
@@ -1977,8 +4281,20 @@ class Mesh(Stateful, uw_object):
             # viewer.pushTimestepping(viewer)
             # viewer.setTimestep(index)
 
-        viewer(self.dm)
-        viewer.destroy()
+        viewer = PETSc.ViewerHDF5().create(filename, "w", comm=PETSc.COMM_WORLD)
+        try:
+            if petsc_format is not None:
+                viewer_format = (
+                    PETSc.Viewer.Format.HDF5_PETSC
+                    if petsc_format
+                    else PETSc.Viewer.Format.HDF5_VIZ
+                )
+                viewer.pushFormat(viewer_format)
+            viewer(self.dm)
+        finally:
+            if petsc_format is not None:
+                viewer.popFormat()
+            viewer.destroy()
 
         ## Add boundary metadata to the file
 
@@ -1993,11 +4309,28 @@ class Mesh(Stateful, uw_object):
                 boundaries_dict = {i.name: i.value for i in self.boundaries}
                 g.attrs["boundaries"] = json.dumps(boundaries_dict)
 
+                if self.regions is not None:
+                    regions_dict = {i.name: i.value for i in self.regions}
+                    g.attrs["regions"] = json.dumps(regions_dict)
+
                 coordinates_type_dict = {
                     "name": self.CoordinateSystemType.name,
                     "value": self.CoordinateSystemType.value,
                 }
                 g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
+
+                # Save ellipsoid metadata for geographic meshes
+                if hasattr(self.CoordinateSystem, "ellipsoid"):
+                    ellipsoid_ser = {}
+                    for k, v in self.CoordinateSystem.ellipsoid.items():
+                        if hasattr(v, "to"):  # uw.quantity
+                            ellipsoid_ser[k] = {
+                                "value": float(v.magnitude),
+                                "unit": str(v.units),
+                            }
+                        else:
+                            ellipsoid_ser[k] = v
+                    g.attrs["ellipsoid"] = json.dumps(ellipsoid_ser)
 
                 # Add coordinate units metadata
                 if hasattr(self, "coordinate_units"):
@@ -2016,7 +4349,33 @@ class Mesh(Stateful, uw_object):
                     }
                     g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
 
+                # Number of coarse multigrid levels in the hierarchy (= number
+                # of refinements from the stored coarsest level up to the fine
+                # mesh). Used on reload to rebuild the intermediate levels.
+                g.attrs["hierarchy_coarse_levels"] = len(self.dm_hierarchy) - 1
+
                 f.close()
+
+        # Persist the geometric-multigrid (FMG) hierarchy as a SINGLE sidecar
+        # holding the coarsest level only. On reload the intermediate coarse
+        # levels are rebuilt by refining it (they come back canonically numbered,
+        # which is all the co-located nested interpolation needs). Without this
+        # file a reloaded mesh has a single level and falls back to GAMG. One
+        # single-DM HDF5 file (PETSc's HDF5_PETSC format holds one DMPlex per
+        # file). Collective write. See _hierarchy_sidecar_name and the .h5 reload.
+        if len(self.dm_hierarchy) > 1:
+            coarse_dm = self.dm_hierarchy[0]
+            sidecar = _hierarchy_sidecar_name(filename, 0)
+            cviewer = PETSc.ViewerHDF5().create(sidecar, "w", comm=PETSc.COMM_WORLD)
+            cviewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
+            saved_name = coarse_dm.getName()
+            coarse_dm.setName("uw_mesh")  # _from_plexh5 loads the DM named "uw_mesh"
+            try:
+                cviewer(coarse_dm)
+            finally:
+                coarse_dm.setName(saved_name)
+                cviewer.popFormat()
+                cviewer.destroy()
 
     def vtk(self, filename: str):
         """
@@ -2119,6 +4478,12 @@ class Mesh(Stateful, uw_object):
 
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
+        # Clean up the PETSc interpolation objects built above. Without this
+        # they accumulate until Python GC runs — noticeable in long adapt
+        # loops that re-fill the coord cache per variable.
+        matInterp.destroy()
+        if vecScale is not None:
+            vecScale.destroy()
         dmnew.destroy()
         dmfe.destroy()
 
@@ -2153,25 +4518,32 @@ class Mesh(Stateful, uw_object):
             return
 
         dim = self.dim
-        # def mesh_face_skeleton_kdtree(mesh):
+        # Navigation indices build from the nav DM (a 1-cell-overlap
+        # clone on manifold meshes; identical to self.dm on volume
+        # meshes). Cell indices in the resulting _indexMap and
+        # _centroid_index correspond to nav-DM local cell ordering.
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
 
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        fStart, fEnd = self.dm.getHeightStratum(1)
-        pStart, pEnd = self.dm.getDepthStratum(0)
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        fStart, fEnd = nav_dm.getHeightStratum(1)
+        pStart, pEnd = nav_dm.getDepthStratum(0)
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
         control_points_list = []
         control_points_cell_list = []
+        centroids_list = []
 
         for cell, cell_id in enumerate(range(cStart, cEnd)):
 
-            cell_faces = self.dm.getCone(cell_id)
-            points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_faces = nav_dm.getCone(cell_id)
+            points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = self._coords[points - pStart]
+            cell_point_coords = nav_coords[points - pStart]
             cell_centroid = cell_point_coords.mean(axis=0)
+            centroids_list.append(cell_centroid)
 
             # for face in range(cell_num_faces):
 
@@ -2220,12 +4592,14 @@ class Mesh(Stateful, uw_object):
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
 
-        # We don't need an indexMap for this one because there is only one point per cell
-        # and the returned kdtree value IS the index.
-        # Note: self._centroids is not yet defined:
-
-        self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
-        # self._centroid_index.build_index()
+        # Cell-centroid kdtree, built from the nav-DM cells in the
+        # same enumeration order as _indexMap, so the indices it
+        # returns can be used directly as nav-DM cell indices.
+        # We keep _nav_centroids separate from _centroids (which is
+        # the main-DM cell centroids set in __init__) so the FE-side
+        # ``_centroids`` semantics are unchanged on manifold meshes.
+        self._nav_centroids = numpy.array(centroids_list)
+        self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         return
 
@@ -2316,12 +4690,16 @@ class Mesh(Stateful, uw_object):
             return
 
         dim = self.dim
-        # def mesh_face_skeleton_kdtree(mesh):
+        # Build face control points from the nav DM (includes ghost
+        # cells on manifold meshes). Volume meshes have _nav_dm is
+        # None and we use self.dm directly.
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
 
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        fStart, fEnd = self.dm.getHeightStratum(1)
-        pStart, pEnd = self.dm.getDepthStratum(0)
-        num_local_cells = self.dm.getHeightStratum(0)[1]
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        fStart, fEnd = nav_dm.getHeightStratum(1)
+        pStart, pEnd = nav_dm.getDepthStratum(0)
+        num_local_cells = cEnd - cStart
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
@@ -2329,23 +4707,23 @@ class Mesh(Stateful, uw_object):
         # All elements in our mesh are a single type
 
         mesh_cell_outer_control_points = numpy.ndarray(
-            shape=(cell_num_faces, num_local_cells, self.dim)
+            shape=(cell_num_faces, num_local_cells, self.cdim)
         )
         mesh_cell_inner_control_points = numpy.ndarray(
-            shape=(cell_num_faces, num_local_cells, self.dim)
+            shape=(cell_num_faces, num_local_cells, self.cdim)
         )
 
         for cell, cell_id in enumerate(range(cStart, cEnd)):
-            cell_faces = self.dm.getCone(cell_id)
-            points = self.dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_faces = nav_dm.getCone(cell_id)
+            points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_point_coords = self._coords[points - pStart]
+            cell_point_coords = nav_coords[points - pStart]
 
             for face in range(cell_num_faces):
 
-                points = self.dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
+                points = nav_dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
                 # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-                point_coords = self._coords[points - pStart]
+                point_coords = nav_coords[points - pStart]
 
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
@@ -2353,13 +4731,32 @@ class Mesh(Stateful, uw_object):
                 # Compute face normal from point coordinates (already plain numpy arrays)
                 point_data = point_coords
 
-                # 2D case
-                if self.dim == 2:
+                if self.dim == 1:
+                    # 1-manifold (annulus / shell boundary loop as a surface
+                    # submesh): a cell is an edge, its faces are end vertices.
+                    # Outward direction is along the edge, away from the cell
+                    # centroid (the sign fix below orients it).
+                    normal = face_centroid - cell_centroid
+                elif self.dim == 2 and self.cdim == 2:
+                    # 2-D volume mesh — perpendicular to edge in the
+                    # plane of the mesh.
                     vector = point_data[1] - point_data[0]
                     normal = numpy.array((-vector[1], vector[0]))
-
-                # 3D simplex case (probably also OK for hexes)
+                elif self.dim == 2 and self.cdim == 3:
+                    # 2-manifold in 3-space — perpendicular to the
+                    # edge, lying in the cell's tangent plane (the
+                    # natural generalisation of the 2-D rule, where
+                    # the implicit z-hat is replaced by the explicit
+                    # cell normal).
+                    cell_normal = numpy.cross(
+                        cell_point_coords[1] - cell_point_coords[0],
+                        cell_point_coords[2] - cell_point_coords[0],
+                    )
+                    edge_vector = point_data[1] - point_data[0]
+                    normal = numpy.cross(cell_normal, edge_vector)
                 else:
+                    # 3-D simplex / hex face — face normal from two
+                    # in-face edges.
                     normal = numpy.cross(
                         (point_data[1] - point_data[0]),
                         (point_data[2] - point_data[0]),
@@ -2380,7 +4777,50 @@ class Mesh(Stateful, uw_object):
 
         return
 
-    def _test_if_points_in_cells_internal(self, points, cells):
+    def _get_owned_cells_mask(self):
+        """Return a boolean array of length n_local_cells (NAV-DM
+        cells) where True means the cell is owned by this rank, False
+        means it's a ghost cell brought in by
+        ``DMPlexDistributeOverlap``.
+
+        On a non-overlapped DM (the default for volume meshes), every
+        cell is owned and the mask is all True — the downstream filter
+        is a no-op. On the nav DM of a manifold mesh, ghost cells
+        appear as leaves of the point SF in the cell range
+        ``[cStart, cEnd)``.
+
+        Cached on the mesh; rebuilt only when ``_mesh_version`` changes.
+        """
+        version = self._mesh_version
+        cache = getattr(self, "_owned_cells_mask_cache", None)
+        if cache is not None and cache.get("version") == version:
+            return cache["mask"]
+
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        n_local = cEnd - cStart
+        mask = numpy.ones(n_local, dtype=bool)
+
+        sf = nav_dm.getPointSF()
+        if sf is not None:
+            try:
+                _, leaves, _ = sf.getGraph()
+            except Exception:
+                leaves = None
+            if leaves is not None and len(leaves) > 0:
+                leaves = numpy.asarray(leaves)
+                # Leaves are global point IDs; cells live in [cStart, cEnd).
+                cell_leaves = leaves[
+                    (leaves >= cStart) & (leaves < cEnd)
+                ] - cStart
+                if cell_leaves.size > 0:
+                    mask[cell_leaves] = False
+
+        self._owned_cells_mask_cache = {"version": version, "mask": mask}
+        return mask
+
+    def _test_if_points_in_cells_internal(self, points, cells,
+                                          on_boundary=True, tol=0.0):
         """
         Determine if the given points lie in the suggested cells.
         Uses a mesh skeletonization array to determine whether the point is
@@ -2388,12 +4828,57 @@ class Mesh(Stateful, uw_object):
 
         Exact if applied to a linear mesh, approximate otherwise.
 
+        On an overlapped DM (manifold meshes), a query point may land in
+        a *ghost* cell — a cell owned by another rank and present locally
+        only as part of the partition halo. Ghost cells are explicitly
+        rejected so a single rank claims each point cleanly; the migrate
+        loop's iterative fallback then routes the rejected point to the
+        actual owning rank (where the same cell is genuinely owned).
+
         Parameters
         ----------
-        points : array-like
-            Coordinate array in any physical unit system (will be auto-converted)
-        cells : array-like
-            Cell indices to test
+        points : numpy.ndarray
+            Coordinate array, assumed already in model units (this internal
+            helper does not perform unit conversion — use the public
+            `test_if_points_in_cells` for unit-aware input).
+        cells : numpy.ndarray
+            1-D cell indices to test, one per point.
+        on_boundary : bool, default True
+            If True (the default), a point exactly on a cell face counts as
+            inside that cell — the natural semantics for FE evaluation,
+            where the basis at a shared face/vertex is consistent across
+            the adjacent cells. A query point lying on a face shared by N
+            cells passes the test for any of those N cells.
+
+            If False, a point exactly on a face is reported as NOT inside —
+            strict-inside semantics. Use this when uniqueness matters (a
+            strict-ownership scheme where a shared-face point being claimed
+            by all adjacent cells would be a bug).
+
+            The implementation compares the squared distance from the query
+            to a mirrored inner/outer control-point pair placed ±1e-3 along
+            the face normal; a point exactly on the face has zero distance
+            difference. With on_boundary=True the test accepts diff >= -1e-12
+            (well below the 1e-3 control-point offset, well above 64-bit
+            float roundoff); with on_boundary=False the test requires diff > 0.
+        tol : float, default 0.0
+            Face-RELATIVE tolerance — overrides ``on_boundary``'s absolute
+            -1e-12 floor when nonzero. The test becomes
+            ``diff > -tol * |O - I|^2`` (i.e. relative to the
+            control-point separation squared). With ``tol == 0`` (the
+            default) ``on_boundary`` controls the test as documented above.
+            With ``tol > 0`` the test is relaxed to admit points within
+            roughly ``tol`` of the face (relative to the face-normal
+            separation), while still rejecting points that lie inside a
+            *different* cell (whose diff is strongly negative). The
+            parallel evaluation locator
+            (``Mesh._robust_owning_cells``) uses ``tol=1e-2`` to admit
+            on-face / partition-seam node queries that ``on_boundary=True``'s
+            absolute 1e-12 floor is too tight to accept — for query
+            coordinates slightly off the face (e.g. RBF-shifted node
+            points), the geometric scale of the test needs to match the
+            *mesh* spacing, not float roundoff. See memory
+            project_pr207_loose_boundary_clash.
         """
         # Internal version - points assumed to already be in model units
         self._mark_faces_inside_and_out()
@@ -2404,20 +4889,50 @@ class Mesh(Stateful, uw_object):
         cStart, cEnd = self.dm.getHeightStratum(0)
         num_cell_faces = self.dm.getConeSize(cStart)
 
-        inside = numpy.ones_like(cells, dtype=bool)
         insiders = numpy.ndarray(shape=(cells.shape[0], num_cell_faces), dtype=bool)
 
-        for f in range(num_cell_faces):
-            control_points_o = self.faces_outer_control_points[f, cells]
-            control_points_i = self.faces_inner_control_points[f, cells]
-            inside = (
-                ((control_points_o - points) ** 2).sum(axis=1)
-                - ((control_points_i - points) ** 2).sum(axis=1)
-            ) > 0
+        if tol > 0.0:
+            # Face-relative tolerance branch (parallel evaluation locator).
+            # Takes precedence over on_boundary: a non-zero tol expresses
+            # a geometric tolerance on the face-normal separation²; the
+            # absolute on_boundary floor (~1e-12) is far below it and the
+            # strict on_boundary=False (>0) is what tol is widening.
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                value = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                )
+                sep2 = ((control_points_o - control_points_i) ** 2).sum(axis=1)
+                insiders[:, f] = value > -tol * sep2
+        elif on_boundary:
+            _face_tol = -1e-12
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                insiders[:, f] = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                ) >= _face_tol
+        else:
+            for f in range(num_cell_faces):
+                control_points_o = self.faces_outer_control_points[f, cells]
+                control_points_i = self.faces_inner_control_points[f, cells]
+                insiders[:, f] = (
+                    ((control_points_o - points) ** 2).sum(axis=1)
+                    - ((control_points_i - points) ** 2).sum(axis=1)
+                ) > 0
 
-            insiders[:, f] = inside[:]
+        result = numpy.all(insiders, axis=1)
 
-        return numpy.all(insiders, axis=1)
+        # Reject ghost-cell claims so ownership remains unique. No-op on
+        # non-overlapped DMs where every cell is owned.
+        owned_mask = self._get_owned_cells_mask()
+        valid_cell = (cells >= 0) & (cells < owned_mask.shape[0])
+        result[valid_cell] = result[valid_cell] & owned_mask[cells[valid_cell]]
+
+        return result
 
     def _mark_local_boundary_faces_inside_and_out(self):
         """
@@ -2435,37 +4950,94 @@ class Mesh(Stateful, uw_object):
         ):
             return
 
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        fStart, fEnd = self.dm.getHeightStratum(1)
-        pStart, pEnd = self.dm.getDepthStratum(0)
+        # Build boundary control points from the nav DM (sees the
+        # ghost cells on manifold meshes). On volume meshes nav_dm is
+        # self.dm.
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
+
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        fStart, fEnd = nav_dm.getHeightStratum(1)
+        pStart, pEnd = nav_dm.getDepthStratum(0)
         cell_num_faces = self.element.entities[1]
         cell_num_points = self.element.entities[self.dim]
         face_num_points = self.element.face_entities[self.dim]
 
+        # On an overlapped DM (manifold meshes with the partition halo),
+        # the outer edge of the halo masquerades as a boundary: faces
+        # there have ``getJoin(face).shape[0] == 1`` because only one
+        # of the two adjacent cells is in this rank's local view —
+        # and that one is a ghost. Filter to faces whose single
+        # bounding cell is OWNED locally; otherwise we'd build
+        # control points along the partition seam and reject legitimate
+        # interior points. No-op on non-overlapped DMs.
+        owned_mask = self._get_owned_cells_mask()
         boundary_faces = []
         for face in range(fStart, fEnd):
-            if self.dm.getJoin(face).shape[0] == 1:
-                boundary_faces.append(face)
+            join = nav_dm.getJoin(face)
+            if join.shape[0] != 1:
+                continue
+            cell = int(join[0])
+            if cell < cStart or cell >= cEnd:
+                continue
+            if not owned_mask[cell - cStart]:
+                continue
+            boundary_faces.append(face)
 
         boundary_faces = numpy.array(boundary_faces)
+
+        # Closed manifolds (e.g. SphericalManifold) have no boundary
+        # faces — the kdtree path is honestly empty. Let the caller's
+        # closest-local-cell short-circuit handle on-surface queries.
+        if len(boundary_faces) == 0:
+            self.boundary_face_control_points_kdtree = None
+            self.boundary_face_control_points_sign = None
+            self._domain_radius_squared = float("inf")
+            return
 
         control_points_list = []
         control_point_sign_list = []
 
-        for face in boundary_faces:
-            cell = self.dm.getJoin(face)[0]
-            points = self.dm.getTransitiveClosure(face)[0][-face_num_points:]
-            point_coords = self._coords[points - pStart]  # Use raw array for internal calculations
-            face_centroid = point_coords.mean(axis=0)
-            cell_centroid = self._centroids[cell - cStart]
+        # Pick the right centroid source: _nav_centroids if it's been
+        # built (set in _build_kd_tree_index from nav-DM cells), else
+        # the main-DM _centroids. On volume meshes these are equal.
+        nav_centroids = getattr(self, "_nav_centroids", None)
+        if nav_centroids is None:
+            nav_centroids = self._centroids
 
-            # 2D case
-            if self.dim == 2:
+        for face in boundary_faces:
+            cell = nav_dm.getJoin(face)[0]
+            points = nav_dm.getTransitiveClosure(face)[0][-face_num_points:]
+            point_coords = nav_coords[points - pStart]  # Use raw array for internal calculations
+            face_centroid = point_coords.mean(axis=0)
+            cell_centroid = nav_centroids[cell - cStart]
+
+            if self.dim == 1:
+                # 1-manifold (annulus / shell boundary loop extracted as a
+                # surface submesh): a "cell" is an edge whose faces are its
+                # two end vertices (face_num_points == 1). The outward
+                # direction at a face vertex is along the edge, away from the
+                # cell centroid; the inward/outward sign fix below orients it.
+                normal = face_centroid - cell_centroid
+            elif self.dim == 2 and self.cdim == 2:
+                # 2-D volume mesh
                 vector = point_coords[1] - point_coords[0]
                 normal = numpy.array((-vector[1], vector[0]))
-
+            elif self.dim == 2 and self.cdim == 3:
+                # Bounded 2-manifold in 3-space (e.g. a partial-surface
+                # patch). In-tangent-plane perpendicular to the
+                # boundary edge — needs the cell's third vertex to
+                # build the cell normal.
+                cell_points = nav_dm.getTransitiveClosure(cell)[0][-cell_num_points:]
+                cell_point_coords = nav_coords[cell_points - pStart]
+                cell_normal = numpy.cross(
+                    cell_point_coords[1] - cell_point_coords[0],
+                    cell_point_coords[2] - cell_point_coords[0],
+                )
+                edge_vector = point_coords[1] - point_coords[0]
+                normal = numpy.cross(cell_normal, edge_vector)
             else:
-                # 3D simplex case (probably also OK for hexes)
+                # 3-D simplex / hex face
                 normal = numpy.cross(
                     (point_coords[1] - point_coords[0]),
                     (point_coords[2] - point_coords[0]),
@@ -2496,11 +5068,19 @@ class Mesh(Stateful, uw_object):
                 control_points_list.append(inside_control_point)
                 control_point_sign_list.append(1)
 
-        control_point_kdtree = uw.kdtree.KDTree(numpy.array(control_points_list))
+        control_points_array = numpy.array(control_points_list)
+        control_point_kdtree = uw.kdtree.KDTree(control_points_array)
         control_point_sign = numpy.array(control_point_sign_list)
 
         self.boundary_face_control_points_kdtree = control_point_kdtree
         self.boundary_face_control_points_sign = control_point_sign
+
+        # Domain bounding radius (squared): distance from centroid to farthest
+        # control point. Points beyond this distance from their nearest control
+        # point cannot be inside the domain.
+        domain_centroid = control_points_array.mean(axis=0)
+        radii_sq = numpy.sum((control_points_array - domain_centroid) ** 2, axis=1)
+        self._domain_radius_squared = float(radii_sq.max())
 
         return
 
@@ -2536,24 +5116,57 @@ class Mesh(Stateful, uw_object):
         if model_points.shape[0] == 0:
             return numpy.array([], dtype=bool)
 
+        # Cd-1 surface mesh: no boundary-face control points exist
+        # (see _mark_local_boundary_faces_inside_and_out). Per the
+        # surface-mesh contract, query points are assumed to lie on
+        # the manifold; the closest-local-cell test is the right
+        # filter, not an inside/outside split.
+        if self.boundary_face_control_points_kdtree is None:
+            return self._get_closest_local_cells_internal(model_points) != -1
+
         dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
             model_points, k=1, sqr_dists=True
         )
+        dist2 = numpy.asarray(dist2).ravel()  # kd-tree returns (n,1) for k=1
         in_or_not = self.boundary_face_control_points_sign[closest_control_points_ext] > 0
 
-        ## This choice of distance needs some more thought
+        # Points very far from the nearest boundary face are definitely exterior.
+        # The sign heuristic only works for points within the domain's neighbourhood;
+        # beyond that, "nearest control point" is arbitrary.
+        far_from_domain = dist2 > self._domain_radius_squared
+        in_or_not[far_from_domain] = False
 
+        # Points close to the boundary need the expensive cell-location check.
+        #
+        # The plain cell-wall test (_get_closest_local_cells_internal) returns
+        # -1 for points sitting exactly on a cell face/edge OR on the domain
+        # boundary — even though an on-boundary point is in the (closed) domain.
+        # That rejection is what strands on-face / partition-seam / domain-
+        # boundary NODE points in swarm migration (they are never "claimed", so
+        # the domain-centroid routing leaves them on a non-containing rank) and
+        # what routes them to rank-local RBF in evaluation. On parallel simplex
+        # / manifold meshes (mesh._eval_use_robust_location()) defer instead to
+        # the bulletproof barycentric locator, which returns a valid adjacent
+        # cell (>= 0) for any point genuinely in/on the mesh and -1 only for
+        # true exterior. Serial / non-simplex keep the cell-wall test
+        # (bit-identical to the validated baseline).
         near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
         near_boundary_points = model_points[near_boundary]
 
-        in_or_not[near_boundary] = (
-            self._get_closest_local_cells_internal(near_boundary_points) != -1
-        )
+        if self._eval_use_robust_location():
+            in_or_not[near_boundary] = self._robust_owning_cells(near_boundary_points) >= 0
+        else:
+            in_or_not[near_boundary] = (
+                self._get_closest_local_cells_internal(near_boundary_points) != -1
+            )
 
         if strict_validation:
             chosen_ones = numpy.where(in_or_not == True)[0]
             chosen_points = model_points[chosen_ones]
-            in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
+            if self._eval_use_robust_location():
+                in_or_not[chosen_ones] = self._robust_owning_cells(chosen_points) >= 0
+            else:
+                in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
 
         return in_or_not
 
@@ -2602,7 +5215,12 @@ class Mesh(Stateful, uw_object):
             # CRITICAL: Must return 1D array, not 2D, for Cython buffer compatibility
             return numpy.array([], dtype=numpy.int64)
 
-    def _get_closest_local_cells_internal(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def _get_closest_local_cells_internal(
+        self,
+        coords: numpy.ndarray,
+        on_boundary: bool = True,
+        tol: float = 0.0,
+    ) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
@@ -2610,12 +5228,39 @@ class Mesh(Stateful, uw_object):
         is not guaranteed. Also compares the distance from the cell to the
         point - if this is larger than the "cell size" then returns -1
 
+        ``on_boundary`` and ``tol`` are forwarded to the in-cell
+        containment test (see ``_test_if_points_in_cells_internal``).
+        Default ``(on_boundary=True, tol=0.0)`` admits on-face queries
+        at PR #207's absolute -1e-12 floor — the FE-evaluation-natural
+        semantics. Pass ``on_boundary=False`` for strict-inside (a
+        point exactly on a face returns -1). ``tol > 0`` admits on-face
+        points at an absolute -1e-12 floor (matches PR #207). ``tol > 0``
+        admits on-face points at a face-relative tolerance, taking
+        precedence over ``on_boundary``.
+
         Parameters:
         -----------
         coords:
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
-            shape (n_coords,dim) in any physical unit system (will be auto-converted).
+            shape (n_coords,dim), assumed already in model units (this
+            internal helper does not perform unit conversion — use the
+            public `get_closest_local_cells` for unit-aware input).
+        on_boundary : bool, default True
+            Forwarded to `_test_if_points_in_cells_internal`. If True (the
+            default), queries exactly on a cell face count as inside that
+            cell — the natural semantics for FE-evaluation hints (every mesh
+            vertex sits on the faces of every cell containing it). If False,
+            strict-inside semantics; boundary queries come back as -1.
+        tol : float, default 0.0
+            Face-relative tolerance, forwarded to
+            `_test_if_points_in_cells_internal`. When > 0, the in-cell
+            test becomes ``diff > -tol * |O-I|²`` and takes precedence
+            over ``on_boundary``. Used by the parallel evaluation
+            locator (`Mesh._robust_owning_cells`) to admit on-face /
+            partition-seam node queries at a mesh-spacing-relative
+            tolerance — wider than ``on_boundary=True``'s absolute
+            -1e-12 floor.
 
         Returns:
         --------
@@ -2641,19 +5286,30 @@ class Mesh(Stateful, uw_object):
         else:
             return np.zeros((0,))
 
-        # We need to filter points that lie outside the mesh but
-        # still are allocated a nearby element by this distance-only check.
-
         cells = self._indexMap[closest_points]
         cStart, cEnd = self.dm.getHeightStratum(0)
 
-        inside = self._test_if_points_in_cells_internal(coords, cells)
+        # We need to filter points that lie outside the mesh but
+        # still are allocated a nearby element by this distance-only check.
+        # On a 2-manifold in 3-space the in-cell test is the
+        # in-tangent-plane half-space rule (Site A in
+        # _mark_faces_inside_and_out generalises the perpendicular
+        # construction to ``cell_normal × edge``), so this works
+        # uniformly on volume meshes and cd-1 manifolds.
+
+        inside = self._test_if_points_in_cells_internal(
+            coords, cells, on_boundary=on_boundary, tol=tol)
         cells[~inside] = -1
         lost_points = np.where(inside == False)[0]
 
         # Part 2 - try to find the lost points by walking nearby cells
 
-        num_local_cells = self._centroids.shape[0]
+        # Size by the nav-DM cell count, which is what _centroid_index
+        # was built from (includes ghost cells on manifold meshes).
+        nav_centroids = getattr(self, "_nav_centroids", None)
+        if nav_centroids is None:
+            nav_centroids = self._centroids
+        num_local_cells = nav_centroids.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
         dist2, closest_centroids = self._centroid_index.query(
@@ -2666,7 +5322,8 @@ class Mesh(Stateful, uw_object):
         for i in range(0, num_testable_neighbours):
 
             inside = self._test_if_points_in_cells_internal(
-                coords[lost_points], closest_centroids[:, i]
+                coords[lost_points], closest_centroids[:, i],
+                on_boundary=on_boundary, tol=tol,
             )
             cells[lost_points[inside]] = closest_centroids[inside, i]
 
@@ -2675,7 +5332,7 @@ class Mesh(Stateful, uw_object):
 
         return cells
 
-    def test_if_points_in_cells(self, points, cells):
+    def test_if_points_in_cells(self, points, cells, on_boundary=True, tol=0.0):
         """
         Determine if the given points lie in the suggested cells.
         Uses a mesh skeletonization array to determine whether the point is
@@ -2689,6 +5346,19 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted)
         cells : array-like
             Cell indices to test
+        on_boundary : bool, default True
+            If True (the default), points exactly on a cell face count as
+            inside the cell (natural for FE evaluation, where the basis at
+            a shared face/vertex is consistent across adjacent cells). If
+            False, points on the closure of a cell are reported as NOT in
+            it (strict-inside semantics — useful when uniqueness matters).
+        tol : float, default 0.0
+            Face-relative tolerance forwarded to
+            `_test_if_points_in_cells_internal`. When ``> 0`` takes
+            precedence over ``on_boundary``: the test admits points
+            within ``tol`` of the face relative to the control-point
+            separation² — used by the parallel evaluation locator
+            for on-face / near-face queries at the mesh-spacing scale.
 
         Returns
         -------
@@ -2707,10 +5377,22 @@ class Mesh(Stateful, uw_object):
         else:
             model_points = model_quantity
 
-        # Call internal implementation
-        return self._test_if_points_in_cells_internal(model_points, cells)
+        # Coerce cells to a 1-D numpy array — accept list/tuple input as the
+        # docstring promises ("array-like") even though the internal helper
+        # calls cells.reshape(-1) directly.
+        cells = numpy.asarray(cells).reshape(-1)
 
-    def get_closest_local_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+        # Call internal implementation
+        return self._test_if_points_in_cells_internal(
+            model_points, cells, on_boundary=on_boundary, tol=tol,
+        )
+
+    def get_closest_local_cells(
+        self,
+        coords: numpy.ndarray,
+        on_boundary: bool = True,
+        tol: float = 0.0,
+    ) -> numpy.ndarray:
         """
         This method uses a kd-tree algorithm to find the closest
         cells to the provided coords. For a regular mesh, this should
@@ -2724,6 +5406,18 @@ class Mesh(Stateful, uw_object):
             An array of the coordinates for which we wish to determine the
             closest cells. This should be a 2-dimensional array of
             shape (n_coords,dim) in any physical unit system (will be auto-converted).
+        on_boundary : bool, default True
+            If True (the default), queries exactly on a cell face are
+            treated as inside that cell (natural for FE-evaluation hints —
+            mesh vertices sit on cell faces by definition). If False,
+            strict-inside semantics; boundary queries return -1.
+        tol : float, default 0.0
+            Face-relative tolerance forwarded to
+            `_test_if_points_in_cells_internal`. When ``> 0`` takes
+            precedence over ``on_boundary``: the test admits points
+            within ``tol`` of the face relative to the control-point
+            separation² — used by the parallel evaluation locator
+            for on-face / near-face queries at the mesh-spacing scale.
 
         Returns:
         --------
@@ -2745,7 +5439,73 @@ class Mesh(Stateful, uw_object):
             model_coords = model_quantity
 
         # Call internal implementation
-        return self._get_closest_local_cells_internal(model_coords)
+        return self._get_closest_local_cells_internal(
+            model_coords, on_boundary=on_boundary, tol=tol,
+        )
+
+    # Face tolerance for the parallel evaluation locator (relative to the
+    # control-point separation). Tight: it admits points genuinely on a
+    # cell face/edge (containment value ~0) but rejects points sitting inside
+    # a *different* cell (value strongly negative), so a rank never claims a
+    # point another rank owns. A point in the (closed) domain is then found by
+    # exactly one rank (verified: 360/360, owners==1), and the migration routes
+    # it to that owner.
+    _EVAL_FACE_TOL = 1.0e-2
+
+    def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+        """Per-point owning cell for parallel evaluation (coords in model units).
+
+        This is the strict barycentric/cell-wall locator
+        (:meth:`_get_closest_local_cells_internal`) with a *tight* face
+        tolerance (``_EVAL_FACE_TOL``): it returns the containing cell for
+        interior points and a valid sharing cell for genuinely-on-face points,
+        and ``-1`` for points that lie inside a *different* cell or outside the
+        local mesh. Crucially it does **not** fall back to a bounding-sphere
+        "nearest cell" — that earlier fallback let a rank claim a point that
+        another rank actually owns, so the eval-swarm migration stranded it on
+        the wrong rank and ξ-clamp-evaluated it in an adjacent cell (the
+        partition-seam hotspots). With the strict+tol locator the point is
+        found only by its true owner, the migration delivers it there, and it
+        evaluates exactly.
+
+        Never calls PETSc ``DMLocatePoints`` (slow, raises out-of-domain), and
+        is purely kd-tree / Euclidean — manifold-safe, no manifold branch.
+        """
+        coords = numpy.asarray(coords)
+        if coords.shape[0] == 0:
+            return numpy.array([], dtype=numpy.int64)
+        return numpy.asarray(
+            self._get_closest_local_cells_internal(coords, tol=self._EVAL_FACE_TOL),
+            dtype=numpy.int64,
+        )
+
+    def _eval_use_robust_location(self) -> bool:
+        """Single switch for the parallel evaluation cell-location strategy.
+
+        Returns True when ``uw.function`` evaluation should locate cells with
+        the bulletproof barycentric hint (:meth:`_robust_owning_cells`) and the
+        ``DMLocatePoints`` bypass (``petsc_tools.c``), rather than PETSc's
+        ``DMLocatePoints``. This is the *one place* the policy lives; the
+        evaluate_nd classifier, the petsc_interpolate hint, and the
+        DMInterpolation wrapper all defer to it so the three stay consistent.
+
+        Two conditions, both required:
+
+        * **parallel only** (``uw.mpi.size > 1``) — in serial the on-face/edge
+          node points go to RBF-at-node (exact) and PETSc/the cell-wall test
+          are reliable with a single domain, so serial keeps the validated path
+          bit-for-bit. The parallel-only failure is the rank-local RBF / wrong-
+          region value at partition-seam node points.
+        * **hint is authoritative** — simplex cells (``dm.isSimplex()``: planar
+          faces, affine reference map, exact face containment) or manifold
+          meshes (``dim != cdim``: PETSc's in-cell test is unreliable near
+          2-manifold simplex edges in 3-D). On non-simplex volume meshes
+          (quads/hexes) deformed faces can be non-planar and the kdtree-nearest
+          cell can be wrong, so those keep PETSc's DMLocatePoints search.
+        """
+        return (uw.mpi.size > 1) and (
+            bool(self.dm.isSimplex()) or (self.dim != self.cdim)
+        )
 
     def _get_mesh_sizes(self, verbose=False):
         """
@@ -2803,10 +5563,23 @@ class Mesh(Stateful, uw_object):
     def _get_domain_centroids(self):
 
         import numpy as np
+        from underworld3.utilities import gather_data
 
         domain_centroid = self._centroids.mean(axis=0)
-        all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.dim)
+        all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.cdim)
         return all_centroids
+
+    def _get_domain_kdtree(self):
+        import underworld3 as uw
+        if (
+            not hasattr(self, "_domain_kdtree")
+            or self._domain_kdtree is None
+            or getattr(self, "_domain_kdtree_version", -1) != self._mesh_version
+        ):
+            centroids = self._get_domain_centroids()
+            self._domain_kdtree = uw.kdtree.KDTree(centroids)
+            self._domain_kdtree_version = self._mesh_version
+        return self._domain_kdtree
 
     def get_min_radius_old(self) -> float:
         """
@@ -2825,6 +5598,7 @@ class Mesh(Stateful, uw_object):
 
         return self._min_radius
 
+    @uw.collective_operation
     def get_min_radius(self) -> float:
         """
         This method returns the global minimum distance from any cell centroid to a face.
@@ -2841,6 +5615,7 @@ class Mesh(Stateful, uw_object):
 
         return all_min_radii.min()
 
+    @uw.collective_operation
     def get_max_radius(self) -> float:
         """
         This method returns the global maximum distance from any cell centroid to a face.
@@ -2854,6 +5629,35 @@ class Mesh(Stateful, uw_object):
         all_max_radii = uw.utilities.gather_data(np.array((self._radii.max(),)), bcast=True)
 
         return all_max_radii.max()
+
+    @uw.collective_operation
+    def get_mean_radius(self) -> float:
+        """
+        Global mean of the characteristic cell length scale
+        (``volume^(1/dim)``, i.e. the equivalent radius derived from each
+        cell's volume — the same quantity averaged by ``get_min_radius``
+        and ``get_max_radius`` to obtain global min/max). Parallel-safe
+        via MPI allreduce of the local sum and count.
+
+        Together with :meth:`get_min_radius` / :meth:`get_max_radius`
+        this is the canonical "mesh length" API. Use this anywhere you
+        need a representative h0 (smoothing-length defaults, diffusion-
+        stability heuristics, problem-scale normalisation) rather than
+        reaching for the rank-local ``self._radii`` array, which gives
+        different answers on different MPI ranks and leaks downstream
+        (e.g. into JIT C source via per-rank pointwise-function inputs).
+        """
+
+        import numpy as np
+        from mpi4py import MPI
+
+        radii = np.asarray(self._radii)
+        local_sum = float(radii.sum())
+        local_n = int(radii.size)
+        if uw.mpi.size > 1:
+            local_sum = uw.mpi.comm.allreduce(local_sum, op=MPI.SUM)
+            local_n = uw.mpi.comm.allreduce(local_n, op=MPI.SUM)
+        return local_sum / max(local_n, 1)
 
     # This should be deprecated in favour of using integrals
     def stats(self, uw_function, uw_meshVariable, basis=None):
@@ -2946,6 +5750,161 @@ class Mesh(Stateful, uw_object):
             print(f"Mesh version manually incremented to {self._mesh_version}")
 
     @timing.routine_timer_decorator
+    def OT_adapt(
+        self,
+        field,
+        *,
+        refinement=3.0,
+        coarsening="auto",
+        grad_smoothing_length="auto",
+        metric_choice="front-following",
+        fields_to_remap=None,
+        fields_to_zero=None,
+        skip_threshold=None,
+        reference_coords=None,
+        verbose=False,
+    ):
+        r"""Adapt the mesh in place so cell sizes track ``|∇field|``, using
+        the validated optimal-transport reset pattern.
+
+        Each call resets the mesh to a cached reference (the initial uniform
+        coordinates), FE-remaps ``field`` onto that clean canvas, builds a
+        gradient-density metric, runs the OT mover, and FE-remaps the
+        requested fields onto the adapted positions. Resetting every event
+        (rather than composing adaptations across time steps) is what keeps
+        the mover sliver-free over long runs. The "reset" is internal — from
+        the caller's point of view this just tracks the moving feature.
+
+        Topology is preserved (vertex count, DOF maps, rank partition
+        unchanged); only coordinates move. Registered solvers are marked for
+        rebuild via ``_deform_mesh``.
+
+        Reference coordinates
+        ---------------------
+        The reset target is snapshotted lazily on the **first** call as
+        ``self._ot_adapt_reference_coords`` (a copy of the current
+        ``mesh.X.coords``) and reused thereafter.
+
+        .. warning::
+           If the mesh is deformed by something other than ``OT_adapt``
+           between calls (e.g. a manual ``mesh._deform_mesh(...)`` or a
+           resume that loads a *deformed* snapshot), the cached reference no
+           longer matches the intended pristine state. Use
+           :meth:`OT_adapt_reset_reference` to re-baseline, or pass an
+           explicit ``reference_coords`` for a one-off override.
+
+        Parameters
+        ----------
+        field : MeshVariable
+            Scalar field whose gradient drives refinement (typically ``T``).
+            Always FE-remapped onto the adapted mesh.
+        refinement : float, default 3.0
+            Cell-size envelope ``h0/refinement`` for the densest cells.
+            Validated range 1.5–5; 3 is the Nu sweet spot.
+        coarsening : float or "auto", default "auto"
+            ``"auto"`` = budget-conserving ``refinement**(1/d)``.
+        grad_smoothing_length : "auto", None, float, or Pint Quantity, default "auto"
+            Screened-Poisson de-noising length for ``|∇field|`` before the
+            metric is built — the most effective sliver lever; without it,
+            production refinement chases sub-cell gradient noise.
+            ``"auto"`` (default) ≈ the mesh's uniform cell size (mean edge
+            length) — the validated setting. ``None`` turns it off. A number
+            or Pint length sets ``L`` explicitly; **user-supplied lengths are
+            unit-aware** (non-dimensionalised via the projection), so pass a
+            Pint quantity (or a non-dimensional number) — ``≈ h0`` is mild,
+            ``≈ 2·h0`` stronger.
+        metric_choice : {"front-following", "gradient-uniform"}, default "front-following"
+        fields_to_remap : list of MeshVariable, optional
+            Extra fields to FE-remap onto the adapted positions (``field`` is
+            always remapped). ``None`` ⇒ just ``field``.
+        fields_to_zero : list of MeshVariable, optional
+            Fields to zero after the adapt (e.g. ``[V, P]`` for a cold
+            restart of the flow solve).
+        skip_threshold : float, optional
+            If the mesh is already aligned with the metric (misalignment
+            below this; see :func:`~underworld3.meshing.mesh_metric_mismatch`),
+            skip the adapt and return ``False``. ``None`` ⇒ always adapt.
+        reference_coords : array, optional
+            One-off override of the reset target (does not update the cache).
+        verbose : bool, default False
+
+        Returns
+        -------
+        bool
+            ``True`` if the mesh was adapted, ``False`` if the
+            ``skip_threshold`` check short-circuited it.
+
+        Notes
+        -----
+        Boundary nodes slide tangentially and stay on the boundary for
+        radial coordinate systems (Annulus / shell), using the projected
+        boundary normal ``mesh.Gamma_P1``. Cartesian boundaries are pinned
+        (the vertex-evaluated normal is degenerate there).
+
+        Constrained-manifold meshes (``mesh.dim != mesh.cdim``, e.g. a 2D
+        spherical surface in 3D) are **not supported**: the OT mover would
+        have to constrain *every* node to the surface, not just boundary
+        nodes. See ``docs/developer/design/ot-adapt-api-proposal.md``.
+
+        Examples
+        --------
+        >>> mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+        ...                           cellSize=1/16, qdegree=3)
+        >>> T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
+        >>> # ... initialise T ...
+        >>> mesh.OT_adapt(T, refinement=3.0, fields_to_remap=[T])
+
+        See Also
+        --------
+        OT_adapt_reset_reference : Re-baseline the reset reference coords.
+        underworld3.meshing.follow_metric : The single-shot anisotropic mover.
+        adapt : Topology-changing MMG remeshing (different mechanism).
+        """
+        if self.dim != self.cdim:
+            raise NotImplementedError(
+                "OT_adapt is not supported on constrained-manifold meshes "
+                f"(mesh.dim={self.dim} != mesh.cdim={self.cdim}). The OT "
+                "mover would need to constrain every node to the surface, "
+                "not just boundary nodes — see "
+                "docs/developer/design/ot-adapt-api-proposal.md."
+            )
+        if (not hasattr(self, "_ot_adapt_reference_coords")
+                or self._ot_adapt_reference_coords is None):
+            # Lazy snapshot of the reset target on first call.
+            self._ot_adapt_reference_coords = numpy.asarray(
+                self.X.coords).copy()
+
+        from underworld3.meshing._ot_adapt import _ot_adapt_step
+
+        return _ot_adapt_step(
+            self, field,
+            refinement=refinement,
+            coarsening=coarsening,
+            grad_smoothing_length=grad_smoothing_length,
+            metric_choice=metric_choice,
+            fields_to_remap=fields_to_remap,
+            fields_to_zero=fields_to_zero,
+            skip_threshold=skip_threshold,
+            reference_coords=reference_coords,
+            verbose=verbose,
+        )
+
+    def OT_adapt_reset_reference(self, coords=None):
+        r"""Re-baseline the reference coordinates used by :meth:`OT_adapt`.
+
+        ``coords=None`` re-snapshots the current ``mesh.X.coords`` as the new
+        reset target; passing explicit ``coords`` (e.g. the initial uniform
+        mesh loaded from a checkpoint) sets those instead. Use on resume,
+        when the loaded mesh is in a deformed state and the cache would
+        otherwise lazily initialise from it.
+        """
+        if coords is None:
+            self._ot_adapt_reference_coords = numpy.asarray(
+                self.X.coords).copy()
+        else:
+            self._ot_adapt_reference_coords = numpy.asarray(coords).copy()
+
+    @timing.routine_timer_decorator
     def adapt(self, metric_field, verbose=False):
         r"""
         Adapt the mesh discretization based on a metric field.
@@ -3012,6 +5971,26 @@ class Mesh(Stateful, uw_object):
         # Stack boundary labels for adaptation
         adaptivity._dm_stack_bcs(self.dm, self.boundaries, "CombinedBoundaries")
 
+        # Create cell region label if regions exist — this tells MMG to
+        # preserve the interface between regions during adaptation
+        rgLabel_name = None
+        if self.regions is not None:
+            depth_label = self.dm.getLabel("depth")
+            cell_is = depth_label.getStratumIS(self.dim)
+            if cell_is:
+                cells = cell_is.getIndices()
+                self.dm.createLabel("_CellRegions_")
+                rg = self.dm.getLabel("_CellRegions_")
+                for region in self.regions:
+                    lab = self.dm.getLabel(region.name)
+                    if lab:
+                        region_is = lab.getStratumIS(region.value)
+                        if region_is:
+                            region_cells = set(region_is.getIndices()) & set(cells)
+                            for c in region_cells:
+                                rg.setValue(c, region.value)
+                rgLabel_name = "_CellRegions_"
+
         # Create the metric from the field
         hvec = metric_field._lvec
         metric_vec = self.dm.metricCreateIsotropic(hvec, metric_field.field_id)
@@ -3021,10 +6000,25 @@ class Mesh(Stateful, uw_object):
             print(f"[{uw.mpi.rank}] Mesh adaptation starting (nodes: ~{n_nodes_old})...", flush=True)
 
         # Perform the actual mesh adaptation
-        new_dm = self.dm.adaptMetric(metric_vec, bdLabel="CombinedBoundaries")
+        new_dm = self.dm.adaptMetric(
+            metric_vec,
+            bdLabel="CombinedBoundaries",
+            rgLabel=rgLabel_name,
+        )
 
         # Unstack boundary labels on the new dm
         adaptivity._dm_unstack_bcs(new_dm, self.boundaries, "CombinedBoundaries")
+
+        # Reconstruct region labels from cell tags on the adapted mesh
+        if rgLabel_name and self.regions is not None:
+            rg_new = new_dm.getLabel(rgLabel_name)
+            if rg_new:
+                for region in self.regions:
+                    new_dm.createLabel(region.name)
+                    region_label = new_dm.getLabel(region.name)
+                    region_is = rg_new.getStratumIS(region.value)
+                    if region_is:
+                        region_label.setStratumIS(region.value, region_is)
 
         if verbose:
             n_nodes_new = new_dm.getChart()[1] - new_dm.getChart()[0]
@@ -3042,24 +6036,38 @@ class Mesh(Stateful, uw_object):
             boundaries=self.boundaries,
         )
 
-        # Note: Variable transfer is complex and may hang with large meshes.
-        # For now, we skip automatic transfer. Users can reinitialize variables
-        # after adaptation using old_var.rbf_interpolate() if needed.
-        if verbose and old_vars_data:
-            print(f"[{uw.mpi.rank}] Found {len(old_vars_data)} variables. "
-                  "Variables will be reset; reinitialize manually if needed.", flush=True)
+        # Transfer variable data from old mesh to new mesh via evaluate.
+        # The old variables are still on ``self`` (old DM). Evaluate each old
+        # variable's symbol at the *new mesh's DOF coords for that variable's
+        # degree/continuity*, not at the new mesh's vertex set. The vertex
+        # set only matches degree-1 continuous variables; for degree>=2 or
+        # discontinuous variables the DOF count differs and the resulting
+        # array would not fit into ``new_var.data``.
+        #
+        # Cache target coords by (degree, continuous) so meshes with many
+        # variables of the same basis don't pay for repeated cloned
+        # CoordinateDMs inside ``_get_coords_for_basis``.
+        transferred_data = {}
+        target_coords_cache = {}
 
-        # Store old data for potential manual recovery
-        old_var_data_backup = {}
         for var_name, old_var in old_vars_data.items():
             try:
-                # Back up old data before adaptation
-                if old_var._lvec is not None:
-                    old_var_data_backup[var_name] = old_var._lvec.array.copy()
-            except Exception:
-                pass
+                if old_var._lvec is not None and old_var.data.size > 0:
+                    if verbose:
+                        print(f"[{uw.mpi.rank}] Transferring '{var_name}'...", flush=True)
+                    basis_key = (old_var.degree, old_var.continuous)
+                    if basis_key not in target_coords_cache:
+                        target_coords_cache[basis_key] = (
+                            temp_mesh._get_coords_for_basis(*basis_key)
+                        )
+                    target_coords = target_coords_cache[basis_key]
+                    transferred_data[var_name] = uw.function.evaluate(
+                        old_var.sym, target_coords
+                    )
+            except Exception as e:
+                if verbose:
+                    print(f"[{uw.mpi.rank}] Warning: transfer of '{var_name}' failed: {e}", flush=True)
 
-        # Clean up temp mesh (we created it but won't use it for transfer)
         del temp_mesh
 
         # Now update this mesh's internal state
@@ -3076,12 +6084,15 @@ class Mesh(Stateful, uw_object):
 
             # Rebuild the callback for mesh deformation
             def mesh_update_callback(array, change_context):
-                print(f"Mesh update callback - mesh deform")
+                if verbose:
+                    uw.pprint(0, f"Mesh update callback - mesh deform")
+
                 coords = array.reshape(-1, array.owner.cdim)
-                self._deform_mesh(coords, verbose=True)
+                self._deform_mesh(coords, verbose=verbose)
                 with self._mesh_update_lock:
                     self._mesh_version += 1
-                    print(f"Mesh version incremented to {self._mesh_version}")
+                    if verbose:
+                        uw.pprint(0, f"Mesh version incremented to {self._mesh_version}")
                 return
 
             self._coords.add_callback(mesh_update_callback)
@@ -3116,14 +6127,38 @@ class Mesh(Stateful, uw_object):
                 old_var._setup_ds()
                 old_var._set_vec(available=True)
 
-                if verbose:
-                    print(f"[{uw.mpi.rank}] Variable '{var_name}' reset on adapted mesh", flush=True)
+                # Restore transferred data if available
+                if var_name in transferred_data:
+                    try:
+                        data = transferred_data[var_name]
+                        # evaluate returns (N, a, b) shaped array; pack to (N, ncomp)
+                        data_flat = data.reshape(old_var.data.shape)
+                        old_var.pack_raw_data_to_petsc(data_flat, sync=True)
+                        if verbose:
+                            print(f"[{uw.mpi.rank}] Variable '{var_name}' transferred to adapted mesh", flush=True)
+                    except Exception as e2:
+                        if verbose:
+                            print(f"[{uw.mpi.rank}] Variable '{var_name}' reset (transfer failed: {e2})", flush=True)
+                else:
+                    if verbose:
+                        print(f"[{uw.mpi.rank}] Variable '{var_name}' reset on adapted mesh", flush=True)
             except Exception as e:
                 if verbose:
                     print(f"[{uw.mpi.rank}] Warning: Failed to reinitialize '{var_name}': {e}", flush=True)
 
         # Note: Surfaces were already notified at the start of adapt()
         # They will lazily recompute distance fields when accessed
+
+        # Refresh the local cell-size field from the adapted geometry. The
+        # generic variable transfer above re-interpolates it (meaningless for
+        # a geometric size); re-fill it from the new mesh's per-cell radii so
+        # the Nitsche penalty scales correctly after re-refinement.
+        if getattr(self, "_cell_size_variable", None) is not None:
+            try:
+                self._assemble_cell_size(self._cell_size_variable)
+            except Exception as e:
+                if verbose:
+                    print(f"[{uw.mpi.rank}] Warning: cell-size refresh failed: {e}", flush=True)
 
         # Mark solvers for rebuild
         for solver in self._equation_systems_register:
@@ -3138,14 +6173,18 @@ class Mesh(Stateful, uw_object):
         if hasattr(self, '_dminterpolation_cache'):
             self._dminterpolation_cache.invalidate_all(reason="mesh_adaptation")
 
+        # Re-extract registered submeshes from the adapted parent
+        for submesh in list(self._registered_submeshes):
+            try:
+                submesh._re_extract_from_parent(verbose=verbose)
+            except Exception as e:
+                if verbose:
+                    print(f"[{uw.mpi.rank}] Warning: submesh re-extraction failed: {e}", flush=True)
+
         if verbose:
             print(f"[{uw.mpi.rank}] Mesh adaptation complete", flush=True)
 
         return
-
-
-## This is a temporary replacement for the PETSc xdmf generator
-## Simplified to allow us to decide how we want to checkpoint
 
 
 def _write_compat_groups(mesh, var, var_h5_path):
@@ -3208,6 +6247,7 @@ def checkpoint_xdmf(
 ):
     import h5py
     import os
+    import warnings
 
     """Create xdmf file for checkpoints"""
 
@@ -3229,20 +6269,58 @@ def checkpoint_xdmf(
         geomPath = "geometry"
         geom = h5["geometry"]
 
-    if "viz" in h5 and "topology" in h5["viz"]:
+    if "viz" in h5 and "topology" in h5["viz"] and "cells" in h5["viz"]["topology"]:
         topoPath = "viz/topology"
         topo = h5["viz"]["topology"]
-    else:
+    elif "topology" in h5 and "cells" in h5["topology"]:
         topoPath = "topology"
         topo = h5["topology"]
+    else:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: no direct cell "
+            "connectivity dataset found at /viz/topology/cells."
+        )
 
     vertices = geom["vertices"]
     numVertices = vertices.shape[0]
     spaceDim = vertices.shape[1]
     cells = topo["cells"]
+    if len(cells.shape) != 2:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: {topoPath}/cells has "
+            f"shape {cells.shape}. XDMF requires a 2D direct cell-to-vertex "
+            "connectivity dataset."
+        )
     numCells = cells.shape[0]
     numCorners = cells.shape[1]
-    cellDim = topo["cells"].attrs["cell_dim"]
+    topology_precision = cells.dtype.itemsize
+
+    if numCorners <= 1:
+        h5.close()
+        raise RuntimeError(
+            f"Cannot generate XDMF for {mesh_filename}: {topoPath}/cells has "
+            f"shape {cells.shape}. XDMF requires direct cell-to-vertex "
+            "connectivity, not PETSc DMPlex internal topology."
+        )
+
+    if topoPath == "topology":
+        warnings.warn(
+            "Using raw '/topology/cells' for XDMF. This may not be Paraview-compatible. "
+            "Expected '/viz/topology/cells'.",
+            stacklevel=2,
+        )
+
+        cells_data = cells[...]
+        c_min, c_max = cells_data.min(), cells_data.max()
+        if c_min < 0 or c_max >= numVertices:
+            warnings.warn(
+                f"XDMF connectivity is invalid! cells max {c_max} >= "
+                f"numVertices {numVertices} or min {c_min} < 0. ParaView will likely crash. "
+                f"Ensure cell-to-vertex connectivity is written.",
+                stacklevel=2,
+            )
 
     h5.close()
 
@@ -3250,13 +6328,19 @@ def checkpoint_xdmf(
     if spaceDim == 2:
         if numCorners == 3:
             topology_type = "Triangle"
+        elif numCorners == 4:
+            topology_type = "Quadrilateral"
         else:
+            warnings.warn(f"Unexpected numCorners={numCorners} for 2D spaceDim. Expected 3 or 4.", stacklevel=2)
             topology_type = "Quadrilateral"
         geomType = "XY"
     else:
         if numCorners == 4:
             topology_type = "Tetrahedron"
+        elif numCorners == 8:
+            topology_type = "Hexahedron"
         else:
+            warnings.warn(f"Unexpected numCorners={numCorners} for 3D spaceDim. Expected 4 or 8.", stacklevel=2)
             topology_type = "Hexahedron"
         geomType = "XYZ"
 
@@ -3285,7 +6369,7 @@ def checkpoint_xdmf(
     <DataItem Name="cells"
               ItemType="Uniform"
               Format="HDF"
-              NumberType="Float" Precision="8"
+              NumberType="Int" Precision="{topology_precision}"
               Dimensions="{numCells} {numCorners}">
       &MeshData;:/{topoPath}/cells
     </DataItem>
@@ -3348,6 +6432,19 @@ def checkpoint_xdmf(
             center = "Node"
         numItems, numComponents, dataset_path = get_field_info(var_filename, var, center)
 
+        if center == "Node" and numItems != numVertices:
+            warnings.warn(
+                f"Attribute '{var.clean_name}' Center is 'Node' but numItems "
+                f"({numItems}) != numVertices ({numVertices}).",
+                stacklevel=2,
+            )
+        elif center == "Cell" and numItems != numCells:
+            warnings.warn(
+                f"Attribute '{var.clean_name}' Center is 'Cell' but numItems "
+                f"({numItems}) != numCells ({numCells}).",
+                stacklevel=2,
+            )
+
         # Use variable type when available, but reflect actual stored component count.
         if hasattr(var, "vtype") and var.vtype in (
             uw.VarType.TENSOR,
@@ -3360,27 +6457,17 @@ def checkpoint_xdmf(
         else:
             variable_type = "Vector"
 
+        data_dimensions = f"{numItems}" if numComponents == 1 else f"{numItems} {numComponents}"
         var_attribute = f"""
         <Attribute
            Name="{var.clean_name}"
            Type="{variable_type}"
            Center="{center}">
-          <DataItem ItemType="HyperSlab"
-                Dimensions="1 {numItems} {numComponents}"
-                Type="HyperSlab">
-            <DataItem
-               Dimensions="3 3"
-               Format="XML">
-              0 0 0
-              1 1 1
-              1 {numItems} {numComponents}
-            </DataItem>
-            <DataItem
-               DataType="Float" Precision="8"
-               Dimensions="1 {numItems} {numComponents}"
-               Format="HDF">
-              &{var.clean_name+"_Data"};:/{dataset_path}
-            </DataItem>
+          <DataItem
+             DataType="Float" Precision="8"
+             Dimensions="{data_dimensions}"
+             Format="HDF">
+            &{var.clean_name+"_Data"};:/{dataset_path}
           </DataItem>
         </Attribute>
         """

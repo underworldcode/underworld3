@@ -24,3 +24,22 @@ mpirun -np 4 $PYTHON ./ptest_002_projection.py
 #mpirun -np 1 $PYTHON ./ptest_003_swarm_projection.py
 #echo "ptest 003 -np 4"
 #mpirun -np 4 $PYTHON ./ptest_003_swarm_projection.py
+
+echo "ptest 0007 snapshot in-memory -np 1"
+mpirun -np 1 $PYTHON ./ptest_0007_snapshot_inmemory.py
+echo "ptest 0007 snapshot in-memory -np 3 (uneven partition)"
+mpirun -np 3 $PYTHON ./ptest_0007_snapshot_inmemory.py
+echo "ptest 0007 snapshot in-memory -np 4"
+mpirun -np 4 $PYTHON ./ptest_0007_snapshot_inmemory.py
+
+echo "ptest 0010 snapshot on-disk -np 1"
+mpirun -np 1 $PYTHON ./ptest_0010_snapshot_disk.py
+echo "ptest 0010 snapshot on-disk -np 3 (uneven)"
+mpirun -np 3 $PYTHON ./ptest_0010_snapshot_disk.py
+echo "ptest 0010 snapshot on-disk -np 4"
+mpirun -np 4 $PYTHON ./ptest_0010_snapshot_disk.py
+
+echo "ptest 0004 checkpoint FMG hierarchy -np 2"
+mpirun -np 2 $PYTHON ./ptest_0004_checkpoint_fmg_hierarchy.py
+echo "ptest 0004 checkpoint FMG hierarchy -np 3 (uneven partition)"
+mpirun -np 3 $PYTHON ./ptest_0004_checkpoint_fmg_hierarchy.py

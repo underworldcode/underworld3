@@ -4,6 +4,11 @@
 <img src="docs/media/SocialShareS.png" width="80%">
 </center>
 
+[![Latest release](https://img.shields.io/github/v/release/underworldcode/underworld3?label=release)](https://github.com/underworldcode/underworld3/releases/latest)
+[![License: LGPL-3.0](https://img.shields.io/github/license/underworldcode/underworld3)](https://www.gnu.org/licenses/lgpl-3.0)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Documentation](https://img.shields.io/readthedocs/underworld3)](https://underworld3.readthedocs.io/en/latest/)
+
 Welcome to `Underworld3`, a mathematically self-describing, finite-element code for geodynamic modelling. This quick-start guide has basic installation instructions and a brief introduction to some of the concepts in the `Underworld3` code.
 
 All `Underworld3` source code is released under the LGPL-3 open source licence. This covers all files in `underworld3` constituting the Underworld3 Python module. Notebooks, stand-alone documentation and Python scripts which show how the code is used and run are licensed under the Creative Commons Attribution 4.0 International License.

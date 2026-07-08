@@ -113,11 +113,11 @@ pc.data[:, 0] = 0.0
 indexc.data[:, 0] = 0.0
 
 filename = f"{expt_name}.P.0.h5"
-pc.load_from_checkpoint(filename, data_name="P")
+pc.read_checkpoint(filename, data_name="P")
 filename = f"{expt_name}.U.0.h5"
-vc.load_from_checkpoint(filename, data_name="U")
+vc.read_checkpoint(filename, data_name="U")
 filename = f"{expt_name}.Index.0.h5"
-indexc.load_from_checkpoint(filename, data_name="Index")
+indexc.read_checkpoint(filename, data_name="Index")
 
 # %%
 # mesh.write_visualisation_xdmf(expt_name+"_c",
@@ -286,11 +286,11 @@ v3 = uw.discretisation.MeshVariable("U3", mesh3, mesh3.dim, degree=2)
 p3 = uw.discretisation.MeshVariable("P3", mesh3, 1, degree=1, continuous=True)
 
 # %%
-v3.load_from_checkpoint(f"{expt_name}.U.0.h5", data_name="U")
-p3.load_from_checkpoint(f"{expt_name}.P.0.h5", data_name="P")
+v3.read_checkpoint(f"{expt_name}.U.0.h5", data_name="U")
+p3.read_checkpoint(f"{expt_name}.P.0.h5", data_name="P")
 
-vc.load_from_checkpoint(f"{expt_name}.U.0.h5", data_name="U")
-pc.load_from_checkpoint(f"{expt_name}.P.0.h5", data_name="P")
+vc.read_checkpoint(f"{expt_name}.U.0.h5", data_name="U")
+pc.read_checkpoint(f"{expt_name}.P.0.h5", data_name="P")
 
 
 # %%
@@ -362,7 +362,7 @@ if uw.mpi.rank == 0:
     print("U2", U2[0:7, 0].T)
 
 # %%
-vc.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
+vc.read_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
 
 # %%
 # it should be fine to test this proc-by-proc
@@ -393,8 +393,8 @@ mesh2 = uw.meshing.UnstructuredSimplexBox(
 v2 = uw.discretisation.MeshVariable("U", mesh2, mesh2.dim, degree=2)
 p2 = uw.discretisation.MeshVariable("P", mesh2, 1, degree=1, continuous=True)
 
-v2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
-p2.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
+v2.read_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
+p2.read_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
 
 
 # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
@@ -422,8 +422,8 @@ mesh3.dm.view()
 v3 = uw.discretisation.MeshVariable("U", mesh3, mesh3.dim, degree=2)
 p3 = uw.discretisation.MeshVariable("P", mesh3, 1, degree=1, continuous=True)
 
-v3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
-p3.load_from_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
+v3.read_checkpoint(f"viz_chpt_np{uw.mpi.size}.U.0.h5", data_name="U")
+p3.read_checkpoint(f"viz_chpt_np{uw.mpi.size}.P.0.h5", data_name="P")
 
 # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
 print(f"i   - {uw.mpi.rank}: ", v3.data[0:7, 0].T)

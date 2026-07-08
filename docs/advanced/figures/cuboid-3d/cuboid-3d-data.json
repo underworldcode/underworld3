@@ -1,0 +1,264 @@
+{
+  "vertices_2d": [
+    [
+      -0.2165,
+      0.375
+    ],
+    [
+      1.5155,
+      -0.625
+    ],
+    [
+      0.2165,
+      -1.375
+    ],
+    [
+      -1.5155,
+      -0.375
+    ],
+    [
+      -0.2165,
+      1.375
+    ],
+    [
+      1.5155,
+      0.375
+    ],
+    [
+      0.2165,
+      -0.375
+    ],
+    [
+      -1.5155,
+      0.625
+    ]
+  ],
+  "faces": {
+    "Upper": {
+      "vertex_indices": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "visible": true,
+      "arrow_from": [
+        0.0,
+        1.3
+      ],
+      "arrow_to": [
+        0.0,
+        0.5
+      ],
+      "label_pos": [
+        0.0,
+        1.65
+      ],
+      "label_anchor": "south"
+    },
+    "Lower": {
+      "vertex_indices": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "visible": false,
+      "arrow_from": [
+        0.0,
+        -1.3
+      ],
+      "arrow_to": [
+        0.0,
+        -0.5
+      ],
+      "label_pos": [
+        0.0,
+        -1.65
+      ],
+      "label_anchor": "north"
+    },
+    "Front": {
+      "vertex_indices": [
+        0,
+        1,
+        5,
+        4
+      ],
+      "visible": false,
+      "arrow_from": [
+        1.3423,
+        0.775
+      ],
+      "arrow_to": [
+        0.6495,
+        0.375
+      ],
+      "label_pos": [
+        1.6454,
+        0.95
+      ],
+      "label_anchor": "west"
+    },
+    "Back": {
+      "vertex_indices": [
+        2,
+        3,
+        7,
+        6
+      ],
+      "visible": true,
+      "arrow_from": [
+        -1.3423,
+        -0.775
+      ],
+      "arrow_to": [
+        -0.6495,
+        -0.375
+      ],
+      "label_pos": [
+        -1.6454,
+        -0.95
+      ],
+      "label_anchor": "east"
+    },
+    "Left": {
+      "vertex_indices": [
+        0,
+        3,
+        7,
+        4
+      ],
+      "visible": false,
+      "arrow_from": [
+        -1.5588,
+        0.9
+      ],
+      "arrow_to": [
+        -0.866,
+        0.5
+      ],
+      "label_pos": [
+        -1.862,
+        1.075
+      ],
+      "label_anchor": "east"
+    },
+    "Right": {
+      "vertex_indices": [
+        1,
+        2,
+        6,
+        5
+      ],
+      "visible": true,
+      "arrow_from": [
+        1.5588,
+        -0.9
+      ],
+      "arrow_to": [
+        0.866,
+        -0.5
+      ],
+      "label_pos": [
+        1.862,
+        -1.075
+      ],
+      "label_anchor": "west"
+    }
+  },
+  "faces_back_to_front": [
+    "Left",
+    "Front",
+    "Lower",
+    "Upper",
+    "Back",
+    "Right"
+  ],
+  "edges": [
+    {
+      "vertices": [
+        0,
+        1
+      ],
+      "visible": false
+    },
+    {
+      "vertices": [
+        1,
+        2
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        2,
+        3
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        3,
+        0
+      ],
+      "visible": false
+    },
+    {
+      "vertices": [
+        4,
+        5
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        5,
+        6
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        6,
+        7
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        7,
+        4
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        0,
+        4
+      ],
+      "visible": false
+    },
+    {
+      "vertices": [
+        1,
+        5
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        2,
+        6
+      ],
+      "visible": true
+    },
+    {
+      "vertices": [
+        3,
+        7
+      ],
+      "visible": true
+    }
+  ]
+}

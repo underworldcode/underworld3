@@ -60,23 +60,124 @@ def petsc_fvm_get_local_cell_sizes(mesh) -> np.array:
         return cell_radii, cell_centroids
 
 
-def petsc_dm_create_submesh_from_label(incoming_dm, boundary_label_name, boundary_label_value, marked_faces=True) -> float:
+def petsc_dmplex_load_local_vector(dm, viewer, sectiondm, sf, data_name):
         """
-        Wraps DMPlexCreateSubmesh
+        Load a DMPlex checkpoint section and vector through PETSc's local-vector path.
+
+        petsc4py's DMPlex.sectionLoad wrapper always requests both the global and
+        local data SFs. For restart files whose section contains local overlap dofs,
+        the global-data SF construction can fail before the local path is usable.
+        This wrapper follows the PETSc API directly and requests only localDataSF.
         """
 
+        cdef DM c_dm = dm
+        cdef Viewer c_viewer = viewer
+        cdef DM c_sectiondm = sectiondm
+        cdef SF c_sf = sf
+        cdef Vec c_vec
+        cdef PetscSF local_sf = NULL
+        load_vec = None
+
+        CHKERRQ(DMPlexSectionLoad(c_dm.dm, c_viewer.vwr, c_sectiondm.dm, c_sf.sf, NULL, &local_sf))
+        load_vec = sectiondm.createLocalVec()
+        load_vec.setName(data_name)
+        c_vec = load_vec
+        CHKERRQ(DMPlexLocalVectorLoad(c_dm.dm, c_viewer.vwr, c_sectiondm.dm, local_sf, c_vec.vec))
+        CHKERRQ(PetscSFDestroy(&local_sf))
+
+        return load_vec
+
+
+def petsc_dm_create_submesh_from_label(incoming_dm, label_name, label_value, marked_faces=False):
+        """
+        Extract a submesh from a DMPlex using a label.
+
+        Wraps DMPlexCreateSubmesh: returns a new DMPlex containing only
+        cells (and their closures) that have the given value in the
+        specified label.
+
+        Parameters
+        ----------
+        incoming_dm : PETSc.DM
+            The source DMPlex.
+        label_name : str
+            Name of the DM label to filter on.
+        label_value : int
+            Stratum value to select.
+        marked_faces : bool
+            If True, the label marks faces; if False, marks cells.
+
+        Returns
+        -------
+        PETSc.DM
+            The submesh DMPlex.
+        """
 
         cdef DM c_dm = incoming_dm
-        cdef DM subdm
+        cdef DM subdm = PETSc.DMPlex()
         cdef PetscDMLabel dmlabel
-        cdef PetscInt value = boundary_label_value
-        cdef PetscBool markedFaces = marked_faces
+        cdef PetscInt value = label_value
+        cdef PetscBool mf = marked_faces
 
-        subdm = PETSc.DM()
+        DMGetLabel(c_dm.dm, label_name.encode('utf8'), &dmlabel)
+        if dmlabel == NULL:
+            raise ValueError(f"Label '{label_name}' not found on DM")
 
-        DMGetLabel(c_dm.dm, "Boundary", &dmlabel)
-        # DMPlexCreateSubmesh(dm.dm, dmlabel, value, markedFaces, &subdm.dm)
+        CHKERRQ( DMPlexCreateSubmesh(c_dm.dm, dmlabel, value, mf, &subdm.dm) )
 
+        return subdm
+
+
+def petsc_dm_filter_by_label(incoming_dm, label_name, label_value):
+        """
+        Extract a full-dimension submesh containing only cells with the
+        given label value. Uses DMPlexFilter.
+
+        Parameters
+        ----------
+        incoming_dm : PETSc.DM
+            The source DMPlex.
+        label_name : str
+            Name of the DM label to filter on.
+        label_value : int
+            Stratum value to select.
+
+        Returns
+        -------
+        PETSc.DM
+            The filtered submesh (same dimension as input).
+        """
+
+        cdef DM c_dm = incoming_dm
+        cdef DM subdm = PETSc.DMPlex()
+        cdef PetscDMLabel dmlabel
+        cdef PetscInt value = label_value
+
+        DMGetLabel(c_dm.dm, label_name.encode('utf8'), &dmlabel)
+        if dmlabel == NULL:
+            raise ValueError(f"Label '{label_name}' not found on DM")
+
+        # UW_DMPlexFilter handles the PETSc version difference (3.25 added MPI_Comm arg)
+        CHKERRQ( UW_DMPlexFilter(c_dm.dm, dmlabel, value, PETSC_TRUE, PETSC_FALSE, &subdm.dm) )
+
+        return subdm
+
+
+def petsc_dm_set_regular_refinement(dm, regular=True):
+        """Flag a DMPlex as having been produced by uniform (regular) refinement
+        of its coarse DM.
+
+        This is the flag PETSc's geometric multigrid checks
+        (``DMCreateInterpolation_Plex``) to take the exact *nested* interpolation
+        path (``DMPlexComputeInterpolatorNested``, which maps coarse cell ``c`` to
+        fine children ``c*numSubcells + r``) instead of the point-location
+        *general* path. Only valid when the dm's point numbering follows the
+        canonical ``refine()`` convention and its coarse DM is set
+        (``setCoarseDM``). Not exposed by petsc4py, hence this wrapper.
+        """
+        cdef DM c_dm = dm
+        cdef PetscBool flag = PETSC_TRUE if regular else PETSC_FALSE
+        CHKERRQ( DMPlexSetRegularRefinement(c_dm.dm, flag) )
         return
 
 

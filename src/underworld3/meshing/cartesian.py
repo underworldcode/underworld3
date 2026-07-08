@@ -353,6 +353,11 @@ def UnstructuredSimplexBox(
         verbose=verbose,
     )
 
+    # Bounding-surface objects for tangent slip: axis-aligned box faces are
+    # planes (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_box_face_surfaces
+    register_box_face_surfaces(new_mesh, minCoords, maxCoords)
+
     return new_mesh
 
 
@@ -482,6 +487,10 @@ def BoxInternalBoundary(
         Left = 14
         Internal = 15
 
+    class regions_2D(Enum):
+        Inner = 101   # Below internal boundary
+        Outer = 102   # Above internal boundary
+
     class boundary_normals_2D(Enum):
         Bottom = sympy.Matrix([0, 1])
         Top = sympy.Matrix([0, -1])
@@ -497,6 +506,10 @@ def BoxInternalBoundary(
         Front = 15
         Back = 16
         Internal = 17
+
+    class regions_3D(Enum):
+        Inner = 101   # Below internal boundary
+        Outer = 102   # Above internal boundary
 
     class boundary_normals_3D(Enum):
         Bottom = sympy.Matrix([0, 0, 1])
@@ -580,6 +593,9 @@ def BoxInternalBoundary(
             gmsh.model.set_physical_name(1, l56, boundaries.Right.name)
             gmsh.model.add_physical_group(1, [l7], boundaries.Internal.value)
             gmsh.model.set_physical_name(1, l7, boundaries.Internal.name)
+            # Region physical groups — surface1 is below, surface2 is above
+            gmsh.model.addPhysicalGroup(2, [surface1], regions_2D.Inner.value, name=regions_2D.Inner.name)
+            gmsh.model.addPhysicalGroup(2, [surface2], regions_2D.Outer.value, name=regions_2D.Outer.name)
             gmsh.model.addPhysicalGroup(2, [surface1, surface2], 99999)
             gmsh.model.setPhysicalName(2, 99999, "Elements")
 
@@ -731,6 +747,9 @@ def BoxInternalBoundary(
             gmsh.model.add_physical_group(2, [back_t, back_b], boundaries.Back.value)
             gmsh.model.set_physical_name(2, back, boundaries.Back.name)
 
+            # Region physical groups — volume_b is below, volume_t is above
+            gmsh.model.addPhysicalGroup(3, [volume_b], regions_3D.Inner.value, name=regions_3D.Inner.name)
+            gmsh.model.addPhysicalGroup(3, [volume_t], regions_3D.Outer.value, name=regions_3D.Outer.name)
             gmsh.model.addPhysicalGroup(3, [volume_t, volume_b], 99999)
             gmsh.model.setPhysicalName(3, 99999, "Elements")
 
@@ -882,7 +901,7 @@ def BoxInternalBoundary(
         boundary_normals=boundary_normals,
         coordinate_system_type=CoordinateSystemType.CARTESIAN,
         useMultipleTags=True,
-        useRegions=False,
+        useRegions=False,  # BoxInternalBoundary uses _dm_unstack_bcs instead
         markVertices=True,
         refinement=0.0,
         refinement_callback=None,
@@ -891,6 +910,50 @@ def BoxInternalBoundary(
         verbose=verbose,
     )
     uw.adaptivity._dm_unstack_bcs(new_mesh.dm, new_mesh.boundaries, "Face Sets")
+
+    # Create region labels by classifying cells based on centroid position
+    # relative to the internal boundary coordinate
+    if dim == 2:
+        new_mesh.regions = regions_2D
+    else:
+        new_mesh.regions = regions_3D
+
+    dm = new_mesh.dm
+    depth_label = dm.getLabel("depth")
+    cell_is = depth_label.getStratumIS(dim)
+
+    if cell_is:
+        cells = cell_is.getIndices()
+        coord_sec = dm.getCoordinateSection()
+        coord_vec = dm.getCoordinatesLocal()
+        coord_arr = coord_vec.array
+
+        for region in new_mesh.regions:
+            dm.createLabel(region.name)
+
+        inner_label = dm.getLabel(new_mesh.regions.Inner.name)
+        outer_label = dm.getLabel(new_mesh.regions.Outer.name)
+
+        # z-coordinate index: 1 for 2D (y), 2 for 3D (z)
+        z_idx = dim - 1
+
+        for cell in cells:
+            # Compute centroid from cell vertex coordinates
+            closure = dm.getTransitiveClosure(cell)[0]
+            vert_coords = []
+            for pt in closure:
+                ndof = coord_sec.getDof(pt)
+                if ndof > 0:
+                    off = coord_sec.getOffset(pt)
+                    vert_coords.append(coord_arr[off + z_idx])
+
+            if vert_coords:
+                centroid_z = sum(vert_coords) / len(vert_coords)
+                if centroid_z < zintCoord:
+                    inner_label.setValue(cell, new_mesh.regions.Inner.value)
+                else:
+                    outer_label.setValue(cell, new_mesh.regions.Outer.value)
+
     return new_mesh
 
 
@@ -1304,5 +1367,10 @@ def StructuredQuadBox(
         units=units,
         verbose=verbose,
     )
+
+    # Bounding-surface objects for tangent slip: axis-aligned box faces are
+    # planes (see docs/developer/design/boundary-slip-strategy.md).
+    from underworld3.meshing.bounding_surface import register_box_face_surfaces
+    register_box_face_surfaces(new_mesh, minCoords, maxCoords)
 
     return new_mesh

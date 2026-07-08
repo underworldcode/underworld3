@@ -81,3 +81,6 @@ from .unit_aware_array import (
     ones_with_units,
     full_with_units,
 )
+
+from . import retention_curves
+from . import memprobe

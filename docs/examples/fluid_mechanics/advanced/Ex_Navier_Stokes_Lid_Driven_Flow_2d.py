@@ -1,385 +1,139 @@
 # %% [markdown]
 """
-# 🎓 Navier Stokes Lid Driven Flow 2d
+# Navier-Stokes Lid-Driven Cavity (Re=100)
 
-**PHYSICS:** fluid_mechanics  
-**DIFFICULTY:** advanced  
-**MIGRATED:** From underworld3-documentation/Notebooks
+**PHYSICS:** fluid_mechanics
+**DIFFICULTY:** advanced
+**RUNTIME:** ~10 minutes (order=1), ~10 minutes (order=2)
 
 ## Description
-This example has been migrated from the original UW3 documentation.
-Additional documentation and parameter annotations will be added.
 
-## Migration Notes
-- Original complexity preserved
-- Parameters to be extracted and annotated
-- Claude hints to be added in future update
+Classic lid-driven cavity benchmark at Re=100, validated against Ghia et al. (1982)
+reference data. Compares BDF order-1 and order-2 time integration using the
+Semi-Lagrangian Navier-Stokes solver.
+
+## Key Concepts
+
+- Navier-Stokes equations with Semi-Lagrangian advection
+- BDF time integration (order 1 vs order 2)
+- Quantitative validation against published benchmark data
+- Centreline velocity profile extraction
+
+## Reference
+
+Ghia, Ghia & Shin (1982), "High-Re solutions for incompressible flow using
+the Navier-Stokes equations and a multigrid method", J. Comp. Physics 48, 387-411.
 """
 
 # %% [markdown]
 """
-## Original Code
-The following is the migrated code with minimal modifications.
+## Parameters
 """
 
 # %%
+RE = 100.0          # PARAM: Reynolds number
+CELLSIZE = 0.04     # PARAM: mesh element size
+NSTEPS = 200        # PARAM: number of time steps
+DT = 0.05           # PARAM: time step size
+
 # %%
-import os
-
-import petsc4py
-import underworld3 as uw
-from underworld3 import timing
-
 import numpy as np
 import sympy
 
-idx = 0
-prev = 0
+import underworld3 as uw
+from underworld3.systems import NavierStokes
+
+# Ghia et al. (1982) reference data: u-velocity along vertical centreline
+GHIA_Y = np.array([0.0000, 0.0547, 0.0625, 0.0703, 0.1016, 0.1719,
+                    0.2813, 0.4531, 0.5000, 0.6172, 0.7344, 0.8516,
+                    0.9531, 0.9609, 0.9688, 0.9766, 1.0000])
+GHIA_U = np.array([0.0000, -0.03717, -0.04192, -0.04775, -0.06434, -0.10150,
+                    -0.15662, -0.21090, -0.20581, -0.13641, 0.00332, 0.23151,
+                    0.68717, 0.73722, 0.78871, 0.84123, 1.00000])
 
 # %% [markdown]
-# # Lid-driven cavity flow
-# By: Juan Carlos Graciosa
-# - A simple example problem for Navier-Stokes
-# - Has option for finer mesh resolution at the borders
-# - Still needs some fine-tuning to reach benchmark values from literature
+"""
+## Solver Setup
+"""
 
 # %%
-Re_num = 100
-resolution = 16
-wall_res_factor = 0.5 # controls finer resolution close to walls
-maxsteps = 1
-save_every = 5
-tol = 1e-8
+def run_cavity(order):
+    """Run lid-driven cavity to steady state and return centreline velocity."""
 
-# lid driven flow model parameters
-vel   = 1.0    # top boundary horizontal velocity
-dt_ns = 0.01  # time step - constant for now
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        cellSize=CELLSIZE, qdegree=3)
 
-# mesh and solver controls
-refinement = 0
-qdeg = 3
-Vdeg = 3
-Pdeg = Vdeg - 1
-Pcont = False
-ns_order = 1
+    v = uw.discretisation.MeshVariable("U", mesh, 2, degree=2, vtype=uw.VarType.VECTOR)
+    p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=True,
+                                        vtype=uw.VarType.SCALAR)
 
-# control flags
-show_vis = True       # set to True if we want to display visualizations
-gen_mesh = True       # if we want to generate a mesh with finer resolution close to the walls
-save_output = False   # save mesh and output fields
+    ns = NavierStokes(mesh, velocityField=v, pressureField=p, rho=1.0, order=order)
+    ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    ns.constitutive_model.Parameters.viscosity = 1.0 / RE
+    ns.saddle_preconditioner = 1.0
+    ns.bodyforce = sympy.Matrix([0.0, 0.0])
+    ns.tolerance = 1.0e-4
+    ns.petsc_options["ksp_type"] = "fgmres"
 
-# %%
-outfile = f"NS_LDF_run{idx}"
-outdir = f"./NS_LDF_res{resolution}_Re{Re_num}"
+    # Boundary conditions: moving lid on top, no-slip elsewhere
+    ns.add_essential_bc(sympy.Matrix([1.0, 0.0]), "Top")
+    ns.add_essential_bc(sympy.Matrix([0.0, 0.0]), "Bottom")
+    ns.add_essential_bc(sympy.Matrix([0.0, 0.0]), "Left")
+    ns.add_essential_bc(sympy.Matrix([0.0, 0.0]), "Right")
 
-# %%
-if prev == 0:
-    prev_idx = 0
-    infile = None
-else:
-    prev_idx = int(idx) - 1
-    infile = f"NS_LDF_run{prev_idx}"
+    # Time stepping
+    for step in range(NSTEPS):
+        ns.solve(timestep=DT, verbose=False)
+        if (step + 1) % 50 == 0:
+            uw.pprint(0, f"  order={order}, step {step+1}/{NSTEPS}")
 
-if uw.mpi.rank == 0 and if save_output:
-    os.makedirs(outdir, exist_ok=True)
+    # Extract u-velocity along vertical centreline at x=0.5
+    from scipy.interpolate import griddata
 
-# %%
-# dimensional quantities
-width = 1.
-height = 1.
-fluid_rho = 1.
+    coords = v.coords[:, :2]
+    sample_pts = np.column_stack([np.full_like(GHIA_Y, 0.5), GHIA_Y])
+    u_centreline = griddata(coords, v.data[:, 0], sample_pts, method="cubic").flatten()
+    rms = float(np.sqrt(np.mean((u_centreline - GHIA_U) ** 2)))
 
-# %%
-# cell size calculation
-csize = height / resolution
-csize_walls = wall_res_factor * csize
-res = csize_walls
+    return u_centreline, rms
+
+
+# %% [markdown]
+"""
+## Run Benchmark
+"""
 
 # %%
-import gmsh
-from enum import Enum
+results = {}
+for order in [1, 2]:
+    uw.pprint(0, f"\n=== BDF order={order} ===")
+    u, rms = run_cavity(order)
+    results[order] = (u, rms)
+    uw.pprint(0, f"  RMS vs Ghia: {rms:.6f}")
 
-# create mesh with finer cells at the walls
-class boundaries(Enum):
-    Bottom = 1
-    Right = 2
-    Top = 3
-    Left  = 4
-    All_Boundaries = 1001
-
-# mesh with boundary refinement
-if uw.mpi.rank == 0 and infile is None and gen_mesh:
-    gmsh.initialize()
-    gmsh.model.add("box_fine_bdndry")
-
-    # points in domain
-    p1 = gmsh.model.geo.addPoint(0.      , 0.    , 0., csize)
-    p2 = gmsh.model.geo.addPoint(width   , 0.    , 0., csize)
-    p3 = gmsh.model.geo.addPoint(width   , height, 0., csize)
-    p4 = gmsh.model.geo.addPoint(0.      , height, 0., csize)
-
-    l1 = gmsh.model.geo.addLine(p1, p2, tag = boundaries.Bottom.value)
-    l2 = gmsh.model.geo.addLine(p2, p3, tag = boundaries.Right.value )
-    l3 = gmsh.model.geo.addLine(p3, p4, tag = boundaries.Top.value   )
-    l4 = gmsh.model.geo.addLine(p4, p1, tag = boundaries.Left.value  )
-
-    cl = gmsh.model.geo.addCurveLoop([l1, l2, l3, l4])
-    surface = gmsh.model.geo.addPlaneSurface([cl])
-
-    gmsh.model.geo.synchronize()
-
-    # do refinement of boundary elements
-    dist_field = gmsh.model.mesh.field.add("Distance")
-    gmsh.model.mesh.field.setNumbers(dist_field, "CurvesList", [l1, l2, l3, l4])
-    gmsh.model.mesh.field.setNumber(dist_field, "Sampling", 100)
-
-    # threshold field
-    thresh_field = gmsh.model.mesh.field.add("Threshold")
-    gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
-    gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", csize_walls)
-    gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", csize)
-    gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.0)
-    gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.3)
-
-    # background mesh
-    bg_field = gmsh.model.mesh.field.add("Min")
-    gmsh.model.mesh.field.setNumbers(bg_field, "FieldsList", [thresh_field])
-    gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
-
-    # set these to zero
-    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-
-    # Delaunay algorithm is better for complex mesh size fields
-    gmsh.option.setNumber("Mesh.Algorithm", 5)
-
-    gmsh.model.geo.synchronize()
-
-    # add physical groups for boundaries
-    gmsh.model.add_physical_group(1, [l1], l1)
-    gmsh.model.set_physical_name(1, l1, boundaries.Bottom.name)
-    gmsh.model.add_physical_group(1, [l2], l2)
-    gmsh.model.set_physical_name(1, l2, boundaries.Right.name)
-    gmsh.model.add_physical_group(1, [l3], l3)
-    gmsh.model.set_physical_name(1, l3, boundaries.Top.name)
-    gmsh.model.add_physical_group(1, [l4], l4)
-    gmsh.model.set_physical_name(1, l4, boundaries.Left.name)
-
-    gmsh.model.add_physical_group(2, [surface], 99999)
-    gmsh.model.set_physical_name(2, 99999, "Elements")
-
-    gmsh.model.mesh.generate(2)
-    gmsh.write(f".meshes/graded_mesh_{resolution}.msh")
-    gmsh.finalize()
-
-
-def box_return_coords_to_bounds(coords):
-
-    x00s = coords[:, 0] < 0
-    x01s = coords[:, 0] > width
-    x10s = coords[:, 1] < 0
-    x11s = coords[:, 1] > height
-
-    coords[x00s, 0] = 0
-    coords[x01s, 0] = width
-    coords[x10s, 1] = 0
-    coords[x11s, 1] = height
-
-    return coords
+# %% [markdown]
+"""
+## Visualization
+"""
 
 # %%
-if gen_mesh:
-    meshbox = uw.discretisation.Mesh(
-        f".meshes/graded_mesh_{resolution}.msh",
-        markVertices = True,
-        useMultipleTags = True,
-        useRegions = True,
-        refinement = refinement,
-        refinement_callback = None,
-        return_coords_to_bounds = box_return_coords_to_bounds,
-        boundaries = boundaries,
-        qdegree = qdeg)
-else:
-    meshbox = uw.meshing.UnstructuredSimplexBox(
-                                                minCoords = (0.0, 0.0),
-                                                maxCoords = (width, height),
-                                                cellSize = 1.0 / resolution,
-                                                regular = False,
-                                                qdegree = qdeg
-                                            )
+if uw.mpi.size == 1 and uw.is_notebook():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-
-# %%
-meshbox.dm.view()
-
-# %%
-# calculate courant number
-courant = vel * dt_ns / meshbox.get_min_radius()
-
-print("Courant number: ", courant)
-
-# %%
-if uw.mpi.size == 1 and show_vis and uw.is_notebook:
-
-    import pyvista as pv
-    import underworld3.visualisation as vis
-
-    pvmesh = vis.mesh_to_pv_mesh(meshbox)
-
-    pl = pv.Plotter(window_size=(750, 750))
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        use_transparency=False)
-
-    pl.show(cpos="xy")
-
-# %%
-v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree = Vdeg)
-p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree = Pdeg, continuous = Pcont)
-
-# %%
-# passive_swarm = uw.swarm.Swarm(mesh=pipemesh)
-
-if infile is None:
-    pass
-else:
-    v_soln.read_timestep(data_filename = infile, data_name = "U", index = maxsteps, outputPath = outdir)
-    p_soln.read_timestep(data_filename = infile, data_name = "P", index = maxsteps, outputPath = outdir)
-
-# %%
-navier_stokes = uw.systems.NavierStokesSLCN(
-    meshbox,
-    velocityField = v_soln,
-    pressureField = p_soln,
-    rho = fluid_rho,
-    verbose = True,
-    order=ns_order)
-
-navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-# Constant visc
-navier_stokes.constitutive_model.Parameters.viscosity = 1./Re_num
-
-navier_stokes.penalty = 0
-navier_stokes.bodyforce = sympy.Matrix([0, 0])
-
-# Velocity boundary conditions
-navier_stokes.add_dirichlet_bc((vel, 0.0), "Top")
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "Left")
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "Right")
-
-navier_stokes.tolerance = tol
-
-# %%
-# PETSc solver parameters
-
-navier_stokes.petsc_options["snes_monitor"] = None
-navier_stokes.petsc_options["ksp_monitor"] = None
-
-navier_stokes.petsc_options["snes_type"] = "newtonls"
-navier_stokes.petsc_options["ksp_type"] = "fgmres"
-
-navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_type", "mg")
-navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_type", "kaskade")
-navier_stokes.petsc_options.setValue("fieldsplit_velocity_pc_mg_cycle_type", "w")
-
-navier_stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
-navier_stokes.petsc_options["fieldsplit_velocity_ksp_type"] = "fcg"
-navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
-navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-navier_stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
-
-# # gasm is super-fast ... but mg seems to be bulletproof
-# # gamg is toughest wrt viscosity
-
-# navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "gamg")
-# navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "additive")
-# navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-
-# # # mg, multiplicative - very robust ... similar to gamg, additive
-
-navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_type", "mg")
-navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_type", "multiplicative")
-navier_stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
-
-# %%
-ts = 0
-elapsed_time = 0.0
-timeVal =  np.zeros(maxsteps)*np.nan      # time values
-
-# %%
-for step in range(0, maxsteps):
-
-    delta_t = dt_ns
-
-    navier_stokes.solve(timestep=delta_t, zero_init_guess = True)
-
-    elapsed_time += delta_t
-    timeVal[step] = elapsed_time
-
-    uw.pprint("Timestep {}, t {}, dt {}".format(ts, elapsed_time, delta_t))
-
-    ts += 1
-
-# %%
-if save_output:
-    meshbox.write_timestep(
-        outfile,
-        meshUpdates = True,
-        meshVars = [p_soln, v_soln],
-        outputPath = outdir,
-        index = ts)
-
-# %%
-if uw.mpi.size == 1 and show_vis and uw.is_notebook:
-    import pyvista as pv
-    import underworld3.visualisation as vis
-
-    pvmesh = vis.mesh_to_pv_mesh(meshbox)
-
-    pvmesh.point_data["V"]      = vis.vector_fn_to_pv_points(pvmesh, v_soln.sym)
-    pvmesh.point_data["P"]      = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
-
-    velocity_points                 = vis.meshVariable_to_pv_cloud(v_soln)
-    velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, v_soln.sym)
-
-    sargs = dict(title = "Pressure", vertical = False, font_family = "arial", position_x=0.2, position_y = 0.05)
-
-    pl = pv.Plotter(window_size=(1000, 750), notebook = True, off_screen = True)
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=True,
-        scalars="P",
-        use_transparency=False,
-        opacity=1,
-        line_width = 0.0,
-        scalar_bar_args = sargs
-    )
-
-    pl.add_arrows(
-        velocity_points.points[::2],
-        velocity_points.point_data["V"][::2],
-        mag=0.2,
-        color="k")
-
-    pl.camera_position = "xy"
-    # pl.screenshot(
-    #     filename=f"{outdir}/{fname}",
-    #     window_size=(2560, 1280),
-    #     return_img=False,
-    # )
-    pl.show()
-
-
-# %%
-
-
-
+    fig, ax = plt.subplots(1, 1, figsize=(7, 8))
+    ax.plot(GHIA_U, GHIA_Y, "ko", markersize=8, label="Ghia et al. (1982)", zorder=10)
+    ax.plot(results[1][0], GHIA_Y, "b-", linewidth=2,
+            label=f"order=1 (RMS={results[1][1]:.4f})")
+    ax.plot(results[2][0], GHIA_Y, "r--", linewidth=2,
+            label=f"order=2 (RMS={results[2][1]:.4f})")
+    ax.set_xlabel("u-velocity at x=0.5")
+    ax.set_ylabel("y")
+    ax.set_title("Lid-driven cavity Re=100\nGhia et al. (1982) validation")
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig("sl_cavity_benchmark.png", dpi=150)
+    plt.show()

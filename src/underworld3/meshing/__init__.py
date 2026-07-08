@@ -17,6 +17,7 @@ from .spherical import (
     SphericalShellInternalBoundary,
     SegmentofSphere,
     CubedSphere,
+    SphericalManifold,
 )
 
 from .annulus import (
@@ -43,11 +44,24 @@ from .surfaces import (
     Surface,
     SurfaceVariable,
     SurfaceCollection,
+    fault_metric_tensor,
+    fault_comb_metric,
+    fault_metric,
+    compose_metrics,
 )
 
 from .faults import (
     FaultSurface,
     FaultCollection,
+)
+
+from .smoothing import (
+    smooth_mesh_interior,
+    smooth_surface_field,
+    metric_density_from_gradient,
+    mesh_metric_mismatch,
+    follow_metric,
+    ADAPT_STRATEGIES,
 )
 
 # Make all functions available at module level for backward compatibility
@@ -61,6 +75,7 @@ __all__ = [
     "SphericalShellInternalBoundary",
     "SegmentofSphere",
     "CubedSphere",
+    "SphericalManifold",
     # Annulus/cylindrical meshes
     "Annulus",
     "QuarterAnnulus",
@@ -79,7 +94,18 @@ __all__ = [
     "Surface",
     "SurfaceVariable",
     "SurfaceCollection",
+    "fault_metric_tensor",
+    "fault_comb_metric",
+    "fault_metric",
+    "compose_metrics",
     # Backward compatibility aliases
     "FaultSurface",
     "FaultCollection",
+    # Mesh smoothing
+    "smooth_mesh_interior",
+    "smooth_surface_field",
+    "metric_density_from_gradient",
+    "mesh_metric_mismatch",
+    "follow_metric",
+    "ADAPT_STRATEGIES",
 ]

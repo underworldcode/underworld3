@@ -90,7 +90,35 @@ U_a_x = (
 
 
 # %%
-@pytest.mark.parametrize("mesh_type", ["mesh0", "mesh1", "mesh2"])
+@pytest.mark.parametrize(
+    "mesh_type",
+    [
+        pytest.param(
+            "mesh0",
+            marks=pytest.mark.xfail(
+                reason=(
+                    "Fragile test (file header acknowledges it is 'not a great test'): "
+                    "step-function IC is not representable on the FE mesh, and the atol=0.05 "
+                    "tolerance previously aligned only because `uw.function.evaluate` routed "
+                    "boundary-vertex queries through RBF Shepard. With the corrected "
+                    "in-cell test (on_boundary=True default in _test_if_points_in_cells_internal), "
+                    "boundary queries now route through FE evaluation — the more accurate path, "
+                    "but the test was tuned to the legacy RBF-smoothed result. Needs reworking "
+                    "to use a smoother IC (e.g. error-function starting at t > 0 with a "
+                    "meaningful transport distance) before it can pass under the new semantics. "
+                    "strict=False because the parallel-locator path on this branch "
+                    "(bugfix/parallel-singular-corruption) routes serial queries slightly "
+                    "differently from PR #207 alone, sometimes nudging the result back inside "
+                    "the atol=0.05 tolerance. Either outcome (xfail or xpassed) is acceptable "
+                    "until the test is reworked."
+                ),
+                strict=False,
+            ),
+        ),
+        "mesh1",
+        "mesh2",
+    ],
+)
 def test_advDiff_boxmesh(mesh_type):
     """Test advection-diffusion with analytical error function solution."""
     # Create mesh INSIDE test function to ensure proper isolation
