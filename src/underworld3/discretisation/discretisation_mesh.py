@@ -2709,6 +2709,61 @@ class Mesh(Stateful, uw_object):
             self._update_projected_normals()
         return self._projected_normals.sym
 
+    def canonical_normal(self, boundary_name):
+        r"""Analytic outward-pointing normal for a boundary, or ``None``
+        if no analytic normal was declared for that boundary.
+
+        Sourced from the mesh factory's ``boundary_normals`` Enum: for
+        axis-aligned box boundaries this is a constant sympy Matrix, for
+        annulus / spherical-shell radial boundaries it is the analytic
+        radial unit vector, and so on.
+
+        The primary caller is code that needs a **partition-safe** normal
+        on an *internal* boundary — see :issue:`327`. On an internal
+        boundary at a partition seam, PETSc's per-quadrature ``petsc_n[]``
+        (surfacing as :attr:`Gamma` / :attr:`Gamma_N`) is derived from
+        ``support[0]`` of the DMPlex facet closure, which is
+        partition-dependent; different ranks disagree on which cell is
+        "support[0]" for the one seam facet, and the outward normal of
+        that facet flips sign. A signed integral of ``Gamma[k]`` is then
+        wrong by O(seam-facets / total-facets). The analytic normal
+        returned here is partition-independent and does not touch
+        ``petsc_n``, so it sidesteps the defect entirely for the mesh
+        classes that know their internal-boundary geometry
+        (:class:`BoxInternalBoundary`, :class:`AnnulusInternalBoundary`,
+        :class:`SphericalShellInternalBoundary`).
+
+        Parameters
+        ----------
+        boundary_name : str
+            Name of the boundary label to look up (case-sensitive; must
+            match one of :attr:`boundaries`).
+
+        Returns
+        -------
+        sympy.Matrix or None
+            Row matrix of length :attr:`cdim` giving the outward-pointing
+            normal, or ``None`` if this mesh factory did not declare
+            an analytic normal for ``boundary_name``.
+
+        See Also
+        --------
+        Gamma : the raw per-quadrature normal — use for external
+            boundaries; may be partition-dependent on internal seams.
+        Gamma_N : normalised :attr:`Gamma`.
+        Gamma_P1 : projected P1 normals, useful for curved external
+            boundaries.
+        """
+        bn = getattr(self, "boundary_normals", None)
+        if bn is None:
+            return None
+        try:
+            member = bn[boundary_name]
+        except (KeyError, AttributeError):
+            return None
+        value = getattr(member, "value", member)
+        return value
+
     # ===================================================================
     #  Bounding surfaces — per-surface tangent-slip + restore.
     #  See docs/developer/design/boundary-slip-strategy.md. SEPARATE from
