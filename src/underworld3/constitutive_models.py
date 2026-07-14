@@ -305,6 +305,12 @@ class Constitutive_Model(uw_object):
         self._class_instance_number = Constitutive_Model._class_instance_counts[class_name]
         Constitutive_Model._class_instance_counts[class_name] += 1
 
+        # Backing attribute for settable flux_jacobian (set to a custom
+        # SymPy expression to override the Jacobian tangent independently
+        # of the residual flux).  None by default, meaning the solver
+        # differentiates the exact flux.
+        self._flux_jacobian = None
+
         self.Unknowns = unknowns
 
         u = self.Unknowns.u
@@ -581,17 +587,36 @@ class Constitutive_Model(uw_object):
         exact :attr:`flux` (the Newton fix unwraps it first; a generic Min/Max
         kink-smoothing fallback then rounds any remaining yield kink).
 
-        A model whose flux has a non-smooth yield kink (e.g. hard-``Min``
-        viscoplasticity) may override this to supply a physically-motivated
-        *smooth constitutive law for the tangent only*. The residual still uses
-        the exact :attr:`flux`, so the converged solution satisfies the true
-        constitutive law — only the Newton search direction is smoothed, giving
-        a robust, line-search-friendly tangent without changing the answer.
+        Set this to a custom SymPy expression to override the Jacobian tangent
+        independently of the residual flux.  The residual still uses the exact
+        :attr:`flux`, so the converged solution satisfies the true constitutive
+        law — only the Newton search direction is smoothed, giving a robust,
+        line-search-friendly tangent without changing the answer.
+
+        Use cases:
+
+        * A model whose flux has a non-smooth yield kink (e.g. hard-``Min``
+          viscoplasticity) supplies a physically-motivated *smooth law for the
+          tangent only*.
+
+        * A model whose flux contains composition-dependent coefficients
+          (e.g. multicomponent diffusion) may supply a *constant-coefficient*
+          version to give the solver a clean SPD Jacobian while keeping the
+          exact physics in the residual.
 
         Shape must match :attr:`flux` (the solver substitutes it for ``F1`` when
         forming the velocity-gradient Jacobian blocks).
         """
-        return None
+        return self._flux_jacobian
+
+    @flux_jacobian.setter
+    def flux_jacobian(self, value):
+        """Set a custom Jacobian flux expression (or None to revert)."""
+        self._flux_jacobian = value
+        # Signal the solver to rebuild its pointwise Jacobian function.
+        # Without this, the change is silently ignored until something
+        # else triggers a re-setup.
+        self._solver_is_setup = False
 
     def _reset(self):
         """Flags that the expressions in the consitutive tensor need to be refreshed and also that the
