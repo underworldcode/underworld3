@@ -2028,6 +2028,26 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
     @timing.routine_timer_decorator
     def write_proxy(self, filename: str):
+        """Write this variable's proxy mesh variable to an HDF5 file.
+
+        The proxy is the RBF-interpolated mesh-variable image of the
+        particle data (built when the variable was created with
+        ``proxy_degree > 0``); this writes that mesh field via
+        ``MeshVariable.write``, which is often the most convenient
+        checkpoint/visualisation form of particle data.
+
+        Parameters
+        ----------
+        filename : str
+            Output file path, passed directly to
+            ``MeshVariable.write`` (conventionally ``*.h5``).
+
+        Notes
+        -----
+        If the variable has no proxy (``proxy_degree=0`` /
+        ``_proxy=False``), nothing is written; a message is printed and
+        the call returns.
+        """
         # if not proxied, nothing to do. return.
         if not self._meshVar:
             uw.pprint("No proxy mesh variable that can be saved")
@@ -2046,6 +2066,52 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         index: int,
         outputPath="",
     ):
+        """Restore this variable's values from a saved timestep.
+
+        Reads the checkpoint files written by ``Swarm.write_timestep``
+        and maps the saved (coordinate, value) pairs onto the *current*
+        particles by nearest-neighbour interpolation — the live swarm
+        need not have the same particle count or positions as the saved
+        one.
+
+        Filename convention (matching ``Swarm.write_timestep(
+        data_filename, swarmID, swarmVars=[...], outputPath=...,
+        index=...)``):
+
+        * swarm coordinates:
+          ``{outputPath}/{data_filename}.{swarmID}.{index:05}.h5``
+        * this variable's data:
+          ``{outputPath}/{data_filename}.{swarmID}.{data_name}.{index:05}.h5``
+
+        Both files must exist (``RuntimeError`` otherwise).
+
+        Parameters
+        ----------
+        data_filename : str
+            Base name used when the checkpoint was written. (Note: the
+            corresponding parameter on ``Swarm.read_timestep`` is
+            spelled ``base_filename`` — the two signatures predate a
+            common convention.)
+        swarmID : str
+            Swarm identifier used when the checkpoint was written
+            (``swarm_id`` on ``Swarm.read_timestep``).
+        data_name : str
+            The saved variable's ``name`` (``Swarm.write_timestep``
+            embeds each variable's ``.name`` in its data filename).
+        index : int
+            Timestep index (zero-padded to five digits in the
+            filename).
+        outputPath : str, optional
+            Directory holding the checkpoint files (default: current
+            directory).
+
+        Notes
+        -----
+        MPI-collective. Rank 0 reads the saved data in one shot; the
+        saved points are then routed to their owning ranks with the
+        same migration rule the live swarm uses, so the rank-local
+        nearest-neighbour lookup always sees the correct neighbours.
+        """
         # mesh.write_timestep( "test", meshUpdates=False, meshVars=[X], outputPath="", index=0)
         # swarm.write_timestep("test", "swarm", swarmVars=[var], outputPath="", index=0)
 
@@ -4140,6 +4206,41 @@ class Swarm(Stateful, uw_object):
         outputPath: Optional[str] = "",
         migrate=True,
     ):
+        """Restore the swarm's particle coordinates from a saved timestep.
+
+        Adds particles at the coordinates saved by
+        ``Swarm.write_timestep``; call this on a freshly-built swarm
+        *before* restoring variable values with
+        ``SwarmVariable.read_timestep``. File read (matching
+        ``write_timestep(filename, swarmname, index, outputPath=...)``):
+
+        ``{outputPath}/{base_filename}.{swarm_id}.{index:05}.h5``
+
+        Parameters
+        ----------
+        base_filename : str
+            Base name used when the checkpoint was written
+            (``filename`` on ``write_timestep``; note
+            ``SwarmVariable.read_timestep`` spells it
+            ``data_filename`` — the two signatures predate a common
+            convention).
+        swarm_id : str
+            Swarm identifier used when the checkpoint was written
+            (``swarmname`` on ``write_timestep``).
+        index : int
+            Timestep index (zero-padded to five digits in the
+            filename).
+        outputPath : str, optional
+            Directory holding the checkpoint files (default: current
+            directory).
+        migrate : bool, optional
+            ``True`` (default): every rank reads the saved coordinates
+            and keeps only the points it owns — the parallel restore
+            path. ``False``: every rank keeps a full copy of the saved
+            swarm, including points outside the local (or entire)
+            domain — useful for debugging, visualisation, or when the
+            mesh has been adapted since the save.
+        """
         output_base_name = os.path.join(outputPath, base_filename)
         swarm_file = output_base_name + f".{swarm_id}.{index:05}.h5"
 
@@ -4703,6 +4804,52 @@ class Swarm(Stateful, uw_object):
         evalf=False,
         step_limit=False,
     ):
+        r"""Advect the particle swarm through one timestep of a velocity field.
+
+        Particle positions are updated with an explicit Runge-Kutta step
+        of :math:`\dot{\mathbf{x}} = \mathbf{V}(\mathbf{x})`. Velocity
+        is sampled with a *global* evaluation (off-rank sample points
+        are resolved collectively), so the call is MPI-collective: every
+        rank must make it, including ranks holding no particles. On
+        completion the swarm is migrated so each particle lands on the
+        rank owning its new location; particles that leave the domain
+        are removed (unless ``restore_points_to_domain_func`` or the
+        mesh's own ``return_coords_to_bounds`` returns them).
+
+        Parameters
+        ----------
+        V_fn : vector UW function / sympy expression
+            Velocity field, evaluated at particle locations. Any
+            expression accepted by :func:`uw.function.evaluate`,
+            e.g. ``stokes.u.sym``.
+        delta_t : float or UWQuantity
+            Timestep. Non-dimensionalised internally
+            (``uw.scaling.non_dimensionalise``), so a dimensional time
+            (e.g. ``uw.quantity(1000, "year")``) is valid when scaling
+            is active; a plain float is taken to be in model units,
+            consistent with the model-unit velocity.
+        order : int, optional
+            Runge-Kutta order: ``2`` (default) is the midpoint scheme;
+            any other value falls back to first-order forward Euler.
+        corrector : bool, optional
+            Historical predictor-corrector option; currently inert (the
+            corrector block is disabled). Retained for call
+            compatibility. Default ``False``.
+        restore_points_to_domain_func : callable, optional
+            Maps an ``(n, dim)`` coordinate array back into the domain
+            (periodic wrap, boundary projection, ...). Applied to the
+            updated positions each substep, in addition to the mesh's
+            own ``return_coords_to_bounds``.
+        evalf : bool, optional
+            Historical flag selecting RBF (``evalf``) velocity
+            sampling; currently inert — velocity is always sampled with
+            ``uw.function.global_evaluate``. Default ``False``.
+        step_limit : bool, optional
+            If ``True``, split ``delta_t`` into substeps no larger than
+            :meth:`estimate_dt` (roughly one element crossing per
+            substep). Default ``False`` here; note
+            :meth:`NodalPointSwarm.advection` defaults it to ``True``.
+        """
         # Convert delta_t to model units if it has units
         # This ensures consistent arithmetic: velocity is in model units, so time must be too
         import underworld3 as uw
@@ -5054,7 +5201,20 @@ class NodalPointSwarm(Swarm):
         evalf=False,
         step_limit=True,
     ):
+        """Advect the nodal-point swarm one timestep (semi-Lagrangian sweep).
 
+        Records each particle's launch point (its home mesh node) and
+        origin rank, then delegates to :meth:`Swarm.advection`. The
+        recorded launch data is what lets semi-Lagrangian schemes return
+        sampled values to the node the particle departed from after the
+        (possibly off-rank) trajectory.
+
+        Parameters are those of :meth:`Swarm.advection`, with one
+        difference: ``step_limit`` defaults to ``True`` — trajectories
+        are substepped to at most ~one element crossing per substep
+        (see :meth:`Swarm.estimate_dt`), which keeps the node-return
+        bookkeeping robust for large ``delta_t``.
+        """
         self._X0.data[...] = self._nX0.data[...]
 
         self._nR0.data[...] = uw.mpi.rank

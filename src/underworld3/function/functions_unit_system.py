@@ -77,79 +77,12 @@ def _evaluate_impl(
     bounded-interpolation post-process. This body is unchanged from the
     historical ``evaluate`` so that ``monotone=False`` is bit-identical.
 
-    This function wraps the Cython evaluate_nd implementation to automatically
-    handle unit conversions and return unit-aware results.
+    This function wraps the Cython evaluate_nd implementation to
+    automatically handle unit conversions and return unit-aware results.
 
-    Parameters
-    ----------
-    expr : sympy expression or UWexpression
-        Expression to evaluate
-    coords : numpy.ndarray or UnitAwareArray
-        Coordinates at which to evaluate. Supported forms:
-        - numpy array of doubles (shape: n_points x n_dims) in model
-          (non-dimensional) units
-        - UnitAwareArray with dimensional coordinates (e.g., from mesh.X.coords)
-        - Both work transparently - dimensional coords are auto-converted
-
-        Python lists/tuples of coordinates — including quantity-valued
-        lists such as ``[(x_qty, y_qty)]`` — are NOT supported and raise
-        ``TypeError`` (the coordinate-units family is unsupported;
-        maintainer ruling D7, 2026-07). Convert dimensional coordinates
-        explicitly, e.g. ``float(uw.non_dimensionalise(x_qty))``, and
-        pass a plain array.
-    coord_sys : mesh.N vector coordinate system, optional
-        Coordinate system to use (default: None)
-    other_arguments : dict, optional
-        Additional arguments for evaluation (default: None)
-    simplify : bool, optional
-        Whether to simplify expression (default: True)
-    verbose : bool, optional
-        Verbose output (default: False)
-    evalf : bool, optional
-        Force numerical evaluation via sympy evalf (default: False)
-    mode : str, optional
-        Evaluation mode controlling accuracy vs speed tradeoff.
-        Options: ``"default"`` (accurate, projection for derivatives),
-        ``"fast"`` (Clement gradient, RBF everywhere),
-        ``"projection"`` (always L2 projection).
-        Default: ``"default"``
-    data_layout : callable, optional
-        Data layout specification (default: None)
-    check_extrapolated : bool, optional
-        Check for extrapolated values (default: False)
-    smoothing : float, optional
-        Smoothing parameter for L2 projection (dimensionless).
-        Only used when projection is active. Default: 1e-6
-    rbf : bool, optional
-        Expert override: Force RBF interpolation everywhere. Overrides mode.
-    force_l2 : bool, optional
-        Expert override: Force L2 projection path. Overrides mode.
-
-    Returns
-    -------
-    UWQuantity, UnitAwareArray, or ndarray
-        If non-dimensional scaling is active, returns plain ndarray.
-        If expression has units, returns UWQuantity (scalar) or UnitAwareArray.
-        Otherwise returns plain ndarray.
-
-    Notes
-    -----
-    **Evaluation Modes:**
-
-    - ``"fast"``: Clement gradient (no solve), direct calculation, RBF everywhere
-    - ``"default"``: Projection for derivatives (solve), direct otherwise, DMInterp + RBF
-    - ``"projection"``: Always use L2 projection (solve), DMInterp + RBF
-
-    The `rbf` and `force_l2` parameters are expert overrides that take
-    precedence over the mode setting when explicitly provided.
-
-    Examples
-    --------
-    >>> # Works with both dimensional and non-dimensional coords
-    >>> result = uw.function.evaluate(T.sym, T.coords)  # dimensional coords
-    >>> result = uw.function.evaluate(T.sym, mesh.X.coords[:, :2])  # non-dimensional
-    >>> if hasattr(result, 'to'):
-    ...     result_K = result.to('K')  # Unit conversion
+    Parameters, return values, and the evaluation-mode notes are
+    documented on the public wrapper, :func:`evaluate` — every parameter
+    here has the same meaning (the wrapper adds only ``monotone``).
     """
     _validate_coords_not_sequence(coords)
 
@@ -841,20 +774,60 @@ def evaluate(
 ):
     """Evaluate ``expr`` at ``coords`` with automatic unit handling.
 
-    Thin wrapper over :func:`_evaluate_impl`. See that function for the
-    full parameter documentation and evaluation-mode notes. With the
-    default ``monotone=False`` this is bit-identical to the historical
-    ``evaluate``.
-
-    Coordinates are a plain ``(N, dim)`` array in model (non-dimensional)
-    units, or a ``UnitAwareArray``/``UWQuantity`` array which is
-    non-dimensionalised automatically. Python lists/tuples of individual
-    quantity objects (``[(x_qty, y_qty)]``) are NOT supported — convert
-    physical locations with :func:`underworld3.scaling.non_dimensionalise`
-    and pass a numpy array (units-family ruling, 2026-07).
+    Wraps the compiled ``evaluate_nd`` machinery so unit conversion
+    (dimensional coordinates in, unit-aware results out) happens
+    automatically. With the default ``monotone=False`` the result is
+    bit-identical to the historical ``evaluate``.
 
     Parameters
     ----------
+    expr : sympy expression or UWexpression
+        Expression to evaluate. All MeshVariable symbols in the
+        expression must belong to the same mesh (``ValueError``
+        otherwise — use ``var.copy_into()`` to transfer data between
+        meshes first).
+    coords : numpy.ndarray or UnitAwareArray
+        Coordinates at which to evaluate, shape ``(n_points, dim)``.
+        A plain array is taken to be in model (non-dimensional) units;
+        a ``UnitAwareArray`` / ``UWQuantity`` array (e.g. from
+        ``mesh.X.coords``) is non-dimensionalised automatically.
+        Python lists/tuples of individual quantity objects
+        (``[(x_qty, y_qty)]``) are NOT supported and raise
+        ``TypeError`` — convert physical locations with
+        :func:`underworld3.scaling.non_dimensionalise` and pass a
+        numpy array (units-family ruling, 2026-07).
+    coord_sys : mesh.N vector coordinate system, optional
+        Coordinate system to evaluate in (default: the mesh's own).
+    other_arguments : dict, optional
+        Additional arguments passed through to the compiled evaluator.
+    simplify : bool, optional
+        Sympy-simplify the expression before evaluation
+        (default: False).
+    verbose : bool, optional
+        Verbose output (default: False).
+    evalf : bool, optional
+        Force numerical evaluation via sympy ``evalf``
+        (default: False).
+    mode : {"default", "fast", "projection"}, optional
+        Accuracy / speed tradeoff. ``"default"`` — L2 projection for
+        derivative terms, direct evaluation otherwise (DMInterp + RBF).
+        ``"fast"`` — Clement gradient (no solve), RBF everywhere.
+        ``"projection"`` — always L2 projection (a solve).
+    data_layout : callable, optional
+        Data layout specification (default: None).
+    check_extrapolated : bool, optional
+        If True, also return a boolean mask flagging points whose
+        value was extrapolated from outside the domain
+        (default: False).
+    smoothing : float, optional
+        Smoothing parameter for the L2 projection (dimensionless);
+        only used when a projection path is active. Default: 1e-6.
+    rbf : bool, optional
+        Expert override: force RBF interpolation everywhere.
+        Takes precedence over ``mode``.
+    force_l2 : bool, optional
+        Expert override: force the L2 projection path.
+        Takes precedence over ``mode``.
     monotone : bool or str, optional
         Opt-in bounded (monotone) interpolation, applied as a
         post-process to the computed result. ``False`` (default) → no
@@ -864,6 +837,22 @@ def evaluate(
         out-of-bounds subset via (bounded) RBF interpolation. Only
         single-MeshVariable expressions are supported; composites raise
         ``ValueError``. See :func:`_apply_monotone_limit`.
+
+    Returns
+    -------
+    UWQuantity, UnitAwareArray, or numpy.ndarray
+        If non-dimensional scaling is active, a plain ndarray. If the
+        expression carries units, a ``UWQuantity`` (scalar) or
+        ``UnitAwareArray``. Otherwise a plain ndarray. With
+        ``check_extrapolated=True``, a ``(values, extrapolated_mask)``
+        pair.
+
+    Examples
+    --------
+    >>> result = uw.function.evaluate(T.sym, T.coords)  # dimensional coords
+    >>> result = uw.function.evaluate(T.sym, mesh.X.coords[:, :2])
+    >>> if hasattr(result, 'to'):
+    ...     result_K = result.to('K')  # unit conversion
     """
     # Validate up front so an unknown option fails fast (no wasted eval).
     monotone_mode = _normalize_monotone(monotone)
