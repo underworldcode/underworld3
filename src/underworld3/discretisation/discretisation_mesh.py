@@ -2264,6 +2264,12 @@ class Mesh(Stateful, uw_object):
         #
         #
 
+        # Geometry generation counter. First call (construction) -> 0; every
+        # later call means the coordinates changed (deform / adapt /
+        # re-extract), which invalidates factory-declared analytic boundary
+        # normals (see the boundary_normals setter and canonical_normal).
+        self._geometry_version = getattr(self, "_geometry_version", -1) + 1
+
         self.dm.clearDS()
         self.dm.createDS()
 
@@ -2723,6 +2729,25 @@ class Mesh(Stateful, uw_object):
             self._update_projected_normals()
         return self._projected_normals.sym
 
+    @property
+    def boundary_normals(self):
+        """Declared analytic boundary normals (Enum or mapping), or ``None``.
+
+        Assigning stamps the declaration against the mesh's current
+        geometry: any later coordinate change (``deform``, ``adapt``,
+        direct coordinate writes) marks it stale, and
+        :meth:`canonical_normal` then refuses to serve it. Re-assign after
+        a deformation to re-declare normals that are valid for the new
+        geometry (e.g. a radial normal after a radius-preserving remesh).
+        """
+        return getattr(self, "_boundary_normals", None)
+
+    @boundary_normals.setter
+    def boundary_normals(self, value):
+        self._boundary_normals = value
+        self._boundary_normals_geometry_version = getattr(
+            self, "_geometry_version", 0)
+
     def canonical_normal(self, boundary_name):
         r"""Analytic outward-pointing normal for a boundary, or ``None``
         if no analytic normal was declared for that boundary.
@@ -2760,6 +2785,15 @@ class Mesh(Stateful, uw_object):
             normal, or ``None`` if this mesh factory did not declare
             an analytic normal for ``boundary_name``.
 
+        Raises
+        ------
+        RuntimeError
+            If the mesh coordinates have changed since the normals were
+            declared (``deform`` / ``adapt``): the declaration describes
+            the original geometry and may no longer match the deformed
+            surface. Re-assign :attr:`boundary_normals` to re-declare
+            normals valid for the current geometry.
+
         See Also
         --------
         Gamma : the raw per-quadrature normal — use for external
@@ -2768,9 +2802,24 @@ class Mesh(Stateful, uw_object):
         Gamma_P1 : projected P1 normals, useful for curved external
             boundaries.
         """
-        bn = getattr(self, "boundary_normals", None)
+        bn = self.boundary_normals
         if bn is None:
             return None
+        declared_at = getattr(self, "_boundary_normals_geometry_version", 0)
+        if declared_at != getattr(self, "_geometry_version", 0):
+            raise RuntimeError(
+                f"The declared analytic boundary normals for this mesh "
+                f"describe its original (factory) geometry, but the mesh "
+                f"coordinates have changed since (deform / adapt). The "
+                f"declaration for '{boundary_name}' may no longer match the "
+                f"deformed surface. If the normals are still valid for the "
+                f"new geometry (e.g. a radial normal after a "
+                f"radius-preserving remesh), re-declare them:\n"
+                f"    mesh.boundary_normals = mesh.boundary_normals\n"
+                f"or assign a new Enum / dict of normal expressions. "
+                f"Otherwise use an explicit normal expression in place of "
+                f"mesh.Gamma / canonical_normal on this boundary."
+            )
         try:
             member = bn[boundary_name]
         except (KeyError, AttributeError):

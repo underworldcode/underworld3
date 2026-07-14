@@ -241,6 +241,42 @@ def test_bd_integral_internal_gamma_off_grid_zint():
         f"mesh.Gamma internal integral should be exactly +1, got {val}")
 
 
+@pytest.mark.skipif(
+    uw.mpi.size > 1,
+    reason="mesh.deform crashes at np>1 (issue #360, kd-tree index rebuild)",
+)
+def test_bd_integral_internal_gamma_stale_after_deform():
+    """Deformation invalidates the factory-declared analytic normal.
+
+    The declaration describes the original geometry; after mesh.deform()
+    resolving mesh.Gamma on the internal boundary must fail loudly rather
+    than integrate a stale normal. Re-assigning mesh.boundary_normals
+    re-declares it for the new geometry. The deformation used here
+    vanishes on y=0.5 (sin(2*pi*y) = 0), so the internal boundary is
+    unmoved and the re-declared +y normal gives exactly +1 again."""
+
+    mesh_d = BoxInternalBoundary(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        cellSize=1.0/16.0, zintCoord=0.5, simplex=True,
+    )
+    uw.discretisation.MeshVariable("T_deform", mesh_d, 1, degree=2)
+    n_y = mesh_d.Gamma[1]
+
+    coords = np.array(mesh_d.X.coords)
+    new_coords = coords.copy()
+    new_coords[:, 1] += (
+        0.01 * np.sin(np.pi * coords[:, 0]) * np.sin(2.0 * np.pi * coords[:, 1])
+    )
+    mesh_d.deform(new_coords)
+
+    with pytest.raises(RuntimeError, match="coordinates have changed"):
+        uw.maths.BdIntegral(mesh_d, fn=n_y, boundary="Internal").evaluate()
+
+    mesh_d.boundary_normals = mesh_d.boundary_normals
+    val = uw.maths.BdIntegral(mesh_d, fn=n_y, boundary="Internal").evaluate()
+    assert abs(val - 1.0) < 1e-6, f"Expected +1.0 after re-declaration, got {val}"
+
+
 def test_bd_integral_internal_does_not_affect_external():
     """External boundaries should still work on the internal-boundary mesh."""
 
