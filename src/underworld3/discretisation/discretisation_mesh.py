@@ -827,9 +827,11 @@ class Mesh(Stateful, uw_object):
         # coords. On volume meshes _nav_dm is None and we reuse the
         # main coords.
         if self._nav_dm is not None:
-            self._nav_coords = numpy.array(
-                self._nav_dm.getCoordinatesLocal().array.reshape(-1, self.cdim)
-            )
+            # distributeOverlap grew the coordinate section to the ghost
+            # vertices but left their coordinates unscattered, so build a
+            # section-consistent local array (incl. ghost rows) here — a plain
+            # getCoordinatesLocal() is short by the ghost rows (issue #360).
+            self._nav_coords = self._navigation_coords_from_dm(self._nav_dm)
         else:
             self._nav_coords = self._coords
 
@@ -2363,13 +2365,15 @@ class Mesh(Stateful, uw_object):
                 self.dm.getCoordinatesLocal().array
             ).reshape(-1, self.cdim)
         else:
-            # manifold mesh: the nav clone carries its own (ghosted) coords;
-            # refresh them from the rebuilt main DM where possible.
+            # manifold mesh: the nav clone carries its own (ghosted) coords.
+            # Push the rebuilt/deformed geometry onto the clone via its GLOBAL
+            # coordinate vector (owned points share numbering with the main
+            # DM), then rebuild the section-consistent local array incl. the
+            # ghost rows. setCoordinatesLocal(main-local) is size-mismatched on
+            # an overlapped clone and leaves ghost rows unfilled (issue #360).
             try:
-                self._nav_dm.setCoordinatesLocal(self.dm.getCoordinatesLocal())
-                self._nav_coords = numpy.asarray(
-                    self._nav_dm.getCoordinatesLocal().array
-                ).reshape(-1, self.cdim)
+                self._nav_dm.setCoordinates(self.dm.getCoordinates())
+                self._nav_coords = self._navigation_coords_from_dm(self._nav_dm)
             except Exception:
                 pass
 
@@ -4502,6 +4506,50 @@ class Mesh(Stateful, uw_object):
 
         return
 
+    def _coord_rows_for_points(self, nav_dm, points):
+        """Row indices into the navigation coordinate array (``_nav_coords``)
+        for the given vertex plex points, via the coordinate PetscSection
+        offsets.
+
+        Correct in parallel: on the 1-cell-overlap navigation clone (manifold
+        meshes) the local coordinate array is laid out by the coordinate
+        section, so mapping a vertex with the affine shift ``plex_point -
+        pStart`` runs negative or past the end across ghost/halo vertices
+        (issue #360). The section offset is the authoritative vertex->row map.
+        In serial the section offset equals ``(plex_point - pStart) * cdim``,
+        so the rows returned here are bit-identical to the previous affine
+        indexing (verified) and serial navigation is unchanged.
+        """
+        coord_section = nav_dm.getCoordinateSection()
+        cdim = self.cdim
+        return numpy.fromiter(
+            (coord_section.getOffset(p) // cdim for p in points),
+            dtype=numpy.int64,
+            count=len(points),
+        )
+
+    def _navigation_coords_from_dm(self, nav_dm):
+        """Section-consistent LOCAL coordinate rows for a navigation DM.
+
+        On the 1-cell-overlap navigation clone (manifold meshes, parallel)
+        ``distributeOverlap`` expands the coordinate section to cover the
+        ghost vertices but does NOT scatter their coordinates into the local
+        vector, so a plain ``getCoordinatesLocal()`` is short by the ghost
+        rows and any vertex->row map overruns it (issue #360). Rebuild the
+        full local coordinate vector through the coordinate DM's
+        global->local scatter so every ghost vertex referenced by a local
+        cell closure carries coordinates. In serial (no overlap) this equals
+        ``getCoordinatesLocal()``.
+        """
+        from petsc4py import PETSc
+
+        coord_dm = nav_dm.getCoordinateDM()
+        local_coords = coord_dm.createLocalVec()
+        coord_dm.globalToLocal(
+            nav_dm.getCoordinates(), local_coords, addv=PETSc.InsertMode.INSERT
+        )
+        return numpy.array(local_coords.array).reshape(-1, self.cdim)
+
     def _build_kd_tree_index(self):
 
         if hasattr(self, "_index") and self._index is not None:
@@ -4531,7 +4579,7 @@ class Mesh(Stateful, uw_object):
             cell_faces = nav_dm.getCone(cell_id)
             points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for KD-tree construction (avoid unit-aware wrapping)
-            cell_point_coords = nav_coords[points - pStart]
+            cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
             cell_centroid = cell_point_coords.mean(axis=0)
             centroids_list.append(cell_centroid)
 
@@ -4707,13 +4755,13 @@ class Mesh(Stateful, uw_object):
             cell_faces = nav_dm.getCone(cell_id)
             points = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
             # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_point_coords = nav_coords[points - pStart]
+            cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
 
             for face in range(cell_num_faces):
 
                 points = nav_dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
                 # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-                point_coords = nav_coords[points - pStart]
+                point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
 
                 face_centroid = point_coords.mean(axis=0)
                 cell_centroid = cell_point_coords.mean(axis=0)
@@ -4998,7 +5046,7 @@ class Mesh(Stateful, uw_object):
         for face in boundary_faces:
             cell = nav_dm.getJoin(face)[0]
             points = nav_dm.getTransitiveClosure(face)[0][-face_num_points:]
-            point_coords = nav_coords[points - pStart]  # Use raw array for internal calculations
+            point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]  # raw array for internal calculations
             face_centroid = point_coords.mean(axis=0)
             cell_centroid = nav_centroids[cell - cStart]
 
@@ -5019,7 +5067,7 @@ class Mesh(Stateful, uw_object):
                 # boundary edge — needs the cell's third vertex to
                 # build the cell normal.
                 cell_points = nav_dm.getTransitiveClosure(cell)[0][-cell_num_points:]
-                cell_point_coords = nav_coords[cell_points - pStart]
+                cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, cell_points)]
                 cell_normal = numpy.cross(
                     cell_point_coords[1] - cell_point_coords[0],
                     cell_point_coords[2] - cell_point_coords[0],
