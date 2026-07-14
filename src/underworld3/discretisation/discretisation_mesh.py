@@ -4546,7 +4546,7 @@ class Mesh(Stateful, uw_object):
         coord_dm = nav_dm.getCoordinateDM()
         local_coords = coord_dm.createLocalVec()
         coord_dm.globalToLocal(
-            nav_dm.getCoordinates(), local_coords, addv=PETSc.InsertMode.INSERT
+            nav_dm.getCoordinates(), local_coords, addv=PETSc.InsertMode.INSERT_VALUES
         )
         return numpy.array(local_coords.array).reshape(-1, self.cdim)
 
