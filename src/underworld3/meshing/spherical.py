@@ -746,7 +746,14 @@ def SphericalShellInternalBoundary(
         verbose=verbose,
     )
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Internal = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+
+    # Consumed by Mesh.canonical_normal — mesh.Gamma on the Internal
+    # boundary resolves to this analytic radial normal (issue #327).
+    new_mesh.boundary_normals = boundary_normals
 
     new_mesh.regions = regions
 

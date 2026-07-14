@@ -113,9 +113,9 @@ def test_bd_integral_invalid_boundary():
 
 # --- Internal boundary tests (BoxInternalBoundary) ---
 # These run in serial and parallel: the BoxInternalBoundary rank>0
-# UnboundLocalError (2026-07 audit, BF-13) is fixed. Two signed-normal
-# tests remain serial-only — see the TODO(BUG) on
-# test_bd_integral_internal_normal_ny.
+# UnboundLocalError (2026-07 audit, BF-13) is fixed, and signed-normal
+# integrands written with plain mesh.Gamma are partition-safe (resolved
+# to the declared analytic normal — issue #327).
 
 from underworld3.meshing import BoxInternalBoundary
 
@@ -159,29 +159,24 @@ def test_bd_integral_internal_coordinate_fn():
     assert abs(value - 0.5) < 0.01, f"Expected 0.5, got {value}"
 
 
-# The `mesh.Gamma` normal on an *internal* boundary is derived from petsc_n[]
-# which uses DMPlex support[0] — partition-dependent at seam facets, so a
-# signed-normal integral like ∫ n_y dS is silently off by O(seam facets /
-# total facets) in parallel (issue #327). These tests use the analytic
-# `canonical_normal` accessor, which returns the mesh factory's declared
-# outward normal for the boundary (a partition-independent sympy expression);
-# see the accessor's docstring in discretisation_mesh.py.
+# `mesh.Gamma` is the single user-facing normal symbol on any boundary.
+# On an internal boundary the raw petsc_n[] is orientation-ambiguous
+# (DMPlex support[0] is partition-dependent at seam facets — issue #327),
+# so BdIntegral resolves the Gamma components to the mesh factory's
+# declared analytic normal (Mesh._resolve_boundary_normals). The declared
+# internal normal points from region Inner to region Outer (+y here).
 def test_bd_integral_internal_normal_ny():
-    """Integrate n_y along internal boundary at y=0.5 using the analytic
-    canonical normal. The internal boundary has normals pointing in +y or
-    -y direction, so integrating n_y should give +1 or -1 (length 1
-    boundary)."""
+    """Integrate n_y along internal boundary at y=0.5 with plain mesh.Gamma.
+    The declared internal normal is +y, so the integral is exactly +1
+    (length-1 boundary)."""
 
     mesh_internal, _, _ = _get_internal_mesh()
-    normal = mesh_internal.canonical_normal("Internal")
-    n_y = normal[1]
+    n_y = mesh_internal.Gamma[1]
 
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=n_y, boundary="Internal")
     value = bd_int.evaluate()
 
-    # Normal orientation is consistent but direction depends on mesh;
-    # absolute value should be 1.0
-    assert abs(abs(value) - 1.0) < 0.01, f"Expected |n_y integral| = 1.0, got {value}"
+    assert abs(value - 1.0) < 1e-6, f"Expected +1.0, got {value}"
 
 
 def test_bd_integral_internal_normal_nx():
@@ -195,33 +190,44 @@ def test_bd_integral_internal_normal_nx():
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=n_x, boundary="Internal")
     value = bd_int.evaluate()
 
-    assert abs(value) < 0.01, f"Expected ~0, got {value}"
+    assert abs(value) < 1e-6, f"Expected ~0, got {value}"
 
 
 def test_bd_integral_internal_normal_weighted():
-    """Integrate x * n_y along internal boundary at y=0.5 using the analytic
-    canonical normal. int_0^1 x * n_y dx = n_y * 0.5. Since |n_y| = 1,
-    result should be ~0.5."""
+    """Integrate x * n_y along internal boundary at y=0.5 with plain
+    mesh.Gamma: int_0^1 x * (+1) dx = +0.5."""
 
     mesh_internal, x_i, _ = _get_internal_mesh()
-    normal = mesh_internal.canonical_normal("Internal")
-    n_y = normal[1]
+    n_y = mesh_internal.Gamma[1]
 
     bd_int = uw.maths.BdIntegral(mesh_internal, fn=x_i * n_y, boundary="Internal")
     value = bd_int.evaluate()
 
-    assert abs(abs(value) - 0.5) < 0.01, f"Expected |value| = 0.5, got {value}"
+    assert abs(value - 0.5) < 1e-6, f"Expected +0.5, got {value}"
 
 
-def test_bd_integral_internal_canonical_normal_off_grid_zint():
+def test_bd_integral_internal_canonical_normal_accessor():
+    """The canonical_normal accessor remains available and agrees with the
+    normal that mesh.Gamma resolves to on the internal boundary."""
+
+    mesh_internal, _, _ = _get_internal_mesh()
+    normal = mesh_internal.canonical_normal("Internal")
+    n_y = normal[1]
+
+    bd_int = uw.maths.BdIntegral(mesh_internal, fn=n_y, boundary="Internal")
+    value = bd_int.evaluate()
+
+    assert abs(value - 1.0) < 1e-6, f"Expected +1.0, got {value}"
+
+
+def test_bd_integral_internal_gamma_off_grid_zint():
     """Regression for the failing partition-through-boundary case from #327.
 
     With ``zintCoord=0.55`` (off-grid), the mpirun -n 2 partition seam runs
-    through the internal boundary and one seam facet's ``petsc_n[]`` flips
-    sign: ``∫ Gamma[1] dS`` returns 0.9375 = 1 − 2/32 instead of 1.0. The
-    analytic ``canonical_normal("Internal")`` returned by the mesh factory
-    does not touch ``petsc_n[]`` and gives the exact value regardless of
-    partition."""
+    through the internal boundary and one seam facet's raw ``petsc_n[]``
+    flips sign: the unresolved integral returned 0.9375 = 1 − 2/32 instead
+    of 1.0. With plain ``mesh.Gamma`` now resolved to the declared analytic
+    normal, the value is exact regardless of partition."""
     mesh_off = BoxInternalBoundary(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
         cellSize=1.0/32.0, zintCoord=0.55, simplex=True,
@@ -229,10 +235,10 @@ def test_bd_integral_internal_canonical_normal_off_grid_zint():
     # Need at least one variable so BdIntegral has a section to integrate against
     uw.discretisation.MeshVariable("T_off", mesh_off, 1, degree=2)
 
-    n_y = mesh_off.canonical_normal("Internal")[1]
+    n_y = mesh_off.Gamma[1]
     val = uw.maths.BdIntegral(mesh_off, fn=n_y, boundary="Internal").evaluate()
-    assert abs(abs(val) - 1.0) < 1e-6, (
-        f"canonical_normal internal integral should be exactly ±1, got {val}")
+    assert abs(val - 1.0) < 1e-6, (
+        f"mesh.Gamma internal integral should be exactly +1, got {val}")
 
 
 def test_bd_integral_internal_does_not_affect_external():

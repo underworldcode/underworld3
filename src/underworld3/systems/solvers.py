@@ -2371,7 +2371,8 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         boundary : str
             Mesh boundary label (e.g. ``"Upper"``).
         normal : sympy matrix, optional
-            Row-vector constraint normal. Defaults to ``mesh.Gamma_P1``.
+            Row-vector constraint normal. Defaults to
+            ``mesh.boundary_normal(boundary)``.
         screening : float or sympy expression, optional
             Interior screening coefficient :math:`\varepsilon` (de-singularises
             the interior multiplier DOFs). Defaults to ``1e-6``.
@@ -2429,7 +2430,10 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             )
 
         if normal is None:
-            normal = self.mesh.Gamma_P1
+            # Per-boundary assembled normal (facet normals oriented before
+            # averaging) — the legacy global mesh.Gamma_P1 point-evaluates
+            # petsc_n off-kernel and is deprecated (see Mesh.Gamma_P1).
+            normal = self.mesh.boundary_normal(boundary)
         normal = sympy.Matrix(normal)
         if normal.shape[0] != 1:
             normal = normal.reshape(1, self.mesh.dim)

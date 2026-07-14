@@ -1414,7 +1414,9 @@ def AnnulusInternalBoundary(
         Internal = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # Consumed by Mesh.canonical_normal — mesh.Gamma on the Internal
+    # boundary resolves to this analytic radial normal (issue #327).
+    new_mesh.boundary_normals = boundary_normals
     new_mesh.regions = regions
 
     # Full annulus with internal boundary: rigid rotation about z-axis

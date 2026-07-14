@@ -2534,17 +2534,14 @@ class Mesh(Stateful, uw_object):
         self._assemble_boundary_normal(var, name)
         return var.sym
 
-    def _assemble_boundary_normal(self, var, name):
-        """Fill ``var`` with the area-weighted outward facet normal assembled
-        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
-        from scipy.spatial import cKDTree
-        cdim = self.cdim
-        dm = self.dm
-        coords = numpy.ascontiguousarray(var.coords)
-        accum = numpy.zeros((coords.shape[0], cdim))
+    def _boundary_facets(self, name):
+        """This rank's facet (height-1) points carrying boundary label ``name``.
 
-        # faces carrying this boundary label: DM label named after the boundary,
-        # stratum keyed by the boundary's value (same access the BC code uses).
+        Uses the DM label named after the boundary with the stratum keyed by
+        the boundary's value (the same access the BC code uses). Returns an
+        empty list when this rank owns no facets of the boundary.
+        """
+        dm = self.dm
         bvalue = None
         for b in (self.boundaries or []):
             if b.name == name:
@@ -2560,6 +2557,8 @@ class Mesh(Stateful, uw_object):
                 vis = label.getValueIS()
                 live = set(int(x) for x in vis.getIndices()) if vis.getSize() else set()
             except Exception:
+                # Sanctioned: no value IS on this rank means no facets here —
+                # fall through to the empty list.
                 live = set()
             if int(bvalue) in live:
                 pis = label.getStratumIS(bvalue)
@@ -2568,6 +2567,18 @@ class Mesh(Stateful, uw_object):
                     for p in pis.getIndices():
                         if fS <= int(p) < fE:
                             face_pts.append(int(p))
+        return face_pts
+
+    def _assemble_boundary_normal(self, var, name):
+        """Fill ``var`` with the area-weighted outward facet normal assembled
+        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
+        from scipy.spatial import cKDTree
+        cdim = self.cdim
+        dm = self.dm
+        coords = numpy.ascontiguousarray(var.coords)
+        accum = numpy.zeros((coords.shape[0], cdim))
+
+        face_pts = self._boundary_facets(name)
 
         tree = cKDTree(coords)
         # P1 vertices per facet, counted from the facet's own closure so this
@@ -2696,12 +2707,15 @@ class Mesh(Stateful, uw_object):
 
     @property
     def Gamma_P1(self):
-        """Projected P1 boundary normals as a sympy Matrix.
+        """Deprecated — use :attr:`Gamma` in integrands and BCs, or
+        :meth:`boundary_normal` for a per-boundary P1 normal field.
 
-        Returns the normalised, vertex-averaged PETSc face normals
-        as a smooth P1 field. Preferred over :attr:`Gamma_N` for
-        penalty and Nitsche BCs on curved boundaries — gives
-        consistent orientation and better convergence in 3D.
+        This global field point-evaluates :attr:`Gamma` at every mesh
+        vertex, but the underlying ``petsc_n`` only exists inside
+        surface-integral kernels; off-kernel evaluation falls back to a
+        coordinate-based direction and, on internal boundaries, averages
+        oppositely-oriented facet normals into sub-unit vectors. Retained
+        unchanged for back-compat (mesh-smoothing internals).
 
         Automatically updated when the mesh deforms.
         """
@@ -2763,6 +2777,90 @@ class Mesh(Stateful, uw_object):
             return None
         value = getattr(member, "value", member)
         return value
+
+    def _boundary_is_internal(self, boundary_name):
+        """True if boundary ``boundary_name`` is an internal surface — its
+        facets have a cell on BOTH sides (support size 2) — rather than part
+        of the mesh exterior (support size 1).
+
+        Collective on first call per boundary (the local answer is
+        MAX-reduced so every rank agrees even when it owns no facets of the
+        boundary); cached thereafter.
+        """
+        import underworld3 as uw
+        from mpi4py import MPI
+
+        if not hasattr(self, "_internal_boundary_cache") or \
+                self._internal_boundary_cache is None:
+            self._internal_boundary_cache = {}
+        cached = self._internal_boundary_cache.get(boundary_name)
+        if cached is not None:
+            return cached
+
+        dm = self.dm
+        local = 0
+        for f in self._boundary_facets(boundary_name):
+            if dm.getSupportSize(f) == 2:
+                local = 1
+                break
+        result = bool(uw.mpi.comm.allreduce(local, op=MPI.MAX))
+        self._internal_boundary_cache[boundary_name] = result
+        return result
+
+    def _resolve_boundary_normals(self, fn, boundary_name):
+        r"""Return ``fn`` with :attr:`Gamma` resolved for ``boundary_name``.
+
+        ``mesh.Gamma`` is the single user-facing boundary-normal symbol. On
+        an EXTERNAL boundary its components compile directly to PETSc's
+        exact per-quadrature outward unit normal (``petsc_n[]``) and ``fn``
+        is returned unchanged. On an INTERNAL boundary ``petsc_n[]`` is
+        orientation-ambiguous — the facet has two support cells and the sign
+        follows the partition-dependent ``support[0]`` — so a signed integral
+        of ``Gamma`` components is partition-dependent (issue #327). Here the
+        ``Gamma`` components are substituted with the mesh factory's declared
+        analytic normal (:meth:`canonical_normal`), which is
+        partition-independent by construction.
+
+        Called by every boundary-integrand consumer that knows its boundary
+        (``uw.maths.BdIntegral``, natural boundary conditions), so users
+        write ``mesh.Gamma`` everywhere and never choose an implementation.
+
+        Raises
+        ------
+        RuntimeError
+            If ``boundary_name`` is internal and the mesh declares no
+            analytic normal for it. There is no orientation convention for
+            an arbitrary internal surface until the surface itself is
+            oriented (PETSc ``DMPlexOrientLabel``, open-surface support
+            pending upstream), so failing loudly beats integrating a
+            partition-dependent sign.
+        """
+        import underworld3 as uw
+
+        gamma_syms = tuple(self._Gamma.base_scalars()[0:self.cdim])
+        expr = uw.function.expressions.unwrap(
+            fn, keep_constants=False, return_self=False)
+        if not isinstance(expr, sympy.MatrixBase):
+            expr = sympy.sympify(expr)
+        free = expr.free_symbols
+        if not any(g in free for g in gamma_syms):
+            return fn
+        if not self._boundary_is_internal(boundary_name):
+            return fn
+
+        normal = self.canonical_normal(boundary_name)
+        if normal is None:
+            raise RuntimeError(
+                f"The integrand references mesh.Gamma on the internal "
+                f"boundary '{boundary_name}', but this mesh declares no "
+                f"analytic normal for it. On an internal surface the "
+                f"discrete facet normal has no well-defined orientation "
+                f"(issue #327). Declare one in the mesh factory's "
+                f"'boundary_normals' Enum, or use an explicit normal "
+                f"expression in place of mesh.Gamma."
+            )
+        subs = {g: normal[i] for i, g in enumerate(gamma_syms)}
+        return expr.xreplace(subs)
 
     # ===================================================================
     #  Bounding surfaces — per-surface tangent-slip + restore.
@@ -3508,11 +3606,11 @@ class Mesh(Stateful, uw_object):
 
     @property
     def Gamma_N(self) -> sympy.Matrix:
-        r"""Normalised boundary/surface normal as a row matrix.
+        r"""Deprecated alias — use :attr:`Gamma`.
 
-        Returns ``Gamma / |Gamma|`` so that the result is a unit normal
-        regardless of element size. Use this for penalty and Nitsche BCs
-        where mesh-independent scaling is required.
+        Retained for back-compatibility: returns ``Gamma / |Gamma|``, which
+        is numerically identical to :attr:`Gamma` (the quadrature-point
+        normal is already unit length).
 
         Returns
         -------
@@ -3524,15 +3622,24 @@ class Mesh(Stateful, uw_object):
 
     @property
     def Gamma(self) -> sympy.Matrix:
-        r"""Raw (un-normalised) boundary coordinate scalars as a row matrix.
+        r"""The boundary unit normal, as a symbolic row matrix.
 
-        The magnitude scales with face edge length (2D) or face area (3D).
-        For a unit normal, use :attr:`Gamma_N` instead.
+        This is the single user-facing normal symbol: use it in boundary
+        integrands (:class:`uw.maths.BdIntegral`) and natural boundary
+        conditions on any boundary, external or internal.
+
+        The consumer that compiles the integrand resolves the symbol per
+        boundary: on an external boundary the components map to PETSc's
+        exact per-quadrature outward unit normal (``petsc_n[]``); on an
+        internal boundary — where the discrete facet normal has no
+        well-defined orientation (issue #327) — they are substituted with
+        the mesh factory's declared analytic normal (see
+        :meth:`canonical_normal` and :meth:`_resolve_boundary_normals`).
 
         Returns
         -------
         sympy.Matrix
-            Row matrix of boundary coordinate scalars.
+            Row matrix of boundary normal components.
         """
         return sympy.Matrix(self._Gamma.base_scalars()[0 : self.cdim]).T
 

@@ -1600,6 +1600,13 @@ class SolverBaseClass(uw_object):
 
         from collections import namedtuple
         if c_type == 'neumann':
+            # mesh.Gamma in a natural-BC expression resolves per boundary:
+            # external boundaries keep the exact per-quadrature petsc_n[];
+            # internal boundaries substitute the declared analytic normal
+            # (petsc_n is orientation-ambiguous there — issue #327).
+            sympy_fn = sympy.Matrix(
+                self.mesh._resolve_boundary_normals(sympy_fn, label)
+            ).as_immutable()
             BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'fn_F', 'fn_p', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
             self.natural_bcs.append(BC(f_id, components, sympy_fn, None, None, label, -1, "natural", -1, {}))
         elif c_type == 'dirichlet':
