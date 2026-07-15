@@ -3486,7 +3486,7 @@ class SNES_Vector(SolverBaseClass):
         # components as the embedding space (cdim). On volume meshes
         # cdim == dim. On manifold meshes (dim < cdim) the vector lives
         # in the embedding space with an implicit tangency constraint.
-        dim = mesh.cdim
+        cdim = mesh.cdim
 
         # Surface normal components — use this boundary's own deformation-
         # tracking facet normal (see Mesh.boundary_normal) unless the caller
@@ -3494,17 +3494,17 @@ class SNES_Vector(SolverBaseClass):
         # mesh.Gamma_P1 stays radial on a deformed surface.
         if normal is not None:
             if isinstance(normal, sympy.MatrixBase):
-                n = [normal[i] for i in range(dim)]
+                n = [normal[i] for i in range(cdim)]
             else:
                 n = list(normal)
         else:
             bnorm = mesh.boundary_normal(boundary)
-            n = [bnorm[i] for i in range(dim)]
+            n = [bnorm[i] for i in range(cdim)]
 
         # Constraint direction: defaults to surface normal
         if direction is not None:
             if isinstance(direction, sympy.MatrixBase):
-                d = [direction[i] for i in range(dim)]
+                d = [direction[i] for i in range(cdim)]
             else:
                 d = list(direction)
         else:
@@ -3514,7 +3514,7 @@ class SNES_Vector(SolverBaseClass):
         u = self.u.sym
 
         # Constraint residual: c = u.d - g
-        u_dot_d = sum(u[i] * d[i] for i in range(dim))
+        u_dot_d = sum(u[i] * d[i] for i in range(cdim))
         if g is None:
             g = sympy.Integer(0)
         constraint = u_dot_d - g
@@ -3541,12 +3541,12 @@ class SNES_Vector(SolverBaseClass):
         # Traction projected onto constraint direction: (σ·n)·d
         t_d = sum(
             flux[i, j] * n[j] * d[i]
-            for i in range(dim) for j in range(dim)
+            for i in range(cdim) for j in range(cdim)
         )
 
         # f0_bd: velocity boundary residual (value term)
         f0_components = []
-        for c in range(dim):
+        for c in range(cdim):
             f0_c = (gamma * mu / h_sym) * constraint * d[c]    # penalty
             f0_c -= t_d * d[c]                                   # consistency
             f0_components.append(f0_c)
@@ -3556,9 +3556,9 @@ class SNES_Vector(SolverBaseClass):
         # f1_bd: symmetry term
         fn_F = None
         if theta != 0:
-            f1_components = sympy.zeros(dim, dim)
-            for c in range(dim):
-                for dd in range(dim):
+            f1_components = sympy.zeros(cdim, cdim)
+            for c in range(cdim):
+                for dd in range(cdim):
                     f1_components[c, dd] = -theta * mu * (
                         n[dd] * constraint * d[c] + d[c] * constraint * n[dd]
                     )
@@ -3571,7 +3571,7 @@ class SNES_Vector(SolverBaseClass):
         ])
 
         import numpy as np
-        components = np.arange(dim, dtype=np.int32)
+        components = np.arange(cdim, dtype=np.int32)
 
         self.natural_bcs.append(BC(
             0, components, fn_f, fn_F, None,
@@ -3743,17 +3743,16 @@ class SNES_Vector(SolverBaseClass):
                 print(f"SNES_Vector ({self.name}): Pointwise functions need to be built", flush=True)
 
         N = self.mesh.N
-        # For SNES_Vector, the vector has cdim components in the
-        # embedding space — see the boundary-condition setup above.
-        # Volume meshes have cdim == dim so this is unchanged for them.
-        dim = self.mesh.cdim
+        # For SNES_Vector, the vector has cdim components in the embedding
+        # space — see the boundary-condition setup above. On volume meshes
+        # cdim == mesh.dim.
         cdim = self.mesh.cdim
 
         sympy.core.cache.clear_cache()
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
-        # Residual piece shapes: f0 is (dim,) per-component, F1 is (dim, dim).
+        # Residual piece shapes: f0 is (cdim,) per-component, F1 is (cdim, cdim).
         # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
         # it (preserves constant UWexpressions as symbols for constants[]). The
         # Jacobian sources (f0_jac_list / F1_user_jac) are derived below.
@@ -3762,31 +3761,31 @@ class SNES_Vector(SolverBaseClass):
 
         # Normalise F0 into a list of scalar per-component entries so the
         # explicit-index Jacobian construction below can sympy.diff each one.
-        if F0_user.shape == (dim, 1):
-            f0_list = [F0_user[c, 0] for c in range(dim)]
-        elif F0_user.shape == (1, dim):
-            f0_list = [F0_user[0, c] for c in range(dim)]
-        elif F0_user.shape == (dim,):
-            f0_list = [F0_user[c] for c in range(dim)]
+        if F0_user.shape == (cdim, 1):
+            f0_list = [F0_user[c, 0] for c in range(cdim)]
+        elif F0_user.shape == (1, cdim):
+            f0_list = [F0_user[0, c] for c in range(cdim)]
+        elif F0_user.shape == (cdim,):
+            f0_list = [F0_user[c] for c in range(cdim)]
         else:
             raise ValueError(
-                f"SNES_Vector F0 shape {F0_user.shape} is not compatible with dim={dim}."
+                f"SNES_Vector F0 shape {F0_user.shape} is not compatible with cdim={cdim}."
             )
-        if F1_user.shape != (dim, dim):
+        if F1_user.shape != (cdim, cdim):
             raise ValueError(
-                f"SNES_Vector F1 shape {F1_user.shape} does not match (dim, dim)=({dim}, {dim})."
+                f"SNES_Vector F1 shape {F1_user.shape} does not match (cdim, cdim)=({cdim}, {cdim})."
             )
 
         # Residual arrays kept as matrices for the JIT codegen path.
-        # f0 stored as (dim, 1) column; F1 stored as (dim, dim).
+        # f0 stored as (cdim, 1) column; F1 stored as (cdim, cdim).
         self._u_f0 = sympy.ImmutableDenseMatrix([[e] for e in f0_list])
         self._u_F1 = sympy.ImmutableDenseMatrix(F1_user)
         fns_residual = [self._u_f0, self._u_F1]
 
         # Unknowns in the form we need for the explicit Jacobian loops.
-        #   U_list[c] = u-component c            (u.sym is a (1, dim) row for VECTOR vtype)
-        #   L[c, d]   = ∂u_c / ∂x_d              (shape (dim, dim))
-        U_list = [self.u.sym[0, c] for c in range(dim)]
+        #   U_list[c] = u-component c            (u.sym is a (1, cdim) row for VECTOR vtype)
+        #   L[c, d]   = ∂u_c / ∂x_d              (shape (cdim, cdim))
+        U_list = [self.u.sym[0, c] for c in range(cdim)]
         L = self.Unknowns.L
 
         # JACOBIAN sources: unwrap (keep constants) + smooth Min/Max kinks so
@@ -3800,8 +3799,8 @@ class SNES_Vector(SolverBaseClass):
         # into PETSc's flat [fc, gc, df, dg] layout via row-major 2D matrices.
         # See docs/developer/subsystems/petsc-jacobian-layout.md for the
         # convention and why the older derive_by_array + permutedims form
-        # was incorrect for non-symmetric F1. Nc == dim for SNES_Vector.
-        Nc = dim
+        # was incorrect for non-symmetric F1. Nc == cdim for SNES_Vector.
+        Nc = cdim
 
         # G0[fc*Nc + gc, 0]              = ∂f0[fc] / ∂U[gc]
         G0 = sympy.zeros(Nc, Nc)
@@ -3810,26 +3809,26 @@ class SNES_Vector(SolverBaseClass):
                 G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
         # G1[fc*Nc + gc, df]             = ∂f0[fc] / ∂L[gc, df]
-        G1 = sympy.zeros(Nc * Nc, dim)
+        G1 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
+                for df in range(cdim):
                     G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
 
         # G2[fc*Nc + gc, df]             = ∂F1[fc, df] / ∂U[gc]
-        G2 = sympy.zeros(Nc * Nc, dim)
+        G2 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
+                for df in range(cdim):
                     G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
 
-        # G3[fc*Nc + gc, df*dim + dg]    = ∂F1[fc, df] / ∂L[gc, dg]
-        G3 = sympy.zeros(Nc * Nc, dim * dim)
+        # G3[fc*Nc + gc, df*cdim + dg]    = ∂F1[fc, df] / ∂L[gc, dg]
+        G3 = sympy.zeros(Nc * Nc, cdim * cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    for dg in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
+                for df in range(cdim):
+                    for dg in range(cdim):
+                        G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -3852,15 +3851,15 @@ class SNES_Vector(SolverBaseClass):
             if bc.fn_f is not None:
 
                 bd_F0_mat = sympy.Matrix(bc.fn_f)
-                if bd_F0_mat.shape == (dim, 1):
-                    bd_f0_list = [bd_F0_mat[c, 0] for c in range(dim)]
-                elif bd_F0_mat.shape == (1, dim):
-                    bd_f0_list = [bd_F0_mat[0, c] for c in range(dim)]
-                elif bd_F0_mat.shape == (dim,):
-                    bd_f0_list = [bd_F0_mat[c] for c in range(dim)]
+                if bd_F0_mat.shape == (cdim, 1):
+                    bd_f0_list = [bd_F0_mat[c, 0] for c in range(cdim)]
+                elif bd_F0_mat.shape == (1, cdim):
+                    bd_f0_list = [bd_F0_mat[0, c] for c in range(cdim)]
+                elif bd_F0_mat.shape == (cdim,):
+                    bd_f0_list = [bd_F0_mat[c] for c in range(cdim)]
                 else:
                     raise ValueError(
-                        f"Natural BC fn_f shape {bd_F0_mat.shape} is not compatible with dim={dim}."
+                        f"Natural BC fn_f shape {bd_F0_mat.shape} is not compatible with cdim={cdim}."
                     )
 
                 bd_f0 = sympy.ImmutableDenseMatrix([[e] for e in bd_f0_list])
@@ -3869,11 +3868,11 @@ class SNES_Vector(SolverBaseClass):
                 # BC G0[fc*Nc + gc]           = ∂bd_f0[fc]/∂U[gc]
                 # BC G1[fc*Nc + gc, df]       = ∂bd_f0[fc]/∂L[gc, df]
                 bd_G0 = sympy.zeros(Nc, Nc)
-                bd_G1 = sympy.zeros(Nc * Nc, dim)
+                bd_G1 = sympy.zeros(Nc * Nc, cdim)
                 for fc in range(Nc):
                     for gc in range(Nc):
                         bd_G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
-                        for df in range(dim):
+                        for df in range(cdim):
                             bd_G1[fc * Nc + gc, df] = sympy.diff(bd_f0_list[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
@@ -3886,9 +3885,9 @@ class SNES_Vector(SolverBaseClass):
                 # Used by Nitsche-type BCs; None for standard natural BCs.
                 if hasattr(bc, 'fn_F') and bc.fn_F is not None:
                     bd_F1 = sympy.Matrix(bc.fn_F)
-                    if bd_F1.shape != (dim, dim):
+                    if bd_F1.shape != (cdim, cdim):
                         raise ValueError(
-                            f"Natural BC fn_F shape {bd_F1.shape} is not (dim, dim)=({dim}, {dim})."
+                            f"Natural BC fn_F shape {bd_F1.shape} is not (cdim, cdim)=({cdim}, {cdim})."
                         )
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
@@ -3898,15 +3897,15 @@ class SNES_Vector(SolverBaseClass):
                     bd_F1_jac = self._jacobian_source(bd_F1)
 
                     # BC G2[fc*Nc + gc, df]          = ∂bd_F1[fc, df]/∂U[gc]
-                    # BC G3[fc*Nc + gc, df*dim + dg] = ∂bd_F1[fc, df]/∂L[gc, dg]
-                    bd_G2 = sympy.zeros(Nc * Nc, dim)
-                    bd_G3 = sympy.zeros(Nc * Nc, dim * dim)
+                    # BC G3[fc*Nc + gc, df*cdim + dg] = ∂bd_F1[fc, df]/∂L[gc, dg]
+                    bd_G2 = sympy.zeros(Nc * Nc, cdim)
+                    bd_G3 = sympy.zeros(Nc * Nc, cdim * cdim)
                     for fc in range(Nc):
                         for gc in range(Nc):
-                            for df in range(dim):
+                            for df in range(cdim):
                                 bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
-                                for dg in range(dim):
-                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
+                                for dg in range(cdim):
+                                    bd_G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
@@ -4524,10 +4523,10 @@ class SNES_MultiComponent(SolverBaseClass):
         N = self.mesh.N
         # Spatial-derivative iteration uses cdim (the embedded gradient
         # has cdim partial derivatives, one per coordinate of the
-        # embedding space). On volume meshes cdim == dim so the
-        # behaviour is unchanged. Distinct from mesh.dim, which is the
-        # topological dim used for FE element construction at line ~173.
-        dim = self.mesh.cdim
+        # embedding space). On volume meshes cdim == mesh.dim so the
+        # behaviour is unchanged. Distinct from mesh.dim, the topological
+        # dimension used for FE element construction in _setup_discretisation.
+        cdim = self.mesh.cdim
         Nc = self._n_components
 
         sympy.core.cache.clear_cache()
@@ -4551,12 +4550,12 @@ class SNES_MultiComponent(SolverBaseClass):
                 "expected (1, Nc), (Nc, 1) or (Nc,)."
             )
 
-        if F1_user.shape != (Nc, dim):
+        if F1_user.shape != (Nc, cdim):
             raise ValueError(
-                f"F1 shape {F1_user.shape} does not match (n_components, dim)=({Nc}, {dim})."
+                f"F1 shape {F1_user.shape} does not match (n_components, cdim)=({Nc}, {cdim})."
             )
 
-        # Residuals: f0 as (Nc, 1) column, F1 as (Nc, dim).
+        # Residuals: f0 as (Nc, 1) column, F1 as (Nc, cdim).
         # The JIT generator reads matrix shape to size the output buffer.
         self._u_f0 = sympy.ImmutableDenseMatrix([[e] for e in f0_list])
         self._u_F1 = sympy.ImmutableDenseMatrix(F1_user)
@@ -4564,7 +4563,7 @@ class SNES_MultiComponent(SolverBaseClass):
 
         # Unknowns in PETSc-friendly flat form.
         #   U_list[c] = u-component c
-        #   L[c, d]   = ∂u_c / ∂x_d      (already shape (Nc, dim) from Unknowns.u setter)
+        #   L[c, d]   = ∂u_c / ∂x_d      (already shape (Nc, cdim) from Unknowns.u setter)
         U_list = [self.u.sym[0, c] for c in range(Nc)]
         L = self.Unknowns.L
 
@@ -4580,12 +4579,12 @@ class SNES_MultiComponent(SolverBaseClass):
         # order [test_component, trial_component, test_deriv, trial_deriv].
         # From `PetscFEUpdateElementMat_Internal` in fe.c:
         #   g0[fc * Nc + gc]
-        #   g1[(fc * Nc + gc) * dim + df]
-        #   g2[(fc * Nc + gc) * dim + df]
-        #   g3[((fc * Nc + gc) * dim + df) * dim + dg]
+        #   g1[(fc * Nc + gc) * cdim + df]
+        #   g2[(fc * Nc + gc) * cdim + df]
+        #   g3[((fc * Nc + gc) * cdim + df) * cdim + dg]
         # i.e. fc and gc are the two outer indices; df/dg are the derivative
         # indices inside. Construct each Jacobian as a 2D sympy matrix with
-        # row = fc*Nc + gc and col = (df) or (df*dim + dg), then row-major
+        # row = fc*Nc + gc and col = (df) or (df*cdim + dg), then row-major
         # flatten naturally matches PETSc's layout.
 
         #  G0[fc*Nc + gc, 0]           = ∂f0[fc] / ∂U[gc]
@@ -4595,26 +4594,26 @@ class SNES_MultiComponent(SolverBaseClass):
                 G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
         #  G1[fc*Nc + gc, df]          = ∂f0[fc] / ∂L[gc, df]
-        G1 = sympy.zeros(Nc * Nc, dim)
+        G1 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
+                for df in range(cdim):
                     G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
 
         #  G2[fc*Nc + gc, df]          = ∂F1[fc, df] / ∂U[gc]
-        G2 = sympy.zeros(Nc * Nc, dim)
+        G2 = sympy.zeros(Nc * Nc, cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
+                for df in range(cdim):
                     G2[fc * Nc + gc, df] = sympy.diff(F1_jac[fc, df], U_list[gc])
 
-        #  G3[fc*Nc + gc, df*dim + dg] = ∂F1[fc, df] / ∂L[gc, dg]
-        G3 = sympy.zeros(Nc * Nc, dim * dim)
+        #  G3[fc*Nc + gc, df*cdim + dg] = ∂F1[fc, df] / ∂L[gc, dg]
+        G3 = sympy.zeros(Nc * Nc, cdim * cdim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    for dg in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
+                for df in range(cdim):
+                    for dg in range(cdim):
+                        G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(F1_jac[fc, df], L[gc, dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
@@ -4627,7 +4626,7 @@ class SNES_MultiComponent(SolverBaseClass):
         fns_bd_jacobian = []
 
         # Natural BCs. Expected shapes: fn_f is (Nc, 1) or (1, Nc) or (Nc,);
-        # fn_F (gradient term) is (Nc, dim) if provided.
+        # fn_F (gradient term) is (Nc, cdim) if provided.
         for index, bc in enumerate(self.natural_bcs):
 
             if bc.fn_f is not None:
@@ -4647,11 +4646,11 @@ class SNES_MultiComponent(SolverBaseClass):
                 bc.fns["u_f0"] = bd_f0
 
                 bd_G0 = sympy.zeros(Nc, Nc)
-                bd_G1 = sympy.zeros(Nc * Nc, dim)
+                bd_G1 = sympy.zeros(Nc * Nc, cdim)
                 for fc in range(Nc):
                     for gc in range(Nc):
                         bd_G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
-                        for df in range(dim):
+                        for df in range(cdim):
                             bd_G1[fc * Nc + gc, df] = sympy.diff(bd_f0_list[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
@@ -4662,9 +4661,9 @@ class SNES_MultiComponent(SolverBaseClass):
 
                 if hasattr(bc, 'fn_F') and bc.fn_F is not None:
                     bd_F1 = sympy.Matrix(bc.fn_F)
-                    if bd_F1.shape != (Nc, dim):
+                    if bd_F1.shape != (Nc, cdim):
                         raise ValueError(
-                            f"Natural BC fn_F shape {bd_F1.shape} != (n_components, dim)=({Nc}, {dim})."
+                            f"Natural BC fn_F shape {bd_F1.shape} != (n_components, cdim)=({Nc}, {cdim})."
                         )
                     bc.fns["u_F1"] = sympy.ImmutableDenseMatrix(bd_F1)
                     fns_bd_residual += [bc.fns["u_F1"]]
@@ -4673,14 +4672,14 @@ class SNES_MultiComponent(SolverBaseClass):
                     # kinks); residual u_F1 above stays exact. See _jacobian_source.
                     bd_F1_jac = self._jacobian_source(bd_F1)
 
-                    bd_G2 = sympy.zeros(Nc * Nc, dim)
-                    bd_G3 = sympy.zeros(Nc * Nc, dim * dim)
+                    bd_G2 = sympy.zeros(Nc * Nc, cdim)
+                    bd_G3 = sympy.zeros(Nc * Nc, cdim * cdim)
                     for fc in range(Nc):
                         for gc in range(Nc):
-                            for df in range(dim):
+                            for df in range(cdim):
                                 bd_G2[fc * Nc + gc, df] = sympy.diff(bd_F1_jac[fc, df], U_list[gc])
-                                for dg in range(dim):
-                                    bd_G3[fc * Nc + gc, df * dim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
+                                for dg in range(cdim):
+                                    bd_G3[fc * Nc + gc, df * cdim + dg] = sympy.diff(bd_F1_jac[fc, df], L[gc, dg])
 
                     bc.fns["uu_G2"] = sympy.ImmutableMatrix(bd_G2)
                     bc.fns["uu_G3"] = sympy.ImmutableMatrix(bd_G3)
