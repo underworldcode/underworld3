@@ -2411,11 +2411,13 @@ class SNES_Scalar(SolverBaseClass):
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if u_Field is None:
+            # TODO(BUG): num_components=mesh.dim for a SCALAR unknown looks wrong
+            # (a scalar has one component); kept as-is pending review (READ-22).
             self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim,
                                                       varname="Us{}".format(SNES_Scalar._obj_count),
                                                       vtype=uw.VarType.SCALAR, degree=degree, )
-
-        self.Unknowns.u = u_Field
+        else:
+            self.Unknowns.u = u_Field
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
@@ -3361,7 +3363,9 @@ class SNES_Vector(SolverBaseClass):
 
 
         ## Todo: some validity checking on the size / type of u_Field supplied
-        if not u_Field:
+        # (the supplied u_Field, if any, was assigned to self.Unknowns.u above;
+        # here we only auto-create the default unknown when none was supplied)
+        if u_Field is None:
             self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh,
                         num_components=mesh.dim, varname="Uv{}".format(SNES_Vector._obj_count),
                         vtype=uw.VarType.VECTOR, degree=degree )
