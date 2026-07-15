@@ -27,9 +27,6 @@ src/underworld3/tests/test_adaptivity_metrics.py:access-context
 src/underworld3/discretisation/discretisation_mesh.py:mesh-data
 
 # --- hedging-name (Charter S3) ---------------------------------------------
-# `_maybe_install_snes_update` is the Charter S3 example of the banned form;
-# renaming it is library-code churn outside the guardrails PR's scope.
-src/underworld3/cython/petsc_generic_snes_solvers.pyx:hedging-name
 # Four `_do_move()` local closures in the mesh-mover machinery.
 src/underworld3/discretisation/discretisation_mesh.py:hedging-name
 src/underworld3/meshing/_ot_adapt.py:hedging-name
