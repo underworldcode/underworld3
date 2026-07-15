@@ -4054,54 +4054,53 @@ class SNES_Vector(SolverBaseClass):
 
             c_label = bc_label
 
-            if True: #  c_label and label_val != -1:
-                if bc.fn_f is not None:
-                    _has_f1 = "u_F1" in bc.fns
+            if bc.fn_f is not None:
+                _has_f1 = "u_F1" in bc.fns
 
-                    if _has_f1:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        NULL,
-                                        )
+                if _has_f1:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    NULL,
+                                    )
 
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
+                if _has_f1:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
 
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
+                if _has_f1:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
 
 
         if verbose:
@@ -7372,123 +7371,122 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             c_label = bc_label
 
-            if True: #  c_label and label_val != -1:
 
-                if bc.fn_f is not None:
+            if bc.fn_f is not None:
 
-                    _has_f1 = "u_F1" in bc.fns
+                _has_f1 = "u_F1" in bc.fns
 
-                    # Velocity boundary residual: f0 (value) + f1 (gradient, if present)
-                    if _has_f1:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
-                                        NULL,
-                                        )
+                # Velocity boundary residual: f0 (value) + f1 (gradient, if present)
+                if _has_f1:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
+                                    NULL,
+                                    )
 
-                    # Pressure boundary residual (Nitsche: f0_p = u.n - g)
-                    if "p_f0" in bc.fns:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        1, 0,
-                                        ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
-                                        NULL)
-                    else:
-                        UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
+                # Pressure boundary residual (Nitsche: f0_p = u.n - g)
+                if "p_f0" in bc.fns:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    1, 0,
+                                    ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
+                                    NULL)
+                else:
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
 
-                    # Velocity-velocity boundary Jacobian: g0, g1 always; g2, g3 if f1_bd present
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
-
-                    # Velocity-pressure boundary Jacobian
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        NULL, NULL)
-
-                    # Pressure-velocity boundary Jacobian (pu block)
+                # Velocity-velocity boundary Jacobian: g0, g1 always; g2, g3 if f1_bd present
+                if _has_f1:
                     UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
+
+                # Velocity-pressure boundary Jacobian
+                if _has_f1:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                    # Pressure-pressure boundary Jacobian (pp block)
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 1, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                                    NULL, NULL, NULL)
+                # Pressure-velocity boundary Jacobian (pu block)
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                NULL, NULL)
 
-                    # Preconditioner: mirror the Jacobian structure
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 0, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
-                                        NULL, NULL,
-                                        )
+                # Pressure-pressure boundary Jacobian (pp block)
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 1, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
+                                NULL, NULL, NULL)
 
-                    if _has_f1:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
-                                        )
-                    else:
-                        UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                        0, 1, 0,
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
-                                        ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                        NULL, NULL)
-
+                # Preconditioner: mirror the Jacobian structure
+                if _has_f1:
                     UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 0, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 0, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
+                                    NULL, NULL,
+                                    )
+
+                if _has_f1:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
+                                    )
+                else:
+                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                    0, 1, 0,
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
+                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
-                                    1, 1, 0,
-                                    ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                                    NULL, NULL, NULL)
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 0, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
+                                NULL, NULL)
+
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                                1, 1, 0,
+                                ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
+                                NULL, NULL, NULL)
 
         # Lagrange-multiplier boundary coupling DS registration (block-constrained
         # Stokes). Attaches the field-0 traction, field-h constraint, and the
