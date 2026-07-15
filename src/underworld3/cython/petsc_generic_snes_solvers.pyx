@@ -5720,6 +5720,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @strategy.setter
     def strategy(self, value):
+        if value not in ("default", "robust", "fast"):
+            raise ValueError(
+                f"Unknown solver strategy {value!r}: "
+                "expected 'default', 'robust', or 'fast'."
+            )
+        # 'robust' and 'fast' are accepted names but currently configure the
+        # same option bundle as 'default' (their dedicated branches were empty
+        # placeholders and have been removed — Charter S5, READ-23).
+
         # self.is_setup = False
         self._strategy = value
 
@@ -5736,21 +5745,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["pc_fieldsplit_diag_use_amat"] = None
         self.petsc_options["pc_fieldsplit_off_diag_use_amat"] = None
         # self.petsc_options["pc_use_amat"] = None                         # Using this puts more pressure on the inner solve
-
-
-        if value == "robust":
-
-            pass
-
-
-        elif value == "fast":
-
-            pass
-
-
-        else: # "default"
-
-            pass
 
         p_name = "pressure" # pressureField.clean_name
         v_name = "velocity" # velocityField.clean_name
@@ -5778,6 +5772,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options[f"fieldsplit_velocity_pc_type"]  = "gamg"
         self.petsc_options[f"fieldsplit_velocity_pc_gamg_type"]  = "agg"
         self.petsc_options[f"fieldsplit_velocity_pc_gamg_repartition"]  = True
+        # NOTE: "kaskade" here diverges from the "additive" set by __init__'s
+        # velocity block — a long-standing (possibly unintentional) difference.
+        # Do not change without benchmarking (READ-23 kept the value as-is).
         self.petsc_options[f"fieldsplit_velocity_pc_mg_type"]  = "kaskade"
         self.petsc_options[f"fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
         self.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
