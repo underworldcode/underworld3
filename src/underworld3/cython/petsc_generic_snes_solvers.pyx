@@ -1818,7 +1818,7 @@ class SolverBaseClass(uw_object):
 
     @property
     def F1(self):
-        raise RuntimeError("Contact Developers - SolverBaseClass F0 is being used")
+        raise RuntimeError("Contact Developers - SolverBaseClass F1 is being used")
 
     @property
     def u(self):
