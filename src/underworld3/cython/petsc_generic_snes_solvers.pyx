@@ -3227,8 +3227,9 @@ class SNES_Scalar(SolverBaseClass):
 
 ### =================================
 
-# LM: this is probably not something we need ... The petsc interface is
-# general enough to have one class to handle Vector and Scalar
+# TODO(DESIGN): the PETSc interface may be general enough for one class to
+# handle both Vector and Scalar — the multi-solver unification question is
+# tracked as worklist rows D-23..D-28 (deferred, maintainer session).
 
 class SNES_Vector(SolverBaseClass):
     r"""
@@ -5204,7 +5205,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Some other setup
 
         self.mesh._equation_systems_register.append(self)
-        self._rebuild_after_mesh_update = self._build # probably just needs to boot the DM and then it should work
+        self._rebuild_after_mesh_update = self._build
 
         self.essential_bcs = []
 
@@ -5624,8 +5625,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundary, -1, "nitsche", -1, {},
         ))
 
-    ## Why is this here - this is not "generic" at all ??
-
+    # TODO(DESIGN): _setup_history_terms is solver-specific (vector unknowns,
+    # SemiLagrangian machinery), not generic — revisit its placement when the
+    # solver-class unification (worklist D-23..D-28) is taken up.
     def _setup_history_terms(self):
         self.Unknowns.DuDt = uw.systems.ddt.SemiLagrangian(
                     self.mesh,
@@ -6336,8 +6338,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             rot_ns.remove(gvec)
 
 
-    ## F0, F1 should be f0 and F1, (pf0 for Saddles can be added here)
-    ## don't add new ones uf0, uF1 are redundant
+    # TODO(DESIGN): residual-term naming is inconsistent (F0/F1 vs f0, plus the
+    # redundant uf0/uF1 aliases used below); settle one scheme rather than
+    # adding new spellings.
 
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
