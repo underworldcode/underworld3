@@ -137,6 +137,11 @@ This Charter wins on any conflict. One governing document per topic:
 `UW3_Style_and_Patterns_Guide.md` remains as the detailed reference, but where it and
 this Charter disagree (notably docstring format and coordinate access), the Charter wins.
 
+**Machine enforcement**: the cheapest-to-check rules here (§3 hedging names, §4 silent
+swallows, §7 deprecated data access) are enforced in CI by
+`scripts/check_deprecated_patterns.py` via `.github/workflows/style-gates.yml`; its
+allowlist records pre-existing legacy hits and may only shrink. See `guides/style-gates.md`.
+
 ## 11. Things to Remember
 
 Underworld is a parallel code — no feature is complete if it only works in serial.

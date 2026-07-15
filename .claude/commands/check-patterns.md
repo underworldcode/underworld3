@@ -2,15 +2,24 @@
 description: Find deprecated access patterns in code and documentation
 ---
 
-## Reference Document
+## Run the CI scanner first
 
-**Read the authoritative patterns guide first:**
-`docs/developer/UW3_Style_and_Patterns_Guide.qmd`
+The `src/` pattern list is machine-enforced; the scanner is the single source of
+truth for what is banned and what is allowlisted legacy:
 
-Key sections:
-- Section 4 "Array and Data Management" - array indexing patterns
-- Section 5 "Context Managers" - deprecated vs current access patterns
-- Section 6 "MPI and Parallel Patterns" - parallel safety
+```bash
+pixi run -e amr-dev python scripts/check_deprecated_patterns.py
+python scripts/check_deprecated_patterns.py --include-docs   # report-only docs inventory
+```
+
+Policy and pattern definitions: `docs/developer/guides/style-gates.md`
+(allowlist shrinks only — never add entries to make a PR pass).
+
+## Reference Documents
+
+- `docs/developer/UW3_STYLE_CHARTER.md` — normative rules (§3 naming, §4 comments, §7 data access)
+- `docs/developer/subsystems/data-access.md` — governing data-access reference
+- `docs/developer/UW3_Style_and_Patterns_Guide.md` — broader style reference
 
 ---
 

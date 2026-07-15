@@ -1,0 +1,72 @@
+# Deprecated-pattern allowlist for scripts/check_deprecated_patterns.py
+#
+# POLICY: THIS FILE MAY ONLY SHRINK.
+#
+# Each line is `path:pattern-id` and records a PRE-EXISTING legacy hit that
+# predates the style gate (baseline: development @ 9f5ed9e9, 2026-07). The
+# gate fails on any hit NOT listed here. If your PR trips the gate, fix the
+# code — do not add lines. Only a maintainer may add an entry, and only for
+# code that already existed when the gate was introduced.
+#
+# When a file is cleaned up, delete its entries (the scanner prints a
+# "stale allowlist entries" note to remind you). Pattern definitions and
+# rationale: docs/developer/UW3_STYLE_CHARTER.md (S3, S4, S7) and the
+# scanner's module docstring.
+#
+# NOTE: an entry allows every hit of that pattern in that file, so a listed
+# file is not protected against NEW hits of the same pattern. Reviewers
+# should keep an eye on diffs touching listed files.
+
+# --- access-context (Charter S7) ------------------------------------------
+# Legacy test written against the old context-manager API (13 sites).
+src/underworld3/tests/test_adaptivity_metrics.py:access-context
+
+# --- mesh-data (Charter S7) ------------------------------------------------
+# The two hits are the deprecated property's own docstring and its
+# DeprecationWarning message — the implementation of the shim, not usage.
+src/underworld3/discretisation/discretisation_mesh.py:mesh-data
+
+# --- hedging-name (Charter S3) ---------------------------------------------
+# `_maybe_install_snes_update` is the Charter S3 example of the banned form;
+# renaming it is library-code churn outside the guardrails PR's scope.
+src/underworld3/cython/petsc_generic_snes_solvers.pyx:hedging-name
+# Four `_do_move()` local closures in the mesh-mover machinery.
+src/underworld3/discretisation/discretisation_mesh.py:hedging-name
+src/underworld3/meshing/_ot_adapt.py:hedging-name
+src/underworld3/meshing/smoothing/api.py:hedging-name
+
+# --- except-pass (Charter S4) ----------------------------------------------
+# Uncommented exception swallows present at baseline (67 sites). Each needs
+# a one-line comment stating its sanctioned failure mode; do that in the file
+# you are already touching and delete its entry here.
+src/underworld3/constitutive_models.py:except-pass
+src/underworld3/coordinates.py:except-pass
+src/underworld3/cython/petsc_generic_snes_solvers.pyx:except-pass
+src/underworld3/cython/petsc_maths.pyx:except-pass
+src/underworld3/discretisation/discretisation_mesh.py:except-pass
+src/underworld3/discretisation/remesh.py:except-pass
+src/underworld3/function/_function.pyx:except-pass
+src/underworld3/function/expressions.py:except-pass
+src/underworld3/function/quantities.py:except-pass
+src/underworld3/function/unit_conversion.py:except-pass
+src/underworld3/meshing/_ot_adapt.py:except-pass
+src/underworld3/meshing/smoothing/anisotropic.py:except-pass
+src/underworld3/meshing/smoothing/monge_ampere.py:except-pass
+src/underworld3/meshing/surfaces.py:except-pass
+src/underworld3/model.py:except-pass
+src/underworld3/scaling/_scaling.py:except-pass
+src/underworld3/swarm.py:except-pass
+src/underworld3/systems/solvers.py:except-pass
+src/underworld3/timing.py:except-pass
+src/underworld3/units.py:except-pass
+src/underworld3/utilities/_api_tools.py:except-pass
+src/underworld3/utilities/_interrupt.py:except-pass
+src/underworld3/utilities/_jit_cache.py:except-pass
+src/underworld3/utilities/_jitextension.py:except-pass
+src/underworld3/utilities/_params.py:except-pass
+src/underworld3/utilities/diagnostics.py:except-pass
+src/underworld3/utilities/mathematical_mixin.py:except-pass
+src/underworld3/utilities/memprobe.py:except-pass
+src/underworld3/utilities/nondimensional.py:except-pass
+src/underworld3/utilities/rotated_bc.py:except-pass
+src/underworld3/utilities/unit_aware_coordinates.py:except-pass
