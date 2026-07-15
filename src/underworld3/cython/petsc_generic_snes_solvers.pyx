@@ -405,6 +405,16 @@ class SolverBaseClass(uw_object):
         if self.snes is not None and self._snes_update_callbacks:
             self.snes.setUpdate(self._dispatch_snes_update)
 
+    def _nondimensional_time(self, time):
+        """Return ``time`` as a plain float in solver (non-dimensional) units.
+
+        Pint quantities and UWQuantity values are non-dimensionalised through
+        the scaling system; bare numbers pass through unchanged.
+        """
+        if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
+            return float(uw.non_dimensionalise(time))
+        return float(time)
+
     def _scatter_global_to_fields(self, gvec):
         """Scatter the global iterate into the solver's field MeshVariable,
         correct on driven (non-zero Dirichlet) boundaries.
@@ -2230,10 +2240,7 @@ class SolverBaseClass(uw_object):
         self._build(verbose, False, None)
 
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm_reaction = self.dm
             UW_DMSetTime(_time_dm_reaction.dm, <PetscReal>t_nd)
 
@@ -3104,10 +3111,7 @@ class SNES_Scalar(SolverBaseClass):
         # Set time on the DM so petsc_t is available in pointwise functions
         cdef DM _time_dm
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm = self.dm
             UW_DMSetTime(_time_dm.dm, t_nd)
 
@@ -7566,10 +7570,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._build(verbose, False, None)
 
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm_residual = self.dm
             UW_DMSetTime(_time_dm_residual.dm, t_nd)
             residual_time = <PetscReal>t_nd
@@ -7705,10 +7706,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             )
 
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm_boundary_residual = self.dm
             UW_DMSetTime(_time_dm_boundary_residual.dm, t_nd)
 
@@ -8024,10 +8022,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # must precede the nonlinearity probe below so the trial assemblies see
             # the correct coefficients.
             if time is not None:
-                if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                    t_nd = float(uw.non_dimensionalise(time))
-                else:
-                    t_nd = float(time)
+                t_nd = self._nondimensional_time(time)
                 _time_dm_stokes = self.dm
                 UW_DMSetTime(_time_dm_stokes.dm, t_nd)
             self.mesh.update_lvec()
@@ -8057,10 +8052,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             return
 
         if time is not None:
-            if hasattr(time, 'magnitude') or hasattr(time, '_pint_qty'):
-                t_nd = float(uw.non_dimensionalise(time))
-            else:
-                t_nd = float(time)
+            t_nd = self._nondimensional_time(time)
             _time_dm_stokes = self.dm
             UW_DMSetTime(_time_dm_stokes.dm, t_nd)
 
