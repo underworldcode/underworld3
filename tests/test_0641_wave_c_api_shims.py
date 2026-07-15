@@ -421,13 +421,13 @@ class TestSwarmSyncDeprecated:
 # WC-13 - smoothing: dead params dropped, n_sweeps renamed max_cg_iters
 # ---------------------------------------------------------------------------
 
-class TestWinslowSpringSignature:
+class TestSpringMoverSignature:
     def test_dead_params_gone_new_name_present(self):
         import inspect
 
-        from underworld3.meshing.smoothing import _winslow_spring
+        from underworld3.meshing.smoothing import _spring_equilibrium_mover
 
-        params = inspect.signature(_winslow_spring).parameters
+        params = inspect.signature(_spring_equilibrium_mover).parameters
         assert "relax" not in params
         assert "step_frac" not in params
         assert "max_cg_iters" in params
@@ -436,14 +436,14 @@ class TestWinslowSpringSignature:
     def test_n_sweeps_alias_warns_once(self):
         import numpy as np
 
-        from underworld3.meshing.smoothing import _winslow_spring
+        from underworld3.meshing.smoothing import _spring_equilibrium_mover
 
         tri_mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
         )
         pinned = ("Top", "Bottom", "Left", "Right")
         with pytest.warns(DeprecationWarning, match="max_cg_iters") as rec:
-            _winslow_spring(tri_mesh, sympy.Integer(1), pinned, False, n_sweeps=1)
+            _spring_equilibrium_mover(tri_mesh, sympy.Integer(1), pinned, False, n_sweeps=1)
         assert _one_deprecation(rec) == 1
         with _no_deprecation():
-            _winslow_spring(tri_mesh, sympy.Integer(1), pinned, False, max_cg_iters=1)
+            _spring_equilibrium_mover(tri_mesh, sympy.Integer(1), pinned, False, max_cg_iters=1)

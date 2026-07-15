@@ -126,7 +126,7 @@ strictly-positive nodal values — evaluates to **NEGATIVE garbage** (even at it
 DOFs) → non-SPD → the mover wrecks the mesh. FIX (both):
 - **`8a9d2ff2`** (refresh `_nav_coords` + projected normals on every deform) —
   the real fix; makes `function.evaluate`/`points_in_domain` track deformation.
-- **Monotone RBF metric bake** (in `_winslow_mmpde`): Shepard-interpolate the
+- **Monotone RBF metric bake** (in `_mmpde_mover`, formerly `_winslow_mmpde`): Shepard-interpolate the
   metric from its **positive nodal values** — a convex average is guaranteed ≥0
   (monotone) + fast (no cell-location). Use RBF for the metric; it doesn't need
   high-precision eval.

@@ -282,7 +282,8 @@ def remesh_with_field_transfer(
     """Adapt-op contract: run a mover and transfer every registered var.
 
     ``do_move`` is a closure that performs the actual coordinate move —
-    typically the body of a ``_winslow_*`` mover, the OT step, or a
+    typically the body of one of the ``underworld3.meshing.smoothing``
+    package movers (spring / MA / OT / anisotropic / MMPDE) or a
     ``follow_metric`` mover. It is expected to call
     :meth:`Mesh._deform_mesh` one or more times and leave the mesh
     sitting at the final adapted positions. ``do_move`` MUST NOT touch
