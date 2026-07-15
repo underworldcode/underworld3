@@ -1,10 +1,7 @@
-from xmlrpc.client import Boolean
-
 import numpy as np
 import sympy
-from sympy import sympify
 
-from typing import Optional, Union, TypeAlias
+from typing import Optional, Union
 from petsc4py import PETSc
 
 import underworld3
@@ -13,7 +10,6 @@ from   underworld3.utilities._jitextension import getext, JITCallbackSet
 import underworld3.timing as timing
 
 from underworld3.utilities._api_tools import uw_object
-from underworld3.utilities._api_tools import class_or_instance_method
 
 from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
