@@ -8130,38 +8130,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.solve(None, gvec)
             self._warn_on_divergence(phase="picard")
 
-        # Now go back to the original plan
-            self.snes.setType(snes_type)
-            self.tolerance = tolerance
-            self.snes.atol = self.atol
-            self.petsc_options.setValue("snes_max_it", snes_max_it)
-            self.snes.setFromOptions()
-            self._attach_stokes_nullspace()
-            # Custom geometric-MG prolongation on the velocity block (if registered
-            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
-            # before the real solve — because the velocity sub-PC is only reachable
-            # once the monolithic Jacobian is assembled (see custom_mg).
-            if self._custom_mg is not None:
-                from underworld3.utilities.custom_mg import inject_custom_mg
-                inject_custom_mg(self)
-            self._snes_solve_with_retries(gvec, divergence_retries, verbose)
-
-        else:
-        # Standard Newton solve
-            self.snes.setType(snes_type)
-            self.tolerance = tolerance
-            self.snes.atol = self.atol
-            self.petsc_options.setValue("snes_max_it", snes_max_it)
-            self.snes.setFromOptions()
-            self._attach_stokes_nullspace()
-            # Custom geometric-MG prolongation on the velocity block (if registered
-            # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
-            # before the real solve — because the velocity sub-PC is only reachable
-            # once the monolithic Jacobian is assembled (see custom_mg).
-            if self._custom_mg is not None:
-                from underworld3.utilities.custom_mg import inject_custom_mg
-                inject_custom_mg(self)
-            self._snes_solve_with_retries(gvec, divergence_retries, verbose)
+        # The standard Newton solve, run whether or not the optional Picard
+        # warmup above was taken: restore the configured SNES type and
+        # tolerances, then solve.
+        self.snes.setType(snes_type)
+        self.tolerance = tolerance
+        self.snes.atol = self.atol
+        self.petsc_options.setValue("snes_max_it", snes_max_it)
+        self.snes.setFromOptions()
+        self._attach_stokes_nullspace()
+        # Custom geometric-MG prolongation on the velocity block (if registered
+        # via set_custom_fmg). Injected here — after setFromOptions/nullspace,
+        # before the real solve — because the velocity sub-PC is only reachable
+        # once the monolithic Jacobian is assembled (see custom_mg).
+        if self._custom_mg is not None:
+            from underworld3.utilities.custom_mg import inject_custom_mg
+            inject_custom_mg(self)
+        self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
         # Project the rigid-body rotation gauge out of the converged solution.
         # The fieldsplit/Schur inner velocity solve leaves an unconstrained (and
