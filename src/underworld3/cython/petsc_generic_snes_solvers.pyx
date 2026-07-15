@@ -404,7 +404,7 @@ class SolverBaseClass(uw_object):
         self._needs_function_rewire = True
         return callback
 
-    def _maybe_install_snes_update(self):
+    def _attach_snes_update_hook(self):
         """Attach the SNESSetUpdate dispatcher iff callbacks are registered."""
         if self.snes is not None and self._snes_update_callbacks:
             self.snes.setUpdate(self._dispatch_snes_update)
@@ -1174,7 +1174,7 @@ class SolverBaseClass(uw_object):
         """
         # Attach the per-iteration callback dispatcher here (after all
         # setFromOptions in the solve path). No-op when no callbacks registered.
-        self._maybe_install_snes_update()
+        self._attach_snes_update_hook()
         if self.consistent_jacobian == "continuation":
             self._continuation_solve(gvec, verbose=verbose)
         else:
