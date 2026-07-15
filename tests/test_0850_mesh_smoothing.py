@@ -236,3 +236,47 @@ class TestMMPDEDimensionGuard:
         after = np.asarray(mesh.X.coords)
         assert np.all(np.isfinite(after))
         assert not np.allclose(before, after)   # the mover actually moved
+
+
+class TestSPDSanitise:
+    """Regression (#352): the SPD projection must return a finite SPD
+    fallback even when a rank's ENTIRE metric evaluation is degenerate —
+    previously an all-NaN eigenvalue set made the relative floor itself
+    NaN and the "sanitised" output was NaN."""
+
+    def _assert_finite_spd(self, out):
+        assert np.all(np.isfinite(out))
+        w = np.linalg.eigvalsh(out)
+        assert np.all(w > 0)
+
+    def test_all_nan_batch_returns_finite_spd(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((5, 2, 2), np.nan))
+        self._assert_finite_spd(out)
+
+    def test_all_inf_batch_returns_finite_spd(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((3, 2, 2), np.inf))
+        self._assert_finite_spd(out)
+
+    def test_valid_spd_input_is_returned_unchanged(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(7)
+        A = rng.standard_normal((10, 2, 2))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(2)  # SPD by construction
+        out = _spd_sanitise(M)
+        # Symmetrisation of an exactly-symmetric tensor is a no-op, so a
+        # genuine SPD metric must pass through bit-identical.
+        assert np.array_equal(out, M)
+
+    def test_one_degenerate_tensor_does_not_perturb_the_rest(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(11)
+        A = rng.standard_normal((6, 2, 2))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(2)
+        M[2] = np.nan
+        out = _spd_sanitise(M)
+        self._assert_finite_spd(out)
+        good = np.ones(6, dtype=bool)
+        good[2] = False
+        assert np.array_equal(out[good], M[good])
