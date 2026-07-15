@@ -8079,6 +8079,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Keep a record of these set-up parameters
         tolerance = self.tolerance
         snes_type = self.snes.getType()
+        # NOTE: hardcoded iteration cap. Unlike tolerance/snes_type above (read
+        # from current state), this value is pushed to petsc_options before the
+        # final solve below, silently clobbering any user-set snes_max_it on
+        # every solve. Respecting the user's setting is a behaviour change
+        # deferred to the benchmarked D2 sub-wave — see
+        # docs/reviews/2026-07/REMEDIATION-WORKLIST.md rows D-22/D2 (ruling D18).
         snes_max_it = 50
 
         self.mesh.update_lvec()
