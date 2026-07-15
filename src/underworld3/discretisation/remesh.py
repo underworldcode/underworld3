@@ -235,11 +235,17 @@ def _write_var_data(var, values):
     try:
         np.asarray(var.data)[...] = values
     except Exception:
-        # Sanctioned swallow: a var whose storage is unallocated or size-0
-        # on this rank (lazy allocation / empty local partition) has nowhere
-        # to write. Skipping leaves the variable exactly as the snapshot
-        # pass found it — the same vars are skipped by _snapshot_var_data,
-        # so no transfer is silently half-applied.
+        # Sanctioned swallow (pre-existing breadth: this helper unified
+        # three identical broad try/except sites). The INTENDED skip is a
+        # var whose storage is unallocated or size-0 on this rank (lazy
+        # allocation / empty local partition) — nowhere to write, and the
+        # same vars are skipped by _snapshot_var_data, so no transfer is
+        # silently half-applied. The breadth, however, also swallows
+        # genuine write failures (e.g. shape/broadcast mismatches), which
+        # would silently skip a transfer/zeroing for a non-empty variable.
+        # TODO(DESIGN): narrow this once the exception types raised by the
+        # unallocated-storage `.data` paths are established (probe lazy
+        # alloc / empty partitions), or report skips instead of passing.
         pass
 
 
