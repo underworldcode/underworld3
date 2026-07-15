@@ -24,13 +24,34 @@ def _spd_sanitise(M):
     eigenvalues at a small RELATIVE level so a genuine SPD metric passes
     through unchanged while garbage becomes a benign "coarsen here" tensor
     (tiny positive eigenvalues) instead of a NaN in the energy.
+
+    The floor is relative to the batch's largest finite eigenvalue with an
+    absolute minimum of 1e-8, so the pass-through guarantee holds for the
+    O(1)-normalised metrics the mover uses; a metric batch whose valid
+    eigenvalues sit far below unit scale would be floored too.
     """
     # Symmetrise: the metric is symmetric by construction, so for a valid
     # tensor this is an exact no-op (M_ij == M_ji bit-for-bit).
     Ms = 0.5 * (M + np.swapaxes(M, -1, -2))
     if Ms.shape[0] == 0:
         return Ms                                   # rank owns no cells
-    w, Vc = np.linalg.eigh(Ms)
+    try:
+        w, Vc = np.linalg.eigh(Ms)
+    except np.linalg.LinAlgError:
+        # Degenerate-input eigh behaviour is LAPACK-path dependent: the 2x2
+        # kernel returns quiet NaNs, the general kernel raises — and a
+        # batched eigh raises for the WHOLE batch if any one tensor fails.
+        # Retry per tensor so one degenerate tensor cannot take down its
+        # neighbours; a tensor that still fails is marked non-finite and
+        # rebuilt as the isotropic fallback below (#352).
+        w = np.empty(Ms.shape[:-1])
+        Vc = np.empty_like(Ms)
+        for i, Mi in enumerate(Ms):
+            try:
+                w[i], Vc[i] = np.linalg.eigh(Mi)
+            except np.linalg.LinAlgError:
+                w[i] = np.nan
+                Vc[i] = np.eye(Ms.shape[-1])
     wmax = float(np.nanmax(w[np.isfinite(w)], initial=-np.inf))
     if not np.isfinite(wmax):
         # Every eigenvalue on this rank is NaN/inf: the metric carries no

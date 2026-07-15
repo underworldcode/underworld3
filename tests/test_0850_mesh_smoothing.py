@@ -280,3 +280,27 @@ class TestSPDSanitise:
         good = np.ones(6, dtype=bool)
         good[2] = False
         assert np.array_equal(out[good], M[good])
+
+    def test_3x3_degenerate_batch_returns_finite_spd(self):
+        # Degenerate-input eigh is LAPACK-path dependent: the 2x2 kernel
+        # returns quiet NaNs, the general (3x3) kernel raises LinAlgError.
+        # The fallback must hold for both — this is the path the 3D MMPDE
+        # capstone will stand on.
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((4, 3, 3), np.nan))
+        self._assert_finite_spd(out)
+
+    def test_3x3_mixed_batch_survives_batched_eigh_failure(self):
+        # A single non-converging tensor makes the BATCHED eigh raise for
+        # the whole batch; the per-tensor retry must preserve the valid
+        # neighbours bit-identical and rebuild only the degenerate one.
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(3)
+        A = rng.standard_normal((5, 3, 3))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(3)
+        M[1] = np.inf
+        out = _spd_sanitise(M)
+        self._assert_finite_spd(out)
+        good = np.ones(5, dtype=bool)
+        good[1] = False
+        assert np.array_equal(out[good], M[good])
