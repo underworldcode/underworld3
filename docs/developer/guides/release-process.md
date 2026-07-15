@@ -133,6 +133,11 @@ Step 8 is deliberately left to a human so the review gate on `main` is never
 bypassed. CI (`.github/workflows/release.yml`) publishes the GitHub Release from
 the committed `docs/release-notes/vX.Y.0.md`.
 
+The CI style gates must also be green on the release branch — the
+`development → main` PR (step 7) runs `.github/workflows/style-gates.yml`
+automatically; see [style-gates.md](style-gates.md) for the checks and the
+shrink-only allowlist policy.
+
 ### Documentation freshness sweeps (before step 6)
 
 Two "pull" documents go stale silently between releases; refresh both as part
