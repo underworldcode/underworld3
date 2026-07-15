@@ -1458,10 +1458,10 @@ class SolverBaseClass(uw_object):
             eg. For the 3D example cond = (2, 5, 1.2), components = (1,2) the x components is ignored and uncontrainted.
         """
         if not isinstance(f_id, int):
-            raise("Error: f_id argument must be of type 'int' representing the solver's fields")
+            raise TypeError("Error: f_id argument must be of type 'int' representing the solver's fields")
 
         if c_type not in ['dirichlet', 'neumann']:
-            raise("'c_type' unknown. Value must be either 'dirichlet' or 'neumann'")
+            raise ValueError("'c_type' unknown. Value must be either 'dirichlet' or 'neumann'")
 
         self.is_setup = False
         import numpy as np
@@ -1541,7 +1541,7 @@ class SolverBaseClass(uw_object):
 
             components = np.array(cpts_list, dtype=np.int32, ndmin=1)
         else:
-            raise("Unsupported BC 'components' argument")
+            raise TypeError("Unsupported BC 'components' argument")
 
         # ======================================================================
         # Apply non-dimensional scaling to BC values if ND is enabled
@@ -2149,7 +2149,7 @@ class SolverBaseClass(uw_object):
 
         # check if section type is valid
         if section_type not in ['local', 'global']:
-            raise("'section_type' unknown. Value must be either 'local' or 'global'")
+            raise ValueError("'section_type' unknown. Value must be either 'local' or 'global'")
 
         # check if path exists
         if os.path.exists(os.path.abspath(outputPath)):  # easier to debug abs
