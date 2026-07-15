@@ -52,9 +52,10 @@ GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
 # velocity L2. Recompute with `python <thisfile> spherical3d`.
 GOLDEN_SPHERICAL3D = 4.069689334228e-03
 # NONLINEAR (power-law) box with rotated free-slip through the manual Newton loop
-# (consistent tangent): (velocity L2, nonlinear iteration count). Recompute
-# `python <thisfile> nonlinear`.
-GOLDEN_BOX_NONLINEAR = (8.069396188270e-04, 7)
+# (consistent tangent): (velocity L2, nonlinear iteration count — the number of
+# Newton increments solved, == len(ksp_its); this solve exits on the step-norm
+# test after its 8th increment). Recompute `python <thisfile> nonlinear`.
+GOLDEN_BOX_NONLINEAR = (8.069396188270e-04, 8)
 # box sigma_nn (boundary_normal_traction on Top, default lumped mass) vs analytic SolCx
 # sigma_yy, whole boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
 GOLDEN_BOX_SIGMA = (5.554578e-02, 0.998466)

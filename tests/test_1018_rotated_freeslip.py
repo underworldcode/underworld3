@@ -326,6 +326,9 @@ def test_rotated_freeslip_nonlinear_matches_essential(plaw_box_ref):
     s.solve()
     info = s._rotated_freeslip_info
     assert info["nonlinear_iterations"] > 1, "rotated solve did not genuinely iterate"
+    # the reported count is the number of Newton increments solved — one linear
+    # solve per increment (guards the loop-index off-by-one in the result dict)
+    assert info["nonlinear_iterations"] == len(info["ksp_its"])
     assert np.linalg.norm(vR.data - vE) / np.linalg.norm(vE) < 1e-3
     vc = vR.coords
     for lab, msk, comp in [("Top", np.abs(vc[:, 1] - 1) < 1e-6, 1),
