@@ -2466,7 +2466,6 @@ class SNES_Scalar(SolverBaseClass):
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        # self._constitutive_model = None
 
         self.verbose = verbose
 
@@ -2816,12 +2815,6 @@ class SNES_Scalar(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
-        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
-
-        # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(1).as_immutable()
-        # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim).as_immutable()
-
         # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
         # it (preserves constant UWexpressions as symbols for constants[]).
         f0  = sympy.Array(self.F0.sym).reshape(1).as_immutable()
@@ -2878,9 +2871,6 @@ class SNES_Scalar(SolverBaseClass):
 
             bc_label = mesh.dm.getLabel(boundary)
             bc_is = bc_label.getStratumIS(value)
-            # if bc_is is None:
-            #     print(f"{uw.mpi.rank}: Skip bc {boundary}", flush=True)
-            #     continue
 
             if bc.fn_f is not None:
                 
@@ -2897,20 +2887,6 @@ class SNES_Scalar(SolverBaseClass):
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
             # Similar to SNES_Vector, will leave these out for now, perhaps a different user-interface altogether is required for flux-like bcs
-
-            # if bc.fn_F is not None:
-
-            #     bd_F1  = sympy.Array(bc.fn_F).reshape(dim)
-            #     self._bd_f1 = sympy.ImmutableDenseMatrix(bd_F1)
-
-            #     G2 = sympy.derive_by_array(self._bd_f1, U)
-            #     G3 = sympy.derive_by_array(self._bd_f1, self.Unknowns.L)
-
-            #     self._bd_uu_G2 = sympy.ImmutableMatrix(G2.reshape(dim)) # sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-            #     self._bd_uu_G3 = sympy.ImmutableMatrix(G3.reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
-
-            #     fns_bd_residual += [self._bd_f1]
-            #     fns_bd_jacobian += [self._bd_G2, self._bd_G3]
 
 
         self._fns_bd_residual = fns_bd_residual
@@ -3148,13 +3124,9 @@ class SNES_Scalar(SolverBaseClass):
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            # with self.mesh.access():
             self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.0
-
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures()
 
         ## ----
 
@@ -3189,7 +3161,6 @@ class SNES_Scalar(SolverBaseClass):
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        # with self.mesh.access(self.u,):
         self.dm.globalToLocal(gvec, lvec)
         # add back boundaries.
         ierr = DMPlexSNESComputeBoundaryFEM(dm.dm, <void*>clvec.vec, NULL); CHKERRQ(ierr)
@@ -3348,10 +3319,6 @@ class SNES_Vector(SolverBaseClass):
         self.Unknowns.DuDt = DuDt
         self.Unknowns.DFDt = DFDt
 
-        # self.u = u_Field
-        # self.DuDt = DuDt
-        # self.DFDt = DFDt
-
         ## Keep track
 
         self.verbose = verbose
@@ -3412,7 +3379,6 @@ class SNES_Vector(SolverBaseClass):
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        # self._constitutive_model = None
 
         self.is_setup = False
         self.verbose = verbose
@@ -3791,18 +3757,6 @@ class SNES_Vector(SolverBaseClass):
 
         ## The jacobians are determined from the above (assuming we
         ## do not concern ourselves with the zeros)
-        ## Convert to arrays for the moment to allow 1D arrays (size dim, not 1xdim)
-        ## otherwise we have many size-1 indices that we have to collapse
-
-        # f0 = sympy.Array(self.mesh.vector.to_matrix(self._f0)).reshape(dim)
-        # F1 = sympy.Array(self._f1).reshape(dim,dim)
-
-        # f0 = sympy.Array(self._f0).reshape(1).as_immutable()
-        # F1 = sympy.Array(self._f1).reshape(dim).as_immutable()
-
-        # f0  = sympy.Array(uw.function.fn_substitute_expressions(self.F0.sym)).reshape(dim).as_immutable()
-        # F1  = sympy.Array(uw.function.fn_substitute_expressions(self.F1.sym)).reshape(dim,dim).as_immutable()
-
         # Residual piece shapes: f0 is (dim,) per-component, F1 is (dim, dim).
         # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
         # it (preserves constant UWexpressions as symbols for constants[]). The
@@ -4045,7 +3999,6 @@ class SNES_Vector(SolverBaseClass):
 
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
-            #bc_label = self.dm.getLabel(boundary)
 
             label_val = value
 
@@ -4195,47 +4148,18 @@ class SNES_Vector(SolverBaseClass):
 
         self._build(verbose, debug, debug_name)
 
-        # if (not self.is_setup):
-        #     if self.dm is not None:
-        #         self.dm.destroy()
-        #         self.dm = None  # Should be able to avoid nuking this if we
-        #                     # can insert new functions in template (surface integrals problematic in
-        #                     # the current implementation )
-
-        #     self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
-        #     self._setup_discretisation(verbose)
-        #     self._setup_solver(verbose)
-        # else:
-        #     # If only the mesh has changed, this will rebuild (and do nothing if unchanged)
-        #     self._setup_discretisation(verbose)
-
 
         gvec = self.dm.getGlobalVec()
 
         if not zero_init_guess:
-            # with self.mesh.access():
             self.dm.localToGlobal(self.u.vec, gvec)
         else:
             gvec.array[:] = 0.
 
-        # Set quadrature to consistent value given by mesh quadrature.
-        # self.mesh._align_quadratures()
-
-        # COMMENTED OUT: These calls are NOT in SNES_Scalar (Poisson) or Stokes
-        # They appear to destroy field registrations, causing "Invalid field number" errors
-        # when variables are created after other solvers have run.
-        # Removing to match working Poisson pattern.
-        #
-        # # Call `createDS()` on aux dm. This is necessary after the
-        # # quadratures are set above, as it generates the tablatures
-        # # from the quadratures (among other things no doubt).
-        # # TODO: What are the implications of calling this every solve.
-        #
-        # self.mesh.dm.clearDS()
-        # self.mesh.dm.createDS()
-        #
-        # for cdm in self.mesh.dm_hierarchy:
-        #     self.mesh.dm.copyDisc(cdm)
+        # NOTE: do NOT clearDS()/createDS() the aux (mesh) dm here. Those calls
+        # are not made by SNES_Scalar (Poisson) or Stokes, and they destroy field
+        # registrations — "Invalid field number" errors when variables are created
+        # after other solvers have run.
 
         self.mesh.update_lvec()
         cdef DM dm = self.dm
@@ -4260,7 +4184,6 @@ class SNES_Vector(SolverBaseClass):
         lvec = self.dm.getLocalVec()
         cdef Vec clvec = lvec
         # Copy solution back into user facing variable
-        # with self.mesh.access(self.u):
 
         self.dm.globalToLocal(gvec, lvec)
         if verbose:
@@ -5288,17 +5211,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.mesh._equation_systems_register.append(self)
         self._rebuild_after_mesh_update = self._build # probably just needs to boot the DM and then it should work
 
-        # self.F0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        # self.gF0 = sympy.Matrix.zeros(1, self.mesh.dim)
-        # self.F1 = sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim)
-        # self.PF0 = sympy.Matrix.zeros(1, 1)
-
         self.essential_bcs = []
 
         self.natural_bcs = []
         self.bcs = self.essential_bcs
         self.boundary_conditions = False
-        # self._constitutive_model = None
         self._saddle_preconditioner = None
         self._petsc_use_pressure_nullspace = False
         self._petsc_velocity_nullspace_basis = ()
@@ -5316,28 +5233,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # this attrib records if we need to re-setup
         self.is_setup = False
-
-    # @timing.routine_timer_decorator
-    # def add_essential_p_bc(self, fn, boundary):
-    #     # switch to numpy arrays
-    #     # ndmin arg forces an array to be generated even
-    #     # where comps/indices is a single value.
-
-    #     self.is_setup = False
-    #     import numpy as np
-
-    #     try:
-    #         iter(fn)
-    #     except:
-    #         fn = (fn,)
-
-    #     components = np.array([0], dtype=np.int32, ndmin=1)
-
-    #     sympy_fn = sympy.Matrix(fn).as_immutable()
-
-    #     from collections import namedtuple
-    #     BC = namedtuple('EssentialBC', ['components', 'fn', 'boundary', 'boundary_label_val', 'type', 'PETScID'])
-    #     self.essential_p_bcs.append(BC(components, sympy_fn, boundary, -1,  'essential', -1))
 
     def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
         r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
@@ -6581,18 +6476,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         sympy.core.cache.clear_cache()
 
-        # r = self.mesh.CoordinateSystem.N[0]
-
-        # Array form to work well with what is below
-        # The basis functions are 3-vectors by default, even for 2D meshes, soooo ...
-        # F0  = sympy.Array(self._u_f0)  #.reshape(dim)
-        # F1  = sympy.Array(self._u_f1)  # .reshape(dim,dim)
-        # PF0 = sympy.Array(self._p_f0)# .reshape(1)
-
-        ## We don't need to use these arrays, we can specify the ordering of the indices
-        ## and do these one by one as required by PETSc. However, at the moment, this
-        ## is working .. so be careful !!
-
         # RESIDUAL: don't unwrap here — let getext()'s two-phase unwrap handle
         # it (preserves constant UWexpressions as symbols for constants[]). The
         # JACOBIAN sources are unwrapped separately below (see _jac_source) so
@@ -6696,15 +6579,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         G0 = sympy.derive_by_array(PF0_jac, self.u.sym)
         G1 = sympy.derive_by_array(PF0_jac, self.Unknowns.L)
-        # G2 = sympy.derive_by_array(FP1, U) # We don't have an FP1 !
-        # G3 = sympy.derive_by_array(FP1, self.Unknowns.L)
+        # (there is no FP1 flux term, so the pu_G2 / pu_G3 blocks are empty)
 
         self._pu_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # non zero
         self._pu_G1 = sympy.ImmutableMatrix(G1.reshape(dim*dim))  # non-zero
-        # self._pu_G2 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self.p.sym).reshape(dim,dim))
-        # self._pu_G3 = sympy.ImmutableMatrix(sympy.derive_by_array(FP1, self._G).reshape(dim,dim*2))
-
-        # fns_jacobian += [self._pu_G0, self._pu_G1, self._pu_G2, self._pu_G3]
         fns_jacobian += [self._pu_G0, self._pu_G1]
 
         ## PP block is a preconditioner term, not auto-constructed
@@ -7023,10 +6901,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
             ind = value
-
-            # bc_label = self.dm.getLabel(boundary)
-            # bc_is = bc_label.getStratumIS(value)
-            # self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
             # use type 6 bc for `DM_BC_NATURAL_FIELD` enum
@@ -7362,7 +7236,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
-            # bc_label = self.dm.getLabel(boundary)
 
             label_val = value
 
@@ -7565,7 +7438,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if not _rewire_only:
                 self.dm.copyFields(coarse_dm)
             self.dm.copyDS(coarse_dm)
-            # coarse_dm.createDS()
 
         if not _rewire_only:
             for coarse_dm in self.dm_hierarchy:
@@ -8228,7 +8100,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self._attach_stokes_nullspace()
             self.snes.solve(None, gvec)
 
-            # with self.mesh.access():
             for name,var in self.fields.items():
                 sgvec = gvec.getSubVector(self._subdict[name][0])  # Get global subvec off solution gvec.
                 subdm   = self._subdict[name][1]                   # Get subdm corresponding to field
@@ -8318,7 +8189,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._ensure_local_field_index_sets(clvec, local_section)
 
         # Copy solution back into pressure and velocity variables
-        # with self.mesh.access(self.Unknowns.p, self.Unknowns.u):
         for name, var in self.fields.items():
             if name=='velocity':
                 subvec = clvec.getSubVector(self._velocity_is)
@@ -8362,7 +8232,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # first let's extract a max global velocity magnitude
         import math
 
-        # with self.mesh.access():
         vel = self.u.data
         magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
         if self.mesh.dim == 3:
