@@ -6087,6 +6087,77 @@ class Mesh(Stateful, uw_object):
             self._coarse_level_meshes_cache = cached
         return cached
 
+    def redistribute_nodes(self, metric, *, verbose=False, **kwargs):
+        r"""Move this mesh's nodes so cell sizes follow ``metric``, with
+        the topology fixed.
+
+        Node **redistribution** concentrates the existing node budget
+        where the metric demands resolution: vertex count, vertex ids,
+        DOF layout and the parallel partition are all preserved — only
+        coordinates move. Mesh variables (and solver / transport
+        history) are transferred onto the moved nodes automatically.
+        Contrast :meth:`adapt`, which *refines* (returns a child mesh
+        with more cells), and :meth:`remesh`, which regenerates the
+        mesh in place.
+
+        This method is how each mesh type controls whether (and how) it
+        can be modified: the base implementation supports **2D simplex
+        (triangle) meshes**, where it drives the Huang–Kamenski
+        variational MMPDE mover (non-folding by construction,
+        parallel-safe; scalar metric → isotropic equidistribution,
+        tensor metric → anisotropic clustering and alignment).
+        Quadrilateral / hexahedral meshes, 3D meshes and constrained
+        manifolds raise ``NotImplementedError`` — no mover is
+        implemented for them yet.
+
+        Parameters
+        ----------
+        metric : sympy expression, MeshVariable, or sympy Matrix
+            Target density :math:`\rho(x)` (scalar, larger ⇒ finer
+            cells) or a full :math:`d \times d` SPD metric tensor
+            (anisotropic: small across a feature, base along it).
+        verbose : bool, default False
+            Print mover progress.
+        **kwargs
+            Forwarded to
+            :func:`underworld3.meshing.smooth_mesh_interior` — e.g.
+            ``pinned_labels``, ``slip_surfaces``, ``skip_threshold``,
+            ``method_kwargs`` (the mover tunables).
+
+        Examples
+        --------
+        >>> x, y = mesh.CoordinateSystem.X
+        >>> rho = 1 + 8 * sympy.exp(-(((x - 0.5)**2 + (y - 0.5)**2) / 0.05))
+        >>> mesh.redistribute_nodes(rho)
+
+        See Also
+        --------
+        underworld3.meshing.node_redistribution : The free-function
+            spelling of this operation.
+        underworld3.meshing.follow_metric : Two-knob adapter that
+            builds the metric from a field gradient.
+        adapt : Add resolution (topology change, returns a child mesh).
+        """
+        if self.dim != self.cdim:
+            raise NotImplementedError(
+                "node redistribution is not implemented for constrained-"
+                f"manifold meshes (mesh.dim={self.dim} != mesh.cdim="
+                f"{self.cdim}): every node would have to be constrained "
+                "to the surface. Implemented today: 2D simplex (triangle) "
+                "meshes, via the MMPDE mover.")
+        if not bool(self.dm.isSimplex()) or self.cdim != 2:
+            kind = "simplex" if bool(self.dm.isSimplex()) else "tensor-product (quad/hex)"
+            raise NotImplementedError(
+                f"node redistribution is not implemented for {self.cdim}D "
+                f"{kind} meshes. Implemented today: 2D simplex (triangle) "
+                "meshes, via the MMPDE mover (its 3D / quad discretization "
+                "does not exist yet). To add resolution instead, use "
+                "mesh.adapt(metric_field, max_levels=...) — a topology "
+                "change.")
+        from underworld3.meshing.smoothing import smooth_mesh_interior
+        smooth_mesh_interior(self, metric=metric, method="mmpde",
+                             verbose=verbose, **kwargs)
+
     def adapt(self, metric_field, max_levels=None, node_budget=None,
               builder=None, adapter=None, engine=None, verbose=False):
         r"""
@@ -6099,26 +6170,34 @@ class Mesh(Stateful, uw_object):
         base finest, so successive adapts are non-cumulative (cf. :meth:`remesh`,
         which regenerates the mesh in place via MMG and may redistribute).
 
-        Two refinement **engines** (``engine=``):
+        The default call needs no engine choice —
+        ``mesh.adapt(metric, max_levels=...)`` refines with the graded
+        newest-vertex-bisection engine. This is **2D (triangle meshes) only**
+        for now: an engine-less 3D call raises ``NotImplementedError`` (3D
+        refinement is planned work; ``engine="sbr"`` opts a 3D mesh into the
+        simple isotropic engine explicitly). ``engine=`` remains available
+        as an **advanced / internal selector** (the algorithm names live
+        here, not in the everyday call):
 
-        * ``"sbr"`` (default) — PETSc skeleton-based (longest-edge) bisection. Each
+        * ``"nvb"`` (default) — newest-vertex bisection, a **graded** engine with a
+          *bounded* conforming closure: a marked cell adds O(1) cells locally, so
+          successive levels grade (a level+1 ring around a finer core) and DOFs
+          concentrate near the feature. Runs **in parallel** via the native
+          ``uwnvb`` ``DMPlexTransform`` (in-place, co-partitioned with the parent,
+          bit-confluent serial↔parallel); when that compiled extension is absent it
+          falls back to the serial ``NVBMesh`` cell-list engine
+          (``NotImplementedError`` at np>1). Bisects 1→2, so one
+          isotropic-equivalent ``max_levels`` is run as **two** NVB passes.
+        * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection. Each
           pass refines marked cells isotropically (1→4). Its conforming closure is
           *unbounded for region marking*, so it produces a **uniform-finest patch**,
           not a graded mesh (a marked cell drains the longest-edge path to the patch
           edge). Robust and fine for the MG hierarchy.
-        * ``"nvb"`` — newest-vertex bisection, a **graded** engine with a *bounded*
-          conforming closure: a marked cell adds O(1) cells locally, so successive
-          levels grade (a level+1 ring around a finer core) and DOFs concentrate near
-          the feature. Runs **in parallel** via the native ``uwnvb`` ``DMPlexTransform``
-          (in-place, co-partitioned with the parent, bit-confluent serial↔parallel);
-          when that compiled extension is absent it falls back to the serial
-          ``NVBMesh`` cell-list engine (``NotImplementedError`` at np>1). Bisects 1→2,
-          so one isotropic-equivalent ``max_levels`` is run as **two** NVB passes.
 
-        The child owns a custom-P geometric-MG hierarchy with **one level per SBR
-        refinement step** — ``[base L0 … base finest, SBR-1, …, SBR-n(child)]`` —
+        The child owns a custom-P geometric-MG hierarchy with **one level per
+        refinement step** — ``[base L0 … base finest, refine-1, …, refine-n]`` —
         so every solver built on it drives geometric multigrid on the refined
-        operator with no per-solver setup. (Each ``max_levels`` SBR pass adds its
+        operator with no per-solver setup. (Each ``max_levels`` pass adds its
         own MG level; the transfers between consecutive levels each span a single
         refinement.)
 
@@ -6142,8 +6221,8 @@ class Mesh(Stateful, uw_object):
             to a clean, uniform-width band instead of a P1-aliased *patchy* one.
             Same interface as :meth:`remesh` / ``adaptivity.create_metric``.
         max_levels : int, default 2
-            Maximum SBR depth applied on top of the base finest (bounds the
-            on-rank imbalance). Each level re-marks against the metric.
+            Maximum refinement depth applied on top of the base finest (bounds
+            the on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
             Optional cap on the number of *seed* cells marked per level (highest-
             metric first). **Caveat:** this caps the marked seeds, *not* the
@@ -6162,10 +6241,12 @@ class Mesh(Stateful, uw_object):
             ``"sbr"`` (default) is the nested adapt-on-top path (the refinement
             engine is then chosen by ``engine``). ``"mmg"`` is a **deprecated shim**
             that forwards to :meth:`remesh` (in-place, returns ``self``).
-        engine : {"sbr", "nvb"}
-            The nested refinement engine (ignored when ``adapter="mmg"``). ``"sbr"``
-            (default) is longest-edge bisection (uniform patch); ``"nvb"`` is
-            newest-vertex bisection (graded, serial only). See above.
+        engine : {"nvb", "sbr"}, optional
+            Advanced selector for the nested refinement engine (ignored when
+            ``adapter="mmg"``). Default ``"nvb"`` — graded newest-vertex
+            bisection; ``"sbr"`` is longest-edge bisection (uniform patch,
+            still the right choice when a uniform-finest MG patch is wanted).
+            See above.
         verbose : bool
 
         Returns
@@ -6216,7 +6297,20 @@ class Mesh(Stateful, uw_object):
         if adapter is None:
             adapter = "sbr"
         if engine is None:
-            engine = "sbr"
+            # NVB is the default refinement engine (2026-07 naming ruling):
+            # graded, bounded conforming closure, parallel via the native
+            # uwnvb transform. NVB is 2D (triangles) only, and the maintainer
+            # ruled (2026-07-17) that an engine-less 3D adapt must say so
+            # honestly rather than silently selecting a different algorithm —
+            # 3D refinement is committed future work (the MMPDE+NVB capstone).
+            if self.cdim != 2:
+                raise NotImplementedError(
+                    "Default adaptive mesh refinement is 2D (triangle meshes) "
+                    "only in this release: the NVB refinement engine has no 3D "
+                    "(tetrahedral) implementation yet — 3D refinement is "
+                    "planned work. To use the simple isotropic SBR engine on "
+                    "a 3D mesh explicitly, call mesh.adapt(..., engine='sbr').")
+            engine = "nvb"
 
         if adapter == "mmg":
             warnings.warn(
@@ -6237,7 +6331,7 @@ class Mesh(Stateful, uw_object):
         )
 
     def _adapt_nested(self, metric_field, max_levels=2, node_budget=None,
-                      builder="barycentric", engine="sbr", verbose=False):
+                      builder="barycentric", engine="nvb", verbose=False):
         """Core nested adapt-on-top (SBR or NVB engine). See :meth:`adapt`."""
         import math
         from underworld3.utilities import custom_mg

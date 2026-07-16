@@ -1,6 +1,6 @@
 ---
 name: adapt-on-top-faults
-description: Recipe for Underworld3 FAULT models on an NVB adapt-on-top mesh — resolve a fault Surface by LOCAL refinement (mesh.adapt(engine="nvb") returns a child), drive it from the fault's EXACT signed distance, use rotated strong free-slip (composes with transverse-isotropy where Nitsche does not), recover dynamic topography from the constraint reaction, and run advection-diffusion on the adapted mesh with field transfer across re-adaptation. Reach for THIS for instantaneous/coupled fault-flow problems. For MMPDE node-movement convection use the `adaptive-meshing` skill instead; for rendering use `uw-visualisation`.
+description: Recipe for Underworld3 FAULT models on an NVB adapt-on-top mesh — resolve a fault Surface by LOCAL refinement (mesh.adapt(metric, max_levels=...) returns a child; NVB is the 2D default engine), drive it from the fault's EXACT signed distance, use rotated strong free-slip (composes with transverse-isotropy where Nitsche does not), recover dynamic topography from the constraint reaction, and run advection-diffusion on the adapted mesh with field transfer across re-adaptation. Reach for THIS for instantaneous/coupled fault-flow problems. For MMPDE node-movement convection use the `adaptive-meshing` skill instead; for rendering use `uw-visualisation`.
 ---
 
 # adapt-on-top-faults
@@ -9,7 +9,7 @@ The validated recipe for **fault problems on a locally-refined (adapt-on-top) me
 Distilled from the annulus fault study (2026-07, `feature/adapt-on-top`).
 
 **This is the REFINEMENT paradigm**, not the mover one:
-- `mesh.adapt(metric, engine="nvb")` bisects the base finest **locally** and returns
+- `mesh.adapt(metric, max_levels=...)` bisects the base finest **locally** and returns
   a **new child mesh** (`child.parent is mesh`). It is *adapt / re-adapt*, NOT node
   movement — non-cumulative (each call re-marks from the static base). The child owns
   a custom-P geometric-MG (FMG) tail so solvers on it get multigrid for free.
@@ -43,11 +43,12 @@ fault.discretize()
 # so it resolves itself at the new resolution (no P1-field aliasing).
 metric = fault.refinement_metric_function(h_near=0.02, h_far=0.08, width=0.05,
                                           profile="linear")
-child = base.adapt(metric, max_levels=3, engine="nvb")       # -> graded child mesh
+child = base.adapt(metric, max_levels=3)     # -> graded child (NVB is the 2D default)
 ```
 
-- `engine="nvb"` = graded newest-vertex bisection (bounded closure, parallel via the
-  native `uwnvb` transform; bit-confluent serial↔parallel). `engine="sbr"` = uniform
+- NVB (the 2D default engine) = graded newest-vertex bisection (bounded closure,
+  parallel via the native `uwnvb` transform; bit-confluent serial↔parallel);
+  `engine=` is the advanced selector. `engine="sbr"` = uniform
   patch (the default; not graded). NVB is 2D only for now.
 - `max_levels` is the isotropic-equivalent depth (NVB runs `2*max_levels` bisection
   passes). The metric shape decides the grading; `max_levels` just caps it.
@@ -176,7 +177,7 @@ static base, carry any field by interpolation:
 for step in range(N):
     fault_pts = move(fault_pts, step)                    # kinematics
     fault = uw.meshing.Surface(f"fault{step}", base, fault_pts, symbol="F"); fault.discretize()
-    child = base.adapt(fault.refinement_metric_function(...), max_levels=3, engine="nvb")
+    child = base.adapt(fault.refinement_metric_function(...), max_levels=3)
     # verify: folded=0 (all cell |vol|>0), base unchanged (non-cumulative)
     # carry a field child_{k-1} -> child_k by interpolation:
     T = uw.discretisation.MeshVariable(f"T{step}", child, 1, degree=1)

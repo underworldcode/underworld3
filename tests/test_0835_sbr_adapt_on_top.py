@@ -1,4 +1,8 @@
-"""Layer-2 SBR adapt-on-top: mesh.adapt(adapter='sbr') returns a refined CHILD.
+"""Layer-2 SBR adapt-on-top: mesh.adapt(..., engine="sbr") returns a refined CHILD.
+
+(engine="sbr" is pinned explicitly throughout: since 2026-07 the engine-less
+call defaults to the graded NVB engine on 2D meshes; this file locks the SBR
+engine's own contract.)
 
 The new nested adapter (no MMG, on-rank, no redistribute) refines the static base
 finest where a metric demands resolution and returns a child mesh that owns a
@@ -64,7 +68,7 @@ def _poisson(mesh):
 def test_adapt_returns_refinement_child():
     base = _base()
     n0 = _ncell(base)
-    child = base.adapt(_metric(base, 0.7), max_levels=1)
+    child = base.adapt(_metric(base, 0.7), max_levels=1, engine="sbr")
 
     assert child is not base
     assert child.parent is base
@@ -76,7 +80,7 @@ def test_adapt_returns_refinement_child():
 
 def test_child_solver_auto_picks_up_custom_mg():
     base = _base()
-    child = base.adapt(_metric(base, 0.7), max_levels=1)
+    child = base.adapt(_metric(base, 0.7), max_levels=1, engine="sbr")
 
     s = _poisson(child)
     s.solve()                                   # NO set_custom_fmg
@@ -93,7 +97,7 @@ def test_child_solver_auto_picks_up_custom_mg():
 
 def test_copy_into_prolongate_and_restrict():
     base = _base()
-    child = base.adapt(_metric(base, 0.7), max_levels=1)
+    child = base.adapt(_metric(base, 0.7), max_levels=1, engine="sbr")
     fn = sympy.sin(2 * sympy.pi * base.N.x) * sympy.cos(sympy.pi * base.N.y)
 
     Tb = uw.discretisation.MeshVariable("Tb", base, 1, degree=2)
@@ -115,9 +119,9 @@ def test_copy_into_prolongate_and_restrict():
 def test_readapt_is_non_cumulative():
     base = _base()
     n0 = _ncell(base)
-    c1 = base.adapt(_metric(base, 0.7), max_levels=1)
+    c1 = base.adapt(_metric(base, 0.7), max_levels=1, engine="sbr")
     n1 = _ncell(c1)
-    c2 = base.adapt(_metric(base, 0.35), max_levels=1)
+    c2 = base.adapt(_metric(base, 0.35), max_levels=1, engine="sbr")
     # each adapt re-marks from the SAME static base finest
     assert _ncell(base) == n0
     assert _ncell(c2) == n1            # symmetric band -> same count, different place
@@ -127,8 +131,8 @@ def test_readapt_is_non_cumulative():
 def test_node_budget_localises_refinement():
     base = _base()
     sharp = _metric(base, 0.7, width=0.06)
-    full = base.adapt(sharp, max_levels=1)
-    budgeted = base.adapt(sharp, max_levels=1, node_budget=40)
+    full = base.adapt(sharp, max_levels=1, engine="sbr")
+    budgeted = base.adapt(sharp, max_levels=1, node_budget=40, engine="sbr")
     assert _ncell(budgeted) < _ncell(full)
 
 
@@ -159,7 +163,7 @@ def test_stokes_velocity_block_auto_picks_up_fmg():
     M = uw.discretisation.MeshVariable("Mjump", base, 1, degree=1)
     band = sympy.exp(-(((base.N.x - 0.5) / 0.08) ** 2))
     M.data[:, 0] = _ev(1.0 / (0.07 + (1.0 / 80 - 0.07) * band) ** 2, M.coords)
-    child = base.adapt(M, max_levels=1)
+    child = base.adapt(M, max_levels=1, engine="sbr")
     assert _ncell(child) < n_uniform      # local, not a uniform refine
 
     def _solcx(mesh):
@@ -206,12 +210,12 @@ def test_each_sbr_level_is_its_own_mg_level():
     n_base = len(base.dm_hierarchy)
     sharp = _metric(base, 0.5, h_fine=1.0 / 150, width=0.06)
     for ml, want_levels in [(1, n_base + 1), (2, n_base + 2)]:
-        child = base.adapt(sharp, max_levels=ml)
+        child = base.adapt(sharp, max_levels=ml, engine="sbr")
         # coarse tail + the child itself
         assert len(child._custom_mg_coarse_meshes) + 1 == want_levels
 
     # a Poisson solve on a 2-level child must actually drive all n_base+2 levels
-    child2 = base.adapt(sharp, max_levels=2)
+    child2 = base.adapt(sharp, max_levels=2, engine="sbr")
     s = _poisson(child2)
     s.solve()
     assert s.snes.getKSP().getPC().getType() == "mg"
@@ -237,8 +241,8 @@ def test_wedge_metric_funnels_finest_level_to_feature():
     gauss = fault.refinement_metric(h_near=0.0625 / 8, h_far=0.07, width=0.05,
                                     profile="gaussian", name="gauss_m")
 
-    cw = base.adapt(wedge, max_levels=3)
-    cg = base.adapt(gauss, max_levels=3)
+    cw = base.adapt(wedge, max_levels=3, engine="sbr")
+    cg = base.adapt(gauss, max_levels=3, engine="sbr")
     # per-level marked counts are stashed for checkpoint-by-marker
     nw = [len(m) for m in cw._adapt_markers]
     ng = [len(m) for m in cg._adapt_markers]
@@ -260,4 +264,4 @@ def test_adapt_requires_base_hierarchy():
     H = uw.discretisation.MeshVariable("Hflat", flat, 1, degree=1)
     H.data[:, 0] = 1.0 / 0.02**2
     with pytest.raises(RuntimeError):
-        flat.adapt(H, max_levels=1)
+        flat.adapt(H, max_levels=1, engine="sbr")

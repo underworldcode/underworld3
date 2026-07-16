@@ -101,6 +101,7 @@ from .api import (
     smooth_mesh_interior,
     _smooth_mesh_interior_bare,
     follow_metric,
+    node_redistribution,
     _RETIRED_MOVER_MESSAGE,
 )
 

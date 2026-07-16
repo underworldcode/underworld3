@@ -58,6 +58,7 @@ from .faults import (
 from .smoothing import (
     smooth_mesh_interior,
     smooth_surface_field,
+    node_redistribution,
     metric_density_from_gradient,
     mesh_metric_mismatch,
     follow_metric,
@@ -108,9 +109,10 @@ __all__ = [
     # Backward compatibility aliases
     "FaultSurface",
     "FaultCollection",
-    # Mesh smoothing
+    # Mesh smoothing / node redistribution
     "smooth_mesh_interior",
     "smooth_surface_field",
+    "node_redistribution",
     "metric_density_from_gradient",
     "mesh_metric_mismatch",
     "follow_metric",

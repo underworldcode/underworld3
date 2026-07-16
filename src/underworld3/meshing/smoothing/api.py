@@ -37,12 +37,13 @@ _RETIRED_METHODS = {
 _RETIRED_MOVER_MESSAGE = (
     "the spring-equilibrium, Monge-Ampère, OT-step and anisotropic-Winslow "
     "interior movers were retired 2026-07, superseded by the variational "
-    "MMPDE mover. Use smooth_mesh_interior(mesh, metric=..., "
-    "method='mmpde') — a scalar metric gives the same isotropic "
-    "equidistributed grading, a tensor metric adds genuine anisotropic "
-    "clustering — or uw.meshing.follow_metric(...) for the two-knob "
-    "refinement/coarsening form. For more resolution than a fixed node "
-    "budget can grade, change topology with mesh.adapt(...) instead.")
+    "MMPDE mover. Use uw.meshing.node_redistribution(mesh, metric) (or "
+    "mesh.redistribute_nodes(metric)) — a scalar metric gives the same "
+    "isotropic equidistributed grading, a tensor metric adds genuine "
+    "anisotropic clustering — or uw.meshing.follow_metric(...) for the "
+    "two-knob refinement/coarsening form. For more resolution than a "
+    "fixed node budget can grade, change topology with mesh.adapt(...) "
+    "instead.")
 
 
 # Cached adjacency keyed by (mesh-id, pinned-label-tuple, topology).
@@ -66,6 +67,12 @@ def smooth_mesh_interior(
 ):
     r"""Smooth a mesh's interior vertices, optionally toward a
     spatially-varying target spacing.
+
+    This is the underlying machinery; for metric-driven node
+    redistribution the purposeful user entry point is
+    :func:`node_redistribution` (equivalently
+    ``mesh.redistribute_nodes``), which dispatches here on supported
+    mesh types.
 
     **Default (``metric=None``)** — graph-Laplacian Jacobi: each
     interior vertex is blended toward the plain mean of its edge
@@ -812,3 +819,49 @@ def follow_metric(
 
     remesh_with_field_transfer(mesh, _do_move, verbose=verbose)
     return _state["moved"]
+
+
+def node_redistribution(mesh, metric, *, verbose=False, **kwargs):
+    r"""Move a mesh's nodes so cell sizes follow ``metric`` (fixed
+    topology).
+
+    The purposeful, user-facing spelling of node **redistribution**:
+    the existing node budget is concentrated where the metric demands
+    resolution, with vertex count, DOF layout and the parallel
+    partition preserved. This is a thin dispatch to
+    ``mesh.redistribute_nodes(metric, ...)`` — the mesh type controls
+    whether (and how) it can be modified. The base implementation
+    supports 2D simplex (triangle) meshes via the Huang–Kamenski
+    variational MMPDE mover; unsupported mesh types (quad/hex, 3D,
+    manifolds) raise ``NotImplementedError`` stating what exists.
+
+    Parameters
+    ----------
+    mesh : underworld3.discretisation.Mesh
+        The mesh to modify in place.
+    metric : sympy expression, MeshVariable, or sympy Matrix
+        Target density :math:`\rho(x)` (scalar, larger ⇒ finer cells)
+        or a full :math:`d \times d` SPD metric tensor.
+    verbose : bool, default False
+        Print mover progress.
+    **kwargs
+        Forwarded to the mesh's redistribution machinery
+        (:func:`smooth_mesh_interior`) — e.g. ``pinned_labels``,
+        ``slip_surfaces``, ``skip_threshold``, ``method_kwargs``.
+
+    Examples
+    --------
+    >>> x, y = mesh.CoordinateSystem.X
+    >>> rho = 1 + 8 * sympy.exp(-(((x - 0.5)**2 + (y - 0.5)**2) / 0.05))
+    >>> uw.meshing.node_redistribution(mesh, rho)
+
+    See Also
+    --------
+    underworld3.discretisation.Mesh.redistribute_nodes : The method
+        this function dispatches to.
+    follow_metric : Two-knob adapter that builds the metric from a
+        field gradient.
+    underworld3.discretisation.Mesh.adapt : Add resolution (topology
+        change, returns a child mesh).
+    """
+    return mesh.redistribute_nodes(metric, verbose=verbose, **kwargs)

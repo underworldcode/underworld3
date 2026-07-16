@@ -30,7 +30,10 @@ don't mix them.
 
 ## Mover quick-start (copy-paste — this is the hard-to-discover bit)
 
-The mesh mover is `uw.meshing.smooth_mesh_interior`. Minimal correct setup to
+The user entry is `uw.meshing.node_redistribution(mesh, metric, ...)` (the
+purposeful spelling; it dispatches to `mesh.redistribute_nodes`, which drives
+the MMPDE mover on 2D simplex meshes — `smooth_mesh_interior` is the
+machinery underneath and takes the same kwargs). Minimal correct setup to
 adapt a mesh to a field `T` each step:
 
 ```python
@@ -41,10 +44,11 @@ import underworld3 as uw
 rho = uw.meshing.metric_density_from_gradient(
     mesh, T, refinement=5, coarsening="auto", metric_choice="front-following")
 
-# move the mesh — mmpde: variational, non-folding, clusters AND aligns cells.
-# It OWNS field transfer (remaps T + SLCN history, fires on_remesh hooks).
-uw.meshing.smooth_mesh_interior(
-    mesh, metric=rho, method="mmpde",
+# move the mesh — the mover (Huang-Kamenski MMPDE) is variational,
+# non-folding, clusters AND aligns cells. It OWNS field transfer
+# (remaps T + SLCN history, fires on_remesh hooks).
+uw.meshing.node_redistribution(
+    mesh, rho,
     method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0),  # mmpde's OWN kwargs
     slip_surfaces=True,        # boundary nodes slide tangentially (parallel-safe)
     skip_threshold=0.9)        # skip the move when the mesh is already aligned
@@ -59,7 +63,7 @@ n = sympy.Matrix([nx, ny])                       # constant fault-normal unit ve
 d = dfac.sym[0]                                  # DIRECT unsigned distance field (P1)
 M = rho * sympy.eye(2) + (Rf**2 - 1.0) * sympy.exp(-(d/w)**2) * (n * n.T)
 # mesh built with: uw.meshing.Annulus(..., refine_lines=[xy], refine_size_min=smin)
-uw.meshing.smooth_mesh_interior(mesh, metric=M, method="mmpde",
+uw.meshing.node_redistribution(mesh, M,
     method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0),
     slip_surfaces=True, skip_threshold=None)     # tensor metric: do the skip check yourself
 ```
