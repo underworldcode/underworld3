@@ -236,6 +236,13 @@ def test_swarm_save_and_load(tmp_path):
     new_swarm = uw.swarm.Swarm(mesh)
     new_swarm.read_timestep("test", "swarm", 0, outputPath=tmp_path)
 
+    # Restore must reproduce the checkpoint exactly once — the parallel
+    # np-fold duplication regression (issue #324) is covered at np2/np4 by
+    # tests/parallel/test_0757_swarm_read_timestep_mpi.py.
+    saved_count = uw.mpi.comm.allreduce(max(swarm.dm.getLocalSize(), 0))
+    restored_count = uw.mpi.comm.allreduce(max(new_swarm.dm.getLocalSize(), 0))
+    assert restored_count == saved_count
+
 
 def test_swarmvariable_save_and_load(tmp_path):
     import underworld3 as uw
@@ -258,3 +265,20 @@ def test_swarmvariable_save_and_load(tmp_path):
     var2.read_timestep("test", "swarm", "X", 0, outputPath=tmp_path)
 
     assert np.allclose(var.array, var2.array)
+
+
+@pytest.mark.tier_a
+def test_write_timestep_missing_directory_raises(tmp_path):
+    """write_timestep fails loudly when the output directory is absent.
+
+    Regression for D-41/READ-83: the existence / write-access checks were
+    written as inverted no-op guards (`if ok: pass else: raise`); the
+    rewrite must still raise RuntimeError with the offending absolute path.
+    """
+    import underworld3 as uw
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    missing_dir = tmp_path / "does_not_exist"
+
+    with pytest.raises(RuntimeError, match="does not exist"):
+        mesh.write_timestep("chk", index=0, outputPath=str(missing_dir / "run"))

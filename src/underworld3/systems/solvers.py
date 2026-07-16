@@ -73,82 +73,242 @@ from underworld3.utilities._api_tools import (
 
 from underworld3.function import expression as public_expression
 
-expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
+
+def expression(*args, **kwargs):
+    """UWexpression factory with per-instance unique symbol names.
+
+    Solver residual templates re-create expressions carrying the same LaTeX
+    symbol every time they are rebuilt; unique name generation keeps each
+    instance distinct so symbols from different solvers/meshes cannot collide
+    (see docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md).
+    """
+    return public_expression(*args, _unique_name_generation=True, **kwargs)
 
 
 def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
     """
-    Helper function to apply unit-aware scaling to timestep estimates.
+    Convert a nondimensional timestep estimate to physical time units.
 
-    Detects the units of the velocity field and applies appropriate time scaling
-    to convert nondimensional timestep to physical time units.
+    Multiplies by the model's fundamental time scale when one is configured;
+    otherwise the nondimensional value is returned unchanged.
 
     Parameters
     ----------
     dt_nondimensional : float or np.ndarray
-        The nondimensional timestep estimate
-    field : MeshVariable or SymPy expression (often a Matrix)
-        The velocity field - units are detected from this
-    mesh : Mesh
-        The mesh (may have reference to model with time scales)
+        The nondimensional timestep estimate.
+    field, mesh : unused
+        Retained for call-site stability: the estimate_dt implementation in
+        ``cython/petsc_generic_snes_solvers.pyx`` calls this helper with
+        ``(dt_nd, self.u, self.mesh)``. (An earlier version inspected the
+        field's units before scaling, but both branches multiplied by the
+        same ``fundamental_scales['time']``, so the inspection changed
+        nothing and was removed.)
 
     Returns
     -------
     float or UWQuantity
-        Timestep with physical time units if detectable, otherwise nondimensional
+        Timestep with physical time units if a time scale is configured,
+        otherwise the nondimensional input.
     """
     try:
         from ..function.quantities import UWQuantity
-        from ..units import get_units
-        import sympy
 
-        # Extract a component from field if it's a Matrix (common for velocity)
-        field_to_check = field
-        if isinstance(field, sympy.MatrixBase):
-            # Extract first component: V_fn[0] or V_fn[0,0]
-            if field.shape[0] > 0:
-                field_to_check = field[0] if len(field.shape) == 1 else field[0, 0]
-
-        # Try to get units from the field expression
-        field_units = get_units(field_to_check)
-
-        if field_units is not None:
-            # Field has units - verify it has time dimension (as expected for velocity)
-            # Get dimensionality: e.g., {'[length]': 1, '[time]': -1} for velocity
-            field_dimensionality = field_units.dimensionality
-
-            # Check if this has time dimension (velocity should have time^-1)
-            if '[time]' in field_dimensionality:
-                # Velocity field has time dimension - use model time scale for result
-                # Don't try to match the velocity's specific time units (fragile string parsing)
-                # Instead, always return in model's fundamental time scale and let user convert
-                model = uw.get_default_model()
-                if model and hasattr(model, "fundamental_scales"):
-                    model_time_scale = model.fundamental_scales.get("time")
-                    if model_time_scale is not None:
-                        # Apply scaling: dt_physical = dt_nd * time_scale
-                        dt_physical = dt_nondimensional * model_time_scale
-
-                        # Return as UWQuantity
-                        if not isinstance(dt_physical, UWQuantity):
-                            dt_physical = UWQuantity._from_pint(dt_physical)
-                        return dt_physical
-
-        # Fallback: check if model has time scales (old behavior)
-        model = uw.get_default_model()
-        if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
-            time_scale = model.fundamental_scales.get("time")
+        orchestration_model = uw.get_default_model()
+        if (
+            orchestration_model
+            and hasattr(orchestration_model, "fundamental_scales")
+            and orchestration_model.fundamental_scales
+        ):
+            time_scale = orchestration_model.fundamental_scales.get("time")
             if time_scale is not None:
                 dt_physical = dt_nondimensional * time_scale
                 if not isinstance(dt_physical, UWQuantity):
                     dt_physical = UWQuantity._from_pint(dt_physical)
                 return dt_physical
-
-    except Exception as e:
-        # Silently fall back to nondimensional
+    except Exception:
+        # Sanctioned swallow: units machinery unavailable or misconfigured
+        # (no default model, Pint conversion failure) — a timestep estimate
+        # must always come back, so fall back to the nondimensional value.
         pass
 
     return dt_nondimensional
+
+
+def _nondimensionalise_timestep(value):
+    """Convert a dimensional (time-valued) timestep to its nondimensional value.
+
+    Parameters
+    ----------
+    value : float, sympy expression, Pint Quantity, or UWQuantity
+        Timestep. A Pint/UWQuantity with time dimensionality is divided by
+        the model's fundamental time scale; any other input is returned
+        unchanged (assumed already nondimensional).
+
+    Returns
+    -------
+    float or the original object
+        The nondimensional magnitude when the conversion applies, otherwise
+        ``value`` unchanged.
+    """
+    if not hasattr(value, "dimensionality"):
+        return value
+    try:
+        from ..scaling import units as ureg
+
+        if value.dimensionality != ureg.second.dimensionality:
+            return value
+        orchestration_model = uw.get_default_model()
+        if not (
+            orchestration_model
+            and hasattr(orchestration_model, "fundamental_scales")
+            and orchestration_model.fundamental_scales
+        ):
+            return value
+        time_scale = orchestration_model.fundamental_scales.get("time")
+        if time_scale is None:
+            return value
+
+        # Physical time / time scale = nondimensional time.
+        # Must use to_reduced_units() to convert both quantities to the same
+        # base units before extracting the magnitude. Otherwise Pint keeps
+        # different unit bases (megayear/second) and .magnitude returns the
+        # unconverted number!
+        result = value / time_scale
+        if hasattr(result, "_pint_qty"):
+            # UWQuantity - reduce via the internal Pint quantity
+            pint_result = result._pint_qty.to_reduced_units()
+        elif hasattr(result, "to_reduced_units"):
+            # Raw Pint Quantity
+            pint_result = result.to_reduced_units()
+        else:
+            pint_result = result
+
+        if hasattr(pint_result, "magnitude"):
+            return float(pint_result.magnitude)
+        return float(pint_result)
+    except Exception:
+        # Sanctioned swallow: units machinery unavailable or misconfigured —
+        # fall back to using the value as-is (legacy behaviour of the
+        # delta_t setters this was extracted from).
+        return value
+
+
+def _global_max_diffusivity(constitutive_K, mesh):
+    r"""Global (all-rank) maximum of the diffusivity over the mesh.
+
+    Shared by the transient solvers' ``estimate_dt``: the diffusive CFL
+    limit needs one representative :math:`\kappa_{\max}` for
+    :math:`\delta t = h^2 / \kappa_{\max}`.
+
+    Parameters
+    ----------
+    constitutive_K : sympy expression, UWexpression, or number
+        The constitutive model's ``.K`` (diffusivity, or kinematic
+        viscosity for Navier-Stokes).
+    mesh : Mesh
+        Supplies the sampling points (cell centroids) and the coordinate
+        basis.
+
+    Returns
+    -------
+    float
+        Nondimensional global maximum (MPI allreduce MAX across ranks).
+    """
+    from mpi4py import MPI
+
+    K = constitutive_K
+    if isinstance(K, sympy.Expr) or hasattr(K, "sym"):
+        K_sym = K.sym if hasattr(K, "sym") else K
+        if uw.function.fn_is_constant_expr(K_sym):
+            diffusivity = uw.function.evaluate(
+                K_sym, np.zeros((1, mesh.dim)))
+        else:
+            # Spatially varying: sample at cell centroids, take the max.
+            diffusivity = uw.function.evaluate(
+                sympy.sympify(K_sym), mesh._centroids, mesh.N)
+            diffusivity = diffusivity.max()
+    else:
+        diffusivity = K
+
+    # If unit-aware (UnitAwareArray), nondimensionalise so the value is
+    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # physical-units number, which would be wrong here.
+    if hasattr(diffusivity, "units") and diffusivity.units is not None:
+        diffusivity = uw.non_dimensionalise(diffusivity)
+    elif hasattr(diffusivity, "magnitude"):
+        # Plain UWQuantity without units context - use magnitude
+        diffusivity = diffusivity.magnitude
+
+    local_max = float(np.asarray(diffusivity).max())
+    return uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
+
+
+def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
+    """Nondimensional velocities sampled at element centroids.
+
+    Shared by the ``estimate_dt`` implementations: the advective CFL limit
+    needs per-element centroid velocities in the same (nondimensional)
+    scale as ``mesh._radii``.
+
+    Parameters
+    ----------
+    V_fn : sympy Matrix expression
+        Velocity function to sample.
+    mesh : Mesh
+        Supplies the centroid sample points.
+    basis : optional
+        Coordinate basis forwarded to ``uw.function.evaluate`` (the
+        Navier-Stokes caller passes ``mesh.N``; the others use the default).
+    ensure_2d : bool, default True
+        Squeeze evaluate's singleton axes ((N, 1, dim) -> (N, dim)) and
+        re-expand a single-element result to 2-D. The Navier-Stokes caller
+        historically skips this and reduces the raw array.
+
+    Returns
+    -------
+    numpy.ndarray
+        Velocity samples, shape ``(N, dim)`` when ``ensure_2d``.
+    """
+    if basis is not None:
+        vel = uw.function.evaluate(V_fn, mesh._centroids, basis)
+    else:
+        vel = uw.function.evaluate(V_fn, mesh._centroids)
+
+    # If unit-aware (UnitAwareArray), nondimensionalise so the values are
+    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # physical-units numbers, which would be wrong here.
+    if hasattr(vel, "units") and vel.units is not None:
+        vel = uw.non_dimensionalise(vel)
+    elif hasattr(vel, "magnitude"):
+        # Plain UWQuantity without units context - use magnitude
+        vel = vel.magnitude
+
+    vel = np.asarray(vel)
+    if ensure_2d:
+        # Squeeze singleton axes from evaluate ((N,1,dim) -> (N,dim)) and
+        # handle the single-element edge case (ensure 2D).
+        vel = np.squeeze(vel)
+        if vel.ndim == 1:
+            vel = vel.reshape(1, -1)
+    return vel
+
+
+def _invalidate_solution_cache(u):
+    """Drop the cached data view of a just-solved variable.
+
+    PETSc may replace the underlying vector buffers during a solve, so the
+    lazily-built ``.data`` / ``.array`` view on the unknown must be rebuilt
+    on next access. Handles both EnhancedMeshVariable (the base variable
+    sits behind ``_base_var``) and a bare ``_MeshVariable``.
+
+    Parameters
+    ----------
+    u : MeshVariable
+        The solver unknown whose cached view is invalidated.
+    """
+    target_var = getattr(u, "_base_var", u)
+    if hasattr(target_var, "_canonical_data"):
+        target_var._canonical_data = None
 
 
 from .ddt import SemiLagrangian as SemiLagrangian_DDt
@@ -157,7 +317,29 @@ from .ddt import Eulerian as Eulerian_DDt
 from .ddt import Symbolic as Symbolic_DDt
 
 
-class SNES_Poisson(SNES_Scalar):
+class _ConstitutiveModelStateMixin:
+    """Single definition of the constitutive-model readiness flag.
+
+    The solver base classes live in ``cython/petsc_generic_snes_solvers.pyx``,
+    so the shared property is provided here as a mixin (previously defined
+    verbatim on both SNES_Poisson and SNES_Stokes).
+    """
+
+    @property
+    def constitutive_model_is_setup(self):
+        """Whether the constitutive model is configured for this solver.
+
+        Returns False when no constitutive model has been assigned yet.
+        """
+        constitutive_model = getattr(self, "_constitutive_model", None)
+        return (constitutive_model is not None
+                and constitutive_model._solver_is_setup)
+
+    # Legacy abbreviated alias, kept for existing user code.
+    CM_is_setup = constitutive_model_is_setup
+
+
+class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
     r"""Poisson equation solver.
 
     Provides a discrete representation of the Poisson equation:
@@ -175,14 +357,23 @@ class SNES_Poisson(SNES_Scalar):
         The computational mesh.
     u_Field : MeshVariable, optional
         Pre-existing mesh variable for the solution. If None, one is created.
-    verbose : bool, optional
-        Enable verbose output during solve.
     degree : int, optional
         Polynomial degree for the solution field (default: 2).
+    verbose : bool, optional
+        Enable verbose output during solve.
     DuDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for time-dependent problems.
     DFDt : SemiLagrangian_DDt or Lagrangian_DDt, optional
         Time derivative operator for the flux.
+
+    Notes
+    -----
+    The constructor follows the family-wide parameter order
+    ``(mesh, u_Field, degree, verbose, ...)`` (Style Charter, API
+    conventions); SNES_Poisson historically inverted ``(verbose, degree)``.
+    A legacy positional call is detected by ``type(degree) is bool`` (a
+    polynomial degree is never a bool) and shimmed with one
+    DeprecationWarning.
 
     """
 
@@ -191,12 +382,22 @@ class SNES_Poisson(SNES_Scalar):
         self,
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable = None,
-        verbose=False,
         degree=2,
+        verbose=False,
         DuDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
         DFDt: Union[SemiLagrangian_DDt, Lagrangian_DDt] = None,
     ):
-        ## Keep track
+        if type(degree) is bool:
+            # Legacy positional order (mesh, u_Field, verbose, degree): the
+            # bool in the degree slot is the legacy verbose flag; a legacy
+            # positional degree, if present, landed in the verbose slot.
+            import warnings
+            warnings.warn(
+                "SNES_Poisson(mesh, u_Field, verbose, degree) is deprecated; "
+                "use SNES_Poisson(mesh, u_Field, degree, verbose)",
+                DeprecationWarning, stacklevel=2)
+            degree, verbose = (
+                verbose if type(verbose) is not bool else 2), degree
 
         ## Parent class will set up default values etc
         super().__init__(
@@ -281,8 +482,6 @@ class SNES_Poisson(SNES_Scalar):
             plain_value = float(value.value)
 
             # If ND scaling is active, scale the constant
-            import underworld3 as uw
-
             if uw.is_nondimensional_scaling_active():
                 # The source term should have same dimensionality as the unknown field
                 # Access via self.Unknowns.u (Poisson) or self.Unknowns.DuDt.u (Stokes)
@@ -311,11 +510,9 @@ class SNES_Poisson(SNES_Scalar):
                 # Check if model has reference quantities defined
                 # If yes: enforce units everywhere
                 # If no: allow plain numbers (user is responsible for consistency)
-                import underworld3 as uw
+                orchestration_model = uw.get_default_model()
 
-                model = uw.get_default_model()
-
-                if model.has_units():
+                if orchestration_model.has_units():
                     # Reference quantities defined - enforce units everywhere
                     raise ValueError(
                         f"Units requirement enforced: Model has reference quantities defined.\n"
@@ -331,11 +528,6 @@ class SNES_Poisson(SNES_Scalar):
         else:
             # Accept other types (might be symbolic)
             self._f = sympy.Matrix((value,))
-
-    @property
-    def CM_is_setup(self):
-        """Whether the constitutive model is configured for this solver."""
-        return self._constitutive_model._solver_is_setup
 
 
 class SNES_Darcy(SNES_Scalar):
@@ -731,33 +923,8 @@ class SNES_TransientDarcy(SNES_Darcy):
         float or pint.Quantity
             Diffusive timestep :math:`\delta t = (\Delta x)^2 / K_{\max}`.
         """
-        from mpi4py import MPI
-
-        K = self.constitutive_model.K
-
-        if isinstance(K, sympy.Expr) or hasattr(K, "sym"):
-            K_sym = K.sym if hasattr(K, "sym") else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym, np.zeros((1, self.mesh.dim))
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym), self.mesh._centroids, self.mesh.N
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            diffusivity = diffusivity.magnitude
-
-        diffusivity = float(np.asarray(diffusivity).max())
-
-        comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
         min_dx = self.mesh.get_min_radius()
 
@@ -816,10 +983,7 @@ class SNES_TransientDarcy(SNES_Darcy):
         SNES_Scalar.solve(self, zero_init_guess, _force_setup,
                           divergence_retries=divergence_retries)
 
-        # Invalidate cached data views
-        target_var = getattr(self.u, "_base_var", self.u)
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+        _invalidate_solution_cache(self.u)
 
         # Post-solve: shift history
         self.DuDt.update_post_solve(timestep, verbose=verbose)
@@ -1025,7 +1189,7 @@ class SNES_Richards(SNES_TransientDarcy):
 ## --------------------------------
 
 
-class SNES_Stokes(SNES_Stokes_SaddlePt):
+class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     r"""
     Stokes equation solver for incompressible viscous flow.
 
@@ -1158,6 +1322,10 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         # inexact-Newton tricks like a smooth-Jacobian / sharp-residual
         # split at a VEP yield kink.  See ``set_jacobian_F1_source``.
         self._F1_jacobian_source = None
+
+        # Last-seen constitutive effective_order (VE/VEP DDt history
+        # ramp-up); solve() re-wires the pointwise functions when it changes.
+        self._prev_effective_order = None
 
         return
 
@@ -1310,8 +1478,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
             # Re-setup when effective_order changes (DDt history ramp-up)
             _current_eff_order = self.constitutive_model.effective_order
-            if not hasattr(self, '_prev_effective_order'):
-                self._prev_effective_order = None
             if _current_eff_order != self._prev_effective_order:
                 self._needs_function_rewire = True
                 self.constitutive_model._solver_is_setup = False
@@ -1353,8 +1519,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
             # 3. PROJECT actual stress and SHIFT history
             if uw.mpi.rank == 0 and verbose:
                 print(f"Stokes solver - store stress and shift history", flush=True)
-
-            import numpy as np
 
             _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
 
@@ -1405,6 +1569,7 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
                 zero_init_guess,
                 _force_setup=_force_setup,
                 verbose=verbose,
+                picard=picard,
                 divergence_retries=divergence_retries,
             )
 
@@ -1480,11 +1645,6 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
         self._p_f0 = self.PF0.sym
 
         return
-
-    @property
-    def CM_is_setup(self):
-        """Whether the constitutive model is configured for this solver."""
-        return self._constitutive_model._solver_is_setup
 
     @property
     def strainrate(self):
@@ -1880,27 +2040,8 @@ class SNES_Stokes(SNES_Stokes_SaddlePt):
 
         from mpi4py import MPI
 
-        # Evaluate velocity at element centroids (consistent with AdvDiff)
-        vel = uw.function.evaluate(self.u.sym, self.mesh._centroids)
-
-        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(vel, "units") and vel.units is not None:
-            vel = uw.non_dimensionalise(vel)
-        elif hasattr(vel, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            vel = vel.magnitude
-
-        # Ensure vel is a plain numpy array
-        vel = np.asarray(vel)
-
-        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
-        vel = np.squeeze(vel)
-
-        # Handle edge case of single element (ensure 2D)
-        if vel.ndim == 1:
-            vel = vel.reshape(1, -1)
+        # Velocity at element centroids (consistent with AdvDiff)
+        vel = _centroid_velocities_nd(self.u.sym, self.mesh)
 
         # Get per-element velocity magnitudes
         vel_magnitudes = np.linalg.norm(vel, axis=1)
@@ -2128,7 +2269,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # ordinary Stokes solve, so the base assembly is unaffected.
         self._block_constraint_bcs = []
 
-        # Guarded automatic pressure gauge (see _maybe_install_auto_gauge). On an
+        # Guarded automatic pressure gauge (see _install_auto_pressure_gauge). On an
         # enclosed constrained problem the constant pressure and constant
         # multiplier are gauge-free; the solver lands on a partition-dependent
         # level for each, so the raw fields are not reproducible across ranks.
@@ -2226,7 +2367,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         partition-reproducible by construction on enclosed problems.
         """
         self._warn_if_monolithic_direct()
-        self._maybe_install_auto_gauge()
+        self._install_auto_pressure_gauge()
         return super().solve(*args, **kwargs)
 
     def _warn_if_monolithic_direct(self):
@@ -2260,7 +2401,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
                 stacklevel=2,
             )
 
-    def _maybe_install_auto_gauge(self):
+    def _install_auto_pressure_gauge(self):
         """Pin the (p, h) gauge consistently on an enclosed constrained problem.
 
         Conservative — installs ``set_pressure_gauge`` on the first constraint
@@ -2331,22 +2472,25 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         except (TypeError, ValueError, AttributeError):
             return 1.0
 
-    def add_constraint_bc(self, boundary, g=0.0, normal=None, screening=None,
-                          augmentation=None, augmentation_base=1.0e4, degree=None):
+    def add_constraint_bc(self, conds=None, boundary=None, normal=None, screening=None,
+                          augmentation=None, augmentation_base=1.0e4, degree=None,
+                          g=None):
         r"""Register a multiplier-enforced normal-velocity constraint on ``boundary``.
 
         Adds a scalar multiplier field ``h`` coupled into the saddle-point system
-        so that :math:`\mathbf{u}\cdot\mathbf{n}=g` is enforced on ``boundary`` in
-        the coupled solve; at convergence ``h`` on the boundary is the normal
-        traction (dynamic topography), recoverable via :meth:`multiplier` /
-        :meth:`topography`.
+        so that :math:`\mathbf{u}\cdot\mathbf{n}=\mathrm{conds}` is enforced on
+        ``boundary`` in the coupled solve; at convergence ``h`` on the boundary
+        is the normal traction (dynamic topography), recoverable via
+        :meth:`multiplier` / :meth:`topography`.
 
         Parameters
         ----------
+        conds : float or sympy expression, optional
+            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n}`,
+            in the canonical value-first BC order. Default ``None`` means zero
+            (free-slip).
         boundary : str
             Mesh boundary label (e.g. ``"Upper"``).
-        g : float or sympy expression, default 0.0
-            Prescribed normal velocity :math:`\mathbf{u}\cdot\mathbf{n} = g`.
         normal : sympy matrix, optional
             Row-vector constraint normal. Defaults to ``mesh.Gamma_P1``.
         screening : float or sympy expression, optional
@@ -2365,12 +2509,25 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             independent of this value (the multiplier carries the exact
             constraint); larger values reduce the iteration count up to a broad
             plateau, well below the roundoff limit.
+        g : float or sympy expression, optional
+            Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
         Returns
         -------
         h : MeshVariable
             The scalar multiplier field.
+
+        Notes
+        -----
+        The legacy boundary-first call ``add_constraint_bc(boundary, g=...)``
+        is detected conservatively (first positional argument a string while
+        the second is not — a BC datum is never a string) and shimmed with one
+        DeprecationWarning; see
+        ``SolverBaseClass._value_first_bc_args``.
         """
+        conds, boundary = self._value_first_bc_args(
+            "add_constraint_bc", conds, boundary, alias=g)
+        g = conds if conds is not None else 0.0
         # Parallel-safe: the interior-multiplier reduction
         # (_constrain_interior_multipliers_in_section) is rank-local section
         # surgery (it uses the distributed boundary label IS and iterates the
@@ -2381,7 +2538,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # tests/parallel/test_1063_constrained_freeslip_parallel.py.
         # NOTE: on enclosed problems the constant pressure and constant multiplier
         # are gauge-free and land on a partition-dependent level. The automatic
-        # pressure gauge (auto_pressure_gauge, see _maybe_install_auto_gauge) pins
+        # pressure gauge (auto_pressure_gauge, see _install_auto_pressure_gauge) pins
         # the raw PRESSURE reproducibly, but the raw multiplier h keeps its own
         # gauge level — read dynamic topography via topography(..., reference="mean"),
         # which is gauge-invariant and partition-reproducible by construction.
@@ -2515,7 +2672,67 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         return expr / buoyancy_scale
 
 
-class SNES_Projection(SNES_Scalar):
+class _SmoothingLengthMixin:
+    r"""Shared :math:`\alpha \leftrightarrow L` bookkeeping for the projection solvers.
+
+    The projection solvers all implement the screened-Poisson smoother
+    :math:`u - \nabla\!\cdot\!(\alpha\,\nabla u) = \tilde f`, whose natural
+    filter scale is :math:`L = \sqrt{\alpha}` (Green's function
+    :math:`\propto e^{-r/L}`). This mixin holds the single implementation of
+    the ``smoothing`` (:math:`\alpha`, length²) setter and the unit-aware
+    ``smoothing_length`` (:math:`L`, length) accessors — including the
+    ``_smoothing_is_dimensional`` flag that lets a dimensional input
+    round-trip as a Pint Quantity while plain-float input round-trips as a
+    plain float. Subclasses keep their own property docstrings as thin
+    wrappers delegating here.
+    """
+
+    def _set_smoothing(self, value):
+        """Store the smoothing coefficient alpha (units length squared)."""
+        self._needs_function_rewire = True
+        self._smoothing = sympify(value)
+
+    def _get_smoothing_length(self):
+        r"""Return :math:`L = \sqrt{\alpha}` (unit-aware, see mixin docstring)."""
+        s = self._smoothing
+        try:
+            sval = float(s)
+        except (TypeError, ValueError):
+            # Symbolic alpha (e.g. an expression): return the symbolic sqrt.
+            return sympy.sqrt(s)
+        if sval < 0:
+            raise ValueError(
+                f"smoothing is negative ({sval}); smoothing_length is undefined")
+        L_nd = sval ** 0.5
+        # Return a Pint Quantity only if the user set a dimensional value via
+        # the setter; plain-float input round-trips as a plain float so the
+        # meaning of the number the user passed is preserved.
+        if getattr(self, "_smoothing_is_dimensional", False):
+            return uw.scaling.dimensionalise(
+                L_nd, uw.scaling.units.meter)
+        return L_nd
+
+    def _set_smoothing_length(self, L):
+        r"""Store :math:`\alpha = L^2` from a unit-aware length :math:`L`."""
+        self._needs_function_rewire = True
+        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
+        # non-dimensionalised through the active scaling context and reduced to
+        # a plain float (uw.non_dimensionalise returns a dimensionless
+        # UWQuantity, which sympify can't square); a plain number is taken as
+        # already non-dimensional.
+        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
+        if is_dim:
+            L_nd = uw.non_dimensionalise(L)
+            L_nd = float(getattr(L_nd, "magnitude", L_nd))
+        else:
+            L_nd = float(L)
+        if L_nd < 0:
+            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
+        self._smoothing_is_dimensional = is_dim
+        self._smoothing = sympify(L_nd) ** 2
+
+
+class SNES_Projection(_SmoothingLengthMixin, SNES_Scalar):
     r"""
     Scalar projection solver for mapping functions to mesh variables.
 
@@ -2753,8 +2970,7 @@ class SNES_Projection(SNES_Scalar):
     @smoothing.setter
     def smoothing(self, smoothing_factor):
         """Set the smoothing regularization parameter."""
-        self._needs_function_rewire = True
-        self._smoothing = sympify(smoothing_factor)
+        self._set_smoothing(smoothing_factor)
 
     @property
     def smoothing_length(self):
@@ -2807,23 +3023,7 @@ class SNES_Projection(SNES_Scalar):
         when a scaling context is configured; otherwise the plain
         non-dimensional float :math:`\sqrt{\alpha}`.
         """
-        import sympy
-        s = self._smoothing
-        try:
-            sval = float(s)
-        except (TypeError, ValueError):
-            return sympy.sqrt(s)
-        if sval < 0:
-            raise ValueError(
-                f"smoothing is negative ({sval}); smoothing_length is undefined")
-        L_nd = sval ** 0.5
-        # Return a Pint Quantity only if the user set a dimensional value via
-        # the setter; plain-float input round-trips as a plain float so the
-        # meaning of the number the user passed is preserved.
-        if getattr(self, "_smoothing_is_dimensional", False):
-            return uw.scaling.dimensionalise(
-                L_nd, uw.scaling.units.meter)
-        return L_nd
+        return self._get_smoothing_length()
 
     @smoothing_length.setter
     def smoothing_length(self, L):
@@ -2834,22 +3034,7 @@ class SNES_Projection(SNES_Scalar):
         non-dimensionalised through the active scaling context
         before being squared and stored as ``self._smoothing``.
         """
-        self._needs_function_rewire = True
-        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
-        # non-dimensionalised through the active scaling context and reduced to
-        # a plain float (uw.non_dimensionalise returns a dimensionless
-        # UWQuantity, which sympify can't square); a plain number is taken as
-        # already non-dimensional.
-        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
-        if is_dim:
-            L_nd = uw.non_dimensionalise(L)
-            L_nd = float(getattr(L_nd, "magnitude", L_nd))
-        else:
-            L_nd = float(L)
-        if L_nd < 0:
-            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
-        self._smoothing_is_dimensional = is_dim
-        self._smoothing = sympify(L_nd) ** 2
+        self._set_smoothing_length(L)
 
     @property
     def uw_weighting_function(self):
@@ -2873,7 +3058,7 @@ class SNES_Projection(SNES_Scalar):
 ## --------------------------------
 
 
-class SNES_Vector_Projection(SNES_Vector):
+class SNES_Vector_Projection(_SmoothingLengthMixin, SNES_Vector):
     r"""
     Vector projection solver for mapping vector functions to mesh variables.
 
@@ -2968,27 +3153,6 @@ class SNES_Vector_Projection(SNES_Vector):
         "Vector projection pointwise smoothing term: F_1(u)",
     )
 
-    @timing.routine_timer_decorator
-    def projection_problem_description(self):
-        """Build residual terms for vector projection FEM assembly."""
-        # residual terms - defines the problem:
-        # solve for a best fit to the continuous mesh
-        # variable given the values in self.function
-        # F0 is left in place for the user to inject
-        # non-linear constraints if required
-
-        self._f0 = self.F0.sym
-
-        # F1 is left in the users control ... e.g to add other gradient constraints to the stiffness matrix
-
-        self._f1 = (
-            self.F1.sym
-            + self.smoothing * self.Unknowns.E
-            + self.penalty * self.mesh.vector.divergence(self.u.sym) * sympy.eye(self.mesh.dim)
-        )
-
-        return
-
     # Use SymbolicProperty for automatic unwrapping
     uw_function = SymbolicProperty(matrix_wrap=True, doc="Vector function to project onto mesh")
 
@@ -3011,8 +3175,7 @@ class SNES_Vector_Projection(SNES_Vector):
     @smoothing.setter
     def smoothing(self, smoothing_factor):
         """Set the smoothing regularization parameter."""
-        self._needs_function_rewire = True
-        self._smoothing = sympify(smoothing_factor)
+        self._set_smoothing(smoothing_factor)
 
     @property
     def smoothing_length(self):
@@ -3032,42 +3195,12 @@ class SNES_Vector_Projection(SNES_Vector):
         See :attr:`SNES_Projection.smoothing_length` for the full
         mathematical and units discussion.
         """
-        import sympy
-        s = self._smoothing
-        try:
-            sval = float(s)
-        except (TypeError, ValueError):
-            return sympy.sqrt(s)
-        if sval < 0:
-            raise ValueError(
-                f"smoothing is negative ({sval}); smoothing_length is undefined")
-        L_nd = sval ** 0.5
-        # Return a Pint Quantity only if the user set a dimensional value via
-        # the setter; plain-float input round-trips as a plain float.
-        if getattr(self, "_smoothing_is_dimensional", False):
-            return uw.scaling.dimensionalise(
-                L_nd, uw.scaling.units.meter)
-        return L_nd
+        return self._get_smoothing_length()
 
     @smoothing_length.setter
     def smoothing_length(self, L):
         """Set the smoothing length scale (unit-aware)."""
-        self._needs_function_rewire = True
-        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
-        # non-dimensionalised through the active scaling context and reduced to
-        # a plain float (uw.non_dimensionalise returns a dimensionless
-        # UWQuantity, which sympify can't square); a plain number is taken as
-        # already non-dimensional.
-        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
-        if is_dim:
-            L_nd = uw.non_dimensionalise(L)
-            L_nd = float(getattr(L_nd, "magnitude", L_nd))
-        else:
-            L_nd = float(L)
-        if L_nd < 0:
-            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
-        self._smoothing_is_dimensional = is_dim
-        self._smoothing = sympify(L_nd) ** 2
+        self._set_smoothing_length(L)
 
     @property
     def penalty(self):
@@ -3262,7 +3395,7 @@ class SNES_Tensor_Projection(SNES_Projection):
         self._uw_scalar_function = user_uw_function
 
 
-class SNES_MultiComponent_Projection(SNES_MultiComponent):
+class SNES_MultiComponent_Projection(_SmoothingLengthMixin, SNES_MultiComponent):
     r"""
     Multi-component projection solver.
 
@@ -3369,8 +3502,7 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
 
     @smoothing.setter
     def smoothing(self, value):
-        self._needs_function_rewire = True
-        self._smoothing = sympify(value)
+        self._set_smoothing(value)
 
     @property
     def smoothing_length(self):
@@ -3384,42 +3516,12 @@ class SNES_MultiComponent_Projection(SNES_MultiComponent):
         target. See :attr:`SNES_Projection.smoothing_length` for the
         full mathematical and units discussion.
         """
-        import sympy
-        s = self._smoothing
-        try:
-            sval = float(s)
-        except (TypeError, ValueError):
-            return sympy.sqrt(s)
-        if sval < 0:
-            raise ValueError(
-                f"smoothing is negative ({sval}); smoothing_length is undefined")
-        L_nd = sval ** 0.5
-        # Return a Pint Quantity only if the user set a dimensional value via
-        # the setter; plain-float input round-trips as a plain float.
-        if getattr(self, "_smoothing_is_dimensional", False):
-            return uw.scaling.dimensionalise(
-                L_nd, uw.scaling.units.meter)
-        return L_nd
+        return self._get_smoothing_length()
 
     @smoothing_length.setter
     def smoothing_length(self, L):
         """Set the smoothing length scale (unit-aware)."""
-        self._needs_function_rewire = True
-        # Unit-aware: a dimensional input (Pint Quantity / UnitAware) is
-        # non-dimensionalised through the active scaling context and reduced to
-        # a plain float (uw.non_dimensionalise returns a dimensionless
-        # UWQuantity, which sympify can't square); a plain number is taken as
-        # already non-dimensional.
-        is_dim = hasattr(L, "magnitude") or hasattr(L, "units")
-        if is_dim:
-            L_nd = uw.non_dimensionalise(L)
-            L_nd = float(getattr(L_nd, "magnitude", L_nd))
-        else:
-            L_nd = float(L)
-        if L_nd < 0:
-            raise ValueError(f"smoothing_length must be ≥ 0, got {L_nd}")
-        self._smoothing_is_dimensional = is_dim
-        self._smoothing = sympify(L_nd) ** 2
+        self._set_smoothing_length(L)
 
     @property
     def uw_weighting_function(self):
@@ -3830,57 +3932,21 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        # Note: comparison must handle potential UWexpressions / UWQuantities
-        # Use .data or float() to get numeric values for stable comparison
+        # Skip the (expensive) function rewire when the timestep is unchanged.
+        # The comparison must tolerate UWexpressions / UWQuantities, hence the
+        # float() coercion via .data.
         try:
             old_dt = float(self._delta_t.data)
             new_dt = float(value.data) if hasattr(value, 'data') else float(value)
             if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
                 return
-        except:
+        except (TypeError, ValueError):
+            # Non-numeric (e.g. symbolic) timestep: no stable comparison is
+            # possible — fall through and assign.
             pass
 
         self._needs_function_rewire = True
-
-        # Handle Pint Quantities with time dimensions
-        if hasattr(value, "dimensionality"):
-            # This is a Pint Quantity - check if it has time dimensions
-            try:
-                from ..scaling import units as ureg
-
-                time_dim = ureg.second.dimensionality
-                if value.dimensionality == time_dim:
-                    # Convert physical time to nondimensional using model time scale
-                    model = uw.get_default_model()
-                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
-                        time_scale = model.fundamental_scales.get("time")
-                        if time_scale is not None:
-                            # Physical time / time scale = nondimensional time
-                            # Must use to_reduced_units() to convert both quantities
-                            # to same base units before extracting magnitude.
-                            # Otherwise Pint keeps different unit bases (megayear/second)
-                            # and .magnitude returns the unconverted number!
-                            result = value / time_scale
-
-                            # Get the internal Pint quantity for proper unit conversion
-                            if hasattr(result, "_pint_qty"):
-                                # UWQuantity - access internal Pint quantity
-                                pint_result = result._pint_qty.to_reduced_units()
-                            elif hasattr(result, "to_reduced_units"):
-                                # Raw Pint Quantity
-                                pint_result = result.to_reduced_units()
-                            else:
-                                pint_result = result
-
-                            # Extract the dimensionless magnitude
-                            if hasattr(pint_result, "magnitude"):
-                                value = float(pint_result.magnitude)
-                            else:
-                                value = float(pint_result)
-            except Exception:
-                pass  # If anything fails, try to use value as-is
-
-        self._delta_t.sym = value
+        self._delta_t.sym = _nondimensionalise_timestep(value)
 
     @timing.routine_timer_decorator
     def estimate_dt(self, direction_aware: bool = False, percentile: float = 0.0):
@@ -3909,6 +3975,17 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             meshes it's the geometric factor only. Off by
             default to preserve historical behaviour; safe to
             enable everywhere once validated.
+        percentile : float, default 0.0
+            How the per-element timesteps are reduced to one global
+            value. ``0`` (the default) takes the strict global
+            MINIMUM — a single cell sets the limit. A value ``> 0``
+            takes that global percentile of the per-element dt
+            instead (``50`` = median), so a few anisotropic sliver
+            cells (velocity *across* a thin cell) cannot collapse
+            the timestep. SLCN is unconditionally stable, and
+            ``direction_aware`` already credits cells stretched
+            *along* the flow — together they give an
+            orientation-aware, sliver-robust timestep.
 
         Returns
         -------
@@ -3920,68 +3997,15 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         ### required modules
         from mpi4py import MPI
 
-        # Use the unified .K property from the constitutive model
-        # This provides diffusivity for diffusion models
-        K = self.constitutive_model.K
-
-        # Evaluate the diffusivity (handles constant and spatially-varying cases)
-        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
-            K_sym = K.sym if hasattr(K, 'sym') else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            diffusivity = diffusivity.magnitude
-
-        # Ensure diffusivity is a plain numpy scalar
-        max_diffusivity = float(np.asarray(diffusivity).max())
-
-        ## get global max diffusivity value
         comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ### get the velocity values at element centroids (nondimensional)
-        vel = uw.function.evaluate(
-            self.V_fn,
-            self.mesh._centroids,
-        )
+        ## global max diffusivity (unified .K property: diffusivity for
+        ## diffusion models)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
-        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(vel, "units") and vel.units is not None:
-            vel = uw.non_dimensionalise(vel)
-        elif hasattr(vel, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            vel = vel.magnitude
-
-        # Ensure vel is a plain numpy array
-        vel = np.asarray(vel)
-
-        # Squeeze out any singleton dimensions from evaluate (shape: N,1,dim -> N,dim)
-        vel = np.squeeze(vel)
-
-        # Handle edge case of single element (ensure 2D)
-        if vel.ndim == 1:
-            vel = vel.reshape(1, -1)
+        ### velocity values at element centroids (nondimensional)
+        vel = _centroid_velocities_nd(self.V_fn, self.mesh)
 
         # Get per-element velocity magnitudes
         vel_magnitudes = np.linalg.norm(vel, axis=1)
@@ -4121,12 +4145,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
 
-        # Invalidate cached data views - PETSc may have replaced underlying buffers
-        # This ensures .data and .array properties return fresh data from PETSc
-        # Handle both EnhancedMeshVariable (has _base_var) and direct _MeshVariable
-        target_var = getattr(self.u, "_base_var", self.u)
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+        _invalidate_solution_cache(self.u)
 
         self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
@@ -4336,57 +4355,21 @@ class SNES_Diffusion(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         """Set the timestep (handles unit conversion if provided)."""
-        # Note: comparison must handle potential UWexpressions / UWQuantities
-        # Use .data or float() to get numeric values for stable comparison
+        # Skip the (expensive) function rewire when the timestep is unchanged.
+        # The comparison must tolerate UWexpressions / UWQuantities, hence the
+        # float() coercion via .data.
         try:
             old_dt = float(self._delta_t.data)
             new_dt = float(value.data) if hasattr(value, 'data') else float(value)
             if np.isclose(old_dt, new_dt, rtol=1e-12, atol=1e-15):
                 return
-        except:
+        except (TypeError, ValueError):
+            # Non-numeric (e.g. symbolic) timestep: no stable comparison is
+            # possible — fall through and assign.
             pass
 
         self._needs_function_rewire = True
-
-        # Handle Pint Quantities with time dimensions
-        if hasattr(value, "dimensionality"):
-            # This is a Pint Quantity - check if it has time dimensions
-            try:
-                from ..scaling import units as ureg
-
-                time_dim = ureg.second.dimensionality
-                if value.dimensionality == time_dim:
-                    # Convert physical time to nondimensional using model time scale
-                    model = uw.get_default_model()
-                    if model and hasattr(model, "fundamental_scales") and model.fundamental_scales:
-                        time_scale = model.fundamental_scales.get("time")
-                        if time_scale is not None:
-                            # Physical time / time scale = nondimensional time
-                            # Must use to_reduced_units() to convert both quantities
-                            # to same base units before extracting magnitude.
-                            # Otherwise Pint keeps different unit bases (megayear/second)
-                            # and .magnitude returns the unconverted number!
-                            result = value / time_scale
-
-                            # Get the internal Pint quantity for proper unit conversion
-                            if hasattr(result, "_pint_qty"):
-                                # UWQuantity - access internal Pint quantity
-                                pint_result = result._pint_qty.to_reduced_units()
-                            elif hasattr(result, "to_reduced_units"):
-                                # Raw Pint Quantity
-                                pint_result = result.to_reduced_units()
-                            else:
-                                pint_result = result
-
-                            # Extract the dimensionless magnitude
-                            if hasattr(pint_result, "magnitude"):
-                                value = float(pint_result.magnitude)
-                            else:
-                                value = float(pint_result)
-            except Exception:
-                pass  # If anything fails, try to use value as-is
-
-        self._delta_t.sym = value
+        self._delta_t.sym = _nondimensionalise_timestep(value)
 
     @timing.routine_timer_decorator
     def estimate_dt(self):
@@ -4405,46 +4388,10 @@ class SNES_Diffusion(SNES_Scalar):
             with reference scales is available, otherwise nondimensional.
         """
 
-        ### required modules
-        from mpi4py import MPI
-
-        # Use the unified .K property from the constitutive model
-        # This provides diffusivity for diffusion models
-        K = self.constitutive_model.K
-
-        # Evaluate the diffusivity (handles constant and spatially-varying cases)
-        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
-            K_sym = K.sym if hasattr(K, 'sym') else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            diffusivity = diffusivity.magnitude
-
-        # Ensure diffusivity is a plain numpy scalar
-        diffusivity = float(np.asarray(diffusivity).max())
-
-        ## get global max diffusivity value
-        comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(diffusivity, op=MPI.MAX)
+        ## global max diffusivity (unified .K property: diffusivity for
+        ## diffusion models)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
         ## get mesh spacing (nondimensional, consistent with diffusivity)
         min_dx = self.mesh.get_min_radius()
@@ -4511,10 +4458,7 @@ class SNES_Diffusion(SNES_Scalar):
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
 
-        # Invalidate cached data views - PETSc may have replaced underlying buffers
-        target_var = getattr(self.u, "_base_var", self.u)
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+        _invalidate_solution_cache(self.u)
 
         self.DuDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
         self.DFDt.update_post_solve(timestep, evalf=evalf, verbose=verbose)
@@ -4986,64 +4930,25 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         ### required modules
         from mpi4py import MPI
 
-        # For Navier-Stokes, diffusivity is the kinematic viscosity: ν = η/ρ
-        # Use the unified .K property from the constitutive model (returns viscosity)
-        K = self.constitutive_model.K
-
-        # Evaluate the viscosity (handles constant and spatially-varying cases)
-        if isinstance(K, sympy.Expr) or hasattr(K, 'sym'):
-            K_sym = K.sym if hasattr(K, 'sym') else K
-            if uw.function.fn_is_constant_expr(K_sym):
-                diffusivity = uw.function.evaluate(
-                    K_sym,
-                    np.zeros((1, self.mesh.dim)),
-                )
-            else:
-                diffusivity = uw.function.evaluate(
-                    sympy.sympify(K_sym),
-                    self.mesh._centroids,
-                    self.mesh.N,
-                )
-                diffusivity = diffusivity.max()
-        else:
-            diffusivity = K
-
-        # If diffusivity is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            diffusivity = diffusivity.magnitude
-
-        # Ensure diffusivity is a plain numpy scalar
-        max_diffusivity = float(np.asarray(diffusivity).max())
-
-        ## get global max diffusivity value
         comm = uw.mpi.comm
-        diffusivity_glob = comm.allreduce(max_diffusivity, op=MPI.MAX)
 
-        ### get the velocity values
-        vel = uw.function.evaluate(
-            self.u.sym,
-            self.mesh._centroids,
-            self.mesh.N,
-        )
+        # For Navier-Stokes, diffusivity is the kinematic viscosity: ν = η/ρ
+        # (the unified .K property of the constitutive model returns viscosity)
+        diffusivity_glob = _global_max_diffusivity(
+            self.constitutive_model.K, self.mesh)
 
-        # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
-        # Note: .magnitude returns physical units, which would be wrong here
-        if hasattr(vel, "units") and vel.units is not None:
-            vel = uw.non_dimensionalise(vel)
-        elif hasattr(vel, "magnitude"):
-            # Plain UWQuantity without units context - use magnitude
-            vel = vel.magnitude
-
-        # Ensure vel is a plain numpy array
-        vel = np.asarray(vel)
+        ### get the velocity values at element centroids.
+        # ensure_2d=False preserves the historical reduction below, which
+        # operates on the raw (un-squeezed) evaluate result.
+        vel = _centroid_velocities_nd(
+            self.u.sym, self.mesh, basis=self.mesh.N, ensure_2d=False)
 
         ### get global velocity from velocity field
+        # TODO(DESIGN): if evaluate returns the (N, 1, dim) packed shape here,
+        # this axis-1 norm reduces over the singleton axis, making max_magvel
+        # the maximum |component| rather than the maximum vector magnitude
+        # (the other estimate_dt implementations squeeze first). Preserved
+        # as-is (Wave D is behaviour-neutral); revisit with a numerical check.
         max_magvel = np.linalg.norm(vel, axis=1).max()
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 

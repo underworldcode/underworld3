@@ -146,14 +146,8 @@ def test_parallel_custom_fmg_vector():
     assert proj.snes.getConvergedReason() > 0
 
 
-@pytest.mark.skip(reason="Stokes_Constrained is not parallel-safe yet — it "
-                  "segfaults at np>1 independently of custom-P, in the "
-                  "interior-multiplier section reduction (issue #291; canonical "
-                  "test_1062_constrained_solcx also segfaults at np=2, plain GAMG). "
-                  "custom-P on the constrained velocity block works in SERIAL "
-                  "(see test_1017_custom_mg_stokes.test_custom_fmg_stokes_constrained); "
-                  "this auto-enables once #291 is fixed.")
 @pytest.mark.mpi(min_size=2)
+@pytest.mark.slow
 def test_parallel_custom_fmg_stokes_constrained():
     """Stokes_Constrained (free-slip multipliers, grouped [p,h] split) custom-P on
     the velocity block in parallel — velocity must match the analytic SolCx."""
@@ -167,10 +161,10 @@ def test_parallel_custom_fmg_stokes_constrained():
     s.constitutive_model = uw.constitutive_models.ViscousFlowModel
     s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
     s.bodyforce = sol.fn_bodyforce
-    s.add_constraint_bc("Left",   g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))
-    s.add_constraint_bc("Right",  g=0.0, normal=sympy.Matrix([[1.0, 0.0]]))
-    s.add_constraint_bc("Bottom", g=0.0, normal=sympy.Matrix([[0.0, -1.0]]))
-    s.add_constraint_bc("Top",    g=0.0, normal=sympy.Matrix([[0.0, 1.0]]))
+    s.add_constraint_bc(0.0, "Left",   normal=sympy.Matrix([[-1.0, 0.0]]))
+    s.add_constraint_bc(0.0, "Right",  normal=sympy.Matrix([[1.0, 0.0]]))
+    s.add_constraint_bc(0.0, "Bottom", normal=sympy.Matrix([[0.0, -1.0]]))
+    s.add_constraint_bc(0.0, "Top",    normal=sympy.Matrix([[0.0, 1.0]]))
     s.petsc_use_pressure_nullspace = True
     s.tolerance = 1.0e-9
     s.petsc_options["snes_type"] = "ksponly"

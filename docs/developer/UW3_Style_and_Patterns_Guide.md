@@ -1,27 +1,12 @@
 ---
 title: "Underworld3 Style and Patterns Guide"
 subtitle: "Development Standards and Architectural Patterns"
-author: "Underworld Development Team"
-date: today
-execute:
-  enabled: false
-format:
-  html:
-    toc: true
-    toc-depth: 3
-    toc-location: left
-    number-sections: true
-    code-fold: true
-    theme: cosmo
-  pdf:
-    documentclass: report
-    geometry: margin=1in
-    toc: true
-    number-sections: true
 ---
 
 ```{note} Document Purpose
-This guide documents the established patterns, conventions, and architectural decisions for Underworld3 development. It serves as a reference for maintaining consistency across the codebase.
+This guide documents the established patterns, conventions, and architectural decisions for Underworld3 development. It serves as a detailed reference for maintaining consistency across the codebase.
+
+The normative style contract is the [UW3 Style Charter](UW3_STYLE_CHARTER.md) — where this guide and the Charter disagree, **the Charter wins**. See the authority map in [the developer documentation index](index.md).
 ```
 
 # Code Organization
@@ -67,22 +52,22 @@ Properties should return array-like objects that can trigger updates when modifi
 
 ```python
 
-class Mesh:
+class Field:
     @property
     def data(self):
-        """Mesh coordinate data with reactive callbacks."""
+        """Field data with reactive callbacks."""
         if self._cached_data is None:
             self._cached_data = NDArray_With_Callback(
-                self._coordinates,
+                self._values,
                 owner=self
             )
-            self._cached_data.set_callback(self._on_coordinates_changed)
+            self._cached_data.set_callback(self._on_values_changed)
         return self._cached_data
-    
-    def _on_coordinates_changed(self, array, change_info):
-        # Invalidate cached computations
-        self._jacobians = None
-        self._mesh_quality = None
+
+    def _on_values_changed(self, array, change_info):
+        # Invalidate cached computations that depend on the values
+        self._interpolant = None
+        self._stats_cache = None
 ```
 
 ## Property with Getter/Setter Pattern
@@ -104,57 +89,60 @@ When properties need to behave like arrays but with additional functionality:
 
 ```python
 
-# Users should access: mesh.data[...] instead of mesh.data
+# Users index into the property: var.data[...] rather than rebinding var.data
 # Properties return NDArray_With_Callback for transparent numpy compatibility
 ```
 
 # Documentation Style
 
-## Markdown Docstrings for pdoc/pdoc3
+## NumPy/Sphinx Docstrings
 
-Use markdown format with mathematics support:
+Docstrings use **NumPy style with RST markup** (`:math:`, ``double backticks``
+for code). This is the settled standard (Style Charter §6); the docstrings turn
+into the Sphinx documentation and render well in Jupyter. The conversion of older
+docstrings is tracked in `docs/plans/docstring-conversion-plan.md`.
 
 ```python
 
-class MyClass:
-    """
-    # MyClass
+def solve_diffusion(kappa, delta_t, monotone=False):
+    r"""Advance the diffusion equation by one timestep.
 
-    Brief description with **bold** and *italic* formatting.
+    Integrates :math:`\partial_t T = \nabla \cdot (\kappa \nabla T)` with an
+    implicit theta-scheme.
 
-    ## Mathematical Representation
+    Parameters
+    ----------
+    kappa : float or sympy expression
+        Diffusivity :math:`\kappa`. May depend on position or on other
+        mesh variables.
+    delta_t : float
+        Timestep. Non-dimensionalised internally when the model carries units.
+    monotone : bool, default=False
+        Clamp interpolation overshoot during the semi-Lagrangian trace-back.
 
-    Given an array $\\mathbf{A} \\in \\mathbb{R}^{n \\times m}$, operations follow:
+    Returns
+    -------
+    MeshVariable
+        The updated temperature field.
 
-    $$\\mathbf{A}' = \\mathcal{O}(\\mathbf{A}) \\implies \\text{callback}(\\mathbf{A}', \\text{info})$$
+    Examples
+    --------
+    >>> T_new = solve_diffusion(1.0, 0.01)
 
-    ## Usage Examples
-
-    ### Basic Usage
-    ```python
-    obj = MyClass([1, 2, 3])
-    obj.set_callback(my_callback)
-    ```
-
-    ## Advanced Features
-
-    - **Feature 1**: Description
-    - **Feature 2**: Description
-
-    ## Performance Notes
-
-    - **Zero overhead** when disabled
-    - **Minimal impact** during normal operations
+    Notes
+    -----
+    We do not shy away from equations in docstrings: state the weak form or the
+    scheme where it aids the reader.
     """
 ```
 
 ## Key Documentation Elements
 
-- Use `#` headers for structure
-- Include mathematical notation with LaTeX
+- NumPy sections in the standard order: summary line, extended description,
+  ``Parameters``, ``Returns``, ``Examples``, ``Notes``, ``See Also``
+- Mathematical notation via RST ``:math:`` roles (raw strings ``r"""`` for backslashes)
 - Provide complete, runnable examples
-- Use tables for parameter documentation
-- Include performance considerations
+- Include performance considerations where they matter (in ``Notes``)
 
 # Array and Data Management
 
@@ -200,25 +188,22 @@ vector.array[:, 0, :] = all_components # Full vector
 ```python
 
 # Preferred: Direct array access with proper indexing
-temperature.array[:, 0, 0] = temp_values  # Scalar
-velocity.array[:, 0, :] = vel_field      # Vector
-mesh.data[0] = new_position               # Mesh coordinates
-swarm.data += displacement                # Swarm positions
+temperature.array[:, 0, 0] = temp_values   # Scalar
+velocity.array[:, 0, :] = vel_field        # Vector
+
+# Mesh coordinates: read via mesh.X.coords; deform via mesh.deform()
+coords = mesh.X.coords                     # (N, dim) read access
+mesh.deform(mesh.X.coords + displacement)  # coordinate changes go through deform()
+
+# Swarm particle positions: the public coords property (getter and setter)
+swarm.coords = swarm.coords + displacement
 
 # Avoid: Incorrect indexing
 # scalar.array[:, 0] = values  # Missing third index!
 # vector.array[:, i] = values  # Missing middle index!
-```
 
-## Coordinate System Transformations
-
-```python
-
-# Reference changes throughout codebase
-# OLD: swarm.particle_coordinates
-# NEW: swarm._particle_coordinates
-# OLD: mesh.deform_mesh
-# NEW: mesh._deform_mesh
+# Avoid: deprecated coordinate accessors (kept only so old code runs)
+# mesh.data, mesh.points, swarm.data, swarm.points
 ```
 
 # Context Managers
@@ -265,11 +250,12 @@ with arr.delay_callback("batch update"):
     arr[2] = 3
 # All callbacks fire here with MPI barriers
 
-# Global coordination
-with NDArray_With_Callback.delay_callbacks_global("mesh deformation"):
-    mesh.data += displacement
-    swarm.data += velocity * dt
+# Global coordination across several variables
+with NDArray_With_Callback.delay_callbacks_global("field update"):
+    temperature.array[:, 0, 0] = temp_values
+    velocity.array[:, 0, :] = vel_values
 # Synchronized execution across all arrays
+# (uw.synchronised_array_update() is the public spelling of this context)
 ```
 
 ## Custom Context Managers
@@ -419,8 +405,11 @@ def test_callback_triggering():
 ## Documentation Files
 
 - **Developer docs**: `underworld3/docs/developer/`
-- **Format**: Quarto markdown (`.qmd`)
-- **Naming**: Descriptive names with purpose (e.g., `UW3_Developers_NDArrays.qmd`)
+- **Format**: MyST Markdown (`.md`), built with Sphinx — see the
+  "Documentation Requests" section of `CLAUDE.md` for admonition/math syntax
+- **Naming**: Descriptive names with purpose (e.g., `UW3_Developers_NDArrays.md`)
+- **Integration**: add new documents to the appropriate `toctree` in the parent
+  `index.md` and verify with `pixi run docs-build`
 
 ## Test Files  
 
@@ -456,7 +445,7 @@ def test_callback_triggering():
 1. **Reactive Properties**: Return NDArray_With_Callback with owner and callbacks
 2. **Context Managers**: Use for state management and batch operations
 3. **MPI Integration**: Always include barriers with error handling
-4. **Documentation**: Markdown with mathematics for pdoc/jupyter compatibility
+4. **Documentation**: NumPy/Sphinx docstrings with RST `:math:`; MyST `.md` docs
 5. **Testing**: Comprehensive callback and functionality testing
 6. **Error Handling**: Graceful degradation and logging
 7. **Performance**: Provide enable/disable mechanisms for expensive operations
@@ -467,7 +456,7 @@ def test_callback_triggering():
 |---------|--------|---------|--------|
 | **Array Access** | `with mesh.access(var): var.data[...] = values` | `var.array[:, 0, 0] = values` | Direct access preferred |
 | **Multi-Variable** | `with mesh.access(var1, var2):` | `with uw.synchronised_array_update():` | Batch context |
-| **Documentation** | Plain markdown | Quarto markdown | Enhanced features |
+| **Documentation** | Plain markdown | MyST markdown (Sphinx) | Enhanced features |
 | **Testing** | Ad-hoc patterns | Structured fixtures | Comprehensive coverage |
 
 ## Quality Guidelines
@@ -487,5 +476,5 @@ def test_callback_triggering():
 ```{tip} Contributing
 This guide should be updated as new patterns emerge and existing patterns evolve. For questions or suggestions, please see the Contributing Guidelines or open an issue on the Underworld3 repository.
 
-*Last updated: After NDArray migration and synchronised_array_update implementation*
+*Last updated: 2026-07 (Wave E docs alignment — docstring/doc-format/coordinate sections brought in line with the UW3 Style Charter)*
 ```

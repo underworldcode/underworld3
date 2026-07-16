@@ -244,7 +244,7 @@ metric = fault.refinement_metric(
 mesh.adapt(metric)
 
 # Check result
-print(f"Adapted mesh: {mesh.data.shape[0]} nodes")
+print(f"Adapted mesh: {mesh.X.coords.shape[0]} nodes")
 
 # Now set up physics on the adapted mesh...
 v = uw.discretisation.MeshVariable("v", mesh, 2, degree=2)

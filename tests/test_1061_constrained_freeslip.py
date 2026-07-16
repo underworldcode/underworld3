@@ -58,8 +58,8 @@ def box():
     blk.constitutive_model.Parameters.shear_viscosity_0 = MU
     blk.bodyforce = forcing(mb)
     blk.add_dirichlet_bc((0.0, 0.0), "Bottom")
-    hL = blk.add_constraint_bc("Left", g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))
-    hR = blk.add_constraint_bc("Right", g=0.0, normal=sympy.Matrix([[1.0, 0.0]]))
+    hL = blk.add_constraint_bc(0.0, "Left", normal=sympy.Matrix([[-1.0, 0.0]]))
+    hR = blk.add_constraint_bc(0.0, "Right", normal=sympy.Matrix([[1.0, 0.0]]))
     _direct(blk)
     blk.solve()
     return dict(ref=ref, blk=blk, hL=hL, hR=hR)
@@ -102,7 +102,7 @@ def test_multiplier_and_topography_api(box):
 
 def test_rejects_unknown_boundary(box):
     with pytest.raises(ValueError):
-        box["blk"].add_constraint_bc("Nonexistent")
+        box["blk"].add_constraint_bc(0.0, "Nonexistent")
 
 
 # --------------------------------------------------------------------------- #
@@ -133,7 +133,7 @@ def annulus():
     blk.constitutive_model.Parameters.shear_viscosity_0 = MU
     blk.bodyforce = buoy * unit_r
     blk.add_dirichlet_bc((0.0, 0.0), "Lower")
-    hb = blk.add_constraint_bc("Upper", g=0.0, normal=unit_r)
+    hb = blk.add_constraint_bc(0.0, "Upper", normal=unit_r)
     # Enclosed -> pressure/multiplier gauge; DEFAULT grouped-Schur solver config.
     blk.petsc_use_pressure_nullspace = True
     blk.tolerance = 1e-8
@@ -208,8 +208,8 @@ def test_box_variable_viscosity_matches_dirichlet(contrast):
     blk.constitutive_model.Parameters.shear_viscosity_0 = visc(mb)
     blk.bodyforce = forcing(mb)
     blk.add_dirichlet_bc((0.0, 0.0), "Bottom")
-    blk.add_constraint_bc("Left", g=0.0, normal=sympy.Matrix([[-1.0, 0.0]]))
-    blk.add_constraint_bc("Right", g=0.0, normal=sympy.Matrix([[1.0, 0.0]]))
+    blk.add_constraint_bc(0.0, "Left", normal=sympy.Matrix([[-1.0, 0.0]]))
+    blk.add_constraint_bc(0.0, "Right", normal=sympy.Matrix([[1.0, 0.0]]))
     _direct(blk)
     blk.solve()
 
@@ -244,7 +244,7 @@ def contrast_annulus():
     blk.add_dirichlet_bc((0.0, 0.0), "Lower")
     # reduced augmentation (1e2, vs the 1e4 default): only viable with a Schur PC
     # that conditions the constraint block — here the default `selfp`.
-    hb = blk.add_constraint_bc("Upper", g=0.0, normal=unit_r, augmentation_base=1.0e2)
+    hb = blk.add_constraint_bc(0.0, "Upper", normal=unit_r, augmentation_base=1.0e2)
     blk.petsc_use_pressure_nullspace = True
     blk.tolerance = 1e-8
     blk.petsc_options["snes_linesearch_type"] = "basic"

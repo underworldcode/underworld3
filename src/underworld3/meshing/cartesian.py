@@ -81,8 +81,8 @@ def UnstructuredSimplexBox(
         Gmsh output verbosity level. 0 is silent, higher values
         produce more diagnostic output.
     units : str, optional
-        **Deprecated**. Mesh coordinates are always in model reference
-        units. This parameter is retained for backward compatibility.
+        Deprecated and ignored (DeprecationWarning). Mesh coordinates are
+        always in the model's units (``model.set_reference_quantities``).
     verbose : bool, default=False
         If True, print additional diagnostic information during
         mesh construction.
@@ -419,7 +419,8 @@ def BoxInternalBoundary(
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     units : str, optional
-        Coordinate units for unit-aware arrays.
+        Deprecated and ignored (DeprecationWarning). Mesh coordinates are
+        always in the model's units (``model.set_reference_quantities``).
     verbose : bool, default=False
         Print diagnostic information during mesh construction.
 
@@ -522,6 +523,15 @@ def BoxInternalBoundary(
 
     dim = len(minCoords)
 
+    # Every rank passes these Enums to Mesh() below, so they must be bound
+    # on every rank — only the gmsh geometry construction is rank-0 work.
+    if dim == 2:
+        boundaries = boundaries_2D
+        boundary_normals = boundary_normals_2D
+    else:
+        boundaries = boundaries_3D
+        boundary_normals = boundary_normals_3D
+
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
@@ -544,8 +554,6 @@ def BoxInternalBoundary(
             xmin, ymin = minCoords
             xmax, ymax = maxCoords
             yint = zintCoord
-            boundaries = boundaries_2D
-            boundary_normals = boundary_normals_2D
 
             if not simplex:
                 cellSize = 0.0
@@ -639,8 +647,6 @@ def BoxInternalBoundary(
             xmin, ymin, zmin = minCoords
             xmax, ymax, zmax = maxCoords
             zint = zintCoord
-            boundaries = boundaries_3D
-            boundary_normals = boundary_normals_3D
 
             if not simplex:
                 cellSize = 0.0
@@ -1003,7 +1009,8 @@ def StructuredQuadBox(
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     units : str, optional
-        **Deprecated**. Mesh coordinates are always in model reference units.
+        Deprecated and ignored (DeprecationWarning). Mesh coordinates are
+        always in the model's units (``model.set_reference_quantities``).
     verbose : bool, default=False
         Print diagnostic information during mesh construction.
 
@@ -1104,18 +1111,6 @@ def StructuredQuadBox(
         Back = sympy.Matrix([0, 1, 0])
 
     # Convert coordinates to non-dimensional units (handles UWQuantity objects)
-    # Detect units from UWQuantity inputs (if not explicitly specified)
-    if units is None:
-        # Try to detect units from maxCoords (most likely to have units)
-        if maxCoords is not None and hasattr(maxCoords, "__iter__"):
-            for coord in maxCoords:
-                if hasattr(coord, "units"):  # UWQuantity
-                    units = str(coord.units)
-                    break
-                elif hasattr(coord, "_pint_qty"):  # Direct Pint Quantity
-                    units = str(coord._pint_qty.units)
-                    break
-
     if minCoords is not None:
         minCoords = tuple(uw.scaling.non_dimensionalise(c) for c in minCoords)
     if maxCoords is not None:

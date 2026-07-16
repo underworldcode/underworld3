@@ -186,3 +186,121 @@ class TestPinningAPI:
                              n_iters=1, alpha=0.5)
         after = np.asarray(mesh.X.coords)
         assert np.allclose(before[is_bnd], after[is_bnd])
+
+
+class TestMMPDEDimensionGuard:
+    """The MMPDE mover is 2D-only (READ-01/BF-09, 2026-07 audit): the 3D
+    branch used to reference `_signed_volumes`, which was never implemented,
+    so any 3D invocation died with a NameError deep in the mover. The
+    contract is now an immediate, honest NotImplementedError for cdim != 2,
+    while 2D invocation keeps working."""
+
+    def test_mmpde_3d_raises_not_implemented(self):
+        import sympy
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0, 0.0),
+            maxCoords=(1.0, 1.0, 1.0),
+            cellSize=0.5,
+        )
+        with pytest.raises(NotImplementedError,
+                           match="MMPDE mesh movement is currently 2D-only"):
+            smooth_mesh_interior(
+                mesh, metric=sympy.sympify(1), method="mmpde",
+                method_kwargs=dict(n_outer=1))
+
+    def test_mmpde_3d_guard_fires_before_any_mesh_work(self):
+        """The guard reads only mesh.cdim, before metric parsing or DM
+        access, so a minimal cdim stand-in locks the contract
+        deterministically (same pattern as test_0762's non2d tests)."""
+        from underworld3.meshing.smoothing import _mmpde_mover
+
+        class _Mesh3D:
+            cdim = 3
+
+        with pytest.raises(NotImplementedError,
+                           match="MMPDE mesh movement is currently 2D-only"):
+            _mmpde_mover(_Mesh3D(), metric=1, pinned_labels=(),
+                           verbose=False)
+
+    def test_mmpde_2d_smoke_still_works(self):
+        """A small 2D mmpde invocation still runs and leaves a valid mesh."""
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        before = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(
+            mesh, metric=rho, method="mmpde",
+            method_kwargs=dict(n_outer=3, metric_eval="rbf"))
+        after = np.asarray(mesh.X.coords)
+        assert np.all(np.isfinite(after))
+        assert not np.allclose(before, after)   # the mover actually moved
+
+
+class TestSPDSanitise:
+    """Regression (#352): the SPD projection must return a finite SPD
+    fallback even when a rank's ENTIRE metric evaluation is degenerate —
+    previously an all-NaN eigenvalue set made the relative floor itself
+    NaN and the "sanitised" output was NaN."""
+
+    def _assert_finite_spd(self, out):
+        assert np.all(np.isfinite(out))
+        w = np.linalg.eigvalsh(out)
+        assert np.all(w > 0)
+
+    def test_all_nan_batch_returns_finite_spd(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((5, 2, 2), np.nan))
+        self._assert_finite_spd(out)
+
+    def test_all_inf_batch_returns_finite_spd(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((3, 2, 2), np.inf))
+        self._assert_finite_spd(out)
+
+    def test_valid_spd_input_is_returned_unchanged(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(7)
+        A = rng.standard_normal((10, 2, 2))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(2)  # SPD by construction
+        out = _spd_sanitise(M)
+        # Symmetrisation of an exactly-symmetric tensor is a no-op, so a
+        # genuine SPD metric must pass through bit-identical.
+        assert np.array_equal(out, M)
+
+    def test_one_degenerate_tensor_does_not_perturb_the_rest(self):
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(11)
+        A = rng.standard_normal((6, 2, 2))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(2)
+        M[2] = np.nan
+        out = _spd_sanitise(M)
+        self._assert_finite_spd(out)
+        good = np.ones(6, dtype=bool)
+        good[2] = False
+        assert np.array_equal(out[good], M[good])
+
+    def test_3x3_degenerate_batch_returns_finite_spd(self):
+        # Degenerate-input eigh is LAPACK-path dependent: the 2x2 kernel
+        # returns quiet NaNs, the general (3x3) kernel raises LinAlgError.
+        # The fallback must hold for both — this is the path the 3D MMPDE
+        # capstone will stand on.
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        out = _spd_sanitise(np.full((4, 3, 3), np.nan))
+        self._assert_finite_spd(out)
+
+    def test_3x3_mixed_batch_survives_batched_eigh_failure(self):
+        # A single non-converging tensor makes the BATCHED eigh raise for
+        # the whole batch; the per-tensor retry must preserve the valid
+        # neighbours bit-identical and rebuild only the degenerate one.
+        from underworld3.meshing.smoothing.mmpde import _spd_sanitise
+        rng = np.random.default_rng(3)
+        A = rng.standard_normal((5, 3, 3))
+        M = np.einsum('nij,nkj->nik', A, A) + 0.5 * np.eye(3)
+        M[1] = np.inf
+        out = _spd_sanitise(M)
+        self._assert_finite_spd(out)
+        good = np.ones(5, dtype=bool)
+        good[1] = False
+        assert np.array_equal(out[good], M[good])

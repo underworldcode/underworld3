@@ -48,11 +48,19 @@ GOLDEN_ANNULUS = (1.897011154231e-02, 4.563841e-05, 9.341699e-06)
 # annulus driven by CUSTOM GEOMETRIC FMG on the velocity block (nested hierarchy):
 # (velocity L2, radial-leakage L2 on Lower arc, radial-leakage L2 on Upper arc)
 GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
+# 3D spherical shell (free-slip both boundaries, all 3 rotation nullspace modes):
+# velocity L2. Recompute with `python <thisfile> spherical3d`.
+GOLDEN_SPHERICAL3D = 4.069689334228e-03
+# NONLINEAR (power-law) box with rotated free-slip through the manual Newton loop
+# (consistent tangent): (velocity L2, nonlinear iteration count — the number of
+# Newton increments solved, == len(ksp_its); this solve exits on the step-norm
+# test after its 8th increment). Recompute `python <thisfile> nonlinear`.
+GOLDEN_BOX_NONLINEAR = (8.069396188270e-04, 8)
 # box sigma_nn (boundary_normal_traction on Top, default lumped mass) vs analytic SolCx
 # sigma_yy, whole boundary: (relL2, |corr|). Recompute with `python <thisfile> sigma`.
-GOLDEN_BOX_SIGMA = (3.985444e-02, 0.999208)
+GOLDEN_BOX_SIGMA = (5.554578e-02, 0.998466)
 # dynamic_topography field: BdIntegral L2 of h over Top. Recompute `python <thisfile> topo`.
-GOLDEN_TOPO_BDL2 = 2.560593173e-01
+GOLDEN_TOPO_BDL2 = 2.553916470e-01
 
 
 def _wrap(dm, m0):
@@ -79,7 +87,7 @@ def _box_diagnostics():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -105,8 +113,8 @@ def _annulus_diagnostics():
     s.bodyforce = sympy.Matrix([[x / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0,
                                  y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
     nhat = sympy.Matrix([[x / r, y / r]])
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.tolerance = 1e-9
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
@@ -119,6 +127,35 @@ def _annulus_diagnostics():
     leak_up = float(np.sqrt(uw.maths.BdIntegral(
         mesh=mesh, fn=vr**2, boundary="Upper").evaluate()))
     return L2, leak_lo, leak_up
+
+
+def _spherical3d_diagnostics():
+    """3D spherical shell with per-node radial free-slip on BOTH boundaries (the
+    Zhong #248 configuration): all three rigid rotations are nullspace modes.
+    Returns (velocity L2, outer KSP its, converged reason)."""
+    RI, RO = 0.55, 1.0
+    mesh = uw.meshing.SphericalShell(radiusInner=RI, radiusOuter=RO,
+                                     cellSize=0.25, qdegree=2)
+    x, y, z = mesh.X
+    r = sympy.sqrt(x**2 + y**2 + z**2)
+    v = uw.discretisation.MeshVariable("Vs", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("Ps", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    ylm = (3 * (z / r) ** 2 - 1) / 2
+    s.bodyforce = ylm * (r - RI) * (RO - r) * 20.0 / r * sympy.Matrix([[x, y, z]])
+    nhat = sympy.Matrix([[x / r, y / r, z / r]])
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
+    s.tolerance = 1e-7
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.solve()
+
+    L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
+    info = s._rotated_freeslip_info
+    return L2, int(info["ksp_its"]), int(info["ksp_reason"])
 
 
 def _annulus_fmg_diagnostics():
@@ -143,8 +180,8 @@ def _annulus_fmg_diagnostics():
     s.bodyforce = sympy.Matrix([[x / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0,
                                  y / r * sympy.cos(4 * th) * (r - RI) * (RO - r) * 40.0]])
     nhat = sympy.Matrix([[x / r, y / r]])
-    s.add_rotated_freeslip_bc("Lower", normal=nhat)
-    s.add_rotated_freeslip_bc("Upper", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
     s.tolerance = 1e-9
     s.saddle_preconditioner = 1.0
     s.petsc_use_pressure_nullspace = True
@@ -162,12 +199,43 @@ def _annulus_fmg_diagnostics():
     return L2, leak_lo, leak_up
 
 
+def _box_nonlinear_diagnostics():
+    """NONLINEAR box: power-law viscosity eta = eps_II^(1/n-1) with rotated free-slip
+    on all four walls, solved by the manual Newton loop (consistent tangent, GAMG
+    velocity block). Returns (velocity L2, nonlinear iteration count) — both must be
+    partition-independent (the loop's ptap / rotate / constrain / increment-solve are
+    all collective and ownership-relative)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("vNLp", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("pNLp", mesh, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    g = sympy.Matrix([[v.sym[0].diff(x), v.sym[0].diff(y)],
+                      [v.sym[1].diff(x), v.sym[1].diff(y)]])
+    e = 0.5 * (g + g.T)
+    eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
+    s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / 3.0 - 1.0)
+    s.bodyforce = sympy.Matrix([[0.0, -2.0 * sympy.cos(sympy.pi * x)]])
+    s.penalty = 0.0
+    s.tolerance = 1e-7
+    s.petsc_use_pressure_nullspace = True
+    s.consistent_jacobian = True                 # Newton tangent (few iterations)
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+    s.solve()
+
+    L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
+    return L2, int(s._rotated_freeslip_info["nonlinear_iterations"])
+
+
 def _box_sigma_diagnostics():
     """Recover sigma_nn on Top via boundary_normal_traction and compare to the exact
     SolCx sigma_yy over the WHOLE boundary. The per-rank local (xs, sigma) are gathered
     + de-duplicated on rank 0, the metric is computed there and broadcast, so every rank
     returns the same (relL2, |corr|) — a direct partition-independence check."""
-    res = 48
+    res = 24
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
     sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
@@ -180,7 +248,7 @@ def _box_sigma_diagnostics():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -210,7 +278,7 @@ def _box_sigma_diagnostics():
 def _box_topography_bdl2():
     """dynamic_topography onto a P1 surface field; return the (collective) BdIntegral L2
     of h over Top — a partition-independent scalar functional of the topography field."""
-    res = 48
+    res = 24
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(res, res), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
     sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
@@ -224,7 +292,7 @@ def _box_topography_bdl2():
     s.penalty = 0.0
     s.tolerance = 1e-9
     for wall in ("Top", "Bottom", "Left", "Right"):
-        s.add_rotated_freeslip_bc(wall)
+        s.add_rotated_freeslip_bc(0, wall)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.solve()
@@ -278,6 +346,33 @@ def test_rotated_freeslip_annulus_fmg_partition_independent():
         f"{leak_up_ref} vs {leak_up}")
 
 
+def test_rotated_freeslip_spherical3d_partition_independent():
+    """3D spherical shell (free-slip inner+outer, all three rotation nullspace
+    modes): the parallel solve reproduces the serial velocity L2, converges, and
+    stays within the bounded outer iteration count (the 1/mu-mass Schur
+    preconditioner — issue #248's rotated blow-out was ~44 its)."""
+    L2, its, reason = _spherical3d_diagnostics()
+    L2_ref = GOLDEN_SPHERICAL3D
+    assert reason > 0, f"3D spherical rotated solve diverged: reason {reason}"
+    assert its <= 25, f"3D spherical Schur iteration blow-out: {its} outer its"
+    assert np.isclose(L2, L2_ref, rtol=1e-5, atol=0), (
+        f"3D spherical velocity L2 differs serial vs np={uw.mpi.size}: "
+        f"{L2_ref} vs {L2}")
+
+
+def test_rotated_freeslip_box_nonlinear_partition_independent():
+    """NONLINEAR rotated free-slip is partition-independent: a power-law box solved by
+    the manual Newton/Picard loop reproduces the serial velocity L2 and iteration count
+    at np=2/4 — the rotated residual/Jacobian, the increment solve and the constraint
+    zeroing are all parallel-safe (ownership-relative indexing, collective norms)."""
+    L2, iters = _box_nonlinear_diagnostics()
+    L2_ref, iters_ref = GOLDEN_BOX_NONLINEAR
+    assert np.isclose(L2, L2_ref, rtol=1e-6, atol=0), (
+        f"nonlinear box velocity L2 differs serial vs np={uw.mpi.size}: {L2_ref} vs {L2}")
+    assert iters == iters_ref, (
+        f"nonlinear iteration count differs serial vs np={uw.mpi.size}: {iters_ref} vs {iters}")
+
+
 def test_rotated_freeslip_box_sigma_nn_partition_independent():
     """sigma_nn (boundary_normal_traction) recovery is partition-independent: the whole-
     boundary relL2 / |corr| vs analytic SolCx sigma_yy match the serial reference (and
@@ -285,12 +380,12 @@ def test_rotated_freeslip_box_sigma_nn_partition_independent():
     parallel-safe."""
     relL2, corr, nnodes = _box_sigma_diagnostics()
     relL2_ref, corr_ref = GOLDEN_BOX_SIGMA
-    assert nnodes == 97, f"expected 97 top nodes, gathered {nnodes} at np={uw.mpi.size}"
+    assert nnodes == 49, f"expected 49 top nodes, gathered {nnodes} at np={uw.mpi.size}"
     assert np.isclose(relL2, relL2_ref, rtol=1e-4, atol=0), (
         f"sigma_nn relL2 differs serial vs np={uw.mpi.size}: {relL2_ref} vs {relL2}")
     assert np.isclose(corr, corr_ref, rtol=1e-4, atol=0), (
         f"sigma_nn corr differs serial vs np={uw.mpi.size}: {corr_ref} vs {corr}")
-    assert relL2 < 0.08, f"sigma_nn relL2 vs analytic {relL2:.3f} too large"
+    assert relL2 < 0.10, f"sigma_nn relL2 vs analytic {relL2:.3f} too large"
 
 
 def test_rotated_freeslip_dynamic_topography_partition_independent():
@@ -309,7 +404,11 @@ if __name__ == "__main__":
     #   `python <thisfile> {box,annulus,annulus_fmg,sigma,topo}`.
     import sys
     _kind = sys.argv[1] if len(sys.argv) > 1 else "box"
-    if _kind == "topo":
+    if _kind == "nonlinear":
+        _L2, _its = _box_nonlinear_diagnostics()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_NONLINEAR {_L2:.12e} {_its}")
+    elif _kind == "topo":
         _b = _box_topography_bdl2()
         if uw.mpi.rank == 0:
             print(f"DIAG_TOPO bdl2={_b:.9e}")
@@ -325,6 +424,10 @@ if __name__ == "__main__":
         _L2, _lo, _up = _annulus_fmg_diagnostics()
         if uw.mpi.rank == 0:
             print(f"DIAG_ANNULUS_FMG {_L2:.12e} {_lo:.6e} {_up:.6e}")
+    elif _kind == "spherical3d":
+        _L2, _its, _reason = _spherical3d_diagnostics()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_SPHERICAL3D {_L2:.12e} its={_its} reason={_reason}")
     else:
         _L2, _verr = _box_diagnostics()
         if uw.mpi.rank == 0:

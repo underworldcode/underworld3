@@ -201,7 +201,7 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
 
         label = dm.getLabel(label_name)
         if not label:
-                uw.pprint(0, f"Label {label_name} is not present on the dm")
+                uw.pprint(f"Label {label_name} is not present on the dm")
                 return np.array([0])
 
         pointIS = dm.getStratumIS("depth",0)
@@ -244,44 +244,6 @@ def petsc_dm_find_labeled_points_local(dm, label_name, sectionIndex=False, verbo
 
         return IndicesP
 
-
-## Todo !
-
-"""
-def petsc_dm_get_periodicity(incoming_dm):
-
-        dim = incoming_dm.getDimension()
-
-        cdef PetscInt c_dim = dim
-        cdef PetscReal c_maxCell[3]
-        cdef PetscReal c_Lstart[3]
-        cdef PetscReal c_L[3]
-        cdef DM dm = incoming_dm
-
-
-        ierr = DMGetPeriodicity(dm.dm, &c_maxCell[0], &c_Lstart[0],  &c_L[0]); CHKERRQ(ierr)
-
-        maxCell = np.asarray(c_maxCell)
-
-        maxx = maxCell[0]
-        maxy = maxCell[1]
-        maxz = maxCell[2]
-
-        Lstartx = c_Lstart[0]
-        Lstarty = c_Lstart[1]
-        Lstartz = c_Lstart[2]
-
-        Lx = c_L[0]
-        Ly = c_L[1]
-        Lz = c_L[2]
-
-
-        print(f"Max x - {maxx}, y - {maxy}, z - {maxz}"  )
-        print(f"Ls x - {Lstartx}, y - {Lstarty}, z - {Lstartz}"  )
-        print(f"L  x - {Lx}, y - {Ly}, z - {Lz}"  )
-
-        return
-"""
 
 def petsc_dm_set_periodicity(incoming_dm, maxCell, Lstart, L):
         """

@@ -63,7 +63,7 @@ def _solve_diagnostics(kind):
         st.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     st.tolerance = 1.0e-8
     st.add_essential_bc((0.0, 0.0), "Lower")
-    h = st.add_constraint_bc("Upper")
+    h = st.add_constraint_bc(0.0, "Upper")
     st.bodyforce = 1.0e2 * sympy.sin(3 * sympy.atan2(X[1], X[0])) * unit_r
     st.solve(zero_init_guess=True)
 
@@ -104,7 +104,7 @@ def _solve_gauge_diagnostics():
     st.tolerance = 1.0e-10
     st.petsc_use_nullspace = True            # enclosed -> pressure null space active
     st.add_essential_bc((0.0, 0.0), "Lower")  # kill the velocity rotation null space
-    st.add_constraint_bc("Upper", g=0.0, normal=unit_r)
+    st.add_constraint_bc(0.0, "Upper", normal=unit_r)
     st.bodyforce = 1.0e2 * sympy.sin(3 * sympy.atan2(X[1], X[0])) * unit_r
     st.solve(zero_init_guess=True)
     assert st._auto_gauge_callback is not None, "auto pressure gauge should have fired"

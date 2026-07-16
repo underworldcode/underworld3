@@ -148,10 +148,9 @@ def create_metric(
     # Create metric MeshVariable
     metric = uw.discretisation.MeshVariable(name, mesh, 1, degree=1)
 
-    with mesh.access(metric):
-        # Convert to metric tensor: M = 1/h² × I (isotropic)
-        # This is dimension-independent: same formula for 2D and 3D
-        metric.data[:, 0] = 1.0 / (h_values ** 2)
+    # Convert to metric tensor: M = 1/h² × I (isotropic)
+    # This is dimension-independent: same formula for 2D and 3D
+    metric.data[:, 0] = 1.0 / (h_values ** 2)
 
     return metric
 
@@ -402,8 +401,7 @@ def metric_from_field(
         )
 
     # Get indicator values
-    with mesh.access(indicator):
-        ind_values = indicator.data[:, 0].copy()
+    ind_values = indicator.data[:, 0].copy()
 
     # Handle indicator bounds
     if indicator_min is None:
@@ -647,10 +645,9 @@ def mesh2mesh_swarm(mesh0, mesh1, swarm0, swarmVarList, proxy=True, verbose=Fals
     if the returned swarm is ephemeral
     """
 
-    with swarm0.access():
-        swarm_data = swarm0._particle_coordinates.data.copy()
-        for swarmVar in swarmVarList:
-            swarm_data = np.hstack((swarm_data, np.ascontiguousarray(swarmVar.data.astype(float))))
+    swarm_data = swarm0._particle_coordinates.data.copy()
+    for swarmVar in swarmVarList:
+        swarm_data = np.hstack((swarm_data, np.ascontiguousarray(swarmVar.data.astype(float))))
 
     s_coords0 = np.ascontiguousarray(swarm_data[:, 0 : mesh0.dim])
 
@@ -891,8 +888,7 @@ def mesh2mesh_meshVariable(meshVar0, meshVar1, verbose=False):
 
     # print(f"Map data to swarm (rbf) - points = {tmp_swarm.dm.getSize()}", flush=True)
 
-    with tmp_swarm.access(tmp_varS):
-        tmp_varS.data[...] = meshVar0.rbf_interpolate(tmp_swarm._particle_coordinates.data)
+    tmp_varS.data[...] = meshVar0.rbf_interpolate(tmp_swarm._particle_coordinates.data)
 
     # print(f"Distribute swarm", flush=True)
 

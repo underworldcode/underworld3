@@ -1,0 +1,53 @@
+name: Style Gates
+
+# Machine-enforced subset of docs/developer/UW3_STYLE_CHARTER.md (S3, S4, S7).
+# Fast (<1 min): no PETSc build, no package install — the scanner is stdlib-only.
+#
+# The gate fails on deprecated patterns NOT recorded in
+# scripts/deprecated_pattern_allowlist.txt. That allowlist records pre-existing
+# legacy hits and may only SHRINK: fix the code your PR adds; only a maintainer
+# adds allowlist entries.
+
+on:
+  pull_request:
+    branches:
+      - development
+      - main
+    types: [opened, synchronize, reopened]
+
+jobs:
+  deprecated-patterns:
+    name: Deprecated-pattern scan (Charter S3/S4/S7)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Scan src/ for Charter-banned patterns
+        run: |
+          echo "Running the deprecated-pattern scanner (stdlib only)..."
+          if ! python scripts/check_deprecated_patterns.py; then
+            echo ""
+            echo "FAILED: your change introduces a pattern banned by the UW3 Style Charter."
+            echo ""
+            echo "  Charter:    docs/developer/UW3_STYLE_CHARTER.md (S3 naming, S4 comments, S7 data access)"
+            echo "  Guide:      docs/developer/guides/style-gates.md"
+            echo "  Run local:  pixi run -e amr-dev python scripts/check_deprecated_patterns.py"
+            echo ""
+            echo "Fix the flagged code. The allowlist"
+            echo "(scripts/deprecated_pattern_allowlist.txt) records pre-existing legacy"
+            echo "hits only and may only SHRINK — only a maintainer adds entries."
+            exit 1
+          fi
+
+      - name: Report deprecated patterns in docs/ (informational)
+        run: |
+          # Never fails: docs cleanup is tracked separately. This keeps the
+          # inventory visible in the job log without blocking PRs.
+          python scripts/check_deprecated_patterns.py --include-docs || true

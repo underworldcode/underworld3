@@ -1018,7 +1018,7 @@ def _convert_coords_to_si(coords):
     - lists/tuples of coordinates (each coordinate can be UWQuantity, Pint Quantity, or float/int)
     - lists/tuples of tuples (for multiple points)
     
-    Returns numpy array of shape (n_points, n_dims) with dtype=np.double in model coordinates.
+    Returns numpy array of shape (n_points, n_dims) with dtype=np.float64 in model coordinates.
     """
     import pint
     
@@ -1047,10 +1047,10 @@ def _convert_coords_to_si(coords):
     
     # If already numpy array with correct dtype, assume it's in model coordinates
     if isinstance(coords, np.ndarray):
-        if coords.dtype == np.double:
+        if coords.dtype == np.float64:
             return coords
         else:
-            return np.array(coords, dtype=np.double)
+            return np.array(coords, dtype=np.float64)
     
     # Convert list/tuple input
     if isinstance(coords, (list, tuple)):
@@ -1067,7 +1067,7 @@ def _convert_coords_to_si(coords):
                         model_value = convert_single_coord(coord)
                         model_point.append(model_value)
                     model_coords.append(model_point)
-                return np.array(model_coords, dtype=np.double)
+                return np.array(model_coords, dtype=np.float64)
             else:
                 # Flat list of coordinates - could be single point [x, y] or [x, y, z]
                 # Check if all elements are coordinate values (not lists/tuples)
@@ -1083,7 +1083,7 @@ def _convert_coords_to_si(coords):
                         model_value = convert_single_coord(coord)
                         model_point.append(model_value)
                     # Return as 2D array with single point
-                    return np.array([model_point], dtype=np.double)
+                    return np.array([model_point], dtype=np.float64)
                 else:
                     raise TypeError(f"Unable to parse coordinate format. Expected list of tuples like "
                                   f"[(x1,y1), (x2,y2)] or single point like [x, y].")

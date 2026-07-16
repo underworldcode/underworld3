@@ -514,23 +514,31 @@ def check_units_consistency(*expressions) -> bool:
     This function validates that all provided expressions have the same dimensionality,
     which is required for addition, subtraction, and comparison operations.
 
-    Args:
-        *expressions: Any number of expressions, quantities, or unit-aware objects
+    Parameters
+    ----------
+    *expressions :
+        Any number of expressions, quantities, or unit-aware objects
 
-    Returns:
-        bool: True if all expressions have consistent units, False otherwise
+    Returns
+    -------
+    bool
+        True if all expressions have consistent units, False otherwise
 
-    Raises:
-        DimensionalityError: If expressions have inconsistent units
-        NoUnitsError: If some expressions have units and others don't
+    Raises
+    ------
+    DimensionalityError
+        If expressions have inconsistent units
+    NoUnitsError
+        If some expressions have units and others don't
 
-    Examples:
-        >>> velocity1 = EnhancedMeshVariable("v1", mesh, 2, units="m/s")
-        >>> velocity2 = EnhancedMeshVariable("v2", mesh, 2, units="km/h")
-        >>> pressure = EnhancedMeshVariable("p", mesh, 1, units="Pa")
+    Examples
+    --------
+    >>> velocity1 = EnhancedMeshVariable("v1", mesh, 2, units="m/s")
+    >>> velocity2 = EnhancedMeshVariable("v2", mesh, 2, units="km/h")
+    >>> pressure = EnhancedMeshVariable("p", mesh, 1, units="Pa")
 
-        >>> check_units_consistency(velocity1, velocity2)  # True - both velocities
-        >>> check_units_consistency(velocity1, pressure)   # False - different dimensions
+    >>> check_units_consistency(velocity1, velocity2)  # True - both velocities
+    >>> check_units_consistency(velocity1, pressure)   # False - different dimensions
     """
     if len(expressions) < 2:
         return True
@@ -568,16 +576,20 @@ def get_dimensionality(expression) -> Optional[Any]:
     """
     Get the dimensionality of an expression or quantity.
 
-    Args:
-        expression: Expression, quantity, or unit-aware object
+    Parameters
+    ----------
+    expression :
+        Expression, quantity, or unit-aware object
 
-    Returns:
-        Dimensionality representation (backend-specific) or None if no units
+    Returns
+    -------
+    Dimensionality representation (backend-specific) or None if no units
 
-    Examples:
-        >>> velocity = EnhancedMeshVariable("velocity", mesh, 2, units="m/s")
-        >>> dims = get_dimensionality(velocity)
-        >>> print(dims)  # [length] / [time]
+    Examples
+    --------
+    >>> velocity = EnhancedMeshVariable("velocity", mesh, 2, units="m/s")
+    >>> dims = get_dimensionality(velocity)
+    >>> print(dims)  # [length] / [time]
     """
     has_units, units, backend = _extract_units_info(expression)
 
@@ -600,22 +612,28 @@ def get_units(expression, simplify: bool = False) -> Optional[Any]:
     IMPORTANT: This function ALWAYS returns Pint Unit objects (or None), never strings.
     We accept strings for INPUT (user convenience), but always return Pint objects.
 
-    Args:
-        expression: Expression, quantity, or unit-aware object
-        simplify: If True, simplify mixed units to base SI (default False).
+    Parameters
+    ----------
+    expression :
+        Expression, quantity, or unit-aware object
+    simplify : bool, default=False
+        If True, simplify mixed units to base SI (default False).
 
-    Returns:
+    Returns
+    -------
+    pint.Unit or None
         Pint Unit object or None if no units
 
-    Examples:
-        >>> velocity = uw.discretisation.MeshVariable("velocity", mesh, 2, units="m/s")
-        >>> units = uw.get_units(velocity)
-        >>> print(units)  # <Unit('meter / second')>
+    Examples
+    --------
+    >>> velocity = uw.discretisation.MeshVariable("velocity", mesh, 2, units="m/s")
+    >>> units = uw.get_units(velocity)
+    >>> print(units)  # <Unit('meter / second')>
 
-        >>> # Mixed units from composite expressions
-        >>> th2 = uw.expression("th2", ((2 * kappa * t_now))**0.5)
-        >>> uw.get_units(th2)  # megayear ** 0.5 * meter / second ** 0.5
-        >>> uw.get_units(th2, simplify=True)  # meter (simplified!)
+    >>> # Mixed units from composite expressions
+    >>> th2 = uw.expression("th2", ((2 * kappa * t_now))**0.5)
+    >>> uw.get_units(th2)  # megayear ** 0.5 * meter / second ** 0.5
+    >>> uw.get_units(th2, simplify=True)  # meter (simplified!)
     """
     has_units, units, backend = _extract_units_info(expression)
 
@@ -655,30 +673,38 @@ def non_dimensionalise(expression, model=None) -> Any:
     - UnitAwareArray (extracts dimensionality from units)
     - Plain numbers (pass through unchanged)
 
-    Args:
-        expression: Expression, quantity, or unit-aware object to non-dimensionalise
-        model: Model instance with reference quantities (uses default if None)
+    Parameters
+    ----------
+    expression :
+        Expression, quantity, or unit-aware object to non-dimensionalise
+    model : Model, optional
+        Model instance with reference quantities (uses default if None)
 
-    Returns:
-        Non-dimensional value(s) with preserved dimensionality metadata
+    Returns
+    -------
+    Non-dimensional value(s) with preserved dimensionality metadata
 
-    Raises:
-        NoUnitsError: If expression has no units and model has reference quantities
-        ValueError: If model has no reference quantities
+    Raises
+    ------
+    NoUnitsError
+        If expression has no units and model has reference quantities
+    ValueError
+        If model has no reference quantities
 
-    Examples:
-        >>> # With variables (uses existing method)
-        >>> velocity_var = MeshVariable("v", mesh, 2, units="m/s")
-        >>> nondim_v = non_dimensionalise(velocity_var)
+    Examples
+    --------
+    >>> # With variables (uses existing method)
+    >>> velocity_var = MeshVariable("v", mesh, 2, units="m/s")
+    >>> nondim_v = non_dimensionalise(velocity_var)
 
-        >>> # With UWQuantity
-        >>> velocity_qty = uw.quantity(5.0, "cm/year")
-        >>> nondim_qty = non_dimensionalise(velocity_qty, model)
-        >>> # Result is dimensionless but remembers it was velocity
+    >>> # With UWQuantity
+    >>> velocity_qty = uw.quantity(5.0, "cm/year")
+    >>> nondim_qty = non_dimensionalise(velocity_qty, model)
+    >>> # Result is dimensionless but remembers it was velocity
 
-        >>> # With plain number (no model reference quantities)
-        >>> plain_value = 2.5
-        >>> result = non_dimensionalise(plain_value)  # Returns 2.5
+    >>> # With plain number (no model reference quantities)
+    >>> plain_value = 2.5
+    >>> result = non_dimensionalise(plain_value)  # Returns 2.5
     """
     # Get model if not provided
     if model is None:
@@ -851,6 +877,12 @@ def non_dimensionalise(expression, model=None) -> Any:
             try:
                 scale = model.get_scale_for_dimensionality(dimensionality)
                 result_qty = expression / scale
+                # TODO(BUG): UWQuantity.__init__ has no `dimensionality`
+                # kwarg, so this raises TypeError whenever a raw
+                # pint.Quantity is non-dimensionalised with active scaling
+                # and a resolvable scale. Found while verifying BF-12
+                # (2026-07 audit). The uw.quantity (UWQuantity) path works
+                # and is the workaround.
                 # Return UWQuantity to preserve dimensionality
                 return UWQuantity(float(result_qty.magnitude), units="dimensionless", dimensionality=dimensionality)
             except ValueError as e:
@@ -887,22 +919,27 @@ def show_nondimensional_form(expression, model=None):
     Useful for seeing what will actually be compiled into C code when
     scaling is active.
 
-    Args:
-        expression: Any SymPy expression, UW expression, or variable
-        model: Model instance with reference quantities (uses default if None)
+    Parameters
+    ----------
+    expression :
+        Any SymPy expression, UW expression, or variable
+    model : Model, optional
+        Model instance with reference quantities (uses default if None)
 
-    Returns:
-        SymPy expression with non-dimensional scaling applied
+    Returns
+    -------
+    SymPy expression with non-dimensional scaling applied
 
-    Examples:
-        >>> # See what the Stokes flux looks like non-dimensionally
-        >>> flux = stokes.constitutive_model.flux
-        >>> nondim_flux = uw.show_nondimensional_form(flux)
-        >>> print(nondim_flux)  # Should show values close to 1.0, not 1e21
+    Examples
+    --------
+    >>> # See what the Stokes flux looks like non-dimensionally
+    >>> flux = stokes.constitutive_model.flux
+    >>> nondim_flux = uw.show_nondimensional_form(flux)
+    >>> print(nondim_flux)  # Should show values close to 1.0, not 1e21
 
-        >>> # Check a parameter
-        >>> viscosity = model.Parameters.shear_viscosity_0
-        >>> print(uw.show_nondimensional_form(viscosity))  # Should be ~1.0
+    >>> # Check a parameter
+    >>> viscosity = model.Parameters.shear_viscosity_0
+    >>> print(uw.show_nondimensional_form(viscosity))  # Should be ~1.0
     """
     import underworld3 as uw
     from .function.expressions import _unwrap_for_compilation
@@ -1090,16 +1127,20 @@ def simplify_units(expression) -> Any:
     This function performs dimensional analysis to simplify unit expressions,
     canceling common factors and reducing to fundamental units.
 
-    Args:
-        expression: Expression with units to simplify
+    Parameters
+    ----------
+    expression :
+        Expression with units to simplify
 
-    Returns:
-        Expression with simplified units
+    Returns
+    -------
+    Expression with simplified units
 
-    Examples:
-        >>> # Force per area = pressure
-        >>> force_per_area = force / area  # N/m²
-        >>> simplified = simplify_units(force_per_area)  # Pa
+    Examples
+    --------
+    >>> # Force per area = pressure
+    >>> force_per_area = force / area  # N/m²
+    >>> simplified = simplify_units(force_per_area)  # Pa
     """
     has_units, units, backend = _extract_units_info(expression)
 
@@ -1116,18 +1157,35 @@ def create_quantity(value, units: Union[str, Any], backend: Optional[str] = None
     """
     Create a dimensional quantity from a value and units.
 
-    Args:
-        value: Numeric value or array
-        units: Units specification (string or units object)
-        backend: Backend to use ('pint' or 'sympy'), defaults to 'pint'
+    .. deprecated:: 2026-07
+        ``uw.quantity`` is THE quantity factory (maintainer decision D14):
+        it returns a :class:`~underworld3.function.quantities.UWQuantity`,
+        which composes with expressions and non-dimensionalisation. This
+        function returns a raw Pint ``Quantity`` and will be removed after one
+        deprecation cycle.
 
-    Returns:
-        Dimensional quantity
+    Parameters
+    ----------
+    value :
+        Numeric value or array
+    units : str or units object
+        Units specification (string or units object)
+    backend : str, optional
+        Backend to use ('pint' or 'sympy'), defaults to 'pint'
 
-    Examples:
-        >>> velocity_qty = create_quantity([1.0, 2.0], "m/s")
-        >>> pressure_qty = create_quantity(101325, "Pa")
+    Returns
+    -------
+    Dimensional quantity (raw Pint ``Quantity``)
+
+    Examples
+    --------
+    >>> velocity_qty = create_quantity([1.0, 2.0], "m/s")
+    >>> pressure_qty = create_quantity(101325, "Pa")
     """
+    warnings.warn(
+        "create_quantity is deprecated; use uw.quantity(value, units) — note "
+        "it returns a UWQuantity rather than a raw Pint Quantity",
+        DeprecationWarning, stacklevel=2)
     # backend parameter is deprecated - Pint is the only supported backend
     if backend is not None and backend.lower() != "pint":
         raise ValueError(f"Unknown backend: {backend}. Only 'pint' is supported.")
@@ -1148,25 +1206,33 @@ def convert_units(quantity, target_units: Union[str, Any]) -> Any:
     - UnitAwareArray → returns new UnitAwareArray with converted values
     - Pint Quantity → returns converted Pint Quantity
 
-    Args:
-        quantity: Quantity to convert (UWQuantity, UWexpression, UnitAwareArray, Pint)
-        target_units: Target units for conversion (str or Pint Unit)
+    Parameters
+    ----------
+    quantity :
+        Quantity to convert (UWQuantity, UWexpression, UnitAwareArray, Pint)
+    target_units : str or pint.Unit
+        Target units for conversion (str or Pint Unit)
 
-    Returns:
-        Same type as input, converted to target units
+    Returns
+    -------
+    Same type as input, converted to target units
 
-    Raises:
-        DimensionalityError: If units are not compatible for conversion
-        NoUnitsError: If quantity has no units
+    Raises
+    ------
+    DimensionalityError
+        If units are not compatible for conversion
+    NoUnitsError
+        If quantity has no units
 
-    Examples:
-        >>> velocity = uw.quantity(10, "m/s")
-        >>> velocity_kmh = uw.convert_units(velocity, "km/h")
-        >>> print(velocity_kmh)  # 36.0 [kilometer / hour]
+    Examples
+    --------
+    >>> velocity = uw.quantity(10, "m/s")
+    >>> velocity_kmh = uw.convert_units(velocity, "km/h")
+    >>> print(velocity_kmh)  # 36.0 [kilometer / hour]
 
-        >>> radius = uw.expression("r", uw.quantity(6370, "km"))
-        >>> radius_m = uw.convert_units(radius, "m")
-        >>> print(radius_m.value)  # 6370000.0
+    >>> radius = uw.expression("r", uw.quantity(6370, "km"))
+    >>> radius_m = uw.convert_units(radius, "m")
+    >>> print(radius_m.value)  # 6370000.0
     """
     from underworld3.scaling import units as ureg
 
@@ -1276,23 +1342,29 @@ def to_base_units(quantity) -> Any:
     This is a convenience function that converts any unit-aware quantity
     to its SI base unit representation.
 
-    Args:
-        quantity: Quantity to convert (UWQuantity, UWexpression, UnitAwareArray, Pint)
+    Parameters
+    ----------
+    quantity :
+        Quantity to convert (UWQuantity, UWexpression, UnitAwareArray, Pint)
 
-    Returns:
-        Same type as input, converted to SI base units
+    Returns
+    -------
+    Same type as input, converted to SI base units
 
-    Raises:
-        NoUnitsError: If quantity has no units
+    Raises
+    ------
+    NoUnitsError
+        If quantity has no units
 
-    Examples:
-        >>> velocity = uw.quantity(36, "km/h")
-        >>> velocity_si = uw.to_base_units(velocity)
-        >>> print(velocity_si)  # 10.0 [meter / second]
+    Examples
+    --------
+    >>> velocity = uw.quantity(36, "km/h")
+    >>> velocity_si = uw.to_base_units(velocity)
+    >>> print(velocity_si)  # 10.0 [meter / second]
 
-        >>> radius = uw.expression("r", uw.quantity(6370, "km"))
-        >>> radius_si = uw.to_base_units(radius)
-        >>> print(radius_si.value)  # 6370000.0
+    >>> radius = uw.expression("r", uw.quantity(6370, "km"))
+    >>> radius_si = uw.to_base_units(radius)
+    >>> print(radius_si.value)  # 6370000.0
     """
     from underworld3.scaling import units as ureg
 
@@ -1370,19 +1442,25 @@ def to_reduced_units(quantity) -> Any:
     This is useful for complex unit expressions like (kg * m / s²) / (kg / m³)
     which would simplify to m⁴ / s².
 
-    Args:
-        quantity: Quantity to simplify (UWQuantity, UWexpression, UnitAwareArray, Pint)
+    Parameters
+    ----------
+    quantity :
+        Quantity to simplify (UWQuantity, UWexpression, UnitAwareArray, Pint)
 
-    Returns:
-        Same type as input, with simplified units
+    Returns
+    -------
+    Same type as input, with simplified units
 
-    Raises:
-        NoUnitsError: If quantity has no units
+    Raises
+    ------
+    NoUnitsError
+        If quantity has no units
 
-    Examples:
-        >>> force = uw.quantity(100, "kg*m/s**2")
-        >>> force_simplified = uw.to_reduced_units(force)
-        >>> print(force_simplified)  # 100.0 [newton]
+    Examples
+    --------
+    >>> force = uw.quantity(100, "kg*m/s**2")
+    >>> force_simplified = uw.to_reduced_units(force)
+    >>> print(force_simplified)  # 100.0 [newton]
     """
     from underworld3.scaling import units as ureg
 
@@ -1456,23 +1534,29 @@ def to_compact(quantity) -> Any:
     This automatically chooses unit prefixes (kilo, mega, micro, etc.)
     to make the number more readable. For example, 0.001 km becomes 1 m.
 
-    Args:
-        quantity: Quantity to make compact (UWQuantity, UWexpression, UnitAwareArray, Pint)
+    Parameters
+    ----------
+    quantity :
+        Quantity to make compact (UWQuantity, UWexpression, UnitAwareArray, Pint)
 
-    Returns:
-        Same type as input, with compact units
+    Returns
+    -------
+    Same type as input, with compact units
 
-    Raises:
-        NoUnitsError: If quantity has no units
+    Raises
+    ------
+    NoUnitsError
+        If quantity has no units
 
-    Examples:
-        >>> length = uw.quantity(0.001, "km")
-        >>> length_compact = uw.to_compact(length)
-        >>> print(length_compact)  # 1.0 [meter]
+    Examples
+    --------
+    >>> length = uw.quantity(0.001, "km")
+    >>> length_compact = uw.to_compact(length)
+    >>> print(length_compact)  # 1.0 [meter]
 
-        >>> big_length = uw.quantity(1e9, "m")
-        >>> big_compact = uw.to_compact(big_length)
-        >>> print(big_compact)  # 1.0 [gigameter]
+    >>> big_length = uw.quantity(1e9, "m")
+    >>> big_compact = uw.to_compact(big_length)
+    >>> print(big_compact)  # 1.0 [gigameter]
     """
     from underworld3.scaling import units as ureg
 
@@ -1543,13 +1627,16 @@ def get_scaling_coefficients() -> Dict[str, Any]:
     """
     Get the current scaling coefficients used for non-dimensionalisation.
 
-    Returns:
+    Returns
+    -------
+    dict
         Dictionary of scaling coefficients for fundamental dimensions
 
-    Examples:
-        >>> coeffs = get_scaling_coefficients()
-        >>> print(coeffs['[length]'])  # 1.0 meter
-        >>> print(coeffs['[time]'])    # 1.0 year
+    Examples
+    --------
+    >>> coeffs = get_scaling_coefficients()
+    >>> print(coeffs['[length]'])  # 1.0 meter
+    >>> print(coeffs['[time]'])    # 1.0 year
     """
     # Use the existing scaling module
     import underworld3.scaling as scaling
@@ -1561,14 +1648,17 @@ def set_scaling_coefficients(coefficients: Dict[str, Any]) -> None:
     """
     Set custom scaling coefficients for non-dimensionalisation.
 
-    Args:
-        coefficients: Dictionary mapping dimension names to scaling quantities
+    Parameters
+    ----------
+    coefficients : dict
+        Dictionary mapping dimension names to scaling quantities
 
-    Examples:
-        >>> coeffs = get_scaling_coefficients()
-        >>> coeffs['[length]'] = create_quantity(1000, "km")  # Geological scale
-        >>> coeffs['[time]'] = create_quantity(1e6, "year")   # Geological time
-        >>> set_scaling_coefficients(coeffs)
+    Examples
+    --------
+    >>> coeffs = get_scaling_coefficients()
+    >>> coeffs['[length]'] = create_quantity(1000, "km")  # Geological scale
+    >>> coeffs['[time]'] = create_quantity(1e6, "year")   # Geological time
+    >>> set_scaling_coefficients(coeffs)
     """
     # This would need to update the scaling module's global coefficients
     warnings.warn("Setting custom scaling coefficients not implemented")
@@ -1617,15 +1707,22 @@ def validate_expression_units(expression, expected_units: Union[str, Any]) -> bo
     """
     Validate that an expression has the expected units.
 
-    Args:
-        expression: Expression to validate
-        expected_units: Expected units (string or units object)
+    Parameters
+    ----------
+    expression :
+        Expression to validate
+    expected_units : str or units object
+        Expected units (string or units object)
 
-    Returns:
+    Returns
+    -------
+    bool
         True if units match, False otherwise
 
-    Raises:
-        NoUnitsError: If expression has no units but units are expected
+    Raises
+    ------
+    NoUnitsError
+        If expression has no units but units are expected
     """
     has_units_flag, actual_units, backend = _extract_units_info(expression)
 
@@ -1652,42 +1749,53 @@ def assert_dimensionality(
     at various points in the code. Complements get_dimensionality() by providing
     enforcement rather than just inspection.
 
-    Args:
-        value: The value to validate (quantity, expression, variable, array, etc.)
-        expected_dimensionality: Expected dimensionality as a string
-            - Specific dimensionality: "[length]", "[length]/[time]", "[mass]*[length]/[time]**2"
-            - Dimensionless: "dimensionless" or ""
-        value_name: Name of the value being validated (for error messages)
-        allow_dimensionless: If True, accept dimensionless values even when dimensional
-            expected (default: True, as dimensionless is valid for solver operations)
-        strict: If True, raise error on dimensionless when dimensional expected
-            (default: False, overrides allow_dimensionless)
+    Parameters
+    ----------
+    value :
+        The value to validate (quantity, expression, variable, array, etc.)
+    expected_dimensionality : str
+        Expected dimensionality as a string
 
-    Raises:
-        DimensionalityError: If dimensionality doesn't match expected
-        NoUnitsError: If strict=True and value is dimensionless when dimensional expected
+        - Specific dimensionality: "[length]", "[length]/[time]", "[mass]*[length]/[time]**2"
+        - Dimensionless: "dimensionless" or ""
+    value_name : str, default="value"
+        Name of the value being validated (for error messages)
+    allow_dimensionless : bool, default=True
+        If True, accept dimensionless values even when dimensional
+        expected (default: True, as dimensionless is valid for solver operations)
+    strict : bool, default=False
+        If True, raise error on dimensionless when dimensional expected
+        (default: False, overrides allow_dimensionless)
 
-    Examples:
-        >>> # Validate coordinates have length dimensionality
-        >>> coords = mesh.X.coords
-        >>> assert_dimensionality(coords, "[length]", "coordinates")
+    Raises
+    ------
+    DimensionalityError
+        If dimensionality doesn't match expected
+    NoUnitsError
+        If strict=True and value is dimensionless when dimensional expected
 
-        >>> # Validate velocity has correct dimensionality
-        >>> velocity = uw.discretisation.MeshVariable("v", mesh, 2, units="m/s")
-        >>> assert_dimensionality(velocity, "[length]/[time]", "velocity")
+    Examples
+    --------
+    >>> # Validate coordinates have length dimensionality
+    >>> coords = mesh.X.coords
+    >>> assert_dimensionality(coords, "[length]", "coordinates")
 
-        >>> # Validate pressure
-        >>> pressure = uw.quantity(1e5, "Pa")
-        >>> assert_dimensionality(pressure, "[mass]/([length]*[time]**2)", "pressure")
+    >>> # Validate velocity has correct dimensionality
+    >>> velocity = uw.discretisation.MeshVariable("v", mesh, 2, units="m/s")
+    >>> assert_dimensionality(velocity, "[length]/[time]", "velocity")
 
-        >>> # Accept dimensionless when dimensional expected (default)
-        >>> dimensionless_coords = np.array([[0, 1], [1, 1]])
-        >>> assert_dimensionality(dimensionless_coords, "[length]", "coords")  # OK
+    >>> # Validate pressure
+    >>> pressure = uw.quantity(1e5, "Pa")
+    >>> assert_dimensionality(pressure, "[mass]/([length]*[time]**2)", "pressure")
 
-        >>> # Strict mode: reject dimensionless when dimensional expected
-        >>> assert_dimensionality(
-        ...     dimensionless_coords, "[length]", "coords", strict=True
-        ... )  # Raises NoUnitsError
+    >>> # Accept dimensionless when dimensional expected (default)
+    >>> dimensionless_coords = np.array([[0, 1], [1, 1]])
+    >>> assert_dimensionality(dimensionless_coords, "[length]", "coords")  # OK
+
+    >>> # Strict mode: reject dimensionless when dimensional expected
+    >>> assert_dimensionality(
+    ...     dimensionless_coords, "[length]", "coords", strict=True
+    ... )  # Raises NoUnitsError
     """
     # Check if value has units
     has_units_flag, actual_units, backend = _extract_units_info(value)
@@ -1778,23 +1886,28 @@ def validate_coordinates_dimensionality(coords) -> None:
     raise an error if coordinates have the wrong dimensionality (e.g., time,
     temperature, velocity).
 
-    Args:
-        coords: Coordinate array to validate
+    Parameters
+    ----------
+    coords :
+        Coordinate array to validate
 
-    Raises:
-        DimensionalityError: If coordinates have units but not length dimensionality
+    Raises
+    ------
+    DimensionalityError
+        If coordinates have units but not length dimensionality
 
-    Examples:
-        >>> # Valid: dimensionless coords (for solvers)
-        >>> validate_coordinates_dimensionality(np.array([[0, 1], [1, 1]]))
+    Examples
+    --------
+    >>> # Valid: dimensionless coords (for solvers)
+    >>> validate_coordinates_dimensionality(np.array([[0, 1], [1, 1]]))
 
-        >>> # Valid: coords with length units
-        >>> coords = uw.function.UnitAwareArray([[0, 1000], [1000, 1000]], units="meter")
-        >>> validate_coordinates_dimensionality(coords)
+    >>> # Valid: coords with length units
+    >>> coords = uw.function.UnitAwareArray([[0, 1000], [1000, 1000]], units="meter")
+    >>> validate_coordinates_dimensionality(coords)
 
-        >>> # Invalid: coords with time units (would raise error)
-        >>> time_coords = uw.quantity(5.0, "second")
-        >>> validate_coordinates_dimensionality(time_coords)  # Raises DimensionalityError
+    >>> # Invalid: coords with time units (would raise error)
+    >>> time_coords = uw.quantity(5.0, "second")
+    >>> validate_coordinates_dimensionality(time_coords)  # Raises DimensionalityError
     """
     # Check if coords have units
     has_units_flag, actual_units, backend = _extract_units_info(coords)
@@ -1828,12 +1941,17 @@ def enforce_units_consistency(*expressions) -> None:
     """
     Enforce units consistency, raising an error if inconsistent.
 
-    Args:
-        *expressions: Expressions that must have consistent units
+    Parameters
+    ----------
+    *expressions :
+        Expressions that must have consistent units
 
-    Raises:
-        DimensionalityError: If units are inconsistent
-        NoUnitsError: If some have units and others don't
+    Raises
+    ------
+    DimensionalityError
+        If units are inconsistent
+    NoUnitsError
+        If some have units and others don't
     """
     check_units_consistency(*expressions)  # This already raises appropriate errors
 
@@ -1860,39 +1978,50 @@ def require_units_if_active(
     This prevents ambiguity in dimensional problems where a raw number like `400`
     could mean meters, kilometers, or a nondimensional value.
 
-    Args:
-        value: Input value (quantity, expression, or raw number)
-        name: Parameter name for error messages (e.g., "depth_max")
-        expected_dimensionality: Expected dimensionality string (e.g., "[length]")
-            If provided, validates the input has correct dimensionality.
-        default_unit: Default unit to assume for raw values when units not active.
-            Only used for documentation in error messages.
+    Parameters
+    ----------
+    value :
+        Input value (quantity, expression, or raw number)
+    name : str
+        Parameter name for error messages (e.g., "depth_max")
+    expected_dimensionality : str, optional
+        Expected dimensionality string (e.g., "[length]")
+        If provided, validates the input has correct dimensionality.
+    default_unit : str, optional
+        Default unit to assume for raw values when units not active.
+        Only used for documentation in error messages.
 
-    Returns:
-        float: Nondimensional value (divided by appropriate reference scale)
+    Returns
+    -------
+    float
+        Nondimensional value (divided by appropriate reference scale)
 
-    Raises:
-        ValueError: If units are active but value has no units
-        DimensionalityError: If value has wrong dimensionality
+    Raises
+    ------
+    ValueError
+        If units are active but value has no units
+    DimensionalityError
+        If value has wrong dimensionality
 
-    Examples:
-        >>> # With units active - requires quantity
-        >>> model = uw.Model()
-        >>> model.set_reference_quantities(length=uw.quantity(1000, "km"), ...)
-        >>> depth = require_units_if_active(
-        ...     uw.quantity(400, "km"),
-        ...     "depth_max",
-        ...     expected_dimensionality="[length]"
-        ... )
-        >>> depth  # Returns 0.4 (400 km / 1000 km reference)
+    Examples
+    --------
+    >>> # With units active - requires quantity
+    >>> model = uw.Model()
+    >>> model.set_reference_quantities(length=uw.quantity(1000, "km"), ...)
+    >>> depth = require_units_if_active(
+    ...     uw.quantity(400, "km"),
+    ...     "depth_max",
+    ...     expected_dimensionality="[length]"
+    ... )
+    >>> depth  # Returns 0.4 (400 km / 1000 km reference)
 
-        >>> # Without units - raw numbers accepted
-        >>> depth = require_units_if_active(400, "depth_max")
-        >>> depth  # Returns 400 (unchanged)
+    >>> # Without units - raw numbers accepted
+    >>> depth = require_units_if_active(400, "depth_max")
+    >>> depth  # Returns 400 (unchanged)
 
-        >>> # Error case - units active but raw number provided
-        >>> model.set_reference_quantities(...)
-        >>> require_units_if_active(400, "depth_max")  # Raises ValueError
+    >>> # Error case - units active but raw number provided
+    >>> model.set_reference_quantities(...)
+    >>> require_units_if_active(400, "depth_max")  # Raises ValueError
     """
     import underworld3 as uw
 
@@ -1953,17 +2082,23 @@ def convert_angle_to_degrees(value, name: str = "angle") -> float:
     - Quantities with degree units: extracted as degrees
     - Quantities with radian units: converted to degrees
 
-    Args:
-        value: Angle value (quantity or raw number)
-        name: Parameter name for error messages
+    Parameters
+    ----------
+    value :
+        Angle value (quantity or raw number)
+    name : str, default="angle"
+        Parameter name for error messages
 
-    Returns:
-        float: Angle in degrees
+    Returns
+    -------
+    float
+        Angle in degrees
 
-    Examples:
-        >>> convert_angle_to_degrees(45)  # Raw number → 45 degrees
-        >>> convert_angle_to_degrees(uw.quantity(45, "degree"))  # → 45
-        >>> convert_angle_to_degrees(uw.quantity(np.pi/4, "radian"))  # → 45
+    Examples
+    --------
+    >>> convert_angle_to_degrees(45)  # Raw number → 45 degrees
+    >>> convert_angle_to_degrees(uw.quantity(45, "degree"))  # → 45
+    >>> convert_angle_to_degrees(uw.quantity(np.pi/4, "radian"))  # → 45
     """
     if not has_units(value):
         # Raw number - assume degrees (conventional for geographic)

@@ -67,7 +67,7 @@ def _boundary_field_nodes(solver, boundary, field_id=0):
     v0, v1 = dm.getDepthStratum(0)
     fS, fE = dm.getHeightStratum(1)
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-    if sis is None or sis.handle == 0:
+    if not (sis and sis.getSize() > 0):
         return [], lsec, csec, cvec, v0, v1
     facets = [int(z) for z in sis.getIndices()]
     seen = set(); out = []
@@ -103,7 +103,7 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     if normal is None:
         # accumulate area-weighted facet normals to the closure nodes
         sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-        facets = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
+        facets = [] if not (sis and sis.getSize() > 0) else [int(z) for z in sis.getIndices()]
         fS, fE = dm.getHeightStratum(1)
         acc = {}
         for f in facets:
@@ -151,7 +151,7 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     def vcoord(q): return cvec[csec.getOffset(q) // dim]
     nodeR = {_key(x, dim): float(r) for x, r in zip(xs, R)}
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-    strat = [] if (sis is None or sis.handle == 0) else [int(z) for z in sis.getIndices()]
+    strat = [] if not (sis and sis.getSize() > 0) else [int(z) for z in sis.getIndices()]
     local_elems = []
     for e in [q for q in strat if e0 <= q < e1]:
         a, b = (int(c) for c in dm.getCone(e))
@@ -253,10 +253,21 @@ def write_boundary_scalar_field(solver, field, value_by_key, dim):
     return field
 
 
-def boundary_flux_to_field(solver, boundary, field, mass="lumped",
-                           remove_mean=False, scale=1.0, normal=None):
-    """See ``SolverBaseClass.boundary_flux_field``. Writes ``scale * flux`` onto the
-    scalar MeshVariable ``field`` at the boundary nodes (interior untouched)."""
+def boundary_flux_field(solver, boundary, field, mass="lumped",
+                        remove_mean=False, scale=1.0, normal=None):
+    r"""See ``SolverBaseClass.boundary_flux_field`` (the documented entry point;
+    this free function is its implementation and shares its name). Writes
+    ``scale * flux`` onto the scalar MeshVariable ``field`` at the boundary
+    nodes (interior untouched).
+
+    ``scale`` is a generic multiplier on the recovered flux. For dynamic
+    topography it is the **negated reciprocal** of the buoyancy scale used by
+    the expression-return paths: ``scale = -1 / buoyancy_scale``, where
+    ``buoyancy_scale`` is :math:`\Delta\rho\, g` as taken by
+    ``dynamic_topography`` / ``topography`` (there the division and the minus
+    sign are internal). The two parameters are deliberately NOT aliased —
+    treating them as one factor invites sign/reciprocal errors.
+    """
     dim = solver.mesh.dim
     xs, flux = boundary_flux(solver, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
     flux = np.asarray(flux)
@@ -270,3 +281,13 @@ def boundary_flux_to_field(solver, boundary, field, mass="lumped",
             "component, or use boundary_flux() directly for the full vector.")
     fmap = {_key(x, dim): scale * float(f) for x, f in zip(np.asarray(xs), flux.ravel())}
     return write_boundary_scalar_field(solver, field, fmap, dim)
+
+
+def boundary_flux_to_field(*args, **kwargs):
+    """Deprecated alias for :func:`boundary_flux_field` (renamed 2026-07 so the
+    free function matches the solver method it implements; kept one cycle)."""
+    import warnings
+    warnings.warn(
+        "boundary_flux_to_field is renamed; use boundary_flux_field(...)",
+        DeprecationWarning, stacklevel=2)
+    return boundary_flux_field(*args, **kwargs)

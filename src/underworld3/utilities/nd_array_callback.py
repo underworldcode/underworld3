@@ -267,11 +267,18 @@ class NDArray_With_Callback(np.ndarray):
         # Use numpy's view to avoid recursion
         try:
             self_as_ndarray = np.ndarray.view(self, np.ndarray)
+            # NB: require a NON-None shared base for the base-equality branch.
+            # A fresh ufunc result (e.g. scalar * arr) has base=None; if self
+            # also owns its data (base=None) then `result.base is self.base`
+            # is `None is None` == True, which under numpy 2.0's ufunc dispatch
+            # wrongly returned `self` and dropped the operation (scalar * arr ==
+            # arr). Only a genuine in-place/view result shares a non-None base.
             if result is self_as_ndarray or (
-                hasattr(result, "base") and hasattr(self, "base") and result.base is self.base
+                self.base is not None
+                and getattr(result, "base", None) is self.base
             ):
                 return self
-        except:
+        except Exception:
             # If view comparison fails, fall back to simple check
             pass
 
@@ -414,9 +421,9 @@ class NDArray_With_Callback(np.ndarray):
 
         Example
         -------
-        >>> with NDArray_With_Callback.delay_callbacks_global("mesh update"):
-        ...     mesh.data[0] = new_pos
-        ...     swarm.data += displacement
+        >>> with NDArray_With_Callback.delay_callbacks_global("field update"):
+        ...     temperature.array[...] = new_T
+        ...     material.array[...] = new_material
         # All callbacks from all arrays fire here
         """
 

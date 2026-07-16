@@ -415,7 +415,7 @@ def global_evaluate_nd(   expr,
     # Python wrapper in functions_unit_system.py handles dimensional conversions
     # CRITICAL: Use np.array() to force copy and strip subclass (e.g. UnitAwareArray)
     # np.asarray() preserves subclass if dtype matches, causing downstream issues
-    coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
+    coords_array = np.array(coords, dtype=np.float64, copy=False).view(np.ndarray)
 
     mesh, varfns, derivfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
@@ -527,7 +527,7 @@ def global_evaluate_nd(   expr,
     # Pre-allocate with NaN so the shape is always correct. If any points
     # are lost during the migration round-trip, they remain NaN rather than
     # causing a shape mismatch or returning uninitialised data.
-    return_value = np.full((n_input_points,) + expr_shape, np.nan, dtype=np.double)
+    return_value = np.full((n_input_points,) + expr_shape, np.nan, dtype=np.float64)
     return_mask = np.full((n_input_points, 1, 1), True, dtype=bool)
 
     n_returned = original_index.array.shape[0]
@@ -590,7 +590,7 @@ def global_evaluate_nd(   expr,
 
         comm = uw.mpi.comm
         ext_idx = np.where(return_mask[:, 0, 0])[0]
-        ext_coords = np.ascontiguousarray(coords_array[ext_idx], dtype=np.double)
+        ext_coords = np.ascontiguousarray(coords_array[ext_idx], dtype=np.float64)
 
         counts = np.array(comm.allgather(ext_coords.shape[0]), dtype=int)
         n_ext_total = int(counts.sum())
@@ -606,16 +606,16 @@ def global_evaluate_nd(   expr,
                 expr, all_ext, rbf=True, evalf=False, verbose=False,
                 check_extrapolated=True,)
             ext_vals = np.ascontiguousarray(
-                np.asarray(ext_vals, dtype=np.double).reshape((n_ext_total,) + expr_shape))
+                np.asarray(ext_vals, dtype=np.float64).reshape((n_ext_total,) + expr_shape))
             ext_flag = np.asarray(ext_flag).reshape(n_ext_total).astype(np.int32)
 
             # Nearest-local-cell distance for every point (local kd-tree query).
             mesh._build_kd_tree_index()
             dist2, _ = mesh._centroid_index.query(all_ext, k=1, sqr_dists=True)
-            dist2 = np.ascontiguousarray(np.asarray(dist2, dtype=np.double).ravel())
+            dist2 = np.ascontiguousarray(np.asarray(dist2, dtype=np.float64).ravel())
 
             # Globally-nearest cell per point, lowest rank as the tie-break.
-            min_dist2 = np.empty(n_ext_total, dtype=np.double)
+            min_dist2 = np.empty(n_ext_total, dtype=np.float64)
             comm.Allreduce([dist2, MPI.DOUBLE], [min_dist2, MPI.DOUBLE], op=MPI.MIN)
             my_claim = np.where(dist2 <= min_dist2 * (1.0 + 1e-12) + 1e-300,
                                 comm.rank, comm.size).astype(np.int32)
@@ -822,10 +822,13 @@ def _clement_to_work_variable(expr, mesh, derivfns):
             # P1 - data is at nodes
             nodal_values[varfn] = var.data[:, comp].flatten()
         else:
-            # Higher degree - need to evaluate at node coords
-            nodal_values[varfn] = uw.function.evaluate(
-                var.sym[comp, 0], node_coords, rbf=True
-            ).flatten()
+            # Higher degree - need to evaluate at node coords. Evaluate the
+            # component's own applied function directly: var.sym is a row
+            # matrix (1, cdim) for vectors (and (rows, cols) for tensors), so
+            # indexing it by the flat data-column index is wrong / can raise.
+            nodal_values[varfn] = np.asarray(uw.function.evaluate(
+                varfn, node_coords, rbf=True
+            )).flatten()
 
     # Compute Clement gradients for derivative source variables
     gradient_at_nodes = {}
@@ -840,11 +843,14 @@ def _clement_to_work_variable(expr, mesh, derivfns):
                 grad = compute_clement_gradient_at_nodes(source_var, component=c)
                 gradient_at_nodes[(source_var, c)] = grad
 
-    # Add derivative values to nodal_values dictionary
+    # Add derivative values to nodal_values dictionary. Each derivative
+    # expression carries its own flat data-column index (diffcls.component,
+    # set at UnderworldFunction registration) — use it to retrieve the
+    # matching per-component gradient, so e.g. v[1].diff(x) reads the
+    # component-1 gradient rather than component 0.
     for source_var, deriv_list in derivfns.items():
-        comp = 0 if source_var.num_components == 1 else 0  # TODO: handle multi-component
-        grad = gradient_at_nodes[(source_var, comp)]  # shape (n_nodes, dim)
         for deriv_expr, diffindex in deriv_list:
+            grad = gradient_at_nodes[(source_var, deriv_expr.component)]  # (n_nodes, dim)
             # grad[:, diffindex] gives ∂f/∂x_i at all nodes
             nodal_values[deriv_expr] = grad[:, diffindex]
 
@@ -886,8 +892,7 @@ def _clement_to_work_variable(expr, mesh, derivfns):
         result = np.full(n_nodes, result[0])
 
     # Store in work variable
-    with mesh.access(work_var):
-        work_var.data[:, 0] = result.flatten()
+    work_var.data[:, 0] = result.flatten()
 
     return work_var
 
@@ -941,7 +946,7 @@ def evaluate_nd(   expr,
     # Python wrapper in functions_unit_system.py handles dimensional conversions
     # CRITICAL: Use np.array() to force copy and strip subclass (e.g. UnitAwareArray)
     # np.asarray() preserves subclass if dtype matches, causing downstream issues
-    coords_array = np.array(coords, dtype=np.double, copy=False).view(np.ndarray)
+    coords_array = np.array(coords, dtype=np.float64, copy=False).view(np.ndarray)
 
     dim = coords_array.shape[1]
     mesh, varfns, derivfns = uw.function.fn_mesh_vars_in_expression(expr)
@@ -1153,7 +1158,7 @@ def petsc_interpolate(   expr,
                          "Note also that it is inefficient to call this function for a single evaluation,\n"
                          "and you should instead stack up all necessary evaluations into your `coords` array\n"
                          "and call this function once.")
-    if coords.dtype != np.double:
+    if coords.dtype != np.float64:
         raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
@@ -1275,11 +1280,15 @@ def petsc_interpolate(   expr,
         cached_info = mesh._dminterpolation_cache.get_structure(coords, dofcount)
 
         # Create output array
-        cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.double)
+        cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.float64)
 
         if cached_info is not None:
             # CACHE HIT - Fast path. Evaluate using cached structure
-            mesh.update_lvec()  # Ensure fresh values
+            # swarm_sync=False: petsc_interpolate is reached by only the
+            # ranks that hold interior points — the swarm-dependency hook
+            # does collective reductions and must not run on a subset.
+            # Freshness comes from the all-ranks update_lvec() in evaluate().
+            mesh.update_lvec(swarm_sync=False)  # Ensure fresh values
             cached_info.evaluate(mesh, outarray)
 
         else:
@@ -1320,7 +1329,9 @@ def petsc_interpolate(   expr,
             mesh._dminterpolation_cache.store_structure(coords, dofcount, cached_info)
 
             # Evaluate
-            mesh.update_lvec()
+            # swarm_sync=False: see the cache-hit branch above — only a
+            # subset of ranks reaches petsc_interpolate.
+            mesh.update_lvec(swarm_sync=False)
             cached_info.evaluate(mesh, outarray)
         # === END CACHING ===
 
@@ -1439,7 +1450,7 @@ def rbf_evaluate(  expr,
                          "Note also that it is inefficient to call this function for a single evaluation,\n"
                          "and you should instead stack up all necessary evaluations into your `coords` array\n"
                          "and call this function once.")
-    if coords.dtype != np.double:
+    if coords.dtype != np.float64:
         raise ValueError("Provided `coords` must be an array of doubles.")
     if other_arguments:
         raise RuntimeError("`other_arguments` functionality not yet implemented.")
