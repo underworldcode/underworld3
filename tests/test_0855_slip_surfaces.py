@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
-from underworld3.meshing import _ot_adapt as ota
+from underworld3.meshing import smoothing as ota
 from underworld3.meshing.smoothing import _pinned_mask
 
 

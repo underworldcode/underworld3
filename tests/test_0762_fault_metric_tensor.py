@@ -6,7 +6,7 @@ refining a thin band ACROSS one or more faults. These tests pin:
 
 * tensor structure — at a fault the across-fault eigenvalue is base*R^2 and
   the along-fault eigenvalue is base; far away M = base*I;
-* the supplied-tensor mover (smooth_mesh_interior method="anisotropic",
+* the supplied-tensor mover (smooth_mesh_interior method="mmpde",
   metric=M) centres TWO close faults on their lines (|offset| < one refined
   cell) with the topology preserved (r-adapt, not h-adapt);
 * the builder accepts Surface objects equivalently to raw segments;
@@ -157,8 +157,11 @@ def test_fault_comb_metric_two_faults_band():
     n0 = len(np.asarray(m.X.coords)); nc0 = len(_tri_cells(m.dm))
     dx = 0.006
     rho = uw.meshing.fault_comb_metric(m, _SEG3, cell_size=dx, n_across=4)
-    _sm.smooth_mesh_interior(m, metric=rho, method="ma", boundary_slip=False,
-                             method_kwargs=dict(n_outer=1, n_picard=25))
+    # p=2: sharper equidistribution power — resolves the comb's
+    # sub-cell teeth to the banded target the retired MA mover reached.
+    _sm.smooth_mesh_interior(m, metric=rho, method="mmpde",
+                             boundary_slip=False,
+                             method_kwargs=dict(p=2.0))
     Xa = np.asarray(m.X.coords); tris = _tri_cells(m.dm)
     a = _signed_areas(Xa, tris)
     assert len(Xa) == n0 and len(tris) == nc0        # topology preserved
@@ -189,8 +192,9 @@ def test_fault_comb_metric_curved():
     arc = np.array([0.2, 0.2]) + 0.42 * np.column_stack(
         [np.cos(phis), np.sin(phis)])
     rho = uw.meshing.fault_comb_metric(m, [arc], cell_size=0.008, n_across=4)
-    _sm.smooth_mesh_interior(m, metric=rho, method="ma", boundary_slip=False,
-                             method_kwargs=dict(n_outer=1, n_picard=25))
+    _sm.smooth_mesh_interior(m, metric=rho, method="mmpde",
+                             boundary_slip=False,
+                             method_kwargs=dict(p=2.0))
     Xa = np.asarray(m.X.coords); tris = _tri_cells(m.dm)
     a = _signed_areas(Xa, tris)
     assert len(Xa) == n0 and len(tris) == nc0
@@ -325,26 +329,3 @@ def test_compose_metrics_rejects_tensor():
     M = uw.meshing.fault_metric_tensor(m, [_SEG3[0]], refinement=3.0, width=0.01)
     with pytest.raises(ValueError):
         uw.meshing.compose_metrics([M])
-
-
-@pytest.mark.tier_a
-@pytest.mark.level_1
-@pytest.mark.xfail(
-    reason="list-of-(metric,weight) composition inside smooth_mesh_interior was "
-    "an elliptic-ma feature dropped in the development merge (dev's wrapper "
-    "passes the metric straight to the mover). Compose faults via "
-    "fault_metric_tensor / fault_comb_metric instead.",
-    strict=False)
-def test_smooth_mesh_interior_list_of_metrics():
-    # smooth_mesh_interior accepts a list and composes internally
-    m = _box(cs=1.0 / 50)
-    n0 = len(np.asarray(m.X.coords)); nc0 = len(_tri_cells(m.dm))
-    r1 = uw.meshing.fault_comb_metric(m, [_SEG3[0]], cell_size=0.008)
-    r2 = uw.meshing.fault_comb_metric(m, [_SEG3[1]], cell_size=0.008)
-    _sm.smooth_mesh_interior(m, metric=[(r1, 1.0), (r2, 1.0)], method="ma",
-                             boundary_slip=False,
-                             method_kwargs=dict(n_outer=1, n_picard=25))
-    Xa = np.asarray(m.X.coords); tris = _tri_cells(m.dm)
-    a = _signed_areas(Xa, tris)
-    assert len(Xa) == n0 and len(tris) == nc0
-    assert int((np.sign(a) != np.sign(np.median(a))).sum()) == 0

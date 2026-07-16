@@ -274,8 +274,7 @@ def metric_density_from_gradient(
     :func:`smooth_mesh_interior`::
 
         rho = metric_density_from_gradient(mesh, T, amp=8.0)
-        smooth_mesh_interior(mesh, metric=rho,
-                             method="anisotropic")
+        smooth_mesh_interior(mesh, metric=rho, method="mmpde")
 
     The projector/fields are cached per ``(mesh, degree, name,
     topology)``, so calling this **every step** in an adaptive loop
@@ -340,8 +339,8 @@ def metric_density_from_gradient(
         refinement only into the steepest fronts.
     degree : int, default 1
         Polynomial degree of the projected-gradient / density
-        fields (1 matches the anisotropic mover's default
-        ``aux_degree``).
+        fields (P1 is what the mover's per-vertex metric
+        evaluation samples).
     name : str, optional
         Cache disambiguator. Pass distinct names if you build
         several independent gradient metrics on the *same* mesh
@@ -518,7 +517,7 @@ def metric_density_from_gradient(
     # * "arc-length" — smooth arc-length monitor
     #   ρ = √(1 + (A·|∇field|/g_hi)²), clipped to the envelope.
     #   Grades continuously from ρ=1 in flat regions (no clip
-    #   kink) → cleaner OT / Monge–Ampère meshes.
+    #   kink) → the smoothest equidistributed meshes.
     #
     # ``coarsening="auto"`` uses the budget-conserving minimum
     # ``refinement^(1/d)`` — the smallest coarsening that
@@ -593,7 +592,7 @@ def metric_density_from_gradient(
             # Smooth arc-length monitor rho = sqrt(1 + (A*ghat)^2),
             # ghat = |grad field|/g_hi, A = sqrt(ref^4 - 1) so rho = ref^2 at
             # the hi-percentile gradient. Grades continuously from rho=1 in
-            # flat regions (no clip kink) -> cleaner OT / Monge-Ampere meshes.
+            # flat regions (no clip kink) -> the smoothest equidistributed meshes.
             A = np.sqrt(max(ref_val ** 4 - 1.0, 0.0))
             ghat = gmag / max(g_hi, 1.0e-30)
             rho_al = np.sqrt(1.0 + (A * ghat) ** 2)

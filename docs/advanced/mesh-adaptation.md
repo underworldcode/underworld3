@@ -65,7 +65,7 @@ for each edge vector $\mathbf{e}$. Edges that are too long get subdivided; regio
 UW3 offers **two complementary** ways to put resolution where it is
 needed:
 
-| | `mesh.remesh(...)` (this page) | `smooth_mesh_interior(method="anisotropic")` |
+| | `mesh.remesh(...)` (this page) | `smooth_mesh_interior(method="mmpde")` |
 |---|---|---|
 | Mechanism | **Re-mesh** (MMG): insert/remove/retriangulate | **Redistribute** the existing nodes (move only) |
 | Node budget | *Changes* — targets an **absolute** edge length `h` | **Fixed** — relative redistribution to a target *density* |
@@ -405,9 +405,10 @@ smooth_mesh_interior(mesh, metric=rho, method="mmpde",
 ```{tip}
 **`method="mmpde"` is the default mover** (since this release): the
 variational moving-mesh adaptation of Huang & Kamenski. It is
-dimension-general (2D/3D), matrix-free (no PETSc solve — small
-per-cell dense algebra plus a parallel `Vec` assembly), provably
-non-folding, and — uniquely among the movers here — genuinely
+matrix-free (no PETSc solve — small per-cell dense algebra plus a
+parallel `Vec` assembly), provably non-folding, currently 2D
+(triangle meshes; the method itself is dimension-general but the
+3D discretization is not implemented), and genuinely
 *clusters and aligns* to an **anisotropic tensor** metric. It is
 both the most capable and the most straightforward to reason about,
 which is why it is now the default. Pass a **scalar** density (as
@@ -417,13 +418,13 @@ above; it is promoted to the isotropic tensor `ρ·I`) or a `d×d`
 long-along refinement. Full design + derivation:
 {doc}`/developer/design/anisotropic-mmpde-mover`.
 
-The earlier movers remain available via `method=`:
-`"spring"` (fast volumetric equant-cell smoother), `"ma"`
-(isotropic Monge–Ampère), `"ot"` (linear OT-improvement step),
-`"anisotropic"` (decoupled-Winslow tensor smoother — reshapes but
-does not cluster). Use them only when you specifically need their
-behaviour; `"mmpde"` supersedes `"anisotropic"` for fault / front
-refinement.
+The earlier movers — `"spring"` (volumetric equant-cell smoother),
+`"ma"` (isotropic Monge–Ampère), `"ot"` (linear OT-improvement
+step) and `"anisotropic"` (decoupled-Winslow tensor smoother) —
+were **retired in 2026-07**: `"mmpde"` with a scalar metric
+reproduces their isotropic equidistribution, and with a tensor
+metric it clusters and aligns where they could not. The retired
+spellings now raise a `ValueError` pointing here.
 
 Key `mmpde` knobs (via `method_kwargs`): `p` (functional exponent,
 1.5–2), `theta` (Huang alignment/equidistribution balance, 1/3),
@@ -439,9 +440,6 @@ T| - g_{lo})/(g_{hi}-g_{lo}),0,1\big)$ with $g_{lo},g_{hi}$ the
 lo/hi percentiles of $|\nabla T|$ — deliberately the same shape as
 {py:func}`underworld3.adaptivity.metric_from_gradient`, so the
 *intent* you express is identical whichever family you choose.
-The mover then builds a gradient-derived **anisotropic tensor**
-metric internally and solves an M-weighted Laplace (Winslow)
-coordinate map.
 
 ```{important}
 This is a **gradient** metric: it resolves where the field
@@ -455,13 +453,8 @@ on general non-separable features and on cell-alignment / quality
 (it never produces slivers).
 ```
 
-Key knobs (via `method_kwargs`): `aniso_cap` (max cell anisotropy
-— the binding stability lever; ≈2 robust, ≳6 folds), `relax`
-(damping), `n_outer` (composed damped steps), `linear_solver`
-(`"direct"` MUMPS, or `"gamg"` for the parallel-scalable path —
-validated bit-parity). The full mathematical derivation (OT /
-Monge–Ampère, the metric-tensor / Winslow mover, dynamic field
-handling, Nusselt) is in
+The full mathematical derivation (including the retired OT /
+Monge–Ampère and Winslow movers, kept as an R&D record) is in
 {doc}`/developer/design/mesh-adaptation-formulation`; operational
 detail in {doc}`/developer/subsystems/mesh-metric-redistribution`;
 the dated R&D log in

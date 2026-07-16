@@ -1,5 +1,10 @@
 # Mesh adaptation by metric-driven node redistribution — mathematical formulation
 
+> **RETIRED movers note (2026-07):** the spring / Monge-Ampère / OT-step /
+> anisotropic-Winslow interior movers this document discusses were retired
+> (superseded by `method="mmpde"`, the default). Kept as the R&D record;
+> the code lives in git history before the retirement commit.
+
 **Status**: Reference (current, 2026-05) — the mathematical formulation for the implemented `smooth_mesh_interior` family (`meshing/smoothing.py`).
 
 > **Scope.** This is the self-contained *mathematical* reference for the

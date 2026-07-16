@@ -13,32 +13,41 @@ import underworld3 as uw
 
 from .graph import (_auto_pinned_labels, _pinned_mask,
                     _build_adjacency_matrix, _build_local_to_owned_map,
-                    _tri_cells, _signed_areas, _mean_edge_length,
+                    _tri_cells, _signed_areas,
                     _global_sum, _global_min, _global_max)
 from .metrics import (ADAPT_STRATEGIES, _UNSET, mesh_metric_mismatch,
                       metric_density_from_gradient)
-from .spring import _spring_equilibrium_mover
-from .monge_ampere import _monge_ampere_mover, _ot_improvement_step
-from .anisotropic import _winslow_anisotropic
 from .mmpde import _mmpde_mover
+
+
+# The retired ``method=`` spellings (2026-07 maintainer ruling: the
+# spring / Monge-Ampère / OT-step / anisotropic-Winslow interior movers
+# are superseded by the MMPDE mover — a scalar metric reproduces their
+# isotropic equidistribution, a tensor metric does what they could not).
+_RETIRED_METHODS = {
+    "spring": "spring-equilibrium",
+    "ma": "Monge-Ampère", "monge-ampere": "Monge-Ampère",
+    "monge_ampere": "Monge-Ampère",
+    "ot": "OT-improvement-step", "equidistribute": "OT-improvement-step",
+    "improve": "OT-improvement-step",
+    "anisotropic": "anisotropic-Winslow", "aniso": "anisotropic-Winslow",
+    "tensor": "anisotropic-Winslow",
+}
+
+_RETIRED_MOVER_MESSAGE = (
+    "the spring-equilibrium, Monge-Ampère, OT-step and anisotropic-Winslow "
+    "interior movers were retired 2026-07, superseded by the variational "
+    "MMPDE mover. Use smooth_mesh_interior(mesh, metric=..., "
+    "method='mmpde') — a scalar metric gives the same isotropic "
+    "equidistributed grading, a tensor metric adds genuine anisotropic "
+    "clustering — or uw.meshing.follow_metric(...) for the two-knob "
+    "refinement/coarsening form. For more resolution than a fixed node "
+    "budget can grade, change topology with mesh.adapt(...) instead.")
 
 
 # Cached adjacency keyed by (mesh-id, pinned-label-tuple, topology).
 # Rebuilt automatically when the mesh topology changes.
 _ADJ_CACHE: dict = {}
-
-
-# Cache of the **original** (undeformed) state per mesh,
-# captured the first time follow_metric is called on that mesh:
-#   h0           — mean edge length
-#   rest_coords  — vertex positions (the spring's pull-back target)
-# Subsequent calls reuse these references instead of measuring the
-# (already-refined) current mesh, otherwise the spring's reference
-# state shrinks at every adapt and the refinement compounds,
-# crashing the CFL-bound dt by 2× per adapt step.
-# Keyed by id(mesh).
-_FOLLOW_METRIC_H0_CACHE: dict = {}
-_FOLLOW_METRIC_REST_CACHE: dict = {}
 
 
 def smooth_mesh_interior(
@@ -47,7 +56,7 @@ def smooth_mesh_interior(
     n_iters: int = 5,
     alpha: float = 0.5,
     metric=None,
-    method: str = "spring",
+    method: str = "mmpde",
     boundary_slip: bool = False,
     method_kwargs: Optional[dict] = None,
     verbose: bool = False,
@@ -70,19 +79,17 @@ def smooth_mesh_interior(
 
     over ``n_iters`` sweeps. Equalises connectivity → equant cells.
 
-    **With a ``metric``** — an elastic-spring network relaxed to
-    equilibrium. Every edge is a linear spring with rest length
-    ``∝ ρ_tgt^{-1/d}`` (``ρ_tgt = metric``), scaled so the mean rest
-    length equals the current mean edge length (overall scale
-    preserved — pure redistribution). Damped Jacobi force iteration
-    relaxes interior nodes to force balance, with a coherent global
-    signed-area backtrack guaranteeing no cell inverts. The rest
-    length is an *absolute* target, so the mesh genuinely grades
-    toward spacing ``∝ ρ_tgt^{-1/d}`` (a regime the weighted
-    Laplacian / Jacobi cannot reach). ``n_iters`` and ``alpha`` are
-    ignored on this path (it has its own internal sweep budget). A
+    **With a ``metric``** — the variational MMPDE mover
+    (Huang–Kamenski; ``method="mmpde"``, the only metric-grading
+    method since the 2026-07 mover retirement). A scalar metric
+    ``ρ_tgt`` equidistributes cell size toward spacing
+    ``∝ ρ_tgt^{-1/d}``; a full ``d×d`` tensor metric additionally
+    clusters and *aligns* cells to the tensor (short across a
+    feature, long along it). The map is non-folding by construction.
+    ``n_iters`` and ``alpha`` are ignored on this path (the mover
+    has its own outer-iteration budget and convergence test). A
     Lagrangian density (``f(r0.sym)`` peaked at the original outer
-    radius) keeps the rest lengths fixed per material point, so the
+    radius) keeps the target fixed per material point, so the
     *design* boundary-layer grading is restored even after
     free-surface deformation.
 
@@ -102,7 +109,7 @@ def smooth_mesh_interior(
     n_iters : int, default 5
         Number of Jacobi sweeps. 5-10 is typical for surface-
         deformation cleanup. **Ignored when ``metric`` is given**
-        (the spring path has its own internal sweep budget).
+        (the metric path has its own outer-iteration budget).
     alpha : float, default 0.5
         Under-relaxation in ``(0, 1]`` for the Jacobi path. 1.0 is
         pure Jacobi; smaller is more damped. **Ignored when
@@ -117,118 +124,45 @@ def smooth_mesh_interior(
         positive and finite. ``None`` (default) ⇒ the
         graph-Laplacian Jacobi path, unchanged behaviour
         bit-for-bit.
-    method : {"spring", "ma", "anisotropic", "mmpde"}, default "spring"
+    method : str, default "mmpde"
         Metric-grading solver (ignored when ``metric is None``).
-        ``"mmpde"`` is the recommended production mover for adaptive
-        meshing; ``"ot"`` is accepted but deprecated (incomplete —
-        prefer ``"mmpde"`` with a scalar metric):
+        ``"mmpde"`` (alias ``"variational"``) — variational
+        moving-mesh (Huang–Kamenski MMPDE) with a full tensor (or
+        scalar) metric; non-folding by construction. **Currently
+        2D-only** (triangle meshes) — a 3D mesh raises
+        ``NotImplementedError``.
 
-        * ``"spring"`` — *volumetric* elastic-spring equilibrium:
-          equal edge springs (shape regulariser, equant cells, no
-          slivers) + a per-cell area constraint
-          ``A0 ∝ 1/ρ_tgt`` (the size grading), minimised by
-          preconditioned nonlinear CG. **Fast** (~0.3 s on a
-          res-16 Annulus), robust, scales with the metric
-          amplitude; slightly anisotropic at sharp interior
-          features.
-        * ``"ma"`` — Benamou–Froese–Oberman convex-branch
-          **Monge–Ampère** equidistribution. Highest-fidelity
-          *isotropic* refinement and robust to the boundary
-          treatment, but ~60× costlier than the spring.
-        * ``"anisotropic"`` — **tensor** metric mover: an
-          M-weighted Laplace (Winslow) smooth of the coordinate
-          map with an eigen-clamped, gradient-derived *anisotropic*
-          metric tensor. Reshapes cells (short across a feature,
-          long along it) and removes the slivers / wasted isotropic
-          resolution the scalar paths leave near a boundary-peaked
-          feature. Linear (one solve/component/step — cheaper than
-          ``"ma"``). It improves cell **alignment / quality**, not
-          the grading magnitude (see the cap note below); for a
-          *separable* feature the explicit 1-D OT is exact and
-          cheaper — ``"anisotropic"`` earns its keep on the general
-          non-separable case.
-        * ``"mmpde"`` — variational moving-mesh (Huang–Kamenski
-          MMPDE) with a full tensor (or scalar) metric; the
-          recommended production mover for adaptive meshing.
-          **Currently 2D-only** (triangle meshes) — a 3D mesh
-          raises ``NotImplementedError``.
-        * ``"ot"`` (deprecated) — one linear OT-improvement step,
-          composable; boundary slip is gated to radial geometries.
-          Kept for the internal ``mesh.OT_adapt`` reset path; new
-          code should use ``"mmpde"``.
+        The historical spellings ``"spring"``, ``"ma"``, ``"ot"``
+        and ``"anisotropic"`` name interior movers retired in
+        2026-07 (superseded by ``"mmpde"``) and raise a
+        ``ValueError`` describing the replacement.
 
-        With a fixed node count neither can exceed ≈1.3–1.8×
+        With a fixed node count the mover cannot exceed ≈1.3–1.8×
         deep/near grading (the optimal-transport ≈10× needs *more
         nodes* — a topology change, not this smoother). See
         ``docs/developer/subsystems/mesh-metric-redistribution.md``.
     boundary_slip : bool, default False
         Let boundary nodes slide tangentially along their boundary
         (snapped back to the boundary each step — they cannot leave
-        it; serial circular/spherical boundaries only). Strongly
-        helps the spring (+~10 % grading, faster); near-no-op for
-        ``ma`` (its natural Neumann BC already handles the
-        boundary). Off by default — for a free surface the boundary
-        is the moving surface, so sliding interacts with the
-        free-surface coupling; enable per use-context.
+        it). Off by default — for a free surface the boundary is
+        the moving surface, so sliding interacts with the
+        free-surface coupling; enable per use-context. Prefer the
+        richer ``slip_surfaces`` spelling in new code.
     method_kwargs : dict, optional
-        Extra tuning forwarded to the chosen metric solver (ignored
-        when ``metric is None``). Keeps the shared signature clean
-        while exposing the per-method knobs. For
-        ``method="anisotropic"`` there is **one primary knob**:
-
-        * ``resolution_ratio`` (``R``, default **1.0 = exact
-          no-op**) — *the* tuneable. Cells may refine to ``h0/R``
-          and coarsen to ``h0·R``; the refine ⇄ coarsen split is
-          **not a parameter** — the isotropic density is
-          equidistribution-normalised (``s = base·ρ/G``, ``G`` the
-          geometric mean of ρ), so flat regions release exactly the
-          budget the fronts consume, *complementary by the
-          conservation law itself*. The eigen-clamp
-          ``[h0/R, h0·R]`` is just a safety rail. ``R=1`` ⇒
-          bit-identical to the refine-only historical default (an
-          exact no-op vs. every prior result). ``R≈2`` is the
-          validated production point (clean mesh through a full
-          convection lifecycle, ``minA/meanA``≈0.2, genuine
-          plume-reaching de-resolution, settled physics intact).
-          One number; complementary coarsening is automatic.
-        * ``geom_mean_smoothing`` (``a``, default 0.25) —
-          *internal* temporal damping of the equidistribution
-          normaliser ``G`` (not a grading knob; only acts when
-          ``R>1``). ``G`` is recomputed from the instantaneous
-          field every adaptation event; in a violent transient
-          that lurches the whole ``ρ/G`` distribution across the
-          fixed clamp band → clamp-saturation → the mesh visibly
-          "wobbles". An EMA in log space
-          (``lnG ← a·lnG_now+(1−a)·lnG_prev``) keeps the band
-          centred: ``a=1`` ⇒ no damping (instantaneous, the
-          original wobbly behaviour); ``a≈0.25`` ⇒ strong damping
-          of the startup over-reaction + steady-state contrast
-          pulse. It smooths **only the one global intensity
-          scalar** — the spatial ρ(x) pattern still tracks the
-          current field every event, so the API stays single-knob
-          (``R``); ``a`` carries one internal scalar across events.
-        * ``relax`` (0.2) / ``n_outer`` (12) — damped-MMPDE
-          under-relaxation + composed steps (early-exit
-          ``outer_tol``). ``linear_solver`` (``"direct"`` | MUMPS |
-          ``"gamg"``, bit-parity, parallel-scalable). ``beta``
-          (200) — anisotropic-bump saturation. ``move_anisotropy``
-          — optional radial/tangential move reweight.
-        * **Expert overrides (not the documented API; only honoured
-          when ``resolution_ratio≤1``):** ``aniso_cap`` (2.0) and
-          ``coarsen_cap`` (1.0) are the legacy two-knob clamp
-          (``h_min=h0/√aniso_cap``, ``h_max=h0·√coarsen_cap``,
-          ad-hoc ``s=base·cc^(q-1)``). Retained **bit-for-bit** so
-          historical scripts reproduce; superseded by
-          ``resolution_ratio``.
+        Extra tuning forwarded to the mover (ignored when ``metric
+        is None``). The MMPDE tunables are documented on
+        :func:`~underworld3.meshing.smoothing.mmpde._mmpde_mover`
+        (``n_outer``, ``step_frac``, ``accel``, ``metric_eval``,
+        tolerances, ...); unknown keywords are warned about and
+        ignored.
 
         Example::
 
             smooth_mesh_interior(
-                mesh, metric=rho, method="anisotropic",
-                method_kwargs=dict(resolution_ratio=2.0,
-                                   relax=0.05, n_outer=25))
+                mesh, metric=rho, method="mmpde",
+                method_kwargs=dict(n_outer=50, accel="cg"))
     verbose : bool, default False
-        Print per-sweep (Jacobi) or periodic (spring/MA) progress.
+        Print per-sweep (Jacobi) or periodic (mover) progress.
     skip_threshold : float, optional
         If set, evaluate the *misalignment* between current mesh
         cell density and the metric (via
@@ -260,12 +194,10 @@ def smooth_mesh_interior(
     Results are bit-identical (to a single ULP) between serial and
     parallel runs at any rank count.
 
-    **Spring path**: serial-exact. Edge forces are accumulated over
-    locally-visible edges only, so rank-partition-boundary nodes
-    under-count their incident forces in parallel (a future PR can
-    assemble the edge forces cross-rank like the Jacobi adjacency
-    Mat). The edge list and per-node degree are cached against the
-    topology key and rebuilt only on a topology change.
+    **MMPDE path**: parallel-safe — the velocity assembly reduces
+    cross-rank via the coordinate DM and all accept/backtrack
+    decisions are collective, so serial and parallel runs take the
+    same steps (see the mover's docstring).
 
     **Topology preservation**: vertex IDs, DOF mappings, and the
     rank partition are unchanged. Only coordinates move. Anything
@@ -326,8 +258,8 @@ def smooth_mesh_interior(
     # snapshotted, the mover runs, and a single deform-back /
     # global_evaluate / deform-forward pair carries every variable onto
     # the adapted node positions. Re-entrancy guard
-    # ``mesh._in_remesh_transfer`` lets composite adapts (OT_adapt) wrap
-    # the whole reset+build+smooth dance once at the outer level and
+    # ``mesh._in_remesh_transfer`` lets composite adapts (follow_metric)
+    # wrap the whole build+smooth dance once at the outer level and
     # have this inner call skip its own wrap.
     if not getattr(mesh, "_in_remesh_transfer", False):
         from underworld3.discretisation.remesh import (
@@ -371,7 +303,7 @@ def _smooth_mesh_interior_bare(
     n_iters: int = 5,
     alpha: float = 0.5,
     metric=None,
-    method: str = "spring",
+    method: str = "mmpde",
     boundary_slip: bool = False,
     method_kwargs: Optional[dict] = None,
     verbose: bool = False,
@@ -381,8 +313,8 @@ def _smooth_mesh_interior_bare(
     """Internal mover dispatch — no transfer, no helper wrap.
 
     Identical to the body of :func:`smooth_mesh_interior` minus the
-    Phase-1 transfer wrap. Composite adapt ops (``_ot_adapt_step``,
-    ``follow_metric``) own the wrap at their level and call this bare
+    Phase-1 transfer wrap. Composite adapt ops (``follow_metric``)
+    own the wrap at their level and call this bare
     form to avoid nesting the snapshot/restore dance. End-users should
     keep using :func:`smooth_mesh_interior`.
     """
@@ -411,14 +343,11 @@ def _smooth_mesh_interior_bare(
             method_kwargs = {}
         else:
             method_kwargs = dict(method_kwargs)
-        # TODO(BUG): this injection is unconditional, but only the
-        # 'anisotropic' and 'mmpde' movers accept resolution_ratio —
-        # strategy= combined with the default method='spring' (or
-        # 'ma'/'ot') raises TypeError at the mover call. Pre-existing
-        # at the Wave D base (verified by signature-binding probe);
-        # spring/MA/OT are retired in favour of 'mmpde' (see #346
-        # context), so the fix is to inject only for movers that
-        # accept it (or route strategy= to a surviving mover).
+        # #353: strategy= now routes to the mmpde mover (the default
+        # method), which accepts resolution_ratio (advisory — MMPDE's
+        # clustering intensity comes from the metric itself). The
+        # retired movers that could not bind it raise their retirement
+        # ValueError before this kwarg reaches any call.
         method_kwargs.setdefault(
             "resolution_ratio", _s["resolution_ratio"])
     if skip_threshold is _UNSET:
@@ -432,8 +361,8 @@ def _smooth_mesh_interior_bare(
         # evaluate + a few NumPy reductions) — avoids a redundant
         # mover call when the mesh hasn't drifted from its target.
         # Mismatch is measured against the R-clamped achievable
-        # target (when the anisotropic mover's resolution_ratio is
-        # given), so a perfectly-adapted mesh measures ~0.
+        # target (when a resolution_ratio is given in method_kwargs),
+        # so a perfectly-adapted mesh measures ~0.
         if skip_threshold is not None:
             _R = mk.get("resolution_ratio", None)
             mm = mesh_metric_mismatch(
@@ -465,48 +394,20 @@ def _smooth_mesh_interior_bare(
                       f"threshold {float(skip_threshold):.3f}; "
                       f"alignment r={mm['alignment']:.3f})",
                       flush=True)
-        if method == "spring":
-            _spring_equilibrium_mover(mesh, metric, pinned_labels, verbose,
-                            boundary_slip=boundary_slip, **mk)
-        elif method in ("ma", "monge-ampere", "monge_ampere"):
-            _monge_ampere_mover(mesh, metric, pinned_labels, verbose,
-                              boundary_slip=boundary_slip, **mk)
-        elif method in ("ot", "equidistribute", "improve"):
-            # The OT / equidistribution mover is incomplete — e.g. its boundary
-            # slip is gated to radial geometries (box boundaries are pinned, not
-            # slid; see boundary-slip-strategy.md) — and is expected to be
-            # superseded by ``method='mmpde'`` with a scalar metric. This fires
-            # for every OT use, including the internal ``mesh.OT_adapt`` reset
-            # path. (Python shows a given DeprecationWarning once per location.)
-            warnings.warn(
-                "smooth_mesh_interior(method='ot'/'equidistribute'/'improve') "
-                "is an incomplete mesh mover (boundary slip is gated to radial "
-                "geometries) and is expected to be superseded by "
-                "method='mmpde' with a scalar metric. Prefer 'mmpde' for "
-                "production adaptive meshing.",
-                DeprecationWarning, stacklevel=2)
-            _ot_improvement_step(mesh, metric, pinned_labels,
-                                     verbose,
-                                     boundary_slip=boundary_slip,
-                                     **mk)
-        elif method in ("anisotropic", "aniso", "tensor"):
-            _winslow_anisotropic(mesh, metric, pinned_labels,
-                                 verbose,
-                                 boundary_slip=boundary_slip, **mk)
-        elif method in ("mmpde", "variational"):
+        if method in ("mmpde", "variational"):
             _mmpde_mover(mesh, metric, pinned_labels, verbose,
                            boundary_slip=boundary_slip, **mk)
+        elif method in _RETIRED_METHODS:
+            raise ValueError(
+                f"smooth_mesh_interior: method={method!r} "
+                f"({_RETIRED_METHODS[method]}) was retired: "
+                f"{_RETIRED_MOVER_MESSAGE}")
         else:
             raise ValueError(
                 f"smooth_mesh_interior: unknown method {method!r}; "
-                f"use 'spring' (default, fast volumetric), "
-                f"'ma' (Monge–Ampère, isotropic, ~60× costlier), "
-                f"'anisotropic' (tensor metric — reshapes cells / "
-                f"removes slivers; does not beat the node-count "
-                f"cap), 'mmpde' (variational moving mesh — the "
-                f"recommended production mover) or "
-                f"'ot' / 'equidistribute' (deprecated linear "
-                f"OT-improvement step).")
+                f"use 'mmpde' (the variational moving-mesh mover — "
+                f"the only metric-grading method; scalar or tensor "
+                f"metric).")
         return
 
     dm = mesh.dm
@@ -621,40 +522,34 @@ def follow_metric(
     r"""Move the mesh's interior nodes so cell sizes follow a target
     derived from ``|∇field|``.
 
-    Two-knob, cell-size-envelope API for the anisotropic node mover.
-    The user specifies how *fine* the densest cells can get and
-    (optionally) how *coarse* the sparsest can get; the function
-    derives the metric density and invokes the mover.
+    Two-knob, cell-size-envelope API for the metric-driven node
+    mover (the variational MMPDE mover since the 2026-07 mover
+    retirement). The user specifies how *fine* the densest cells
+    can get and (optionally) how *coarse* the sparsest can get; the
+    function derives the metric density and invokes the mover.
 
     Cell-size envelope (approximate)
     --------------------------------
 
-    The mover's eigenvalue → cell-size map is
-    :math:`h = h_0/\sqrt{\hat\rho}` (after the mover's
-    geometric-mean normalisation :math:`\hat\rho = \rho/G`), so
-    asking for the envelope
+    The metric density is built so that equidistribution maps it to
+    cell size as :math:`h = h_0/\sqrt{\rho}` (with
+    :math:`\mathrm{geomean}(\rho) = 1` by construction), so asking
+    for the envelope
 
     .. math::
 
         h \;\in\; \bigl[\, h_0/\text{refinement},\;
                           h_0\cdot\text{coarsening} \,\bigr]
 
-    corresponds to :math:`\hat\rho \in [1/\text{coarsening}^2,
+    corresponds to :math:`\rho \in [1/\text{coarsening}^2,
     \text{refinement}^2]` — note this is **dimension-
-    independent** (the eigenvalue λ has units of 1/length²).
+    independent**.
 
-    Validation on a sharp-tanh annulus test problem shows:
-
-    * **Refinement side:** achieved :math:`h_\min` within ~5-10%
-      of :math:`h_0/\text{refinement}` for refinement ∈ [1.5, 3].
-    * **Coarsening side:** achieved :math:`h_\max` typically
-      ~2× the requested :math:`h_0\cdot\text{coarsening}`. The
-      mover's anisotropic cells and iterative deformation map
-      together don't honour the eigenvalue clamp on a per-cell
-      basis as tightly as the refinement side. This is a known
-      feature of the underlying mover, not of the new API.
-
-    The :func:`mesh_metric_mismatch` diagnostic is the right tool
+    The achieved envelope is *approximate*: the mover
+    equidistributes toward the metric under a fixed node budget, it
+    does not clamp per-cell sizes. Expect the refinement side to
+    track the request more tightly than the coarsening side. The
+    :func:`mesh_metric_mismatch` diagnostic is the right tool
     for measuring how close the achieved mesh is to the requested
     metric in practice.
 
@@ -673,9 +568,8 @@ def follow_metric(
                                   \text{coarsening})} .
 
     This break point makes :math:`\mathrm{geomean}(\rho) = 1`
-    by construction, so the mover's :math:`G`-normalisation
-    leaves :math:`\rho` unshifted and the eigenvalue clamps land
-    on the desired envelope. Concretely:
+    by construction, so equidistributing :math:`\rho` lands the
+    cell sizes on the desired envelope. Concretely:
 
     * "front-following" (default) — log-:math:`\rho` is linear
       in percentile rank on each side of :math:`p^{\ast}`. Every
@@ -692,7 +586,7 @@ def follow_metric(
       :math:`\rho = \sqrt{1 + (A\,|\nabla\text{field}|/g_{hi})^2}`,
       clipped to the envelope. Grades continuously from
       :math:`\rho = 1` in flat regions (no clip kink), giving
-      cleaner OT / Monge–Ampère meshes.
+      the smoothest equidistributed meshes.
 
     Auto coarsening (the budget-conserving default)
     -----------------------------------------------
@@ -747,7 +641,7 @@ def follow_metric(
         per-cell field change everywhere (best for advection-
         diffusion accuracy). ``"arc-length"`` is a smooth
         arc-length monitor — grades continuously from flat
-        regions with no clip kink (cleaner OT / Monge–Ampère
+        regions with no clip kink (the smoothest equidistributed
         meshes).
     skip_threshold : float, default 0.9
         Misalignment threshold for the adapt-on-demand skip. If the
@@ -764,7 +658,7 @@ def follow_metric(
         ``≈ 2 * h_0`` (background cell size).
     polish_max_iters : int, default 5
         Maximum Jacobi (graph-Laplacian) polish iterations
-        applied AFTER the anisotropic mover. The polish runs
+        applied AFTER the mover. The polish runs
         adaptively: each iteration averages every interior
         vertex toward the mean of its edge neighbours
         (cell-quality cleanup), and the loop stops as soon as
@@ -834,63 +728,27 @@ def follow_metric(
         gradient_smoothing_length=gradient_smoothing_length,
         name=name,
     )
-    # Resolve auto coarsening
+    # Resolve auto coarsening (the R clamp fed to the skip check's
+    # achievable-target normalisation).
     if coarsening is None or coarsening == "auto":
         coar_val = float(refinement) ** (1.0 / mesh.cdim)
     else:
         coar_val = float(coarsening)
-    # Mover's `resolution_ratio` is a SYMMETRIC eigenvalue clamp
-    # (h ∈ [h0/R, h0·R]) — too loose for either side on its own.
-    # We pass R = max(refinement, coarsening) so the clamp doesn't
-    # bind tightly, then rely on the per-cell *rest-size spring*
-    # (below) to enforce the literal cell-size envelope.
     R = max(float(refinement), coar_val)
 
-    # The spring caps refer to h0 — the **undeformed** mean edge
-    # length, captured ONCE per mesh and reused (the dt-crash /
-    # compounding-refinement bug, 2026-05-22 — full story on the
-    # _FOLLOW_METRIC_H0_CACHE declaration and _mean_edge_length).
-    _key = id(mesh)
-    h0 = _FOLLOW_METRIC_H0_CACHE.get(_key)
-    rest_coords = _FOLLOW_METRIC_REST_CACHE.get(_key)
-    if h0 is None:
-        coords = np.asarray(mesh.X.coords)
-        h0 = _mean_edge_length(mesh.dm, coords)
-        _FOLLOW_METRIC_H0_CACHE[_key] = h0
-        rest_coords = coords.copy()
-        _FOLLOW_METRIC_REST_CACHE[_key] = rest_coords
-        if verbose:
-            uw.pprint(f"  follow_metric: captured h0={h0:.4e}, "
-                      f"rest_coords (first call on this mesh)")
-
-    mover_kwargs = dict(
-        relax=0.2,
-        n_outer=12,
-        # Per-cell Lagrangian rest-size spring: literal cell-size
-        # cap enforced by pulling vertices back toward their
-        # rest positions when an incident cell exceeds the cap.
-        # h0 is the undeformed mean edge length.
-        rest_size_cap_max=h0 * coar_val,
-        rest_size_cap_min=h0 / float(refinement),
-        rest_spring_K=1.0,
-        # Override the mover's internal h0 measurement (which
-        # would otherwise re-measure on the already-deformed
-        # mesh and shrink each adapt — the second leg of the
-        # dt-crash bug surfaced 2026-05-22).
-        h0_override=h0,
-        # Override the spring's rest-coords (and the area-floor
-        # baseline) so they refer to the **truly-undeformed**
-        # mesh. Otherwise each adapt's "rest" is the previous
-        # adapt's output, the spring "preserves" each successive
-        # refinement, and refinement compounds — third leg of
-        # the dt-crash bug.
-        rest_coords_override=rest_coords,
-    )
+    # The metric density carries the whole cell-size envelope
+    # (geomean(rho)=1 by construction), so the MMPDE mover needs no
+    # per-call clamp translation. theta=0.5 weights Huang's functional
+    # fully toward EQUIDISTRIBUTION — the right balance for this
+    # scalar-density contract (the alignment term only matters for
+    # tensor metrics) and measurably tighter on the requested h_min
+    # envelope than the mover's general-purpose default (1/3).
+    mover_kwargs = dict(theta=0.5)
     if method_kwargs:
         mover_kwargs.update(method_kwargs)
 
-    # Phase-1 remesh redesign: wrap the whole anisotropic-move + polish
-    # pipeline in a single field-transfer pass at this composite level.
+    # Phase-1 remesh redesign: wrap the whole move + polish pipeline
+    # in a single field-transfer pass at this composite level.
     # The inner smooth_mesh_interior calls see ``mesh._in_remesh_transfer``
     # set by the helper and skip their own wrap, so REMAP variables
     # (including hidden solver history) are transferred exactly once,
@@ -904,7 +762,7 @@ def follow_metric(
         smooth_mesh_interior(
             mesh,
             metric=rho,
-            method="anisotropic",
+            method="mmpde",
             method_kwargs={**mover_kwargs, "resolution_ratio": R},
             skip_threshold=skip_threshold,
             verbose=verbose,

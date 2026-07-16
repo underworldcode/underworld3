@@ -304,3 +304,111 @@ class TestSPDSanitise:
         good = np.ones(5, dtype=bool)
         good[1] = False
         assert np.array_equal(out[good], M[good])
+
+
+class TestRetiredMovers:
+    """2026-07 retirement ruling: the spring / Monge-Ampere / OT-step /
+    anisotropic-Winslow interior movers were superseded by the MMPDE
+    mover and deleted. The retired ``method=`` spellings raise a clear
+    ValueError; ``mesh.OT_adapt`` (built on the OT step) raises a clear
+    RuntimeError; the default ``method=`` is now ``"mmpde"`` and
+    ``strategy=`` routes to it (regression for #353, where strategy=
+    with the old default method='spring' raised TypeError)."""
+
+    @pytest.mark.parametrize("method", ["spring", "ma", "monge-ampere",
+                                        "ot", "equidistribute",
+                                        "anisotropic", "aniso", "tensor"])
+    def test_retired_method_values_raise(self, method):
+        import sympy
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        with pytest.raises(ValueError, match="retired"):
+            smooth_mesh_interior(mesh, metric=sympy.sympify(1),
+                                 method=method)
+
+    def test_unknown_method_raises(self):
+        import sympy
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        with pytest.raises(ValueError, match="unknown method"):
+            smooth_mesh_interior(mesh, metric=sympy.sympify(1),
+                                 method="not-a-mover")
+
+    def test_ot_adapt_tombstone_raises(self):
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        with pytest.raises(RuntimeError, match="retired"):
+            mesh.OT_adapt(None)
+
+    def test_retired_private_names_raise(self):
+        from underworld3.meshing import smoothing as sm
+        for name in ("_spring_equilibrium_mover", "_monge_ampere_mover",
+                     "_ot_improvement_step", "_winslow_anisotropic",
+                     "_winslow_spring", "_winslow_elliptic",
+                     "_winslow_equidistribute"):
+            with pytest.raises(ValueError, match="retired"):
+                getattr(sm, name)()
+
+    def test_default_method_is_mmpde(self):
+        """smooth_mesh_interior with a metric and NO method= runs the
+        MMPDE mover (the sanctioned default switch from 'spring')."""
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        before = np.asarray(mesh.X.coords).copy()
+        smooth_mesh_interior(mesh, metric=rho,
+                             method_kwargs=dict(n_outer=3))
+        after = np.asarray(mesh.X.coords)
+        assert np.all(np.isfinite(after))
+        assert not np.allclose(before, after)
+
+    def test_strategy_routes_to_mmpde_without_typeerror(self):
+        """#353 regression: strategy= injects resolution_ratio, which the
+        old default mover ('spring') could not bind (TypeError). It now
+        routes to the mmpde default, which accepts it."""
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        smooth_mesh_interior(mesh, metric=rho, strategy="med",
+                             skip_threshold=None,
+                             method_kwargs=dict(n_outer=2))
+        assert np.all(np.isfinite(np.asarray(mesh.X.coords)))
+
+
+class TestWinslowMMPDEAliasShim:
+    """Wave C shim contract for the surviving READ-06 alias: the old
+    ``_winslow_mmpde`` spelling gives the identical result plus exactly
+    one DeprecationWarning; the new ``_mmpde_mover`` spelling is
+    warning-free."""
+
+    def _fresh_mesh_and_metric(self):
+        import sympy
+        mesh = _box_mesh(resolution=6)
+        x, y = mesh.CoordinateSystem.X
+        rho = 1 + 4 * sympy.exp(-(((x - 0.5) ** 2 + (y - 0.5) ** 2)
+                                  / 0.05))
+        return mesh, rho
+
+    def test_old_name_identical_result_one_warning(self):
+        import warnings as _w
+        from underworld3.meshing.smoothing import (_mmpde_mover,
+                                                   _winslow_mmpde)
+        pinned = ("Top", "Bottom", "Left", "Right")
+
+        mesh_new, rho_new = self._fresh_mesh_and_metric()
+        with _w.catch_warnings():
+            _w.simplefilter("error", DeprecationWarning)
+            _mmpde_mover(mesh_new, rho_new, pinned, False, n_outer=3)
+
+        mesh_old, rho_old = self._fresh_mesh_and_metric()
+        with pytest.warns(DeprecationWarning, match="_mmpde_mover") as rec:
+            _winslow_mmpde(mesh_old, rho_old, pinned, False, n_outer=3)
+        n_dep = sum(1 for w in rec
+                    if issubclass(w.category, DeprecationWarning))
+        assert n_dep == 1
+        assert np.array_equal(np.asarray(mesh_new.X.coords),
+                              np.asarray(mesh_old.X.coords))

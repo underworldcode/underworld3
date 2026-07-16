@@ -495,7 +495,7 @@ class Mesh(Stateful, uw_object):
         # Operator on_remesh(ctx) hooks (SemiLagrangian / Lagrangian DDt,
         # solver-coupled history transfers). Stored as weakrefs so a
         # forgotten operator does not keep the mesh holding it alive.
-        # The adapt op (smooth_mesh_interior / OT_adapt / follow_metric)
+        # The adapt op (smooth_mesh_interior / follow_metric)
         # fires these after the generic per-variable REMAP pass; see
         # discretisation/remesh.py.
         self._remesh_hooks = []
@@ -3067,7 +3067,7 @@ class Mesh(Stateful, uw_object):
         """
         from underworld3.meshing.smoothing import (
             _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
-        from underworld3.meshing._ot_adapt import _boundary_facets
+        from underworld3.meshing.smoothing import _boundary_facets
         from underworld3.meshing.bounding_surface import BoundingSurface
 
         dm = self.dm
@@ -3267,7 +3267,7 @@ class Mesh(Stateful, uw_object):
     def register_remesh_hook(self, op):
         """Register an operator's ``on_remesh(ctx)`` callback.
 
-        Called by the adapt op (``smooth_mesh_interior``, ``OT_adapt``,
+        Called by the adapt op (``smooth_mesh_interior``,
         ``follow_metric``) after the generic per-variable REMAP pass.
         ``op`` must expose an ``on_remesh(ctx)`` method; ``ctx`` is a
         :class:`~underworld3.discretisation.remesh.RemeshContext` with
@@ -3338,7 +3338,7 @@ class Mesh(Stateful, uw_object):
             "  Use instead:\n"
             "    • mesh.deform(new_coords, dt=…)        — impose an arbitrary "
             "node displacement (free surface / prescribed motion)\n"
-            "    • mesh.remesh(metric) / mesh.OT_adapt(field)\n"
+            "    • mesh.remesh(metric) / mesh.adapt(metric_field)\n"
             "    • uw.meshing.smooth_mesh_interior(…) / uw.meshing.follow_metric(…)\n"
             "  These route the field + SL/DDt-history transfer "
             "(remesh_with_field_transfer). For trusted scheme-internal trial "
@@ -6046,160 +6046,23 @@ class Mesh(Stateful, uw_object):
             self._mesh_version += 1
             print(f"Mesh version manually incremented to {self._mesh_version}")
 
-    @timing.routine_timer_decorator
-    def OT_adapt(
-        self,
-        field,
-        *,
-        refinement=3.0,
-        coarsening="auto",
-        grad_smoothing_length="auto",
-        metric_choice="front-following",
-        fields_to_remap=None,
-        fields_to_zero=None,
-        skip_threshold=None,
-        reference_coords=None,
-        verbose=False,
-    ):
-        r"""Adapt the mesh in place so cell sizes track ``|∇field|``, using
-        the validated optimal-transport reset pattern.
+    def OT_adapt(self, *args, **kwargs):
+        """RETIRED (2026-07). The optimal-transport reset adapt was
+        superseded by the variational MMPDE mover; calling this raises
+        RuntimeError.
 
-        Each call resets the mesh to a cached reference (the initial uniform
-        coordinates), FE-remaps ``field`` onto that clean canvas, builds a
-        gradient-density metric, runs the OT mover, and FE-remaps the
-        requested fields onto the adapted positions. Resetting every event
-        (rather than composing adaptations across time steps) is what keeps
-        the mover sliver-free over long runs. The "reset" is internal — from
-        the caller's point of view this just tracks the moving feature.
-
-        Topology is preserved (vertex count, DOF maps, rank partition
-        unchanged); only coordinates move. Registered solvers are marked for
-        rebuild via ``_deform_mesh``.
-
-        Reference coordinates
-        ---------------------
-        The reset target is snapshotted lazily on the **first** call as
-        ``self._ot_adapt_reference_coords`` (a copy of the current
-        ``mesh.X.coords``) and reused thereafter.
-
-        .. warning::
-           If the mesh is deformed by something other than ``OT_adapt``
-           between calls (e.g. a manual ``mesh._deform_mesh(...)`` or a
-           resume that loads a *deformed* snapshot), the cached reference no
-           longer matches the intended pristine state. Use
-           :meth:`OT_adapt_reset_reference` to re-baseline, or pass an
-           explicit ``reference_coords`` for a one-off override.
-
-        Parameters
-        ----------
-        field : MeshVariable
-            Scalar field whose gradient drives refinement (typically ``T``).
-            Always FE-remapped onto the adapted mesh.
-        refinement : float, default 3.0
-            Cell-size envelope ``h0/refinement`` for the densest cells.
-            Validated range 1.5–5; 3 is the Nu sweet spot.
-        coarsening : float or "auto", default "auto"
-            ``"auto"`` = budget-conserving ``refinement**(1/d)``.
-        grad_smoothing_length : "auto", None, float, or Pint Quantity, default "auto"
-            Screened-Poisson de-noising length for ``|∇field|`` before the
-            metric is built — the most effective sliver lever; without it,
-            production refinement chases sub-cell gradient noise.
-            ``"auto"`` (default) ≈ the mesh's uniform cell size (mean edge
-            length) — the validated setting. ``None`` turns it off. A number
-            or Pint length sets ``L`` explicitly; **user-supplied lengths are
-            unit-aware** (non-dimensionalised via the projection), so pass a
-            Pint quantity (or a non-dimensional number) — ``≈ h0`` is mild,
-            ``≈ 2·h0`` stronger.
-        metric_choice : {"front-following", "gradient-uniform"}, default "front-following"
-        fields_to_remap : list of MeshVariable, optional
-            Extra fields to FE-remap onto the adapted positions (``field`` is
-            always remapped). ``None`` ⇒ just ``field``.
-        fields_to_zero : list of MeshVariable, optional
-            Fields to zero after the adapt (e.g. ``[V, P]`` for a cold
-            restart of the flow solve).
-        skip_threshold : float, optional
-            If the mesh is already aligned with the metric (misalignment
-            below this; see :func:`~underworld3.meshing.mesh_metric_mismatch`),
-            skip the adapt and return ``False``. ``None`` ⇒ always adapt.
-        reference_coords : array, optional
-            One-off override of the reset target (does not update the cache).
-        verbose : bool, default False
-
-        Returns
-        -------
-        bool
-            ``True`` if the mesh was adapted, ``False`` if the
-            ``skip_threshold`` check short-circuited it.
-
-        Notes
-        -----
-        Boundary nodes slide tangentially and stay on the boundary for
-        radial coordinate systems (Annulus / shell), using the projected
-        boundary normal ``mesh.Gamma_P1``. Cartesian boundaries are pinned
-        (the vertex-evaluated normal is degenerate there).
-
-        Constrained-manifold meshes (``mesh.dim != mesh.cdim``, e.g. a 2D
-        spherical surface in 3D) are **not supported**: the OT mover would
-        have to constrain *every* node to the surface, not just boundary
-        nodes. See ``docs/developer/design/ot-adapt-api-proposal.md``.
-
-        Examples
-        --------
-        >>> mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
-        ...                           cellSize=1/16, qdegree=3)
-        >>> T = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
-        >>> # ... initialise T ...
-        >>> mesh.OT_adapt(T, refinement=3.0, fields_to_remap=[T])
-
-        See Also
-        --------
-        OT_adapt_reset_reference : Re-baseline the reset reference coords.
-        underworld3.meshing.follow_metric : The single-shot anisotropic mover.
-        adapt : Topology-changing MMG remeshing (different mechanism).
+        Use ``uw.meshing.follow_metric(mesh, field, refinement=...)`` (the
+        two-knob gradient-following adapter) or
+        ``uw.meshing.smooth_mesh_interior(mesh, metric=..., method="mmpde")``
+        for fixed-topology node redistribution; use :meth:`adapt` when more
+        resolution than a fixed node budget can provide is needed.
         """
-        if self.dim != self.cdim:
-            raise NotImplementedError(
-                "OT_adapt is not supported on constrained-manifold meshes "
-                f"(mesh.dim={self.dim} != mesh.cdim={self.cdim}). The OT "
-                "mover would need to constrain every node to the surface, "
-                "not just boundary nodes — see "
-                "docs/developer/design/ot-adapt-api-proposal.md."
-            )
-        if (not hasattr(self, "_ot_adapt_reference_coords")
-                or self._ot_adapt_reference_coords is None):
-            # Lazy snapshot of the reset target on first call.
-            self._ot_adapt_reference_coords = numpy.asarray(
-                self.X.coords).copy()
-
-        from underworld3.meshing._ot_adapt import _ot_adapt_step
-
-        return _ot_adapt_step(
-            self, field,
-            refinement=refinement,
-            coarsening=coarsening,
-            grad_smoothing_length=grad_smoothing_length,
-            metric_choice=metric_choice,
-            fields_to_remap=fields_to_remap,
-            fields_to_zero=fields_to_zero,
-            skip_threshold=skip_threshold,
-            reference_coords=reference_coords,
-            verbose=verbose,
-        )
-
-    def OT_adapt_reset_reference(self, coords=None):
-        r"""Re-baseline the reference coordinates used by :meth:`OT_adapt`.
-
-        ``coords=None`` re-snapshots the current ``mesh.X.coords`` as the new
-        reset target; passing explicit ``coords`` (e.g. the initial uniform
-        mesh loaded from a checkpoint) sets those instead. Use on resume,
-        when the loaded mesh is in a deformed state and the cache would
-        otherwise lazily initialise from it.
-        """
-        if coords is None:
-            self._ot_adapt_reference_coords = numpy.asarray(
-                self.X.coords).copy()
-        else:
-            self._ot_adapt_reference_coords = numpy.asarray(coords).copy()
+        raise RuntimeError(
+            "mesh.OT_adapt was retired (2026-07): the OT reset adapt was "
+            "superseded by the variational MMPDE mover. Use "
+            "uw.meshing.follow_metric(mesh, field, refinement=...) or "
+            "uw.meshing.smooth_mesh_interior(mesh, metric=..., "
+            "method='mmpde'); for a topology change use mesh.adapt(...).")
 
     @timing.routine_timer_decorator
     def _wrap_coarse_level(self, dm):

@@ -17,11 +17,13 @@ envelope.
 
 The mover's achieved cell-size envelope is APPROXIMATE — anisotropic
 cells + iterative deformation map mean the eigenvalue clamp doesn't
-literally bound the achieved h_max on a per-cell basis. Validation
+literally bound the achieved h_max on a per-cell basis (since the
+2026-07 mover retirement the backing mover is the variational MMPDE
+mover with theta=0.5, pure equidistribution weighting). Validation
 on a sharp-tanh annulus shows:
 
-* refinement side: achieved h_min within ~5-10% of h0/refinement
-* coarsening side: achieved h_max within ~2× of h0·coarsening
+* refinement side: achieved h_min within ~30% of h0/refinement
+* coarsening side: achieved h_max within ~2x of h0*coarsening
 
 The tests here use loose tolerances reflecting that empirical reality.
 """
@@ -266,17 +268,9 @@ def test_follow_metric_no_slivers_after_adaptive_polish():
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
-@pytest.mark.xfail(
-    reason="dev↔#202 (manifold/extract_surface) merge reconciliation. The "
-    "ADAPTATION is bit-identical to development (moved coords match to 8 "
-    "figures; evaluate is bit-identical interior + near-boundary). The only "
-    "difference is the FIELD re-interpolation during the remesh step near the "
-    "curved boundary (T-after differs ~1.8%), which nudges the second call's "
-    "mismatch just over skip_threshold=0.9 so it re-adapts instead of skipping. "
-    "A skip-optimisation only — adaptation correctness is preserved. Track in "
-    "the #202 nav/remesh field-transfer reconciliation.",
-    strict=False)
 def test_follow_metric_skip_threshold_skips_aligned_mesh():
+    # (An xfail marker for a #202-era field-transfer nudge was removed
+    # 2026-07: the MMPDE-backed follow_metric passes this cleanly.)
     """A mesh that's already aligned (here: any uniform mesh with
     the field still in the natural shape) gets the skip-on-align
     short-circuit when skip_threshold is permissive."""

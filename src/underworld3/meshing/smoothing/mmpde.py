@@ -107,9 +107,9 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     Because `G → ∞` as `det𝕁 → 0` the map is non-folding (Math. Comp. 87
     (2018) 1887); because it is the inverse map of a convex computational
     domain it genuinely *clusters and aligns* to `M` — a thin strip on a
-    fault, not the isotropic centre-of-gravity blob the scalar MA mover
-    produces, and not the non-clustering smooth of the decoupled
-    `_winslow_anisotropic`. See
+    fault, not an isotropic centre-of-gravity blob, and not a
+    non-clustering decoupled Winslow smooth (the scalar Monge-Ampère and
+    anisotropic-Winslow movers it superseded were retired 2026-07). See
     ``docs/developer/design/anisotropic-mmpde-mover.md``.
 
     ``metric`` is the SPD `d×d` metric tensor: a sympy `Matrix` (function
@@ -305,7 +305,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     # (below). Pre-touch Gamma_P1 here so the projected-normal MeshVariable
     # exists before any DM snapshot (footgun-safe; redundant with the central
     # pre-touch in smooth_mesh_interior, kept as defence-in-depth).
-    from underworld3.meshing._ot_adapt import _resolve_slip
+    from .graph import _resolve_slip
     _slip_pretouch = _resolve_slip(mesh, boundary_slip)  # pre-touch Gamma_P1 before DM build
 
     # Reference edge matrices (fixed) for the owned cells.

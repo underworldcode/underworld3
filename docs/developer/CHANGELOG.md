@@ -6,6 +6,30 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### Retired Interior Movers — MMPDE Is the Mover (July 2026)
+
+**The superseded fixed-topology interior movers were retired** (maintainer
+ruling 2026-07): the spring-equilibrium, Monge–Ampère, OT-improvement-step
+and anisotropic-Winslow movers were deleted, together with `mesh.OT_adapt()`
+(built on the OT step; closes #346, whose latent MPI deadlock dies with the
+spring mover, and #353, whose `strategy=` TypeError dies with the dispatch).
+
+- `smooth_mesh_interior(method=...)` now defaults to **`"mmpde"`** (was
+  `"spring"`) — a sanctioned behaviour change: with a scalar metric the
+  MMPDE mover reproduces the retired movers' isotropic equidistribution
+  (the isotropic-metric equivalence), and with a tensor metric it clusters
+  and aligns where they could not. Retired spellings raise a `ValueError`
+  naming the replacement.
+- `follow_metric(...)` (the two-knob adapter) now drives the MMPDE mover;
+  `mesh.OT_adapt()` raises a `RuntimeError` tombstone pointing at
+  `follow_metric` / `smooth_mesh_interior` / `mesh.adapt`.
+- The graph-Laplacian Jacobi smoother and the Taubin surface-field smoother
+  (`smooth_surface_field`) are separate, current tools and are unchanged.
+- The boundary-facet / boundary-slip primitives shared with surviving code
+  moved from `meshing/_ot_adapt.py` into `meshing/smoothing/graph.py`;
+  the style-gate allowlist shrank by the deleted files' entries.
+
+
 ### July 2026 Quality Campaign — Audit, Style Charter, Remediation Waves (July 2026)
 
 **A systematic post-development-burst quality campaign**: six adversarially
