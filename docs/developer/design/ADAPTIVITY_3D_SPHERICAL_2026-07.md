@@ -171,6 +171,23 @@ What is genuinely new in 3D:
    must be partition-independent — compute it once on the (small) serial
    base at construction, or greedy-color in coordinate-lexicographic order;
    it then travels as an ordinary vertex label.
+   **Does DGS change the 2D engine? No (maintainer question, 2026-07-17).**
+   In n=2 the Binev–Dahmen–DeVore closure estimate holds for *arbitrary*
+   initializations (Karkulik–Pavlicek–Praetorius, cited in DGS §3.1) — the
+   theorem that does not exist in 3D — so our longest-edge-seeded 2D engine
+   already has termination, conformity, 4 classes per base triangle, and the
+   BDV bound. DGS would only improve the closure *constant* (removing a
+   dependence on the base mesh's longest refinement chain — an adversarial
+   strip-of-obtuse-triangles pathology causing a one-time base-wide cascade
+   on the first refinement, not observed on quality gmsh meshes), while
+   giving up the geometry-awareness that makes longest-edge seeds
+   first-generation-friendly on badly-shaped base cells. Decision: **2D
+   stays as-is** (validated, bit-confluent, replay-compatible); revisit only
+   if maintaining two seeding schemes (2D longest-edge slot vs 3D coloring
+   tag) becomes a burden — unifying on DGS would allow one dimension-general
+   seeding routine at the cost of regenerating the 2D confluence integers
+   and breaking marker-replay compatibility.
+
 3. **The tet subcell-orientation tables.** `GetSubcellOrientation` for
    TETRAHEDRON under its 24 arrangements (`DMPolytopeTypeGetArrangement` is a
    `static inline` in public `petscdm.h` — usable by inclusion). This is the
