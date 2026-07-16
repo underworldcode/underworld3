@@ -1,7 +1,14 @@
 # Adaptivity in 3D and spherical geometry — the MMPDE + NVB capstone
 
-Status: **PROPOSED** (phase-0 design note, 2026-07-17). Awaiting maintainer
-rulings on the decisions in the final section before implementation starts.
+Status: **RULED — round 1 = NVB-3D** (2026-07-17). Maintainer ruling on the
+phase-0 draft: *"NVB is the key piece here — existence at all in 3D is
+important to implement… just figuring out how to do this in 3D is probably
+the big task. Let's put that in the first round. Checking that it produces an
+mg-viable hierarchy at every stage."* Curved / internal boundaries are
+explicitly classed as later clean-up items. The phasing below reflects the
+ruling: **round 1 = NVB-3D with an MG-viability gate at every stage**,
+round 2 = MMPDE-3D, round 3 = composition + the boundary clean-ups +
+spherical geometry.
 
 ## Scope
 
@@ -178,7 +185,57 @@ suites strictly serial; parallel gates as `tests/parallel/` scripts; style
 gates without allowlist additions; adversarial review before merge; no
 `pixi.toml`/`pixi.lock` changes. No new user-facing API anywhere below.
 
-### Phase 1 — 3D MMPDE, serial (`feature/mmpde-3d`)
+**Round order (maintainer ruling, 2026-07-17): NVB-3D is round 1** — existence
+of 3D adaptive refinement is the big task and the key deliverable; MMPDE-3D is
+round 2; composition, curved/internal-boundary clean-ups, and spherical
+geometry are round 3. Within round 1, **every stage carries an MG-viability
+gate**: it is not enough that a stage's mesh refines and conforms — the
+refined generations must feed the coordinate-based custom-P tail and drive
+FMG. Concretely, per stage:
+
+- *oracle stage*: the structural prerequisites the tail depends on — every
+  generation conforming (0 hanging faces/edges — `createDS` needs it),
+  children geometrically nested in parents (fine-node point location in
+  coarse cells is what the barycentric P builder does), similarity classes
+  bounded (shape-regular coarse problems);
+- *DMPlex stages*: build the `[base … child]` tail for the actual generations
+  and run Poisson (then Stokes velocity-block) **FMG vs GAMG iteration
+  parity** on the graded child — the same acceptance the 2D engine passed
+  (`test_0836` / `test_0839`), at np=1 first, then np=1/2/4 bit-confluent.
+
+### Round 1 — 3D NVB (`feature/nvb-3d`; the major work package)
+
+Strictly serial-oracle-first, replaying the 2D de-risking sequence:
+
+- **1a. Serial oracle** — `nvb_prototype_3d.py` (pure numpy, mirroring the 2D
+  `nvb_prototype_2d.py`): marked-tet data model (decide Maubach vs AMP
+  encoding here), recursive compatible-star-bisection closure (an edge is
+  bisectable when it is the refinement edge of *every* tet in its star),
+  conformity / bounded-closure / similarity-class diagnostics, plus the
+  oracle-stage MG-structural checks above. Acceptance mirrors the 2D
+  prototype: one tet deep in a uniform patch refines O(1)-locally; graded 3D
+  bullseye; 0 hanging faces/edges; classes bounded over deep refinement.
+  **This is the go/no-go gate for the C investment.**
+- **1b. DMPlex wrap + serial engine** — `from_dm`/`to_dm` with boundary-face
+  and region label transfer; wire as the np=1 `engine="nvb"` path for tets;
+  Poisson + FMG-vs-GAMG parity on the graded child (the MG gate, per
+  generation).
+- **1c. Native transform** — extend `nvb_transform.c`: the TETRAHEDRON
+  single-edge-split production rule + orientation tables; per-cell state label
+  (from 1a) maintenance across passes; agree/bisect SF reconciliation extended
+  over the face stratum; the same drain-loop driver. Bit-confluence integers
+  at np1/2/4 mirroring `test_0839`; FMG parity (Poisson + 3D Stokes velocity
+  block) — the MG gate, parallel.
+- **1d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
+  `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
+  `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
+  if the phase-0 suspicion is confirmed.
+
+The 2D marker-replay checkpoint design (deterministic replay from
+per-generation marked sets + state labels) carries over unchanged and stays
+out of scope here, as in 2D.
+
+### Round 2a — 3D MMPDE, serial (`feature/mmpde-3d`)
 
 - `_signed_volumes` in `graph.py`; dimension dispatch in `_mmpde_mover`
   (`_tet_cells` / `_signed_volumes` / `fact = d!`); lift the mover guard and
@@ -204,7 +261,7 @@ gates without allowlist additions; adversarial review before merge; no
   metric-variation term is 2·d analytic metric evaluations per iteration —
   measure, and if hot, evaluate the Shepard-baked metric's gradient instead.
 
-### Phase 2 — 3D MMPDE, parallel (`same worktree, gated separately`)
+### Round 2b — 3D MMPDE, parallel (same worktree, gated separately)
 
 The mover's parallel machinery (coordinate-DM `localToGlobal(ADD_VALUES)`
 velocity assembly, collective line-search predicates, halo sync) is
@@ -214,34 +271,7 @@ bit-identical; the known ~1e-4%-level step-cap partition drift documented in
 `mmpde.py:487-495` applies unchanged). Any 3D-specific divergence is a bug to
 fix, not a new mechanism to build.
 
-### Phase 3 — 3D NVB (`feature/nvb-3d`; the major work package)
-
-Strictly serial-oracle-first, replaying the 2D de-risking sequence:
-
-- **3a. Serial oracle** — `NVBMesh3D` (pure numpy, mirroring `NVBMesh`):
-  marked-tet data model (decide Maubach vs AMP encoding here), recursive
-  compatible-bisection closure, conformity / bounded-closure / similarity-class
-  diagnostics. Acceptance mirrors the 2D prototype: one tet deep in a uniform
-  patch refines O(1)-locally; graded 3D bullseye; 0 hanging faces/edges.
-- **3b. DMPlex wrap + serial engine** — `from_dm`/`to_dm` with boundary-face
-  and region label transfer; wire as the np=1 `engine="nvb"` path for tets;
-  Poisson + FMG-vs-GAMG parity on the graded child.
-- **3c. Native transform** — extend `nvb_transform.c`: the TETRAHEDRON
-  single-edge-split production rule + orientation tables; per-cell state label
-  (from 3a) maintenance across passes; agree/bisect SF reconciliation extended
-  over the face stratum; the same drain-loop driver. Bit-confluence integers
-  at np1/2/4 mirroring `test_0839`; FMG parity (Poisson + 3D Stokes velocity
-  block).
-- **3d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
-  `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
-  `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
-  if the phase-0 suspicion is confirmed.
-
-The 2D marker-replay checkpoint design (deterministic replay from
-per-generation marked sets + state labels) carries over unchanged and stays
-out of scope here, as in 2D.
-
-### Phase 4 — unified adapt + redistribute workflow
+### Round 3a — unified adapt + redistribute workflow
 
 Composition semantics need one design commitment: **redistribute-then-adapt**
 is the safe order. `adapt()` re-marks from the static base each call, so
@@ -252,7 +282,7 @@ worked example (3D box or annulus fault: metric-driven redistribution of the
 base + NVB band on the fault + Stokes FMG + advection-diffusion with field
 transfer across re-adaptation), plus a short how-to in `docs/advanced/`.
 
-### Phase 5 — spherical geometry
+### Round 3b — spherical geometry + curved/internal-boundary clean-ups
 
 - **MMPDE on shells**: `SphericalShell` (solid, `dim==cdim==3`) is a valid
   redistribution target once phase 1 lands; slip on inner/outer spheres runs
@@ -279,49 +309,55 @@ transfer across re-adaptation), plus a short how-to in `docs/advanced/`.
 
 ## Effort and risk, honestly
 
-| phase | new-code size | risk | notes |
+| round | new-code size | risk | notes |
 |---|---|---|---|
-| 1. MMPDE-3D serial | small (~100 lines + tests) | **low-medium** | core is dim-general; risk is *behavioural* (3D tangling resistance, tet quality under strong metrics) — precisely what the validation ladder measures |
-| 2. MMPDE-3D parallel | tiny (gates) | low | machinery dim-general |
-| 3. NVB-3D | large (oracle ~300 py; C: tables + face-stratum SF) | **high** | the tet orientation tables and the face-stratum SF reconciliation are the two dragons; serial oracle de-risks the algorithm before any C |
-| 4. unified workflow | small-medium | low | one ordering commitment + an example |
-| 5. spherical | medium | medium | one geometry ruling (snapping); rest is validation |
+| 1. NVB-3D | large (oracle ~300 py; C: tables + face-stratum SF) | **high** | the tet orientation tables and the face-stratum SF reconciliation are the two dragons; serial oracle de-risks the algorithm before any C |
+| 2a. MMPDE-3D serial | small (~100 lines + tests) | **low-medium** | core is dim-general; risk is *behavioural* (3D tangling resistance, tet quality under strong metrics) — precisely what the validation ladder measures |
+| 2b. MMPDE-3D parallel | tiny (gates) | low | machinery dim-general |
+| 3a. unified workflow | small-medium | low | one ordering commitment + an example |
+| 3b. spherical + boundary clean-ups | medium | medium | one geometry ruling (snapping); rest is validation |
 
 **Pause points.** This is an ambitious integration of parts that individually
 work; the phasing is designed so every boundary is a clean stop:
 
-- After phase 2, **3D node redistribution ships on its own** — a complete,
-  useful capability (and the only mover there is; the retired movers never
-  did 3D either).
-- Phase 3a (the serial oracle) is deliberately cheap and *decides* whether the
+- Stage 1a (the serial oracle) is deliberately cheap and *decides* whether the
   C investment proceeds — the same gate that worked for 2D (the 2D oracle was
   ~135 lines and settled the grading question before any C was written).
-- If 3c stalls (the C tables/SF prove worse than expected), the serial 3b
+- If 1c stalls (the C tables/SF prove worse than expected), the serial 1b
   engine still gives np=1 3D adapt-on-top with FMG, which is scientifically
   usable while the parallel path waits.
+- Round 2 (3D node redistribution) is independent of round 1 and ships on its
+  own — a complete, useful capability (and the only mover there is; the
+  retired movers never did 3D either).
 
-## Decisions needed from the maintainer
+## Maintainer rulings and open decisions
 
-1. **Commit / pause structure.** Proceed with phases 1–2 (3D MMPDE) now, with
-   an explicit re-assessment at the phase-2 → 3 boundary before the C
-   investment? (Recommended: yes — 1–2 are contained; 3 is where the effort
-   concentrates and 3a is the cheap go/no-go probe.)
+**RULED (2026-07-17):**
+
+1. **Round order** — NVB-3D first ("existence at all in 3D is important to
+   implement… the big task"), with the MG-viability gate at every stage.
+   Curved / internal boundaries are later clean-up items, not round-1 blockers.
+
+**Open (will proceed as recommended unless overruled):**
+
 2. **3D NVB first-landing guarantee level.** Accept
    termination + conformity + shape-regularity via face-consistent
    longest-edge seeding (geometric tie-breaks), with Stevenson's compatible
    initial labelling (the sharp O(#marked) constant) as a follow-up — matching
-   the 2D precedent? The alternative (compatibility from day one) adds
+   the 2D precedent. The alternative (compatibility from day one) adds
    substantial combinatorial work for a constant-factor guarantee.
-3. **Curved-boundary vertices under NVB refinement** (phase 5, but the ruling
-   shapes 3c's coordinate hook): chord midpoints (geometry frozen at base
+3. **Curved-boundary vertices under NVB refinement** (round 3b, but the ruling
+   shapes 1c's coordinate hook): chord midpoints (geometry frozen at base
    resolution) vs snap-to-analytic-surface (geometry converges; recommended,
-   probed on the 2D annulus first)?
-4. **Small defaults** (will proceed as stated unless overruled):
-   `mesh_metric_mismatch` and the `follow_metric` tet quality implemented in
-   phase 1; the `_pinned_mask` face-only-label TODO left as-is (gmsh meshes
-   are unaffected); the `engine="sbr"`-on-3D documentation corrected once
-   verified; design-note and internal names keep the algorithm names
-   (NVB, MMPDE, Maubach/AMP) while user-facing surfaces stay purposeful.
+   probed on the 2D annulus first). Round 1 proceeds with chord midpoints —
+   the 2D engine's current behaviour — so the snap decision stays a clean
+   later layer.
+4. **Small defaults**: `mesh_metric_mismatch` and the `follow_metric` tet
+   quality implemented with round 2a; the `_pinned_mask` face-only-label TODO
+   left as-is (gmsh meshes are unaffected); the `engine="sbr"`-on-3D
+   documentation corrected once verified; design-note and internal names keep
+   the algorithm names (NVB, MMPDE, Maubach/AMP) while user-facing surfaces
+   stay purposeful.
 
 ## References
 
