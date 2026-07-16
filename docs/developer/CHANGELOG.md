@@ -6,6 +6,24 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### Purposeful Adapt / Redistribution Naming (July 2026)
+
+**User-facing mesh-modification names now state the capability** (maintainer
+naming ruling 2026-07-16); the algorithm names (NVB, MMPDE) stay in internals
+and docstrings:
+
+- New user entry `uw.meshing.node_redistribution(mesh, metric, ...)`,
+  dispatching through the mesh-controlled `Mesh.redistribute_nodes(metric)`
+  method — the architecture by which each mesh type controls how it can be
+  modified. The base implementation supports 2D simplex (triangle) meshes
+  (via the MMPDE mover); quad/hex, 3D and manifold meshes raise an honest
+  `NotImplementedError` stating what exists. `smooth_mesh_interior` remains
+  as the machinery underneath.
+- `mesh.adapt(metric, max_levels=...)` no longer needs `engine=`: the graded
+  newest-vertex-bisection engine is the default on 2D meshes (NVB is 2D-only
+  this pass, so 3D meshes resolve to SBR); `engine=` stays as the
+  advanced/internal selector.
+
 ### Retired Interior Movers — MMPDE Is the Mover (July 2026)
 
 **The superseded fixed-topology interior movers were retired** (maintainer

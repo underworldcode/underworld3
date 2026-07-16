@@ -65,7 +65,7 @@ for each edge vector $\mathbf{e}$. Edges that are too long get subdivided; regio
 UW3 offers **two complementary** ways to put resolution where it is
 needed:
 
-| | `mesh.remesh(...)` (this page) | `smooth_mesh_interior(method="mmpde")` |
+| | `mesh.remesh(...)` (this page) | `uw.meshing.node_redistribution(...)` |
 |---|---|---|
 | Mechanism | **Re-mesh** (MMG): insert/remove/retriangulate | **Redistribute** the existing nodes (move only) |
 | Node budget | *Changes* — targets an **absolute** edge length `h` | **Fixed** — relative redistribution to a target *density* |
@@ -379,13 +379,18 @@ For the mathematically inclined, see the [Developer Design Document](../develope
 
 When you want to concentrate resolution on an evolving feature
 **every timestep** without re-meshing — keeping the topology and
-all field data intact — use `smooth_mesh_interior` (the node-moving
-mover) instead of `mesh.remesh`:
+all field data intact — use **node redistribution** instead of
+`mesh.remesh`. The purposeful spelling is
+`uw.meshing.node_redistribution(mesh, metric)` (equivalently the
+mesh-controlled method `mesh.redistribute_nodes(metric)`); it names
+the capability — the algorithm behind it (the Huang–Kamenski MMPDE
+mover) is an implementation detail documented on the machinery,
+`smooth_mesh_interior`:
 
 ```python
 import underworld3 as uw
 from underworld3.meshing import (
-    smooth_mesh_interior, metric_density_from_gradient)
+    node_redistribution, metric_density_from_gradient)
 
 # ... mesh + a temperature field T after some solve ...
 
@@ -396,11 +401,17 @@ from underworld3.meshing import (
 rho = metric_density_from_gradient(mesh, T, amp=8.0)
 
 # Move the nodes to that metric (topology / DOFs / variables
-# all preserved — no transfer needed). method="mmpde" is the
-# DEFAULT and may be omitted; shown here for clarity.
-smooth_mesh_interior(mesh, metric=rho, method="mmpde",
-                     boundary_slip=True)
+# all preserved — no transfer needed).
+node_redistribution(mesh, rho, boundary_slip=True)
 ```
+
+Node redistribution is implemented for **2D simplex (triangle)
+meshes**; other mesh types (quad/hex, 3D, manifolds) raise an
+honest `NotImplementedError` stating what exists. To *add*
+resolution locally instead of moving it, use the nested
+adapt-on-top: `child = mesh.adapt(metric, max_levels=2)` — no
+`engine=` needed (the graded newest-vertex-bisection engine is the
+default on 2D meshes; `engine=` remains as an advanced selector).
 
 ```{tip}
 **`method="mmpde"` is the default mover** (since this release): the
