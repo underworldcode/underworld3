@@ -1,8 +1,32 @@
 # Multigrid with minimal user control — design note
 
-**Status**: PROPOSED (2026-07). No implementation in this PR — this note
-surveys what exists after #369 and asks the maintainer to settle the
-default-behaviour questions at the end.
+**Status**: RULED (2026-07-17) — the maintainer settled all seven questions;
+rulings recorded below. No implementation in this PR; the rulings govern the
+implementation PR that follows.
+
+## Maintainer rulings (2026-07-17)
+
+1. **Automatic routing**: GAMG remains the automatic default; custom-P
+   geometric FMG is **opt-in**, not auto-selected — it needs more production
+   mileage before it becomes a silent default (#276's fallback stands).
+2. **Failure loudness — two-tier**: automatic/default MG decisions warn and
+   fall back to a working solve; an EXPLICIT user request (e.g. geometric FMG)
+   that cannot be honoured fails hard.
+3. **Utility-solver exclusion**: an explicit `wants_mg = False` class
+   attribute — the solver class declares its MG policy readably; the options
+   latch is retired when this lands.
+4. **User spelling**: `solver.multigrid = "auto" | "geometric" | "algebraic"
+   | "off"` — capability words per the purposeful-naming ruling.
+   `solver.preconditioner` remains the expert/PETSc-level knob.
+5. **`set_custom_mg`**: removed next release cycle (one full deprecation
+   cycle, the Wave C pattern).
+6. **SNESFAS**: options-only, and explicitly **not a viable option** at
+   present — "we don't have good preconditioners for this one and we seem to
+   lose the robust linear solver path if we adopt this strategy." Noted here
+   and in the solver skills as a future investigation only.
+7. **Default hierarchies**: NO — meshes do not build a refinement hierarchy
+   by default. Hierarchy cost stays explicit and predictable; users who want
+   geometric MG ask for `refinement>=1`.
 
 **Maintainer direction** (2026-07): *"the laplacian solvers all benefit
 from MG; the real question is how much control is handed to / required

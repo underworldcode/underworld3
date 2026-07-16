@@ -355,6 +355,16 @@ degrades on poor cells (the GAMG anisotropy section above) —
 mesh-quality monitoring is therefore not aesthetic, it directly
 predicts solver robustness.
 
+## SNESFAS (nonlinear multigrid) — NOT a viable option (ruled 2026-07-17)
+
+SNESFAS remains reachable via PETSc options for experimentation, but it is
+**not part of any recommended strategy**: we do not have good preconditioners
+for the nonlinear hierarchy, and adopting it means losing the robust
+linear-solver path (Newton/Picard + fieldsplit + the MG ladder above) that the
+rest of this catalogue is built on. Treat it as a future investigation, not a
+tool to reach for when a solve struggles — the failure-class map below never
+routes to it. See `MULTIGRID_MINIMAL_CONTROL_2026-07.md`, ruling 6.
+
 ## Failure-class → strategy map (the picking guide)
 
 ```
