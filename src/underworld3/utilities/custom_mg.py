@@ -670,6 +670,9 @@ class CustomMGHierarchy:
         try:
             solver.snes.setUp()
         except Exception:
+            # Sanctioned swallow: setUp can fail on a not-yet-fully-configured
+            # SNES (pre-solve injection). The install paths call setUp again;
+            # the finest map then reads the DM's current global section.
             pass
 
         coords, maps, ncomp = [], [], []
