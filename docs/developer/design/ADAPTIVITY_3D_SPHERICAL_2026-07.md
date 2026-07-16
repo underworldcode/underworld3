@@ -154,17 +154,23 @@ What is genuinely new in 3D:
    exactly like the 2D slot label. **The serial oracle (below) decides which
    encoding yields the cleaner child tables** — they are mathematically
    equivalent (Traxler 1997).
-2. **Initial labelling / termination.** In 2D the longest-edge seed always
-   conforming-terminates. In 3D, arbitrary seeds can cycle; the standard
-   practical choice is **face-consistent marks** — each face's marked edge is
-   its longest, with a *geometric, partition-independent* tie-break (both tets
-   sharing a face then agree by construction, on any rank). This guarantees
-   termination, conformity and boundedly many similarity classes
-   (Bänsch 1991; AMP 2000); the *sharp* O(#marked) closure constant needs
-   Stevenson's (2008) compatible initial labelling, which — exactly as the 2D
-   note ruled — is a follow-up, not a first-landing requirement. (Kossaczký
-   pre-refinement is rejected: it would alter the user's base mesh, which is
-   also the MG tail.)
+2. **Initial labelling / termination — SOLVED by the DGS initialization
+   (stage-1a finding, 2026-07-17).** In 2D the longest-edge seed always
+   conforming-terminates; in 3D arbitrary seeds can cycle and the classical
+   remedies (Kossaczký/Stevenson pre-refinement — alters the user's base
+   mesh, which is also the MG tail; Bänsch/AMP marked types — weaker closure
+   theory) all cost something. Diening–Gehring–Storn (arXiv:2306.02674)
+   removes the problem: a **greedy vertex coloring** of the base mesh (in a
+   deterministic order), the vertices of each cell sorted by color (global-
+   max color first, tag = n), then Maubach's plain bisection rule. For **any
+   conforming initial triangulation in any dimension** this is proven to
+   terminate, keep ≤ n!·n·2^(n−2) = 36 similarity classes per base tet,
+   preserve shape regularity with an explicit constant, and satisfy the full
+   Binev–Dahmen–DeVore closure estimate — the *sharp* bound, not a weakened
+   one, with **no pre-refinement**. Parallel note for stage 1c: the coloring
+   must be partition-independent — compute it once on the (small) serial
+   base at construction, or greedy-color in coordinate-lexicographic order;
+   it then travels as an ordinary vertex label.
 3. **The tet subcell-orientation tables.** `GetSubcellOrientation` for
    TETRAHEDRON under its 24 arrangements (`DMPolytopeTypeGetArrangement` is a
    `static inline` in public `petscdm.h` — usable by inclusion). This is the
@@ -216,6 +222,26 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
   prototype: one tet deep in a uniform patch refines O(1)-locally; graded 3D
   bullseye; 0 hanging faces/edges; classes bounded over deep refinement.
   **This is the go/no-go gate for the C investment.**
+
+  **DONE — PASS (2026-07-17).** Maubach rule + DGS coloring initialization,
+  ~330 lines of numpy. Measured, on a structured Kuhn 2×2×2 base *and* an
+  arbitrary unstructured Delaunay base (361 tets):
+
+  | property | Kuhn (structured) | Delaunay (arbitrary) |
+  |---|---|---|
+  | conformity, every sweep (9 uniform sweeps, to 124k / 2.87M cells) | 0 hanging, 0 overshared | 0 hanging, 0 overshared |
+  | per-base-tet similarity classes (theorem bound **36**) | ≤ 36, plateaued | **exactly 36**, plateaued from sweep 4 |
+  | one deep mark inside a 2-level uniform patch | **+6 cells**, local | **+4 cells**, local |
+  | graded bullseye (4 shrinking radii × 3 sweeps) | gens 2–18, finest confined r<0.094 | gens 0–20, finest confined r<0.093 |
+  | volume conservation | exact (4e-16) | exact (0.0) |
+  | child-in-base-ancestor nesting (custom-P prerequisite) | exact | 9e-15 |
+
+  Hitting the similarity-class bound exactly and plateauing there is the
+  sharpest available signature that the child rule is implemented correctly.
+  The per-cell state for stage 1c is confirmed as **(ordered vertex 4-tuple,
+  tag γ ∈ {1,2,3})** — encodable as one small-integer DMLabel value
+  (permutation index 0–23 × tag), maintained across passes exactly like the
+  2D `uwnvb_refedge` slot. **Go for stages 1b/1c.**
 - **1b. DMPlex wrap + serial engine** — `from_dm`/`to_dm` with boundary-face
   and region label transfer; wire as the np=1 `engine="nvb"` path for tets;
   Poisson + FMG-vs-GAMG parity on the graded child (the MG gate, per
@@ -340,12 +366,13 @@ work; the phasing is designed so every boundary is a clean stop:
 
 **Open (will proceed as recommended unless overruled):**
 
-2. **3D NVB first-landing guarantee level.** Accept
-   termination + conformity + shape-regularity via face-consistent
-   longest-edge seeding (geometric tie-breaks), with Stevenson's compatible
-   initial labelling (the sharp O(#marked) constant) as a follow-up — matching
-   the 2D precedent. The alternative (compatibility from day one) adds
-   substantial combinatorial work for a constant-factor guarantee.
+2. **3D NVB first-landing guarantee level — RESOLVED by a better option
+   (stage-1a, 2026-07-17).** The DGS coloring initialization delivers the
+   *full* guarantee set (termination + conformity + shape regularity + the
+   sharp BDV closure bound) on arbitrary conforming base meshes at the cost
+   of a trivial greedy coloring — strictly better than the face-consistent
+   longest-edge compromise this decision originally weighed. Adopted;
+   validated by the oracle (see stage 1a).
 3. **Curved-boundary vertices under NVB refinement** (round 3b, but the ruling
    shapes 1c's coordinate hook): chord midpoints (geometry frozen at base
    resolution) vs snap-to-analytic-surface (geometry converges; recommended,
@@ -374,5 +401,10 @@ work; the phasing is designed so every boundary is a clean stop:
 - R. Stevenson, *The completion of locally refined simplicial partitions
   created by bisection*, Math. Comp. 77 (2008) 227 — compatible labelling,
   O(#marked) closure.
+- L. Diening, L. Gehring, J. Storn, *Adaptive mesh refinement for arbitrary
+  initial triangulations* (arXiv:2306.02674; FoCM 2025) — the coloring
+  initialization adopted here: Maubach's routine on ANY conforming initial
+  mesh, with termination, 36 similarity classes per base tet, shape
+  regularity, and the sharp BDV closure estimate.
 - `NVB_GRADED_ADAPT.md`, `LAYER2_SBR_ADAPT_ON_TOP.md` (this repo) — the 2D
   engine, the single-bisection finding, the parallel confluence machinery.
