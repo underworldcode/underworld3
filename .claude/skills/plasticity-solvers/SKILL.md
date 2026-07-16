@@ -129,3 +129,13 @@ Override with `consistent_tangent=True` / `False` / `"continuation"`.
 <sub>Footnote: before this work UW3 differentiated the flux with the viscosity still
 wrapped, so `∂η/∂(grad v)` was dropped and viscoplastic solves silently ran the Picard
 tangent — the origin of the "~20 iterations is intrinsic" folklore.</sub>
+
+## SNESFAS — do not reach for it
+
+Nonlinear multigrid (SNESFAS) looks tempting for hard viscoplastic solves but is
+**not a viable option** at present (maintainer ruling 2026-07-17): there are no
+good preconditioners for the nonlinear hierarchy, and it abandons the robust
+linear-solver path (consistent tangent / continuation + fieldsplit + MG) that
+this skill is built around. It stays options-only for experiments; treat it as a
+future investigation. See `docs/developer/design/solver-strategies-catalogue.md`
+and `MULTIGRID_MINIMAL_CONTROL_2026-07.md` (ruling 6).

@@ -38,6 +38,8 @@ Notes
   operators from the DM hierarchy, so our explicit ``P`` is used.
 """
 
+from typing import NamedTuple
+
 import numpy as np
 from petsc4py import PETSc
 
@@ -64,14 +66,18 @@ def barycentric_prolongation(coarse_coords, fine_coords):
     for i in range(fine_coords.shape[0]):
         s = simp[i]
         if s < 0:  # outside coarse hull → nearest coarse DOF
-            rows.append(i); cols.append(int(tree.query(fine_coords[i])[1])); vals.append(1.0)
+            rows.append(i)
+            cols.append(int(tree.query(fine_coords[i])[1]))
+            vals.append(1.0)
             continue
         verts = tri.simplices[s]
         T = tri.transform[s]
         bary = T[:dim].dot(fine_coords[i] - T[dim])
         w = np.append(bary, 1.0 - bary.sum())
         for k in range(dim + 1):
-            rows.append(i); cols.append(int(verts[k])); vals.append(float(w[k]))
+            rows.append(i)
+            cols.append(int(verts[k]))
+            vals.append(float(w[k]))
     return sp.csr_matrix((vals, (rows, cols)),
                          shape=(fine_coords.shape[0], coarse_coords.shape[0]))
 
@@ -85,6 +91,8 @@ def rbf_prolongation(coarse_coords, fine_coords, smooth=0.0):
     from scipy.spatial.distance import cdist
 
     def phi(r):
+        # r² log r → 0 as r → 0; the clamp only keeps log(0) finite at
+        # coincident points — it does not perturb the kernel value.
         r = np.where(r == 0.0, 1e-30, r)
         return r ** 2 * np.log(r)
 
@@ -220,7 +228,8 @@ def _reduce_to_global(dm, full_coords):
     gvec = dm.getGlobalVec()
     cdim = full_coords.shape[1]
     if lvec.getLocalSize() != full_coords.shape[0]:
-        dm.restoreLocalVec(lvec); dm.restoreGlobalVec(gvec)
+        dm.restoreLocalVec(lvec)
+        dm.restoreGlobalVec(gvec)
         raise RuntimeError(
             f"custom_mg: local DOF count {lvec.getLocalSize()} != coord count "
             f"{full_coords.shape[0]} — degree/continuity mismatch")
@@ -252,7 +261,10 @@ def _field_subdm(dm, field_id):
     try:
         if dm.getNumFields() <= 1:
             return dm
-    except Exception:
+    except PETSc.Error:
+        # Sanctioned: a DM whose DS is not created yet cannot report its
+        # field count; treat it as single-field rather than mask a real
+        # multi-field mistake with a broad swallow.
         return dm
     _iset, sub = dm.createSubDM(field_id)
     return sub
@@ -278,24 +290,31 @@ def _reduced_map(dm, field_id=None):
     return r2f, n_full
 
 
-def _coarse_reduced_map(solver, coarse_mesh, field_id=None):
-    """A COARSE level's BC-constrained reduced map, with NO throwaway solver.
+def _clone_dm_with_solver_discretisation(solver, coarse_mesh):
+    """Clone a coarse mesh DM carrying the finest ``solver``'s discretisation.
 
-    Clone the coarse mesh DM and copy the (built) finest ``solver``'s fields + DS
-    onto it. The DS carries UW's exact essential-BC definitions (the custom
-    essential-field boundaries), and is a topology-independent discretisation spec,
-    so ``createDS`` constrains the matching boundary DOFs on ANY coarse mesh that
-    carries the same boundary labels (nested or not). The resulting global section
-    gives the same reduced map a full same-discretisation solver would — validated
-    identical to the old ``level_solver_factory`` path. Leak-free: DM ops only, no
-    SNES / JIT.
-
-    NOTE: serial, like ``_reduced_map`` (uses local indices); parallel correctness
-    is a Phase-3 item."""
+    Copy the (built) solver's fields + DS onto the clone. The DS carries UW's
+    exact essential-BC definitions (the custom essential-field boundaries), and
+    is a topology-independent discretisation spec, so ``createDS`` constrains
+    the matching boundary DOFs on ANY coarse mesh that carries the same
+    boundary labels (nested or not). The resulting global section gives the
+    same reduced map a full same-discretisation solver would — validated
+    identical to the old ``level_solver_factory`` path. Leak-free: DM ops
+    only, no SNES / JIT."""
     cdm = coarse_mesh.dm.clone()
     solver.dm.copyFields(cdm)
     solver.dm.copyDS(cdm)
     cdm.createDS()
+    return cdm
+
+
+def _coarse_reduced_map(solver, coarse_mesh, field_id=None):
+    """A COARSE level's BC-constrained reduced map, with NO throwaway solver
+    (see :func:`_clone_dm_with_solver_discretisation` for the copyDS trick).
+
+    NOTE: serial, like ``_reduced_map`` (uses local indices); parallel correctness
+    is a Phase-3 item."""
+    cdm = _clone_dm_with_solver_discretisation(solver, coarse_mesh)
     return _reduced_map(cdm, field_id)
 
 
@@ -317,14 +336,26 @@ def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
 #  its block of P from its LOCAL (ghost-inclusive) coarse coords — point-location
 #  is rank-local. The reduced global numbering rides the DM global section.
 # --------------------------------------------------------------------------- #
-def _level_dof_layout(dm, field_id=None):
-    """Parallel DOF layout for one level: ``(l2g, rstart, rend, n_full)``.
+class LevelLayout(NamedTuple):
+    """Parallel DOF layout of one MG level.
 
-    ``l2g[i]`` is the GLOBAL reduced index of local DOF ``i`` — ghost-resolved to
-    the owner's global index, and ``-1`` for a BC-constrained DOF. Built by
-    scattering each owned global index out to the local (incl. ghost) layout via
-    ``globalToLocal`` (constrained local DOFs have no global source, so they keep
-    the pre-set ``-1``). ``[rstart, rend)`` is this rank's owned global range."""
+    ``l2g[i]`` is the GLOBAL reduced index of local DOF ``i`` — ghost-resolved
+    to the owner's global index, and ``-1`` for a BC-constrained DOF.
+    ``[rstart, rend)`` is this rank's owned global range; ``n_full`` is the
+    local (ghost-inclusive) full DOF count."""
+
+    l2g: np.ndarray
+    rstart: int
+    rend: int
+    n_full: int
+
+
+def _level_dof_layout(dm, field_id=None):
+    """Parallel DOF layout for one level (a :class:`LevelLayout`).
+
+    ``l2g`` is built by scattering each owned global index out to the local
+    (incl. ghost) layout via ``globalToLocal`` (constrained local DOFs have no
+    global source, so they keep the pre-set ``-1``)."""
     sub = _field_subdm(dm, field_id)
     gv = sub.getGlobalVec()
     lv = sub.getLocalVec()
@@ -336,20 +367,18 @@ def _level_dof_layout(dm, field_id=None):
     n_full = lv.getLocalSize()
     sub.restoreGlobalVec(gv)
     sub.restoreLocalVec(lv)
-    return l2g, rstart, rend, n_full
+    return LevelLayout(l2g, rstart, rend, n_full)
 
 
 def _coarse_dof_layout(solver, coarse_mesh, field_id=None):
     """Parallel coarse-level DOF layout, no throwaway solver — same copyDS trick
-    as :func:`_coarse_reduced_map` but returning the parallel ``l2g`` layout."""
-    cdm = coarse_mesh.dm.clone()
-    solver.dm.copyFields(cdm)
-    solver.dm.copyDS(cdm)
-    cdm.createDS()
+    as :func:`_coarse_reduced_map` but returning the parallel layout."""
+    cdm = _clone_dm_with_solver_discretisation(solver, coarse_mesh)
     return _level_dof_layout(cdm, field_id)
 
 
-def _build_parallel_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
+def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
+                             fine_layout, ncomp, builder, comm):
     """One reduced->reduced prolongation as an MPIAIJ matrix.
 
     Node-level barycentric/RBF weights are built rank-locally (coarse LOCAL coords
@@ -357,11 +386,11 @@ def _build_parallel_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
     fine OWNED DOF becomes a global row; its coarse contributions map through the
     coarse ``l2g`` to global columns (off-rank columns are fine for MPIAIJ).
     Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
-    l2g_c, cstart, cend, _ = lay_c
-    l2g_f, fstart, fend, _ = lay_f
-    Pn = builder(cc, fc).tocsr()                 # (n_f_nodes, n_c_nodes), local
+    l2g_c = coarse_layout.l2g
+    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
+    Pn = builder(coarse_coords, fine_coords).tocsr()   # (n_f_nodes, n_c_nodes), local
     nloc_f = fend - fstart
-    nloc_c = cend - cstart
+    nloc_c = coarse_layout.rend - coarse_layout.rstart
 
     P = PETSc.Mat().create(comm=comm)
     P.setSizes(((nloc_f, None), (nloc_c, None)))
@@ -386,7 +415,7 @@ def _build_parallel_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
     return P
 
 
-def _gather_coarse_cloud(cc, lay_c, ncomp, comm):
+def _gather_coarse_cloud(coarse_coords, coarse_layout, ncomp, comm):
     """All-gather the (small) coarse node cloud across ranks and deduplicate.
 
     Returns ``(coords_u, cols_u)``: ``coords_u`` is the FULL coarse node cloud
@@ -396,16 +425,18 @@ def _gather_coarse_cloud(cc, lay_c, ncomp, comm):
     coordinate; constrained nodes stay in the cloud as barycentric vertices but
     carry ``-1`` so they are dropped from the transfer columns."""
     m4 = comm.tompi4py()
-    ncn = cc.shape[0]
-    cols_local = np.asarray(lay_c[0], dtype=np.int64).reshape(ncn, ncomp)
-    cc_all = np.vstack(m4.allgather(np.ascontiguousarray(cc, dtype=float)))
+    ncn = coarse_coords.shape[0]
+    cols_local = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(ncn, ncomp)
+    cc_all = np.vstack(m4.allgather(
+        np.ascontiguousarray(coarse_coords, dtype=float)))
     cols_all = np.vstack(m4.allgather(np.ascontiguousarray(cols_local)))
     _key, uidx = np.unique(np.round(cc_all, 9), axis=0, return_index=True)
     uidx = np.sort(uidx)
     return cc_all[uidx], cols_all[uidx]
 
 
-def _build_crosspart_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
+def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
+                              fine_layout, ncomp, builder, comm):
     """One reduced->reduced prolongation for a NON-NESTED (independently
     partitioned) coarse level.
 
@@ -417,13 +448,13 @@ def _build_crosspart_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
     small — that is what makes a coarse MG level coarse), so point location spans
     partitions. Columns are the coarse GLOBAL reduced indices (off-rank columns are
     fine for MPIAIJ); constrained coarse DOFs (col < 0) drop out."""
-    _l2g_c, cstart, cend, _ = lay_c
-    l2g_f, fstart, fend, _ = lay_f
-    coords_u, cols_u = _gather_coarse_cloud(cc, lay_c, ncomp, comm)
+    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
+    coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
+                                            ncomp, comm)
 
-    Pn = builder(coords_u, fc).tocsr()           # (n_f_nodes_local, Nu)
+    Pn = builder(coords_u, fine_coords).tocsr()  # (n_f_nodes_local, Nu)
     nloc_f = fend - fstart
-    nloc_c = cend - cstart
+    nloc_c = coarse_layout.rend - coarse_layout.rstart
 
     P = PETSc.Mat().create(comm=comm)
     P.setSizes(((nloc_f, None), (nloc_c, None)))
@@ -453,12 +484,14 @@ def _count_zero_columns_parallel(P, comm):
     image). Column sums via P^T·1 (barycentric/RBF weights are positive, so a zero
     sum is an empty column). Used to auto-detect a cross-partition point-location
     miss (non-nested coarse level) and, separately, as the hard guard below."""
-    ones_f = P.createVecLeft(); ones_f.set(1.0)
+    ones_f = P.createVecLeft()
+    ones_f.set(1.0)
     colsum = P.createVecRight()
     P.multTranspose(ones_f, colsum)
     nzero_local = int((colsum.array == 0.0).sum())
     nzero = comm.tompi4py().allreduce(nzero_local)
-    ones_f.destroy(); colsum.destroy()
+    ones_f.destroy()
+    colsum.destroy()
     return nzero
 
 
@@ -470,6 +503,17 @@ def _assert_no_zero_columns_parallel(P, comm):
         raise RuntimeError(
             f"parallel transfer has {nzero} zero columns (coarse DOFs with no fine "
             f"image) — BC-per-level reduction failed; coarse operator would be singular.")
+
+
+def _assert_no_zero_columns_serial(P_csr, level):
+    """Serial zero-column guard — same physics as the parallel guard above: a
+    coarse DOF with no fine image makes the Galerkin coarse operator singular."""
+    nzero = int((np.asarray((P_csr != 0).sum(axis=0)).ravel() == 0).sum())
+    if nzero:
+        raise RuntimeError(
+            f"transfer {level - 1}->{level} has {nzero} zero columns (coarse DOFs "
+            f"with no fine image) — BC-per-level reduction failed; coarse "
+            f"operator would be singular.")
 
 
 def _configure_pcmg(pc, Ps):
@@ -583,7 +627,6 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
     outer_pc.setUp()
     vel_ksp = outer_pc.getFieldSplitSubKSP()[0]
     vel_pc = vel_ksp.getPC()
-    sub = vel_pc.getOptionsPrefix() or "fieldsplit_velocity_"
     A_vv, P_vv = vel_pc.getOperators()        # capture before reset (reset drops them)
 
     # 3. fresh PCMG on the velocity sub-block from our Ps
@@ -598,8 +641,9 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
 
     if verbose:
         from underworld3 import mpi
+        vel_prefix = vel_pc.getOptionsPrefix() or "fieldsplit_velocity_"
         mpi.pprint(f"[{solver.name}] custom FMG installed on velocity block: "
-                   f"{len(Ps) + 1} levels, sub-prefix {sub!r}, "
+                   f"{len(Ps) + 1} levels, sub-prefix {vel_prefix!r}, "
                    f"P sizes {[tuple(P.getSize()) for P in Ps]}")
 
 
@@ -680,9 +724,11 @@ class CustomMGHierarchy:
             c = np.asarray(mesh._get_coords_for_basis(degree, continuous))
             finest = (k == nlev - 1)
             if parallel:
+                # ``maps`` holds a LevelLayout per level in parallel, and a
+                # bare reduced->full index array per level in serial.
                 lay = (_level_dof_layout(solver.dm, self.field_id) if finest
                        else _coarse_dof_layout(solver, mesh, self.field_id))
-                nfull = lay[3]
+                nfull = lay.n_full
                 maps.append(lay)
             else:
                 rmap, nfull = (_reduced_map(solver.dm, self.field_id) if finest
@@ -692,7 +738,8 @@ class CustomMGHierarchy:
             if nfull % c.shape[0] != 0:
                 raise RuntimeError(
                     f"level {k}: full DOFs {nfull} not divisible by nodes {c.shape[0]}")
-            coords.append(c); ncomp.append(nc)
+            coords.append(c)
+            ncomp.append(nc)
 
         if len(set(ncomp)) != 1:
             raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
@@ -727,12 +774,7 @@ class CustomMGHierarchy:
             else:
                 Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
                                        maps[l], nc, self.builder)
-                zc = int((np.asarray((Pr != 0).sum(axis=0)).ravel() == 0).sum())
-                if zc:
-                    raise RuntimeError(
-                        f"transfer {l-1}->{l} has {zc} zero columns (coarse DOFs with "
-                        f"no fine image) — BC-per-level reduction failed; coarse "
-                        f"operator would be singular.")
+                _assert_no_zero_columns_serial(Pr, l)
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         return Ps
@@ -753,8 +795,8 @@ class CustomMGHierarchy:
         if op_n <= 0:
             return
         if parallel:
-            _l2g, rstart, rend, _n = finest_map
-            red_n = int(solver.dm.comm.tompi4py().allreduce(int(rend - rstart)))
+            red_n = int(solver.dm.comm.tompi4py().allreduce(
+                int(finest_map.rend - finest_map.rstart)))
         else:
             red_n = int(len(finest_map))             # r2f length = reduced global size
         if red_n != op_n:
@@ -876,6 +918,12 @@ def inject_custom_mg(solver):
         return
 
     # ---- legacy finest-only path (back-compat, serial only) -----------------
+    # TODO(deprecate): remove together with SolverBaseClass.set_custom_mg and
+    # test_1015's legacy cases. The one behavioural difference from the
+    # hierarchy path: NO BC-per-level reduction — transfers are built on the
+    # full node cloud, which is only valid when the coarse levels are
+    # non-nested / unconstrained (a nested coarse boundary DOF coinciding with
+    # a BC-removed fine DOF would give a zero column -> singular coarse op).
     _require_serial("legacy custom_mg (set_custom_mg)")
     coarse_meshes = cfg["coarse_meshes"]
     builder = _BUILDERS[cfg["kind"]]
