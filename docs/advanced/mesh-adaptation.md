@@ -30,7 +30,7 @@ metric = uw.adaptivity.metric_from_gradient(
 )
 
 # Adapt the mesh
-mesh.adapt(metric)
+mesh.remesh(metric)
 ```
 
 ## Core Concepts
@@ -65,7 +65,7 @@ for each edge vector $\mathbf{e}$. Edges that are too long get subdivided; regio
 UW3 offers **two complementary** ways to put resolution where it is
 needed:
 
-| | `mesh.adapt(...)` (this page) | `smooth_mesh_interior(method="anisotropic")` |
+| | `mesh.remesh(...)` (this page) | `smooth_mesh_interior(method="anisotropic")` |
 |---|---|---|
 | Mechanism | **Re-mesh** (MMG): insert/remove/retriangulate | **Redistribute** the existing nodes (move only) |
 | Node budget | *Changes* — targets an **absolute** edge length `h` | **Fixed** — relative redistribution to a target *density* |
@@ -75,7 +75,7 @@ needed:
 | Cost | Re-mesh + full variable transfer | A few cheap SPD elliptic solves (no re-mesh) |
 | Parallel | MMG re-partition | O(N), GAMG-parallelisable, no transfer |
 
-Use `mesh.adapt` when you need a genuinely finer mesh (more
+Use `mesh.remesh` when you need a genuinely finer mesh (more
 elements) and can afford to rebuild the problem. Use the
 **node-snuggling** redistribution when you want to *reshape* the
 existing mesh toward a feature every timestep cheaply, keeping the
@@ -241,7 +241,7 @@ metric = fault.refinement_metric(
 )
 
 # Adapt mesh
-mesh.adapt(metric)
+mesh.remesh(metric)
 
 # Check result
 print(f"Adapted mesh: {mesh.X.coords.shape[0]} nodes")
@@ -258,7 +258,7 @@ p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
 
 ### Variables Are Reset
 
-After `mesh.adapt()`, all variables on the old mesh become invalid. Variables on the new mesh start uninitialized.
+After `mesh.remesh()`, all variables on the old mesh become invalid. Variables on the new mesh start uninitialized.
 
 **For analytical initialization:**
 ```python
@@ -347,7 +347,7 @@ pixi run -e amr python -c "import underworld3; print('AMR ready')"
 
 | Function | Purpose |
 |----------|---------|
-| `mesh.adapt(metric)` | Adapt mesh using metric field |
+| `mesh.remesh(metric)` | Re-mesh (in place) using metric field |
 | `uw.adaptivity.create_metric(mesh, h)` | Convert h-field to metric |
 | `uw.adaptivity.metric_from_gradient(field, ...)` | Metric from field gradient |
 | `uw.adaptivity.metric_from_field(indicator, ...)` | Metric from indicator field |
@@ -380,7 +380,7 @@ For the mathematically inclined, see the [Developer Design Document](../develope
 When you want to concentrate resolution on an evolving feature
 **every timestep** without re-meshing — keeping the topology and
 all field data intact — use `smooth_mesh_interior` (the node-moving
-mover) instead of `mesh.adapt`:
+mover) instead of `mesh.remesh`:
 
 ```python
 import underworld3 as uw

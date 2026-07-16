@@ -69,6 +69,26 @@ def test_parallel_custom_fmg_scalar():
 
 
 @pytest.mark.mpi(min_size=2)
+def test_parallel_custom_fmg_nonnested():
+    """NON-NESTED coarse tail in parallel: the coarse mesh is an INDEPENDENT box at
+    a different cellSize (partitioned independently of the fine mesh), so a fine
+    leaf on rank r can sit in a coarse cell owned by rank s. The co-partitioned
+    rank-local builder misses those (zero columns); the "auto" cross-partition path
+    all-gathers the coarse cloud so every rank locates its fine nodes against the
+    full coarse mesh. Result must converge and match a GAMG reference."""
+    assert uw.mpi.size > 1
+    fine   = _box(0.07)                       # NO refine hierarchy
+    coarse = _box(0.25)                        # independent, non-nested
+    g = _poisson(fine); g.preconditioner = "gamg"; g.solve()
+    c = _poisson(fine)
+    custom_mg.set_custom_fmg(c, [coarse], builder="barycentric")   # cross_partition="auto"
+    c.solve()
+    assert c.snes.getKSP().getPC().getType() == "mg"
+    assert c.snes.getConvergedReason() > 0
+    assert _rel_l2(c.Unknowns.u.data, g.Unknowns.u.data) < 1e-4
+
+
+@pytest.mark.mpi(min_size=2)
 def test_parallel_custom_fmg_stokes_velocity_block():
     """Custom-P on the SolCx velocity block converges in few MG iters in parallel
     and matches the analytic velocity to the GAMG reference's accuracy."""

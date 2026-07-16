@@ -42,7 +42,8 @@ import numpy as np
 from petsc4py import PETSc
 
 __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
-           "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where"]
+           "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where",
+           "nvb_refine"]
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +168,32 @@ def sbr_refine_where(dm, predicate):
             if predicate(d.computeCellGeometryFVM(c)[1]):
                 lab.setValue(c, _DM_ADAPT_REFINE)
     return _sbr_apply(dm, mark)
+
+
+# --------------------------------------------------------------------------- #
+#  Newest-vertex bisection (NVB) — GRADED refinement (serial Route A)
+# --------------------------------------------------------------------------- #
+def nvb_refine(dm, cells, boundaries=(), regions=()):
+    """NVB-refine an explicit list of ``cells`` (serial, single level), returning a
+    fresh interpolated ``DMPlex`` with boundary/region labels transferred.
+
+    Counterpart to :func:`sbr_refine` but with a **bounded conforming closure**, so
+    a marked cell deep in a uniform patch adds O(1) cells locally instead of
+    draining the longest-edge path to the patch edge — the property that lets
+    successive levels *grade* (see :mod:`underworld3.utilities.nvb`).
+
+    Single-shot: builds an :class:`~underworld3.utilities.nvb.NVBMesh` from ``dm``
+    (longest-edge seed), refines, and emits the DM. For a **multi-level** graded
+    adapt, drive a *persistent* ``NVBMesh`` across levels instead (so the
+    refinement-edge labelling — hence the similarity-class / shape-regularity bound
+    — propagates parent→child); ``Mesh._adapt_nested(engine="nvb")`` does this.
+
+    ``boundaries`` / ``regions`` are ``(name, value)`` iterables of labels to carry.
+    """
+    from underworld3.utilities.nvb import NVBMesh
+    nvb = NVBMesh.from_dm(dm, boundaries=boundaries, regions=regions)
+    nvb.refine(set(int(c) for c in cells))
+    return nvb.to_dm(boundaries=boundaries, regions=regions, comm=dm.comm)
 
 
 # --------------------------------------------------------------------------- #
@@ -359,16 +386,86 @@ def _build_parallel_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
     return P
 
 
-def _assert_no_zero_columns_parallel(P, comm):
-    """Parallel zero-column guard: a coarse DOF with no fine image -> singular
-    Galerkin coarse operator. Column sums via P^T·1 (weights are positive, so a
-    zero sum means an empty column)."""
+def _gather_coarse_cloud(cc, lay_c, ncomp, comm):
+    """All-gather the (small) coarse node cloud across ranks and deduplicate.
+
+    Returns ``(coords_u, cols_u)``: ``coords_u`` is the FULL coarse node cloud
+    (Nu, dim) — every coarse node in the mesh, on every rank — and ``cols_u`` is
+    (Nu, ncomp) the GLOBAL reduced column index of each node/component (``-1`` for a
+    BC-constrained DOF). Ghost copies are bit-identical and dedup by rounded
+    coordinate; constrained nodes stay in the cloud as barycentric vertices but
+    carry ``-1`` so they are dropped from the transfer columns."""
+    m4 = comm.tompi4py()
+    ncn = cc.shape[0]
+    cols_local = np.asarray(lay_c[0], dtype=np.int64).reshape(ncn, ncomp)
+    cc_all = np.vstack(m4.allgather(np.ascontiguousarray(cc, dtype=float)))
+    cols_all = np.vstack(m4.allgather(np.ascontiguousarray(cols_local)))
+    _key, uidx = np.unique(np.round(cc_all, 9), axis=0, return_index=True)
+    uidx = np.sort(uidx)
+    return cc_all[uidx], cols_all[uidx]
+
+
+def _build_crosspart_transfer(cc, fc, lay_c, lay_f, ncomp, builder, comm):
+    """One reduced->reduced prolongation for a NON-NESTED (independently
+    partitioned) coarse level.
+
+    The co-partitioned builder locates each rank's fine nodes only in that rank's
+    LOCAL coarse coords; when the coarse and fine partitions differ a fine leaf on
+    rank ``r`` can sit in a coarse cell owned by rank ``s`` -> missed (nearest-DOF
+    fallback, wrong) or a coarse DOF with no fine image (zero column). Here every
+    rank locates its OWNED fine nodes against the FULL coarse cloud (all-gathered,
+    small — that is what makes a coarse MG level coarse), so point location spans
+    partitions. Columns are the coarse GLOBAL reduced indices (off-rank columns are
+    fine for MPIAIJ); constrained coarse DOFs (col < 0) drop out."""
+    _l2g_c, cstart, cend, _ = lay_c
+    l2g_f, fstart, fend, _ = lay_f
+    coords_u, cols_u = _gather_coarse_cloud(cc, lay_c, ncomp, comm)
+
+    Pn = builder(coords_u, fc).tocsr()           # (n_f_nodes_local, Nu)
+    nloc_f = fend - fstart
+    nloc_c = cend - cstart
+
+    P = PETSc.Mat().create(comm=comm)
+    P.setSizes(((nloc_f, None), (nloc_c, None)))
+    P.setType("aij")
+    P.setUp()
+    for i in range(Pn.shape[0]):                 # fine local node
+        js = Pn.indices[Pn.indptr[i]:Pn.indptr[i + 1]]
+        ws = Pn.data[Pn.indptr[i]:Pn.indptr[i + 1]]
+        for c in range(ncomp):
+            grow = int(l2g_f[i * ncomp + c])
+            if grow < fstart or grow >= fend:    # set OWNED rows only
+                continue
+            gcols, vals = [], []
+            for jj, w in zip(js.tolist(), ws.tolist()):
+                gcol = int(cols_u[jj, c])
+                if gcol >= 0:                    # skip constrained coarse DOFs
+                    gcols.append(gcol)
+                    vals.append(w)
+            if gcols:
+                P.setValues([grow], gcols, vals, addv=PETSc.InsertMode.INSERT_VALUES)
+    P.assemble()
+    return P
+
+
+def _count_zero_columns_parallel(P, comm):
+    """Number of empty columns of ``P`` across all ranks (coarse DOFs with no fine
+    image). Column sums via P^T·1 (barycentric/RBF weights are positive, so a zero
+    sum is an empty column). Used to auto-detect a cross-partition point-location
+    miss (non-nested coarse level) and, separately, as the hard guard below."""
     ones_f = P.createVecLeft(); ones_f.set(1.0)
     colsum = P.createVecRight()
     P.multTranspose(ones_f, colsum)
     nzero_local = int((colsum.array == 0.0).sum())
     nzero = comm.tompi4py().allreduce(nzero_local)
     ones_f.destroy(); colsum.destroy()
+    return nzero
+
+
+def _assert_no_zero_columns_parallel(P, comm):
+    """Parallel zero-column guard: a coarse DOF with no fine image -> singular
+    Galerkin coarse operator."""
+    nzero = _count_zero_columns_parallel(P, comm)
     if nzero:
         raise RuntimeError(
             f"parallel transfer has {nzero} zero columns (coarse DOFs with no fine "
@@ -520,17 +617,30 @@ class CustomMGHierarchy:
         Per-level node prolongation builder.
     field_id : int or None
         Field index for multi-field solvers (e.g. 0 = velocity); None = single field.
+    cross_partition : {"auto", True, False}
+        Parallel (np>1) transfer strategy. ``False`` = rank-local point location
+        (the co-partitioned nested / adapt-child fast path; each rank uses only its
+        LOCAL coarse coords). ``True`` = all-gather the coarse cloud so every rank
+        locates its fine nodes against the FULL coarse mesh (required when coarse
+        and fine are partitioned independently — non-nested coarse tails). ``"auto"``
+        (default) uses the fast path and, if it produces a zero-column transfer
+        (the signature of a cross-partition point-location miss), rebuilds that
+        level cross-partition. Serial builds ignore this.
     """
 
-    def __init__(self, level_meshes, builder="barycentric", field_id=None):
+    def __init__(self, level_meshes, builder="barycentric", field_id=None,
+                 cross_partition="auto"):
         if builder not in _BUILDERS:
             raise ValueError("builder must be 'barycentric' or 'rbf'")
         if len(level_meshes) < 2:
             raise ValueError("need at least 2 levels (>=1 coarse + finest)")
+        if cross_partition not in ("auto", True, False):
+            raise ValueError("cross_partition must be 'auto', True or False")
         self.level_meshes = list(level_meshes)
         self.builder = _BUILDERS[builder]
         self.builder_name = builder
         self.field_id = field_id
+        self.cross_partition = cross_partition
         self.transfers = None
 
     def build(self, solver):
@@ -548,6 +658,22 @@ class CustomMGHierarchy:
         continuous = getattr(var, "continuous", True)
         nlev = len(self.level_meshes)
         parallel = mpi.size > 1
+
+        # Operator-faithful finest level: finalize the DM section and assemble the
+        # operator BEFORE reading the finest reduced map. The finest transfer's row
+        # space must be the space the operator's PCMG will Galerkin against; the DM
+        # global section is that space only once the SNES is set up (an adapt()
+        # child can otherwise carry a not-yet-finalized / auxiliary section that
+        # disagrees with the assembled operator -> rectangular finest transfer ->
+        # cryptic PETSc error 60 in the PtAP). setUp is idempotent (the install
+        # paths call it again).
+        try:
+            solver.snes.setUp()
+        except Exception:
+            # Sanctioned swallow: setUp can fail on a not-yet-fully-configured
+            # SNES (pre-solve injection). The install paths call setUp again;
+            # the finest map then reads the DM's current global section.
+            pass
 
         coords, maps, ncomp = [], [], []
         for k, mesh in enumerate(self.level_meshes):
@@ -572,13 +698,31 @@ class CustomMGHierarchy:
             raise RuntimeError(f"inconsistent component counts across levels: {ncomp}")
         nc = ncomp[0]
 
+        # Operator-faithful check: the finest reduced map must span exactly the
+        # assembled operator's rows. Checkable directly for the monolithic
+        # single-field operator (field_id is None — scalar / single-field vector,
+        # e.g. Poisson, Projection, semi-Lagrangian AdvDiffusion on an adapt child).
+        # Fail here with an actionable message rather than deep inside PETSc's PtAP.
+        if self.field_id is None:
+            self._assert_finest_matches_operator(solver, maps[-1], parallel)
+
         Ps = []
+        comm = solver.dm.comm
         for l in range(1, nlev):
             if parallel:
-                P = _build_parallel_transfer(coords[l - 1], coords[l],
-                                             maps[l - 1], maps[l], nc,
-                                             self.builder, solver.dm.comm)
-                _assert_no_zero_columns_parallel(P, solver.dm.comm)
+                args = (coords[l - 1], coords[l], maps[l - 1], maps[l], nc,
+                        self.builder, comm)
+                if self.cross_partition is True:
+                    P = _build_crosspart_transfer(*args)
+                else:
+                    P = _build_parallel_transfer(*args)
+                    # "auto": a zero-column transfer means the coarse level is NOT
+                    # co-partitioned with the fine level (a fine leaf sits in an
+                    # off-rank coarse cell). Rebuild it spanning partitions.
+                    if (self.cross_partition == "auto"
+                            and _count_zero_columns_parallel(P, comm) > 0):
+                        P = _build_crosspart_transfer(*args)
+                _assert_no_zero_columns_parallel(P, comm)
                 Ps.append(P)
             else:
                 Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
@@ -593,6 +737,35 @@ class CustomMGHierarchy:
         self.transfers = Ps
         return Ps
 
+    @staticmethod
+    def _assert_finest_matches_operator(solver, finest_map, parallel):
+        """Guarantee the finest reduced map spans the assembled operator's rows.
+
+        The finest transfer is Galerkin-multiplied against the solver's real
+        operator (``PtAP``); if the row space disagrees the product is rectangular
+        and PETSc aborts with a bare error 60. On a plain mesh the DM global section
+        and the operator always agree; the guard matters for adapt() children whose
+        DM section could be stale relative to the freshly assembled operator."""
+        try:
+            op_n = int(solver.snes.getJacobian()[0].getSize()[0])
+        except Exception:
+            return                                   # can't read operator -> skip
+        if op_n <= 0:
+            return
+        if parallel:
+            _l2g, rstart, rend, _n = finest_map
+            red_n = int(solver.dm.comm.tompi4py().allreduce(int(rend - rstart)))
+        else:
+            red_n = int(len(finest_map))             # r2f length = reduced global size
+        if red_n != op_n:
+            raise RuntimeError(
+                f"custom_mg: finest reduced-map size {red_n} != assembled operator "
+                f"size {op_n}. The DM global section disagrees with the operator "
+                f"(an adapt-child section inconsistency); the finest transfer would "
+                f"be rectangular and the Galerkin PtAP would abort (PETSc error 60). "
+                f"Rebuild the solver so its DM section matches the operator before "
+                f"installing custom-P.")
+
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
@@ -603,7 +776,7 @@ class CustomMGHierarchy:
 #  Entry points
 # --------------------------------------------------------------------------- #
 def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
-                   field_id=None, verbose=False):
+                   field_id=None, cross_partition="auto", verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
     Registers a :class:`CustomMGHierarchy` on the solver so that the next
@@ -612,14 +785,80 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     map is derived directly from its DM by copying the solver's fields + DS
     (``_coarse_reduced_map``), so ``coarse_meshes`` need only carry the same
     boundary labels as the solver's mesh. For a saddle-point (Stokes) solver pass
-    ``field_id=0`` to target the velocity sub-block."""
+    ``field_id=0`` to target the velocity sub-block.
+
+    ``cross_partition`` selects the parallel (np>1) transfer strategy (see
+    :class:`CustomMGHierarchy`); the default ``"auto"`` handles both nested and
+    non-nested coarse tails."""
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
-                                       builder=builder, field_id=field_id),
+                                       builder=builder, field_id=field_id,
+                                       cross_partition=cross_partition),
         "verbose": verbose,
     }
     solver.is_setup = False
+
+
+def auto_inject_custom_mg(solver, field_id=None):
+    """Solve-hook entry: inject custom-P FMG from either a solver-set hierarchy
+    (``set_custom_fmg``) or a **mesh-owned** one (``mesh.adapt`` refinement child).
+
+    A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
+    coarse tail). The first time a solver on such a mesh solves, we lazily build a
+    :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]`` targeting ``field_id``
+    (0 for the Stokes velocity block, None for scalar/vector) and register it on
+    the solver — so every solver on an adapted mesh drives geometric MG with no
+    per-solver call. A solver-set hierarchy (if present) always wins.
+    """
+    # Solver-set hierarchy (set_custom_fmg): the user asked for it explicitly —
+    # build + install directly and let any error surface.
+    if solver._custom_mg is not None:
+        inject_custom_mg(solver)
+        return
+
+    # Mesh-owned hierarchy (adapt() child): OPPORTUNISTIC auto-pickup. It must never
+    # crash a solve, so build the transfers (which now validate the finest reduced
+    # map against the assembled operator — see CustomMGHierarchy.build) inside a
+    # try/except and fall back to the solver's default preconditioner on any failure.
+    # The finest map is derived from the DM section AFTER snes.setUp() finalizes it,
+    # so it is faithful to the operator on adapt children too — including scalar
+    # semi-Lagrangian advection-diffusion (which earlier had to be skipped).
+    coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
+    if coarse is None:
+        return                              # nothing to inject
+
+    builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
+    h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=builder,
+                          field_id=field_id)
+    try:
+        Ps = h.build(solver)
+    except Exception as exc:                # pragma: no cover - defensive
+        import warnings
+        warnings.warn(f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
+                      "solver's default preconditioner.")
+        return
+
+    # Dimensional guard (checkable for the monolithic operator, field_id is None):
+    # the finest transfer must chain to the operator PCMG will Galerkin against.
+    if field_id is None and len(Ps):
+        try:
+            solver.snes.setUp()
+            op_n = int(solver.snes.getJacobian()[0].getSize()[0])
+            pr, pc = (int(v) for v in Ps[-1].getSize())
+            if op_n > 0 and (pr != op_n or pc >= pr):   # rows!=op or no coarsening
+                import warnings
+                warnings.warn(
+                    "custom_mg: mesh-owned adapt-mesh FMG transfer is incompatible "
+                    f"with this solver's operator (transfer {pr}x{pc}, operator {op_n}); "
+                    "skipping the auto-pickup (using the default preconditioner). "
+                    "set_custom_fmg() an explicit hierarchy to override.")
+                return
+        except Exception:
+            pass                            # can't check -> don't block working cases
+
+    h.install(solver, verbose=False)
+    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
 
 
 def inject_custom_mg(solver):

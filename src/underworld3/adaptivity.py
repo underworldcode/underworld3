@@ -108,7 +108,7 @@ def create_metric(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.adapt().
+        Scalar MeshVariable containing metric values ready for mesh.remesh().
 
     Notes
     -----
@@ -132,7 +132,7 @@ def create_metric(
     >>> # Create metric from h-field computed elsewhere
     >>> h_field = compute_error_based_h(solution)  # User function
     >>> metric = uw.adaptivity.create_metric(mesh, h_field)
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     See Also
     --------
@@ -197,7 +197,7 @@ def metric_from_gradient(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.adapt().
+        Scalar MeshVariable containing metric values ready for mesh.remesh().
 
     Notes
     -----
@@ -243,14 +243,14 @@ def metric_from_gradient(
     >>> metric = uw.adaptivity.metric_from_gradient(
     ...     T, h_min=0.005, h_max=0.05, profile="smoothstep"
     ... )
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     >>> # Refine based on strain rate
     >>> # First compute strain rate magnitude as scalar field
     >>> SR = uw.discretisation.MeshVariable("SR", mesh, 1)
     >>> # ... populate SR with strain rate second invariant ...
     >>> metric = uw.adaptivity.metric_from_gradient(SR, h_min=0.01, h_max=0.1)
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     See Also
     --------
@@ -359,7 +359,7 @@ def metric_from_field(
     Returns
     -------
     MeshVariable
-        Scalar MeshVariable containing metric values ready for mesh.adapt().
+        Scalar MeshVariable containing metric values ready for mesh.remesh().
 
     Notes
     -----
@@ -380,7 +380,7 @@ def metric_from_field(
     >>> # Refine based on error estimate
     >>> error = compute_error_estimate(solution)  # User function
     >>> metric = uw.adaptivity.metric_from_field(error, h_min=0.005, h_max=0.05)
-    >>> mesh.adapt(metric)
+    >>> mesh.remesh(metric)
 
     >>> # Refine at phase boundaries (phi transitions from 0 to 1)
     >>> # Want fine mesh where phi is near 0.5
