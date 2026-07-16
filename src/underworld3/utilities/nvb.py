@@ -95,6 +95,14 @@ class NVBMesh:
         vS, vE = dm.getDepthStratum(0)
         eS, eE = dm.getDepthStratum(1)
         cS, cE = dm.getHeightStratum(0)
+        # TODO(#360): coordinate row i is assumed to be vertex point vS+i — the
+        # assumption class outlawed for Mesh coordinate arrays by #360. It holds
+        # HERE because this serial cell-list engine only ever sees fresh
+        # createFromCellList / undistributed base DMs whose degree-1 coordinate
+        # section is vertex-ordered (checked below), and the np>1 path uses the
+        # native transform instead (NotImplementedError before reaching this).
+        # If NVBMesh ever ingests distributed/permuted DMs, switch to a
+        # section-offset mapping (cf. Mesh._coord_rows_for_points).
         coords = dm.getCoordinatesLocal().array.reshape(-1, 2)
         if coords.shape[0] != vE - vS:
             raise RuntimeError(
@@ -307,6 +315,9 @@ class NVBMesh:
 
         # DM vertex point -> NVB vertex id by coordinate (midpoints are exact float
         # averages, computed identically here and in the DM, so the match is exact).
+        # TODO(#360): row i == vertex point vS+i is assumed, as in from_dm above.
+        # Safe here: the DM was created two lines up by createFromCellList on this
+        # rank (serial-only path), so its coordinate section is vertex-ordered.
         dm_vcoords = dm.getCoordinatesLocal().array.reshape(-1, 2)
         _, nearest = cKDTree(np.array(self.coords)).query(dm_vcoords)
         nvb_of_dmvert = {vS + i: int(nearest[i]) for i in range(vE - vS)}

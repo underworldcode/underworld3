@@ -1524,13 +1524,13 @@ class Surface:
     # --- Mesh Adaptation Support ---
 
     def _on_mesh_adapted(self, adapted_mesh: "Mesh") -> None:
-        """Called by mesh.adapt() to update after mesh adaptation.
+        """Called by mesh.remesh() to update after mesh adaptation.
 
         Marks the distance field as stale so it will be recomputed on next access.
         The surface geometry (control points, pyvista mesh) is unchanged -
         only the cached distance values need updating.
 
-        The distance MeshVariable itself is reinitialized by mesh.adapt() along
+        The distance MeshVariable itself is reinitialized by mesh.remesh() along
         with all other MeshVariables - we just need to mark the data as stale.
 
         Args:
@@ -1611,7 +1611,7 @@ class Surface:
         r"""Create a metric field for mesh adaptation based on distance from this surface.
 
         Returns a MeshVariable containing refinement metric values that can
-        be passed directly to mesh.adapt(). Higher metric values produce finer
+        be passed directly to mesh.remesh(). Higher metric values produce finer
         mesh (smaller elements).
 
         Parameters
@@ -1681,7 +1681,7 @@ class Surface:
         >>>
         >>> # With plain floats (nondimensional coordinates)
         >>> metric = fault.refinement_metric(h_near=0.005, h_far=0.05)
-        >>> mesh.adapt(metric)
+        >>> mesh.remesh(metric)
         >>>
         >>> # With quantities (automatic nondimensionalisation)
         >>> metric = fault.refinement_metric(
@@ -1689,7 +1689,7 @@ class Surface:
         ...     h_far=uw.quantity(30, "km"),
         ...     width=uw.quantity(10, "km"),
         ... )
-        >>> mesh.adapt(metric)
+        >>> mesh.remesh(metric)
         """
         if self.mesh is None:
             raise RuntimeError(
@@ -2463,7 +2463,7 @@ class SurfaceCollection:
         Returns
         -------
         MeshVariable
-            Scalar metric field suitable for ``mesh.adapt()``.
+            Scalar metric field suitable for ``mesh.remesh()``.
         """
         h_near = _to_nd_length(h_near)
         h_far = _to_nd_length(h_far)
@@ -3068,7 +3068,7 @@ def fault_metric(mesh, faults, method="ma", *, cell_size,
                                                        method="ma")``
     ``"anisotropic"``    2×2 tensor (sympy Matrix)     ``smooth_mesh_interior(
                                                        method="anisotropic")``
-    ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.adapt(...)``
+    ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.remesh(...)``
     ===================  ============================  ===========================
 
     **``cell_size`` is honoured differently by each** — this is the key

@@ -3338,7 +3338,7 @@ class Mesh(Stateful, uw_object):
             "  Use instead:\n"
             "    • mesh.deform(new_coords, dt=…)        — impose an arbitrary "
             "node displacement (free surface / prescribed motion)\n"
-            "    • mesh.adapt(metric) / mesh.OT_adapt(field)\n"
+            "    • mesh.remesh(metric) / mesh.OT_adapt(field)\n"
             "    • uw.meshing.smooth_mesh_interior(…) / uw.meshing.follow_metric(…)\n"
             "  These route the field + SL/DDt-history transfer "
             "(remesh_with_field_transfer). For trusted scheme-internal trial "
@@ -6224,8 +6224,8 @@ class Mesh(Stateful, uw_object):
             self._coarse_level_meshes_cache = cached
         return cached
 
-    def adapt(self, metric_field, max_levels=2, node_budget=None,
-              builder="barycentric", adapter="sbr", engine="sbr", verbose=False):
+    def adapt(self, metric_field, max_levels=None, node_budget=None,
+              builder=None, adapter=None, engine=None, verbose=False):
         r"""
         Nested **adapt-on-top**: return a refined **child** mesh.
 
@@ -6259,6 +6259,13 @@ class Mesh(Stateful, uw_object):
         own MG level; the transfers between consecutive levels each span a single
         refinement.)
 
+        .. note::
+            ``mesh.adapt(metric)`` with **no other keyword** raises a
+            ``TypeError``: that call shape used to be the in-place MMG remesher
+            (now :meth:`remesh`), and a legacy caller would silently discard
+            the returned child. Pass any keyword — e.g.
+            ``adapt(metric, max_levels=2)`` — to opt in to the new semantics.
+
         Parameters
         ----------
         metric_field : MeshVariable, sympy expression, or callable
@@ -6271,7 +6278,7 @@ class Mesh(Stateful, uw_object):
             :meth:`Surface.refinement_metric_function`) so a thin feature refines
             to a clean, uniform-width band instead of a P1-aliased *patchy* one.
             Same interface as :meth:`remesh` / ``adaptivity.create_metric``.
-        max_levels : int
+        max_levels : int, default 2
             Maximum SBR depth applied on top of the base finest (bounds the
             on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
@@ -6321,6 +6328,32 @@ class Mesh(Stateful, uw_object):
         level); the wedge keeps the total finite and feature-concentrated.
         """
         import warnings
+
+        # Legacy-call guard. Before 2026-07 ``mesh.adapt(metric)`` was the
+        # IN-PLACE MMG remesher (now :meth:`remesh`); the nested adapt-on-top
+        # returns a NEW child mesh instead, which a legacy caller would silently
+        # discard. A bare call with no new-API keyword is therefore ambiguous
+        # and refused rather than redirected (the return semantics differ).
+        if (max_levels is None and node_budget is None and builder is None
+                and adapter is None and engine is None):
+            raise TypeError(
+                "mesh.adapt(metric) has changed meaning: the in-place metric "
+                "adaptation this call shape used to perform is now "
+                "mesh.remesh(metric). mesh.adapt(...) performs nested "
+                "adapt-on-top refinement and RETURNS A NEW child mesh (the "
+                "base mesh is not modified) — opt in explicitly by passing "
+                "any of its keywords, e.g. mesh.adapt(metric, max_levels=2) "
+                "or mesh.adapt(metric, engine='nvb'), and keep the returned "
+                "child."
+            )
+        if max_levels is None:
+            max_levels = 2
+        if builder is None:
+            builder = "barycentric"
+        if adapter is None:
+            adapter = "sbr"
+        if engine is None:
+            engine = "sbr"
 
         if adapter == "mmg":
             warnings.warn(

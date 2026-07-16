@@ -1809,7 +1809,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         """
         Replace internal storage after mesh adaptation.
 
-        Called by mesh.adapt() to update this variable's internal PETSc
+        Called by mesh.remesh() to update this variable's internal PETSc
         structures after the mesh's discretization has changed. The data
         has already been interpolated to temp_var; this method copies that
         data into this variable's updated storage.
@@ -1824,7 +1824,7 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         Notes
         -----
-        This is an internal method called by mesh.adapt(). Users should
+        This is an internal method called by mesh.remesh(). Users should
         not need to call this directly.
 
         After this method returns, all user references to this variable
