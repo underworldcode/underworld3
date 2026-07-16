@@ -12,8 +12,8 @@ This is the step-1 (additive, self-contained) implementation: ``radial`` and
 ``plane`` restore are analytic; ``facet`` (nearest reference facet) and the
 ``free`` live-surface follow are follow-ups (the orchestrator pins labels with
 no analytic surface). The module depends only on the primitive
-``_ot_adapt`` helpers that exist on ``development`` (``_slip_normals``), not on
-the mover feature branch's unified projector.
+boundary helpers in ``meshing.smoothing.graph`` (``_slip_normals``,
+``_nearest_on_facets_*``).
 """
 import numpy as np
 
@@ -140,7 +140,7 @@ class BoundingSurface:
         ``_gamma_p1_at_vertices`` did in git history) and re-solve only for
         free surfaces. See docs/developer/design/boundary-slip-strategy.md.
         """
-        from underworld3.meshing._ot_adapt import _slip_normals
+        from underworld3.meshing.smoothing import _slip_normals
         return _slip_normals(self._mesh, np.ascontiguousarray(coords, dtype=float))
 
     # -- tangent slide -------------------------------------------------------
@@ -182,7 +182,7 @@ class BoundingSurface:
         if self.kind == "facet":
             if coords.shape[0] == 0:
                 return coords
-            from underworld3.meshing._ot_adapt import (
+            from underworld3.meshing.smoothing import (
                 _nearest_on_facets_2d, _nearest_on_facets_3d)
             if coords.shape[1] == 2:
                 return _nearest_on_facets_2d(coords, self.reference_facets)

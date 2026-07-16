@@ -2707,8 +2707,7 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
 
         M = uw.meshing.fault_metric_tensor(mesh, faults, refinement=3.0)
         uw.meshing.smooth_mesh_interior(
-            mesh, metric=M, method="anisotropic", boundary_slip=False,
-            method_kwargs=dict(n_outer=12, relax=0.4))
+            mesh, metric=M, method="mmpde", boundary_slip=False)
 
     Construction — summed over every fault segment ``i`` (normal ``n_i``,
     point-to-segment distance ``d_i(x)``):
@@ -2754,7 +2753,7 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     sympy.Matrix
         The ``2×2`` analytic metric tensor ``M(x)`` (a function of
         ``mesh.CoordinateSystem.X``), to pass as ``metric=`` with
-        ``method="anisotropic"``.
+        ``method="mmpde"``.
     """
     cdim = mesh.cdim
     if cdim != 2:
@@ -2814,20 +2813,16 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
                       tooth_width=None, combine="sum"):
     r"""Build a scalar **comb** metric ``ρ(x)`` that refines a band of a
     controlled number of roughly-**uniform** cells *across* one or more faults,
-    for the isotropic equidistribution mover (``method="ma"``).
+    for the scalar-metric equidistribution mover (``method="mmpde"``).
 
     Pass the result straight to the mover::
 
         rho = uw.meshing.fault_comb_metric(mesh, faults, cell_size=0.006,
                                            n_across=4)
-        uw.meshing.smooth_mesh_interior(
-            mesh, metric=rho, method="ma",
-            method_kwargs=dict(n_outer=1, n_picard=25))   # single-shot
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="mmpde")
 
-    Use the **single-shot** map (``n_outer=1``): one Caffarelli-clean
-    Monge–Ampère solve, untangled by construction (no folding), with no
-    outer-iteration compounding and nothing to tune — the most robust
-    configuration, and the comb's teeth give the single map all the row
+    The MMPDE map is non-folding by construction, and the comb's teeth
+    give it all the row
     structure it needs (~``n_across``−1 even layers, centred). ``n_outer=2``
     realises a touch more of the requested ``n_across`` (the single map is
     mildly node-budget-capped) at ~1.6× the cost; rarely needed.
@@ -2855,9 +2850,9 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     Parameters
     ----------
     mesh : Mesh
-        2D mesh. (The isotropic equidistribution movers — ``ma``/``ot`` — are
-        2D-only; 3D would need a 3D equidistribution mover, which does not yet
-        exist, so this builder is 2D-only.)
+        2D mesh. (The MMPDE mover is 2D-only; 3D would need a 3D
+        discretization of the mover, which does not yet exist, so this
+        builder is 2D-only.)
     faults : Surface | array | list
         Fault geometry in mesh coordinate space — a :class:`Surface`, an
         ``(N>=2, 2|3)`` polyline array, or a list mixing those. Each fault's
@@ -2885,13 +2880,13 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     -------
     sympy.Expr
         The scalar comb metric ``ρ(x)``, to pass as ``metric=`` with
-        ``method="ma"``.
+        ``method="mmpde"``.
     """
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "fault_comb_metric is 2D only (the isotropic equidistribution "
-            "movers are 2D; 3D needs a 3D equidistribution mover)")
+            "fault_comb_metric is 2D only (the MMPDE mover is 2D; 3D needs "
+            "a 3D discretization of the mover)")
     dx = float(cell_size)
     if not (dx > 0.0):
         raise ValueError(f"cell_size must be positive; got {cell_size}")
@@ -2927,7 +2922,7 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
 
 def compose_metrics(metrics, compose="max"):
     r"""Combine several scalar density metrics into one, for the
-    equidistribution mover (``method="ma"``).
+    scalar-metric equidistribution mover (``method="mmpde"``).
 
     Each item may be either a metric (a scalar sympy expression or
     MeshVariable) or a ``(metric, weight)`` tuple. The default ``"max"``
@@ -2952,8 +2947,7 @@ def compose_metrics(metrics, compose="max"):
                                                        metric_choice="arc-length")
         rho_F = uw.meshing.fault_comb_metric(mesh, faults, cell_size=0.008)
         rho   = uw.meshing.compose_metrics([(rho_T, 1.0), (rho_F, 3.0)])  # fault heavier
-        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="ma",
-                                        method_kwargs=dict(n_outer=1, n_picard=25))
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="mmpde")
 
     Parameters
     ----------
@@ -3057,17 +3051,20 @@ def fault_metric(mesh, faults, method="ma", *, cell_size,
     ``n_across`` elements of size ``cell_size`` across a band around the
     fault(s)*.
 
-    The three movers consume **different metric objects with different
+    The consumers take **different metric objects with different
     semantics**, so this facade unifies the *intent* and emits the right
-    representation — it does not pretend they are interchangeable:
+    representation — it does not pretend they are interchangeable (the
+    ``method`` values name the metric KIND; the historical mover names
+    are kept as spellings even though the movers themselves were
+    superseded by MMPDE in 2026-07):
 
     ===================  ============================  ===========================
     ``method``           returns                       pass to
     ===================  ============================  ===========================
     ``"ma"`` (default)   scalar comb density (sympy)   ``smooth_mesh_interior(
-                                                       method="ma")``
+                                                       method="mmpde")``
     ``"anisotropic"``    2×2 tensor (sympy Matrix)     ``smooth_mesh_interior(
-                                                       method="anisotropic")``
+                                                       method="mmpde")``
     ``"adapt"``/``"mmg"``  ``h⁻²`` MeshVariable          ``mesh.remesh(...)``
     ===================  ============================  ===========================
 
@@ -3116,8 +3113,7 @@ def fault_metric(mesh, faults, method="ma", *, cell_size,
         # uniform-ish band, fixed topology (the slip-rheology recipe)
         rho = uw.meshing.fault_metric(mesh, faults, method="ma",
                                       cell_size=0.006, n_across=4)
-        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="ma",
-                                        method_kwargs=dict(n_outer=1, n_picard=25))
+        uw.meshing.smooth_mesh_interior(mesh, metric=rho, method="mmpde")
     """
     if cell_size is None or not (float(cell_size) > 0.0):
         raise ValueError("cell_size must be a positive number")

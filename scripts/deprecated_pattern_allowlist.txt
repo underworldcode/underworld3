@@ -27,9 +27,8 @@ src/underworld3/tests/test_adaptivity_metrics.py:access-context
 src/underworld3/discretisation/discretisation_mesh.py:mesh-data
 
 # --- hedging-name (Charter S3) ---------------------------------------------
-# Four `_do_move()` local closures in the mesh-mover machinery.
+# `_do_move()` local closures in the mesh-mover machinery (three sites).
 src/underworld3/discretisation/discretisation_mesh.py:hedging-name
-src/underworld3/meshing/_ot_adapt.py:hedging-name
 src/underworld3/meshing/smoothing/api.py:hedging-name
 
 # --- except-pass (Charter S4) ----------------------------------------------
@@ -46,9 +45,6 @@ src/underworld3/function/_function.pyx:except-pass
 src/underworld3/function/expressions.py:except-pass
 src/underworld3/function/quantities.py:except-pass
 src/underworld3/function/unit_conversion.py:except-pass
-src/underworld3/meshing/_ot_adapt.py:except-pass
-src/underworld3/meshing/smoothing/anisotropic.py:except-pass
-src/underworld3/meshing/smoothing/monge_ampere.py:except-pass
 src/underworld3/meshing/surfaces.py:except-pass
 src/underworld3/model.py:except-pass
 src/underworld3/scaling/_scaling.py:except-pass

@@ -83,8 +83,8 @@ re-discretising on the coarse mesh. `pc_mg_galerkin = both` does this.
 
 This is the key reason to prefer FMG when you adapt:
 
-- The coordinate-deforming adaptation movers (Winslow / anisotropic /
-  `OT_adapt` / `follow_metric`) **preserve mesh topology**. The refinement
+- The coordinate-deforming adaptation movers (the MMPDE mover /
+  `follow_metric`) **preserve mesh topology**. The refinement
   hierarchy survives them, so geometric multigrid keeps working as the mesh
   deforms — precisely where GAMG struggles with the resulting anisotropy.
 - A **true remesh** (a topology change) collapses the hierarchy to a single

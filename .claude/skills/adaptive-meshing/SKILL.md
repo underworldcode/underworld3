@@ -64,8 +64,9 @@ uw.meshing.smooth_mesh_interior(mesh, metric=M, method="mmpde",
     slip_surfaces=True, skip_threshold=None)     # tensor metric: do the skip check yourself
 ```
 
-Pitfalls that make it "not work": `method="anisotropic"`/`"ot"` (shred/sliver — use
-mmpde); injecting `relax`/`n_outer` (starves mmpde's CG); `strategy=` instead of
+Pitfalls that make it "not work": `method="anisotropic"`/`"ot"`/`"spring"`/`"ma"`
+(RETIRED 2026-07 — they now raise ValueError; mmpde is the default and only
+metric mover); injecting `relax`/`n_outer` (starves mmpde's CG); `strategy=` instead of
 `refinement=R` (under-grades); a scalar bump for a fault (refines a fat corridor,
 leaves the centre coarse); signed `Surface.distance.sym` for `d` (bleeds along the
 line extension — use a direct unsigned distance). Full rationale + the rest of the

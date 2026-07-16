@@ -64,8 +64,8 @@ This section needs:
 
 - [Metric-driven mesh redistribution](mesh-metric-redistribution.md)
   — topology-preserving node redistribution toward a target
-  size/density field (`smooth_mesh_interior`; spring &
-  Monge–Ampère methods). Restores the grading of a deformed
+  size/density field (`smooth_mesh_interior`; the variational
+  MMPDE mover). Restores the grading of a deformed
   adapted mesh or bunches nodes ~2× at a feature; contrast
   `mesh.adapt()` which remeshes.
 

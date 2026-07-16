@@ -1883,7 +1883,7 @@ class SemiLagrangian(_DDtBase):
           mesh motion when reading the CARRY'd history. One-step
           pulse: the next solve consumes Δx and clears it.
 
-        * **Opt-out (e.g. OT_adapt reset).** When the adapt is a
+        * **Opt-out (discrete-jump adapts).** When the adapt is a
           discrete jump rather than a smooth displacement
           (``ctx.scratch.get("ale_opt_out")``), the linear
           ``Δx/dt → v_mesh`` interpretation breaks down. Fall back to

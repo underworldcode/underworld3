@@ -17,11 +17,14 @@ envelope.
 
 The mover's achieved cell-size envelope is APPROXIMATE — anisotropic
 cells + iterative deformation map mean the eigenvalue clamp doesn't
-literally bound the achieved h_max on a per-cell basis. Validation
+literally bound the achieved h_max on a per-cell basis (since the
+2026-07 mover retirement the backing mover is the variational MMPDE
+mover with theta=0.5, pure equidistribution weighting). Validation
 on a sharp-tanh annulus shows:
 
-* refinement side: achieved h_min within ~5-10% of h0/refinement
-* coarsening side: achieved h_max within ~2× of h0·coarsening
+* refinement side: achieved h_min within ~30-40% of h0/refinement
+  (platform-dependent: ~27% on macOS, ~40% on Linux CI at refinement=2)
+* coarsening side: achieved h_max within ~2x of h0*coarsening
 
 The tests here use loose tolerances reflecting that empirical reality.
 """
@@ -189,17 +192,18 @@ def test_follow_metric_refinement_envelope_approximate():
             m, T, refinement=ref, skip_threshold=None)
         h_min_cell, _, _ = _cell_h_stats(m)
         target_h_min = h0 / ref
-        # The spring keeps mean-edge min at or close to target.
-        # Allow up to ~25% over-spec (under-refinement, the safe
-        # side) and ~15% under-spec (over-refinement, the unsafe
-        # side).
+        # The MMPDE mover honours the envelope approximately (it
+        # equidistributes toward the metric, it does not clamp cells).
+        # Measured spread at refinement=2: 1.27 (macOS) - 1.40 (Linux
+        # CI) over-spec; the bounds catch over-refinement (unsafe) and
+        # gross under-refinement, not the platform jitter.
         assert h_min_cell / target_h_min > 0.85, (
             f"refinement={ref}: mean-edge h_min/target = "
             f"{h_min_cell/target_h_min:.3f}, want > 0.85 "
             f"(should not over-refine past spec)")
-        assert h_min_cell / target_h_min < 1.30, (
+        assert h_min_cell / target_h_min < 1.5, (
             f"refinement={ref}: mean-edge h_min/target = "
-            f"{h_min_cell/target_h_min:.3f}, want < 1.30 "
+            f"{h_min_cell/target_h_min:.3f}, want < 1.5 "
             f"(should not under-refine far past spec)")
 
 
@@ -266,17 +270,9 @@ def test_follow_metric_no_slivers_after_adaptive_polish():
 
 @pytest.mark.tier_a
 @pytest.mark.level_1
-@pytest.mark.xfail(
-    reason="dev↔#202 (manifold/extract_surface) merge reconciliation. The "
-    "ADAPTATION is bit-identical to development (moved coords match to 8 "
-    "figures; evaluate is bit-identical interior + near-boundary). The only "
-    "difference is the FIELD re-interpolation during the remesh step near the "
-    "curved boundary (T-after differs ~1.8%), which nudges the second call's "
-    "mismatch just over skip_threshold=0.9 so it re-adapts instead of skipping. "
-    "A skip-optimisation only — adaptation correctness is preserved. Track in "
-    "the #202 nav/remesh field-transfer reconciliation.",
-    strict=False)
 def test_follow_metric_skip_threshold_skips_aligned_mesh():
+    # (An xfail marker for a #202-era field-transfer nudge was removed
+    # 2026-07: the MMPDE-backed follow_metric passes this cleanly.)
     """A mesh that's already aligned (here: any uniform mesh with
     the field still in the natural shape) gets the skip-on-align
     short-circuit when skip_threshold is permissive."""

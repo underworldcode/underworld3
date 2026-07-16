@@ -18,8 +18,7 @@ Three pieces:
   displacement, dt, and a bound interpolator. Passed to operator
   ``on_remesh`` hooks (Phase 2 ALE uses this).
 * :func:`remesh_with_field_transfer` — the helper used by the adapt
-  entry points (``smooth_mesh_interior``, ``OT_adapt``,
-  ``follow_metric``). Takes a closure ``do_move`` that runs the mover
+  entry points (``smooth_mesh_interior``, ``follow_metric``). Takes a closure ``do_move`` that runs the mover
   (calling :meth:`Mesh._deform_mesh` repeatedly); the helper handles
   snapshot + transfer + operator-hook dispatch.
 
@@ -133,9 +132,10 @@ class RemeshContext:
     ``scratch`` is a free-form dict where adapt ops or hooks publish
     flags / per-step state. Two keys are in use:
 
-    * ``"ale_opt_out"`` — published by ``OT_adapt``
-      (:mod:`underworld3.meshing._ot_adapt`, from inside ``do_move`` via
-      ``mesh._remesh_pending_scratch``) on a reset adapt; consumed by
+    * ``"ale_opt_out"`` — published (from inside ``do_move`` via
+      ``mesh._remesh_pending_scratch``) by any adapt whose node motion
+      is a discrete jump rather than a smooth displacement (the retired
+      ``OT_adapt`` reset was the original publisher); consumed by
       the ``DuDt`` ``on_remesh`` hook (:mod:`underworld3.systems.ddt`),
       which falls back to REMAP for its managed history vars.
     * ``"v_mesh"`` — the Phase 2 ALE convention: an ALE-style operator
@@ -327,15 +327,15 @@ def remesh_with_field_transfer(
     leave stale values at the partition seams (the documented failure
     mode that motivated this design).
     """
-    # Re-entrancy guard: composite adapt ops (OT_adapt) wrap the whole
-    # reset+build+smooth pipeline once at the outer level; inner movers
+    # Re-entrancy guard: composite adapt ops (follow_metric) wrap the
+    # whole build+smooth pipeline once at the outer level; inner movers
     # (smooth_mesh_interior called from inside that pipeline) consult
     # this flag and skip their own wrap.
     if getattr(mesh, "_in_remesh_transfer", False):
         # Nested call: run the mover only. The OUTER wrapper owns
         # snapshot / transfer / hook dispatch, and it already set
         # mesh._remesh_pending_scratch, so an inner adapt op can still
-        # publish flags there (e.g. OT_adapt marking a reset adapt).
+        # publish flags there (e.g. ale_opt_out on a discrete-jump adapt).
         # The True return here is unconditional and meaningless — nested
         # callers cannot use it to tell whether the mesh actually moved;
         # only the outer call's return value carries that information.
@@ -420,8 +420,8 @@ def _remesh_with_field_transfer_impl(
 
     # Caller-supplied zero list (e.g. V, P after a topology-preserving
     # mover, when the flow solve wants a cold start). This is NOT the
-    # REINIT policy — it is a user knob preserved from the old OT_adapt
-    # API. REINIT is for *framework-stamped* stateless vars.
+    # REINIT policy — it is a user knob preserved from the retired
+    # OT_adapt API. REINIT is for *framework-stamped* stateless vars.
     if extra_zero:
         for var in extra_zero:
             _write_var_data(var, 0.0)
@@ -462,8 +462,8 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
     Used by the generic per-variable pass in
     :func:`remesh_with_field_transfer`, and public so an operator's
     ``on_remesh`` hook can force-REMAP its CARRY-managed vars on an
-    adapt that is ALE-incompatible (e.g. an OT_adapt reset, where the
-    linear ``Δx/dt → v_mesh`` interpretation breaks down).
+    adapt that is ALE-incompatible (a discrete node-position jump,
+    where the linear ``Δx/dt → v_mesh`` interpretation breaks down).
 
     Contract: on entry the mesh is at ``new_X`` and each var's
     ``.data`` may hold *either* the original snapshot value (CARRY:

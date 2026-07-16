@@ -1,4 +1,5 @@
-"""Wave C API-harmonization contract tests (WC-01..WC-13).
+"""Wave C API-harmonization contract tests (WC-01..WC-12; the WC-13
+spring-mover shim tests were removed with the 2026-07 mover retirement).
 
 Every deprecation shim introduced by the 2026-07 Wave C API harmonization
 carries the two-test contract here:
@@ -415,35 +416,3 @@ class TestSwarmSyncDeprecated:
         assert _one_deprecation(rec) == 1
         with _no_deprecation():
             swarm_var.pack_uw_data_to_petsc(data)
-
-
-# ---------------------------------------------------------------------------
-# WC-13 - smoothing: dead params dropped, n_sweeps renamed max_cg_iters
-# ---------------------------------------------------------------------------
-
-class TestSpringMoverSignature:
-    def test_dead_params_gone_new_name_present(self):
-        import inspect
-
-        from underworld3.meshing.smoothing import _spring_equilibrium_mover
-
-        params = inspect.signature(_spring_equilibrium_mover).parameters
-        assert "relax" not in params
-        assert "step_frac" not in params
-        assert "max_cg_iters" in params
-        assert "n_sweeps" in params  # deprecated alias, one cycle
-
-    def test_n_sweeps_alias_warns_once(self):
-        import numpy as np
-
-        from underworld3.meshing.smoothing import _spring_equilibrium_mover
-
-        tri_mesh = uw.meshing.UnstructuredSimplexBox(
-            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
-        )
-        pinned = ("Top", "Bottom", "Left", "Right")
-        with pytest.warns(DeprecationWarning, match="max_cg_iters") as rec:
-            _spring_equilibrium_mover(tri_mesh, sympy.Integer(1), pinned, False, n_sweeps=1)
-        assert _one_deprecation(rec) == 1
-        with _no_deprecation():
-            _spring_equilibrium_mover(tri_mesh, sympy.Integer(1), pinned, False, max_cg_iters=1)
