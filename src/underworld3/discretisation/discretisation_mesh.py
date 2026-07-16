@@ -6172,8 +6172,10 @@ class Mesh(Stateful, uw_object):
 
         The default call needs no engine choice —
         ``mesh.adapt(metric, max_levels=...)`` refines with the graded
-        newest-vertex-bisection engine on 2D meshes (NVB is 2D-only this
-        pass, so 3D meshes default to SBR). ``engine=`` remains available
+        newest-vertex-bisection engine. This is **2D (triangle meshes) only**
+        for now: an engine-less 3D call raises ``NotImplementedError`` (3D
+        refinement is planned work; ``engine="sbr"`` opts a 3D mesh into the
+        simple isotropic engine explicitly). ``engine=`` remains available
         as an **advanced / internal selector** (the algorithm names live
         here, not in the everyday call):
 
@@ -6297,10 +6299,18 @@ class Mesh(Stateful, uw_object):
         if engine is None:
             # NVB is the default refinement engine (2026-07 naming ruling):
             # graded, bounded conforming closure, parallel via the native
-            # uwnvb transform. NVB is 2D (triangles) this pass, so 3D
-            # meshes resolve to SBR — an engine-less 3D adapt keeps
-            # working. engine= stays as the advanced selector.
-            engine = "nvb" if self.cdim == 2 else "sbr"
+            # uwnvb transform. NVB is 2D (triangles) only, and the maintainer
+            # ruled (2026-07-17) that an engine-less 3D adapt must say so
+            # honestly rather than silently selecting a different algorithm —
+            # 3D refinement is committed future work (the MMPDE+NVB capstone).
+            if self.cdim != 2:
+                raise NotImplementedError(
+                    "Default adaptive mesh refinement is 2D (triangle meshes) "
+                    "only in this release: the NVB refinement engine has no 3D "
+                    "(tetrahedral) implementation yet — 3D refinement is "
+                    "planned work. To use the simple isotropic SBR engine on "
+                    "a 3D mesh explicitly, call mesh.adapt(..., engine='sbr').")
+            engine = "nvb"
 
         if adapter == "mmg":
             warnings.warn(
