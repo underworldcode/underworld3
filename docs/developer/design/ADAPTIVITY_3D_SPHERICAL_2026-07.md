@@ -421,11 +421,31 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
     by copying label values — the 2D lesson). Gate: native np=1 output
     equals the serial `TaggedBisectionMesh` oracle over multi-pass graded
     refinement.
+  * **1c-ii status: DONE — PASS (2026-07-17, commit 6f46535e).** The native
+    driver refines tetrahedral meshes at np=1 and produces the same mesh,
+    cell for cell, as the serial engine over multi-pass graded refinement
+    (they share one seed: `write_tagged_state_label` runs the serial
+    engine's own initialization). `mesh.adapt()` on a 3D mesh now prefers
+    the native driver, exactly as 2D does, and all the stage-1b gates
+    (FMG parity, label transfer, orientation) pass through it.
+
+    **One structural finding worth knowing:** the driver's conforming
+    closure — the step that finds which neighbours must split first — had
+    to move from "compute once up front" to "re-grow at the top of every
+    pass". In 2D, splitting a blocking neighbour once always makes the
+    blocked edge available next pass, so a single up-front closure was
+    sufficient. In 3D, a waiting cell can find itself blocked by cells
+    *created during the drain*, over several generations, and the
+    original structure deadlocked. Re-running the closure is idempotent,
+    so 2D behaviour is unchanged bit for bit (the exact-mesh regressions
+    all pass untouched).
+
   * **1c-iii — parallel.** Agree (`MPI_LAND`) / bisect-mark (`MPI_LOR`) SF
     reconciliation over the 3D strata (faces are shared SF points too);
-    collective drain termination. Gates: np1/2/4 bit-confluence integers
-    (`test_0839` 3D mirror), `DMPlexCheck*` per pass, parallel Poisson +
-    Stokes velocity-block FMG-vs-GAMG parity.
+    collective drain termination; the state seed computed on the base and
+    distributed as an ordinary cell label. Gates: np1/2/4 bit-confluence
+    integers (`test_0839` 3D mirror), `DMPlexCheck*` per pass, parallel
+    Poisson + Stokes velocity-block FMG-vs-GAMG parity.
 - **1d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
