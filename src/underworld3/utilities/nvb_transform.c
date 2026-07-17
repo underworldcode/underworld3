@@ -279,7 +279,16 @@ typedef enum {
   RT_TRIANGLE_SPLIT_02,
   RT_TRIANGLE_SPLIT_0,
   RT_TRIANGLE_SPLIT_1,
-  RT_TRIANGLE_SPLIT_2
+  RT_TRIANGLE_SPLIT_2,
+  /* 3D (uwnvb_bisect only): tetrahedron unsplit, and single-edge bisection
+     on closure edge K of the canonical tet (e0=[v0,v1] ... e5=[v2,v3]) */
+  RT_TET,
+  RT_TET_SPLIT_0,
+  RT_TET_SPLIT_1,
+  RT_TET_SPLIT_2,
+  RT_TET_SPLIT_3,
+  RT_TET_SPLIT_4,
+  RT_TET_SPLIT_5
 } RefinementType;
 
 static PetscErrorCode DMPlexTransformSetUp_UWNVB(DMPlexTransform tr)
@@ -424,9 +433,18 @@ static PetscErrorCode DMPlexTransformGetSubcellOrientation_UWNVB(DMPlexTransform
   case RT_TRIANGLE_SPLIT_2:
     switch (tct) {
     case DM_POLYTOPE_SEGMENT:
+      /* the interior segment is anchored to the split edge, so every view
+         of the face produces the same directed segment: identity */
       break;
     case DM_POLYTOPE_TRIANGLE:
-      *onew = so < 0 ? -(o + 1) : o;
+      /* The split children are anchored to the physical split edge, so
+         rotations act trivially; a reflected view swaps the two children
+         and composes a reflection. The composition must be the exact
+         D3 group product — the former -(o+1) shortcut equals
+         Compose(o, -1) only for o in {0,-1} (all a 2D mesh passes; a 3D
+         cell viewing a shared split face passes rotated o too).
+         Derived + verified in tet_bisection_tables_generator.py. */
+      *onew = so < 0 ? DMPolytopeTypeComposeOrientation(DM_POLYTOPE_TRIANGLE, o, -1) : o;
       *rnew = so < 0 ? (r + 1) % 2 : r;
       break;
     default:
@@ -436,6 +454,17 @@ static PetscErrorCode DMPlexTransformGetSubcellOrientation_UWNVB(DMPlexTransform
   case RT_EDGE_SPLIT:
   case RT_TRIANGLE_SPLIT:
     PetscCall(UWNVBRegularGetSubcellOrientation(tr, sct, sp, so, tct, r, o, rnew, onew));
+    break;
+  case RT_TET_SPLIT_0:
+  case RT_TET_SPLIT_1:
+  case RT_TET_SPLIT_2:
+  case RT_TET_SPLIT_3:
+  case RT_TET_SPLIT_4:
+  case RT_TET_SPLIT_5:
+    /* A tetrahedron is a cell: it appears in no cone, so its products are
+       only ever referenced in its own frame (so == 0) and the identity
+       mapping set above is exact. Fail loudly if that assumption breaks. */
+    PetscCheck(so == 0, PETSC_COMM_SELF, PETSC_ERR_SUP, "Tet bisection products referenced with source orientation %" PetscInt_FMT " (expected 0)", so);
     break;
   default:
     PetscCall(DMPlexTransformGetSubcellOrientationIdentity(tr, sct, sp, so, tct, r, o, rnew, onew));
@@ -517,6 +546,59 @@ static PetscErrorCode UWNVBGetTriangleSplitDouble(PetscInt o, PetscInt *Nt, DMPo
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+/* Single-edge bisection of a tetrahedron (3D, uwnvb_bisect): bisecting
+   closure edge eK produces 1 interior triangle + 2 child tets; the two
+   faces containing eK split via the triangle single-split rule above, so
+   these tables only reference face/edge products and our own interior
+   triangle. Generated (and symbolically self-checked against the serial
+   oracle) by docs/developer/design/tet_bisection_tables_generator.py —
+   regenerate there rather than hand-editing.
+
+   Conventions (plexrefregular.c): faces f0=[v0,v1,v2], f1=[v0,v3,v1],
+   f2=[v0,v2,v3], f3=[v2,v1,v3]; closure edges e0=[v0,v1], e1=[v1,v2],
+   e2=[v2,v0], e3=[v0,v3], e4=[v1,v3], e5=[v2,v3]. */
+static DMPolytopeType tetBisT[] = {DM_POLYTOPE_TRIANGLE, DM_POLYTOPE_TETRAHEDRON};
+static PetscInt       tetBisS[] = {1, 2};
+/* e0=[v0,v1]: children (v0,m,v2,v3) and (m,v1,v2,v3), interior (m,v2,v3) */
+static PetscInt tetBisC0[] = {DM_POLYTOPE_SEGMENT, 1, 0, 0, DM_POLYTOPE_SEGMENT, 2, 2, 1, 0, DM_POLYTOPE_SEGMENT, 1, 1, 0, DM_POLYTOPE_TRIANGLE, 1, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 1, 1, DM_POLYTOPE_TRIANGLE, 1, 2, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 0, 1, DM_POLYTOPE_TRIANGLE, 1, 1, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 3, 0};
+static PetscInt tetBisO0[] = {-1, 0, 0, 1, 1, 0, -3, 0, 2, 0, 0};
+/* e1=[v1,v2]: children (v1,m,v0,v3) and (m,v2,v0,v3), interior (m,v0,v3) */
+static PetscInt tetBisC1[] = {DM_POLYTOPE_SEGMENT, 1, 0, 0, DM_POLYTOPE_SEGMENT, 2, 1, 0, 0, DM_POLYTOPE_SEGMENT, 1, 3, 0, DM_POLYTOPE_TRIANGLE, 1, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 3, 1, DM_POLYTOPE_TRIANGLE, 1, 1, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 0, 1, DM_POLYTOPE_TRIANGLE, 1, 3, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 2, 0};
+static PetscInt tetBisO1[] = {-1, 0, 0, 1, 1, 2, -3, 0, 2, 0, 0};
+/* e2=[v2,v0]: children (v2,m,v1,v3) and (m,v0,v1,v3), interior (m,v1,v3) */
+static PetscInt tetBisC2[] = {DM_POLYTOPE_SEGMENT, 1, 0, 0, DM_POLYTOPE_SEGMENT, 2, 1, 1, 0, DM_POLYTOPE_SEGMENT, 1, 2, 0, DM_POLYTOPE_TRIANGLE, 1, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 2, 1, DM_POLYTOPE_TRIANGLE, 1, 3, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 0, 1, DM_POLYTOPE_TRIANGLE, 1, 2, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 1, 0};
+static PetscInt tetBisO2[] = {-1, -1, 0, 1, 1, 0, -3, 0, 2, 0, 2};
+/* e3=[v0,v3]: children (v0,m,v1,v2) and (m,v3,v1,v2), interior (m,v1,v2) */
+static PetscInt tetBisC3[] = {DM_POLYTOPE_SEGMENT, 1, 1, 0, DM_POLYTOPE_SEGMENT, 2, 0, 1, 0, DM_POLYTOPE_SEGMENT, 1, 2, 0, DM_POLYTOPE_TRIANGLE, 1, 1, 0, DM_POLYTOPE_TRIANGLE, 1, 2, 1, DM_POLYTOPE_TRIANGLE, 1, 0, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 1, 1, DM_POLYTOPE_TRIANGLE, 1, 2, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 3, 0};
+static PetscInt tetBisO3[] = {-1, 0, 0, 1, 1, 0, -3, 0, 2, 0, 1};
+/* e4=[v1,v3]: children (v1,m,v2,v0) and (m,v3,v2,v0), interior (m,v2,v0) */
+static PetscInt tetBisC4[] = {DM_POLYTOPE_SEGMENT, 1, 3, 0, DM_POLYTOPE_SEGMENT, 2, 0, 2, 0, DM_POLYTOPE_SEGMENT, 1, 1, 0, DM_POLYTOPE_TRIANGLE, 1, 3, 0, DM_POLYTOPE_TRIANGLE, 1, 1, 1, DM_POLYTOPE_TRIANGLE, 1, 0, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 3, 1, DM_POLYTOPE_TRIANGLE, 1, 1, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 2, 0};
+static PetscInt tetBisO4[] = {-1, 0, 0, 1, 1, 1, -3, 0, 2, 0, 1};
+/* e5=[v2,v3]: children (v2,m,v0,v1) and (m,v3,v0,v1), interior (m,v0,v1) */
+static PetscInt tetBisC5[] = {DM_POLYTOPE_SEGMENT, 1, 2, 0, DM_POLYTOPE_SEGMENT, 2, 0, 0, 0, DM_POLYTOPE_SEGMENT, 1, 3, 0, DM_POLYTOPE_TRIANGLE, 1, 2, 0, DM_POLYTOPE_TRIANGLE, 1, 3, 1, DM_POLYTOPE_TRIANGLE, 1, 0, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 2, 1, DM_POLYTOPE_TRIANGLE, 1, 3, 0, DM_POLYTOPE_TRIANGLE, 0, 0, DM_POLYTOPE_TRIANGLE, 1, 1, 0};
+static PetscInt tetBisO5[] = {-1, 0, 0, 1, 1, 2, -3, 0, 2, 0, 0};
+
+static PetscErrorCode UWNVBGetTetSplit(PetscInt k, PetscInt *Nt, DMPolytopeType *target[], PetscInt *size[], PetscInt *cone[], PetscInt *ornt[])
+{
+  static PetscInt *tetBisC[6] = {tetBisC0, tetBisC1, tetBisC2, tetBisC3, tetBisC4, tetBisC5};
+  static PetscInt *tetBisO[6] = {tetBisO0, tetBisO1, tetBisO2, tetBisO3, tetBisO4, tetBisO5};
+
+  PetscFunctionBeginHot;
+  PetscCheck(k >= 0 && k < 6, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, "Tet closure edge %" PetscInt_FMT " not in [0,6)", k);
+  *Nt     = 2;
+  *target = tetBisT;
+  *size   = tetBisS;
+  *cone   = tetBisC[k];
+  *ornt   = tetBisO[k];
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* Canonical (face, slot) cone path of each tet closure edge: descending
+   the cell's cone at face position f, then that face's cone at slot k,
+   reaches eK. Used by the uwnvb_bisect SetUp to express a marked DM edge
+   in the cell's canonical frame (composing the face's cone orientation). */
+static const PetscInt tetEdgePath[6][2] = {{0, 0}, {0, 1}, {0, 2}, {1, 0}, {3, 1}, {2, 1}};
+
 static PetscErrorCode DMPlexTransformCellTransform_UWNVB(DMPlexTransform tr, DMPolytopeType source, PetscInt p, PetscInt *rt, PetscInt *Nt, DMPolytopeType *target[], PetscInt *size[], PetscInt *cone[], PetscInt *ornt[])
 {
   DMLabel  trType = tr->trType;
@@ -531,13 +613,16 @@ static PetscErrorCode DMPlexTransformCellTransform_UWNVB(DMPlexTransform tr, DMP
   case DM_POLYTOPE_POINT_PRISM_TENSOR:
   case DM_POLYTOPE_QUADRILATERAL:
   case DM_POLYTOPE_SEG_PRISM_TENSOR:
-  case DM_POLYTOPE_TETRAHEDRON:
   case DM_POLYTOPE_HEXAHEDRON:
   case DM_POLYTOPE_TRI_PRISM:
   case DM_POLYTOPE_TRI_PRISM_TENSOR:
   case DM_POLYTOPE_QUAD_PRISM_TENSOR:
   case DM_POLYTOPE_PYRAMID:
     PetscCall(DMPlexTransformCellTransformIdentity(tr, source, p, NULL, Nt, target, size, cone, ornt));
+    break;
+  case DM_POLYTOPE_TETRAHEDRON:
+    if (val >= RT_TET_SPLIT_0 && val <= RT_TET_SPLIT_5) PetscCall(UWNVBGetTetSplit(val - RT_TET_SPLIT_0, Nt, target, size, cone, ornt));
+    else PetscCall(DMPlexTransformCellTransformIdentity(tr, source, p, NULL, Nt, target, size, cone, ornt));
     break;
   case DM_POLYTOPE_SEGMENT:
     if (val == RT_EDGE) PetscCall(DMPlexTransformCellTransformIdentity(tr, source, p, NULL, Nt, target, size, cone, ornt));
@@ -711,10 +796,11 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVBBisect(DMPlexTransform tr)
   DMLabel             bisect;
   IS                  bisectIS;
   const PetscInt     *bisectEdges;
-  PetscInt            pStart, pEnd, p, eStart, eEnd, e, edgeLenSize, Nb, i;
+  PetscInt            pStart, pEnd, p, eStart, eEnd, e, edgeLenSize, Nb, i, dim;
 
   PetscFunctionBegin;
   PetscCall(DMPlexTransformGetDM(tr, &dm));
+  PetscCall(DMGetDimension(dm, &dim));
   PetscCall(DMLabelCreate(PETSC_COMM_SELF, "Split Points", &nvb->splitPoints));
   /* edge lengths (for the 2/3-marked disambiguation only) */
   PetscCall(DMGetCoordinatesLocalSetUp(dm));
@@ -740,7 +826,19 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVBBisect(DMPlexTransform tr)
       PetscCall(DMLabelSetValue(nvb->splitPoints, edge, 1));
       PetscCall(DMPlexGetSupport(dm, edge, &supp));
       PetscCall(DMPlexGetSupportSize(dm, edge, &suppSize));
-      for (s = 0; s < suppSize; ++s) PetscCall(DMLabelSetValue(nvb->splitPoints, supp[s], 2));
+      for (s = 0; s < suppSize; ++s) {
+        PetscCall(DMLabelSetValue(nvb->splitPoints, supp[s], 2));
+        /* in 3D the edge's support is its faces; the cells above them
+           (the edge star) bisect too — mark them one more level up */
+        if (dim == 3) {
+          const PetscInt *csupp;
+          PetscInt        csuppSize, c;
+
+          PetscCall(DMPlexGetSupport(dm, supp[s], &csupp));
+          PetscCall(DMPlexGetSupportSize(dm, supp[s], &csuppSize));
+          for (c = 0; c < csuppSize; ++c) PetscCall(DMLabelSetValue(nvb->splitPoints, csupp[c], 3));
+        }
+      }
     }
     PetscCall(ISRestoreIndices(bisectIS, &bisectEdges));
   }
@@ -783,6 +881,35 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVBBisect(DMPlexTransform tr)
         else if (vals[1]) PetscCall(DMLabelSetValue(trType, p, RT_TRIANGLE_SPLIT_1));
         else PetscCall(DMLabelSetValue(trType, p, RT_TRIANGLE_SPLIT_2));
       } else PetscCall(DMLabelSetValue(trType, p, RT_TRIANGLE));
+      break;
+    case DM_POLYTOPE_TETRAHEDRON:
+      PetscCall(DMLabelGetValue(nvb->splitPoints, p, &val));
+      if (val == 3) {
+        /* Express the marked edge in the cell's canonical frame: descend
+           each canonical edge path (face f, slot k), composing the face's
+           cone orientation so slot k names the edge the CELL sees there.
+           The driver feeds pairwise-independent single edges, so exactly
+           one closure edge is marked. */
+        const PetscInt *cone, *ornt;
+        PetscInt        K, found = -1;
+
+        PetscCall(DMPlexGetCone(dm, p, &cone));
+        PetscCall(DMPlexGetConeOrientation(dm, p, &ornt));
+        for (K = 0; K < 6; ++K) {
+          const PetscInt *arr = DMPolytopeTypeGetArrangement(DM_POLYTOPE_TRIANGLE, ornt[tetEdgePath[K][0]]);
+          const PetscInt *fcone;
+          PetscInt        eval;
+
+          PetscCall(DMPlexGetCone(dm, cone[tetEdgePath[K][0]], &fcone));
+          PetscCall(DMLabelGetValue(nvb->splitPoints, fcone[arr[2 * tetEdgePath[K][1]]], &eval));
+          if (eval == 1) {
+            PetscCheck(found < 0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Tet %" PetscInt_FMT " has more than one marked edge (e%" PetscInt_FMT " and e%" PetscInt_FMT ") — uwnvb_bisect takes pairwise-independent single edges", p, found, K);
+            found = K;
+          }
+        }
+        PetscCheck(found >= 0, PETSC_COMM_SELF, PETSC_ERR_PLIB, "Tet %" PetscInt_FMT " marked for bisection but no closure edge is marked", p);
+        PetscCall(DMLabelSetValue(trType, p, RT_TET_SPLIT_0 + found));
+      } else PetscCall(DMLabelSetValue(trType, p, RT_TET));
       break;
     default:
       SETERRQ(PETSC_COMM_SELF, PETSC_ERR_SUP, "Cannot handle points of type %s", DMPolytopeTypes[ct]);

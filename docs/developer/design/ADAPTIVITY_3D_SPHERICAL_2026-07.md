@@ -333,6 +333,27 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
     conservation + oracle equality on a single tet (all 6 edges), the
     two-tets-sharing-a-face configuration (the shared-face orientation
     test), and Kuhn/Delaunay meshes.
+
+    **DONE — PASS (2026-07-17, `test_0841`).** The generated tables, the 3D
+    `SetUp` (edge → faces → cells marking + the canonical-edge walker that
+    composes face cone orientations — verified correct through a reflected
+    shared face), and the identity-only tet `GetSubcellOrientation` case
+    all landed in `nvb_transform.c`. Full `-dm_plex_check_all` + volume +
+    reference-split equality on: all 6 single-tet edges, 6 two-tet
+    shared-face cases, and independent-edge-star batches on Kuhn (64
+    cells) and Delaunay (281 cells) meshes. **Two real bugs found and
+    fixed by the gate:** (1) the 2D-era `GetSubcellOrientation` shortcut
+    `-(o+1)` for reflected views of a split face equals the true D3 group
+    product only for `o ∈ {0,−1}` — the only values a 2D mesh passes; 3D
+    cells pass rotated `o` and hit the wrong composition. Replaced with
+    `DMPolytopeTypeComposeOrientation(TRIANGLE, o, −1)` (bit-identical in
+    2D — `test_0836/0837/0838` 21/21 unchanged). (2)
+    `TaggedBisectionMesh.to_dm` oriented tets backwards: the DMPlex
+    reference tet has *negative* `det[v1−v0, v2−v0, v3−v0]`, so
+    "positively oriented" 3D cells are inverted to
+    `DMPlexCheckGeometry` (2D CCW-positive is correct) — solves were
+    sign-tolerant so stage 1b passed, but the convention is now correct
+    and geometry-checked.
   * **1c-ii — tagged state + serial driver.** Per-cell DMLabel packing the
     Maubach state (vertex permutation 0–23 relative to the cell's closure
     order × tag 1–3 → 72 values). DGS coloring seed computed once per base

@@ -685,13 +685,17 @@ class TaggedBisectionMesh:
         from scipy.spatial import cKDTree
 
         coords, cells, region_of, _ = self.arrays()
-        # createFromCellList needs positively-oriented cells; the Maubach
-        # ordering is refinement state, not orientation, so reorient only the
-        # EXPORTED copy (swap the last two vertices where det is negative).
+        # createFromCellList needs cells in the DMPlex orientation class; the
+        # Maubach ordering is refinement state, not orientation, so reorient
+        # only the EXPORTED copy. Convention check: the DMPlex reference
+        # simplex has NEGATIVE det[v1-v0, ..., vd-v0] in 3D (its f0 normal
+        # points away from v3) and POSITIVE in 2D (CCW) — a cell in the
+        # opposite class is "inverted" to DMPlexCheckGeometry.
         e = coords[cells[:, 1:]] - coords[cells[:, :1]]
-        neg = np.linalg.det(e) < 0
-        cells[neg, -2], cells[neg, -1] = (cells[neg, -1],
-                                          cells[neg, -2].copy())
+        det = np.linalg.det(e)
+        wrong = det < 0 if self.dim == 2 else det > 0
+        cells[wrong, -2], cells[wrong, -1] = (cells[wrong, -1],
+                                              cells[wrong, -2].copy())
 
         dm = PETSc.DMPlex().createFromCellList(
             self.dim, cells.astype(np.int32), coords, interpolate=True,
