@@ -272,6 +272,23 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
   and region label transfer; wire as the np=1 `engine="nvb"` path for tets;
   Poisson + FMG-vs-GAMG parity on the graded child (the MG gate, per
   generation).
+
+  **DONE — PASS (2026-07-17).** `TaggedBisectionMesh` in `utilities/nvb.py`
+  (dimension-general: the Maubach rule + DGS coloring from stage 1a, plus
+  facet-label carrying — labelled boundary/interface facets split with their
+  bisected edges — and the same `from_dm`/`refine`/`to_dm` interface as the
+  2D `NVBMesh`). `_adapt_nested` dispatches 3D tets to it at np=1; the
+  engine-less 3D `adapt()` guard is lifted (np>1 raises cleanly, verified
+  under `mpirun -n 2`); `max_levels` now runs **dim** bisection generations
+  per isotropic level (2D unchanged). The advertised `engine="sbr"` 3D
+  fallback was confirmed broken (PETSc error 56, `DMPlexTransformSetUp_SBR`
+  cannot handle tetrahedra) and the message/docstring corrected — NVB-3D is
+  the only adaptive 3D refinement. Gates: `test_0840` 5/5 (engine
+  conformity/closure/shape + **the MG gate**: Poisson FMG on the graded 3D
+  child, `pc=mg` with one MG level per generation, matches GAMG to 1e-4,
+  exact linear solution to 1e-8 — which also proves the 3D facet-label
+  transfer); 2D adapt-family regressions `test_0830/0834–0838` 40/40;
+  style gates clean, no allowlist additions.
 - **1c. Native transform** — extend `nvb_transform.c`: the TETRAHEDRON
   single-edge-split production rule + orientation tables; per-cell state label
   (from 1a) maintenance across passes; agree/bisect SF reconciliation extended

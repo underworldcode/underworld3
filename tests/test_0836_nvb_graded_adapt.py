@@ -289,12 +289,14 @@ def test_solcx_stokes_velocity_fmg_on_nvb_child():
     assert sol.velocity_error(s.u) < 2.0 * solg.velocity_error(sg.u) + 1e-6
 
 
-def test_nvb_3d_guard_raises():
-    """NVB is 2D only this pass — a 3D base must raise NotImplementedError."""
+def test_nvb_3d_serial_returns_child():
+    """3D NVB adapt is served by the serial tagged-simplex engine at np=1
+    (the full 3D gates live in test_0840_nvb_3d_serial_adapt.py)."""
     base3 = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.4, regular=False,
         refinement=1, qdegree=2)
     H = uw.discretisation.MeshVariable("H3", base3, 1, degree=1)
-    H.data[:, 0] = 1.0 / 0.1**2
-    with pytest.raises(NotImplementedError):
-        base3.adapt(H, max_levels=1, engine="nvb")
+    H.data[:, 0] = 1.0 / 0.2**2
+    child = base3.adapt(H, max_levels=1, engine="nvb")
+    assert child.parent is base3
+    assert _ncell(child) > _ncell(base3)

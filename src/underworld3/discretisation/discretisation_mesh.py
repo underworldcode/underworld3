@@ -6172,23 +6172,28 @@ class Mesh(Stateful, uw_object):
 
         The default call needs no engine choice —
         ``mesh.adapt(metric, max_levels=...)`` refines with the graded
-        newest-vertex-bisection engine. This is **2D (triangle meshes) only**
-        for now: an engine-less 3D call raises ``NotImplementedError`` (3D
-        refinement is planned work; ``engine="sbr"`` opts a 3D mesh into the
-        simple isotropic engine explicitly). ``engine=`` remains available
-        as an **advanced / internal selector** (the algorithm names live
-        here, not in the everyday call):
+        newest-vertex-bisection engine, on **2D triangle and 3D tetrahedral
+        meshes**. The 3D path is **serial for now** (an np>1 3D call raises
+        ``NotImplementedError``; the parallel tetrahedral transform is
+        planned work). ``engine=`` remains available as an **advanced /
+        internal selector** (the algorithm names live here, not in the
+        everyday call):
 
         * ``"nvb"`` (default) — newest-vertex bisection, a **graded** engine with a
           *bounded* conforming closure: a marked cell adds O(1) cells locally, so
           successive levels grade (a level+1 ring around a finer core) and DOFs
-          concentrate near the feature. Runs **in parallel** via the native
-          ``uwnvb`` ``DMPlexTransform`` (in-place, co-partitioned with the parent,
-          bit-confluent serial↔parallel); when that compiled extension is absent it
-          falls back to the serial ``NVBMesh`` cell-list engine
-          (``NotImplementedError`` at np>1). Bisects 1→2, so one
-          isotropic-equivalent ``max_levels`` is run as **two** NVB passes.
-        * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection. Each
+          concentrate near the feature. In 2D it runs **in parallel** via the
+          native ``uwnvb`` ``DMPlexTransform`` (in-place, co-partitioned with
+          the parent, bit-confluent serial↔parallel), falling back to the
+          serial ``NVBMesh`` cell-list engine when that compiled extension is
+          absent (``NotImplementedError`` at np>1). In 3D it runs the serial
+          dimension-general tagged-simplex engine
+          (``TaggedBisectionMesh``; ``NotImplementedError`` at np>1 — the
+          parallel tetrahedral transform is planned work). Bisects 1→2
+          (volume halves), so one isotropic-equivalent ``max_levels`` is run
+          as **dim** bisection generations.
+        * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection, **2D
+          only** (PETSc's SBR transform cannot handle tetrahedra). Each
           pass refines marked cells isotropically (1→4). Its conforming closure is
           *unbounded for region marking*, so it produces a **uniform-finest patch**,
           not a graded mesh (a marked cell drains the longest-edge path to the patch
@@ -6298,18 +6303,12 @@ class Mesh(Stateful, uw_object):
             adapter = "sbr"
         if engine is None:
             # NVB is the default refinement engine (2026-07 naming ruling):
-            # graded, bounded conforming closure, parallel via the native
-            # uwnvb transform. NVB is 2D (triangles) only, and the maintainer
-            # ruled (2026-07-17) that an engine-less 3D adapt must say so
-            # honestly rather than silently selecting a different algorithm —
-            # 3D refinement is committed future work (the MMPDE+NVB capstone).
-            if self.cdim != 2:
-                raise NotImplementedError(
-                    "Default adaptive mesh refinement is 2D (triangle meshes) "
-                    "only in this release: the NVB refinement engine has no 3D "
-                    "(tetrahedral) implementation yet — 3D refinement is "
-                    "planned work. To use the simple isotropic SBR engine on "
-                    "a 3D mesh explicitly, call mesh.adapt(..., engine='sbr').")
+            # graded, bounded conforming closure, parallel (2D) via the
+            # native uwnvb transform. In 3D the serial tagged-simplex engine
+            # serves np=1; an np>1 3D call raises honestly inside the engine
+            # guard (the parallel tetrahedral transform is capstone stage
+            # 1c). Note engine='sbr' is NOT a 3D fallback: PETSc's SBR
+            # transform handles triangles only (error 56 on tetrahedra).
             engine = "nvb"
 
         if adapter == "mmg":
@@ -6349,25 +6348,35 @@ class Mesh(Stateful, uw_object):
             )
         # The native uwnvb DMPlexTransform (Route B) is the parallel NVB engine:
         # in-place (co-partitioned with the parent), graded, and bit-confluent
-        # serial<->parallel. Prefer it whenever the compiled extension is present;
-        # fall back to the serial NVBMesh cell-list engine only when it is not
-        # (which then restricts engine='nvb' to np=1).
+        # serial<->parallel. It bisects triangles only, so it serves the 2D
+        # path; 3D (tetrahedra) runs the serial dimension-general tagged-
+        # simplex engine until the native transform adopts the tagged rule
+        # (adaptivity capstone stage 1c).
         _nvbx = None
         if engine == "nvb":
-            if self.dim != 2:
+            if not bool(self.dm.isSimplex()) or self.dim not in (2, 3):
                 raise NotImplementedError(
-                    "adapt(engine='nvb') is 2D only this pass (tets are a follow-up)."
+                    "adapt(engine='nvb') supports 2D triangle and 3D "
+                    "tetrahedral meshes."
                 )
-            try:
-                from underworld3.utilities import _nvb_transform as _nvbx
-            except ImportError:
-                _nvbx = None
-            if _nvbx is None and uw.mpi.size > 1:
+            if self.dim == 2:
+                try:
+                    from underworld3.utilities import _nvb_transform as _nvbx
+                except ImportError:
+                    _nvbx = None
+                if _nvbx is None and uw.mpi.size > 1:
+                    raise NotImplementedError(
+                        "adapt(engine='nvb') at np>1 needs the native uwnvb "
+                        "transform (underworld3.utilities._nvb_transform), "
+                        "which is not built in this environment. Build the "
+                        "custom-PETSc/amr env, or use engine='sbr' at np>1."
+                    )
+            elif uw.mpi.size > 1:
                 raise NotImplementedError(
-                    "adapt(engine='nvb') at np>1 needs the native uwnvb transform "
-                    "(underworld3.utilities._nvb_transform), which is not built in "
-                    "this environment. Build the custom-PETSc/amr env, or use "
-                    "engine='sbr' at np>1."
+                    "adapt(engine='nvb') on a 3D mesh is serial-only for "
+                    "now: the native uwnvb transform bisects triangles only, "
+                    "and the parallel tetrahedral transform is planned work "
+                    "(adaptivity capstone stage 1c)."
                 )
 
         dim = self.dim
@@ -6470,17 +6479,23 @@ class Mesh(Stateful, uw_object):
             if not level_dms:
                 current_dm = self.dm_hierarchy[-1].clone()
         elif engine == "nvb":
-            # Serial fallback (no native transform): persistent NVBMesh cell-list
-            # engine. The refinement-edge labelling propagates parent→child across
-            # generations, preserving the similarity-class (shape-regularity) bound.
-            from underworld3.utilities.nvb import NVBMesh
+            # Serial cell-list engines: the slot-based NVBMesh in 2D (until
+            # the native transform adopts the tagged rule — capstone stage
+            # 1e) and the dimension-general TaggedBisectionMesh in 3D. The
+            # refinement-edge state propagates parent→child across
+            # generations, preserving the similarity-class (shape-regularity)
+            # bound. A bisection halves the cell volume, so h shrinks by
+            # 2^(1/dim) per generation and one isotropic-equivalent
+            # ``max_levels`` is dim generations.
+            from underworld3.utilities.nvb import NVBMesh, TaggedBisectionMesh
+            _Engine = TaggedBisectionMesh if self.dim == 3 else NVBMesh
             carry = [(b.name, b.value) for b in self.boundaries
                      if b.name not in ("Null_Boundary", "All_Boundaries")]
             rcarry = ([(r.name, r.value) for r in self.regions]
                       if self.regions is not None else [])
-            nvb = NVBMesh.from_dm(self.dm_hierarchy[-1], boundaries=carry,
+            nvb = _Engine.from_dm(self.dm_hierarchy[-1], boundaries=carry,
                                   regions=rcarry)
-            n_gen = 2 * max_levels
+            n_gen = dim * max_levels
             for level in range(n_gen):
                 centroids, cur_h, cids = nvb.centroids_h()
                 M = numpy.clip(eval_metric(centroids), 1e-30, None)
