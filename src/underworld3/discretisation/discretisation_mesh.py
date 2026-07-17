@@ -6374,10 +6374,23 @@ class Mesh(Stateful, uw_object):
             elif uw.mpi.size > 1:
                 raise NotImplementedError(
                     "adapt(engine='nvb') on a 3D mesh is serial-only for "
-                    "now: the native uwnvb transform bisects triangles only, "
-                    "and the parallel tetrahedral transform is planned work "
-                    "(adaptivity capstone stage 1c)."
+                    "now: the parallel tetrahedral path (the distributed "
+                    "state seed and its acceptance gates) is planned work "
+                    "(adaptivity capstone stage 1c-iii)."
                 )
+            else:
+                # 3D at np=1: prefer the native driver when built (same
+                # preference order as 2D); the serial cell-list engine is
+                # the fallback. The native driver needs the per-cell
+                # refinement state seeded on the base mesh first.
+                try:
+                    from underworld3.utilities import _nvb_transform as _nvbx
+                except ImportError:
+                    _nvbx = None
+                if _nvbx is not None:
+                    from underworld3.utilities.nvb import (
+                        write_tagged_state_label)
+                    write_tagged_state_label(self.dm_hierarchy[-1])
 
         dim = self.dim
         edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
@@ -6431,10 +6444,10 @@ class Mesh(Stateful, uw_object):
             # bounded newest-vertex conforming closure); the transform is in-place so
             # the output stays co-partitioned with the parent and carries the
             # boundary/region labels forward automatically. A single bisection halves
-            # the area (h → h/√2), so we allow up to 2·max_levels passes to reach the
-            # same isotropic target as the SBR path's max_levels quad-splits.
+            # the cell volume (h shrinks by 2^(1/dim)), so one isotropic-equivalent
+            # max_levels is dim bisection passes.
             current_dm = self.dm_hierarchy[-1]   # static base finest (distributed)
-            n_gen = 2 * max_levels
+            n_gen = dim * max_levels
             for level in range(n_gen):
                 cs, ce = current_dm.getHeightStratum(0)
                 ncells = ce - cs

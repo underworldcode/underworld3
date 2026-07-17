@@ -968,6 +968,117 @@ static PetscErrorCode uwnvb_edge_len(DM dm, PetscInt e, PetscReal *len)
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+/* ---- 3D tagged-simplex state (Maubach bookkeeping) ---------------------- */
+/*
+  Each tetrahedron carries its refinement state as an ordered vertex tuple
+  plus a small counter, following Maubach's rule (see the design note
+  ADAPTIVITY_3D_SPHERICAL_2026-07.md for the plain-language account and
+  references). The state is stored per cell in the UWNVB_STATE_LABEL as
+
+      value = perm * 3 + (tag - 1),   perm in [0,24), tag in {1,2,3}
+
+  where `perm` indexes the lexicographic list of permutations of (0,1,2,3)
+  applied to the cell's closure vertex order: tuple[i] = closure[PERM24[perm][i]].
+  The bisection edge is (tuple[0], tuple[tag]); the two children replace the
+  edge with its midpoint by the fixed Maubach recipe and take tag-1 (or 3
+  when the tag was 1).
+
+  The INITIAL state (the vertex-coloring seed of Diening-Gehring-Storn,
+  arXiv:2306.02674) is computed once in Python and written onto the base DM
+  before the driver runs — one seed implementation serves both the serial
+  engine and this native path. The driver only decodes and maintains it.
+*/
+#define UWNVB_STATE_LABEL "uwnvb_tetstate"
+
+static const PetscInt UWNVB_PERM24[24][4] = {
+  {0, 1, 2, 3}, {0, 1, 3, 2}, {0, 2, 1, 3}, {0, 2, 3, 1}, {0, 3, 1, 2}, {0, 3, 2, 1},
+  {1, 0, 2, 3}, {1, 0, 3, 2}, {1, 2, 0, 3}, {1, 2, 3, 0}, {1, 3, 0, 2}, {1, 3, 2, 0},
+  {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 1, 0, 3}, {2, 1, 3, 0}, {2, 3, 0, 1}, {2, 3, 1, 0},
+  {3, 0, 1, 2}, {3, 0, 2, 1}, {3, 1, 0, 2}, {3, 1, 2, 0}, {3, 2, 0, 1}, {3, 2, 1, 0}};
+
+/* The cell's four vertex points in canonical closure order. */
+static PetscErrorCode uwnvb_tet_vertices(DM dm, PetscInt cell, PetscInt verts[4])
+{
+  PetscInt *closure = NULL, nclos, i, nv = 0, vStart, vEnd;
+
+  PetscFunctionBegin;
+  PetscCall(DMPlexGetDepthStratum(dm, 0, &vStart, &vEnd));
+  PetscCall(DMPlexGetTransitiveClosure(dm, cell, PETSC_TRUE, &nclos, &closure));
+  for (i = 0; i < nclos; ++i) {
+    const PetscInt p = closure[2 * i];
+    if (p >= vStart && p < vEnd) {
+      PetscCheck(nv < 4, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Cell %" PetscInt_FMT " has more than 4 vertices", cell);
+      verts[nv++] = p;
+    }
+  }
+  PetscCall(DMPlexRestoreTransitiveClosure(dm, cell, PETSC_TRUE, &nclos, &closure));
+  PetscCheck(nv == 4, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Cell %" PetscInt_FMT " has %" PetscInt_FMT " vertices (tet expected)", cell, nv);
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* Decode a cell's Maubach tuple and tag from the state label. */
+static PetscErrorCode uwnvb_tet_state_decode(DM dm, DMLabel state, PetscInt cell, PetscInt tuple[4], PetscInt *tag)
+{
+  PetscInt verts[4], val, perm, i;
+
+  PetscFunctionBegin;
+  PetscCall(DMLabelGetValue(state, cell, &val));
+  PetscCheck(val >= 0 && val < 72, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, "Tet %" PetscInt_FMT " has no refinement state (label value %" PetscInt_FMT ") — seed the base mesh first", cell, val);
+  perm = val / 3;
+  *tag = val % 3 + 1;
+  PetscCall(uwnvb_tet_vertices(dm, cell, verts));
+  for (i = 0; i < 4; ++i) tuple[i] = verts[UWNVB_PERM24[perm][i]];
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* Encode (tuple, tag) as a state-label value on `cell` (whose closure vertex
+   order the permutation is relative to). */
+static PetscErrorCode uwnvb_tet_state_encode(DM dm, DMLabel state, PetscInt cell, const PetscInt tuple[4], PetscInt tag)
+{
+  PetscInt verts[4], perm, i;
+
+  PetscFunctionBegin;
+  PetscCall(uwnvb_tet_vertices(dm, cell, verts));
+  for (perm = 0; perm < 24; ++perm) {
+    for (i = 0; i < 4; ++i)
+      if (tuple[i] != verts[UWNVB_PERM24[perm][i]]) break;
+    if (i == 4) break;
+  }
+  PetscCheck(perm < 24, PETSC_COMM_SELF, PETSC_ERR_PLIB, "Tuple is not a permutation of cell %" PetscInt_FMT "'s vertices", cell);
+  PetscCall(DMLabelSetValue(state, cell, perm * 3 + (tag - 1)));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* The bisection edge of tet `cell`: the DM edge point joining tuple[0] and
+   tuple[tag]. Found among the cell's closure edges. */
+static PetscErrorCode uwnvb_tet_refedge(DM dm, DMLabel state, PetscInt cell, PetscInt *refedge)
+{
+  PetscInt  tuple[4], tag, va, vb;
+  PetscInt *closure = NULL, nclos, i, eStart, eEnd;
+
+  PetscFunctionBegin;
+  PetscCall(uwnvb_tet_state_decode(dm, state, cell, tuple, &tag));
+  va = tuple[0];
+  vb = tuple[tag];
+  PetscCall(DMPlexGetDepthStratum(dm, 1, &eStart, &eEnd));
+  *refedge = -1;
+  PetscCall(DMPlexGetTransitiveClosure(dm, cell, PETSC_TRUE, &nclos, &closure));
+  for (i = 0; i < nclos; ++i) {
+    const PetscInt p = closure[2 * i];
+    if (p >= eStart && p < eEnd) {
+      const PetscInt *ec;
+      PetscCall(DMPlexGetCone(dm, p, &ec));
+      if ((ec[0] == va && ec[1] == vb) || (ec[0] == vb && ec[1] == va)) {
+        *refedge = p;
+        break;
+      }
+    }
+  }
+  PetscCall(DMPlexRestoreTransitiveClosure(dm, cell, PETSC_TRUE, &nclos, &closure));
+  PetscCheck(*refedge >= 0, PETSC_COMM_SELF, PETSC_ERR_PLIB, "Bisection edge (%" PetscInt_FMT ", %" PetscInt_FMT ") not found among cell %" PetscInt_FMT "'s edges", va, vb, cell);
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 /* Refinement edge of triangle `cell`: the stored cone slot, or the longest-edge
    seed when no slot is set (base mesh / uninitialised cell). */
 static PetscErrorCode uwnvb_refedge(DM dm, DMLabel slot, PetscInt cell, PetscInt *refedge, PetscInt *refslot)
@@ -1034,6 +1145,165 @@ static PetscErrorCode uwnvb_sf_lor(DM dm, PetscInt *val)
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+/* ---- dimension dispatch for the driver ---------------------------------- */
+/* The drain-loop driver below is shared by the 2D (triangle, slot label) and
+   3D (tetrahedron, tagged-state label) paths; these helpers hide the four
+   places they differ: the cell type, how a cell names its refinement edge,
+   which edges a cell can veto, and which cells surround an edge. */
+
+static inline PetscBool uwnvb_is_target(DMPolytopeType ct, PetscInt dim)
+{
+  return (dim == 2 && ct == DM_POLYTOPE_TRIANGLE) || (dim == 3 && ct == DM_POLYTOPE_TETRAHEDRON) ? PETSC_TRUE : PETSC_FALSE;
+}
+
+static PetscErrorCode uwnvb_cell_refedge(DM dm, PetscInt dim, DMLabel slot, DMLabel state, PetscInt cell, PetscInt *refedge)
+{
+  PetscFunctionBegin;
+  if (dim == 2) {
+    PetscInt refslot;
+    PetscCall(uwnvb_refedge(dm, slot, cell, refedge, &refslot));
+  } else {
+    PetscCall(uwnvb_tet_refedge(dm, state, cell, refedge));
+  }
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* All edges of `cell`: the cone in 2D, the six closure edges in 3D. */
+static PetscErrorCode uwnvb_cell_edges(DM dm, PetscInt dim, PetscInt cell, PetscInt edges[6], PetscInt *ne)
+{
+  PetscFunctionBegin;
+  if (dim == 2) {
+    const PetscInt *cone;
+    PetscInt        k;
+    PetscCall(DMPlexGetCone(dm, cell, &cone));
+    for (k = 0; k < 3; ++k) edges[k] = cone[k];
+    *ne = 3;
+  } else {
+    PetscInt *closure = NULL, nclos, i, eStart, eEnd, n = 0;
+    PetscCall(DMPlexGetDepthStratum(dm, 1, &eStart, &eEnd));
+    PetscCall(DMPlexGetTransitiveClosure(dm, cell, PETSC_TRUE, &nclos, &closure));
+    for (i = 0; i < nclos; ++i) {
+      const PetscInt p = closure[2 * i];
+      if (p >= eStart && p < eEnd) {
+        PetscCheck(n < 6, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Cell %" PetscInt_FMT " has more than 6 edges", cell);
+        edges[n++] = p;
+      }
+    }
+    PetscCall(DMPlexRestoreTransitiveClosure(dm, cell, PETSC_TRUE, &nclos, &closure));
+    *ne = n;
+  }
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* The cells around edge `e`: its support in 2D; the support of its supporting
+   faces in 3D (deduplicated). `cap` bounds the caller's array. */
+static PetscErrorCode uwnvb_edge_star_cells(DM dm, PetscInt dim, PetscInt e, PetscInt cells[], PetscInt cap, PetscInt *nc)
+{
+  const PetscInt *supp;
+  PetscInt        ss, s, n = 0;
+
+  PetscFunctionBegin;
+  PetscCall(DMPlexGetSupport(dm, e, &supp));
+  PetscCall(DMPlexGetSupportSize(dm, e, &ss));
+  if (dim == 2) {
+    for (s = 0; s < ss; ++s) {
+      PetscCheck(n < cap, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ, "Edge star exceeds %" PetscInt_FMT " cells", cap);
+      cells[n++] = supp[s];
+    }
+  } else {
+    for (s = 0; s < ss; ++s) {
+      const PetscInt *csupp;
+      PetscInt        cs, c, j;
+      PetscCall(DMPlexGetSupport(dm, supp[s], &csupp));
+      PetscCall(DMPlexGetSupportSize(dm, supp[s], &cs));
+      for (c = 0; c < cs; ++c) {
+        for (j = 0; j < n; ++j)
+          if (cells[j] == csupp[c]) break;
+        if (j < n) continue;
+        PetscCheck(n < cap, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ, "Edge star exceeds %" PetscInt_FMT " cells", cap);
+        cells[n++] = csupp[c];
+      }
+    }
+  }
+  *nc = n;
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* Grow the working set C to its conforming closure on the CURRENT mesh:
+   every C cell requests its refinement edge; any cell around a requested
+   edge whose own refinement edge differs is blocked, joins C, and requests
+   its own edge — iterated to a fixpoint, with requested edges exchanged
+   across ranks over the point SF (edges are shared SF points; cells are
+   not). Idempotent, so re-running on an already-complete C adds nothing.
+
+   This must run at the TOP OF EVERY drain pass, not once up front: after a
+   pass splits some edges, a still-waiting cell can find itself blocked by
+   the CHILDREN just created, and in 3D those can need several further
+   generations before the awaited edge becomes compatible (in 2D one split
+   always suffices, which is why the single up-front closure used to be
+   enough). */
+static PetscErrorCode uwnvb_grow_closure(DM work, PetscInt dim, DMLabel slot, DMLabel state, DMLabel C)
+{
+  IS               cis;
+  const PetscInt  *ccells;
+  DMLabel          req;
+  DMPlexPointQueue queue;
+  PetscSF          pointSF;
+  PetscInt         n, i;
+  PetscBool        empty;
+
+  PetscFunctionBegin;
+  PetscCall(DMGetPointSF(work, &pointSF));
+  PetscCall(DMLabelCreate(PETSC_COMM_SELF, "uwnvb_req", &req));
+  PetscCall(DMPlexPointQueueCreate(1024, &queue));
+  PetscCall(DMLabelGetStratumIS(C, 1, &cis));
+  PetscCall(DMLabelGetStratumSize(C, 1, &n));
+  if (cis) {
+    PetscCall(ISGetIndices(cis, &ccells));
+    for (i = 0; i < n; ++i) {
+      PetscInt refedge, rv;
+      PetscCall(uwnvb_cell_refedge(work, dim, slot, state, ccells[i], &refedge));
+      PetscCall(DMLabelGetValue(req, refedge, &rv));
+      if (rv != 1) {
+        PetscCall(DMLabelSetValue(req, refedge, 1));
+        PetscCall(DMPlexPointQueueEnqueue(queue, refedge));
+      }
+    }
+    PetscCall(ISRestoreIndices(cis, &ccells));
+  }
+  PetscCall(ISDestroy(&cis));
+  PetscCall(DMLabelPropagateBegin(req, pointSF));
+  PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
+  while (!empty) {
+    while (!DMPlexPointQueueEmpty(queue)) {
+      PetscInt e = -1, star[128], ns, s;
+      PetscCall(DMPlexPointQueueDequeue(queue, &e));
+      PetscCall(uwnvb_edge_star_cells(work, dim, e, star, 128, &ns));
+      for (s = 0; s < ns; ++s) {
+        PetscInt d = star[s], de, cv, rv;
+        PetscCall(uwnvb_cell_refedge(work, dim, slot, state, d, &de));
+        if (de != e) { /* d blocks a request on e: it must bisect its own refedge first */
+          PetscCall(DMLabelGetValue(C, d, &cv));
+          if (cv != 1) PetscCall(DMLabelSetValue(C, d, 1));
+          PetscCall(DMLabelGetValue(req, de, &rv));
+          if (rv != 1) {
+            PetscCall(DMLabelSetValue(req, de, 1));
+            PetscCall(DMPlexPointQueueEnqueue(queue, de));
+          }
+        }
+      }
+    }
+    /* exchange newly-requested edges across ranks; the callback enqueues any
+       that arrive here so their incident cells are processed next round */
+    PetscCall(DMLabelPropagatePush(req, pointSF, UWNVBSplitPoint, queue));
+    PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
+  }
+  PetscCall(DMLabelPropagateEnd(req, pointSF));
+  PetscCall(DMLabelDestroy(&req));
+  PetscCall(DMPlexPointQueueDestroy(&queue));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 /* ---- driver: graded NVB refinement of `dm` ----------------------------- */
 /*
   Refine `dm` so that every cell flagged in the `wantName` adaptation label
@@ -1057,98 +1327,57 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
 {
   MPI_Comm comm;
   DM       work;
-  DMLabel  want, C, slot = NULL;
-  PetscInt cStart, cEnd, c, guard, nC;
+  DMLabel  want, C, slot = NULL, state = NULL;
+  PetscInt cStart, cEnd, c, guard, nC, dim;
 
   PetscFunctionBegin;
   PetscValidHeaderSpecific(dm, DM_CLASSID, 1);
   PetscAssertPointer(rdm, 3);
   PetscCall(PetscObjectGetComm((PetscObject)dm, &comm));
+  PetscCall(DMGetDimension(dm, &dim));
+  PetscCheck(dim == 2 || dim == 3, comm, PETSC_ERR_SUP, "UWNVBRefine supports 2D triangle and 3D tetrahedral meshes, got dim=%" PetscInt_FMT, dim);
   PetscCall(DMGetLabel(dm, wantName, &want));
   PetscCheck(want, comm, PETSC_ERR_ARG_WRONGSTATE, "Adaptation label '%s' not found on DM", wantName);
 
   work = dm;
   PetscCall(PetscObjectReference((PetscObject)work));
-  PetscCall(DMGetLabel(work, UWNVB_SLOT_LABEL, &slot)); /* NULL on the base */
+  PetscCall(DMGetLabel(work, UWNVB_SLOT_LABEL, &slot)); /* 2D: NULL on the base (longest-edge seed) */
+  if (dim == 3) {
+    /* 3D has no per-cell fallback: the tagged state must be seeded on the
+       base mesh (the Python side writes it — one seed implementation). */
+    PetscCall(DMGetLabel(work, UWNVB_STATE_LABEL, &state));
+    PetscCheck(state, comm, PETSC_ERR_ARG_WRONGSTATE, "3D refinement needs the '%s' per-cell state label on the base mesh — write it with underworld3.utilities.nvb.write_tagged_state_label()", UWNVB_STATE_LABEL);
+  }
 
-  /* --- 1. closure: C = want, grown by blocking neighbours across refinement
-     edges. Blockers are discovered by propagating REQUESTED refinement edges over
-     the point SF (edges are shared SF points; cells are not) — the same
-     DMLabelPropagate mechanism SBR uses, so the closure is cross-rank complete and
-     bounded (LEPP; Rivara/Stevenson). Each rank derives its own C cells locally
-     from the requested edges incident to them. --- */
+  /* --- 1. seed the working set C from the adaptation label. Its conforming
+     closure (uwnvb_grow_closure) runs at the top of every drain pass. --- */
   PetscCall(DMLabelCreate(PETSC_COMM_SELF, "uwnvb_C", &C));
   {
-    IS               wantIS;
-    const PetscInt  *wantCells;
-    DMLabel          req;
-    DMPlexPointQueue queue;
-    PetscSF          pointSF;
-    PetscInt         nWant, i;
-    PetscBool        empty;
+    IS              wantIS;
+    const PetscInt *wantCells;
+    PetscInt        nWant, i;
 
     PetscCall(DMPlexGetHeightStratum(work, 0, &cStart, &cEnd));
-    PetscCall(DMGetPointSF(work, &pointSF));
-    PetscCall(DMLabelCreate(PETSC_COMM_SELF, "uwnvb_req", &req));
-    PetscCall(DMPlexPointQueueCreate(1024, &queue));
-    /* seed: each want triangle joins C and requests its refinement edge */
     PetscCall(DMLabelGetStratumIS(want, DM_ADAPT_REFINE, &wantIS));
     PetscCall(DMLabelGetStratumSize(want, DM_ADAPT_REFINE, &nWant));
     if (wantIS) {
       PetscCall(ISGetIndices(wantIS, &wantCells));
       for (i = 0; i < nWant; ++i) {
         DMPolytopeType ct;
-        PetscInt       refedge, refslot, rv;
-        /* Ignore non-triangle marks — the adaptation label can carry stale
+        /* Ignore non-cell marks — the adaptation label can carry stale
            entries transferred from a previous refine onto non-cell points. */
         if (wantCells[i] < cStart || wantCells[i] >= cEnd) continue;
         PetscCall(DMPlexGetCellType(work, wantCells[i], &ct));
-        if (ct != DM_POLYTOPE_TRIANGLE) continue;
+        if (!uwnvb_is_target(ct, dim)) continue;
         PetscCall(DMLabelSetValue(C, wantCells[i], 1));
-        PetscCall(uwnvb_refedge(work, slot, wantCells[i], &refedge, &refslot));
-        PetscCall(DMLabelGetValue(req, refedge, &rv));
-        if (rv != 1) {
-          PetscCall(DMLabelSetValue(req, refedge, 1));
-          PetscCall(DMPlexPointQueueEnqueue(queue, refedge));
-        }
       }
       PetscCall(ISRestoreIndices(wantIS, &wantCells));
     }
     PetscCall(ISDestroy(&wantIS));
-    PetscCall(DMLabelPropagateBegin(req, pointSF));
-    PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
-    while (!empty) {
-      while (!DMPlexPointQueueEmpty(queue)) {
-        PetscInt        e = -1, ss, s;
-        const PetscInt *supp;
-        PetscCall(DMPlexPointQueueDequeue(queue, &e));
-        PetscCall(DMPlexGetSupport(work, e, &supp));
-        PetscCall(DMPlexGetSupportSize(work, e, &ss));
-        for (s = 0; s < ss; ++s) {
-          PetscInt d = supp[s], de, ds, cv, rv;
-          PetscCall(uwnvb_refedge(work, slot, d, &de, &ds));
-          if (de != e) { /* d blocks a request on e: it must bisect its own refedge first */
-            PetscCall(DMLabelGetValue(C, d, &cv));
-            if (cv != 1) PetscCall(DMLabelSetValue(C, d, 1));
-            PetscCall(DMLabelGetValue(req, de, &rv));
-            if (rv != 1) {
-              PetscCall(DMLabelSetValue(req, de, 1));
-              PetscCall(DMPlexPointQueueEnqueue(queue, de));
-            }
-          }
-        }
-      }
-      /* exchange newly-requested edges across ranks; the callback enqueues any
-         that arrive here so their incident cells are processed next round */
-      PetscCall(DMLabelPropagatePush(req, pointSF, UWNVBSplitPoint, queue));
-      PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
-    }
-    PetscCall(DMLabelPropagateEnd(req, pointSF));
-    PetscCall(DMLabelDestroy(&req));
-    PetscCall(DMPlexPointQueueDestroy(&queue));
   }
 
-  /* --- 2. drain: single-split compatible refedges of C until C empty --- */
+  /* --- 2. drain: grow the closure, then single-split the compatible
+     refinement edges of C; repeat until C is empty --- */
   PetscCall(DMLabelGetStratumSize(C, 1, &nC));
   { /* GLOBAL count: ranks with no local C must still enter the collective loop */
     PetscInt nCG = nC;
@@ -1163,6 +1392,7 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
     PetscInt       *agree, pStart, pEnd, p, e, eStart, eEnd, nready = 0;
 
     PetscCheck(++guard < 100000, comm, PETSC_ERR_PLIB, "UWNVB drain did not converge");
+    PetscCall(uwnvb_grow_closure(work, dim, slot, state, C));
 
     /* agree[e] = 1 iff e is the refinement edge of all its incident cells */
     PetscCall(DMPlexGetChart(work, &pStart, &pEnd));
@@ -1170,15 +1400,14 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
     for (p = 0; p < pEnd - pStart; ++p) agree[p] = 1;
     PetscCall(DMPlexGetHeightStratum(work, 0, &cStart, &cEnd));
     for (c = cStart; c < cEnd; ++c) {
-      DMPolytopeType  ct;
-      const PetscInt *cone;
-      PetscInt        refedge, refslot, k;
+      DMPolytopeType ct;
+      PetscInt       refedge, cedges[6], ne, k;
       PetscCall(DMPlexGetCellType(work, c, &ct));
-      if (ct != DM_POLYTOPE_TRIANGLE) continue;
-      PetscCall(uwnvb_refedge(work, slot, c, &refedge, &refslot));
-      PetscCall(DMPlexGetCone(work, c, &cone));
-      for (k = 0; k < 3; ++k)
-        if (cone[k] != refedge) agree[cone[k] - pStart] = 0; /* c vetoes non-refedges */
+      if (!uwnvb_is_target(ct, dim)) continue;
+      PetscCall(uwnvb_cell_refedge(work, dim, slot, state, c, &refedge));
+      PetscCall(uwnvb_cell_edges(work, dim, c, cedges, &ne));
+      for (k = 0; k < ne; ++k)
+        if (cedges[k] != refedge) agree[cedges[k] - pStart] = 0; /* c vetoes non-refedges */
     }
     PetscCall(uwnvb_sf_land(work, agree));
 
@@ -1198,8 +1427,8 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
       if (cis) {
         PetscCall(ISGetIndices(cis, &ccells));
         for (i = 0; i < n; ++i) {
-          PetscInt refedge, refslot;
-          PetscCall(uwnvb_refedge(work, slot, ccells[i], &refedge, &refslot));
+          PetscInt refedge;
+          PetscCall(uwnvb_cell_refedge(work, dim, slot, state, ccells[i], &refedge));
           if (agree[refedge - pStart]) bmark[refedge - pStart] = 1;
         }
         PetscCall(ISRestoreIndices(cis, &ccells));
@@ -1239,18 +1468,79 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
       PetscCall(DMLabelDestroy(&tmp));
     }
 
-    /* rebuild the slot label on `out` (single split => child refedge is the edge
-       opposite the new midpoint; unsplit cells copy their slot) */
+    /* rebuild the refinement-state label on `out`: in 2D the cone-slot label
+       (single split => child refedge is the edge opposite the new midpoint);
+       in 3D the tagged state (children by the Maubach recipe, unsplit cells
+       re-encoded through the transform's point mapping — never by copying
+       label values, since the identity transform may renumber). */
     {
-      DMLabel staleS = NULL;
-      PetscCall(DMGetLabel(out, UWNVB_SLOT_LABEL, &staleS));
-      if (staleS) { PetscCall(DMRemoveLabel(out, UWNVB_SLOT_LABEL, &staleS)); PetscCall(DMLabelDestroy(&staleS)); }
+      const char *maintName = dim == 2 ? UWNVB_SLOT_LABEL : UWNVB_STATE_LABEL;
+      DMLabel     staleS    = NULL;
+      PetscCall(DMGetLabel(out, maintName, &staleS));
+      if (staleS) { PetscCall(DMRemoveLabel(out, maintName, &staleS)); PetscCall(DMLabelDestroy(&staleS)); }
+      PetscCall(DMCreateLabel(out, maintName));
+      PetscCall(DMGetLabel(out, maintName, &slotOut));
     }
-    PetscCall(DMCreateLabel(out, UWNVB_SLOT_LABEL));
-    PetscCall(DMGetLabel(out, UWNVB_SLOT_LABEL, &slotOut));
     PetscCall(DMLabelCreate(PETSC_COMM_SELF, "uwnvb_C", &Cout));
 
     PetscCall(DMPlexGetHeightStratum(work, 0, &cStart, &cEnd));
+    if (dim == 3) {
+      for (c = cStart; c < cEnd; ++c) {
+        DMPolytopeType ct;
+        PetscInt       rt, cval, pNew, tuple[4], tag;
+        PetscCall(DMPlexGetCellType(work, c, &ct));
+        if (ct != DM_POLYTOPE_TETRAHEDRON) continue;
+        PetscCall(DMLabelGetValue(tr->trType, c, &rt));
+        PetscCall(uwnvb_tet_state_decode(work, state, c, tuple, &tag));
+        PetscCall(DMLabelGetValue(C, c, &cval));
+
+        if (rt == RT_TET) {
+          /* Unsplit: same tuple, its vertices mapped to their identical
+             child points; re-encode against the child's closure order. */
+          PetscInt ctuple[4], i;
+          PetscCall(DMPlexTransformGetTargetPoint(tr, DM_POLYTOPE_TETRAHEDRON, DM_POLYTOPE_TETRAHEDRON, c, 0, &pNew));
+          for (i = 0; i < 4; ++i) PetscCall(DMPlexTransformGetTargetPoint(tr, DM_POLYTOPE_POINT, DM_POLYTOPE_POINT, tuple[i], 0, &ctuple[i]));
+          PetscCall(uwnvb_tet_state_encode(out, slotOut, pNew, ctuple, tag));
+          if (cval == 1) PetscCall(DMLabelSetValue(Cout, pNew, 1));
+        } else {
+          /* Maubach split: bisect (tuple[0], tuple[tag]) at midpoint m;
+               T1 = tuple with v_tag replaced by m   (keeps tuple[0])
+               T2 = tuple with v_0 dropped, m at position tag
+             both children take tag-1 (or 3 when the tag was 1). Children
+             are matched to the transform's two replicas by vertex SET. */
+          PetscInt refedge, m, t1[4], t2[4], gp, i, r;
+          PetscCheck(rt >= RT_TET_SPLIT_0 && rt <= RT_TET_SPLIT_5, comm, PETSC_ERR_PLIB, "UWNVB drain produced a non-single tet split (rt=%" PetscInt_FMT ")", rt);
+          PetscCall(uwnvb_tet_refedge(work, state, c, &refedge));
+          PetscCall(DMPlexTransformGetTargetPoint(tr, DM_POLYTOPE_SEGMENT, DM_POLYTOPE_POINT, refedge, 0, &m));
+          gp = tag >= 2 ? tag - 1 : 3;
+          for (i = 0; i < 4; ++i) {
+            PetscInt cv;
+            PetscCall(DMPlexTransformGetTargetPoint(tr, DM_POLYTOPE_POINT, DM_POLYTOPE_POINT, tuple[i], 0, &cv));
+            t1[i] = cv;
+            t2[i] = cv;
+          }
+          t1[tag] = m;                                   /* T1: m replaces v_tag */
+          for (i = 0; i < tag; ++i) t2[i] = t2[i + 1];   /* T2: drop v_0 ...     */
+          t2[tag] = m;                                   /* ... m at position tag */
+          for (r = 0; r < 2; ++r) {
+            PetscInt cverts[4], j, k, hit1 = 1, hit2 = 1;
+            PetscCall(DMPlexTransformGetTargetPoint(tr, DM_POLYTOPE_TETRAHEDRON, DM_POLYTOPE_TETRAHEDRON, c, r, &pNew));
+            PetscCall(uwnvb_tet_vertices(out, pNew, cverts));
+            for (j = 0; j < 4; ++j) {
+              for (k = 0; k < 4; ++k)
+                if (cverts[k] == t1[j]) break;
+              if (k == 4) hit1 = 0;
+              for (k = 0; k < 4; ++k)
+                if (cverts[k] == t2[j]) break;
+              if (k == 4) hit2 = 0;
+            }
+            PetscCheck(hit1 != hit2, comm, PETSC_ERR_PLIB, "Child %" PetscInt_FMT " of tet %" PetscInt_FMT " matches %s Maubach child", r, c, hit1 ? "both" : "neither");
+            PetscCall(uwnvb_tet_state_encode(out, slotOut, pNew, hit1 ? t1 : t2, gp));
+            /* children of a bisected cell are done -> NOT added to Cout */
+          }
+        }
+      }
+    } else {
     for (c = cStart; c < cEnd; ++c) {
       DMPolytopeType ct;
       PetscInt       rt, refedge, refslot, cval, pNew;
@@ -1297,11 +1587,13 @@ PETSC_EXTERN PetscErrorCode UWNVBRefine(DM dm, const char *wantName, DM *rdm)
         }
       }
     }
+    }
 
     PetscCall(DMPlexTransformDestroy(&tr));
     PetscCall(DMDestroy(&work));
     work = out;
-    slot = slotOut;
+    if (dim == 2) slot = slotOut;
+    else state = slotOut;
     PetscCall(DMLabelDestroy(&C));
     C    = Cout;
     PetscCall(DMLabelGetStratumSize(C, 1, &nC));

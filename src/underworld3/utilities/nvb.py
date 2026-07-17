@@ -39,7 +39,49 @@ finite number of similarity classes.
 import numpy as np
 from petsc4py import PETSc
 
-__all__ = ["NVBMesh", "TaggedBisectionMesh"]
+__all__ = ["NVBMesh", "TaggedBisectionMesh", "write_tagged_state_label"]
+
+#: Per-cell refinement-state label consumed by the native 3D driver
+#: (``UWNVBRefine`` in ``nvb_transform.c``): value = perm * 3 + (tag - 1),
+#: with ``perm`` indexing the lexicographic permutations of (0,1,2,3)
+#: applied to the cell's closure vertex order. Must match UWNVB_PERM24.
+TAGGED_STATE_LABEL = "uwnvb_tetstate"
+
+
+def write_tagged_state_label(dm):
+    """Seed the Maubach refinement state on a tetrahedral ``DMPlex``.
+
+    Computes the coloring-based initial vertex ordering and tag for every
+    cell — by running :class:`TaggedBisectionMesh`'s own initialization, so
+    the native driver and the serial engine share ONE seed implementation —
+    and writes it as the per-cell ``uwnvb_tetstate`` label the native
+    ``UWNVBRefine`` driver requires. See the design note
+    ``ADAPTIVITY_3D_SPHERICAL_2026-07.md`` for the plain-language account
+    (the initialization is Diening--Gehring--Storn, arXiv:2306.02674).
+
+    Serial DMs only (the same restriction as ``TaggedBisectionMesh.from_dm``);
+    the parallel seed (computed on the base, distributed as a label) is the
+    capstone's stage 1c-iii.
+    """
+    import itertools
+
+    eng = TaggedBisectionMesh.from_dm(dm)
+    perms = {p: i for i, p in enumerate(itertools.permutations(range(4)))}
+    cS, cE = dm.getHeightStratum(0)
+    if not dm.hasLabel(TAGGED_STATE_LABEL):
+        dm.createLabel(TAGGED_STATE_LABEL)
+    label = dm.getLabel(TAGGED_STATE_LABEL)
+    # engine cell ids are insertion-ordered = the DM cell order cS..cE, and
+    # the engine's closure_verts for cell i is the from_dm vertex list; the
+    # ordered tuple is a permutation of it by construction
+    vS, _ = dm.getDepthStratum(0)
+    for i, c in enumerate(range(cS, cE)):
+        clos = dm.getTransitiveClosure(c)[0]
+        closure_verts = [p - vS for p in clos
+                         if vS <= p < vS + len(eng.vertex_color)]
+        tuple_i, tag = eng.cells[i]
+        perm = perms[tuple(closure_verts.index(v) for v in tuple_i)]
+        label.setValue(c, perm * 3 + (tag - 1))
 
 
 def _fs(a, b):

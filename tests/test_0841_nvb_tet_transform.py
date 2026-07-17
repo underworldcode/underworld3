@@ -160,6 +160,65 @@ def _kuhn(n=2):
     return np.array(coords), cells
 
 
+def test_native_driver_matches_serial_engine_multipass():
+    """The native UWNVBRefine driver and the serial TaggedBisectionMesh
+    engine share one seed (write_tagged_state_label runs the engine's own
+    initialization), so multi-pass graded refinement driven by the same
+    metric must produce the same mesh, cell for cell."""
+    import underworld3 as uw
+    from underworld3.utilities.nvb import (TaggedBisectionMesh,
+                                           write_tagged_state_label)
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.4,
+        refinement=1, qdegree=2)
+    dm0 = base.dm_hierarchy[-1]
+
+    def target_h(centroids):
+        r = np.linalg.norm(np.asarray(centroids) - 0.5, axis=1)
+        return np.where(r < 0.2, 0.08, np.minimum(0.08 + (0.4 - 0.08)
+                                                  * (r - 0.2) / 0.25, 0.4))
+
+    # serial engine (from the raw base, before the native seed label is added)
+    eng = TaggedBisectionMesh.from_dm(dm0)
+    for _ in range(3):
+        cen, h, cids = eng.centroids_h()
+        sel = np.where(h > target_h(cen))[0]
+        if sel.size == 0:
+            break
+        eng.refine(set(int(cids[j]) for j in sel))
+    want = []
+    coords_all = np.array(eng.coords)
+    for verts, _ in eng.cells.values():
+        want.append(frozenset(tuple(np.round(coords_all[v], 12))
+                              for v in verts))
+
+    # native driver, same seed, same marking rule
+    write_tagged_state_label(dm0)
+    current = dm0
+    for _ in range(3):
+        cs, ce = current.getHeightStratum(0)
+        cen = np.empty((ce - cs, 3))
+        h = np.empty(ce - cs)
+        for i, c in enumerate(range(cs, ce)):
+            vol, ccen = current.computeCellGeometryFVM(c)[0:2]
+            cen[i] = np.asarray(ccen)[:3]
+            h[i] = (6.0 * abs(float(vol))) ** (1.0 / 3.0)
+        sel = np.where(h > target_h(cen))[0]
+        if sel.size == 0:
+            break
+        d = current.clone()
+        d.createLabel("adapt")
+        lab = d.getLabel("adapt")
+        for j in sel:
+            lab.setValue(int(cs + j), 1)
+        current = _nvbx.refine(d, "adapt")
+    got, _ = _cells_and_volumes(current)
+
+    assert sorted(map(sorted, map(list, got))) == \
+        sorted(map(sorted, map(list, want)))
+
+
 def test_kuhn_mesh_independent_edge_stars():
     coords, cells = _kuhn(2)
     dm = _make_dm(coords, cells)
