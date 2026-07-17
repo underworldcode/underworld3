@@ -107,18 +107,22 @@ class TestEngineLessAdapt:
         assert child is not base
         assert child.parent is base
 
-    def test_engine_less_adapt_3d_raises_not_implemented(self):
-        # Maintainer ruling 2026-07-17: an engine-less 3D adapt must refuse
-        # honestly (3D refinement is planned work), not silently select SBR.
-        # engine="sbr" remains the explicit 3D opt-in.
+    def test_engine_less_adapt_3d_returns_child(self):
+        # The 2026-07-17 "refuse honestly" placeholder is retired: 3D
+        # refinement landed with the adaptivity capstone (round 1), so the
+        # engine-less call now returns a graded tetrahedral child. Full 3D
+        # gates live in test_0840/test_0842.
         base3d = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
             cellSize=0.5, refinement=1,
         )
         M = uw.discretisation.MeshVariable("M3d", base3d, 1, degree=1)
-        M.data[:, 0] = 1.0
-        with pytest.raises(NotImplementedError, match="planned work"):
-            base3d.adapt(M, max_levels=1)
+        M.data[:, 0] = 1.0 / 0.12**2      # finer than the refined base (~0.22)
+        child = base3d.adapt(M, max_levels=1)
+        assert child.parent is base3d
+        cs, ce = child.dm.getHeightStratum(0)
+        bs, be = base3d.dm.getHeightStratum(0)
+        assert ce - cs > be - bs
 
     def test_engine_less_adapt_is_nvb(self):
         """The engine-less child matches an explicit engine='nvb' child

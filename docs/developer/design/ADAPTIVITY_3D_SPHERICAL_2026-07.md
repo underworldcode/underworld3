@@ -456,6 +456,34 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
     serial and parallel, engine-less at the user API, with the MG gate
     green at every stage. Remaining round-1 loose end deferred to the PR
     review: a plain-language PR body per the 2026-07-17 wording ruling.
+
+    **Mesh-evaluation findings (2026-07-18, maintainer review of rendered
+    meshes; artefacts in `~/+Simulations/nvb_3d_adapt_evaluation/`):**
+
+    * *No misses:* sampling 1720 points on a dipping fault plane, the
+      containing-cell size is min 0.012 / median 0.019 / max 0.034
+      against a target of 0.02 — every point of the fault surface sits in
+      a cell at or near the finest size (bisection quantises h in steps
+      of 2^(1/3), so under 2x target means on-target everywhere).
+    * *The 3D refinement halo is wider than 2D's, and that is real, not a
+      rendering artefact.* On the identical problem (the fault plane is
+      invariant along strike, so the box's front wall is exactly a 2D
+      fault problem), the fraction of cells finer than half the locally
+      demanded size is ~73% in 3D vs ~57% in true 2D — measured by the
+      driver's own volume-based h, so the face-vs-volume section effect
+      accounts for almost none of it. The mechanism is the conforming
+      closure: in 2D a bisection drags in at most the one neighbour
+      across the refinement edge, while in 3D it must split every tet in
+      the edge's star (typically 15–25), so each on-fault cut forces a
+      thicker shell of neighbour splits. Bounded (the theory's closure
+      constant grows with dimension) and centred on the fault; the funnel
+      still beats a uniform fine mesh by an order of magnitude in cells.
+    * *Marking-loop cost:* the per-generation marking in `_adapt_nested`
+      computes centroids/sizes with a per-cell Python geometry call — at
+      depth 3 (nine generations, 69k cells) marking dominates wall time
+      over the C refinement. Fix before the PR: vectorise the
+      centroid/size computation from the cell list (three lines, done in
+      the evaluation scripts already).
 - **1d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs

@@ -6434,6 +6434,31 @@ class Mesh(Stateful, uw_object):
             def eval_metric(centroids):
                 return numpy.asarray(_sampler(metric_sym, centroids)).reshape(-1)
 
+        # Refine from the mesh's CURRENT geometry. Node redistribution
+        # (redistribute_nodes) moves mesh.dm's coordinates while the static
+        # base hierarchy keeps the originals — without this carry, an adapt
+        # after a redistribution would silently refine the unmoved mesh.
+        # When moved, the base-finest MG tail level is swapped for the moved
+        # copy below; the coarser tail levels keep their original geometry
+        # (the coordinate-based custom-P transfers accept non-nested pairs).
+        base_finest = self.dm_hierarchy[-1]
+        _cur_coords = self.dm.getCoordinatesLocal().array
+        _moved = not numpy.array_equal(
+            _cur_coords, base_finest.getCoordinatesLocal().array)
+        if uw.mpi.size > 1:
+            from mpi4py import MPI
+            _moved = uw.mpi.comm.allreduce(_moved, op=MPI.LOR)
+        if _moved:
+            base_finest = base_finest.clone()
+            _v = base_finest.getCoordinatesLocal()
+            _v.array[:] = _cur_coords
+            base_finest.setCoordinatesLocal(_v)
+            if engine == "nvb" and self.dim == 3 and _nvbx is not None:
+                # the refinement-state seed was written on the unmoved base
+                # (in the guard above); re-seed on the moved geometry
+                from underworld3.utilities.nvb import write_tagged_state_label
+                write_tagged_state_label(base_finest)
+
         markers_per_level = []
         level_dms = []                       # one DM per refinement level
 
@@ -6445,7 +6470,7 @@ class Mesh(Stateful, uw_object):
             # boundary/region labels forward automatically. A single bisection halves
             # the cell volume (h shrinks by 2^(1/dim)), so one isotropic-equivalent
             # max_levels is dim bisection passes.
-            current_dm = self.dm_hierarchy[-1]   # static base finest (distributed)
+            current_dm = base_finest             # base finest, current geometry
             n_gen = dim * max_levels
             for level in range(n_gen):
                 cs, ce = current_dm.getHeightStratum(0)
@@ -6489,7 +6514,7 @@ class Mesh(Stateful, uw_object):
                     uw.pprint(0, f"[adapt] nvb pass {level}: marked {len(marked)} "
                                  f"-> {fe - fs} cells (rank-local)")
             if not level_dms:
-                current_dm = self.dm_hierarchy[-1].clone()
+                current_dm = base_finest.clone()
         elif engine == "nvb":
             # Serial cell-list engines: the slot-based NVBMesh in 2D (until
             # the native transform adopts the tagged rule — capstone stage
@@ -6505,7 +6530,7 @@ class Mesh(Stateful, uw_object):
                      if b.name not in ("Null_Boundary", "All_Boundaries")]
             rcarry = ([(r.name, r.value) for r in self.regions]
                       if self.regions is not None else [])
-            nvb = _Engine.from_dm(self.dm_hierarchy[-1], boundaries=carry,
+            nvb = _Engine.from_dm(base_finest, boundaries=carry,
                                   regions=rcarry)
             n_gen = dim * max_levels
             for level in range(n_gen):
@@ -6528,9 +6553,9 @@ class Mesh(Stateful, uw_object):
                 if verbose:
                     uw.pprint(0, f"[adapt] nvb gen {level}: marked {len(marked)} "
                                  f"-> {len(nvb.cells)} cells")
-            current_dm = level_dms[-1] if level_dms else self.dm_hierarchy[-1].clone()
+            current_dm = level_dms[-1] if level_dms else base_finest.clone()
         else:
-            current_dm = self.dm_hierarchy[-1]   # static base finest
+            current_dm = base_finest             # base finest, current geometry
             for level in range(max_levels):
                 cs, ce = current_dm.getHeightStratum(0)
                 ncells = ce - cs
@@ -6569,7 +6594,7 @@ class Mesh(Stateful, uw_object):
                 level_dms.append(current_dm)
 
         if verbose:
-            base_n = self.dm_hierarchy[-1].getHeightStratum(0)
+            base_n = base_finest.getHeightStratum(0)
             fin_n = current_dm.getHeightStratum(0)
             uw.pprint(0, f"[adapt] base finest {base_n[1]-base_n[0]} -> "
                          f"child {fin_n[1]-fin_n[0]} cells "
@@ -6606,7 +6631,13 @@ class Mesh(Stateful, uw_object):
         intermediate = [
             self._wrap_coarse_level(d) for d in level_dms[:-1]
         ]
-        child._custom_mg_coarse_meshes = self._coarse_level_meshes() + intermediate
+        coarse_tail = self._coarse_level_meshes()
+        if _moved:
+            # the finest base level of the MG tail must carry the SAME moved
+            # geometry the child was refined from; coarser levels keep their
+            # original coordinates (custom-P transfers accept non-nested pairs)
+            coarse_tail = coarse_tail[:-1] + [self._wrap_coarse_level(base_finest)]
+        child._custom_mg_coarse_meshes = coarse_tail + intermediate
         child._custom_mg_builder = builder
 
         self._registered_children.add(child)
