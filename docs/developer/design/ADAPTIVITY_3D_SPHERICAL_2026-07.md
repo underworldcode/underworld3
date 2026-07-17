@@ -171,22 +171,31 @@ What is genuinely new in 3D:
    must be partition-independent — compute it once on the (small) serial
    base at construction, or greedy-color in coordinate-lexicographic order;
    it then travels as an ordinary vertex label.
-   **Does DGS change the 2D engine? No (maintainer question, 2026-07-17).**
-   In n=2 the Binev–Dahmen–DeVore closure estimate holds for *arbitrary*
+   **Does DGS change the 2D engine? Yes — by unification, not by necessity
+   (maintainer tech-debt ruling, 2026-07-17).** On correctness the 2D engine
+   needs nothing: in n=2 the BDV closure estimate holds for *arbitrary*
    initializations (Karkulik–Pavlicek–Praetorius, cited in DGS §3.1) — the
-   theorem that does not exist in 3D — so our longest-edge-seeded 2D engine
+   theorem that does not exist in 3D — so the longest-edge-seeded 2D engine
    already has termination, conformity, 4 classes per base triangle, and the
-   BDV bound. DGS would only improve the closure *constant* (removing a
-   dependence on the base mesh's longest refinement chain — an adversarial
-   strip-of-obtuse-triangles pathology causing a one-time base-wide cascade
-   on the first refinement, not observed on quality gmsh meshes), while
-   giving up the geometry-awareness that makes longest-edge seeds
-   first-generation-friendly on badly-shaped base cells. Decision: **2D
-   stays as-is** (validated, bit-confluent, replay-compatible); revisit only
-   if maintaining two seeding schemes (2D longest-edge slot vs 3D coloring
-   tag) becomes a burden — unifying on DGS would allow one dimension-general
-   seeding routine at the cost of regenerating the 2D confluence integers
-   and breaking marker-replay compatibility.
+   BDV bound; DGS would only improve the closure constant against an
+   adversarial base-mesh chain pathology not seen on quality gmsh meshes.
+   But the Maubach/DGS formulation is **dimension-general**, and the
+   maintainer's priority is servicing the tech debt by combining algorithms:
+   two cell-rule layers (2D slot label + opposite-the-midpoint child rule vs
+   3D tagged tuple + Maubach rule) and two seeding schemes are debt with no
+   compensating capability. **Plan: build stages 1b/1c as a
+   dimension-general tagged-simplex engine** (one data model
+   `(ordered tuple, tag)`, one DGS coloring seed, one closure driver; only
+   the per-polytope production/orientation tables dispatch on dimension —
+   those are irreducibly per-polytope). Validate 3D first (the round-1
+   ruling), then **switch the 2D dispatch onto the tagged engine and retire
+   the slot-based path** in its own gated PR. Migration cost is bounded and
+   the window is open: the marker-replay checkpoint was never implemented,
+   so no persisted refinement state exists to stay compatible with — the
+   cost is regenerating the hard-coded 2D confluence integers in
+   `test_083x` (mechanical asserts) plus one re-validation of the 2D FMG
+   parity gates. The refined 2D meshes change node-for-node but stay in the
+   same quality class (both schemes are 4-classes-per-base-triangle NVB).
 
 3. **The tet subcell-orientation tables.** `GetSubcellOrientation` for
    TETRAHEDRON under its 24 arrangements (`DMPolytopeTypeGetArrangement` is a
@@ -273,6 +282,13 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
   if the phase-0 suspicion is confirmed.
+- **1e. 2D unification (tech-debt ruling)** — once the 3D gates are green,
+  switch the 2D dispatch onto the same dimension-general tagged-simplex
+  engine and retire the slot-based 2D cell rule, in its own gated PR:
+  regenerate the 2D confluence integers, re-run the 2D FMG parity and
+  parallel gates. Stages 1b/1c are therefore written dimension-generally
+  from the start (the tagged data model and DGS seed are n-general; only
+  the polytope tables are per-dimension).
 
 The 2D marker-replay checkpoint design (deterministic replay from
 per-generation marked sets + state labels) carries over unchanged and stays
