@@ -440,12 +440,22 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
     so 2D behaviour is unchanged bit for bit (the exact-mesh regressions
     all pass untouched).
 
-  * **1c-iii — parallel.** Agree (`MPI_LAND`) / bisect-mark (`MPI_LOR`) SF
-    reconciliation over the 3D strata (faces are shared SF points too);
-    collective drain termination; the state seed computed on the base and
-    distributed as an ordinary cell label. Gates: np1/2/4 bit-confluence
-    integers (`test_0839` 3D mirror), `DMPlexCheck*` per pass, parallel
-    Poisson + Stokes velocity-block FMG-vs-GAMG parity.
+  * **1c-iii — parallel. DONE — PASS (2026-07-17, commit 3acdd992).**
+    `mesh.adapt()` on tetrahedral meshes runs in parallel: the refinement
+    state is seeded identically on every rank from geometry alone (the
+    base cell list gathered by vertex coordinates, the same deterministic
+    colouring run everywhere — cost bounded by the BASE mesh, the coarse
+    end of adapt-on-top), and the cross-rank splitting rules the 2D engine
+    already used needed **no changes** for the extra 3D mesh strata.
+    Gates (`test_0842`, the 3D mirror of `test_0839`): identical global
+    cell count (5198) at np=1/2/4; boundary labels survive (proven by the
+    exact Poisson solution); geometric FMG matches GAMG at every
+    communicator size. Full adapt-family sweep 57/57.
+
+    **ROUND 1 (NVB-3D) IS COMPLETE.** 3D adaptive mesh refinement exists,
+    serial and parallel, engine-less at the user API, with the MG gate
+    green at every stage. Remaining round-1 loose end deferred to the PR
+    review: a plain-language PR body per the 2026-07-17 wording ruling.
 - **1d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
