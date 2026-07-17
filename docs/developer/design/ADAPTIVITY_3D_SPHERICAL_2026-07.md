@@ -282,13 +282,17 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
   if the phase-0 suspicion is confirmed.
-- **1e. 2D unification (tech-debt ruling)** — once the 3D gates are green,
-  switch the 2D dispatch onto the same dimension-general tagged-simplex
-  engine and retire the slot-based 2D cell rule, in its own gated PR:
-  regenerate the 2D confluence integers, re-run the 2D FMG parity and
-  parallel gates. Stages 1b/1c are therefore written dimension-generally
-  from the start (the tagged data model and DGS seed are n-general; only
-  the polytope tables are per-dimension).
+- **1e. 2D unification (tech-debt ruling; breaking changes sanctioned)** —
+  the maintainer confirmed (2026-07-17) that NVB adapt-on-top has never been
+  in production beyond its tests, so **now is the time for breaking
+  changes**: the unified tagged-simplex engine *replaces* the 2D path
+  outright and the slot-based 2D cell rule (and, once the native path
+  covers it, the serial slot bookkeeping) is **deleted, not deprecated**.
+  The 2D confluence integers in `test_083x` are regenerated as part of
+  round 1's gates rather than in a compatibility-careful follow-up. Stages
+  1b/1c are written dimension-generally from the start (the tagged data
+  model and DGS seed are n-general; only the polytope tables are
+  per-dimension).
 
 The 2D marker-replay checkpoint design (deterministic replay from
 per-generation marked sets + state labels) carries over unchanged and stays
