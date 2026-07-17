@@ -296,6 +296,47 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
   at np1/2/4 mirroring `test_0839`; FMG parity (Poisson + 3D Stokes velocity
   block) — the MG gate, parallel.
 
+  **How the 3D refinement works, in plain terms.** To refine a
+  tetrahedron we cut it in half: pick one of its six edges (its
+  *refinement edge*), put a new vertex at that edge's midpoint, and slice
+  the tet into two smaller tets through that midpoint. The cut surface is
+  a new triangle inside the old tet, and any face of the tet that
+  contained the cut edge is split into two triangles — that last part is
+  exactly the operation the 2D engine already performs on triangles, so
+  the 2D code is reused for it.
+
+  Several tets share each edge, so cutting an edge means every tet around
+  it must be cut too, or the mesh would have hanging nodes. What keeps
+  this from cascading across the whole mesh is *which* edge each cell
+  nominates as its refinement edge. We use Maubach's bookkeeping
+  (Maubach 1995; equivalently Traxler 1997): each cell carries a vertex
+  ordering and a small counter (the "tag"), the refinement edge is read
+  off from them, and the two children inherit their ordering and tag by a
+  fixed recipe. This guarantees the mesh stays conforming, cells never
+  degenerate (at most 36 distinct shapes ever arise from one starting
+  tet), and the total amount of extra cutting is proportional to what was
+  asked for (Stevenson 2008).
+
+  To start the bookkeeping on an arbitrary gmsh mesh, we colour the
+  vertices so that neighbouring vertices get different colours (a greedy
+  pass; a handful of colours suffice) and order each cell's vertices by
+  colour. This initialisation is the contribution of Diening, Gehring &
+  Storn (arXiv:2306.02674): it works for any conforming mesh, needs no
+  pre-processing of the user's mesh, and preserves all the guarantees
+  above. The stage-1a prototype demonstrates the whole scheme in ~300
+  lines of plain numpy (`nvb_prototype_3d.py`) and is kept as the
+  reference implementation the native code is tested against.
+
+  Inside PETSc, "cut this tet along that edge" must be spelled out as
+  static tables listing which new cells appear and how their faces attach
+  to the neighbours' faces (the `DMPlexTransform` framework; see the
+  `DMPlexTransformCellTransform` documentation in PETSc). These tables
+  are easy to get subtly wrong — a face is viewed from opposite sides by
+  its two neighbouring tets, and the tables must agree with both views —
+  so we do not write them by hand: a generator script derives them from
+  the conventions and checks them against the numpy reference before they
+  ever compile (`tet_bisection_tables_generator.py`).
+
   **Sub-plan (started 2026-07-17), each step with its own gate:**
 
   * **1c-i — production tables.** The tet single-edge split: 6 refine types
@@ -334,26 +375,40 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
     two-tets-sharing-a-face configuration (the shared-face orientation
     test), and Kuhn/Delaunay meshes.
 
-    **DONE — PASS (2026-07-17, `test_0841`).** The generated tables, the 3D
-    `SetUp` (edge → faces → cells marking + the canonical-edge walker that
-    composes face cone orientations — verified correct through a reflected
-    shared face), and the identity-only tet `GetSubcellOrientation` case
-    all landed in `nvb_transform.c`. Full `-dm_plex_check_all` + volume +
-    reference-split equality on: all 6 single-tet edges, 6 two-tet
-    shared-face cases, and independent-edge-star batches on Kuhn (64
-    cells) and Delaunay (281 cells) meshes. **Two real bugs found and
-    fixed by the gate:** (1) the 2D-era `GetSubcellOrientation` shortcut
-    `-(o+1)` for reflected views of a split face equals the true D3 group
-    product only for `o ∈ {0,−1}` — the only values a 2D mesh passes; 3D
-    cells pass rotated `o` and hit the wrong composition. Replaced with
-    `DMPolytopeTypeComposeOrientation(TRIANGLE, o, −1)` (bit-identical in
-    2D — `test_0836/0837/0838` 21/21 unchanged). (2)
-    `TaggedBisectionMesh.to_dm` oriented tets backwards: the DMPlex
-    reference tet has *negative* `det[v1−v0, v2−v0, v3−v0]`, so
-    "positively oriented" 3D cells are inverted to
-    `DMPlexCheckGeometry` (2D CCW-positive is correct) — solves were
-    sign-tolerant so stage 1b passed, but the convention is now correct
-    and geometry-checked.
+    **DONE — PASS (2026-07-17, `test_0841`).** The generated tables landed
+    in `nvb_transform.c`, together with the set-up code that finds which
+    edge of each marked cell to cut, and the piece that tells PETSc the
+    two child tets are only ever referenced by their own parent. Every
+    case passes PETSc's full mesh-consistency battery
+    (`-dm_plex_check_all`), conserves volume exactly, and reproduces the
+    reference (numpy) split: all 6 edges of a single tet, six
+    configurations of two tets sharing a face, and multi-edge batches on
+    structured (Kuhn, 64-cell) and unstructured (Delaunay, 281-cell)
+    meshes.
+
+    **The gates caught two real, pre-existing bugs — worth reading as
+    they affect more than this feature:**
+
+    1. *Mistranslated face views.* When two tets look at their shared
+       face from opposite sides, the transform must translate "child 0 of
+       the split face, rotated this way" between the two viewpoints. The
+       existing code used a shortcut for that translation which happens
+       to be correct for the only two viewpoints a 2D mesh can produce —
+       and wrong for the extra viewpoints that occur in 3D. It now calls
+       PETSc's exact orientation-composition routine
+       (`DMPolytopeTypeComposeOrientation`); behaviour in 2D is
+       unchanged, bit for bit (the exact-mesh regression tests
+       `test_0836/0837/0838` all pass untouched).
+    2. *Tetrahedra listed the wrong way round.* The convention for the
+       vertex order of a tetrahedron is the opposite handedness to the
+       2D counter-clockwise rule (PETSc's reference tet is "negative" by
+       the 2D intuition), and the serial engine was emitting cells
+       inverted. Solvers never noticed — finite-element assembly uses the
+       absolute volume — but visualisation winding, outward normals and
+       boundary integrals all read the sign. The convention is now
+       correct in both dimensions and locked into the adapt gate
+       (`test_0840` runs the full check battery, including inversion, on
+       every child mesh).
   * **1c-ii — tagged state + serial driver.** Per-cell DMLabel packing the
     Maubach state (vertex permutation 0–23 relative to the cell's closure
     order × tag 1–3 → 72 values). DGS coloring seed computed once per base
