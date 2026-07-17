@@ -29,6 +29,7 @@ transform is stage 1c); 2D behaviour is untouched and covered by
 import numpy as np
 import pytest
 import underworld3 as uw
+from petsc4py import PETSc
 from underworld3.utilities.nvb import TaggedBisectionMesh
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
@@ -120,10 +121,18 @@ def test_adapt_engineless_3d_returns_graded_child():
     assert 1 <= n_gens <= 3                              # dim * max_levels
     assert (len(child._custom_mg_coarse_meshes)
             == len(base.dm_hierarchy) + n_gens - 1)
-    # the finest cells concentrate in the marked core (grading, not a patch);
-    # geometry is read from a clone (the live mesh DM raises err73 from
-    # computeCellGeometryFVM — see custom_mg)
+    # full PETSc consistency battery on the child, including the cell
+    # ORIENTATION class (DMPlexCheckGeometry flags inverted cells) —
+    # visualisation winding, outward normals and boundary integrals are
+    # not sign-tolerant even though FE assembly is. Run on a clone (the
+    # live mesh DM raises err73 from geometry routines — see custom_mg).
     d = child.dm.clone()
+    opts = PETSc.Options()
+    opts["dm_plex_check_all"] = None
+    d.setFromOptions()
+    del opts["dm_plex_check_all"]
+
+    # the finest cells concentrate in the marked core (grading, not a patch)
     cs, ce = d.getHeightStratum(0)
     vols = np.empty(ce - cs)
     cens = np.empty((ce - cs, 3))
