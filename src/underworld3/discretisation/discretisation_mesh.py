@@ -6173,25 +6173,23 @@ class Mesh(Stateful, uw_object):
         The default call needs no engine choice —
         ``mesh.adapt(metric, max_levels=...)`` refines with the graded
         newest-vertex-bisection engine, on **2D triangle and 3D tetrahedral
-        meshes**. The 3D path is **serial for now** (an np>1 3D call raises
-        ``NotImplementedError``; the parallel tetrahedral transform is
-        planned work). ``engine=`` remains available as an **advanced /
-        internal selector** (the algorithm names live here, not in the
-        everyday call):
+        meshes, serial and parallel** (the refined mesh is
+        partition-independent: the same mesh at any communicator size).
+        ``engine=`` remains available as an **advanced / internal selector**
+        (the algorithm names live here, not in the everyday call):
 
         * ``"nvb"`` (default) — newest-vertex bisection, a **graded** engine with a
           *bounded* conforming closure: a marked cell adds O(1) cells locally, so
           successive levels grade (a level+1 ring around a finer core) and DOFs
-          concentrate near the feature. In 2D it runs **in parallel** via the
-          native ``uwnvb`` ``DMPlexTransform`` (in-place, co-partitioned with
-          the parent, bit-confluent serial↔parallel), falling back to the
-          serial ``NVBMesh`` cell-list engine when that compiled extension is
-          absent (``NotImplementedError`` at np>1). In 3D it runs the serial
-          dimension-general tagged-simplex engine
-          (``TaggedBisectionMesh``; ``NotImplementedError`` at np>1 — the
-          parallel tetrahedral transform is planned work). Bisects 1→2
-          (volume halves), so one isotropic-equivalent ``max_levels`` is run
-          as **dim** bisection generations.
+          concentrate near the feature. Runs **in parallel** in both
+          dimensions via the native ``uwnvb`` ``DMPlexTransform`` driver
+          (in-place, co-partitioned with the parent, bit-confluent
+          serial↔parallel; in 3D the per-cell refinement state is seeded
+          identically on every rank from geometry). When the compiled
+          extension is absent it falls back to the serial cell-list engines
+          (``NVBMesh`` / ``TaggedBisectionMesh``; ``NotImplementedError`` at
+          np>1). Bisects 1→2 (volume halves), so one isotropic-equivalent
+          ``max_levels`` is run as **dim** bisection generations.
         * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection, **2D
           only** (PETSc's SBR transform cannot handle tetrahedra). Each
           pass refines marked cells isotropically (1→4). Its conforming closure is
@@ -6371,22 +6369,23 @@ class Mesh(Stateful, uw_object):
                         "which is not built in this environment. Build the "
                         "custom-PETSc/amr env, or use engine='sbr' at np>1."
                     )
-            elif uw.mpi.size > 1:
-                raise NotImplementedError(
-                    "adapt(engine='nvb') on a 3D mesh is serial-only for "
-                    "now: the parallel tetrahedral path (the distributed "
-                    "state seed and its acceptance gates) is planned work "
-                    "(adaptivity capstone stage 1c-iii)."
-                )
             else:
-                # 3D at np=1: prefer the native driver when built (same
-                # preference order as 2D); the serial cell-list engine is
-                # the fallback. The native driver needs the per-cell
-                # refinement state seeded on the base mesh first.
+                # 3D: prefer the native driver when built (same preference
+                # order as 2D); the serial cell-list engine is the np=1
+                # fallback. The native driver needs the per-cell refinement
+                # state seeded on the base mesh first (partition-independent
+                # by construction — see write_tagged_state_label).
                 try:
                     from underworld3.utilities import _nvb_transform as _nvbx
                 except ImportError:
                     _nvbx = None
+                if _nvbx is None and uw.mpi.size > 1:
+                    raise NotImplementedError(
+                        "adapt(engine='nvb') at np>1 needs the native uwnvb "
+                        "transform (underworld3.utilities._nvb_transform), "
+                        "which is not built in this environment. Build the "
+                        "custom-PETSc/amr env."
+                    )
                 if _nvbx is not None:
                     from underworld3.utilities.nvb import (
                         write_tagged_state_label)

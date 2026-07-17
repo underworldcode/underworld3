@@ -52,36 +52,83 @@ def write_tagged_state_label(dm):
     """Seed the Maubach refinement state on a tetrahedral ``DMPlex``.
 
     Computes the coloring-based initial vertex ordering and tag for every
-    cell — by running :class:`TaggedBisectionMesh`'s own initialization, so
-    the native driver and the serial engine share ONE seed implementation —
-    and writes it as the per-cell ``uwnvb_tetstate`` label the native
+    cell and writes it as the per-cell ``uwnvb_tetstate`` label the native
     ``UWNVBRefine`` driver requires. See the design note
     ``ADAPTIVITY_3D_SPHERICAL_2026-07.md`` for the plain-language account
     (the initialization is Diening--Gehring--Storn, arXiv:2306.02674).
 
-    Serial DMs only (the same restriction as ``TaggedBisectionMesh.from_dm``);
-    the parallel seed (computed on the base, distributed as a label) is the
-    capstone's stage 1c-iii.
+    At np=1 this runs :class:`TaggedBisectionMesh`'s own initialization, so
+    the native driver and the serial engine share ONE seed implementation.
+    On a distributed mesh, every rank reconstructs the SAME global coloring
+    from geometry — the cell list is gathered by vertex coordinates and the
+    identical deterministic pass is run everywhere — so the resulting states
+    (hence the refined meshes) are partition-independent. The gather is
+    bounded by the BASE mesh size, the coarse end of adapt-on-top.
     """
     import itertools
 
-    eng = TaggedBisectionMesh.from_dm(dm)
     perms = {p: i for i, p in enumerate(itertools.permutations(range(4)))}
     cS, cE = dm.getHeightStratum(0)
+    vS, vE = dm.getDepthStratum(0)
     if not dm.hasLabel(TAGGED_STATE_LABEL):
         dm.createLabel(TAGGED_STATE_LABEL)
     label = dm.getLabel(TAGGED_STATE_LABEL)
-    # engine cell ids are insertion-ordered = the DM cell order cS..cE, and
-    # the engine's closure_verts for cell i is the from_dm vertex list; the
-    # ordered tuple is a permutation of it by construction
-    vS, _ = dm.getDepthStratum(0)
-    for i, c in enumerate(range(cS, cE)):
+    comm = dm.comm.tompi4py()
+
+    if comm.size == 1:
+        eng = TaggedBisectionMesh.from_dm(dm)
+        # engine cell ids are insertion-ordered = the DM cell order cS..cE,
+        # and the ordered tuple is a permutation of the closure vertex list
+        for i, c in enumerate(range(cS, cE)):
+            clos = dm.getTransitiveClosure(c)[0]
+            closure_verts = [p - vS for p in clos if vS <= p < vE]
+            tuple_i, tag = eng.cells[i]
+            perm = perms[tuple(closure_verts.index(v) for v in tuple_i)]
+            label.setValue(c, perm * 3 + (tag - 1))
+        return
+
+    # ---- distributed: same coloring, reconstructed identically per rank ----
+    # Vertices are identified by rounded coordinates (exact across ranks:
+    # distribution copies, never recomputes, coordinates).
+    coords = dm.getCoordinatesLocal().array.reshape(-1, dm.getCoordinateDim())
+    key_of = {v: tuple(np.round(coords[v - vS], 12)) for v in range(vS, vE)}
+    local_cells = []
+    cell_closures = []
+    for c in range(cS, cE):
         clos = dm.getTransitiveClosure(c)[0]
-        closure_verts = [p - vS for p in clos
-                         if vS <= p < vS + len(eng.vertex_color)]
-        tuple_i, tag = eng.cells[i]
-        perm = perms[tuple(closure_verts.index(v) for v in tuple_i)]
-        label.setValue(c, perm * 3 + (tag - 1))
+        verts = [p for p in clos if vS <= p < vE]
+        cell_closures.append(verts)
+        local_cells.append(tuple(key_of[v] for v in verts))
+    all_cells = {cell for rank_cells in comm.allgather(local_cells)
+                 for cell in rank_cells}
+
+    # deterministic global vertex order (coordinate-lexicographic — the same
+    # order the serial engine colours in), then the same greedy colouring
+    vkeys = sorted({k for cell in all_cells for k in cell})
+    vidx = {k: i for i, k in enumerate(vkeys)}
+    adj = [set() for _ in vkeys]
+    for cell in all_cells:
+        ids = [vidx[k] for k in cell]
+        for a in ids:
+            for b in ids:
+                if a != b:
+                    adj[a].add(b)
+    color = [-1] * len(vkeys)
+    for v in range(len(vkeys)):                  # vkeys is already coord-lex
+        used = {color[w] for w in adj[v] if color[w] >= 0}
+        c = 0
+        while c in used:
+            c += 1
+        color[v] = c
+    N = max(color)
+
+    for i, c in enumerate(range(cS, cE)):
+        verts = cell_closures[i]
+        vs = sorted(verts, key=lambda v: color[vidx[key_of[v]]])
+        if color[vidx[key_of[vs[-1]]]] == N:     # global max colour first
+            vs = [vs[-1]] + vs[:-1]
+        perm = perms[tuple(verts.index(v) for v in vs)]
+        label.setValue(c, perm * 3 + 2)          # tag = dim = 3
 
 
 def _fs(a, b):
