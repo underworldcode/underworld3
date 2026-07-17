@@ -295,6 +295,39 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
   over the face stratum; the same drain-loop driver. Bit-confluence integers
   at np1/2/4 mirroring `test_0839`; FMG parity (Poisson + 3D Stokes velocity
   block) — the MG gate, parallel.
+
+  **Sub-plan (started 2026-07-17), each step with its own gate:**
+
+  * **1c-i — production tables.** The tet single-edge split (canonical
+    marked edge → 2 child tets + 1 interior triangle; the two faces
+    containing the edge split via the existing TRIANGLE rules; the other 5
+    edge positions reached by composing with
+    `DMPolytopeTypeGetArrangement(TETRAHEDRON, o)`, mirroring how the 2D
+    code writes one slot and orientation-composes the rest) plus
+    `GetSubcellOrientation` under the 24 tet arrangements. Note the driver's
+    single-bisection design means NO green/blue multi-edge tet tables are
+    needed — only 1-marked-edge cases (two agreed edges can never share a
+    cell, since a cell has one bisection edge; hence faces split at most
+    1→2 per pass). Gate: `DMPlexCheckSymmetry/Skeleton/Faces` + volume
+    conservation + oracle equality on one-tet and small meshes under all 24
+    input orientations.
+  * **1c-ii — tagged state + serial driver.** Per-cell DMLabel packing the
+    Maubach state (vertex permutation 0–23 relative to the cell's closure
+    order × tag 1–3 → 72 values). DGS coloring seed computed once per base
+    mesh: gather the base-finest edge graph, deterministic
+    coordinate-lexicographic greedy — identical on every rank by
+    construction, and bounded by the BASE size (the coarse end of
+    adapt-on-top), not the child. Driver decodes state → bisection edge,
+    runs the same agree/drain loop, re-encodes children by the Maubach
+    child rule and unsplit cells via the transform's point mapping (never
+    by copying label values — the 2D lesson). Gate: native np=1 output
+    equals the serial `TaggedBisectionMesh` oracle over multi-pass graded
+    refinement.
+  * **1c-iii — parallel.** Agree (`MPI_LAND`) / bisect-mark (`MPI_LOR`) SF
+    reconciliation over the 3D strata (faces are shared SF points too);
+    collective drain termination. Gates: np1/2/4 bit-confluence integers
+    (`test_0839` 3D mirror), `DMPlexCheck*` per pass, parallel Poisson +
+    Stokes velocity-block FMG-vs-GAMG parity.
 - **1d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
