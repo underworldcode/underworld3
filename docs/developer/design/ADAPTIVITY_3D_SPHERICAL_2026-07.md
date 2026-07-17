@@ -298,19 +298,41 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
 
   **Sub-plan (started 2026-07-17), each step with its own gate:**
 
-  * **1c-i — production tables.** The tet single-edge split (canonical
-    marked edge → 2 child tets + 1 interior triangle; the two faces
-    containing the edge split via the existing TRIANGLE rules; the other 5
-    edge positions reached by composing with
-    `DMPolytopeTypeGetArrangement(TETRAHEDRON, o)`, mirroring how the 2D
-    code writes one slot and orientation-composes the rest) plus
-    `GetSubcellOrientation` under the 24 tet arrangements. Note the driver's
-    single-bisection design means NO green/blue multi-edge tet tables are
-    needed — only 1-marked-edge cases (two agreed edges can never share a
-    cell, since a cell has one bisection edge; hence faces split at most
-    1→2 per pass). Gate: `DMPlexCheckSymmetry/Skeleton/Faces` + volume
-    conservation + oracle equality on one-tet and small meshes under all 24
-    input orientations.
+  * **1c-i — production tables.** The tet single-edge split: 6 refine types
+    (one per closure-edge position), each producing `{1 interior TRIANGLE +
+    2 child TETRAHEDRA}` — the exact 3D analogue of the 2D triangle rule's
+    `{1 SEGMENT + 2 TRIANGLES}`. Note the driver's single-bisection design
+    means NO green/blue multi-edge tet tables are needed — only
+    1-marked-edge cases (two agreed edges can never share a cell, since a
+    cell has one bisection edge; hence faces split at most 1→2 per pass).
+
+    **Spec findings (PETSc 3.25 source extraction, 2026-07-17) that shrink
+    the job:** (a) a tetrahedron is a CELL — it appears in no cone, so its
+    `GetSubcellOrientation` source orientation is always identity: the
+    feared 24-arrangement tet reconciliation tables are unreachable and
+    reduce to the `so==0` fast path. The orientation reconciliation that
+    IS load-bearing (shared faces seen differently by their two tets) runs
+    through the TRIANGLE single-split tables **already present** in
+    `nvb_transform.c` (Stage-2a SBR clone). (b) The only new vertex is the
+    edge midpoint, produced by the SEGMENT rule — the default barycenter
+    coordinate map is exactly the midpoint; no custom coordinate op.
+    (c) Canonical conventions pinned from `plexrefregular.c:713-738` and
+    `DMPlexGetRawFaces_Internal`: tet faces `f0=[v0,v1,v2], f1=[v0,v3,v1],
+    f2=[v0,v2,v3], f3=[v2,v1,v3]`; closure edges `e0=[v0,v1] …
+    e5=[v2,v3]`; cone-entry grammar `[type, Npath, d_1..d_Npath, r]` with
+    one `ornt` per cone point. Remaining new C: the 6 tet cell-transform
+    tables, the 3D `SetUp` (edge → supporting faces → supporting cells,
+    refine-type assignment), and the identity-only tet
+    `GetSubcellOrientation` case.
+
+    **Method:** the 6 static tables are emitted by a Python generator
+    (committed as a design experiment) that walks the canonical
+    conventions and self-checks the produced complex against the stage-1a
+    oracle symbolically before any C compiles — killing sign/path errors
+    mechanically. Gate: `DMPlexCheckSymmetry/Skeleton/Faces` + volume
+    conservation + oracle equality on a single tet (all 6 edges), the
+    two-tets-sharing-a-face configuration (the shared-face orientation
+    test), and Kuhn/Delaunay meshes.
   * **1c-ii — tagged state + serial driver.** Per-cell DMLabel packing the
     Maubach state (vertex permutation 0–23 relative to the cell's closure
     order × tag 1–3 → 72 values). DGS coloring seed computed once per base
