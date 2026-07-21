@@ -80,6 +80,29 @@ class TestNodeRedistribution:
         assert "node_redistribution" in uw.meshing.__all__
         assert callable(uw.meshing.node_redistribution)
 
+    def test_no_swallowed_callback_errors(self, caplog):
+        """Masked in-place updates (``data[mask] /= s``) must not fire the
+        canonical PETSc-sync callback on the fancy-indexed COPY. In serial
+        that surfaced as swallowed 'Callback error ... could not broadcast'
+        log warnings; in parallel the partition-dependent mask made the
+        collective sync rank-asymmetric and hung the MMPDE mover (#376).
+        The refinement=1 box exercises the trigger (`Gamma_P1` has one
+        zero-magnitude corner normal, so the mask drops one node)."""
+        import logging
+
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+            cellSize=0.4, refinement=1, qdegree=2)
+        x, y = mesh.X
+        d = sympy.Abs((x - 0.35) * 0.866 + (y - 1.0) * 0.5)
+        h = sympy.sqrt(0.08**2 + (1.6 * d) ** 2)
+        with caplog.at_level(logging.WARNING,
+                             logger="underworld3.utilities.nd_array_callback"):
+            mesh.redistribute_nodes(1.0 / h**2, slip_surfaces=True)
+        bad = [r.message for r in caplog.records
+               if "allback error" in r.message]
+        assert not bad, f"swallowed canonical-callback errors: {bad[:3]}"
+
 
 class TestEngineLessAdapt:
     """mesh.adapt(metric, max_levels=...) works without engine= and
