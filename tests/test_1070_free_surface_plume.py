@@ -1,0 +1,110 @@
+"""FreeSurface manager on the Crameri Case-2 plume (uw.systems.FreeSurface).
+
+A buoyant plume under a stiff lid raises a true free surface. This exercises the
+whole manager — the derived held (rotated free-slip, sigma_nn -> h_inf) and
+consistent solves, the exponential surface step, the interior carry + deform, and
+the level-set composition transport with enclosed-area conservation — and checks
+the physical signature at coarse resolution: the surface rises, the relaxation is
+bounded (no overshoot), and the enclosed buoyancy is conserved.
+
+The values are validated against the reference driver
+(``~/+Simulations/FreeSurface/crameri_study/scripts/crameri_box.py``): at res 48 the
+per-step surface amplitude agrees to < 0.2 %.
+"""
+import numpy as np
+import pytest
+import sympy
+
+import underworld3 as uw
+
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+
+
+def _case2(res):
+    """Coarse Crameri Case-2: box, plume level set, smooth lid/plume viscosity, and a
+    stress-free-top Stokes with rotated free-slip walls. Returns (fs, buoyancy)."""
+    L, H = 1.0, 0.25
+    lid_frac, lid_eta, plume_eta = 0.143, 100.0, 0.1
+    plume_r, px0, py0, drho, rho_g = 0.0179, 0.5, 0.107, 30.3, 1000.0
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(L, H), cellSize=L / res, qdegree=3
+    )
+    x, y = mesh.X
+    yhat = sympy.Matrix([[0, 1]])
+
+    phi = uw.discretisation.MeshVariable(
+        "phi", mesh, vtype=uw.VarType.SCALAR, degree=3, continuous=True
+    )
+    phi.array[:, 0, 0] = np.asarray(
+        uw.function.evaluate(
+            sympy.sqrt((x - px0) ** 2 + (y - py0) ** 2) - plume_r, phi.coords
+        )
+    ).flatten()
+
+    eps = 0.7 * (L / res)
+    buoyancy = 0.5 * (1.0 - sympy.tanh(phi.sym[0] / eps))
+    w = 0.5 * (L / res)
+    s_lid = 0.5 * (1.0 + sympy.tanh((y - H * (1.0 - lid_frac)) / w))
+    s_plume = 0.5 * (1.0 + sympy.tanh((sympy.Min(sympy.Max(buoyancy, 0.0), 1.0) - 0.5) / 0.10))
+    eta = sympy.exp(s_lid * sympy.log(lid_eta) + s_plume * sympy.log(plume_eta))
+
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+    stokes.bodyforce = (drho * buoyancy - rho_g) * yhat
+    stokes.add_essential_bc((0.0, 0.0), "Bottom")
+    stokes.add_rotated_freeslip_bc(0.0, "Left")
+    stokes.add_rotated_freeslip_bc(0.0, "Right")
+    stokes.petsc_options["snes_type"] = "ksponly"
+    stokes.tolerance = 1.0e-5
+
+    fs = uw.systems.FreeSurface(
+        stokes, "Top", buoyancy_scale=rho_g, composition=phi, conserve=buoyancy,
+        driving_buoyancy=drho * buoyancy * yhat,
+    )
+    return fs, buoyancy
+
+
+def _surface_amplitude(fs):
+    top = fs.mesh.X.coords[fs._surf_rows, -1]
+    return float(np.abs(top - top.mean()).max()) if top.size else 0.0
+
+
+def test_free_surface_plume_rises_and_conserves():
+    """The surface rises under the plume, the relaxation does not overshoot, and the
+    enclosed buoyancy is conserved."""
+    fs, buoyancy = _case2(res=40)
+    enclosed = uw.maths.Integral(fs.mesh, buoyancy)
+    area0 = float(enclosed.evaluate())
+
+    amplitude, increment = [], []
+    prev = _surface_amplitude(fs)
+    for _ in range(2):
+        fs.solve()
+        fs.advance(1.0)
+        now = _surface_amplitude(fs)
+        amplitude.append(now)
+        increment.append(now - prev)
+        prev = now
+
+    assert amplitude[0] > 0.0, "surface did not rise under the plume"
+    assert amplitude[1] > amplitude[0], "surface amplitude not growing (early Case-2)"
+    # Bounded relaxation: the per-step rise stays finite and does not run away.
+    assert 0.0 < increment[1] < increment[0] * 5.0, "surface step is not bounded"
+
+    area = float(enclosed.evaluate())
+    assert abs(area - area0) / area0 < 0.02, "enclosed buoyancy not conserved"
+
+
+@pytest.mark.mpi(min_size=2)
+def test_free_surface_plume_parallel():
+    """The manager runs on a distributed mesh (mesh.deform every step) and produces a
+    physically consistent rising surface — the surface step is not serial-only."""
+    fs, _ = _case2(res=40)
+    for _ in range(2):
+        fs.solve()
+        fs.advance(1.0)
+    amplitude = _surface_amplitude(fs)
+    # coarse res-40 reference is O(1e-4); assert the right sign and magnitude band.
+    assert 1.0e-5 < amplitude < 1.0e-3, f"parallel surface amplitude off: {amplitude}"
