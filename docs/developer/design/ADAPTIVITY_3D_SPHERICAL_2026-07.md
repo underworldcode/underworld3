@@ -484,6 +484,35 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
       over the C refinement. Fix before the PR: vectorise the
       centroid/size computation from the cell list (three lines, done in
       the evaluation scripts already).
+
+    **PR close-out (2026-07-22).** All items above are landed:
+
+    * *Parallel validation of the composition slice is complete.* The
+      hyperbolic-profile 3D adapt gives the identical cell count (36,040)
+      at np=1/2/4. The 2D redistribute-then-adapt combination runs clean
+      in parallel — cell counts within the mover's documented partition
+      drift of the 607-cell serial reference (604 at np=2, 583 at np=4)
+      and geometric MG on the combined child converges in 2 iterations
+      with the exact linear solution recovered at every communicator
+      size.
+    * *That validation flushed out a real parallel bug* (issue #376,
+      fixed here): the canonical PETSc-sync callback on variable arrays
+      also fired for fancy-indexed *copies* (`data[mask] /= s`), trying
+      to pack the subset into the full-size vec. Serial: a swallowed
+      warning. Parallel: the mask is partition-dependent, so some ranks
+      abandoned the pack *before* its collective sync while others
+      entered it — mismatched collectives that hung the MMPDE mover at
+      np=2. The callback now only ever syncs the canonical storage it
+      was registered on (mesh and swarm variables both); a regression
+      test locks redistribute_nodes warning-free.
+    * *Marking loop vectorised:* centroid = vertex mean, size from one
+      vectorised determinant over the cell list (h = |det|^(1/dim), Gram
+      determinant on manifolds). The full serial adapt-family sweep and
+      the parallel confluence integers are unchanged.
+    * *`profile="hyperbolic"` added* to the surface metric helpers with
+      the evaluation's guidance in the docstrings: hyperbolic for the
+      best transition fidelity per cell, gaussian for a uniform-size
+      corridor, linear for the minimum cell count.
 - **1d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
