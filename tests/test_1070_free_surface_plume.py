@@ -97,6 +97,61 @@ def test_free_surface_plume_rises_and_conserves():
     assert abs(area - area0) / area0 < 0.02, "enclosed buoyancy not conserved"
 
 
+def _powerlaw(v, x):
+    """Power-law viscosity eta = eps_II^(1/3 - 1), written from v's own velocity."""
+    g = sympy.Matrix([[v.sym[0].diff(x[0]), v.sym[0].diff(x[1])],
+                      [v.sym[1].diff(x[0]), v.sym[1].diff(x[1])]])
+    e = 0.5 * (g + g.T)
+    eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
+    return eII ** (1.0 / 3.0 - 1.0)
+
+
+def test_free_surface_nonlinear_viscosity_self_consistent():
+    """With a strain-rate-dependent (power-law) viscosity, the derived held solve must
+    use its OWN velocity, not the free solution. Guards the constitutive-model copy:
+    the viscosity is written from the free solve's velocity-gradient symbols, which
+    must be rebound onto each derived solve. The FreeSurface held solve must match an
+    independently built held solve whose viscosity uses its own velocity."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 0.5), cellSize=1.0 / 20, qdegree=3
+    )
+    x = mesh.X
+    driving = 50.0 * sympy.exp(-(((x[0] - 0.5) ** 2 + (x[1] - 0.25) ** 2) / 0.02)) \
+        * sympy.Matrix([[0, 1]])
+
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = _powerlaw(stokes.u, x)
+    stokes.bodyforce = driving
+    stokes.add_essential_bc((0.0, 0.0), "Bottom")
+    stokes.add_rotated_freeslip_bc(0.0, "Left")
+    stokes.add_rotated_freeslip_bc(0.0, "Right")
+    stokes.consistent_jacobian = True
+    stokes.tolerance = 1.0e-8
+
+    fs = uw.systems.FreeSurface(stokes, "Top", buoyancy_scale=50.0)
+    fs.solve()
+
+    ref = uw.systems.Stokes(mesh)
+    ref.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    ref.constitutive_model.Parameters.shear_viscosity_0 = _powerlaw(ref.u, x)
+    ref.bodyforce = driving
+    ref.add_essential_bc((0.0, 0.0), "Bottom")
+    ref.add_rotated_freeslip_bc(0.0, "Left")
+    ref.add_rotated_freeslip_bc(0.0, "Right")
+    ref.add_rotated_freeslip_bc(0.0, "Top")
+    ref.petsc_use_pressure_nullspace = True
+    ref.consistent_jacobian = True
+    ref.tolerance = 1.0e-8
+    ref.solve(zero_init_guess=True)
+
+    a = np.asarray(fs.held.u.array).reshape(-1)
+    b = np.asarray(ref.u.array).reshape(-1)
+    assert np.linalg.norm(b) > 1.0e-3, "reference held solve produced no flow"
+    rel = np.linalg.norm(a - b) / np.linalg.norm(b)
+    assert rel < 1.0e-6, f"held viscosity not rebound to own velocity (rel diff {rel:.2e})"
+
+
 @pytest.mark.mpi(min_size=2)
 def test_free_surface_plume_parallel():
     """The manager runs on a distributed mesh (mesh.deform every step) and produces a

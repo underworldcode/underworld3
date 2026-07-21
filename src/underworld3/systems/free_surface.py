@@ -241,25 +241,66 @@ class FreeSurface:
         # Carry the strategic velocity-block choice (e.g. FMG on a refined mesh); the
         # fresh Stokes already holds sensible default PETSc options.
         solver.preconditioner = self.free.preconditioner
+        # Mirror the free solve's nonlinear configuration: the derived solves share its
+        # rheology, so a nonlinear free solve (Newton/Picard tangent, full SNES) needs
+        # nonlinear derived solves too — not a single ksponly linearisation. A linear
+        # free solve keeps its ksponly one-shot. (The rotated held solve additionally
+        # auto-detects nonlinearity and dispatches its own linear/Newton path.)
+        solver.consistent_jacobian = self.free.consistent_jacobian
+        solver.petsc_options["snes_type"] = self.free.petsc_options.getString(
+            "snes_type", "newtonls"
+        )
         return solver
 
     def _copy_constitutive_model(self, solver):
-        """Give ``solver`` its own constitutive model of the free solve's class with
-        the same parameters. A model instance binds to one solver's unknowns, so it
-        cannot be shared; a fresh instance is made and its parameter expressions are
-        copied (linear or field-dependent viscosity — a strain-rate-dependent law
-        would reference the free velocity and is out of scope)."""
+        """Give ``solver`` its own constitutive model of the free solve's class with the
+        same parameters, retargeted onto ``solver``'s unknowns.
+
+        A model instance binds to one solver's unknowns and cannot be shared, so a
+        fresh instance is made and each parameter expression is copied with the free
+        solve's velocity/gradient atoms rebound onto ``solver``'s own (see
+        :meth:`_velocity_rebind_map`). The atoms are hidden inside a wrapped
+        ``UWexpression``, so the value is unwrapped before substitution; for a linear or
+        field-dependent viscosity the substitution is a no-op.
+        """
         from underworld3.utilities._api_tools import ExpressionDescriptor
+        from underworld3.function.expressions import unwrap
 
         free_model = self.free.constitutive_model
         solver.constitutive_model = type(free_model)
+        rebind = self._velocity_rebind_map(solver)
         copied = set()
         for cls in type(free_model.Parameters).__mro__:
             for name, attr in cls.__dict__.items():
                 if isinstance(attr, ExpressionDescriptor) and name not in copied:
-                    setattr(solver.constitutive_model.Parameters, name,
-                            getattr(free_model.Parameters, name))
+                    value = getattr(free_model.Parameters, name)
+                    if hasattr(value, "subs"):
+                        value = unwrap(value, keep_constants=True, return_self=True).subs(rebind)
+                    setattr(solver.constitutive_model.Parameters, name, value)
                     copied.add(name)
+
+    def _velocity_rebind_map(self, solver):
+        """Substitution from the free solve's velocity atoms to ``solver``'s own.
+
+        A constitutive expression built from strain rate carries the *source* solver's
+        velocity (``u``) and velocity-gradient (``Unknowns.L``) symbols — each tagged
+        with that solver's variable identity. Copying the expression to another solver
+        WITHOUT this substitution silently binds it to the source solution: the derived
+        held/consistent solve would compute its viscosity from the free velocity rather
+        than its own. (Any solver-to-solver retarget of a nonlinear constitutive model
+        hits this — an adjoint operator sharing the forward rheology would too. See
+        ``docs/developer/subsystems/constitutive-models.md``, "Retargeting a model".)
+
+        Velocity and its first gradient cover strain-rate rheology; a pressure- or
+        higher-gradient-dependent law would extend this map.
+        """
+        dim = self.mesh.dim
+        rebind = {self.free.u.sym[i]: solver.u.sym[i] for i in range(dim)}
+        source_L, target_L = self.free.Unknowns.L, solver.Unknowns.L
+        for i in range(dim):
+            for j in range(dim):
+                rebind[source_L[i, j]] = target_L[i, j]
+        return rebind
 
     def _build_held(self, driving_buoyancy):
         r"""The held free-slip lid: rotated ``u.n = 0`` on every wall and the
@@ -272,7 +313,6 @@ class FreeSurface:
         self._apply_walls(self.held)
         self.held.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
         self.held.petsc_use_pressure_nullspace = True
-        self.held.petsc_options["snes_type"] = "ksponly"
 
     def _build_consistent(self):
         r"""The consistent solve: walls as the free solve, and a penalty natural BC
@@ -294,7 +334,6 @@ class FreeSurface:
             penalty * (n_hat.dot(v_sym) - self._un_target.sym[0]) * n_hat, self.surface
         )
         self.consistent.petsc_use_pressure_nullspace = True
-        self.consistent.petsc_options["snes_type"] = "ksponly"
         self._adv_velocity = self.consistent.u
 
     def _build_surface_velocity_projection(self):
