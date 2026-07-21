@@ -6392,7 +6392,6 @@ class Mesh(Stateful, uw_object):
                     write_tagged_state_label(self.dm_hierarchy[-1])
 
         dim = self.dim
-        edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
         DM_ADAPT_REFINE = 1                  # PETSc DMAdaptFlag: refine this cell
 
         # The metric is normalised to a single callable `eval_metric(centroids)
@@ -6434,6 +6433,34 @@ class Mesh(Stateful, uw_object):
             def eval_metric(centroids):
                 return numpy.asarray(_sampler(metric_sym, centroids)).reshape(-1)
 
+        def cell_geometry(dm):
+            """Per-cell centroid and size for every cell of a simplicial DM.
+
+            A simplex centroid is the vertex mean and its volume is
+            |det(edge vectors)|/dim!, so h = (dim!·vol)^(1/dim) reduces to
+            |det|^(1/dim) — one vectorised det over the cell list. (The
+            per-cell petsc4py ``computeCellGeometryFVM`` calls this replaces
+            dominated the marking cost at bisection depth ≥ 3.)
+            """
+            cs, ce = dm.getHeightStratum(0)
+            n = ce - cs
+            if n == 0:
+                return numpy.empty((0, self.cdim)), numpy.empty(0), cs
+            vS, vE = dm.getDepthStratum(0)
+            verts = numpy.empty((n, dim + 1), dtype=numpy.int64)
+            for i, c in enumerate(range(cs, ce)):
+                verts[i] = [p for p in dm.getTransitiveClosure(c)[0]
+                            if vS <= p < vE]
+            X = dm.getCoordinatesLocal().array.reshape(-1, self.cdim)[
+                verts - vS]
+            e = X[:, 1:, :] - X[:, :1, :]
+            if self.cdim == dim:
+                vol_scaled = numpy.abs(numpy.linalg.det(e))
+            else:                        # manifold: Gram determinant
+                G = e @ e.transpose(0, 2, 1)
+                vol_scaled = numpy.sqrt(numpy.abs(numpy.linalg.det(G)))
+            return X.mean(axis=1), vol_scaled ** (1.0 / dim), cs
+
         # Refine from the mesh's CURRENT geometry. Node redistribution
         # (redistribute_nodes) moves mesh.dm's coordinates while the static
         # base hierarchy keeps the originals — without this carry, an adapt
@@ -6473,15 +6500,8 @@ class Mesh(Stateful, uw_object):
             current_dm = base_finest             # base finest, current geometry
             n_gen = dim * max_levels
             for level in range(n_gen):
-                cs, ce = current_dm.getHeightStratum(0)
-                ncells = ce - cs
-                if ncells:
-                    centroids = numpy.empty((ncells, self.cdim))
-                    cur_h = numpy.empty(ncells)
-                    for i, c in enumerate(range(cs, ce)):
-                        vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
-                        centroids[i] = numpy.asarray(cen)[: self.cdim]
-                        cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
+                centroids, cur_h, cs = cell_geometry(current_dm)
+                if cur_h.size:
                     M = numpy.clip(eval_metric(centroids), 1e-30, None)
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
@@ -6557,16 +6577,9 @@ class Mesh(Stateful, uw_object):
         else:
             current_dm = base_finest             # base finest, current geometry
             for level in range(max_levels):
-                cs, ce = current_dm.getHeightStratum(0)
-                ncells = ce - cs
-                if ncells == 0:
+                centroids, cur_h, cs = cell_geometry(current_dm)
+                if cur_h.size == 0:
                     break
-                centroids = numpy.empty((ncells, self.cdim))
-                cur_h = numpy.empty(ncells)
-                for i, c in enumerate(range(cs, ce)):
-                    vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
-                    centroids[i] = numpy.asarray(cen)[: self.cdim]
-                    cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
 
                 # Metric M = 1/h_target² at the cell centroids (parent field).
                 # A callable is evaluated directly on the centroids; a field/expr
