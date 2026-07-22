@@ -38,6 +38,10 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities._api_tools import Stateful
+from underworld3.utilities.nd_array_callback import (
+    fire_canonical_callbacks,
+    register_collective_flush,
+)
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
 
@@ -430,6 +434,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
 
+        # Creation-order id for the synchronised-update collective flush.
+        # Variable construction is collective (see the coordinate-cache note
+        # below), so this counter advances in lockstep on every rank and the
+        # id is a valid cross-rank key. Variable NAMES are not: temporary
+        # variables embed rank-local id() values in their names.
+        self._collective_flush_id = register_collective_flush(self)
+
         # BUGFIX(#130): pre-populate the mesh's coordinate cache for this
         # variable's basis. mesh._get_coords_for_basis contains MPI
         # collectives (DMClone, createInterpolation, globalToLocal) that
@@ -441,6 +452,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         # ranks populate it together and subsequent rank-local lookups are
         # cache hits.
         self.mesh._get_coords_for_var(self)
+
+        # Eager canonical-array creation, for the same reason: the first
+        # .data access performs collective vec setup (_set_vec), so a lazy
+        # first touch from rank-conditional code — e.g. a masked write on
+        # one rank inside uw.synchronised_array_update — deadlocks. Create
+        # it here, while every rank is constructing together.
+        _ = self.data
 
         # Setup public view of data - using NDArray_With_Callback
         self._array_cache = None  # Will be created lazily when first accessed
@@ -2077,11 +2095,14 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Step 3: Assign the (now non-dimensional) value
                 modified_data[key] = value
 
-                # Pack the entire NON-DIMENSIONAL array to PETSc
-                # Don't use pack_uw_data_to_petsc - it expects dimensional input
-                # Use pack_raw_data_to_petsc instead - it handles plain arrays
+                # Route the write through the canonical array. A direct pack
+                # here is a per-write collective (localToGlobal ghost sync),
+                # which desynchronises ranks that write unevenly inside
+                # uw.synchronised_array_update. The canonical callback packs
+                # immediately outside a delay context and defers to the
+                # single rank-agreed flush inside one.
                 flat_data = modified_data.reshape(-1, self.parent.num_components)
-                self.parent.pack_raw_data_to_petsc(flat_data, sync=True)
+                self.parent.data[...] = flat_data
 
             @property
             def shape(self):
@@ -2369,6 +2390,10 @@ class _BaseMeshVariable(Stateful, uw_object):
                             else:
                                 pint_qty = np.asarray(value) * target_units
 
+                            # TODO(BUG): the branches above reference np.*
+                            # but this method has no numpy import in scope
+                            # (module imports `numpy`, not `np`) — a latent
+                            # NameError on the unit-aware tensor write path.
                             # Convert to target units using Pint
                             converted_qty = pint_qty.to(target_units)
                             dimensional_value = converted_qty.magnitude
@@ -2397,8 +2422,20 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Step 3: Assign the (now non-dimensional) value
                 modified_data[key] = value
 
-                # Pack the entire NON-DIMENSIONAL array to PETSc using complex tensor layout
-                self.parent.pack_uw_data_to_petsc(modified_data, sync=True)
+                # Route the write through the canonical array (see
+                # SimpleMeshArrayView.__setitem__: a direct pack is a
+                # per-write collective). _data_layout maps the structured
+                # components onto the packed PETSc ordering, as
+                # pack_uw_data_to_petsc does internally.
+                flat_data = numpy.empty(
+                    (modified_data.shape[0], self.parent.num_components),
+                    dtype=modified_data.dtype,
+                )
+                var_shape = self.parent.shape
+                for i in range(var_shape[0]):
+                    for j in range(var_shape[1]):
+                        flat_data[:, self.parent._data_layout(i, j)] = modified_data[:, i, j]
+                self.parent.data[...] = flat_data
 
             @property
             def shape(self):
@@ -2679,13 +2716,27 @@ class _BaseMeshVariable(Stateful, uw_object):
         if hasattr(self, "_on_data_changed"):
             self._on_data_changed()
 
+    def _deferred_canonical_flush(self):
+        """Collective flush target for ``uw.synchronised_array_update``.
+
+        Called on EVERY rank for each variable in the agreed flush set —
+        ranks that made no local writes pack unchanged values, which keeps
+        the per-variable ghost-sync collective matched. Touching
+        ``self.data`` first creates the canonical array lazily on ranks
+        that never accessed it.
+        """
+        fire_canonical_callbacks(self.data)
+
     @array.setter
     def array(self, array_value):
         """
-        Set variable data using pack method to handle shape transformation.
+        Set variable data through the standard write path.
         """
-        # Use pack method to handle proper data transformation and shape conversion
-        self.pack_uw_data_to_petsc(array_value, sync=True)
+        # Attribute assignment follows the same route as view writes: the
+        # full conversion pipeline, then the canonical array. A direct pack
+        # here is a per-write collective, which desynchronises rank-uneven
+        # writes inside uw.synchronised_array_update (round-1 review).
+        self.array[...] = array_value
 
     ## ToDo: We should probably deprecate this in favour of using integrals
 
