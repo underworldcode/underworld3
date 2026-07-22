@@ -501,6 +501,19 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         array_obj.add_canonical_callback(canonical_data_callback)
         return array_obj
 
+    def _deferred_canonical_flush(self):
+        """Rank-local flush target for ``uw.synchronised_array_update``.
+
+        Re-resolves the LIVE canonical at flush time: migration inside the
+        context invalidates and rebuilds it, and flushing a pinned
+        pre-migration array would resurrect stale values. (A migrate()
+        issued inside the context forfeits unflushed writes made before
+        it — the flush stays consistent with the post-migration layout.)
+        """
+        from underworld3.utilities.nd_array_callback import fire_canonical_callbacks
+
+        fire_canonical_callbacks(self.data)
+
     def _create_array_view(self):
         """
         Create array view of canonical data using appropriate conversion strategy.

@@ -140,3 +140,63 @@ def test_zero_size_slice_on_one_rank(mesh):
     # (the zero-size 9.0 write touched no memory).
     assert float(t.data.global_max()) == pytest.approx(2.0)
     assert float(t.data.global_min()) == pytest.approx(1.0)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_caught_rank_local_exception_exits_everywhere(mesh):
+    """A rank-local exception raised inside the context and CAUGHT by the
+    user must leave every rank able to continue: the exit runs the
+    rank-agreement collective on both paths and all ranks skip the flush
+    together (round-1 review finding 1 — this shape used to deadlock)."""
+    t = uw.discretisation.MeshVariable("t758f", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
+    t.array[...] = 1.0
+    try:
+        with uw.synchronised_array_update("caught exception"):
+            t.data[...] = 2.0
+            if uw.mpi.rank == 0:
+                raise ValueError("rank-local failure")
+    except ValueError:
+        pass
+    # Every rank reaches the same subsequent collective; values landed
+    # locally even though the deferred synchronisation was dropped.
+    assert float(t.data.global_min()) == pytest.approx(2.0)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_rank_uneven_array_view_write(mesh):
+    """The .array view path defers like .data (round-1 review: the views
+    used to pack collectively on every write, bypassing the context)."""
+    t = uw.discretisation.MeshVariable("t758g", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
+    t.array[...] = 1.0
+    with uw.synchronised_array_update("array view"):
+        if uw.mpi.rank == 0:
+            t.array[:, 0, 0] = 2.0
+    assert float(t.data.global_max()) == pytest.approx(2.0)
+    assert float(t.data.global_min()) == pytest.approx(1.0)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_rank_uneven_array_setter(mesh):
+    """v.array = values (attribute assignment) on one rank only — round-1
+    finding 2: the property setter packed collectively per write and hung
+    this exact shape."""
+    t = uw.discretisation.MeshVariable("t758h", mesh, 1, vtype=uw.VarType.SCALAR, degree=1)
+    t.array[...] = 1.0
+    with uw.synchronised_array_update("setter"):
+        if uw.mpi.rank == 0:
+            t.array = np.full(t.array.shape, 3.0)
+    assert float(t.data.global_max()) == pytest.approx(3.0)
+    assert float(t.data.global_min()) == pytest.approx(1.0)
+
+
+@pytest.mark.mpi(min_size=2)
+def test_coords_write_inside_context_defers_deform(mesh):
+    """mesh.X.coords writes inside the context join the rank-agreed flush —
+    round-1 finding 3: the legacy replay ran the collective deform
+    rank-locally at exit and hung. The deform runs once, on every rank,
+    at exit (non-writing ranks deform with unchanged coordinates)."""
+    before_version = mesh._mesh_version
+    with uw.synchronised_array_update("coords"):
+        if uw.mpi.rank == 0:
+            mesh.X.coords[...] = np.asarray(mesh._coords) + 1.0e-4
+    assert mesh._mesh_version == before_version + 1

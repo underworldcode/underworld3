@@ -16,6 +16,10 @@ import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
+from underworld3.utilities.nd_array_callback import (
+    fire_canonical_callbacks,
+    register_collective_flush,
+)
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 
@@ -1184,7 +1188,26 @@ class Mesh(Stateful, uw_object):
             numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
             owner=self,
         )
-        self._coords.add_callback(_mesh_coords_update_callback)
+        # Canonical registration: the guard keeps derived views/copies from
+        # firing a full-mesh deform (#376-class), and — because the deform
+        # is COLLECTIVE — the mesh joins the synchronised-update flush
+        # registry so coordinate writes inside uw.synchronised_array_update
+        # defer to the single rank-agreed flush instead of replaying a
+        # rank-local deform at exit.
+        self._coords.add_canonical_callback(_mesh_coords_update_callback)
+        if not hasattr(self, "_collective_flush_id"):
+            # Register once per mesh: re-installs (submesh re-extraction,
+            # adaptation) replace the array, not the mesh's flush identity.
+            self._collective_flush_id = register_collective_flush(self)
+
+    def _deferred_canonical_flush(self):
+        """Collective flush target for ``uw.synchronised_array_update``.
+
+        Coordinate writes made inside the context land in the canonical
+        array immediately; the deform they imply runs here, once, on every
+        rank in the agreed flush order.
+        """
+        fire_canonical_callbacks(self._coords)
 
     def _setup_symbolic_coordinates(self, coordinate_system_type):
         """Create the sympy coordinate systems and their JIT code bindings.

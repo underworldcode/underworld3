@@ -2730,10 +2730,13 @@ class _BaseMeshVariable(Stateful, uw_object):
     @array.setter
     def array(self, array_value):
         """
-        Set variable data using pack method to handle shape transformation.
+        Set variable data through the standard write path.
         """
-        # Use pack method to handle proper data transformation and shape conversion
-        self.pack_uw_data_to_petsc(array_value, sync=True)
+        # Attribute assignment follows the same route as view writes: the
+        # full conversion pipeline, then the canonical array. A direct pack
+        # here is a per-write collective, which desynchronises rank-uneven
+        # writes inside uw.synchronised_array_update (round-1 review).
+        self.array[...] = array_value
 
     ## ToDo: We should probably deprecate this in favour of using integrals
 

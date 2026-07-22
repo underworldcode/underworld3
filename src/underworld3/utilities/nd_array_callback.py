@@ -70,6 +70,7 @@ class DelayedCallbackManager:
             {
                 "context_info": context_info,
                 "legacy_queue": [],
+                "dirty_owners": {},
                 "dirty_local": {},
                 "dirty_collective": set(),
             }
@@ -107,6 +108,11 @@ class DelayedCallbackManager:
         flush_id = getattr(owner, "_collective_flush_id", None)
         if flush_id is not None:
             level["dirty_collective"].add(flush_id)
+        elif owner is not None and hasattr(owner, "_deferred_canonical_flush"):
+            # Weak ref, re-resolved at flush: the owner's canonical may be
+            # invalidated and rebuilt mid-context (swarm migration), and a
+            # pinned array would flush stale pre-migration values.
+            level["dirty_owners"].setdefault(id(owner), weakref.ref(owner))
         else:
             level["dirty_local"].setdefault(id(canonical), canonical)
 
@@ -178,23 +184,41 @@ def fire_canonical_callbacks(canonical):
             callback(canonical, info)
 
 
-def _flush_delay_level(level):
-    """Flush one delay level: legacy replay, rank-local canonical flushes,
-    then the collectively-agreed canonical flushes in creation order."""
+def _flush_delay_level(level, aborted=False):
+    """Flush one delay level: rank agreement first, then legacy replay,
+    rank-local canonical flushes, and the collectively-agreed canonical
+    flushes in creation order.
+
+    The agreement allgather runs FIRST and unconditionally — empty sets
+    and aborted ranks included — so every rank stays matched even when
+    writes were rank-uneven or the context body raised on some ranks
+    only. Any rank aborting makes every rank skip all flushing.
+    """
+    local_ids = [] if aborted else sorted(level["dirty_collective"])
+    if _has_uw_mpi and uw.mpi.size > 1:
+        gathered = uw.mpi.comm.allgather((bool(aborted), local_ids))
+        if any(flag for flag, _ in gathered):
+            return
+        union = sorted(set().union(*(ids for _, ids in gathered)))
+    else:
+        if aborted:
+            return
+        union = local_ids
+
     for item in level["legacy_queue"]:
         item["callback"](item["array"], item["change_info"])
 
+    # Rank-local canonical flushes re-resolve the LIVE canonical through
+    # the owner where one exists: migration inside the context invalidates
+    # and rebuilds swarm canonicals, and flushing a pinned pre-migration
+    # array would resurrect stale values.
+    for owner_ref in level["dirty_owners"].values():
+        owner = owner_ref()
+        if owner is not None:
+            owner._deferred_canonical_flush()
+
     for canonical in level["dirty_local"].values():
         fire_canonical_callbacks(canonical)
-
-    # Every rank must flush the SAME variables in the SAME order: the
-    # allgather runs unconditionally (empty sets included) so ranks stay
-    # matched even when only some of them wrote.
-    local_ids = sorted(level["dirty_collective"])
-    if _has_uw_mpi and uw.mpi.size > 1:
-        union = sorted(set().union(*uw.mpi.comm.allgather(local_ids)))
-    else:
-        union = local_ids
 
     targets = {}
     for flush_id in union:
@@ -237,14 +261,15 @@ class _DelayCallbacksContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         level = _delayed_callback_manager.pop_delay_context()
-        if exc_type is not None:
-            # Ranks unwind exceptions asymmetrically and the flush contains
-            # collectives — running it here is the hang vector. Values have
-            # already landed in the canonical arrays; only the deferred
-            # synchronisation is dropped.
-            return False
         if level is not None:
-            _flush_delay_level(level)
+            # BOTH paths run the flush's rank-agreement collective: if the
+            # raising rank skipped it, the survivors' allgather would pair
+            # with an unrelated collective elsewhere (round-1 review: a
+            # CAUGHT rank-local exception deadlocked). Any rank aborting
+            # makes every rank skip the flushes; values already landed in
+            # the canonical arrays — only the deferred synchronisation is
+            # dropped, symmetrically.
+            _flush_delay_level(level, aborted=exc_type is not None)
         return False
 
 
