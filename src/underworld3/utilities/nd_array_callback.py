@@ -337,6 +337,14 @@ class NDArray_With_Callback(np.ndarray):
           and would re-create the rank asymmetry on ranks whose local
           slice is empty.
 
+        Known corner (from the #378 analysis): ``reshape``/``ravel`` of a
+        NON-contiguous derived view produces a copy on non-empty ranks but
+        a view on a zero-size rank, so that one pattern remains
+        rank-asymmetric at the per-write level — locally
+        indistinguishable. The ``uw.synchronised_array_update`` dirty-flag
+        flush (#383) is the real fix: agreement happens per variable at
+        context exit, not per write.
+
         Parameters
         ----------
         callback : callable
