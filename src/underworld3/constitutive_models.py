@@ -1043,6 +1043,32 @@ class ViscousFlowModel(Constitutive_Model):
             self.yield_softness = 1.0
         self._reset()
 
+    # --- Smooth lower bounds (viscosity / yield floors) -----------------------------
+    # A hard sympy.Max cutoff is non-differentiable at the corner. When the flux is
+    # differentiated for the consistent-Newton tangent that kink breaks the tangent —
+    # and, because one operand is a UWexpression over the fields, sympy's fuzzy `>=`
+    # comparison cannot resolve it and recurses. In the smooth yield modes we therefore
+    # round the floor with the same δ that regularises the yield transition, so the
+    # whole effective viscosity stays differentiable and δ→0 recovers the sharp bound.
+
+    def _apply_floor(self, value, floor):
+        r"""Impose the lower bound :math:`value \ge floor`.
+
+        In ``yield_mode="min"`` this is the exact hard ``sympy.Max(value, floor)`` —
+        the sharp cutoff the model has always used. In the smooth yield modes
+        (``"softmin"``/``"harmonic"``) it is the differentiable ``uw.maths.smooth_max``
+        rounded by the yield softness δ *relative to the floor* (:math:`\epsilon =
+        \delta\,|floor|`), so the whole effective viscosity — not only the yield
+        transition — is differentiable for the consistent-Newton tangent. The relative
+        rounding needs a non-zero ``floor`` for a length scale, which the numerical
+        viscosity/yield floors provide; a cutoff *at zero* (a tension cutoff) has no
+        such scale and is rounded by its own physical parameter via
+        ``uw.maths.smooth_max`` at the call site instead.
+        """
+        if getattr(self, "_yield_mode", "min") == "min":
+            return sympy.Max(value, floor)
+        return uw.maths.smooth_max(value, floor, self._get_yield_softness() * floor)
+
 
 ## NOTE - retrofit VEP into here
 
@@ -1191,8 +1217,13 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # Don't put conditional behaviour in the constitutive law
         # when it is not needed
 
-        if inner_self.yield_stress_min.sym != 0:
-            yield_stress = sympy.Max(inner_self.yield_stress_min, inner_self.yield_stress)
+        # Numerical lower bound on the yield stress. The "unset" sentinel is -∞
+        # (per the Parameters convention that ±∞ defaults simplify away), so a
+        # user-supplied yield_stress_min of exactly 0 is honoured as a real floor.
+        if inner_self.yield_stress_min.sym != -sympy.oo:
+            yield_stress = self._apply_floor(
+                inner_self.yield_stress, inner_self.yield_stress_min
+            )
         else:
             yield_stress = inner_self.yield_stress
 
@@ -1210,7 +1241,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # Keep this as an sub-expression for clarity
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
-            self._plastic_eff_viscosity._sym = sympy.Max(
+            self._plastic_eff_viscosity._sym = self._apply_floor(
                 effective_viscosity, inner_self.shear_viscosity_min
             )
 
