@@ -236,6 +236,11 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     cells_all = _tri_cells(dm) if cdim == 2 else _tet_cells(dm)
     signed_vol = _signed_areas if cdim == 2 else _signed_volumes
     if cells_all is None:
+        # TODO(BUG): rank-LOCAL early return — under MPI a rank with zero
+        # local cells (or a non-simplex local patch) returns here while the
+        # other ranks enter the collective energy/line-search reductions
+        # below, hanging the job. Pre-existing 2D posture, inherited by 3D
+        # (2026-07 review note); the fix is a collective emptiness check.
         return
     fact = float(math.factorial(cdim))         # d! → |K| = |detE|/d!
     owned_cell = _owned_cell_mask(dm)

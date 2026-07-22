@@ -69,16 +69,15 @@ class TestNodeRedistribution:
                            match="2D simplex"):
             uw.meshing.node_redistribution(mesh, sympy.sympify(1))
 
-    def test_3d_simplex_moves_no_fold_boundary_held(self, caplog):
+    def test_3d_simplex_moves_no_fold_boundary_held(self):
         """3D node redistribution landed with the adaptivity capstone
         (round 2): the same MMPDE mover drives tetrahedral meshes. One
         compact run walks the ladder — nodes move, nothing folds (every
-        tet keeps its orientation sign), slip keeps boundary nodes
+        tet keeps its orientation sign), and slip keeps boundary nodes
         EXACTLY on their box faces (the face-only 3D labels close down
-        to vertices now), and no swallowed callback errors (#376's
-        trigger exists identically in 3D)."""
-        import logging
-
+        to vertices now). Callback-sync failures (#376's trigger exists
+        identically in 3D) RAISE since the #379 rework, so a clean run
+        is itself the guard — no log capture needed."""
         from underworld3.meshing.smoothing.graph import (
             _tet_cells, _signed_volumes)
 
@@ -93,14 +92,9 @@ class TestNodeRedistribution:
         tets = _tet_cells(mesh.dm)
         sign0 = np.sign(_signed_volumes(before, tets))
 
-        with caplog.at_level(logging.WARNING,
-                             logger="underworld3.utilities.nd_array_callback"):
-            uw.meshing.node_redistribution(
-                mesh, rho, slip_surfaces=True,
-                method_kwargs=dict(n_outer=15))
-        bad = [r.message for r in caplog.records
-               if "allback error" in r.message]
-        assert not bad, f"swallowed callback errors: {bad[:3]}"
+        uw.meshing.node_redistribution(
+            mesh, rho, slip_surfaces=True,
+            method_kwargs=dict(n_outer=15))
 
         after = np.asarray(mesh.X.coords)
         assert after.shape == before.shape            # topology preserved
