@@ -140,13 +140,17 @@ def test_second_coords_write_still_deforms(mesh):
     callback must be RE-HOMED onto the replacement, not copied verbatim
     (its guard is bound to the old array's identity). Previously the
     second write silently did nothing (#379 review round 2)."""
+    # Version advances per write but not by an exact step: both
+    # _deform_mesh and the coords-callback path bump it (the consumer
+    # checks inequality, not counts).
     v0 = mesh._mesh_version
     a = np.array(mesh._coords) + 0.01
     mesh.X.coords[...] = a
-    assert mesh._mesh_version == v0 + 1
+    v1 = mesh._mesh_version
+    assert v1 > v0
 
     b = np.array(mesh._coords) + 0.01
     mesh.X.coords[...] = b
-    assert mesh._mesh_version == v0 + 2
+    assert mesh._mesh_version > v1
     dm_coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
     assert np.allclose(dm_coords, b.reshape(-1, mesh.cdim))
