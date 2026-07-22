@@ -706,6 +706,63 @@ class NDArray_With_Callback(np.ndarray):
             for callback in self._callbacks.copy():  # Copy in case callbacks modify the list
                 callback(self, change_info)
 
+    def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
+        """Compute on plain-ndarray views, then notify ``out=`` targets.
+
+        ``np.add(x, 1, out=x)`` (and every in-place operator, which numpy
+        routes through the same machinery) writes straight into the buffer
+        with no ``__setitem__`` — previously a silent bypass: values landed
+        but ghost sync and the state increment did not happen.
+
+        The standard override recipe applies: operands are unwrapped to
+        base-class views (``ndarray.__array_ufunc__`` refuses mixed
+        overriding operands), and each requested ``out`` is returned AS THE
+        ORIGINAL OBJECT so ``x += 1`` keeps its subclass and callbacks. The
+        notification goes to each ``out=`` target rather than ``self``,
+        because numpy invokes this method on the first operand, which need
+        not be the array being written. Results without ``out`` come back
+        as plain ndarrays (matching the prior ``__array_wrap__`` policy of
+        not propagating callbacks to derived results).
+
+        Remaining bypasses this cannot intercept: ``np.copyto`` and
+        ``ufunc.at`` (neither passes ``out=``).
+        """
+        if out is not None:
+            for target in out:
+                if getattr(target, "_disable_inplace_operators", False):
+                    # The out= spelling must honour the same contract as the
+                    # in-place operators — bypassing it would re-arm the
+                    # per-write hazard the flag exists to prevent.
+                    raise RuntimeError(
+                        "In-place ufunc output (out=) is disabled for parallel "
+                        "safety on this array. Use explicit assignment instead."
+                    )
+
+        plain_inputs = tuple(
+            np.asarray(x) if isinstance(x, NDArray_With_Callback) else x for x in inputs
+        )
+        if out is not None:
+            kwargs["out"] = tuple(
+                np.asarray(x) if isinstance(x, NDArray_With_Callback) else x for x in out
+            )
+
+        results = getattr(ufunc, method)(*plain_inputs, **kwargs)
+
+        if out is not None:
+            for target in out:
+                if isinstance(target, NDArray_With_Callback):
+                    target._trigger_callback("ufunc_out")
+
+        if method == "at":
+            return None
+        if ufunc.nout == 1:
+            results = (results,)
+        wrapped = tuple(
+            out[i] if out is not None and i < len(out) and out[i] is not None else r
+            for i, r in enumerate(results)
+        )
+        return wrapped[0] if len(wrapped) == 1 else wrapped
+
     def __setitem__(self, key, value):
         """Override setitem to trigger callbacks on assignment."""
         # Handle UnitAwareArray values by extracting magnitude
@@ -730,9 +787,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr + other"
             )
 
-        result = super().__iadd__(other)
-        self._trigger_callback("iadd", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__iadd__(other)
 
     def __isub__(self, other):
         """In-place subtraction with callback."""
@@ -742,9 +799,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr - other"
             )
 
-        result = super().__isub__(other)
-        self._trigger_callback("isub", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__isub__(other)
 
     def __imul__(self, other):
         """In-place multiplication with callback."""
@@ -754,9 +811,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr * other"
             )
 
-        result = super().__imul__(other)
-        self._trigger_callback("imul", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__imul__(other)
 
     def __itruediv__(self, other):
         """In-place true division with callback."""
@@ -766,9 +823,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr / other"
             )
 
-        result = super().__itruediv__(other)
-        self._trigger_callback("itruediv", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__itruediv__(other)
 
     def __ifloordiv__(self, other):
         """In-place floor division with callback."""
@@ -778,9 +835,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr // other"
             )
 
-        result = super().__ifloordiv__(other)
-        self._trigger_callback("ifloordiv", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ifloordiv__(other)
 
     def __imod__(self, other):
         """In-place modulo with callback."""
@@ -790,9 +847,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr % other"
             )
 
-        result = super().__imod__(other)
-        self._trigger_callback("imod", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__imod__(other)
 
     def __ipow__(self, other):
         """In-place power with callback."""
@@ -802,9 +859,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr ** other"
             )
 
-        result = super().__ipow__(other)
-        self._trigger_callback("ipow", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ipow__(other)
 
     def __iand__(self, other):
         """In-place bitwise and with callback."""
@@ -814,9 +871,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr & other"
             )
 
-        result = super().__iand__(other)
-        self._trigger_callback("iand", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__iand__(other)
 
     def __ior__(self, other):
         """In-place bitwise or with callback."""
@@ -826,9 +883,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr | other"
             )
 
-        result = super().__ior__(other)
-        self._trigger_callback("ior", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ior__(other)
 
     def __ixor__(self, other):
         """In-place bitwise xor with callback."""
@@ -838,9 +895,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr ^ other"
             )
 
-        result = super().__ixor__(other)
-        self._trigger_callback("ixor", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ixor__(other)
 
     def __ilshift__(self, other):
         """In-place left shift with callback."""
@@ -850,9 +907,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr << other"
             )
 
-        result = super().__ilshift__(other)
-        self._trigger_callback("ilshift", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ilshift__(other)
 
     def __irshift__(self, other):
         """In-place right shift with callback."""
@@ -862,9 +919,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr >> other"
             )
 
-        result = super().__irshift__(other)
-        self._trigger_callback("irshift", new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__irshift__(other)
 
     def fill(self, value):
         """Fill array with scalar value, triggering callback."""
