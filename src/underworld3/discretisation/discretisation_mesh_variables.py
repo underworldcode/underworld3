@@ -38,6 +38,10 @@ from petsc4py import PETSc
 import underworld3 as uw
 
 from underworld3.utilities._api_tools import Stateful
+from underworld3.utilities.nd_array_callback import (
+    fire_canonical_callbacks,
+    register_collective_flush,
+)
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
 
@@ -430,6 +434,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.mesh.vars[self.clean_name] = self
         self._setup_ds()
 
+        # Creation-order id for the synchronised-update collective flush.
+        # Variable construction is collective (see the coordinate-cache note
+        # below), so this counter advances in lockstep on every rank and the
+        # id is a valid cross-rank key. Variable NAMES are not: temporary
+        # variables embed rank-local id() values in their names.
+        self._collective_flush_id = register_collective_flush(self)
+
         # BUGFIX(#130): pre-populate the mesh's coordinate cache for this
         # variable's basis. mesh._get_coords_for_basis contains MPI
         # collectives (DMClone, createInterpolation, globalToLocal) that
@@ -441,6 +452,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         # ranks populate it together and subsequent rank-local lookups are
         # cache hits.
         self.mesh._get_coords_for_var(self)
+
+        # Eager canonical-array creation, for the same reason: the first
+        # .data access performs collective vec setup (_set_vec), so a lazy
+        # first touch from rank-conditional code — e.g. a masked write on
+        # one rank inside uw.synchronised_array_update — deadlocks. Create
+        # it here, while every rank is constructing together.
+        _ = self.data
 
         # Setup public view of data - using NDArray_With_Callback
         self._array_cache = None  # Will be created lazily when first accessed
@@ -526,143 +544,6 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._remesh_policy = value
         else:
             self._remesh_policy = RemeshPolicy(value)
-
-    def _create_variable_array(self, initial_data=None):
-        """
-        Factory function to create NDArray_With_Callback for variable data.
-        Follows the same pattern as mesh.points implementation.
-
-        Parameters
-        ----------
-        initial_data : numpy.ndarray, optional
-            Initial data for the array. If None, fetches current data from PETSc.
-
-        Returns
-        -------
-        NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
-        """
-        if initial_data is None:
-            initial_data = self.unpack_uw_data_from_petsc(squeeze=False, sync=True)
-
-        # Create NDArray_With_Callback (following mesh._points pattern)
-        array_obj = uw.utilities.NDArray_With_Callback(
-            initial_data,
-            owner=self,
-            disable_inplace_operators=False,  # Allow operations like existing arrays
-        )
-
-        # Single callback function (following mesh_update_callback pattern)
-        def variable_update_callback(array, change_context):
-            """Callback to sync variable changes back to PETSc (like mesh.points)"""
-            var = array.owner
-            if var is None:
-                # This guard handles cases where the array is accessed during
-                # object teardown (e.g. at application exit or mesh rebuilds),
-                # where the owning Python variable has already been garbage
-                # collected but the NDArray proxy still exists.
-                return
-
-            # Only act on data-changing operations (following mesh.points pattern)
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
-                return
-
-            # Prevent recursion by checking if we're already in a callback
-            if hasattr(var, "_in_callback") and var._in_callback:
-                return
-
-            # Set recursion guard
-            var._in_callback = True
-
-            try:
-                # Skip updates during mesh coordinate changes to prevent corruption
-                # Check if mesh is currently being updated
-                if hasattr(var.mesh, "_mesh_update_lock"):
-                    # Try to acquire lock without blocking - if we can't, skip update
-                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
-                        return
-                    try:
-                        # Persist changes to PETSc (like mesh callback updates coordinates)
-                        var.pack_uw_data_to_petsc(array, sync=True)
-                    finally:
-                        var.mesh._mesh_update_lock.release()
-                else:
-                    # Fallback if no lock exists
-                    var.pack_uw_data_to_petsc(array, sync=True)
-            finally:
-                # Clear recursion guard
-                var._in_callback = False
-
-        # Register the callback (following mesh.points pattern)
-        array_obj.add_callback(variable_update_callback)
-        return array_obj
-
-    def _create_flat_data_array(self, initial_data=None):
-        """
-        Factory function to create NDArray_With_Callback for backward-compatible flat data.
-        Returns data in shape (-1, num_components) using pack_raw/unpack_raw methods.
-
-        Parameters
-        ----------
-        initial_data : numpy.ndarray, optional
-            Initial data for the array. If None, fetches current data from PETSc.
-
-        Returns
-        -------
-        NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
-        """
-        if initial_data is None:
-            # Use unpack_raw to get flat format (-1, num_components)
-            initial_data = self.unpack_raw_data_from_petsc(squeeze=False, sync=True)
-
-        # Create NDArray_With_Callback for flat data
-        array_obj = uw.utilities.NDArray_With_Callback(
-            initial_data,
-            owner=self,
-            disable_inplace_operators=False,  # Allow operations like existing arrays
-        )
-
-        # Callback for flat data format
-        def flat_data_update_callback(array, change_context):
-            """Callback to sync flat data changes back to PETSc"""
-            var = array.owner
-            if var is None:
-                return
-
-            # Only act on data-changing operations
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
-                return
-
-            # Prevent recursion by checking if we're already in a callback
-            if hasattr(var, "_in_flat_callback") and var._in_flat_callback:
-                return
-
-            # Set recursion guard
-            var._in_flat_callback = True
-
-            try:
-                # Skip updates during mesh coordinate changes to prevent corruption
-                if hasattr(var.mesh, "_mesh_update_lock"):
-                    if not var.mesh._mesh_update_lock.acquire(blocking=False):
-                        return
-                    try:
-                        # Use pack_raw for flat data format
-                        var.pack_raw_data_to_petsc(array, sync=True)
-                    finally:
-                        var.mesh._mesh_update_lock.release()
-                else:
-                    # Fallback if no lock exists
-                    var.pack_raw_data_to_petsc(array, sync=True)
-            finally:
-                # Clear recursion guard
-                var._in_flat_callback = False
-
-        # Register the callback
-        array_obj.add_callback(flat_data_update_callback)
-        return array_obj
 
     def _object_viewer(self):
         """This will substitute specific information about this object"""
@@ -2214,11 +2095,14 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Step 3: Assign the (now non-dimensional) value
                 modified_data[key] = value
 
-                # Pack the entire NON-DIMENSIONAL array to PETSc
-                # Don't use pack_uw_data_to_petsc - it expects dimensional input
-                # Use pack_raw_data_to_petsc instead - it handles plain arrays
+                # Route the write through the canonical array. A direct pack
+                # here is a per-write collective (localToGlobal ghost sync),
+                # which desynchronises ranks that write unevenly inside
+                # uw.synchronised_array_update. The canonical callback packs
+                # immediately outside a delay context and defers to the
+                # single rank-agreed flush inside one.
                 flat_data = modified_data.reshape(-1, self.parent.num_components)
-                self.parent.pack_raw_data_to_petsc(flat_data, sync=True)
+                self.parent.data[...] = flat_data
 
             @property
             def shape(self):
@@ -2506,6 +2390,10 @@ class _BaseMeshVariable(Stateful, uw_object):
                             else:
                                 pint_qty = np.asarray(value) * target_units
 
+                            # TODO(BUG): the branches above reference np.*
+                            # but this method has no numpy import in scope
+                            # (module imports `numpy`, not `np`) — a latent
+                            # NameError on the unit-aware tensor write path.
                             # Convert to target units using Pint
                             converted_qty = pint_qty.to(target_units)
                             dimensional_value = converted_qty.magnitude
@@ -2534,8 +2422,20 @@ class _BaseMeshVariable(Stateful, uw_object):
                 # Step 3: Assign the (now non-dimensional) value
                 modified_data[key] = value
 
-                # Pack the entire NON-DIMENSIONAL array to PETSc using complex tensor layout
-                self.parent.pack_uw_data_to_petsc(modified_data, sync=True)
+                # Route the write through the canonical array (see
+                # SimpleMeshArrayView.__setitem__: a direct pack is a
+                # per-write collective). _data_layout maps the structured
+                # components onto the packed PETSc ordering, as
+                # pack_uw_data_to_petsc does internally.
+                flat_data = numpy.empty(
+                    (modified_data.shape[0], self.parent.num_components),
+                    dtype=modified_data.dtype,
+                )
+                var_shape = self.parent.shape
+                for i in range(var_shape[0]):
+                    for j in range(var_shape[1]):
+                        flat_data[:, self.parent._data_layout(i, j)] = modified_data[:, i, j]
+                self.parent.data[...] = flat_data
 
             @property
             def shape(self):
@@ -2767,93 +2667,76 @@ class _BaseMeshVariable(Stateful, uw_object):
         from underworld3.utilities import NDArray_With_Callback
         array_obj = NDArray_With_Callback(flat_petsc_data, owner=self)
 
-        # Single canonical callback for PETSc synchronization
-
+        # Single canonical callback for PETSc synchronization. The
+        # add_canonical_callback dispatch guarantees `array` IS the canonical
+        # storage (views resolved to it, fancy-index copies skipped), so the
+        # pack below always covers the full local vector — never a
+        # partition-dependent subset whose collectives would run on some
+        # ranks only (#376).
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
             var = array.owner
             if var is None:
+                # Array outlived its variable (teardown / mesh rebuild)
                 return
 
-            # Only act on data-changing operations
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
+            if not change_context.get("data_has_changed", True):
                 return
 
-            # Check for None array to prevent copy errors
-            if array is None:
-                return
+            var._flush_canonical_to_petsc(array)
 
-            import numpy as np
-
-            # Only the canonical storage may be packed to PETSc. Derived
-            # arrays inherit this callback via __array_finalize__, so an
-            # in-place op on a fancy-indexed COPY (``var.data[mask] /= s``)
-            # would try to pack the subset into the full-size vec. The mask
-            # is partition-dependent, so in parallel the failed pack skips
-            # the collective sync on some ranks only — mismatched
-            # collectives hang the run (#376). numpy writes the copy back
-            # through __setitem__ on the parent, which re-runs this
-            # callback with the canonical array, so skipping here loses
-            # nothing. A partial VIEW has already changed the canonical
-            # storage in place: sync the full canonical instead.
-            #
-            # View-vs-copy must be decided by IDENTITY in the base chain,
-            # not memory overlap: np.may_share_memory is False for any
-            # zero-size array, so a rank whose slice is locally empty
-            # would classify a view as a copy and skip the collective
-            # sync that the other ranks enter — the same rank-asymmetry
-            # again. For indexing statements (basic slice → view, fancy
-            # → copy) the classification follows the statement and is
-            # identical on every rank. Known corner (#379): reshape/
-            # ravel of a NON-contiguous derived view is a copy on
-            # non-empty ranks but a view on a zero-size rank, so that
-            # pattern is still rank-asymmetric — unresolvable here (the
-            # zero-size cases are locally indistinguishable); the
-            # dirty-flag flush planned in #379 is the real fix.
-            if array is not array_obj:
-                base = array.base
-                while base is not None and base is not array_obj:
-                    base = getattr(base, "base", None)
-                if base is None:
-                    return
-                array = np.asarray(array_obj)
-
-            # STEP 1: Ensure array has correct canonical shape before PETSc sync
-            # The callback might receive wrong-shaped arrays from array view operations
-            canonical_array = np.atleast_2d(array)
-
-            if canonical_array.shape != (canonical_array.shape[0], var.num_components):
-                # Only reshape if we actually need to
-                canonical_array = canonical_array.reshape(-1, var.num_components)
-
-            # Skip updates during mesh coordinate changes to prevent corruption
-            if hasattr(var.mesh, "_mesh_update_lock"):
-                if not var.mesh._mesh_update_lock.acquire(blocking=False):
-                    return
-                try:
-                    # STEP 1: Sync to PETSc using established method with correct shape
-                    var.pack_raw_data_to_petsc(canonical_array, sync=True)
-                finally:
-                    var.mesh._mesh_update_lock.release()
-            else:
-                # Fallback if no lock exists
-                var.pack_raw_data_to_petsc(canonical_array, sync=True)
-
-            # STEP 2: Handle variable-specific updates (extensible like SwarmVariable)
-            if hasattr(var, "_on_data_changed"):
-                var._on_data_changed()
-
-        array_obj.add_callback(canonical_data_callback)
+        array_obj.add_canonical_callback(canonical_data_callback)
         return array_obj
+
+    def _flush_canonical_to_petsc(self, array):
+        """Pack canonical-storage values into PETSc, with ghost synchronisation.
+
+        The single write-back path behind the canonical data callback. The
+        pack with ``sync=True`` performs a local-to-global / global-to-local
+        round trip, which is collective: every rank must call this for the
+        same variable.
+        """
+        canonical_array = numpy.atleast_2d(array)
+        if canonical_array.shape != (canonical_array.shape[0], self.num_components):
+            canonical_array = canonical_array.reshape(-1, self.num_components)
+
+        # A mesh-coordinate update owns the lock; packing mid-update would
+        # corrupt the coordinate change, so this write-back is skipped (the
+        # deform path re-syncs variables when it completes).
+        if hasattr(self.mesh, "_mesh_update_lock"):
+            if not self.mesh._mesh_update_lock.acquire(blocking=False):
+                return
+            try:
+                self.pack_raw_data_to_petsc(canonical_array, sync=True)
+            finally:
+                self.mesh._mesh_update_lock.release()
+        else:
+            self.pack_raw_data_to_petsc(canonical_array, sync=True)
+
+        if hasattr(self, "_on_data_changed"):
+            self._on_data_changed()
+
+    def _deferred_canonical_flush(self):
+        """Collective flush target for ``uw.synchronised_array_update``.
+
+        Called on EVERY rank for each variable in the agreed flush set —
+        ranks that made no local writes pack unchanged values, which keeps
+        the per-variable ghost-sync collective matched. Touching
+        ``self.data`` first creates the canonical array lazily on ranks
+        that never accessed it.
+        """
+        fire_canonical_callbacks(self.data)
 
     @array.setter
     def array(self, array_value):
         """
-        Set variable data using pack method to handle shape transformation.
+        Set variable data through the standard write path.
         """
-        # Use pack method to handle proper data transformation and shape conversion
-        self.pack_uw_data_to_petsc(array_value, sync=True)
+        # Attribute assignment follows the same route as view writes: the
+        # full conversion pipeline, then the canonical array. A direct pack
+        # here is a per-write collective, which desynchronises rank-uneven
+        # writes inside uw.synchronised_array_update (round-1 review).
+        self.array[...] = array_value
 
     ## ToDo: We should probably deprecate this in favour of using integrals
 

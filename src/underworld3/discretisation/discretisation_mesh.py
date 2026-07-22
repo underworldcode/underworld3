@@ -16,6 +16,10 @@ import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
+from underworld3.utilities.nd_array_callback import (
+    fire_canonical_callbacks,
+    register_collective_flush,
+)
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 
@@ -244,7 +248,23 @@ def _mesh_coords_update_callback(array, change_context):
         uw.pprint(f"Mesh update callback - mesh deform")
 
     coords = array.reshape(-1, mesh.cdim)
-    mesh._deform_mesh(coords, verbose=verbose)
+    try:
+        mesh._deform_mesh(coords, verbose=verbose)
+    except Exception:
+        # The user's write landed in the canonical array BEFORE this
+        # callback ran. A rejected/failed deform must not leave
+        # mesh.X.coords disagreeing with the DM — the guard's message
+        # says the write "is rejected", so make that true by restoring
+        # the canonical from the DM, then let the error surface.
+        # (np.copyto bypasses callbacks; this restore must not re-fire.)
+        dm_coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
+        cached = numpy.asarray(mesh._coords).reshape(-1, mesh.cdim)
+        if cached.shape == dm_coords.shape:
+            numpy.copyto(cached, dm_coords)
+        # else: the failure replaced the coordinate Vec at a different size
+        # (mid-rebuild) — restoring is impossible and a broadcast error here
+        # would mask the original exception (round-2 review).
+        raise
 
     # Increment mesh version to notify registered swarms of coordinate changes
     with mesh._mesh_update_lock:
@@ -1168,7 +1188,26 @@ class Mesh(Stateful, uw_object):
             numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
             owner=self,
         )
-        self._coords.add_callback(_mesh_coords_update_callback)
+        # Canonical registration: the guard keeps derived views/copies from
+        # firing a full-mesh deform (#376-class), and — because the deform
+        # is COLLECTIVE — the mesh joins the synchronised-update flush
+        # registry so coordinate writes inside uw.synchronised_array_update
+        # defer to the single rank-agreed flush instead of replaying a
+        # rank-local deform at exit.
+        self._coords.add_canonical_callback(_mesh_coords_update_callback)
+        if not hasattr(self, "_collective_flush_id"):
+            # Register once per mesh: re-installs (submesh re-extraction,
+            # adaptation) replace the array, not the mesh's flush identity.
+            self._collective_flush_id = register_collective_flush(self)
+
+    def _deferred_canonical_flush(self):
+        """Collective flush target for ``uw.synchronised_array_update``.
+
+        Coordinate writes made inside the context land in the canonical
+        array immediately; the deform they imply runs here, once, on every
+        rank in the agreed flush order.
+        """
+        fire_canonical_callbacks(self._coords)
 
     def _setup_symbolic_coordinates(self, coordinate_system_type):
         """Create the sympy coordinate systems and their JIT code bindings.
@@ -3417,6 +3456,15 @@ class Mesh(Stateful, uw_object):
         result = remesh_with_field_transfer(
             self, _do_move, dt=dt, extra_zero=zero, verbose=verbose)
 
+        # Notify registered swarms: solve-entry sync compares this version
+        # and marks them for deferred migration (#379 item 1 retired the
+        # read-trigger that consumed this channel). The bump lives HERE,
+        # not in _deform_mesh: the internal primitive also runs on
+        # snapshot restore, whose integrity check treats a moved version
+        # as invalidation and would refuse its own recovery.
+        if result:
+            self._mesh_version += 1
+
         # Refresh deformation-tracking per-boundary normals so Nitsche/penalty
         # BCs that captured ``boundary_normal(...).sym`` at setup read the new
         # geometry (the JIT reads the variable's .data, which would otherwise
@@ -3497,7 +3545,17 @@ class Mesh(Stateful, uw_object):
                 owner=self,
             )
             for cb in old_callbacks:
-                self._coords.add_callback(cb)
+                original = getattr(cb, "_wrapped", None)
+                if original is not None:
+                    # Canonical dispatch wrappers are bound (by weakref) to
+                    # the OLD array's identity — copied verbatim they never
+                    # fire on the replacement, so a SECOND coords write
+                    # would silently do nothing (round-2 review; same
+                    # class as the sync_data re-homing). Re-register the
+                    # original function against the new canonical.
+                    self._coords.add_canonical_callback(original)
+                else:
+                    self._coords.add_callback(cb)
 
             # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
             # ("Trust JIT cache: skip DM rebuild on constant-only parameter

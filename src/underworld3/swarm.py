@@ -46,6 +46,36 @@ from enum import Enum
 
 
 # We can grab this type from the PETSc module
+class _ReadOnlyCoordinateSnapshot(np.ndarray):
+    """Read-only view returned by the deprecated ``swarm.points`` /
+    ``swarm.data`` reads.
+
+    Plain read-only ndarrays refuse writes with numpy's bare
+    "assignment destination is read-only" — no pointer to the working
+    interfaces. This view carries the guidance (#379 item 1).
+
+    Non-``__setitem__`` mutation routes (``fill``, ``sort``,
+    ``np.copyto``, in-place operators, ``out=`` ufuncs) are refused by
+    the read-only flag with numpy's own error; when the mesh carries
+    units the ``UnitAwareArray`` wrapper likewise stays non-writeable
+    but surfaces numpy's message rather than this guidance. Deliberately
+    re-enabling ``snapshot.base.flags.writeable`` writes only into the
+    DETACHED copy — never the swarm.
+    """
+
+    _GUIDANCE = (
+        "swarm.points / swarm.data is a read-only snapshot (issue #379): "
+        "its writable stack ran collective particle migration per write "
+        "and could deadlock in parallel. Write coordinates via "
+        "swarm.coords = values (physical units), or "
+        "swarm._particle_coordinates.data[...] (model units) — masked "
+        "writes are supported inside 'with swarm.migration_control():'."
+    )
+
+    def __setitem__(self, key, value):
+        raise ValueError(self._GUIDANCE)
+
+
 class SwarmType(Enum):
     """
     PETSc swarm type specification.
@@ -380,63 +410,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         """Check if this variable has units."""
         return self._units is not None
 
-    def _create_variable_array(self, initial_data=None):
-        """
-        Factory function to create NDArray_With_Callback for variable data.
-        Follows the same pattern as swarm.points implementation.
-
-        Parameters
-        ----------
-        initial_data : numpy.ndarray, optional
-            Initial data for the array. If None, fetches current data from PETSc.
-
-        Returns
-        -------
-        NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
-        """
-        if initial_data is None:
-            initial_data = self.unpack_uw_data_from_petsc(squeeze=False)
-
-        # Create NDArray_With_Callback (following swarm._points pattern)
-        array_obj = uw.utilities.NDArray_With_Callback(
-            initial_data,
-            owner=self,
-            disable_inplace_operators=False,  # Allow operations like existing arrays
-        )
-
-        # Single callback function (following swarm_update_callback pattern)
-        def variable_update_callback(array, change_context):
-            """Callback to sync variable changes back to PETSc (like swarm.points)"""
-            var = array.owner
-            if var is None:
-                # This guard handles cases where the array is accessed during
-                # object teardown (e.g. at application exit or mesh rebuilds),
-                # where the owning Python variable has already been garbage
-                # collected but the NDArray proxy still exists.
-                return
-
-            # Only act on data-changing operations (following swarm.points pattern)
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
-                return
-
-            # While migration is suppressed, DEFER the PETSc pack rather than
-            # discarding the write: the DMSwarm layout may be mid-change, so
-            # packing now could corrupt it, but the user's values must survive.
-            # They are flushed by Swarm._flush_pending_petsc_sync() when the
-            # migration-control context exits (SWARM-04).
-            if getattr(var.swarm, "_migration_disabled", False):
-                var.swarm._pending_petsc_sync.add(var.clean_name)
-                return
-
-            # Persist changes to PETSc (like swarm callback updates coordinates)
-            var.pack_uw_data_to_petsc(array)
-
-        # Register the callback (following swarm.points pattern)
-        array_obj.add_callback(variable_update_callback)
-        return array_obj
-
     def _create_canonical_data_array(self, initial_data=None):
         """
         Create the single canonical data array with PETSc synchronization.
@@ -469,9 +442,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             disable_inplace_operators=False,  # Allow operations like existing arrays
         )
 
-        # Single canonical callback for PETSc synchronization
+        # Single canonical callback for PETSc synchronization. The
+        # add_canonical_callback dispatch guarantees `array` IS the canonical
+        # storage (views resolved to it, fancy-index copies skipped), so the
+        # pack below always covers every local particle — never a
+        # partition-dependent subset (#376).
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
+            # Resolve the variable through the owner weakref (like the mesh
+            # callback) rather than closing over self: the callback list
+            # lives on the canonical array, so a strong self-capture here
+            # would be a var <-> array reference cycle.
+            var = array.owner
+            if var is None:
+                # Array outlived its variable (teardown / swarm rebuild)
+                return
+
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
@@ -485,46 +471,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # context exits (SWARM-04: previously these writes were silently
             # lost — nothing re-packed, and migrate()'s trailing invalidation
             # destroyed the only copy).
-            if getattr(self.swarm, "_migration_disabled", False):
-                self.swarm._pending_petsc_sync.add(self.clean_name)
+            if getattr(var.swarm, "_migration_disabled", False):
+                var.swarm._pending_petsc_sync.add(var.clean_name)
                 return
-
-            # Check for None array to prevent copy errors
-            if array is None:
-                return
-
-            import numpy as np
-
-            # Only the canonical storage may be packed to PETSc (same
-            # guard as the MeshVariable callback, #376): a fancy-indexed
-            # COPY inherits this callback and would pack a wrong-sized
-            # subset — numpy's write-back via __setitem__ on the parent
-            # does the real sync. A partial VIEW has already updated the
-            # canonical storage in place, so pack the full canonical.
-            # View-vs-copy is decided by identity in the base chain
-            # (indexing statements classify the same on every rank), NOT
-            # by np.may_share_memory, which is False for any zero-size
-            # array and would re-create the rank asymmetry on ranks with
-            # no local particles. Known corner (#379): reshape/ravel of
-            # a non-contiguous derived view still classifies
-            # asymmetrically on zero-size ranks.
-            if array is not array_obj:
-                base = array.base
-                while base is not None and base is not array_obj:
-                    base = getattr(base, "base", None)
-                if base is None:
-                    return
-                array = np.asarray(array_obj)
 
             # STEP 1: Ensure array has correct canonical shape before PETSc sync
-            # The callback might receive wrong-shaped arrays from array view operations
             canonical_array = np.atleast_2d(array)
-            if canonical_array.shape != (array.shape[0], self.num_components):
+            if canonical_array.shape != (array.shape[0], var.num_components):
                 # Reshape to canonical format: (-1, num_components)
-                canonical_array = canonical_array.reshape(-1, self.num_components)
+                canonical_array = canonical_array.reshape(-1, var.num_components)
 
             # STEP 1: Sync to PETSc using established method with correct shape
-            self.pack_raw_data_to_petsc(canonical_array)
+            var.pack_raw_data_to_petsc(canonical_array)
 
             # Coordinate writes may strand particles on the wrong rank. Mark
             # the swarm for DEFERRED migration — migrate() itself is
@@ -532,16 +490,29 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # write unevenly → deadlock). The migration happens at the next
             # collective point: migration-control context exit or solve entry
             # (SWARM-03; the class docstring's automatic-migration promise).
-            if getattr(self.swarm, "_coord_var", None) is self:
-                self.swarm._needs_migration = True
+            if getattr(var.swarm, "_coord_var", None) is var:
+                var.swarm._needs_migration = True
 
             # STEP 2: Handle variable-specific updates (like IndexSwarmVariable proxy marking)
-            if hasattr(self, "_on_data_changed"):
-                self._on_data_changed()
+            if hasattr(var, "_on_data_changed"):
+                var._on_data_changed()
 
-        # Register the single canonical callback
-        array_obj.add_callback(canonical_data_callback)
+        # Register through the central view/copy guard
+        array_obj.add_canonical_callback(canonical_data_callback)
         return array_obj
+
+    def _deferred_canonical_flush(self):
+        """Rank-local flush target for ``uw.synchronised_array_update``.
+
+        Re-resolves the LIVE canonical at flush time: migration inside the
+        context invalidates and rebuilds it, and flushing a pinned
+        pre-migration array would resurrect stale values. (A migrate()
+        issued inside the context forfeits unflushed writes made before
+        it — the flush stays consistent with the post-migration layout.)
+        """
+        from underworld3.utilities.nd_array_callback import fire_canonical_callbacks
+
+        fire_canonical_callbacks(self.data)
 
     def _create_array_view(self):
         """
@@ -2817,12 +2788,6 @@ class Swarm(Stateful, uw_object):
         self.dm.setType(SwarmType.DMSWARM_BASIC.value)
         self._data = None
 
-        # Add data structure to hold point location information in
-        # an array with a callback that resets the relevant parts of the
-        # swarm variable stack when the data structure is modified.
-
-        self._coords = None
-
         ####
 
         # Retained attribute: always 0 or 1 (no recycling) — see the
@@ -3033,6 +2998,15 @@ class Swarm(Stateful, uw_object):
         if global_count == 0:
             return
 
+        # A mesh coordinate change (deform / adaptation) strands particles
+        # in cells that moved; nothing re-bins them since the read-trigger
+        # on swarm.points was retired (#379 item 1 — a collective on READ
+        # was itself a parallel hazard). Solve entry is the collective
+        # point that notices the mesh version changed.
+        if getattr(self, "_mesh_version", None) != self.mesh._mesh_version:
+            self._needs_migration = True
+            self._mesh_version = self.mesh._mesh_version
+
         if not self._deferred_migration_suspended:
             needs_migration = bool(self._needs_migration)
             if uw.mpi.size > 1:
@@ -3210,10 +3184,10 @@ class Swarm(Stateful, uw_object):
 
     @property
     def data(self):
-        r"""Particle coordinates (alias for :attr:`points`).
+        r"""Particle coordinates (alias for :attr:`points`; read-only snapshot).
 
         .. deprecated:: 0.99.0
-            Use direct DM field access for particle coordinates.
+            Use :attr:`coords` instead.
 
         Returns
         -------
@@ -3225,168 +3199,72 @@ class Swarm(Stateful, uw_object):
     @property
     def points(self):
         """
-        Swarm particle coordinates in physical units.
+        Swarm particle coordinates in physical units (read-only snapshot).
 
         .. deprecated:: 0.99.0
-            Use swarm variables or direct DM access instead.
-            ``swarm.points`` is being deprecated.
+            Read coordinates via :attr:`coords`; write them via the
+            ``coords`` setter (physical units) or
+            ``swarm._particle_coordinates.data`` (model units).
 
-        When the mesh has coordinate scaling applied (via model units),
-        this property automatically converts from internal model coordinates
-        to physical coordinates for user access.
+        The returned array is a detached, read-only copy. The previous
+        writable wrapper ran collective particle migration from inside a
+        per-write callback, which deadlocks when ranks write unevenly, and
+        reading it could force a collective migration after mesh changes —
+        so a read performed on some ranks only could hang (#379). Like
+        ``mesh.points`` (BF-18), the write path is removed rather than
+        repaired.
 
-        When the mesh has coordinate units specified, returns a unit-aware array.
-
-        Returns:
-            numpy.ndarray or UnitAwareArray: Particle coordinates (with units if mesh.units is set)
+        Returns
+        -------
+        numpy.ndarray or UnitAwareArray
+            Particle coordinates (with units if mesh.units is set).
         """
         import warnings
 
-        warnings.warn("swarm.points is deprecated", DeprecationWarning, stacklevel=2)
+        warnings.warn(
+            "swarm.points is deprecated, use swarm.coords instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-        # Check for mesh coordinate changes and trigger migration if needed
-        if hasattr(self, "_mesh_version") and self._mesh_version != self.mesh._mesh_version:
-            # Mesh coordinates have changed, force migration to update swarm
-            self._force_migration_after_mesh_change()
-            # Update our mesh version to match
-            self._mesh_version = self.mesh._mesh_version
-
-        # Get current coordinate data from PETSc (these are in model coordinates)
+        # Current coordinates from PETSc (model coordinates)
         model_coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Apply scaling to convert model coordinates to physical coordinates
+        # Scale model coordinates to physical coordinates
         if hasattr(self.mesh.CoordinateSystem, "_scaled") and self.mesh.CoordinateSystem._scaled:
-            scale_factor = self.mesh.CoordinateSystem._length_scale
-            coords = model_coords * scale_factor
+            coords = model_coords * self.mesh.CoordinateSystem._length_scale
         else:
             coords = model_coords
 
-        # Cache and reuse NDArray_With_Callback object for consistent object identity
-        if not hasattr(self, "_coords") or self._coords is None:
-            # First access: create new NDArray_With_Callback object
-            self._coords = uw.utilities.NDArray_With_Callback(
-                coords,
-                owner=self,
-                disable_inplace_operators=True,
-            )
+        coords.flags.writeable = False
+        coords = coords.view(_ReadOnlyCoordinateSnapshot)
 
-            # Define the callback function (only once)
-            def swarm_update_callback(array, change_context):
-                # print(
-                #     f"Swarm update callback - {self.dm.getLocalSize()}",
-                #     flush=True,
-                # )
-
-                # Check if this operation may have changed data
-                # Skip expensive operations for read-only sync operations
-                data_changed = change_context.get("data_has_changed", True)
-
-                if not data_changed:
-                    # print(
-                    #     "Swarm callback: Skipping migration - read-only sync operation"
-                    # )
-                    return
-
-                # Check if sizes match before attempting to copy back
-                petsc_size = self.dm.getLocalSize()
-                points_size = array.shape[0]
-
-                if petsc_size == points_size:
-                    # Update PETSc state
-                    # We could do this directly which would be more efficient and bypass the access manager (appropriately, here)
-                    self._coord_var.array[:, 0, :] = array[...]
-
-                    # Migrate by default (unless user has disabled it)
-                    if not self._migration_disabled:
-                        self.migrate()
-                        for var in self._vars.values():
-                            var._update()
-
-                else:
-                    # This means a migration call has been made before we have
-                    # had a chance to update the swarm consistently. This is an error
-                    # condition. We raise an exception to prevent further errors.
-
-                    print(
-                        f"Size mismatch: PETSc={petsc_size}, Points={points_size}\n",
-                        f"The swarm migration state has become corrupted",
-                    )
-                    raise RuntimeError
-
-                return
-
-            # Add callback to the cached object
-            self._coords.add_callback(swarm_update_callback)
-        else:
-            # Subsequent accesses: efficiently sync new coordinate data
-            # This preserves callbacks and delay contexts, updating object reference if size
-            # changed as a result of migration operations
-
-            self._coords = self._coords.sync_data(coords)
-
-        # Wrap with unit-aware array if mesh has units
         if hasattr(self.mesh, "units") and self.mesh.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray
 
-            return UnitAwareArray(self._coords, units=self.mesh.units)
+            return UnitAwareArray(coords, units=self.mesh.units)
 
-        return self._coords
+        return coords
 
     @points.setter
     def points(self, value):
+        """Removed. Write coordinates via :attr:`coords` or
+        ``swarm._particle_coordinates.data``.
+
+        The deprecated setter wrote through a cached callback wrapper whose
+        per-write callback ran collective migration — ranks writing unevenly
+        deadlocked in parallel, and the masked-write idiom its own
+        documentation advertised raised through the same wrapper (#379).
         """
-        Set swarm particle coordinates from physical units.
-
-        .. deprecated:: 0.99.0
-            Use swarm variables or direct DM access instead.
-
-        When the mesh has coordinate scaling applied (via model units),
-        this property automatically converts from physical coordinates
-        to internal model coordinates for PETSc storage.
-
-        Args:
-            value (numpy.ndarray): Particle coordinates in physical units
-        """
-        import warnings
-
-        warnings.warn("swarm.points is deprecated", DeprecationWarning, stacklevel=2)
-
-        if value.shape[0] != self.local_size:
-            raise TypeError(
-                f"Points must be a numpy array with the same size as the swarm",
-                f"  - partial allocation to the swarm may trigger migration or point removal",
-                f"  - either change all the swarm points at once or use the `with migration_control()` manager",
-            )
-
-        # Apply inverse scaling to convert physical coordinates to model coordinates
-        if hasattr(self.mesh.CoordinateSystem, "_scaled") and self.mesh.CoordinateSystem._scaled:
-            scale_factor = self.mesh.CoordinateSystem._length_scale
-            model_coords = value / scale_factor
-        else:
-            model_coords = value
-
-        # Update the cached NDArray (triggers callback) - use physical coordinates for cache
-        self._coords[...] = value[...]
-
-        # Update PETSc DM field directly with model coordinates for immediate consistency
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-        coords[...] = model_coords[...]
-        self.dm.restoreField("DMSwarmPIC_coor")
-
-    # @points.setter
-    # def points(self, value):
-
-    #     if isinstance(value, np.ndarray):
-    #         if value.shape[0] != self.local_size:
-    #             message = (
-    #                 "Points must be a numpy array with the same size as the swarm."
-    #                 + "Partial allocation to the swarm may trigger particle migration"
-    #                 + "either change all the swarm points at once or use the `with migration_disabled()` manager",
-    #             )
-    #             raise TypeError(message)
-
-    #     self._coords[...] = value[...]
+        raise AttributeError(
+            "Assigning to swarm.points has been removed (issue #379): its "
+            "per-write callback ran collective particle migration and could "
+            "deadlock in parallel. Use swarm.coords = values (physical "
+            "units), or write swarm._particle_coordinates.data[...] (model "
+            "units) — masked writes are supported inside "
+            "'with swarm.migration_control():'."
+        )
 
     @property
     def _particle_coordinates(self):
@@ -3597,9 +3475,10 @@ class Swarm(Stateful, uw_object):
         --------
         Defer migration until end (default)::
 
+            coords = swarm._particle_coordinates.data
             with swarm.migration_control():
-                swarm.points[mask1] += delta1
-                swarm.points[mask2] *= scale
+                coords[mask1] += delta1
+                coords[mask2] *= scale
                 # Migration happens HERE on exit
 
         Completely disable migration::
