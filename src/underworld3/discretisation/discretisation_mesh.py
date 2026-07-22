@@ -6172,23 +6172,26 @@ class Mesh(Stateful, uw_object):
 
         The default call needs no engine choice —
         ``mesh.adapt(metric, max_levels=...)`` refines with the graded
-        newest-vertex-bisection engine. This is **2D (triangle meshes) only**
-        for now: an engine-less 3D call raises ``NotImplementedError`` (3D
-        refinement is planned work; ``engine="sbr"`` opts a 3D mesh into the
-        simple isotropic engine explicitly). ``engine=`` remains available
-        as an **advanced / internal selector** (the algorithm names live
-        here, not in the everyday call):
+        newest-vertex-bisection engine, on **2D triangle and 3D tetrahedral
+        meshes, serial and parallel** (the refined mesh is
+        partition-independent: the same mesh at any communicator size).
+        ``engine=`` remains available as an **advanced / internal selector**
+        (the algorithm names live here, not in the everyday call):
 
         * ``"nvb"`` (default) — newest-vertex bisection, a **graded** engine with a
           *bounded* conforming closure: a marked cell adds O(1) cells locally, so
           successive levels grade (a level+1 ring around a finer core) and DOFs
-          concentrate near the feature. Runs **in parallel** via the native
-          ``uwnvb`` ``DMPlexTransform`` (in-place, co-partitioned with the parent,
-          bit-confluent serial↔parallel); when that compiled extension is absent it
-          falls back to the serial ``NVBMesh`` cell-list engine
-          (``NotImplementedError`` at np>1). Bisects 1→2, so one
-          isotropic-equivalent ``max_levels`` is run as **two** NVB passes.
-        * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection. Each
+          concentrate near the feature. Runs **in parallel** in both
+          dimensions via the native ``uwnvb`` ``DMPlexTransform`` driver
+          (in-place, co-partitioned with the parent, bit-confluent
+          serial↔parallel; in 3D the per-cell refinement state is seeded
+          identically on every rank from geometry). When the compiled
+          extension is absent it falls back to the serial cell-list engines
+          (``NVBMesh`` / ``TaggedBisectionMesh``; ``NotImplementedError`` at
+          np>1). Bisects 1→2 (volume halves), so one isotropic-equivalent
+          ``max_levels`` is run as **dim** bisection generations.
+        * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection, **2D
+          only** (PETSc's SBR transform cannot handle tetrahedra). Each
           pass refines marked cells isotropically (1→4). Its conforming closure is
           *unbounded for region marking*, so it produces a **uniform-finest patch**,
           not a graded mesh (a marked cell drains the longest-edge path to the patch
@@ -6298,18 +6301,12 @@ class Mesh(Stateful, uw_object):
             adapter = "sbr"
         if engine is None:
             # NVB is the default refinement engine (2026-07 naming ruling):
-            # graded, bounded conforming closure, parallel via the native
-            # uwnvb transform. NVB is 2D (triangles) only, and the maintainer
-            # ruled (2026-07-17) that an engine-less 3D adapt must say so
-            # honestly rather than silently selecting a different algorithm —
-            # 3D refinement is committed future work (the MMPDE+NVB capstone).
-            if self.cdim != 2:
-                raise NotImplementedError(
-                    "Default adaptive mesh refinement is 2D (triangle meshes) "
-                    "only in this release: the NVB refinement engine has no 3D "
-                    "(tetrahedral) implementation yet — 3D refinement is "
-                    "planned work. To use the simple isotropic SBR engine on "
-                    "a 3D mesh explicitly, call mesh.adapt(..., engine='sbr').")
+            # graded, bounded conforming closure, parallel (2D) via the
+            # native uwnvb transform. In 3D the serial tagged-simplex engine
+            # serves np=1; an np>1 3D call raises honestly inside the engine
+            # guard (the parallel tetrahedral transform is capstone stage
+            # 1c). Note engine='sbr' is NOT a 3D fallback: PETSc's SBR
+            # transform handles triangles only (error 56 on tetrahedra).
             engine = "nvb"
 
         if adapter == "mmg":
@@ -6349,29 +6346,52 @@ class Mesh(Stateful, uw_object):
             )
         # The native uwnvb DMPlexTransform (Route B) is the parallel NVB engine:
         # in-place (co-partitioned with the parent), graded, and bit-confluent
-        # serial<->parallel. Prefer it whenever the compiled extension is present;
-        # fall back to the serial NVBMesh cell-list engine only when it is not
-        # (which then restricts engine='nvb' to np=1).
+        # serial<->parallel. It bisects triangles only, so it serves the 2D
+        # path; 3D (tetrahedra) runs the serial dimension-general tagged-
+        # simplex engine until the native transform adopts the tagged rule
+        # (adaptivity capstone stage 1c).
         _nvbx = None
         if engine == "nvb":
-            if self.dim != 2:
+            if not bool(self.dm.isSimplex()) or self.dim not in (2, 3):
                 raise NotImplementedError(
-                    "adapt(engine='nvb') is 2D only this pass (tets are a follow-up)."
+                    "adapt(engine='nvb') supports 2D triangle and 3D "
+                    "tetrahedral meshes."
                 )
-            try:
-                from underworld3.utilities import _nvb_transform as _nvbx
-            except ImportError:
-                _nvbx = None
-            if _nvbx is None and uw.mpi.size > 1:
-                raise NotImplementedError(
-                    "adapt(engine='nvb') at np>1 needs the native uwnvb transform "
-                    "(underworld3.utilities._nvb_transform), which is not built in "
-                    "this environment. Build the custom-PETSc/amr env, or use "
-                    "engine='sbr' at np>1."
-                )
+            if self.dim == 2:
+                try:
+                    from underworld3.utilities import _nvb_transform as _nvbx
+                except ImportError:
+                    _nvbx = None
+                if _nvbx is None and uw.mpi.size > 1:
+                    raise NotImplementedError(
+                        "adapt(engine='nvb') at np>1 needs the native uwnvb "
+                        "transform (underworld3.utilities._nvb_transform), "
+                        "which is not built in this environment. Build the "
+                        "custom-PETSc/amr env, or use engine='sbr' at np>1."
+                    )
+            else:
+                # 3D: prefer the native driver when built (same preference
+                # order as 2D); the serial cell-list engine is the np=1
+                # fallback. The native driver needs the per-cell refinement
+                # state seeded on the base mesh first (partition-independent
+                # by construction — see write_tagged_state_label).
+                try:
+                    from underworld3.utilities import _nvb_transform as _nvbx
+                except ImportError:
+                    _nvbx = None
+                if _nvbx is None and uw.mpi.size > 1:
+                    raise NotImplementedError(
+                        "adapt(engine='nvb') at np>1 needs the native uwnvb "
+                        "transform (underworld3.utilities._nvb_transform), "
+                        "which is not built in this environment. Build the "
+                        "custom-PETSc/amr env."
+                    )
+                if _nvbx is not None:
+                    from underworld3.utilities.nvb import (
+                        write_tagged_state_label)
+                    write_tagged_state_label(self.dm_hierarchy[-1])
 
         dim = self.dim
-        edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
         DM_ADAPT_REFINE = 1                  # PETSc DMAdaptFlag: refine this cell
 
         # The metric is normalised to a single callable `eval_metric(centroids)
@@ -6413,6 +6433,64 @@ class Mesh(Stateful, uw_object):
             def eval_metric(centroids):
                 return numpy.asarray(_sampler(metric_sym, centroids)).reshape(-1)
 
+        def cell_geometry(dm):
+            """Per-cell centroid and size for every cell of a simplicial DM.
+
+            A simplex centroid is the vertex mean and its volume is
+            |det(edge vectors)|/dim!, so h = (dim!·vol)^(1/dim) reduces to
+            |det|^(1/dim) — one vectorised det over the cell list. (The
+            per-cell petsc4py ``computeCellGeometryFVM`` calls this replaces
+            dominated the marking cost at bisection depth ≥ 3.)
+            """
+            cs, ce = dm.getHeightStratum(0)
+            n = ce - cs
+            if n == 0:
+                return numpy.empty((0, self.cdim)), numpy.empty(0), cs
+            vS, vE = dm.getDepthStratum(0)
+            verts = numpy.empty((n, dim + 1), dtype=numpy.int64)
+            for i, c in enumerate(range(cs, ce)):
+                verts[i] = [p for p in dm.getTransitiveClosure(c)[0]
+                            if vS <= p < vE]
+            X = dm.getCoordinatesLocal().array.reshape(-1, self.cdim)[
+                verts - vS]
+            e = X[:, 1:, :] - X[:, :1, :]
+            if self.cdim == dim:
+                vol_scaled = numpy.abs(numpy.linalg.det(e))
+            else:                        # manifold: Gram determinant
+                G = e @ e.transpose(0, 2, 1)
+                vol_scaled = numpy.sqrt(numpy.abs(numpy.linalg.det(G)))
+            return X.mean(axis=1), vol_scaled ** (1.0 / dim), cs
+
+        # Refine from the mesh's CURRENT geometry. Node redistribution
+        # (redistribute_nodes) moves mesh.dm's coordinates while the static
+        # base hierarchy keeps the originals — without this carry, an adapt
+        # after a redistribution would silently refine the unmoved mesh.
+        # When moved, the base-finest MG tail level is swapped for the moved
+        # copy below; the coarser tail levels keep their original geometry
+        # (the coordinate-based custom-P transfers accept non-nested pairs).
+        base_finest = self.dm_hierarchy[-1]
+        _cur_coords = self.dm.getCoordinatesLocal().array
+        _moved = not numpy.array_equal(
+            _cur_coords, base_finest.getCoordinatesLocal().array)
+        if uw.mpi.size > 1:
+            from mpi4py import MPI
+            _moved = uw.mpi.comm.allreduce(_moved, op=MPI.LOR)
+        if _moved:
+            base_finest = base_finest.clone()
+            # DMClone shares the coordinates Vec by reference — writing
+            # through getCoordinatesLocal().array here would silently move
+            # the "static" hierarchy level (self.dm_hierarchy[-1]) under
+            # the parent mesh. Install a duplicate instead; the clone gets
+            # the moved geometry, the hierarchy keeps the original.
+            _v = base_finest.getCoordinatesLocal().duplicate()
+            _v.array[:] = _cur_coords
+            base_finest.setCoordinatesLocal(_v)
+            if engine == "nvb" and self.dim == 3 and _nvbx is not None:
+                # the refinement-state seed was written on the unmoved base
+                # (in the guard above); re-seed on the moved geometry
+                from underworld3.utilities.nvb import write_tagged_state_label
+                write_tagged_state_label(base_finest)
+
         markers_per_level = []
         level_dms = []                       # one DM per refinement level
 
@@ -6422,20 +6500,13 @@ class Mesh(Stateful, uw_object):
             # bounded newest-vertex conforming closure); the transform is in-place so
             # the output stays co-partitioned with the parent and carries the
             # boundary/region labels forward automatically. A single bisection halves
-            # the area (h → h/√2), so we allow up to 2·max_levels passes to reach the
-            # same isotropic target as the SBR path's max_levels quad-splits.
-            current_dm = self.dm_hierarchy[-1]   # static base finest (distributed)
-            n_gen = 2 * max_levels
+            # the cell volume (h shrinks by 2^(1/dim)), so one isotropic-equivalent
+            # max_levels is dim bisection passes.
+            current_dm = base_finest             # base finest, current geometry
+            n_gen = dim * max_levels
             for level in range(n_gen):
-                cs, ce = current_dm.getHeightStratum(0)
-                ncells = ce - cs
-                if ncells:
-                    centroids = numpy.empty((ncells, self.cdim))
-                    cur_h = numpy.empty(ncells)
-                    for i, c in enumerate(range(cs, ce)):
-                        vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
-                        centroids[i] = numpy.asarray(cen)[: self.cdim]
-                        cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
+                centroids, cur_h, cs = cell_geometry(current_dm)
+                if cur_h.size:
                     M = numpy.clip(eval_metric(centroids), 1e-30, None)
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
@@ -6468,19 +6539,25 @@ class Mesh(Stateful, uw_object):
                     uw.pprint(0, f"[adapt] nvb pass {level}: marked {len(marked)} "
                                  f"-> {fe - fs} cells (rank-local)")
             if not level_dms:
-                current_dm = self.dm_hierarchy[-1].clone()
+                current_dm = base_finest.clone()
         elif engine == "nvb":
-            # Serial fallback (no native transform): persistent NVBMesh cell-list
-            # engine. The refinement-edge labelling propagates parent→child across
-            # generations, preserving the similarity-class (shape-regularity) bound.
-            from underworld3.utilities.nvb import NVBMesh
+            # Serial cell-list engines: the slot-based NVBMesh in 2D (until
+            # the native transform adopts the tagged rule — capstone stage
+            # 1e) and the dimension-general TaggedBisectionMesh in 3D. The
+            # refinement-edge state propagates parent→child across
+            # generations, preserving the similarity-class (shape-regularity)
+            # bound. A bisection halves the cell volume, so h shrinks by
+            # 2^(1/dim) per generation and one isotropic-equivalent
+            # ``max_levels`` is dim generations.
+            from underworld3.utilities.nvb import NVBMesh, TaggedBisectionMesh
+            _Engine = TaggedBisectionMesh if self.dim == 3 else NVBMesh
             carry = [(b.name, b.value) for b in self.boundaries
                      if b.name not in ("Null_Boundary", "All_Boundaries")]
             rcarry = ([(r.name, r.value) for r in self.regions]
                       if self.regions is not None else [])
-            nvb = NVBMesh.from_dm(self.dm_hierarchy[-1], boundaries=carry,
+            nvb = _Engine.from_dm(base_finest, boundaries=carry,
                                   regions=rcarry)
-            n_gen = 2 * max_levels
+            n_gen = dim * max_levels
             for level in range(n_gen):
                 centroids, cur_h, cids = nvb.centroids_h()
                 M = numpy.clip(eval_metric(centroids), 1e-30, None)
@@ -6501,20 +6578,13 @@ class Mesh(Stateful, uw_object):
                 if verbose:
                     uw.pprint(0, f"[adapt] nvb gen {level}: marked {len(marked)} "
                                  f"-> {len(nvb.cells)} cells")
-            current_dm = level_dms[-1] if level_dms else self.dm_hierarchy[-1].clone()
+            current_dm = level_dms[-1] if level_dms else base_finest.clone()
         else:
-            current_dm = self.dm_hierarchy[-1]   # static base finest
+            current_dm = base_finest             # base finest, current geometry
             for level in range(max_levels):
-                cs, ce = current_dm.getHeightStratum(0)
-                ncells = ce - cs
-                if ncells == 0:
+                centroids, cur_h, cs = cell_geometry(current_dm)
+                if cur_h.size == 0:
                     break
-                centroids = numpy.empty((ncells, self.cdim))
-                cur_h = numpy.empty(ncells)
-                for i, c in enumerate(range(cs, ce)):
-                    vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
-                    centroids[i] = numpy.asarray(cen)[: self.cdim]
-                    cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
 
                 # Metric M = 1/h_target² at the cell centroids (parent field).
                 # A callable is evaluated directly on the centroids; a field/expr
@@ -6542,7 +6612,7 @@ class Mesh(Stateful, uw_object):
                 level_dms.append(current_dm)
 
         if verbose:
-            base_n = self.dm_hierarchy[-1].getHeightStratum(0)
+            base_n = base_finest.getHeightStratum(0)
             fin_n = current_dm.getHeightStratum(0)
             uw.pprint(0, f"[adapt] base finest {base_n[1]-base_n[0]} -> "
                          f"child {fin_n[1]-fin_n[0]} cells "
@@ -6579,7 +6649,13 @@ class Mesh(Stateful, uw_object):
         intermediate = [
             self._wrap_coarse_level(d) for d in level_dms[:-1]
         ]
-        child._custom_mg_coarse_meshes = self._coarse_level_meshes() + intermediate
+        coarse_tail = self._coarse_level_meshes()
+        if _moved:
+            # the finest base level of the MG tail must carry the SAME moved
+            # geometry the child was refined from; coarser levels keep their
+            # original coordinates (custom-P transfers accept non-nested pairs)
+            coarse_tail = coarse_tail[:-1] + [self._wrap_coarse_level(base_finest)]
+        child._custom_mg_coarse_meshes = coarse_tail + intermediate
         child._custom_mg_builder = builder
 
         self._registered_children.add(child)

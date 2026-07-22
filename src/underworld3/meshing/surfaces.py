@@ -267,7 +267,7 @@ def _profile_to_edge_lengths(
     width : float
         Transition distance from h_near to h_far.
     profile : str
-        One of "linear", "smoothstep", or "gaussian".
+        One of "linear", "smoothstep", "gaussian", or "hyperbolic".
 
     Returns
     -------
@@ -285,9 +285,21 @@ def _profile_to_edge_lengths(
         sigma = width / 3.0
         gaussian = np.exp(-(dist_values**2) / (2 * sigma**2))
         return h_far - (h_far - h_near) * gaussian
+    elif profile == "hyperbolic":
+        # h(d) = sqrt(h_near² + (s·d)²), capped at h_far: cell size grows
+        # in proportion to distance once clear of the surface, so each
+        # bisection generation fills a band about as wide as its own cell
+        # size. Of the profiles this one buys the most transition fidelity
+        # per cell (2026-07 3D adaptivity evaluation); prefer "gaussian"
+        # when a corridor of UNIFORM h around the surface is wanted (e.g.
+        # resolving a weak zone), "linear" for the minimum cell count.
+        slope = np.sqrt(np.maximum(h_far**2 - h_near**2, 0.0)) / width
+        return np.minimum(
+            np.sqrt(h_near**2 + (slope * dist_values) ** 2), h_far)
     else:
         raise ValueError(
-            f"Unknown profile: {profile}. Use 'linear', 'smoothstep', or 'gaussian'"
+            f"Unknown profile: {profile}. "
+            "Use 'linear', 'smoothstep', 'gaussian', or 'hyperbolic'"
         )
 
 
@@ -1628,8 +1640,11 @@ class Surface:
             Distance over which to transition from h_near to h_far.
             If None, defaults to 2 * h_far.  Same unit handling as *h_near*.
         profile : str, optional
-            Transition profile: "linear", "smoothstep", or "gaussian".
-            Default is "linear".
+            Transition profile: "linear", "smoothstep", "gaussian", or
+            "hyperbolic". Default is "linear". In short: "hyperbolic"
+            gives the best transition fidelity per cell (size grows with
+            distance), "gaussian" holds a corridor of uniform size around
+            the surface, "linear" needs the fewest cells.
         name : str, optional
             Name for the metric MeshVariable. Defaults to "{surface_name}_metric".
 
@@ -1756,8 +1771,12 @@ class Surface:
             as :meth:`refinement_metric`).
         width : float or quantity, optional
             Transition distance; defaults to ``2 * h_far``.
-        profile : {"linear", "smoothstep", "gaussian"}
-            Distance-to-size profile. Default ``"linear"``.
+        profile : {"linear", "smoothstep", "gaussian", "hyperbolic"}
+            Distance-to-size profile. Default ``"linear"``. "hyperbolic"
+            (h ∝ distance once clear of the surface) gives the best
+            transition fidelity per cell and pairs well with adapt();
+            "gaussian" holds a uniform-size corridor around the surface;
+            "linear" needs the fewest cells.
 
         Returns
         -------
@@ -2456,7 +2475,8 @@ class SurfaceCollection:
         width : float or quantity, optional
             Transition distance.  Defaults to ``2 * h_far``.
         profile : str
-            ``"linear"``, ``"smoothstep"``, or ``"gaussian"``.
+            ``"linear"``, ``"smoothstep"``, ``"gaussian"``, or
+            ``"hyperbolic"``.
         variable_name : str
             Name for the metric MeshVariable.
 

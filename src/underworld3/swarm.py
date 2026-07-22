@@ -493,10 +493,31 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             if array is None:
                 return
 
-            # STEP 1: Ensure array has correct canonical shape before PETSc sync
-            # The callback might receive wrong-shaped arrays from array view operations
             import numpy as np
 
+            # Only the canonical storage may be packed to PETSc (same
+            # guard as the MeshVariable callback, #376): a fancy-indexed
+            # COPY inherits this callback and would pack a wrong-sized
+            # subset — numpy's write-back via __setitem__ on the parent
+            # does the real sync. A partial VIEW has already updated the
+            # canonical storage in place, so pack the full canonical.
+            # View-vs-copy is decided by identity in the base chain
+            # (indexing statements classify the same on every rank), NOT
+            # by np.may_share_memory, which is False for any zero-size
+            # array and would re-create the rank asymmetry on ranks with
+            # no local particles. Known corner (#379): reshape/ravel of
+            # a non-contiguous derived view still classifies
+            # asymmetrically on zero-size ranks.
+            if array is not array_obj:
+                base = array.base
+                while base is not None and base is not array_obj:
+                    base = getattr(base, "base", None)
+                if base is None:
+                    return
+                array = np.asarray(array_obj)
+
+            # STEP 1: Ensure array has correct canonical shape before PETSc sync
+            # The callback might receive wrong-shaped arrays from array view operations
             canonical_array = np.atleast_2d(array)
             if canonical_array.shape != (array.shape[0], self.num_components):
                 # Reshape to canonical format: (-1, num_components)
