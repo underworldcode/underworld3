@@ -2784,10 +2784,43 @@ class _BaseMeshVariable(Stateful, uw_object):
             if array is None:
                 return
 
-            # STEP 1: Ensure array has correct canonical shape before PETSc sync
-            # The callback might receive wrong-shaped arrays from array view operations
             import numpy as np
 
+            # Only the canonical storage may be packed to PETSc. Derived
+            # arrays inherit this callback via __array_finalize__, so an
+            # in-place op on a fancy-indexed COPY (``var.data[mask] /= s``)
+            # would try to pack the subset into the full-size vec. The mask
+            # is partition-dependent, so in parallel the failed pack skips
+            # the collective sync on some ranks only — mismatched
+            # collectives hang the run (#376). numpy writes the copy back
+            # through __setitem__ on the parent, which re-runs this
+            # callback with the canonical array, so skipping here loses
+            # nothing. A partial VIEW has already changed the canonical
+            # storage in place: sync the full canonical instead.
+            #
+            # View-vs-copy must be decided by IDENTITY in the base chain,
+            # not memory overlap: np.may_share_memory is False for any
+            # zero-size array, so a rank whose slice is locally empty
+            # would classify a view as a copy and skip the collective
+            # sync that the other ranks enter — the same rank-asymmetry
+            # again. For indexing statements (basic slice → view, fancy
+            # → copy) the classification follows the statement and is
+            # identical on every rank. Known corner (#379): reshape/
+            # ravel of a NON-contiguous derived view is a copy on
+            # non-empty ranks but a view on a zero-size rank, so that
+            # pattern is still rank-asymmetric — unresolvable here (the
+            # zero-size cases are locally indistinguishable); the
+            # dirty-flag flush planned in #379 is the real fix.
+            if array is not array_obj:
+                base = array.base
+                while base is not None and base is not array_obj:
+                    base = getattr(base, "base", None)
+                if base is None:
+                    return
+                array = np.asarray(array_obj)
+
+            # STEP 1: Ensure array has correct canonical shape before PETSc sync
+            # The callback might receive wrong-shaped arrays from array view operations
             canonical_array = np.atleast_2d(array)
 
             if canonical_array.shape != (canonical_array.shape[0], var.num_components):
