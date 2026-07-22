@@ -118,7 +118,10 @@ class NDArray_With_Callback(np.ndarray):
 
     - ``operation`` (str): Operation name ('setitem', 'iadd', 'fill', etc.)
     - ``indices`` (tuple/slice/None): Location of change (for setitem operations)
-    - ``old_value`` (array-like/None): Previous values (when available)
+    - ``old_value`` (None): Always None. Internal operations no longer snapshot
+      prior values (no registered callback ever read them, and the copy was a
+      full-array allocation per write); the key is retained for dict-shape
+      compatibility.
     - ``new_value`` (array-like): New values being assigned
     - ``array_shape`` (tuple): Current shape of the array
     - ``array_dtype`` (np.dtype): Data type of the array
@@ -541,8 +544,9 @@ class NDArray_With_Callback(np.ndarray):
             Name of the operation that triggered the callback
         indices : tuple or slice, optional
             Indices that were modified
-        old_value : array-like, optional
-            Previous value(s) at the modified location
+        old_value : None
+            Always None from internal operations (see class docstring);
+            the parameter and dict key remain for compatibility
         new_value : array-like, optional
             New value(s) at the modified location
         data_has_changed : bool, optional
@@ -567,23 +571,15 @@ class NDArray_With_Callback(np.ndarray):
             for callback in self._callbacks:
                 _delayed_callback_manager.add_delayed_callback(self, callback, change_info)
         else:
-            # Execute callbacks immediately
+            # Execute callbacks immediately. Exceptions PROPAGATE: a swallowed
+            # callback failure leaves PETSc out of sync with the canonical
+            # array on this rank only — the silent desynchronisation that hid
+            # the #376 parallel hang.
             for callback in self._callbacks.copy():  # Copy in case callbacks modify the list
-                try:
-                    callback(self, change_info)
-                except Exception as e:
-                    logger.warning(f"Callback error in {callback}: {e}")
+                callback(self, change_info)
 
     def __setitem__(self, key, value):
         """Override setitem to trigger callbacks on assignment."""
-        if self._callback_enabled and self._callbacks:
-            try:
-                old_value = self[key].copy() if hasattr(self[key], "copy") else self[key]
-            except (IndexError, ValueError):
-                old_value = None
-        else:
-            old_value = None
-
         # Handle UnitAwareArray values by extracting magnitude
         # This allows: T.array[...] = uw.function.evaluate(...) where evaluate returns UnitAwareArray
         # Without this, numpy raises "only length-1 arrays can be converted to Python scalars"
@@ -596,7 +592,7 @@ class NDArray_With_Callback(np.ndarray):
         super().__setitem__(key, actual_value)
 
         # Trigger callbacks
-        self._trigger_callback("setitem", indices=key, old_value=old_value, new_value=value)
+        self._trigger_callback("setitem", indices=key, new_value=value)
 
     def __iadd__(self, other):
         """In-place addition with callback."""
@@ -606,13 +602,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr + other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__iadd__(other)
-        self._trigger_callback("iadd", old_value=old_value, new_value=other)
+        self._trigger_callback("iadd", new_value=other)
         return result
 
     def __isub__(self, other):
@@ -623,13 +614,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr - other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__isub__(other)
-        self._trigger_callback("isub", old_value=old_value, new_value=other)
+        self._trigger_callback("isub", new_value=other)
         return result
 
     def __imul__(self, other):
@@ -640,13 +626,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr * other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__imul__(other)
-        self._trigger_callback("imul", old_value=old_value, new_value=other)
+        self._trigger_callback("imul", new_value=other)
         return result
 
     def __itruediv__(self, other):
@@ -657,13 +638,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr / other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__itruediv__(other)
-        self._trigger_callback("itruediv", old_value=old_value, new_value=other)
+        self._trigger_callback("itruediv", new_value=other)
         return result
 
     def __ifloordiv__(self, other):
@@ -674,13 +650,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr // other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__ifloordiv__(other)
-        self._trigger_callback("ifloordiv", old_value=old_value, new_value=other)
+        self._trigger_callback("ifloordiv", new_value=other)
         return result
 
     def __imod__(self, other):
@@ -691,13 +662,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr % other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__imod__(other)
-        self._trigger_callback("imod", old_value=old_value, new_value=other)
+        self._trigger_callback("imod", new_value=other)
         return result
 
     def __ipow__(self, other):
@@ -708,13 +674,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr ** other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__ipow__(other)
-        self._trigger_callback("ipow", old_value=old_value, new_value=other)
+        self._trigger_callback("ipow", new_value=other)
         return result
 
     def __iand__(self, other):
@@ -725,13 +686,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr & other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__iand__(other)
-        self._trigger_callback("iand", old_value=old_value, new_value=other)
+        self._trigger_callback("iand", new_value=other)
         return result
 
     def __ior__(self, other):
@@ -742,13 +698,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr | other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__ior__(other)
-        self._trigger_callback("ior", old_value=old_value, new_value=other)
+        self._trigger_callback("ior", new_value=other)
         return result
 
     def __ixor__(self, other):
@@ -759,13 +710,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr ^ other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__ixor__(other)
-        self._trigger_callback("ixor", old_value=old_value, new_value=other)
+        self._trigger_callback("ixor", new_value=other)
         return result
 
     def __ilshift__(self, other):
@@ -776,13 +722,8 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr << other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__ilshift__(other)
-        self._trigger_callback("ilshift", old_value=old_value, new_value=other)
+        self._trigger_callback("ilshift", new_value=other)
         return result
 
     def __irshift__(self, other):
@@ -793,46 +734,24 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr >> other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         result = super().__irshift__(other)
-        self._trigger_callback("irshift", old_value=old_value, new_value=other)
+        self._trigger_callback("irshift", new_value=other)
         return result
 
     def fill(self, value):
         """Fill array with scalar value, triggering callback."""
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         super().fill(value)
-        self._trigger_callback("fill", old_value=old_value, new_value=value)
+        self._trigger_callback("fill", new_value=value)
 
     def sort(self, axis=-1, kind=None, order=None):
         """Sort array in-place, triggering callback."""
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         super().sort(axis=axis, kind=kind, order=order)
-        self._trigger_callback("sort", old_value=old_value)
+        self._trigger_callback("sort")
 
     def resize(self, new_shape, refcheck=True):
         """Resize array in-place, triggering callback."""
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-            old_shape = self.shape
-        else:
-            old_value = None
-            old_shape = None
-
         super().resize(new_shape, refcheck=refcheck)
-        self._trigger_callback("resize", old_value=old_value, new_value=new_shape)
+        self._trigger_callback("resize", new_value=new_shape)
 
     def copy(self, order="C"):
         """
@@ -911,12 +830,6 @@ class NDArray_With_Callback(np.ndarray):
         """
         new_array = np.asarray(new_data)
 
-        # Store old info for callback
-        if self._callback_enabled and self._callbacks:
-            old_data = self.copy()
-        else:
-            old_data = None
-
         if new_array.shape == self.shape and new_array.dtype == self.dtype:
             # Same size and dtype: ultra-efficient in-place copy
             np.copyto(self, new_array)
@@ -924,7 +837,6 @@ class NDArray_With_Callback(np.ndarray):
             # Trigger callback for the sync operation
             self._trigger_callback(
                 "sync_data",
-                old_value=old_data,
                 new_value=new_array,
                 indices=None,  # Full array update
                 data_has_changed=False,  # Sync operation doesn't represent user data change
@@ -948,7 +860,6 @@ class NDArray_With_Callback(np.ndarray):
             # Trigger callback on the new object
             new_obj._trigger_callback(
                 "sync_data",
-                old_value=old_data,
                 new_value=new_array,
                 indices=None,
                 data_has_changed=False,  # Sync operation doesn't represent user data change
