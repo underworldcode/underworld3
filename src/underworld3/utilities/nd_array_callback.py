@@ -311,6 +311,56 @@ class NDArray_With_Callback(np.ndarray):
         if callback is not None and callback not in self._callbacks:
             self._callbacks.append(callback)
 
+    def add_canonical_callback(self, callback: Callable):
+        """
+        Register a callback that only ever fires for the canonical storage.
+
+        ``self`` must be the canonical array at registration time. Derived
+        arrays inherit the callback list via ``__array_finalize__``, so an
+        unguarded callback also fires on views and temporary fancy-index
+        copies. A copy's contents are partition-dependent, so a PETSc sync
+        run from inside the callback executes its collectives on some ranks
+        only — the #376 parallel hang. This wrapper applies the guard once,
+        centrally:
+
+        - write through a **view** of the canonical array: the data already
+          landed in canonical storage, so the callback fires with the FULL
+          canonical array;
+        - write to a **copy**: skipped — numpy's fancy-index write-back
+          re-fires the callback through the parent's ``__setitem__``, so
+          nothing is lost;
+        - view-vs-copy is decided by IDENTITY in numpy's base chain, never
+          ``np.may_share_memory``, which is False for any zero-size array
+          and would re-create the rank asymmetry on ranks whose local
+          slice is empty.
+
+        Parameters
+        ----------
+        callback : callable
+            Function with signature ``callback(array, change_info)``;
+            ``array`` is always the canonical storage.
+        """
+        # weakref: the callback list lives ON the array, so a strong capture
+        # of self inside the closure would be an uncollectable cycle
+        canonical_ref = weakref.ref(self)
+
+        def _canonical_dispatch(array, change_info):
+            canonical = canonical_ref()
+            if canonical is None:
+                return
+            if array is not canonical:
+                base = array.base
+                while base is not None and base is not canonical:
+                    base = getattr(base, "base", None)
+                if base is None:
+                    return
+                array = canonical
+            callback(array, change_info)
+
+        _canonical_dispatch._is_canonical = True
+        _canonical_dispatch._canonical_ref = canonical_ref
+        self.add_callback(_canonical_dispatch)
+
     def remove_callback(self, callback: Callable):
         """
         Remove a specific callback function.
