@@ -244,7 +244,23 @@ def _mesh_coords_update_callback(array, change_context):
         uw.pprint(f"Mesh update callback - mesh deform")
 
     coords = array.reshape(-1, mesh.cdim)
-    mesh._deform_mesh(coords, verbose=verbose)
+    try:
+        mesh._deform_mesh(coords, verbose=verbose)
+    except Exception:
+        # The user's write landed in the canonical array BEFORE this
+        # callback ran. A rejected/failed deform must not leave
+        # mesh.X.coords disagreeing with the DM — the guard's message
+        # says the write "is rejected", so make that true by restoring
+        # the canonical from the DM, then let the error surface.
+        # (np.copyto bypasses callbacks; this restore must not re-fire.)
+        dm_coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
+        cached = numpy.asarray(mesh._coords).reshape(-1, mesh.cdim)
+        if cached.shape == dm_coords.shape:
+            numpy.copyto(cached, dm_coords)
+        # else: the failure replaced the coordinate Vec at a different size
+        # (mid-rebuild) — restoring is impossible and a broadcast error here
+        # would mask the original exception (round-2 review).
+        raise
 
     # Increment mesh version to notify registered swarms of coordinate changes
     with mesh._mesh_update_lock:

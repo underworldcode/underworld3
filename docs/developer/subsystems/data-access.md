@@ -181,7 +181,8 @@ Key implementation locations:
 - **MeshVariable**: `discretisation_mesh_variables.py`
   - `array` property (lines 700-720)
   - `data` property for compatibility (lines 680-700)
-  - Callback registration in `_create_variable_array()`
+  - Callback registration in `_create_canonical_data_array()` via
+    `NDArray_With_Callback.add_canonical_callback()` (central view/copy guard)
 
 - **SwarmVariable**: `swarm.py`
   - `array` property with caching (lines 857-871)
