@@ -2803,8 +2803,14 @@ class _BaseMeshVariable(Stateful, uw_object):
             # zero-size array, so a rank whose slice is locally empty
             # would classify a view as a copy and skip the collective
             # sync that the other ranks enter — the same rank-asymmetry
-            # again. The indexing *statement* (basic slice → view, fancy
-            # → copy) is identical on every rank, and so is this walk.
+            # again. For indexing statements (basic slice → view, fancy
+            # → copy) the classification follows the statement and is
+            # identical on every rank. Known corner (#379): reshape/
+            # ravel of a NON-contiguous derived view is a copy on
+            # non-empty ranks but a view on a zero-size rank, so that
+            # pattern is still rank-asymmetric — unresolvable here (the
+            # zero-size cases are locally indistinguishable); the
+            # dirty-flag flush planned in #379 is the real fix.
             if array is not array_obj:
                 base = array.base
                 while base is not None and base is not array_obj:

@@ -501,11 +501,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # subset — numpy's write-back via __setitem__ on the parent
             # does the real sync. A partial VIEW has already updated the
             # canonical storage in place, so pack the full canonical.
-            # View-vs-copy is decided by identity in the base chain (the
-            # indexing statement is the same on every rank), NOT by
-            # np.may_share_memory, which is False for any zero-size array
-            # and would re-create the rank asymmetry on ranks with no
-            # local particles.
+            # View-vs-copy is decided by identity in the base chain
+            # (indexing statements classify the same on every rank), NOT
+            # by np.may_share_memory, which is False for any zero-size
+            # array and would re-create the rank asymmetry on ranks with
+            # no local particles. Known corner (#379): reshape/ravel of
+            # a non-contiguous derived view still classifies
+            # asymmetrically on zero-size ranks.
             if array is not array_obj:
                 base = array.base
                 while base is not None and base is not array_obj:

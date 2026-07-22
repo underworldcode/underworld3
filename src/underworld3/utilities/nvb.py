@@ -113,10 +113,17 @@ def write_tagged_state_label(dm):
         _, ilocal, _ = dm.getPointSF().getGraph()
         leaves = {int(p) for p in ilocal}
     except (ValueError, TypeError):
-        leaves = set()
-    n_owned = sum(1 for v in range(vS, vE) if v not in leaves)
+        leaves = None      # SF not graphed: cannot count owned vertices —
+        #                    skip the check rather than miscount (a bare
+        #                    leaves=set() would over-count every ghost as
+        #                    owned and false-positive on a healthy mesh)
+    # every rank enters both allreduces unconditionally, so the skip
+    # decision stays collective even if the SF were ungraphed unevenly
+    n_owned = (sum(1 for v in range(vS, vE) if v not in leaves)
+               if leaves is not None else 0)
+    skip = comm.allreduce(int(leaves is None)) > 0
     n_global = comm.allreduce(n_owned)
-    if len(vkeys) != n_global:
+    if not skip and len(vkeys) != n_global:
         raise RuntimeError(
             f"tagged-state seed: {n_global} global vertices reduce to "
             f"{len(vkeys)} distinct coordinate keys — the mesh has "
