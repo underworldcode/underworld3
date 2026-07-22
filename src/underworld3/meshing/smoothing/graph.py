@@ -101,7 +101,6 @@ def _pinned_mask(dm, pinned_labels):
     ``Centre`` pressure-pin marker on an Annulus, whose underlying
     ``DMLabel`` has no strata and hard-crashes any query)."""
     pStart, pEnd = dm.getDepthStratum(0)
-    eStart, eEnd = dm.getDepthStratum(1)
     n_verts = pEnd - pStart
     is_pinned = np.zeros(n_verts, dtype=bool)
     for lname in pinned_labels:
@@ -127,10 +126,15 @@ def _pinned_mask(dm, pinned_labels):
                 if pStart <= idx < pEnd:
                     # Tagged vertex — pin directly.
                     is_pinned[idx - pStart] = True
-                elif eStart <= idx < eEnd:
-                    # Tagged edge — pin both endpoint vertices.
-                    cone = dm.getCone(idx)
-                    for c in cone:
+                else:
+                    # Tagged edge (2D labels) or face (3D labels tag
+                    # faces ONLY, so stopping at edges left every 3D
+                    # boundary vertex unmarked — no pin, no slip, the
+                    # boundary drifted freely): close the point down to
+                    # its vertices. For an edge the closure is exactly
+                    # its endpoints, so the 2D mask is bit-identical.
+                    closure = dm.getTransitiveClosure(idx)[0]
+                    for c in closure:
                         if pStart <= c < pEnd:
                             is_pinned[c - pStart] = True
     return is_pinned
@@ -235,6 +239,20 @@ def _signed_areas(coords, tris):
     c = coords[tris[:, 2]]
     return 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
                   - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+
+
+def _signed_volumes(coords, tets):
+    """Signed volume of each tetrahedron (sign = orientation) — the 3D
+    analogue of :func:`_signed_areas`, indexed the same way. Note the
+    DMPlex reference tet is det-NEGATIVE, so a healthy all-DMPlex-ordered
+    tet mesh yields uniformly negative values; callers (the MMPDE mover's
+    fold guard) already orientation-normalise with the global median
+    sign, exactly as they do for 2D."""
+    a = coords[tets[:, 0]]
+    e = np.stack([coords[tets[:, 1]] - a,
+                  coords[tets[:, 2]] - a,
+                  coords[tets[:, 3]] - a], axis=1)
+    return np.linalg.det(e) / 6.0
 
 
 
@@ -441,8 +459,8 @@ def smooth_surface_field(
 def _tet_cells(dm):
     """Tetrahedron vertex-index quadruples (local-chart), or ``None`` if the
     mesh is not all-tet. The 3D analogue of :func:`_tri_cells` — used by the
-    3D boundary-face extraction in :func:`_boundary_facets` (the MMPDE
-    mover itself is currently 2D-only)."""
+    3D boundary-face extraction in :func:`_boundary_facets` and by the
+    MMPDE mover's 3D discretization."""
     cStart, cEnd = dm.getHeightStratum(0)
     pStart, pEnd = dm.getDepthStratum(0)
     tets = []
