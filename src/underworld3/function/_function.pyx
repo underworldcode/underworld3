@@ -1276,8 +1276,23 @@ def petsc_interpolate(   expr,
         # Try to get cached structure first
         from underworld3.function._dminterp_wrapper import CachedDMInterpolationInfo
 
+        # Location policy: is the cell-wall hint authoritative for THIS
+        # evaluation? Decided by the mesh's measured capability (face
+        # planarity + convexity, mesh._location_capability) combined with the
+        # continuity of the variables being interpolated — "continuous"
+        # capability (small-sagitta warped hexes, e.g. the cubed sphere) is
+        # authoritative only when every field is continuous, because a
+        # face-aligned jump inside the misclassification slab would see
+        # O(jump) wrong-side errors. The policy participates in the cache key
+        # so the same coords evaluated with a different field mix cannot
+        # reuse a structure built under the other policy.
+        all_continuous = all(getattr(var, "continuous", True) for var in vars)
+        authoritative = mesh._hint_is_authoritative(all_continuous)
+        location_policy = "auth" if authoritative else "locate"
+
         # coords is already np.ndarray type in petsc_interpolate function signature
-        cached_info = mesh._dminterpolation_cache.get_structure(coords, dofcount)
+        cached_info = mesh._dminterpolation_cache.get_structure(
+            coords, dofcount, policy=location_policy)
 
         # Create output array
         cdef np.ndarray outarray = np.empty([len(coords), dofcount], dtype=np.float64)
@@ -1295,27 +1310,34 @@ def petsc_interpolate(   expr,
             # CACHE MISS - Create structure and cache it
             cached_info = CachedDMInterpolationInfo()
 
-            # Get cell hints.
-            # In PARALLEL use the bulletproof barycentric locator (the swarm-
-            # migration locator): get_closest_cells (first-pass kd-tree-nearest)
-            # can hand back a non-containing cell for on-face/seam node points,
-            # and that wrong cell is what the DMInterpolation recovery uses when
-            # DMLocatePoints drops the point -> a value from the wrong region.
-            # _robust_owning_cells returns the true containing cell (or a valid
-            # adjacent cell for on-face points). When the bypass is active
-            # (mesh._eval_use_robust_location()) this hint is trusted directly;
-            # otherwise it is the first-pass guess as before. Same single policy
-            # switch as the classifier and the DMInterpolation wrapper.
-            if mesh._eval_use_robust_location():
-                cells = mesh._robust_owning_cells(coords)
+            # Cell hints, by policy:
+            # AUTHORITATIVE — the estimator owner is the answer. Parallel uses
+            # the bulletproof barycentric locator (correct owner across
+            # seams). Serial simplex keeps get_closest_cells (the validated
+            # bit-for-bit PR #203 path; with planar faces + ξ-clamp the
+            # nearest-cell hint evaluates exactly). Serial quad/hex meshes
+            # that qualify by MEASUREMENT use the estimator directly — the
+            # nearest-centroid guess is not containment-checked and these
+            # meshes only just graduated, so take the checked owner.
+            # NOT AUTHORITATIVE — no hint at all: DMLocatePoints decides,
+            # dropped points surface in unlocated_mask and are filled by the
+            # RBF fallback below.
+            if authoritative:
+                if mesh._eval_use_robust_location():
+                    cells = mesh._robust_owning_cells(coords)
+                elif not bool(mesh.dm.isSimplex()) and mesh.dim == mesh.cdim:
+                    cells = mesh._robust_owning_cells(coords)
+                else:
+                    cells = mesh.get_closest_cells(coords)
             else:
-                cells = mesh.get_closest_cells(coords)
+                cells = None
 
             # Create and set up DMInterpolation structure (EXPENSIVE)
             # This calls DMLocatePoints which is COLLECTIVE — all ranks must enter.
             try:
                 # coords is already np.ndarray type (function signature ensures this)
-                cached_info.create_structure(mesh, coords, cells, dofcount)
+                cached_info.create_structure(mesh, coords, cells, dofcount,
+                                             hint_authoritative=authoritative)
             except RuntimeError as e:
                 # Handle DMInterpolationSetUp failures gracefully
                 if "outside the domain" in str(e):
@@ -1326,13 +1348,29 @@ def petsc_interpolate(   expr,
 
             # Store in cache for reuse
             # coords is already np.ndarray type (function signature ensures this)
-            mesh._dminterpolation_cache.store_structure(coords, dofcount, cached_info)
+            mesh._dminterpolation_cache.store_structure(
+                coords, dofcount, cached_info, policy=location_policy)
 
             # Evaluate
             # swarm_sync=False: see the cache-hit branch above — only a
             # subset of ranks reaches petsc_interpolate.
             mesh.update_lvec(swarm_sync=False)
             cached_info.evaluate(mesh, outarray)
+
+        # RBF fallback rung: points no cell owns (dropped by DMLocatePoints
+        # on a non-authoritative mesh, or hinted -1) hold NaN in outarray.
+        # Fill them per-variable with the bounded, topology-free RBF
+        # interpolant — the same machinery exterior points already use. NaN
+        # survives only if this plumbing is bypassed, which is exactly when
+        # it should be visible.
+        unlocated = getattr(cached_info, "unlocated_mask", None)
+        if unlocated is not None and unlocated.any():
+            fallback_coords = coords[unlocated]
+            for var in vars:
+                var_start = var_start_index[var]
+                rbf_vals = np.asarray(var.rbf_interpolate(fallback_coords))
+                rbf_vals = rbf_vals.reshape(len(fallback_coords), var.num_components)
+                outarray[unlocated, var_start:var_start + var.num_components] = rbf_vals
         # === END CACHING ===
 
         # Create map between array slices and variable functions

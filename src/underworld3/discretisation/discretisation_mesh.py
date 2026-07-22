@@ -5834,14 +5834,132 @@ class Mesh(Stateful, uw_object):
             dtype=numpy.int64,
         )
 
+    def _audit_cell_face_geometry(self):
+        """Measure the two quantities that bound the cell-wall estimator's
+        authority on quad/hex meshes: worst face non-planarity (sagitta) and
+        worst outward half-space violation by a cell's own vertices, both
+        relative to the face diameter.
+
+        The in-cell test (:meth:`_test_if_points_in_cells_internal`) is a
+        half-space intersection over the face planes the control points
+        define. It is exact when every face is planar and every cell is
+        convex; a warped face confines misclassification to a slab of
+        thickness ~sagitta at that face (and the misassigned cell is the
+        face-adjacent neighbour, where continuous FE interpolants agree).
+        The violation term catches non-convex / tangled cells, whose
+        half-space intersection no longer represents the cell at all.
+
+        Returns ``(max_sagitta_rel, max_violation_rel)`` over local cells;
+        ``(0.0, 0.0)`` on an empty local mesh.
+        """
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
+
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        if cEnd == cStart:
+            return 0.0, 0.0
+        cell_num_faces = self.element.entities[1]
+        cell_num_points = self.element.entities[self.dim]
+        face_num_points = self.element.face_entities[self.dim]
+
+        max_sag = 0.0
+        max_viol = 0.0
+        for cell_id in range(cStart, cEnd):
+            cell_faces = nav_dm.getCone(cell_id)
+            cpoints = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, cpoints)]
+            cell_centroid = cell_point_coords.mean(axis=0)
+            for face in range(cell_num_faces):
+                fpoints = nav_dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
+                point_coords = nav_coords[self._coord_rows_for_points(nav_dm, fpoints)]
+                face_centroid = point_coords.mean(axis=0)
+                normal = self._facet_outward_unit_normal(
+                    point_coords, face_centroid, cell_centroid,
+                    cell_point_coords=cell_point_coords,
+                )
+                diam = float(numpy.linalg.norm(
+                    point_coords.max(axis=0) - point_coords.min(axis=0)))
+                if diam == 0.0:
+                    continue
+                sag = float(numpy.abs((point_coords - face_centroid) @ normal).max())
+                viol = float(((cell_point_coords - face_centroid) @ normal).max())
+                max_sag = max(max_sag, sag / diam)
+                max_viol = max(max_viol, viol / diam)
+        return max_sag, max_viol
+
+    # Capability thresholds. EXACT demands machine-planar faces and convex
+    # cells; CONTINUOUS admits face warp up to 5% of the face diameter (the
+    # cubed sphere measures ~1e-2 on its spherical faces; a smoothly deformed
+    # hex box ~1e-2). Beyond that the estimator's error bound is no longer
+    # small against per-cell field variation and it loses authority entirely.
+    _LOCATION_EXACT_TOL = 1.0e-9
+    _LOCATION_CONTINUOUS_TOL = 5.0e-2
+
+    def _location_capability(self) -> str:
+        """Measured point-location capability of this mesh's cell-wall
+        estimator: ``"exact"``, ``"continuous"``, or ``"none"``.
+
+        * ``"exact"`` — the estimator is authoritative for every field type:
+          simplex meshes, manifold meshes (dim != cdim, where PETSc's own
+          in-cell test is the unreliable party), and any quad/hex mesh whose
+          measured face sagitta and convexity violation are at machine level
+          (rectilinear boxes, affine images, and *all valid 2-D quad meshes* —
+          straight edges are always planar and convexity is equivalent to an
+          untangled mesh).
+        * ``"continuous"`` — authoritative for continuous fields only: warped
+          hexes within the sagitta tolerance (cubed-sphere class). A point in
+          the misclassification slab lands in the face-adjacent neighbour,
+          where continuous FE interpolants agree to O(sagitta x gradient) —
+          but a field with a face-aligned jump would see O(jump) errors, so
+          discontinuous evaluation must not trust the estimator here.
+        * ``"none"`` — badly warped or non-convex cells: the estimator carries
+          no authority and dropped points take the RBF fallback.
+
+        The audit is computed per rank over local cells and cached against
+        ``(_mesh_version, _topology_version)`` — ``deform()`` and adaptation
+        both bump these. It is deliberately NOT reduced across ranks: the
+        evaluator runs on COMM_SELF, so a (pathological) capability split at
+        a threshold is rank-local and safe, while a collective reduction here
+        could deadlock (petsc_interpolate is reached only by ranks holding
+        points).
+        """
+        key = (self._mesh_version, self._topology_version)
+        cached = getattr(self, "_location_capability_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        if bool(self.dm.isSimplex()) or (self.dim != self.cdim):
+            cap = "exact"
+        else:
+            sag_rel, viol_rel = self._audit_cell_face_geometry()
+            worst = max(sag_rel, viol_rel)
+            if worst < self._LOCATION_EXACT_TOL:
+                cap = "exact"
+            elif worst < self._LOCATION_CONTINUOUS_TOL:
+                cap = "continuous"
+            else:
+                cap = "none"
+        self._location_capability_cache = (key, cap)
+        return cap
+
+    def _hint_is_authoritative(self, all_fields_continuous: bool = True) -> bool:
+        """Whether the cell-wall hint may bypass ``DMLocatePoints`` for an
+        evaluation involving the given field continuity. See
+        :meth:`_location_capability` for the regimes; ``"continuous"``
+        capability is only authoritative when every interpolated variable is
+        continuous.
+        """
+        cap = self._location_capability()
+        return cap == "exact" or (cap == "continuous" and bool(all_fields_continuous))
+
     def _eval_use_robust_location(self) -> bool:
         """Single switch for the parallel evaluation cell-location strategy.
 
         Returns True when ``uw.function`` evaluation should locate cells with
         the bulletproof barycentric hint (:meth:`_robust_owning_cells`) and the
         ``DMLocatePoints`` bypass (``petsc_tools.c``), rather than PETSc's
-        ``DMLocatePoints``. This is the *one place* the policy lives; the
-        evaluate_nd classifier, the petsc_interpolate hint, and the
+        ``DMLocatePoints``. This is the *one place* the parallel policy lives;
+        the evaluate_nd classifier, the petsc_interpolate hint, and the
         DMInterpolation wrapper all defer to it so the three stay consistent.
 
         Two conditions, both required:
@@ -5851,16 +5969,15 @@ class Mesh(Stateful, uw_object):
           are reliable with a single domain, so serial keeps the validated path
           bit-for-bit. The parallel-only failure is the rank-local RBF / wrong-
           region value at partition-seam node points.
-        * **hint is authoritative** — simplex cells (``dm.isSimplex()``: planar
-          faces, affine reference map, exact face containment) or manifold
-          meshes (``dim != cdim``: PETSc's in-cell test is unreliable near
-          2-manifold simplex edges in 3-D). On non-simplex volume meshes
-          (quads/hexes) deformed faces can be non-planar and the kdtree-nearest
-          cell can be wrong, so those keep PETSc's DMLocatePoints search.
+        * **the estimator carries geometric authority** — measured capability
+          ``"exact"`` or ``"continuous"`` (:meth:`_location_capability`). For
+          in/out *classification* the continuous regime is sufficient: the
+          only ambiguity is within the sagitta slab of the domain boundary,
+          which is exactly the tolerance the classifier already accepts.
+          Capability ``"none"`` (badly warped / non-convex quad meshes) keeps
+          PETSc's DMLocatePoints search.
         """
-        return (uw.mpi.size > 1) and (
-            bool(self.dm.isSimplex()) or (self.dim != self.cdim)
-        )
+        return (uw.mpi.size > 1) and (self._location_capability() != "none")
 
     def _get_mesh_sizes(self, verbose=False):
         """
