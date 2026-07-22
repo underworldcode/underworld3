@@ -99,6 +99,9 @@ class FreeSurface:
         smooth_length=0.0,
         mass="lumped",
         max_surface_cfl=0.5,
+        tangent_advect=None,
+        surface_mask=None,
+        surface_filter=0,
         verbose=False,
     ):
         self.free = stokes
@@ -111,6 +114,11 @@ class FreeSurface:
         self._smooth_length = smooth_length
         self._mass = mass
         self.max_surface_cfl = max_surface_cfl
+        # First-pass along-surface (tangential) transport of the surface fields:
+        # None (off), "shape" (transport the geometry h — the standard operator split),
+        # or "fields" (transport the driving h_inf, u_n). A diagnostic to size the term.
+        self.tangent_advect = tangent_advect
+        self._surface_mask_fn = surface_mask
         self.verbose = verbose
 
         # Continuous pressure is required for the CBF reaction on a simplex free
@@ -127,6 +135,15 @@ class FreeSurface:
         self._surf_coords = self._surface_node_coords()
         self._surf_rows, self._surf_x = self._field_rows(self.mesh.X, self._surf_coords)
 
+        # Optional taper on the surface rate: h_dot -> h_dot * mask(x). A mask that
+        # falls to zero near a driven wall pins the surface where a stress-free top
+        # would otherwise fight an imposed wall velocity (the outflow-corner spike),
+        # leaving the interior free. Evaluated once on the (Cartesian-invariant) x.
+        self._surface_mask = None
+        if surface_mask is not None:
+            mask = np.asarray(function.evaluate(surface_mask, self._surf_coords)).flatten()
+            self._surface_mask = mask[np.argsort(self._surf_coords[:, 0])]
+
         # Equilibrium-topography field, filled on the surface nodes by the held solve.
         self._hinf_field = uw.discretisation.MeshVariable(
             "h_inf", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
@@ -137,6 +154,9 @@ class FreeSurface:
         self._build_held(driving_buoyancy)
         self._build_consistent()
         self._build_interior_diffuser()
+        self._filter_iters = int(surface_filter)
+        if self._filter_iters:
+            self._build_surface_filter()
         if composition is not None:
             self._build_composition_transport()
 
@@ -154,9 +174,10 @@ class FreeSurface:
         r"""Read the free solve's wall BCs as ``{boundary: ("freeslip"|"noslip", normal)}``.
 
         Free-slip walls are the rotated-free-slip constraints (the recommended
-        primitive); no-slip walls are homogeneous essential BCs. The surface label
-        is excluded — the free solve leaves it stress-free. Both are replayed onto
-        the derived solves.
+        primitive); essential walls carry their prescribed value verbatim — including a
+        NON-zero driving velocity (a plate push), not just no-slip. The surface label is
+        excluded (the free solve leaves it stress-free). Both are replayed on the derived
+        solves so they see the same forcing.
         """
         walls = {}
         for boundary, wall_normal in getattr(self.free, "_rotated_freeslip_bcs", []):
@@ -164,17 +185,20 @@ class FreeSurface:
                 walls[boundary] = ("freeslip", wall_normal)
         for bc in self.free.essential_bcs:
             if bc.boundary != self.surface and bc.boundary not in walls:
-                walls[bc.boundary] = ("noslip", None)
+                # bc.fn is an immutable dim x 1 matrix; add_essential_bc wants a mutable
+                # sympy.Matrix in the value-first (column, oo-masked) form.
+                walls[bc.boundary] = ("essential", sympy.Matrix(bc.fn))
         return walls
 
     def _apply_walls(self, solver):
         """Replay the classified wall BCs onto a derived solve (rotated free-slip lid
-        pattern: rotate every free-slip wall so shared corners stay consistent)."""
-        for boundary, (kind, wall_normal) in self._walls.items():
-            if kind == "noslip":
-                solver.add_essential_bc(sympy.Matrix([[0.0] * self.mesh.dim]), boundary)
+        pattern: rotate every free-slip wall so shared corners stay consistent; essential
+        walls keep their prescribed value)."""
+        for boundary, (kind, spec) in self._walls.items():
+            if kind == "freeslip":
+                solver.add_rotated_freeslip_bc(0.0, boundary, normal=spec)
             else:
-                solver.add_rotated_freeslip_bc(0.0, boundary, normal=wall_normal)
+                solver.add_essential_bc(spec, boundary)
 
     def _surface_node_coords(self):
         r"""Coordinates of the vertices on ``surface``, from the DMPlex boundary
@@ -401,6 +425,26 @@ class FreeSurface:
             self._conserve_rate = uw.maths.Integral(self.mesh, shift_rate)
             self._conserve_target = float(self._conserve_area.evaluate())
 
+    def _build_surface_filter(self):
+        """Taubin low-pass over the surface graph, to attenuate the facet-scale (CBF
+        boundary) node-noise in the recovered equilibrium topography while leaving the
+        long-wavelength swell. Built on the extracted surface submesh (parallel-safe);
+        the ring is mapped to the submesh DOFs by coordinate."""
+        self._surf_mesh = self.mesh.extract_surface(self.surface)
+        self._filter_field = uw.discretisation.MeshVariable(
+            "h_filter", self._surf_mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+        )
+        order = np.argsort(self._surf_coords[:, 0])
+        ring_sorted = np.ascontiguousarray(self._surf_coords[order])
+        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._filter_field.coords))
+        self._ring_to_surf = np.asarray(tree.query(ring_sorted, 1)[1]).flatten()
+
+    def _filter_surface(self, values):
+        """Taubin-smooth a ring-ordered surface array through the submesh field."""
+        self._filter_field.array[self._ring_to_surf, 0, 0] = values
+        uw.meshing.smooth_surface_field(self._filter_field, n_iters=self._filter_iters, taubin=True)
+        return np.asarray(self._filter_field.array[self._ring_to_surf, 0, 0]).flatten()
+
     # -- public step ----------------------------------------------------------
 
     def solve(self):
@@ -420,6 +464,8 @@ class FreeSurface:
         # dynamic_topography returns a depression over a rising load; negate for the
         # physical uplift and float the datum.
         self._h_inf = self._demean(-self._demean(h))
+        if self._filter_iters:
+            self._h_inf = self._demean(self._filter_surface(self._h_inf))
 
     def estimate_dt(self):
         """A step size that respects both advection and surface-motion limits.
@@ -458,11 +504,16 @@ class FreeSurface:
         """
         shape = self._current_shape()
         u_n = self._surface_normal_velocity()
-        displacement = self._h_inf - shape
+        h_inf = self._h_inf
+
+        if self.tangent_advect is not None:
+            shape, h_inf, u_n = self._apply_tangential_transport(shape, h_inf, u_n, dt)
+
+        displacement = h_inf - shape
         with np.errstate(divide="ignore", invalid="ignore"):
             gamma = np.where(np.abs(displacement) > 1.0e-9, u_n / displacement, 0.0)
         gamma = np.abs(gamma)  # relax toward equilibrium; L-stable for any rate
-        shape_new = self._h_inf + (shape - self._h_inf) * np.exp(-gamma * dt)
+        shape_new = h_inf + (shape - h_inf) * np.exp(-gamma * dt)
         increment = shape_new - shape
 
         if self.composition is not None:
@@ -500,7 +551,43 @@ class FreeSurface:
         norm = np.sqrt(sum(n_i * n_i for _, n_i in components))
         norm[norm == 0.0] = 1.0
         u_n = (dot / norm)[np.argsort(coords[:, 0])]
-        return self._demean(u_n)
+        u_n = self._demean(u_n)
+        if self._surface_mask is not None:
+            u_n = u_n * self._surface_mask  # pin the surface rate near driven walls
+        return u_n
+
+    def _apply_tangential_transport(self, shape, h_inf, u_n, dt):
+        """First-pass along-surface transport: barycentric-interpolate the surface
+        fields at the tangential launch point ``s - v_t*dt`` and report the correction.
+
+        The 1-D interpolation is a convex combination of the bracketing nodal values,
+        so it is bounded (cannot overshoot) even when the launch point is crudely
+        located. This is the diagnostic first pass: the along-surface coordinate is the
+        Cartesian ``x``, the tangential velocity is the horizontal component, and the
+        interpolation runs over this rank's local ring only (a parallel version gathers
+        the ring, and the annulus swaps ``x -> theta`` with periodic wrap).
+        """
+        v_x = np.asarray(function.evaluate(self._v_p1.sym[0], self._surf_coords)).flatten()
+        v_x = v_x[np.argsort(self._surf_coords[:, 0])]
+        s = self._surf_x
+        s_dep = s - v_x * dt
+        shape_up = np.interp(s_dep, s, shape)
+        h_inf_up = np.interp(s_dep, s, h_inf)
+        u_n_up = np.interp(s_dep, s, u_n)
+        if self.verbose:
+            h_scale = np.abs(shape).max() + 1.0e-300
+            u_scale = np.abs(u_n).max() + 1.0e-300
+            uw.pprint(
+                "FreeSurface tangential correction: "
+                f"shape {np.abs(shape_up - shape).max() / h_scale:.2e}, "
+                f"h_inf {np.abs(h_inf_up - h_inf).max() / h_scale:.2e}, "
+                f"u_n {np.abs(u_n_up - u_n).max() / u_scale:.2e}  (relative)"
+            )
+        if self.tangent_advect == "shape":
+            return shape_up, h_inf, u_n
+        if self.tangent_advect == "fields":
+            return shape, h_inf_up, u_n_up
+        return shape, h_inf, u_n
 
     def _solve_consistent(self, increment, dt):
         r"""Prescribe :math:`\tilde u_n = \Delta h/\Delta t` (mean-removed, net flux
