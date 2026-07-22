@@ -113,3 +113,56 @@ def test_no_reference_cycle_with_canonical():
     del arr
     gc.collect()
     assert ref() is None
+
+
+def test_callback_exceptions_propagate_immediately_and_delayed():
+    """A failing callback must surface — immediately, and at delay-context
+    exit. The swallowed-warning path left PETSc silently desynchronised on
+    one rank (#376-class)."""
+    import underworld3 as uw
+
+    arr = NDArray_With_Callback(np.zeros(4))
+
+    def failing(array, info):
+        raise RuntimeError("callback failure")
+
+    arr.add_canonical_callback(failing)
+
+    with pytest.raises(RuntimeError, match="callback failure"):
+        arr[0] = 1.0
+
+    with pytest.raises(RuntimeError, match="callback failure"):
+        with uw.synchronised_array_update():
+            arr[1] = 2.0
+
+
+def test_change_info_old_value_always_none():
+    """Internal operations no longer snapshot prior values; the dict key
+    remains for compatibility and is always None."""
+    arr = NDArray_With_Callback(np.zeros(4))
+    seen = []
+    arr.add_canonical_callback(lambda a, info: seen.append(info["old_value"]))
+    arr[0] = 1.0
+    arr += 1.0
+    arr.fill(3.0)
+    assert seen == [None, None, None]
+
+
+def test_sync_data_resize_rehomes_canonical_callbacks():
+    """The different-size sync_data path returns a NEW canonical object;
+    canonical callbacks must be re-registered against it, not copied as
+    wrappers bound to the old array's identity."""
+    arr, recorder = _canonical(shape=(4, 2))
+    bigger = arr.sync_data(np.ones((6, 2)))
+    assert bigger is not arr
+    recorder.calls.clear()
+    bigger[0, 0] = 5.0
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0][0] is bigger
+
+
+def test_remove_canonical_callback_by_original_function():
+    arr, recorder = _canonical()
+    arr.remove_callback(recorder)
+    arr[0, 0] = 1.0
+    assert recorder.calls == []

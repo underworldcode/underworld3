@@ -163,3 +163,26 @@ if __name__ == "__main__":
     """Run tests directly"""
     success = run_locking_tests()
     exit(0 if success else 1)
+
+
+def test_rejected_coord_write_leaves_mesh_coords_clean():
+    """A rejected in-place write to mesh.X.coords must not poison the
+    coordinate cache: the guard's message says the write "is rejected",
+    so mesh.X.coords must still agree with the DM afterwards (#379
+    review round 1). Previously the values landed in the cache before
+    the rejection fired, and catch-and-continue code then used
+    coordinates the DM does not have.
+    """
+    import underworld3 as uw
+    from underworld3.meshing import UnstructuredSimplexBox
+
+    mesh = UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25)
+    uw.discretisation.MeshVariable("t540_reject", mesh, 1, degree=1)  # live mesh
+
+    before = np.array(mesh.X.coords)
+    with pytest.raises(RuntimeError, match="rejected"):
+        mesh.X.coords[:] = before + 0.01
+
+    assert np.array_equal(np.array(mesh.X.coords), before)
+    dm_coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
+    assert np.allclose(np.array(mesh.X.coords).reshape(-1, mesh.cdim), dm_coords)

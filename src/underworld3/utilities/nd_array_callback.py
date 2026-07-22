@@ -362,11 +362,16 @@ class NDArray_With_Callback(np.ndarray):
 
         _canonical_dispatch._is_canonical = True
         _canonical_dispatch._canonical_ref = canonical_ref
+        _canonical_dispatch._wrapped = callback
         self.add_callback(_canonical_dispatch)
 
     def remove_callback(self, callback: Callable):
         """
         Remove a specific callback function.
+
+        Accepts either the registered callable itself or the original
+        function handed to :meth:`add_canonical_callback` (the list stores
+        the guarding dispatch wrapper, not the original).
 
         Parameters
         ----------
@@ -375,6 +380,10 @@ class NDArray_With_Callback(np.ndarray):
         """
         if callback in self._callbacks:
             self._callbacks.remove(callback)
+            return
+        for registered in list(self._callbacks):
+            if getattr(registered, "_wrapped", None) is callback:
+                self._callbacks.remove(registered)
 
     def clear_callbacks(self):
         """Remove all registered callbacks."""
@@ -442,14 +451,13 @@ class NDArray_With_Callback(np.ndarray):
                     except Exception as e:
                         logger.warning(f"MPI barrier failed before delayed callback execution: {e}")
 
-                # Execute all delayed callbacks
+                # Execute all delayed callbacks. Exceptions PROPAGATE, as on
+                # the immediate path: a swallowed failure here leaves PETSc
+                # desynchronised on this rank only (#376-class).
                 for callback_item in delayed_callbacks:
-                    try:
-                        callback_item["callback"](
-                            callback_item["array"], callback_item["change_info"]
-                        )
-                    except Exception as e:
-                        logger.warning(f"Delayed callback error: {e}")
+                    callback_item["callback"](
+                        callback_item["array"], callback_item["change_info"]
+                    )
 
                 # MPI barrier to ensure all processes complete their callbacks
                 # before any process exits the context
@@ -509,14 +517,13 @@ class NDArray_With_Callback(np.ndarray):
                             f"MPI barrier failed before global delayed callback execution: {e}"
                         )
 
-                # Execute all delayed callbacks
+                # Execute all delayed callbacks. Exceptions PROPAGATE, as on
+                # the immediate path: a swallowed failure here leaves PETSc
+                # desynchronised on this rank only (#376-class).
                 for callback_item in delayed_callbacks:
-                    try:
-                        callback_item["callback"](
-                            callback_item["array"], callback_item["change_info"]
-                        )
-                    except Exception as e:
-                        logger.warning(f"Delayed callback error: {e}")
+                    callback_item["callback"](
+                        callback_item["array"], callback_item["change_info"]
+                    )
 
                 # MPI barrier to ensure all processes complete their callbacks
                 # before any process exits the context
@@ -853,8 +860,18 @@ class NDArray_With_Callback(np.ndarray):
                 disable_inplace_operators=self._disable_inplace_operators,
             )
 
-            # Copy all callbacks and settings
-            new_obj._callbacks = self._callbacks.copy()
+            # Re-home callbacks onto the new object. Canonical-guarded
+            # callbacks are bound (by weakref) to THIS array's identity —
+            # copying their wrappers verbatim would leave callbacks that
+            # never fire on the new object (every write would classify as
+            # a foreign copy). Re-register their original functions against
+            # the new canonical; plain callbacks copy across unchanged.
+            for registered in self._callbacks:
+                original = getattr(registered, "_wrapped", None)
+                if original is not None:
+                    new_obj.add_canonical_callback(original)
+                else:
+                    new_obj.add_callback(registered)
             new_obj._callback_enabled = self._callback_enabled
 
             # Trigger callback on the new object

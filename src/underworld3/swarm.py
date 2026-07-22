@@ -419,6 +419,15 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         # partition-dependent subset (#376).
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
+            # Resolve the variable through the owner weakref (like the mesh
+            # callback) rather than closing over self: the callback list
+            # lives on the canonical array, so a strong self-capture here
+            # would be a var <-> array reference cycle.
+            var = array.owner
+            if var is None:
+                # Array outlived its variable (teardown / swarm rebuild)
+                return
+
             # Only act on data-changing operations
             data_changed = change_context.get("data_has_changed", True)
             if not data_changed:
@@ -432,18 +441,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # context exits (SWARM-04: previously these writes were silently
             # lost — nothing re-packed, and migrate()'s trailing invalidation
             # destroyed the only copy).
-            if getattr(self.swarm, "_migration_disabled", False):
-                self.swarm._pending_petsc_sync.add(self.clean_name)
+            if getattr(var.swarm, "_migration_disabled", False):
+                var.swarm._pending_petsc_sync.add(var.clean_name)
                 return
 
             # STEP 1: Ensure array has correct canonical shape before PETSc sync
             canonical_array = np.atleast_2d(array)
-            if canonical_array.shape != (array.shape[0], self.num_components):
+            if canonical_array.shape != (array.shape[0], var.num_components):
                 # Reshape to canonical format: (-1, num_components)
-                canonical_array = canonical_array.reshape(-1, self.num_components)
+                canonical_array = canonical_array.reshape(-1, var.num_components)
 
             # STEP 1: Sync to PETSc using established method with correct shape
-            self.pack_raw_data_to_petsc(canonical_array)
+            var.pack_raw_data_to_petsc(canonical_array)
 
             # Coordinate writes may strand particles on the wrong rank. Mark
             # the swarm for DEFERRED migration — migrate() itself is
@@ -451,12 +460,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # write unevenly → deadlock). The migration happens at the next
             # collective point: migration-control context exit or solve entry
             # (SWARM-03; the class docstring's automatic-migration promise).
-            if getattr(self.swarm, "_coord_var", None) is self:
-                self.swarm._needs_migration = True
+            if getattr(var.swarm, "_coord_var", None) is var:
+                var.swarm._needs_migration = True
 
             # STEP 2: Handle variable-specific updates (like IndexSwarmVariable proxy marking)
-            if hasattr(self, "_on_data_changed"):
-                self._on_data_changed()
+            if hasattr(var, "_on_data_changed"):
+                var._on_data_changed()
 
         # Register through the central view/copy guard
         array_obj.add_canonical_callback(canonical_data_callback)
