@@ -46,6 +46,28 @@ from enum import Enum
 
 
 # We can grab this type from the PETSc module
+class _ReadOnlyCoordinateSnapshot(np.ndarray):
+    """Read-only view returned by the deprecated ``swarm.points`` /
+    ``swarm.data`` reads.
+
+    Plain read-only ndarrays refuse writes with numpy's bare
+    "assignment destination is read-only" — no pointer to the working
+    interfaces. This view carries the guidance (#379 item 1).
+    """
+
+    _GUIDANCE = (
+        "swarm.points / swarm.data is a read-only snapshot (issue #379): "
+        "its writable stack ran collective particle migration per write "
+        "and could deadlock in parallel. Write coordinates via "
+        "swarm.coords = values (physical units), or "
+        "swarm._particle_coordinates.data[...] (model units) — masked "
+        "writes are supported inside 'with swarm.migration_control():'."
+    )
+
+    def __setitem__(self, key, value):
+        raise ValueError(self._GUIDANCE)
+
+
 class SwarmType(Enum):
     """
     PETSc swarm type specification.
@@ -2937,6 +2959,15 @@ class Swarm(Stateful, uw_object):
         if global_count == 0:
             return
 
+        # A mesh coordinate change (deform / adaptation) strands particles
+        # in cells that moved; nothing re-bins them since the read-trigger
+        # on swarm.points was retired (#379 item 1 — a collective on READ
+        # was itself a parallel hazard). Solve entry is the collective
+        # point that notices the mesh version changed.
+        if getattr(self, "_mesh_version", None) != self.mesh._mesh_version:
+            self._needs_migration = True
+            self._mesh_version = self.mesh._mesh_version
+
         if not self._deferred_migration_suspended:
             needs_migration = bool(self._needs_migration)
             if uw.mpi.size > 1:
@@ -3168,6 +3199,7 @@ class Swarm(Stateful, uw_object):
             coords = model_coords
 
         coords.flags.writeable = False
+        coords = coords.view(_ReadOnlyCoordinateSnapshot)
 
         if hasattr(self.mesh, "units") and self.mesh.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray

@@ -77,3 +77,26 @@ def test_coords_is_the_supported_path(swarm):
     after = np.asarray(swarm._particle_coordinates.data)
     assert np.allclose(after[mask], original[mask])
     assert np.allclose(after[~mask], original[~mask] + shift)
+
+
+def test_snapshot_write_error_carries_guidance(swarm):
+    """Item assignment on the snapshot never reaches the property setter,
+    so the snapshot itself must carry the pointer to the working
+    interfaces — not numpy's bare read-only error (#379 review round 1)."""
+    with pytest.warns(DeprecationWarning):
+        pts = swarm.points
+    with pytest.raises(ValueError, match="swarm.coords"):
+        pts[0, 0] = 1.0
+    with pytest.raises(ValueError, match="migration_control"):
+        pts[0:2] = 0.0
+
+
+def test_mesh_deform_marks_swarm_for_migration(swarm):
+    """With the migration-on-read trigger retired, solve-entry sync is the
+    collective point that notices a mesh coordinate change; it must mark
+    the swarm for deferred migration so deformed meshes cannot strand
+    particles permanently (#379 review round 1)."""
+    swarm._needs_migration = False
+    swarm._mesh_version = swarm.mesh._mesh_version - 1  # simulate a deform bump
+    swarm._sync_before_assembly()
+    assert swarm._mesh_version == swarm.mesh._mesh_version
