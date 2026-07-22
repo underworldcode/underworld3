@@ -15,6 +15,7 @@ Key Features:
 This is the base class for UnitAwareArray which adds unit preservation.
 """
 
+import itertools
 import numpy as np
 import weakref
 import logging
@@ -35,10 +36,17 @@ except ImportError:
 
 class DelayedCallbackManager:
     """
-    Thread-local manager for delayed callbacks across multiple NDArray_With_Callback instances.
+    Thread-local manager for deferred synchronisation across multiple
+    NDArray_With_Callback instances.
 
-    This allows batch operations across multiple arrays to accumulate callbacks
-    and trigger them all at once when the context exits.
+    Writes made inside a delay context land in the arrays immediately; what
+    is deferred is the *synchronisation* work the callbacks perform. Each
+    delay level records which CANONICAL arrays were touched (dirty marking)
+    rather than queueing per-write events — the flush at context exit then
+    synchronises each touched variable exactly once, in the same order on
+    every rank. Per-event queueing survives only for legacy untagged
+    callbacks (plain ``add_callback``), whose replay is rank-local and must
+    not contain collective operations.
     """
 
     def __init__(self):
@@ -48,7 +56,6 @@ class DelayedCallbackManager:
         """Get or create thread-local state."""
         if not hasattr(self._local, "delay_stack"):
             self._local.delay_stack = []
-            self._local.delayed_callbacks = []
         return self._local
 
     def is_delaying(self):
@@ -57,40 +64,28 @@ class DelayedCallbackManager:
         return len(state.delay_stack) > 0
 
     def push_delay_context(self, context_info=None):
-        """Enter a new delay context."""
+        """Enter a new delay context (one dirty-set per nesting level)."""
         state = self._get_state()
         state.delay_stack.append(
             {
                 "context_info": context_info,
-                "callback_count": len(state.delayed_callbacks),
+                "legacy_queue": [],
+                "dirty_local": {},
+                "dirty_collective": set(),
             }
         )
 
     def pop_delay_context(self):
-        """Exit delay context and return callbacks accumulated in this context."""
+        """Exit the current delay level and return its recorded state."""
         state = self._get_state()
         if not state.delay_stack:
-            return []
-
-        context = state.delay_stack.pop()
-        start_idx = context["callback_count"]
-
-        # Get callbacks from this context level
-        context_callbacks = state.delayed_callbacks[start_idx:]
-
-        # If we're exiting the outermost context, clear all callbacks
-        if not state.delay_stack:
-            state.delayed_callbacks.clear()
-        else:
-            # Remove only this context's callbacks (keep outer context callbacks)
-            state.delayed_callbacks = state.delayed_callbacks[:start_idx]
-
-        return context_callbacks
+            return None
+        return state.delay_stack.pop()
 
     def add_delayed_callback(self, array, callback_func, change_info):
-        """Add a callback to the delayed execution queue."""
+        """Queue a legacy per-event callback for rank-local replay at exit."""
         state = self._get_state()
-        state.delayed_callbacks.append(
+        state.delay_stack[-1]["legacy_queue"].append(
             {
                 "array": array,
                 "callback": callback_func,
@@ -98,9 +93,159 @@ class DelayedCallbackManager:
             }
         )
 
+    def mark_dirty(self, canonical):
+        """Record that a canonical array was written in the current level.
+
+        Owners carrying a ``_collective_flush_id`` (mesh variables — their
+        PETSc pack is collective) go into the id set that is agreed across
+        ranks at flush time. Everything else (swarm variables — their packs
+        are rank-local; migration is separately rank-agreed) flushes
+        rank-locally.
+        """
+        level = self._get_state().delay_stack[-1]
+        owner = canonical.owner
+        flush_id = getattr(owner, "_collective_flush_id", None)
+        if flush_id is not None:
+            level["dirty_collective"].add(flush_id)
+        else:
+            level["dirty_local"].setdefault(id(canonical), canonical)
+
 
 # Global instance for managing delayed callbacks
 _delayed_callback_manager = DelayedCallbackManager()
+
+
+# --- Collective-flush registry -------------------------------------------
+#
+# Cross-rank agreement on WHICH variables to flush at a synchronised-update
+# exit needs a key that is identical on every rank. Creation-order integer
+# ids qualify because registered objects are created SPMD-collectively
+# (mesh-variable construction performs collective DM operations, so the
+# counter advances in lockstep). Variable NAMES do not qualify: temporary
+# variables embed rank-local id() values in their names.
+
+_collective_flush_ids = itertools.count()
+_collective_flush_registry: Dict[int, "weakref.ref"] = {}
+
+
+def register_collective_flush(obj):
+    """Assign a creation-order id for the synchronised-update flush.
+
+    ``obj`` must provide ``_deferred_canonical_flush()``, which every rank
+    calls for every id in the agreed flush set.
+    """
+    flush_id = next(_collective_flush_ids)
+    _collective_flush_registry[flush_id] = weakref.ref(obj)
+    return flush_id
+
+
+def _base_chain_resolves(array, canonical):
+    """True if ``array`` IS ``canonical`` or a view whose base chain reaches it.
+
+    Identity in the base chain, never ``np.may_share_memory``: that is False
+    for any zero-size array, which would classify an empty rank's view as a
+    copy and desynchronise the collective branch (#376).
+    """
+    if array is canonical:
+        return True
+    base = array.base
+    while base is not None and base is not canonical:
+        base = getattr(base, "base", None)
+    return base is not None
+
+
+def _deferred_flush_info(canonical):
+    return {
+        "operation": "deferred_flush",
+        "indices": None,
+        "old_value": None,
+        "new_value": None,
+        "array_shape": canonical.shape,
+        "array_dtype": canonical.dtype,
+        "data_has_changed": True,
+    }
+
+
+def fire_canonical_callbacks(canonical):
+    """Fire each canonical-guarded callback once, with the canonical array.
+
+    Reads the canonical array's LIVE callback list (derived views hold stale
+    copies), so callbacks registered after a view was created still fire.
+    """
+    info = _deferred_flush_info(canonical)
+    for callback in list(canonical._callbacks):
+        if getattr(callback, "_is_canonical", False):
+            callback(canonical, info)
+
+
+def _flush_delay_level(level):
+    """Flush one delay level: legacy replay, rank-local canonical flushes,
+    then the collectively-agreed canonical flushes in creation order."""
+    for item in level["legacy_queue"]:
+        item["callback"](item["array"], item["change_info"])
+
+    for canonical in level["dirty_local"].values():
+        fire_canonical_callbacks(canonical)
+
+    # Every rank must flush the SAME variables in the SAME order: the
+    # allgather runs unconditionally (empty sets included) so ranks stay
+    # matched even when only some of them wrote.
+    local_ids = sorted(level["dirty_collective"])
+    if _has_uw_mpi and uw.mpi.size > 1:
+        union = sorted(set().union(*uw.mpi.comm.allgather(local_ids)))
+    else:
+        union = local_ids
+
+    targets = {}
+    for flush_id in union:
+        ref = _collective_flush_registry.get(flush_id)
+        targets[flush_id] = ref() if ref is not None else None
+    missing = [flush_id for flush_id, obj in targets.items() if obj is None]
+    if _has_uw_mpi and uw.mpi.size > 1:
+        missing_anywhere = max(uw.mpi.comm.allgather(len(missing)))
+    else:
+        missing_anywhere = len(missing)
+    if missing_anywhere:
+        # Raise on EVERY rank: a one-rank raise inside the flush loop below
+        # would leave the other ranks blocked in a collective.
+        raise RuntimeError(
+            "synchronised_array_update flush found dirty variables that no "
+            f"longer exist (registration ids {missing or union}). A variable "
+            "written inside the context was destroyed before context exit."
+        )
+
+    for flush_id in union:
+        targets[flush_id]._deferred_canonical_flush()
+
+
+class _DelayCallbacksContext:
+    """Context manager behind ``delay_callback`` / ``synchronised_array_update``.
+
+    Entering and exiting are collective when MPI is active: the entry
+    barrier catches non-lockstep entry early, and the exit flush contains
+    an allgather plus per-variable collective synchronisation.
+    """
+
+    def __init__(self, context_info):
+        self.context_info = context_info
+
+    def __enter__(self):
+        if _has_uw_mpi and uw.mpi.size > 1:
+            uw.mpi.barrier()
+        _delayed_callback_manager.push_delay_context(self.context_info)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        level = _delayed_callback_manager.pop_delay_context()
+        if exc_type is not None:
+            # Ranks unwind exceptions asymmetrically and the flush contains
+            # collectives — running it here is the hang vector. Values have
+            # already landed in the canonical arrays; only the deferred
+            # synchronisation is dropped.
+            return False
+        if level is not None:
+            _flush_delay_level(level)
+        return False
 
 
 class NDArray_With_Callback(np.ndarray):
@@ -359,14 +504,9 @@ class NDArray_With_Callback(np.ndarray):
             canonical = canonical_ref()
             if canonical is None:
                 return
-            if array is not canonical:
-                base = array.base
-                while base is not None and base is not canonical:
-                    base = getattr(base, "base", None)
-                if base is None:
-                    return
-                array = canonical
-            callback(array, change_info)
+            if not _base_chain_resolves(array, canonical):
+                return
+            callback(canonical, change_info)
 
         _canonical_dispatch._is_canonical = True
         _canonical_dispatch._canonical_ref = canonical_ref
@@ -412,11 +552,13 @@ class NDArray_With_Callback(np.ndarray):
 
     def delay_callback(self, context_info=None):
         """
-        Context manager to delay callback execution until context exit.
+        Context manager to defer callback synchronisation until context exit.
 
-        During the context, all callbacks from this array (and any other arrays
-        using delay_callback) will be accumulated and executed when the outermost
-        context exits.
+        The delay context is global (thread-local), so it covers this array
+        and any other arrays written inside it. Writes land immediately;
+        each touched variable's canonical synchronisation runs once at exit,
+        in the same order on every rank. Legacy untagged callbacks (plain
+        ``add_callback``) keep per-event replay, which is rank-local.
 
         Parameters
         ----------
@@ -429,123 +571,28 @@ class NDArray_With_Callback(np.ndarray):
         ...     arr[0] = 1
         ...     arr[1] = 2
         ...     arr[2] = 3
-        # All callbacks fire here at context exit
+        # Deferred synchronisation runs here, once
         """
 
-        class DelayCallbackContext:
-            def __init__(self, context_info):
-                self.context_info = context_info
-
-            def __enter__(self):
-                # MPI barrier to ensure all processes enter delay context together
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed on delay context enter: {e}")
-
-                _delayed_callback_manager.push_delay_context(self.context_info)
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # Get callbacks accumulated during this context
-                delayed_callbacks = _delayed_callback_manager.pop_delay_context()
-
-                # MPI barrier to ensure all processes finish their delayed operations
-                # before any process starts executing callbacks
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed before delayed callback execution: {e}")
-
-                # Execute all delayed callbacks. Exceptions PROPAGATE, as on
-                # the immediate path: a swallowed failure here leaves PETSc
-                # desynchronised on this rank only (#376-class).
-                for callback_item in delayed_callbacks:
-                    callback_item["callback"](
-                        callback_item["array"], callback_item["change_info"]
-                    )
-
-                # MPI barrier to ensure all processes complete their callbacks
-                # before any process exits the context
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed after delayed callback execution: {e}")
-
-                # Don't suppress exceptions from the context
-                return False
-
-        return DelayCallbackContext(context_info)
+        return _DelayCallbacksContext(context_info)
 
     @staticmethod
     def delay_callbacks_global(context_info=None):
         """
-        Static method to create a global delay context for all NDArray_With_Callback instances.
+        Create a delay context without a specific array instance.
 
-        This is useful when you don't have a specific array instance but want to delay
-        callbacks from multiple arrays.
+        Same semantics as :meth:`delay_callback` — the context is global
+        either way. ``uw.synchronised_array_update`` is the public wrapper.
 
         Example
         -------
         >>> with NDArray_With_Callback.delay_callbacks_global("field update"):
         ...     temperature.array[...] = new_T
         ...     material.array[...] = new_material
-        # All callbacks from all arrays fire here
+        # Each touched variable is synchronised exactly once, here
         """
 
-        class GlobalDelayCallbackContext:
-            def __init__(self, context_info):
-                self.context_info = context_info
-
-            def __enter__(self):
-                # MPI barrier to ensure all processes enter delay context together
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed on global delay context enter: {e}")
-
-                _delayed_callback_manager.push_delay_context(self.context_info)
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # Get callbacks accumulated during this context
-                delayed_callbacks = _delayed_callback_manager.pop_delay_context()
-
-                # MPI barrier to ensure all processes finish their delayed operations
-                # before any process starts executing callbacks
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed before global delayed callback execution: {e}"
-                        )
-
-                # Execute all delayed callbacks. Exceptions PROPAGATE, as on
-                # the immediate path: a swallowed failure here leaves PETSc
-                # desynchronised on this rank only (#376-class).
-                for callback_item in delayed_callbacks:
-                    callback_item["callback"](
-                        callback_item["array"], callback_item["change_info"]
-                    )
-
-                # MPI barrier to ensure all processes complete their callbacks
-                # before any process exits the context
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed after global delayed callback execution: {e}"
-                        )
-
-                return False
-
-        return GlobalDelayCallbackContext(context_info)
+        return _DelayCallbacksContext(context_info)
 
     def _trigger_callback(
         self, operation: str, indices=None, old_value=None, new_value=None, data_has_changed=True
@@ -582,9 +629,24 @@ class NDArray_With_Callback(np.ndarray):
 
         # Check if we're in a delay callback context
         if _delayed_callback_manager.is_delaying():
-            # Add callbacks to the delayed execution queue
             for callback in self._callbacks:
-                _delayed_callback_manager.add_delayed_callback(self, callback, change_info)
+                canonical_ref = getattr(callback, "_canonical_ref", None)
+                if canonical_ref is None:
+                    # Legacy untagged callback: per-event queue, replayed
+                    # rank-locally at exit (must not contain collectives).
+                    _delayed_callback_manager.add_delayed_callback(self, callback, change_info)
+                    continue
+                # Canonical-guarded callback: mark the variable dirty; it is
+                # flushed ONCE at context exit, in the same order on every
+                # rank. Copies are skipped — the parent write-back marks.
+                if not data_has_changed:
+                    continue
+                canonical = canonical_ref()
+                if canonical is None:
+                    continue
+                if not _base_chain_resolves(self, canonical):
+                    continue
+                _delayed_callback_manager.mark_dirty(canonical)
         else:
             # Execute callbacks immediately. Exceptions PROPAGATE: a swallowed
             # callback failure leaves PETSc out of sync with the canonical
