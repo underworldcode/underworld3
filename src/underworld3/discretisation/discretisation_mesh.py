@@ -254,7 +254,12 @@ def _mesh_coords_update_callback(array, change_context):
         # the canonical from the DM, then let the error surface.
         # (np.copyto bypasses callbacks; this restore must not re-fire.)
         dm_coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
-        numpy.copyto(numpy.asarray(mesh._coords).reshape(-1, mesh.cdim), dm_coords)
+        cached = numpy.asarray(mesh._coords).reshape(-1, mesh.cdim)
+        if cached.shape == dm_coords.shape:
+            numpy.copyto(cached, dm_coords)
+        # else: the failure replaced the coordinate Vec at a different size
+        # (mid-rebuild) — restoring is impossible and a broadcast error here
+        # would mask the original exception (round-2 review).
         raise
 
     # Increment mesh version to notify registered swarms of coordinate changes
