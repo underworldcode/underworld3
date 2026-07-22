@@ -205,20 +205,46 @@ def _flush_delay_level(level, aborted=False):
             return
         union = local_ids
 
-    for item in level["legacy_queue"]:
-        item["callback"](item["array"], item["change_info"])
+    # Rank-local phases can raise rank-locally (legacy callbacks, swarm
+    # packs). Entering the per-variable collectives below with some ranks
+    # unwinding is a hang shape (round-2 review) — when a collective flush
+    # follows, agree on local-phase success first.
+    local_error = None
+    try:
+        for item in level["legacy_queue"]:
+            item["callback"](item["array"], item["change_info"])
 
-    # Rank-local canonical flushes re-resolve the LIVE canonical through
-    # the owner where one exists: migration inside the context invalidates
-    # and rebuilds swarm canonicals, and flushing a pinned pre-migration
-    # array would resurrect stale values.
-    for owner_ref in level["dirty_owners"].values():
-        owner = owner_ref()
-        if owner is not None:
-            owner._deferred_canonical_flush()
+        # Rank-local canonical flushes re-resolve the LIVE canonical
+        # through the owner where one exists: migration inside the context
+        # invalidates and rebuilds swarm canonicals, and flushing a pinned
+        # pre-migration array would resurrect stale values.
+        for owner_ref in level["dirty_owners"].values():
+            owner = owner_ref()
+            if owner is not None:
+                owner._deferred_canonical_flush()
 
-    for canonical in level["dirty_local"].values():
-        fire_canonical_callbacks(canonical)
+        for canonical in level["dirty_local"].values():
+            fire_canonical_callbacks(canonical)
+    except Exception as err:
+        local_error = err
+
+    if union:
+        if _has_uw_mpi and uw.mpi.size > 1:
+            failed_anywhere = max(uw.mpi.comm.allgather(int(local_error is not None)))
+        else:
+            failed_anywhere = int(local_error is not None)
+        if local_error is not None:
+            raise local_error
+        if failed_anywhere:
+            # Every rank raises rather than entering the collective loop
+            # while another rank unwinds.
+            raise RuntimeError(
+                "synchronised_array_update: a rank-local flush failed on "
+                "another rank; the collective flush is skipped everywhere "
+                "to keep ranks matched."
+            )
+    elif local_error is not None:
+        raise local_error
 
     targets = {}
     for flush_id in union:

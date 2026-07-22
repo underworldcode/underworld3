@@ -133,3 +133,20 @@ def test_untagged_callbacks_keep_per_event_replay():
         assert probe.calls == []
 
     assert probe.calls == ["setitem", "setitem"]
+
+
+def test_second_coords_write_still_deforms(mesh):
+    """After a deform, the coordinate array is re-wrapped; the canonical
+    callback must be RE-HOMED onto the replacement, not copied verbatim
+    (its guard is bound to the old array's identity). Previously the
+    second write silently did nothing (#379 review round 2)."""
+    v0 = mesh._mesh_version
+    a = np.array(mesh._coords) + 0.01
+    mesh.X.coords[...] = a
+    assert mesh._mesh_version == v0 + 1
+
+    b = np.array(mesh._coords) + 0.01
+    mesh.X.coords[...] = b
+    assert mesh._mesh_version == v0 + 2
+    dm_coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
+    assert np.allclose(dm_coords, b.reshape(-1, mesh.cdim))

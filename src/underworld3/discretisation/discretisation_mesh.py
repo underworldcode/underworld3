@@ -3536,7 +3536,17 @@ class Mesh(Stateful, uw_object):
                 owner=self,
             )
             for cb in old_callbacks:
-                self._coords.add_callback(cb)
+                original = getattr(cb, "_wrapped", None)
+                if original is not None:
+                    # Canonical dispatch wrappers are bound (by weakref) to
+                    # the OLD array's identity — copied verbatim they never
+                    # fire on the replacement, so a SECOND coords write
+                    # would silently do nothing (round-2 review; same
+                    # class as the sync_data re-homing). Re-register the
+                    # original function against the new canonical.
+                    self._coords.add_canonical_callback(original)
+                else:
+                    self._coords.add_callback(cb)
 
             # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
             # ("Trust JIT cache: skip DM rebuild on constant-only parameter
