@@ -72,11 +72,12 @@ def test_stokes_advdiff_memory_leak():
         dt = 0.001
         advdiff.solve(timestep=dt)
 
-        with swarm.access(swarm):
-            swarm.data[...] = swarm.data[...] + 0.01 * np.random.rand(*swarm.data.shape)
-            swarm.data[...] = np.clip(swarm.data[...], 0, 1)
-        
-        v_at_swarm = uw.function.evaluate(v.sym, swarm.data)
+        coords = swarm._particle_coordinates.data
+        with swarm.migration_control():
+            coords[...] = coords[...] + 0.01 * np.random.rand(*coords.shape)
+            coords[...] = np.clip(coords[...], 0, 1)
+
+        v_at_swarm = uw.function.evaluate(v.sym, np.asarray(swarm._particle_coordinates.data))
 
         gc.collect()
 
