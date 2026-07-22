@@ -513,6 +513,20 @@ Strictly serial-oracle-first, replaying the 2D de-risking sequence:
       the evaluation's guidance in the docstrings: hyperbolic for the
       best transition fidelity per cell, gaussian for a uniform-size
       corridor, linear for the minimum cell count.
+    * *Adversarial review (independent agent) found two real defects in
+      this branch's own additions, both fixed and regression-tested:*
+      the moved-coordinate carry wrote through DMClone's *shared*
+      coordinates Vec (silently moving the parent's static hierarchy —
+      self-masking, since the next moved-check compared moved against
+      moved; the clone now installs a duplicated Vec), and the #376
+      guard's `np.may_share_memory` probe is False for any zero-size
+      array, so a rank with an empty local slice would have skipped the
+      collective sync other ranks entered — the same asymmetry class
+      the fix targets; view-vs-copy is now decided by identity in
+      numpy's base chain, which follows the indexing statement and is
+      rank-independent. The distributed seed also gained a loud guard
+      against near-duplicate vertex coordinates collapsing under the
+      rounding key.
 - **1d. Integration** — lift the `_adapt_nested` dim guard and the engine-less
   `adapt()` 3D refusal; callable exact-distance metrics via the existing 3D
   `Surface` distance primitives; correct the `engine="sbr"` 3D claim in docs
