@@ -2797,8 +2797,19 @@ class _BaseMeshVariable(Stateful, uw_object):
             # callback with the canonical array, so skipping here loses
             # nothing. A partial VIEW has already changed the canonical
             # storage in place: sync the full canonical instead.
+            #
+            # View-vs-copy must be decided by IDENTITY in the base chain,
+            # not memory overlap: np.may_share_memory is False for any
+            # zero-size array, so a rank whose slice is locally empty
+            # would classify a view as a copy and skip the collective
+            # sync that the other ranks enter — the same rank-asymmetry
+            # again. The indexing *statement* (basic slice → view, fancy
+            # → copy) is identical on every rank, and so is this walk.
             if array is not array_obj:
-                if not np.may_share_memory(array, array_obj):
+                base = array.base
+                while base is not None and base is not array_obj:
+                    base = getattr(base, "base", None)
+                if base is None:
                     return
                 array = np.asarray(array_obj)
 

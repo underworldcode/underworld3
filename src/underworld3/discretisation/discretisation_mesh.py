@@ -6477,7 +6477,12 @@ class Mesh(Stateful, uw_object):
             _moved = uw.mpi.comm.allreduce(_moved, op=MPI.LOR)
         if _moved:
             base_finest = base_finest.clone()
-            _v = base_finest.getCoordinatesLocal()
+            # DMClone shares the coordinates Vec by reference — writing
+            # through getCoordinatesLocal().array here would silently move
+            # the "static" hierarchy level (self.dm_hierarchy[-1]) under
+            # the parent mesh. Install a duplicate instead; the clone gets
+            # the moved geometry, the hierarchy keeps the original.
+            _v = base_finest.getCoordinatesLocal().duplicate()
             _v.array[:] = _cur_coords
             base_finest.setCoordinatesLocal(_v)
             if engine == "nvb" and self.dim == 3 and _nvbx is not None:

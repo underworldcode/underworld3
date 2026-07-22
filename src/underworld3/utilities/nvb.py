@@ -105,6 +105,24 @@ def write_tagged_state_label(dm):
     # deterministic global vertex order (coordinate-lexicographic — the same
     # order the serial engine colours in), then the same greedy colouring
     vkeys = sorted({k for cell in all_cells for k in cell})
+    # Two distinct vertices closer than the rounding tolerance would merge
+    # into one coloring node — a silently wrong, partition-dependent seed.
+    # Fail loudly instead: the distinct-key count must equal the global
+    # vertex count (owned vertices summed over ranks).
+    try:
+        _, ilocal, _ = dm.getPointSF().getGraph()
+        leaves = {int(p) for p in ilocal}
+    except (ValueError, TypeError):
+        leaves = set()
+    n_owned = sum(1 for v in range(vS, vE) if v not in leaves)
+    n_global = comm.allreduce(n_owned)
+    if len(vkeys) != n_global:
+        raise RuntimeError(
+            f"tagged-state seed: {n_global} global vertices reduce to "
+            f"{len(vkeys)} distinct coordinate keys — the mesh has "
+            "(near-)duplicate vertex coordinates, which this "
+            "geometry-keyed seed cannot distinguish."
+        )
     vidx = {k: i for i, k in enumerate(vkeys)}
     adj = [set() for _ in vkeys]
     for cell in all_cells:

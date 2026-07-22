@@ -22,9 +22,9 @@ The MG-viability gate (the capstone's per-stage acceptance):
     the exact linear solution (which also validates the 3D facet-label
     transfer, since the Dirichlet boundaries came through ``to_dm``).
 
-The np>1 3D path raises ``NotImplementedError`` (the parallel tetrahedral
-transform is stage 1c); 2D behaviour is untouched and covered by
-``test_0836`` / ``test_0839``.
+The np>1 3D path is covered by ``test_0842`` (parallel confluence, labels,
+FMG); 2D behaviour is untouched and covered by ``test_0836`` /
+``test_0839``.
 """
 import numpy as np
 import pytest
