@@ -111,3 +111,15 @@ def test_mesh_variable_ufunc_out_reaches_petsc():
     np.multiply(t.data, 3.0, out=t.data)
     assert np.allclose(np.asarray(t.data), 6.0)
     assert np.allclose(t.vec.array, 6.0)
+
+
+def test_out_honours_disable_inplace_operators():
+    """np.add(x, 1, out=x) must respect the same contract as x += 1 —
+    bypassing the flag re-armed the per-write hazard it exists to prevent
+    (#379 review round 1)."""
+    arr = NDArray_With_Callback(np.zeros(4), disable_inplace_operators=True)
+    with pytest.raises(RuntimeError, match="parallel safety"):
+        np.add(arr, 1.0, out=arr)
+    with pytest.raises(RuntimeError, match="parallel safety"):
+        arr += 1.0
+    assert np.allclose(np.asarray(arr), 0.0)

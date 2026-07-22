@@ -727,6 +727,17 @@ class NDArray_With_Callback(np.ndarray):
         Remaining bypasses this cannot intercept: ``np.copyto`` and
         ``ufunc.at`` (neither passes ``out=``).
         """
+        if out is not None:
+            for target in out:
+                if getattr(target, "_disable_inplace_operators", False):
+                    # The out= spelling must honour the same contract as the
+                    # in-place operators — bypassing it would re-arm the
+                    # per-write hazard the flag exists to prevent.
+                    raise RuntimeError(
+                        "In-place ufunc output (out=) is disabled for parallel "
+                        "safety on this array. Use explicit assignment instead."
+                    )
+
         plain_inputs = tuple(
             np.asarray(x) if isinstance(x, NDArray_With_Callback) else x for x in inputs
         )
