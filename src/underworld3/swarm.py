@@ -2727,12 +2727,6 @@ class Swarm(Stateful, uw_object):
         self.dm.setType(SwarmType.DMSWARM_BASIC.value)
         self._data = None
 
-        # Add data structure to hold point location information in
-        # an array with a callback that resets the relevant parts of the
-        # swarm variable stack when the data structure is modified.
-
-        self._coords = None
-
         ####
 
         # Retained attribute: always 0 or 1 (no recycling) — see the
@@ -3120,10 +3114,10 @@ class Swarm(Stateful, uw_object):
 
     @property
     def data(self):
-        r"""Particle coordinates (alias for :attr:`points`).
+        r"""Particle coordinates (alias for :attr:`points`; read-only snapshot).
 
         .. deprecated:: 0.99.0
-            Use direct DM field access for particle coordinates.
+            Use :attr:`coords` instead.
 
         Returns
         -------
@@ -3135,173 +3129,71 @@ class Swarm(Stateful, uw_object):
     @property
     def points(self):
         """
-        Swarm particle coordinates in physical units.
+        Swarm particle coordinates in physical units (read-only snapshot).
 
         .. deprecated:: 0.99.0
-            Use swarm variables or direct DM access instead.
-            ``swarm.points`` is being deprecated.
+            Read coordinates via :attr:`coords`; write them via the
+            ``coords`` setter (physical units) or
+            ``swarm._particle_coordinates.data`` (model units).
 
-        When the mesh has coordinate scaling applied (via model units),
-        this property automatically converts from internal model coordinates
-        to physical coordinates for user access.
+        The returned array is a detached, read-only copy. The previous
+        writable wrapper ran collective particle migration from inside a
+        per-write callback, which deadlocks when ranks write unevenly, and
+        reading it could force a collective migration after mesh changes —
+        so a read performed on some ranks only could hang (#379). Like
+        ``mesh.points`` (BF-18), the write path is removed rather than
+        repaired.
 
-        When the mesh has coordinate units specified, returns a unit-aware array.
-
-        Returns:
-            numpy.ndarray or UnitAwareArray: Particle coordinates (with units if mesh.units is set)
+        Returns
+        -------
+        numpy.ndarray or UnitAwareArray
+            Particle coordinates (with units if mesh.units is set).
         """
         import warnings
 
-        warnings.warn("swarm.points is deprecated", DeprecationWarning, stacklevel=2)
+        warnings.warn(
+            "swarm.points is deprecated, use swarm.coords instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-        # Check for mesh coordinate changes and trigger migration if needed
-        if hasattr(self, "_mesh_version") and self._mesh_version != self.mesh._mesh_version:
-            # Mesh coordinates have changed, force migration to update swarm
-            self._force_migration_after_mesh_change()
-            # Update our mesh version to match
-            self._mesh_version = self.mesh._mesh_version
-
-        # Get current coordinate data from PETSc (these are in model coordinates)
+        # Current coordinates from PETSc (model coordinates)
         model_coords = (self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))).copy()
         self.dm.restoreField("DMSwarmPIC_coor")
 
-        # Apply scaling to convert model coordinates to physical coordinates
+        # Scale model coordinates to physical coordinates
         if hasattr(self.mesh.CoordinateSystem, "_scaled") and self.mesh.CoordinateSystem._scaled:
-            scale_factor = self.mesh.CoordinateSystem._length_scale
-            coords = model_coords * scale_factor
+            coords = model_coords * self.mesh.CoordinateSystem._length_scale
         else:
             coords = model_coords
 
-        # Cache and reuse NDArray_With_Callback object for consistent object identity
-        if not hasattr(self, "_coords") or self._coords is None:
-            # First access: create new NDArray_With_Callback object
-            self._coords = uw.utilities.NDArray_With_Callback(
-                coords,
-                owner=self,
-                disable_inplace_operators=True,
-            )
+        coords.flags.writeable = False
 
-            # TODO(BUG): this callback calls collective migrate() per write and
-            # raises rank-locally on size mismatch — the pattern the swarm
-            # variable canonical callback was rewritten to avoid (SWARM-03).
-            # swarm.points is deprecated; the whole writable stack is removed
-            # by issue #379 item 1 (mesh.points treatment) rather than ported.
-            # Define the callback function (only once)
-            def swarm_update_callback(array, change_context):
-                # print(
-                #     f"Swarm update callback - {self.dm.getLocalSize()}",
-                #     flush=True,
-                # )
-
-                # Check if this operation may have changed data
-                # Skip expensive operations for read-only sync operations
-                data_changed = change_context.get("data_has_changed", True)
-
-                if not data_changed:
-                    # print(
-                    #     "Swarm callback: Skipping migration - read-only sync operation"
-                    # )
-                    return
-
-                # Check if sizes match before attempting to copy back
-                petsc_size = self.dm.getLocalSize()
-                points_size = array.shape[0]
-
-                if petsc_size == points_size:
-                    # Update PETSc state
-                    # We could do this directly which would be more efficient and bypass the access manager (appropriately, here)
-                    self._coord_var.array[:, 0, :] = array[...]
-
-                    # Migrate by default (unless user has disabled it)
-                    if not self._migration_disabled:
-                        self.migrate()
-                        for var in self._vars.values():
-                            var._update()
-
-                else:
-                    # This means a migration call has been made before we have
-                    # had a chance to update the swarm consistently. This is an error
-                    # condition. We raise an exception to prevent further errors.
-
-                    print(
-                        f"Size mismatch: PETSc={petsc_size}, Points={points_size}\n",
-                        f"The swarm migration state has become corrupted",
-                    )
-                    raise RuntimeError
-
-                return
-
-            # Add callback to the cached object
-            self._coords.add_callback(swarm_update_callback)
-        else:
-            # Subsequent accesses: efficiently sync new coordinate data
-            # This preserves callbacks and delay contexts, updating object reference if size
-            # changed as a result of migration operations
-
-            self._coords = self._coords.sync_data(coords)
-
-        # Wrap with unit-aware array if mesh has units
         if hasattr(self.mesh, "units") and self.mesh.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray
 
-            return UnitAwareArray(self._coords, units=self.mesh.units)
+            return UnitAwareArray(coords, units=self.mesh.units)
 
-        return self._coords
+        return coords
 
     @points.setter
     def points(self, value):
+        """Removed. Write coordinates via :attr:`coords` or
+        ``swarm._particle_coordinates.data``.
+
+        The deprecated setter wrote through a cached callback wrapper whose
+        per-write callback ran collective migration — ranks writing unevenly
+        deadlocked in parallel, and the masked-write idiom its own
+        documentation advertised raised through the same wrapper (#379).
         """
-        Set swarm particle coordinates from physical units.
-
-        .. deprecated:: 0.99.0
-            Use swarm variables or direct DM access instead.
-
-        When the mesh has coordinate scaling applied (via model units),
-        this property automatically converts from physical coordinates
-        to internal model coordinates for PETSc storage.
-
-        Args:
-            value (numpy.ndarray): Particle coordinates in physical units
-        """
-        import warnings
-
-        warnings.warn("swarm.points is deprecated", DeprecationWarning, stacklevel=2)
-
-        if value.shape[0] != self.local_size:
-            raise TypeError(
-                f"Points must be a numpy array with the same size as the swarm",
-                f"  - partial allocation to the swarm may trigger migration or point removal",
-                f"  - either change all the swarm points at once or use the `with migration_control()` manager",
-            )
-
-        # Apply inverse scaling to convert physical coordinates to model coordinates
-        if hasattr(self.mesh.CoordinateSystem, "_scaled") and self.mesh.CoordinateSystem._scaled:
-            scale_factor = self.mesh.CoordinateSystem._length_scale
-            model_coords = value / scale_factor
-        else:
-            model_coords = value
-
-        # Update the cached NDArray (triggers callback) - use physical coordinates for cache
-        self._coords[...] = value[...]
-
-        # Update PETSc DM field directly with model coordinates for immediate consistency
-        coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, self.cdim))
-        coords[...] = model_coords[...]
-        self.dm.restoreField("DMSwarmPIC_coor")
-
-    # @points.setter
-    # def points(self, value):
-
-    #     if isinstance(value, np.ndarray):
-    #         if value.shape[0] != self.local_size:
-    #             message = (
-    #                 "Points must be a numpy array with the same size as the swarm."
-    #                 + "Partial allocation to the swarm may trigger particle migration"
-    #                 + "either change all the swarm points at once or use the `with migration_disabled()` manager",
-    #             )
-    #             raise TypeError(message)
-
-    #     self._coords[...] = value[...]
+        raise AttributeError(
+            "Assigning to swarm.points has been removed (issue #379): its "
+            "per-write callback ran collective particle migration and could "
+            "deadlock in parallel. Use swarm.coords = values (physical "
+            "units), or write swarm._particle_coordinates.data[...] (model "
+            "units) — masked writes are supported inside "
+            "'with swarm.migration_control():'."
+        )
 
     @property
     def _particle_coordinates(self):
@@ -3512,9 +3404,10 @@ class Swarm(Stateful, uw_object):
         --------
         Defer migration until end (default)::
 
+            coords = swarm._particle_coordinates.data
             with swarm.migration_control():
-                swarm.points[mask1] += delta1
-                swarm.points[mask2] *= scale
+                coords[mask1] += delta1
+                coords[mask2] *= scale
                 # Migration happens HERE on exit
 
         Completely disable migration::

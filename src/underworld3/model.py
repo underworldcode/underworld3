@@ -553,7 +553,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 target_coords = target_var.coords
             elif hasattr(target_var, "swarm"):
                 # Swarm variable
-                target_coords = target_var.swarm.points
+                target_coords = target_var.swarm.coords
             else:
                 raise ValueError(f"Unsupported target variable type: {type(target_var)}")
 
