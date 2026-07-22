@@ -53,6 +53,14 @@ class _ReadOnlyCoordinateSnapshot(np.ndarray):
     Plain read-only ndarrays refuse writes with numpy's bare
     "assignment destination is read-only" — no pointer to the working
     interfaces. This view carries the guidance (#379 item 1).
+
+    Non-``__setitem__`` mutation routes (``fill``, ``sort``,
+    ``np.copyto``, in-place operators, ``out=`` ufuncs) are refused by
+    the read-only flag with numpy's own error; when the mesh carries
+    units the ``UnitAwareArray`` wrapper likewise stays non-writeable
+    but surfaces numpy's message rather than this guidance. Deliberately
+    re-enabling ``snapshot.base.flags.writeable`` writes only into the
+    DETACHED copy — never the swarm.
     """
 
     _GUIDANCE = (

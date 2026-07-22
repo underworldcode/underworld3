@@ -100,3 +100,14 @@ def test_mesh_deform_marks_swarm_for_migration(swarm):
     swarm._mesh_version = swarm.mesh._mesh_version - 1  # simulate a deform bump
     swarm._sync_before_assembly()
     assert swarm._mesh_version == swarm.mesh._mesh_version
+
+
+def test_deform_mesh_bumps_version_for_swarm_rebinning(swarm):
+    """mesh.deform() must bump the mesh version so solve-entry sync can
+    mark registered swarms for migration — previously only the
+    mesh.X.coords callback path bumped it, so the sanctioned deform path
+    left swarms stranded (#379 review round 2)."""
+    mesh = swarm.mesh
+    before = mesh._mesh_version
+    mesh.deform(np.asarray(mesh._coords) + 1.0e-6)
+    assert mesh._mesh_version > before

@@ -3527,6 +3527,13 @@ class Mesh(Stateful, uw_object):
                 if solver is not None and hasattr(solver, "is_setup"):
                     solver.is_setup = False
 
+            # Notify registered swarms: solve-entry sync compares this
+            # version and marks them for deferred migration (#379 item 1
+            # retired the read-trigger that used to consume this channel).
+            # The mesh.X.coords callback path bumps again after this
+            # returns — harmless, the consumer checks inequality.
+            self._mesh_version += 1
+
             # Invalidate caches whose contents become stale when mesh
             # coordinates change. Matches the cache hygiene already
             # performed by mesh.adapt() and _legacy_access. Without
