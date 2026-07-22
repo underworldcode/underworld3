@@ -32,7 +32,7 @@ cdef extern from "petsc.h" nogil:
         pass
 
 cdef extern from "petsc_tools.h" nogil:
-    PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
+    PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell, int petscbool)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
 
 cdef extern from "petsc.h" nogil:

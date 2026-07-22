@@ -34,7 +34,7 @@ cdef extern from "petsc.h" nogil:
 
 # Import custom UW routines
 cdef extern from "petsc_tools.h" nogil:
-    PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell)
+    PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell, int petscbool)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
 
 cdef class CachedDMInterpolationInfo:
@@ -141,31 +141,37 @@ cdef class CachedDMInterpolationInfo:
         # ignoreOutsideDomain=1: PETSc silently skips points it cannot locate
         # rather than crashing.
         #
-        # Hint / bypass policy lives in ONE place: mesh._eval_use_robust_location().
-        # When it is True (parallel simplex / manifold), pass the bulletproof
-        # barycentric hint as authoritative -> petsc_tools.c bypasses
-        # DMLocatePoints (ported from 17a5a8d) and evaluates in the hinted cell,
-        # avoiding PETSc's slow, on-face-rejecting, error-raising location.
-        # Otherwise pass NULL -> PETSc DMLocatePoints runs (serial bit-identical
-        # baseline; non-simplex volume meshes whose deformed faces need PETSc's
-        # rigorous search).
-        # The DMLocatePoints-BYPASS (use the supplied cell hint instead of
-        # PETSc's slow, on-face-rejecting search) is safe whenever the hint is
-        # *authoritative*: simplex cells (planar faces, affine reference map) or
-        # manifold meshes (dim != cdim). That property is independent of rank
-        # count, so the bypass applies in SERIAL too — restoring the fast FE
-        # trace-back (PR #203). The hint *source* still follows
-        # mesh._eval_use_robust_location(): parallel -> _robust_owning_cells
-        # (correct owner across seams); serial -> the standard locator's cells,
-        # which are a valid hint (the pre-merge serial behaviour, bit-for-bit).
-        # Non-simplex volume meshes (deformed quad/hex faces) keep NULL ->
-        # PETSc DMLocatePoints, where the kdtree-nearest hint can be wrong.
-        cdef bint use_hint = (bool(mesh.dm.isSimplex()) or (mesh.dim != mesh.cdim))
-        if n_points > 0 and use_hint:
+        # Hint policy — the hint is ALWAYS passed; what varies is its authority
+        # (the trailing hintAuthoritative flag):
+        #
+        # AUTHORITATIVE (bypass): simplex cells (planar faces, affine reference
+        # map) or manifold meshes (dim != cdim), where PETSc's own in-cell test
+        # is the unreliable party (pseudo-inverse chord-plane projection) and
+        # the barycentric hint correctly contains every query coord ->
+        # petsc_tools.c skips DMLocatePoints entirely (ported from 17a5a8d)
+        # and evaluates in the hinted cell. Independent of rank count, so it
+        # applies in serial too — the fast FE trace-back (PR #203). The hint
+        # *source* still follows mesh._eval_use_robust_location(): parallel ->
+        # _robust_owning_cells (correct owner across seams); serial -> the
+        # standard locator's cells.
+        #
+        # FALLBACK (non-simplex volume meshes — quad/hex, incl. deformed
+        # faces): PETSc DMLocatePoints remains authoritative (the
+        # kdtree-nearest hint can be wrong there), but the hint still prefills
+        # the recovery map so points DMLocatePoints DROPS — notably queries
+        # sitting exactly on the domain's closed upper faces, e.g. SL
+        # trace-back departure points sliding along the top boundary — are
+        # evaluated in the adjacent hinted cell (with reference-coord clamping)
+        # instead of silently zero-filled. Losing this recovery was the ψ*
+        # corruption behind the VEP stability blow-up (#390).
+        cdef bint hint_authoritative = (bool(mesh.dm.isSimplex()) or (mesh.dim != mesh.cdim))
+        if n_points > 0:
             cells_view = np.ascontiguousarray(self.cells)
-            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, <size_t*> &cells_view[0])
+            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1,
+                                           <size_t*> &cells_view[0],
+                                           1 if hint_authoritative else 0)
         else:
-            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, NULL)
+            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, NULL, 0)
         if ierr != 0:
             DMInterpolationDestroy(&self._ipInfo)
             raise RuntimeError(f"DMInterpolationSetUp_UW failed with error {ierr}")
