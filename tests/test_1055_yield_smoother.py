@@ -182,3 +182,53 @@ def test_dp_model_smoother_optin():
     # bad mode rejected
     with pytest.raises(ValueError):
         cm.yield_mode = "not_a_mode"
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_dp_pressure_yield_consistent_jacobian_builds():
+    """Regression: a pressure-dependent tension-cutoff yield ``Max(C+sinφ·p, 0)`` under
+    the consistent-Newton tangent must build the Jacobian without recursing.
+
+    The DP model applied its yield floor as ``Max(yield_stress_min, yield_stress)``
+    whenever ``yield_stress_min.sym != 0`` — but the *unset* default is a −∞-valued
+    Parameter, which passes ``!= 0``, wrapping every yield in ``Max(<−∞ parameter>, …)``.
+    That −∞ parameter is a UWexpression sympy's fuzzy ``is_ge`` cannot resolve, so
+    canonicalising the ``Max`` for the consistent tangent recursed. The guard now uses
+    the model's own −∞ "unset" sentinel, so the wrapper is not applied.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(4, 4), minCoords=(0, 0), maxCoords=(1, 1)
+    )
+    v = uw.discretisation.MeshVariable("Udpj", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Pdpj", mesh, 1, degree=1)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    cm = uw.constitutive_models.ViscoPlasticFlowModel(s.Unknowns)
+    s.constitutive_model = cm
+    sphi = float(np.sin(np.deg2rad(30.0)))
+    cm.Parameters.shear_viscosity_0 = 1.0e3
+    cm.Parameters.yield_stress = sympy.Max(1.0 + sphi * p.sym[0], sympy.sympify(0))
+    cm.Parameters.strainrate_inv_II_min = 1.0e-8
+    s.consistent_jacobian = True
+    # Build the pointwise residual + Jacobian; on the bug this recurses to RecursionError.
+    s._setup_pointwise_functions(verbose=False)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_smooth_max_min_primitive():
+    """uw.maths.smooth_max/smooth_min bracket the hard max/min, approach them as
+    ε→0, and are differentiable at the corner (no kink)."""
+    for a, b in [(1.0, 2.0), (2.0, 1.0), (3.0, -1.0), (0.0, 0.0)]:
+        hi, lo = max(a, b), min(a, b)
+        for eps in (0.5, 0.1, 1.0e-3):
+            smax = float(uw.maths.smooth_max(sympy.Float(a), sympy.Float(b), eps))
+            smin = float(uw.maths.smooth_min(sympy.Float(a), sympy.Float(b), eps))
+            assert smax >= hi - 1.0e-12 and abs(smax - hi) <= eps  # rounds up, →max
+            assert smin <= lo + 1.0e-12 and abs(smin - lo) <= eps  # rounds down, →min
+
+    # smooth at the corner a=b: d/dx smooth_max(x, 0) is the finite value ½ at x=0
+    # (a hard Max(x, 0) has a discontinuous derivative there).
+    x = sympy.Symbol("x")
+    d = sympy.diff(uw.maths.smooth_max(x, sympy.Float(0), sympy.Float(0.1)), x)
+    assert abs(float(d.subs(x, 0)) - 0.5) < 1.0e-9
