@@ -380,63 +380,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         """Check if this variable has units."""
         return self._units is not None
 
-    def _create_variable_array(self, initial_data=None):
-        """
-        Factory function to create NDArray_With_Callback for variable data.
-        Follows the same pattern as swarm.points implementation.
-
-        Parameters
-        ----------
-        initial_data : numpy.ndarray, optional
-            Initial data for the array. If None, fetches current data from PETSc.
-
-        Returns
-        -------
-        NDArray_With_Callback
-            Array object with callback for automatic PETSc synchronization
-        """
-        if initial_data is None:
-            initial_data = self.unpack_uw_data_from_petsc(squeeze=False)
-
-        # Create NDArray_With_Callback (following swarm._points pattern)
-        array_obj = uw.utilities.NDArray_With_Callback(
-            initial_data,
-            owner=self,
-            disable_inplace_operators=False,  # Allow operations like existing arrays
-        )
-
-        # Single callback function (following swarm_update_callback pattern)
-        def variable_update_callback(array, change_context):
-            """Callback to sync variable changes back to PETSc (like swarm.points)"""
-            var = array.owner
-            if var is None:
-                # This guard handles cases where the array is accessed during
-                # object teardown (e.g. at application exit or mesh rebuilds),
-                # where the owning Python variable has already been garbage
-                # collected but the NDArray proxy still exists.
-                return
-
-            # Only act on data-changing operations (following swarm.points pattern)
-            data_changed = change_context.get("data_has_changed", True)
-            if not data_changed:
-                return
-
-            # While migration is suppressed, DEFER the PETSc pack rather than
-            # discarding the write: the DMSwarm layout may be mid-change, so
-            # packing now could corrupt it, but the user's values must survive.
-            # They are flushed by Swarm._flush_pending_petsc_sync() when the
-            # migration-control context exits (SWARM-04).
-            if getattr(var.swarm, "_migration_disabled", False):
-                var.swarm._pending_petsc_sync.add(var.clean_name)
-                return
-
-            # Persist changes to PETSc (like swarm callback updates coordinates)
-            var.pack_uw_data_to_petsc(array)
-
-        # Register the callback (following swarm.points pattern)
-        array_obj.add_callback(variable_update_callback)
-        return array_obj
-
     def _create_canonical_data_array(self, initial_data=None):
         """
         Create the single canonical data array with PETSc synchronization.
@@ -469,7 +412,11 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             disable_inplace_operators=False,  # Allow operations like existing arrays
         )
 
-        # Single canonical callback for PETSc synchronization
+        # Single canonical callback for PETSc synchronization. The
+        # add_canonical_callback dispatch guarantees `array` IS the canonical
+        # storage (views resolved to it, fancy-index copies skipped), so the
+        # pack below always covers every local particle — never a
+        # partition-dependent subset (#376).
         def canonical_data_callback(array, change_context):
             """ONLY callback that handles PETSc synchronization - prevents conflicts"""
             # Only act on data-changing operations
@@ -489,35 +436,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 self.swarm._pending_petsc_sync.add(self.clean_name)
                 return
 
-            # Check for None array to prevent copy errors
-            if array is None:
-                return
-
-            import numpy as np
-
-            # Only the canonical storage may be packed to PETSc (same
-            # guard as the MeshVariable callback, #376): a fancy-indexed
-            # COPY inherits this callback and would pack a wrong-sized
-            # subset — numpy's write-back via __setitem__ on the parent
-            # does the real sync. A partial VIEW has already updated the
-            # canonical storage in place, so pack the full canonical.
-            # View-vs-copy is decided by identity in the base chain
-            # (indexing statements classify the same on every rank), NOT
-            # by np.may_share_memory, which is False for any zero-size
-            # array and would re-create the rank asymmetry on ranks with
-            # no local particles. Known corner (#379): reshape/ravel of
-            # a non-contiguous derived view still classifies
-            # asymmetrically on zero-size ranks.
-            if array is not array_obj:
-                base = array.base
-                while base is not None and base is not array_obj:
-                    base = getattr(base, "base", None)
-                if base is None:
-                    return
-                array = np.asarray(array_obj)
-
             # STEP 1: Ensure array has correct canonical shape before PETSc sync
-            # The callback might receive wrong-shaped arrays from array view operations
             canonical_array = np.atleast_2d(array)
             if canonical_array.shape != (array.shape[0], self.num_components):
                 # Reshape to canonical format: (-1, num_components)
@@ -539,8 +458,8 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             if hasattr(self, "_on_data_changed"):
                 self._on_data_changed()
 
-        # Register the single canonical callback
-        array_obj.add_callback(canonical_data_callback)
+        # Register through the central view/copy guard
+        array_obj.add_canonical_callback(canonical_data_callback)
         return array_obj
 
     def _create_array_view(self):
@@ -3253,6 +3172,11 @@ class Swarm(Stateful, uw_object):
                 disable_inplace_operators=True,
             )
 
+            # TODO(BUG): this callback calls collective migrate() per write and
+            # raises rank-locally on size mismatch — the pattern the swarm
+            # variable canonical callback was rewritten to avoid (SWARM-03).
+            # swarm.points is deprecated; the whole writable stack is removed
+            # by issue #379 item 1 (mesh.points treatment) rather than ported.
             # Define the callback function (only once)
             def swarm_update_callback(array, change_context):
                 # print(

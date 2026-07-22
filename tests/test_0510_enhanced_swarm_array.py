@@ -55,7 +55,7 @@ class TestEnhancedSwarmArray:
         assert hasattr(scalar_var, "unpack_uw_data_from_petsc")
 
         # Check that unified array interface exists
-        assert hasattr(scalar_var, "_create_variable_array")
+        assert hasattr(scalar_var, "_create_canonical_data_array")
         print("✅ Unified NDArray_With_Callback interface exists")
 
     def test_interface_switching(self, setup_enhanced_array_test):
