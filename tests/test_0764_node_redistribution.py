@@ -7,9 +7,10 @@ algorithm names (NVB, MMPDE) live in internals and docs. Locked here:
   fixed-topology node redistribution — dispatches through the
   mesh-controlled ``Mesh.redistribute_nodes`` method (mesh types control
   how they can be modified);
-* supported: 2D simplex (triangle) meshes, warning-free;
-* unsupported mesh types (quad/hex, 3D simplex, manifolds) raise an
-  honest ``NotImplementedError`` stating what exists;
+* supported: 2D (triangle) and 3D (tetrahedral) simplex meshes,
+  warning-free;
+* unsupported mesh types (quad/hex, manifolds) raise an honest
+  ``NotImplementedError`` stating what exists;
 * ``mesh.adapt(metric, max_levels=...)`` needs no ``engine=`` and
   defaults to the graded NVB engine on 2D meshes.
 """
@@ -68,13 +69,44 @@ class TestNodeRedistribution:
                            match="2D simplex"):
             uw.meshing.node_redistribution(mesh, sympy.sympify(1))
 
-    def test_3d_simplex_raises_not_implemented(self):
+    def test_3d_simplex_moves_no_fold_boundary_held(self):
+        """3D node redistribution landed with the adaptivity capstone
+        (round 2): the same MMPDE mover drives tetrahedral meshes. One
+        compact run walks the ladder — nodes move, nothing folds (every
+        tet keeps its orientation sign), and slip keeps boundary nodes
+        EXACTLY on their box faces (the face-only 3D labels close down
+        to vertices now). Callback-sync failures (#376's trigger exists
+        identically in 3D) RAISE since the #379 rework, so a clean run
+        is itself the guard — no log capture needed."""
+        from underworld3.meshing.smoothing.graph import (
+            _tet_cells, _signed_volumes)
+
         mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
-            cellSize=0.5)
-        with pytest.raises(NotImplementedError,
-                           match="2D simplex"):
-            uw.meshing.node_redistribution(mesh, sympy.sympify(1))
+            cellSize=0.3)
+        x, y, z = mesh.X
+        d = sympy.Abs((x - 0.35) * 0.866 + (z - 1.0) * 0.5)
+        rho = 1.0 + 15.0 * sympy.exp(-((d / 0.15) ** 2))
+
+        before = np.asarray(mesh.X.coords).copy()
+        tets = _tet_cells(mesh.dm)
+        sign0 = np.sign(_signed_volumes(before, tets))
+
+        uw.meshing.node_redistribution(
+            mesh, rho, slip_surfaces=True,
+            method_kwargs=dict(n_outer=15))
+
+        after = np.asarray(mesh.X.coords)
+        assert after.shape == before.shape            # topology preserved
+        assert np.all(np.isfinite(after))
+        assert not np.allclose(before, after)         # nodes actually moved
+        # no fold: every tet keeps its original orientation sign
+        assert np.array_equal(np.sign(_signed_volumes(after, tets)), sign0)
+        # slip holds boundary nodes exactly on their planes
+        for k in range(3):
+            for v in (0.0, 1.0):
+                onf = np.isclose(before[:, k], v, atol=1.0e-9)
+                assert np.allclose(after[onf, k], v, atol=1.0e-9)
 
     def test_exported_from_meshing_namespace(self):
         assert "node_redistribution" in uw.meshing.__all__

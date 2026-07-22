@@ -2747,7 +2747,10 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     Parameters
     ----------
     mesh : Mesh
-        2D mesh (the anisotropic mover is 2D-only).
+        2D mesh. (The metric CONSTRUCTION here is 2D — polyline
+        normals and in-plane bumps; the MMPDE mover itself now
+        handles 3D, so a 3D generalisation of this builder is a
+        geometry exercise, not a mover limitation.)
     faults : Surface | array | list
         The fault geometry, in **mesh coordinate space**: a :class:`Surface`
         (uses its control-point polyline), an ``(N>=2, 2|3)`` polyline array,
@@ -2778,7 +2781,10 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "fault_metric_tensor is 2D only (matches the anisotropic mover)")
+            "fault_metric_tensor is 2D only: the polyline-normal band\n"
+            "construction is planar. The MMPDE mover itself handles 3D —\n"
+            "build a 3D metric directly (e.g. from a plane/surface\n"
+            "distance) and pass it to redistribute_nodes.")
     R = float(refinement)
     if isinstance(width, str):
         if width.strip().lower() != "auto":
@@ -2870,9 +2876,10 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     Parameters
     ----------
     mesh : Mesh
-        2D mesh. (The MMPDE mover is 2D-only; 3D would need a 3D
-        discretization of the mover, which does not yet exist, so this
-        builder is 2D-only.)
+        2D mesh. (The comb construction — teeth along a polyline,
+        rows across it — is planar geometry; the MMPDE mover itself
+        now handles 3D, so a 3D comb would be a geometry exercise,
+        not a mover limitation.)
     faults : Surface | array | list
         Fault geometry in mesh coordinate space — a :class:`Surface`, an
         ``(N>=2, 2|3)`` polyline array, or a list mixing those. Each fault's
@@ -2905,8 +2912,9 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "fault_comb_metric is 2D only (the MMPDE mover is 2D; 3D needs "
-            "a 3D discretization of the mover)")
+            "fault_comb_metric is 2D only: the comb construction is\n"
+            "planar. The MMPDE mover itself handles 3D — build a 3D\n"
+            "metric directly and pass it to redistribute_nodes.")
     dx = float(cell_size)
     if not (dx > 0.0):
         raise ValueError(f"cell_size must be positive; got {cell_size}")

@@ -98,7 +98,8 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     Parameters
     ----------
     mesh : underworld3.discretisation.Mesh
-        Triangle mesh (only 2-D for now).
+        Triangle (2D) or tetrahedral (3D) mesh; "area" throughout
+        this docstring reads as the cell measure (volume in 3D).
     metric : sympy / UW expression
         The target *density* ρ (larger ⇒ finer cells) — same
         object you would pass to ``smooth_mesh_interior``.
@@ -134,11 +135,19 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     import underworld3 as _uw
 
     coords = np.asarray(mesh.X.coords)
-    tris = _tri_cells(mesh.dm)
+    if mesh.cdim == 2:
+        tris = _tri_cells(mesh.dm)
+        A_actual = None if tris is None else np.abs(
+            _signed_areas(coords, tris))
+    else:
+        from .graph import _tet_cells, _signed_volumes
+        tris = _tet_cells(mesh.dm)
+        A_actual = None if tris is None else np.abs(
+            _signed_volumes(coords, tris))
     if tris is None:
         raise NotImplementedError(
-            "mesh_metric_mismatch: triangle mesh required")
-    A_actual = np.abs(_signed_areas(coords, tris))
+            "mesh_metric_mismatch: simplex (triangle/tetrahedral) mesh "
+            "required")
     centroids = coords[tris].mean(axis=1)
     rho = np.asarray(_uw.function.evaluate(
         metric, centroids)).reshape(-1)

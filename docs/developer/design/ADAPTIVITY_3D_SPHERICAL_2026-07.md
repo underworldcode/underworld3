@@ -573,6 +573,29 @@ out of scope here, as in 2D.
   metric-variation term is 2·d analytic metric evaluations per iteration —
   measure, and if hot, evaluate the Shepard-baked metric's gradient instead.
 
+**Round-2a status: DONE (2026-07-23, worktree `mmpde-3d`).** The rim
+locks fell as predicted (`_tet_cells` / new `_signed_volumes` /
+`fact = d!`; guards flipped; `mesh_metric_mismatch` and the
+`follow_metric` polish gained their tet forms). The one REAL blocker
+was not on the list: `_pinned_mask` stopped its label closure at
+edges, and 3D gmsh labels tag *faces only*, so on any 3D mesh **no
+boundary vertex was classified at all** — nothing pinned, nothing
+slipped, the whole boundary drifted freely into the interior. Every
+tagged non-vertex point now closes down to its vertices (bit-identical
+in 2D, where an edge's closure is exactly its endpoints). With that
+fixed, first light on the dipping-fault-plane box: monotone energy
+descent, zero folds, boundary nodes held **exactly** on their faces
+under slip, and h-grading ratio 1.12 vs 1.30 for the identical 2D
+problem — same family, compressed by the dimension exponent (the
+ideal equidistribution ratio for this metric is 4× in 2D but only
+2.5× in 3D, h ∝ ρ^(−1/d)); repeated calls hold a stable equilibrium,
+matching the 2D "maintains, does not compound" behaviour.
+`follow_metric` runs end-to-end on 3D. Full mover/adapt family sweep:
+215 green serially; the negative 3D-raises contract tests flipped to
+capability tests (`test_0764`, `test_0850_mesh_smoothing`). Spherical
+slip validation deferred to round 3b with the rest of the curved-
+boundary work.
+
 ### Round 2b — 3D MMPDE, parallel (same worktree, gated separately)
 
 The mover's parallel machinery (coordinate-DM `localToGlobal(ADD_VALUES)`
@@ -582,6 +605,15 @@ np2/np4 parity tests mirroring the 2D contract (velocity assembly
 bit-identical; the known ~1e-4%-level step-cap partition drift documented in
 `mmpde.py:487-495` applies unchanged). Any 3D-specific divergence is a bug to
 fix, not a new mechanism to build.
+
+**Round-2b status: DONE (2026-07-23).** Gates, not code, exactly as
+predicted — zero 3D-specific changes were needed. The dipping-plane
+box gate at np=1/2/4: runs clean at every rank count (exercising the
+post-#379 collective sync machinery in 3D), zero folds everywhere,
+boundary nodes held exactly on their faces, and the graded
+near/far h medians agree across partitions to ≤2.5% each (grading
+ratio 1.121 / 1.088 / 1.077) — the same few-percent equilibrium
+drift the rank-local step cap produces in the 2D combination gate.
 
 ### Round 3a — unified adapt + redistribute workflow
 
