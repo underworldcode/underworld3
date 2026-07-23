@@ -100,3 +100,48 @@ def test_single_vector_variable():
     assert np.allclose(np.array(((1.1, 1.2),)), result, rtol=1e-05, atol=1e-08)
 
     del mesh
+
+
+@pytest.mark.tier_a
+@pytest.mark.parametrize("simplex", [False, True], ids=["quad", "simplex"])
+def test_evaluate_on_domain_boundary_faces(simplex):
+    """Interpolation at points lying exactly ON the domain boundary must be
+    exact, on both the DMLocatePoints path (quad) and the hint-bypass path
+    (simplex).
+
+    PETSc's point location drops queries sitting exactly on the domain's
+    closed upper faces (half-open cell convention), and a dropped point is
+    zero-filled by the evaluator unless the kd-tree cell hint recovers it.
+    Losing that recovery on quad meshes silently corrupted semi-Lagrangian
+    stress-history trace-backs along the top boundary — the VEP stability
+    blow-up of issue #390.
+    """
+    if simplex:
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5), cellSize=0.25
+        )
+    else:
+        mesh = uw.meshing.StructuredQuadBox(
+            elementRes=(8, 4), minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5)
+        )
+    var = uw.discretisation.MeshVariable("bdry_probe", mesh, 1, degree=2)
+    var.data[:, 0] = 1.0 + 2.0 * var.coords[:, 0] + 3.0 * var.coords[:, 1]
+
+    xs = np.linspace(-0.9, 0.9, 7)
+    ys = np.linspace(-0.4, 0.4, 5)
+    pts = np.array(
+        [[xi, 0.5] for xi in xs]        # top face (the face PETSc drops)
+        + [[xi, -0.5] for xi in xs]     # bottom face
+        + [[-1.0, yi] for yi in ys]     # left face
+        + [[1.0, yi] for yi in ys]      # right face
+        + [[-1.0, -0.5], [1.0, -0.5], [-1.0, 0.5], [1.0, 0.5]]  # corners
+    )
+    vals = fn.evaluate(var.sym[0], pts).flatten()
+    exact = 1.0 + 2.0 * pts[:, 0] + 3.0 * pts[:, 1]
+    assert np.allclose(vals, exact, atol=1e-8), (
+        f"boundary-face interpolation error: "
+        f"max|err|={np.abs(vals - exact).max():.3e} "
+        f"worst at {pts[np.argmax(np.abs(vals - exact))]}"
+    )
+
+    del mesh
