@@ -2016,6 +2016,11 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     if "data" in h5f:
                         h5f["data"].attrs["units_metadata"] = json.dumps(swarm_metadata)
 
+        # Same quiescence contract as Swarm.save (issue #330): all ranks
+        # wait for rank 0's metadata append so an immediate reopen cannot
+        # hit HDF5 file locking.
+        comm.barrier()
+
         return
 
     @timing.routine_timer_decorator
@@ -4087,11 +4092,6 @@ class Swarm(Stateful, uw_object):
             del points_data_copy
 
         ## Add swarm coordinate unit metadata to the file
-        # TODO(BUG): save() returns on non-zero ranks while rank 0 is still
-        # appending this metadata; a rank that immediately reopens the file
-        # (e.g. read_timestep straight after write_timestep) hits HDF5 file
-        # locking (BlockingIOError, errno 35). A trailing barrier would make
-        # the file quiescent on return. Found while reproducing issue #324.
         import json
 
         # Use preferred selective_ranks pattern for coordinate metadata
@@ -4120,6 +4120,13 @@ class Swarm(Stateful, uw_object):
                         h5f["coordinates"].attrs["swarm_metadata"] = json.dumps(
                             swarm_coord_metadata
                         )
+
+        # The file must be quiescent when save() returns on EVERY rank:
+        # without this barrier, non-zero ranks return while rank 0 still
+        # holds the file open for the metadata append, and an immediate
+        # reopen (e.g. read_timestep right after write_timestep) hits HDF5
+        # file locking (BlockingIOError, errno 35) — issue #330.
+        comm.barrier()
 
         return
 

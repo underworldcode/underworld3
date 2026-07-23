@@ -986,28 +986,33 @@ class _BaseMeshVariable(Stateful, uw_object):
         # Use preferred selective_ranks pattern for unit metadata
         with uw.selective_ranks(0) as should_execute:
             if should_execute:
-                f = h5py.File(filename, "a")
+                # Context manager: an exception mid-block must not leak the
+                # handle (a live handle keeps the HDF5 lock held).
+                with h5py.File(filename, "a") as f:
+                    # Create or get metadata group
+                    if "metadata" not in f:
+                        g = f.create_group("metadata")
+                    else:
+                        g = f["metadata"]
 
-                # Create or get metadata group
-                if "metadata" not in f:
-                    g = f.create_group("metadata")
-                else:
-                    g = f["metadata"]
+                    # Add variable unit metadata
+                    var_metadata = {
+                        "units": str(self.units) if hasattr(self, "units") and self.units else None,
+                        "dimensionality": (
+                            str(self.dimensionality) if hasattr(self, "dimensionality") else None
+                        ),
+                        "units_backend": "pint" if self.has_units else None,
+                        "num_components": self.num_components,
+                        "variable_type": str(self.vtype),
+                        "variable_name": self.name,
+                    }
 
-                # Add variable unit metadata
-                var_metadata = {
-                    "units": str(self.units) if hasattr(self, "units") and self.units else None,
-                    "dimensionality": (
-                        str(self.dimensionality) if hasattr(self, "dimensionality") else None
-                    ),
-                    "units_backend": "pint" if self.has_units else None,
-                    "num_components": self.num_components,
-                    "variable_type": str(self.vtype),
-                    "variable_name": self.name,
-                }
+                    g.attrs[f"variable_{self.clean_name}_units"] = json.dumps(var_metadata)
 
-                g.attrs[f"variable_{self.clean_name}_units"] = json.dumps(var_metadata)
-                f.close()
+        # Same quiescence contract as Swarm.save (issue #330): every rank
+        # waits for rank 0's metadata append, so an immediate reopen
+        # (read_timestep after write_timestep) cannot hit HDF5 file locking.
+        uw.mpi.barrier()
 
         lvec = self.mesh.dm.getCoordinates()
 
@@ -3126,8 +3131,20 @@ class _BaseMeshVariable(Stateful, uw_object):
         """Statistics for vector variables using magnitude."""
         import numpy as np
 
-        # Create temporary scalar variable for magnitude
-        magnitude_var = _BaseMeshVariable(f"_temp_mag_{id(self)}", self.mesh, 1, degree=self.degree)
+        # Temporary scalar variable for the magnitude. The name suffix must
+        # be rank-symmetric: variable creation/destruction performs
+        # collective DM operations keyed by field name, and id(self) is a
+        # rank-local address that differs across ranks (issue #384).
+        temp_name = f"_temp_mag_{self.clean_name}"
+        # A name collision would silently ALIAS an existing variable
+        # (creation returns the registered object), and the stats pass
+        # would then overwrite its data and deregister it — refuse instead.
+        if temp_name in self.mesh.vars:
+            raise RuntimeError(
+                f"Cannot compute vector stats: a variable named '{temp_name}' "
+                "already exists on this mesh (reserved as a stats temporary)."
+            )
+        magnitude_var = _BaseMeshVariable(temp_name, self.mesh, 1, degree=self.degree)
 
         try:
             # Compute magnitude: |v| = sqrt(v·v)
@@ -3164,9 +3181,17 @@ class _BaseMeshVariable(Stateful, uw_object):
         """Statistics for tensor variables using Frobenius norm."""
         import numpy as np
 
-        # Create temporary scalar variable for Frobenius norm
+        # Temporary scalar variable for the Frobenius norm — rank-symmetric
+        # name suffix and collision refusal for the same reasons as
+        # _vector_stats (issue #384).
+        temp_name = f"_temp_frob_{self.clean_name}"
+        if temp_name in self.mesh.vars:
+            raise RuntimeError(
+                f"Cannot compute tensor stats: a variable named '{temp_name}' "
+                "already exists on this mesh (reserved as a stats temporary)."
+            )
         frobenius_var = uw.discretisation.MeshVariable(
-            f"_temp_frob_{id(self)}", self.mesh, 1, degree=self.degree
+            temp_name, self.mesh, 1, degree=self.degree
         )
 
         try:

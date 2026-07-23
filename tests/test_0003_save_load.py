@@ -277,7 +277,10 @@ def test_write_timestep_missing_directory_raises(tmp_path):
     """
     import underworld3 as uw
 
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    # 4x4 keeps every rank populated up to np4 — a 2x2 mesh starves ranks
+    # of cells and crashes in mesh construction (issue #399), which then
+    # desynchronises every test after this one in an MPI run.
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
     missing_dir = tmp_path / "does_not_exist"
 
     with pytest.raises(RuntimeError, match="does not exist"):
@@ -372,3 +375,24 @@ def test_read_timestep_refuses_frame_mismatched_file(tmp_path):
     w = uw.discretisation.MeshVariable("phi269b", mesh, 1, degree=0, continuous=False)
     with pytest.raises(RuntimeError, match="coordinate frames do not match"):
         w.read_timestep("chk269g", "phi269", 0, outputPath=tmp_path)
+
+
+def test_mesh_from_msh_file_writes(tmp_path):
+    """#397: a mesh loaded directly from a .msh file must be writable.
+
+    The coordinate system defaults to CARTESIAN (matching every uw.meshing
+    constructor) instead of leaving ``CoordinateSystemType=None`` and
+    crashing ``mesh.write()``'s metadata block.
+    """
+    import underworld3 as uw
+
+    tmp_path = _shared_tmp_path(tmp_path, uw)
+
+    msh = f"{tmp_path}/box397.msh"
+    scratch = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, filename=msh)
+    del scratch
+
+    mesh = uw.discretisation.Mesh(msh)
+    assert mesh.CoordinateSystemType is uw.coordinates.CoordinateSystemType.CARTESIAN
+    mesh.write(f"{tmp_path}/box397.h5")
