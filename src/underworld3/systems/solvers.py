@@ -1896,11 +1896,21 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         boundary : str
             Mesh boundary label over which the mean pressure is fixed.
         reference : float, default 0.0
-            Target mean pressure on ``boundary``.
+            Target mean pressure on ``boundary``, in the model (non-dimensional)
+            frame.
 
         Returns
         -------
         the registered callback (so it can be identified/removed later).
+
+        Notes
+        -----
+        For **pressure-dependent plasticity** (e.g. Drucker-Prager,
+        :math:`\sigma_y = C + p\sin\varphi`) a pressure gauge is
+        counter-productive: shifting the pressure moves the yield surface at
+        every iteration and the nonlinear solve oscillates instead of
+        converging. The pressure level there is physical, not a free gauge —
+        set the level through the boundary conditions instead.
         """
         p = self.Unknowns.p
         area = uw.maths.BdIntegral(self.mesh, 1.0, boundary).evaluate()
@@ -1908,6 +1918,13 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         def _pressure_gauge(solver, iteration):
             mean = p_surface_integral.evaluate() / area
+            # This callback fires inside the SNES non-dimensionalisation
+            # cordon, where p.data holds non-dimensional values. Under an
+            # active units model the boundary integral is a dimensional
+            # quantity, so take its non-dimensional value before applying
+            # the shift (issue #271).
+            if isinstance(mean, uw.function.quantities.UWQuantity):
+                mean = mean.data
             p.data[...] -= (mean - reference)
 
         return self.add_update_callback(_pressure_gauge)
