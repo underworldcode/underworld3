@@ -364,10 +364,17 @@ class FreeSurface:
         self.held.petsc_use_pressure_nullspace = True
 
     def _build_consistent(self):
-        r"""The consistent solve: walls as the free solve, and a penalty natural BC
-        prescribing :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n` (the realised
-        relaxed rate) so the advection velocity keeps the surface a material
-        boundary."""
+        r"""The consistent solve: walls as the free solve, and a STRONG rotated
+        constraint prescribing :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n` (the
+        realised relaxed rate) so the advection velocity keeps the surface a material
+        boundary.
+
+        The per-node rotated constraint enforces the datum to machine precision (no
+        penalty leak) and, crucially, routes the solve through the rotated LINEAR solver
+        (a direct KSP solve) rather than a Newton line search — so a linear (isoviscous)
+        flow does not thrash ``newtonls`` the way the old penalty natural BC did. The
+        datum is the ``ũ_n`` field, re-evaluated at each solve, so refreshing
+        ``_un_target`` each step refreshes the constraint (see #403)."""
         self.consistent = self._new_stokes("cons")
         self.consistent.bodyforce = self.free.bodyforce
         self._apply_walls(self.consistent)
@@ -376,16 +383,13 @@ class FreeSurface:
         )
         self._un_target_rows, _ = self._field_rows(self._un_target, self._surf_coords)
         self._un_target.array[...] = 0.0
-        # Match the normal used to MEASURE the rate (:meth:`_surface_normal_velocity`,
-        # the deform direction) — an analytic normal when supplied, else the FE facet
-        # normal. Prescribing u.n=u_n along a different normal than u_n was read along
-        # injects a spurious tangential-slope term on a bumpy/rotating surface.
-        n_hat = self.normal if self.normal is not None else self.mesh.boundary_normal(self.surface)
-        v_sym = self.consistent.u.sym
-        penalty = 1.0e5
-        self.consistent.add_natural_bc(
-            penalty * (n_hat.dot(v_sym) - self._un_target.sym[0]) * n_hat, self.surface
-        )
+        # Strong rotated u.n = ũ_n on the surface. The datum is read along the rotated
+        # per-node normal — the same deform direction the rate was measured along, so no
+        # spurious tangential-slope term on a bumpy/rotating surface. `normal=None` uses
+        # the FE facet normal (fine on a flat/near-flat top); pass an analytic normal for
+        # a curved surface.
+        self.consistent.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
+        self.consistent._rotated_freeslip_datum = {self.surface: self._un_target.sym[0]}
         self.consistent.petsc_use_pressure_nullspace = True
         self._adv_velocity = self.consistent.u
 
