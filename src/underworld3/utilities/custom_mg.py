@@ -888,7 +888,15 @@ def auto_inject_custom_mg(solver, field_id=None):
             solver.snes.setUp()
             op_n = int(solver.snes.getJacobian()[0].getSize()[0])
             pr, pc = (int(v) for v in Ps[-1].getSize())
-            if op_n > 0 and (pr != op_n or pc >= pr):   # rows!=op or no coarsening
+            # Only a genuine size mismatch disqualifies the transfer. A
+            # SQUARE finest transfer (pc == pr) is legitimate and common on
+            # boundary-focused refinement: a generation whose new vertices
+            # all land on a Dirichlet boundary adds only CONSTRAINED dofs,
+            # so the free-dof counts of the last two levels coincide — the
+            # level is redundant but correct, and rejecting it silently
+            # downgraded every curved-domain boundary-layer adapt to the
+            # default preconditioner (round-3b annulus finding, 2026-07).
+            if op_n > 0 and pr != op_n:
                 import warnings
                 warnings.warn(
                     "custom_mg: mesh-owned adapt-mesh FMG transfer is incompatible "
