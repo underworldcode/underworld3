@@ -20,6 +20,7 @@ from mpi4py import MPI
 
 import underworld3 as uw
 from underworld3 import function
+from underworld3.coordinates import CoordinateSystemType
 
 
 class FreeSurface:
@@ -100,6 +101,7 @@ class FreeSurface:
         mass="lumped",
         max_surface_cfl=0.5,
         tangent_advect=None,
+        tangent_spectral_modes=0,
         surface_mask=None,
         surface_filter=0,
         verbose=False,
@@ -118,6 +120,9 @@ class FreeSurface:
         # None (off), "shape" (transport the geometry h — the standard operator split),
         # or "fields" (transport the driving h_inf, u_n). A diagnostic to size the term.
         self.tangent_advect = tangent_advect
+        # >0 uses a diffusion-free spectral (Fourier) launch-point interpolation on a
+        # periodic ring instead of linear; the mode count also caps facet-scale noise.
+        self._spectral_modes = int(tangent_spectral_modes)
         self._surface_mask_fn = surface_mask
         self.verbose = verbose
 
@@ -130,10 +135,18 @@ class FreeSurface:
                 "free surface the sigma_nn recovery zigzags. Prefer continuous pressure."
             )
 
-        self._yhat = self._vertical_unit()
+        # Topography direction: vertical (last axis) on a Cartesian box, radial on a
+        # cylindrical annulus. The surface height and the mesh deformation follow it.
+        self._cylindrical = (
+            self.mesh.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL2D
+        )
         self._walls = self._classify_walls()
         self._surf_coords = self._surface_node_coords()
         self._surf_rows, self._surf_x = self._field_rows(self.mesh.X, self._surf_coords)
+        # Ring coordinates in the array (x-sorted) order the surface fields are held in.
+        self._ring_coords = np.ascontiguousarray(
+            self._surf_coords[np.argsort(self._surf_coords[:, 0])]
+        )
 
         # Optional taper on the surface rate: h_dot -> h_dot * mask(x). A mask that
         # falls to zero near a driven wall pins the surface where a stress-free top
@@ -164,11 +177,23 @@ class FreeSurface:
 
     # -- geometry / boundary bookkeeping -------------------------------------
 
-    def _vertical_unit(self):
-        """Upward unit row vector — the topography direction (Cartesian gravity)."""
-        row = [[0.0] * self.mesh.dim]
-        row[0][-1] = 1.0
-        return sympy.Matrix(row)
+    def _surface_height(self, coords):
+        """The coordinate along the topography direction: the last axis on a Cartesian
+        box, the radius on a cylindrical annulus."""
+        if self._cylindrical:
+            return np.linalg.norm(coords, axis=1)
+        return np.asarray(coords[:, -1], dtype=float)
+
+    def _normal_direction(self, coords):
+        """Per-node unit vectors along the topography direction that the surface
+        increment is deformed along — vertical (Cartesian) or radial (annulus)."""
+        if self._cylindrical:
+            r = np.linalg.norm(coords, axis=1)
+            r[r == 0.0] = 1.0
+            return coords / r[:, None]
+        n = np.zeros_like(coords)
+        n[:, -1] = 1.0
+        return n
 
     def _classify_walls(self):
         r"""Read the free solve's wall BCs as ``{boundary: ("freeslip"|"noslip", normal)}``.
@@ -351,7 +376,11 @@ class FreeSurface:
         )
         self._un_target_rows, _ = self._field_rows(self._un_target, self._surf_coords)
         self._un_target.array[...] = 0.0
-        n_hat = self.mesh.boundary_normal(self.surface)
+        # Match the normal used to MEASURE the rate (:meth:`_surface_normal_velocity`,
+        # the deform direction) — an analytic normal when supplied, else the FE facet
+        # normal. Prescribing u.n=u_n along a different normal than u_n was read along
+        # injects a spurious tangential-slope term on a bumpy/rotating surface.
+        n_hat = self.normal if self.normal is not None else self.mesh.boundary_normal(self.surface)
         v_sym = self.consistent.u.sym
         penalty = 1.0e5
         self.consistent.add_natural_bc(
@@ -502,7 +531,8 @@ class FreeSurface:
         the material field is transported and (optionally) volume-corrected; and the
         surface increment is carried inward and applied with :meth:`Mesh.deform`.
         """
-        shape = self._current_shape()
+        shape0 = self._current_shape()   # the mesh geometry the increment is applied to
+        shape = shape0
         u_n = self._surface_normal_velocity()
         h_inf = self._h_inf
 
@@ -514,7 +544,9 @@ class FreeSurface:
             gamma = np.where(np.abs(displacement) > 1.0e-9, u_n / displacement, 0.0)
         gamma = np.abs(gamma)  # relax toward equilibrium; L-stable for any rate
         shape_new = h_inf + (shape - h_inf) * np.exp(-gamma * dt)
-        increment = shape_new - shape
+        # Total height change relative to the CURRENT mesh: the tangential transport
+        # (shape - shape0) plus the normal relaxation (shape_new - shape).
+        increment = shape_new - shape0
 
         if self.composition is not None:
             self._solve_consistent(increment, dt)
@@ -533,28 +565,84 @@ class FreeSurface:
     def _current_shape(self):
         """The surface height anomaly (topography direction), mean-removed — read from
         the deformed mesh geometry, which IS the surface state."""
-        height = self.mesh.X.coords[self._surf_rows, -1]
-        return self._demean(np.asarray(height, dtype=float))
+        height = self._surface_height(self.mesh.X.coords[self._surf_rows])
+        return self._demean(height)
 
     def _surface_normal_velocity(self):
         r""":math:`\dot h = \mathbf{u}\cdot\hat{\mathbf n}` on the surface nodes, from
-        the P1-projected free-solve velocity and the per-node normal, mean-removed."""
+        the P1-projected free-solve velocity, mean-removed.
+
+        The normal here is the **deform direction** (:meth:`_normal_direction`: radial on
+        an annulus, vertical in Cartesian), *not* the FE facet normal of the (bumpy)
+        deformed surface. This is the correct operator split: :math:`\dot h` measures the
+        height change along the direction the surface node is advected, while all
+        along-surface motion is carried by the tangential transport. Using the tilted
+        facet normal instead lets a large tangential flow (e.g. a co-rotating base,
+        :math:`\mathbf{u}=\Omega\times\mathbf{r}`) project into :math:`\dot h` through the
+        bump slope — an implicit, unstable explicit-Euler advection that double-counts the
+        transport and grows the surface out of round-off. With the deform-direction normal
+        a rigid rotation gives :math:`\dot h=0` exactly."""
         self._v_p1_proj.solve()
         coords = self._surf_coords
-        n_hat = self.mesh.boundary_normal(self.surface)
-        components = []
+        n = self._normal_direction(coords)          # unit vectors, same as the deform
+        dot = np.zeros(coords.shape[0])
         for i in range(self.mesh.dim):
             v_i = np.asarray(function.evaluate(self._v_p1.sym[i], coords)).flatten()
-            n_i = np.asarray(function.evaluate(n_hat[i], coords)).flatten()
-            components.append((v_i, n_i))
-        dot = sum(v_i * n_i for v_i, n_i in components)
-        norm = np.sqrt(sum(n_i * n_i for _, n_i in components))
-        norm[norm == 0.0] = 1.0
-        u_n = (dot / norm)[np.argsort(coords[:, 0])]
+            dot += v_i * n[:, i]
+        u_n = dot[np.argsort(coords[:, 0])]
         u_n = self._demean(u_n)
         if self._surface_mask is not None:
             u_n = u_n * self._surface_mask  # pin the surface rate near driven walls
         return u_n
+
+    def _along_surface(self):
+        """The along-surface coordinate ``s``, the tangential velocity in ``s``-units,
+        and the period (``None`` = open). Cartesian: ``s = x``, ``v_t = v_x``, open.
+        Cylindrical annulus: ``s = theta``, ``v_t = omega = v_theta/r``, period ``2*pi``.
+        All in the ring-array (x-sorted) order the surface fields are held in."""
+        order = np.argsort(self._surf_coords[:, 0])
+        v_x = np.asarray(function.evaluate(self._v_p1.sym[0], self._surf_coords)).flatten()[order]
+        if not self._cylindrical:
+            return self._surf_x, v_x, None
+        v_y = np.asarray(function.evaluate(self._v_p1.sym[1], self._surf_coords)).flatten()[order]
+        cx, cy = self._ring_coords[:, 0], self._ring_coords[:, 1]
+        r = np.hypot(cx, cy)
+        theta = np.arctan2(cy, cx)
+        v_theta = (-cy * v_x + cx * v_y) / r        # v . theta-hat
+        return theta, v_theta / r, 2.0 * np.pi
+
+    def _launch_interp(self, s, field, s_dep, period):
+        """Interpolate ``field(s)`` at the launch point ``s_dep``. Open surface: linear
+        (bounded), clamped ends. Closed ring: linear periodic, or — when
+        ``tangent_spectral_modes>0`` — a diffusion-free spectral fit (:meth:`_fourier_interp`)."""
+        order = np.argsort(s)
+        s_sorted, f_sorted = s[order], field[order]
+        if period is None:
+            return np.interp(np.clip(s_dep, s_sorted[0], s_sorted[-1]), s_sorted, f_sorted)
+        if self._spectral_modes > 0:
+            return self._fourier_interp(s, field, s_dep, period, self._spectral_modes)
+        lo = s_sorted[0]
+        s_dep_wrapped = lo + np.mod(s_dep - lo, period)
+        s_ext = np.concatenate([s_sorted, [s_sorted[0] + period]])
+        f_ext = np.concatenate([f_sorted, [f_sorted[0]]])
+        return np.interp(s_dep_wrapped, s_ext, f_ext)
+
+    def _fourier_interp(self, s, field, s_dep, period, n_modes):
+        """Diffusion-free interpolation on a periodic ring: a least-squares Fourier fit
+        of ``field(s)`` (``n_modes`` harmonics), evaluated at the launch angles ``s_dep``.
+        Exact for the resolved smooth content; the mode truncation low-passes the
+        facet-scale (node) noise, so it also serves as the surface filter on the ring."""
+        w = 2.0 * np.pi / period
+
+        def design(angles):
+            cols = [np.ones_like(angles)]
+            for k in range(1, n_modes + 1):
+                cols.append(np.cos(k * w * angles))
+                cols.append(np.sin(k * w * angles))
+            return np.column_stack(cols)
+
+        coef, *_ = np.linalg.lstsq(design(s), field, rcond=None)
+        return design(s_dep) @ coef
 
     def _apply_tangential_transport(self, shape, h_inf, u_n, dt):
         """First-pass along-surface transport: barycentric-interpolate the surface
@@ -562,18 +650,16 @@ class FreeSurface:
 
         The 1-D interpolation is a convex combination of the bracketing nodal values,
         so it is bounded (cannot overshoot) even when the launch point is crudely
-        located. This is the diagnostic first pass: the along-surface coordinate is the
-        Cartesian ``x``, the tangential velocity is the horizontal component, and the
-        interpolation runs over this rank's local ring only (a parallel version gathers
-        the ring, and the annulus swaps ``x -> theta`` with periodic wrap).
+        located. Geometry sets the parametrisation (:meth:`_along_surface`): the
+        Cartesian ``x`` with clamped ends, or the annulus ``theta`` with periodic wrap.
+        Serial first pass — the interpolation runs over this rank's local ring only (a
+        parallel version gathers the ring).
         """
-        v_x = np.asarray(function.evaluate(self._v_p1.sym[0], self._surf_coords)).flatten()
-        v_x = v_x[np.argsort(self._surf_coords[:, 0])]
-        s = self._surf_x
-        s_dep = s - v_x * dt
-        shape_up = np.interp(s_dep, s, shape)
-        h_inf_up = np.interp(s_dep, s, h_inf)
-        u_n_up = np.interp(s_dep, s, u_n)
+        s, v_t, period = self._along_surface()
+        s_dep = s - v_t * dt
+        shape_up = self._launch_interp(s, shape, s_dep, period)
+        h_inf_up = self._launch_interp(s, h_inf, s_dep, period)
+        u_n_up = self._launch_interp(s, u_n, s_dep, period)
         if self.verbose:
             h_scale = np.abs(shape).max() + 1.0e-300
             u_scale = np.abs(u_n).max() + 1.0e-300
@@ -611,13 +697,14 @@ class FreeSurface:
 
     def _carry_and_deform(self, increment, dt):
         """Carry the surface increment inward with the Laplacian diffuser and apply it
-        as a purely vertical mesh deformation."""
+        as a mesh deformation along the topography direction (vertical on a box, radial
+        on an annulus)."""
         self._carry_bc.array[...] = 0.0
         self._carry_bc.array[self._carry_bc_rows, 0, 0] = increment
         self._diffuser.solve(zero_init_guess=False)
+        coords = self.mesh.X.coords
         displacement = np.asarray(
-            function.evaluate(self._carry.sym[0], self.mesh.X.coords)
+            function.evaluate(self._carry.sym[0], coords)
         ).flatten()
-        new_coords = self.mesh.X.coords.copy()
-        new_coords[:, -1] += displacement
+        new_coords = coords + displacement[:, None] * self._normal_direction(coords)
         self.mesh.deform(new_coords, dt=dt)
