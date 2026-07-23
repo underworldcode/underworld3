@@ -120,6 +120,75 @@ def test_rotated_freeslip_spherical_shell_3d():
         assert rotfrac < 1e-8, f"rotation mode {k} gauge {rotfrac:.2e} not removed"
 
 
+def _spherical3d_reaction_topography():
+    """Zhong l=2 topography recovered directly from rotated constraint reactions."""
+
+    radius_inner = 0.55
+    radius_outer = 1.0
+    radius_internal = 0.775
+    mesh = uw.meshing.SphericalShellInternalBoundary(
+        radiusOuter=radius_outer,
+        radiusInternal=radius_internal,
+        radiusInner=radius_inner,
+        cellSize=0.25,
+        qdegree=2,
+        degree=1,
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "U_topography_3d", mesh, mesh.dim, degree=2, continuous=True
+    )
+    pressure = uw.discretisation.MeshVariable(
+        "P_topography_3d", mesh, 1, degree=1, continuous=True
+    )
+    stokes = uw.systems.Stokes(
+        mesh, velocityField=velocity, pressureField=pressure
+    )
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    theta = mesh.CoordinateSystem.xR[1]
+    unit_r = mesh.CoordinateSystem.unit_e_0
+    harmonic = sympy.assoc_legendre(2, 0, sympy.cos(theta))
+    stokes.add_natural_bc(harmonic * unit_r, "Internal")
+    stokes.add_rotated_freeslip_bc(0, "Upper", normal=unit_r)
+    stokes.add_rotated_freeslip_bc(0, "Lower", normal=-unit_r)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.petsc_options["snes_type"] = "ksponly"
+    stokes.tolerance = 1.0e-5
+    stokes.solve()
+
+    def harmonic_coefficient(boundary, response_sign):
+        xs, sigma_nn = stokes.boundary_normal_traction(boundary)
+        local = {
+            tuple(np.round(x, 12)): -float(value)
+            for x, value in zip(xs, sigma_nn)
+        }
+        samples = {}
+        for rank_values in uw.mpi.comm.allgather(local):
+            samples.update(rank_values)
+        coords = np.asarray(list(samples))
+        topography = np.asarray(list(samples.values()))
+        radii = np.linalg.norm(coords, axis=1)
+        harmonic_values = 0.5 * (3.0 * (coords[:, 2] / radii) ** 2 - 1.0)
+        return float(
+            response_sign
+            * np.dot(topography, harmonic_values)
+            / np.dot(harmonic_values, harmonic_values)
+        )
+
+    surface = harmonic_coefficient("Upper", 1.0)
+    cmb = harmonic_coefficient("Lower", -1.0)
+    return surface, cmb
+
+
+@pytest.mark.level_2
+def test_rotated_freeslip_spherical3d_reaction_topography():
+    """3D reaction loads must be divided by boundary mass to recover pointwise stress."""
+
+    surface, cmb = _spherical3d_reaction_topography()
+    assert np.isclose(surface, 0.41920, rtol=0.10)
+    assert np.isclose(cmb, 0.77060, rtol=0.10)
+
+
 def test_rotated_freeslip_annulus_zero_leakage():
     """Annulus: per-node radial free-slip on both arcs → machine-zero v_r leakage,
     with the analytic radial normal."""

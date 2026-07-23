@@ -140,12 +140,110 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
+    if dim == 3:
+        if mass != "lumped":
+            raise NotImplementedError(
+                "3D boundary-flux recovery currently supports mass='lumped' only."
+            )
+
+        lsec = dm.getLocalSection()
+        f0, f1 = dm.getHeightStratum(1)
+        e0, e1 = dm.getDepthStratum(1)
+
+        def coord(q):
+            return _point_coord(dm, dim, cvec, csec, v0, v1, q)
+
+        nodeR = {_key(x, dim): float(r) for x, r in zip(xs, R)}
+        sis = _boundary_stratum_is(dm, solver.mesh, boundary)
+        facets = [] if not (sis and sis.getSize() > 0) else [
+            int(q) for q in sis.getIndices() if f0 <= int(q) < f1
+        ]
+        local_triangles = []
+
+        for facet in facets:
+            closure = [int(q) for q in dm.getTransitiveClosure(facet)[0]]
+            vertices = [q for q in closure if v0 <= q < v1]
+            edges = [q for q in closure if e0 <= q < e1]
+            if len(vertices) != 3:
+                raise NotImplementedError(
+                    "3D boundary-flux recovery currently requires triangular facets."
+                )
+
+            vertex_keys = {_key(coord(q), dim): q for q in vertices}
+            edge_midpoints = {}
+            for edge in edges:
+                if lsec.getFieldDof(edge, 0) <= 0:
+                    continue
+                edge_vertices = [
+                    int(q)
+                    for q in dm.getTransitiveClosure(edge)[0]
+                    if v0 <= int(q) < v1
+                ]
+                if len(edge_vertices) == 2:
+                    edge_key = frozenset(_key(coord(q), dim) for q in edge_vertices)
+                    edge_midpoints[edge_key] = _key(coord(edge), dim)
+
+            vk = list(vertex_keys)
+            if not edge_midpoints:
+                local_triangles.append(tuple(vk))
+                continue
+            if len(edge_midpoints) != 3:
+                raise NotImplementedError(
+                    "3D lumped recovery supports P1 or complete P2 triangular traces."
+                )
+
+            m01 = edge_midpoints[frozenset((vk[0], vk[1]))]
+            m12 = edge_midpoints[frozenset((vk[1], vk[2]))]
+            m20 = edge_midpoints[frozenset((vk[2], vk[0]))]
+            local_triangles.extend(
+                (
+                    (vk[0], m01, m20),
+                    (vk[1], m12, m01),
+                    (vk[2], m20, m12),
+                    (m01, m12, m20),
+                )
+            )
+
+        R_by = {}
+        for rank_values in comm.allgather(nodeR):
+            for key, value in rank_values.items():
+                R_by[key] = (
+                    R_by.get(key, 0.0) + value if partial_reaction else value
+                )
+
+        triangles = {}
+        for rank_triangles in comm.allgather(local_triangles):
+            for triangle in rank_triangles:
+                triangles[tuple(sorted(triangle))] = triangle
+
+        keys = sorted(R_by)
+        global_index = {key: i for i, key in enumerate(keys)}
+        reaction = np.array([R_by[key] for key in keys], dtype=float)
+        lumped_mass = np.zeros(len(keys), dtype=float)
+
+        for triangle in triangles.values():
+            a, b, c = (np.asarray(key, dtype=float) for key in triangle)
+            area = 0.5 * float(np.linalg.norm(np.cross(b - a, c - a)))
+            for key in triangle:
+                if key in global_index:
+                    lumped_mass[global_index[key]] += area / 3.0
+
+        missing = np.flatnonzero(lumped_mass <= 0.0)
+        if missing.size:
+            raise RuntimeError(
+                f"Boundary mass is zero at {missing.size} nodes on {boundary!r}."
+            )
+
+        flux = reaction / lumped_mass
+        if remove_mean:
+            mean = float(np.dot(flux, lumped_mass) / np.sum(lumped_mass))
+            flux -= mean
+        return np.array([flux[global_index[_key(x, dim)]] for x in xs])
+
     if dim != 2:
-        # no line-mass geometry yet in 3D → global-mean lumped fallback
-        tot = comm.allreduce(float(np.sum(R)), op=MPI.SUM)
-        cnt = comm.allreduce(int(len(R)), op=MPI.SUM)
-        m = tot / max(cnt, 1)
-        return np.asarray(R) - (m if remove_mean else 0.0)
+        raise NotImplementedError(
+            f"Boundary-flux recovery is not implemented for mesh dimension {dim}."
+        )
 
     e0, e1 = dm.getDepthStratum(1)
     def vcoord(q): return cvec[csec.getOffset(q) // dim]

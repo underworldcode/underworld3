@@ -51,6 +51,9 @@ GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
 # 3D spherical shell (free-slip both boundaries, all 3 rotation nullspace modes):
 # velocity L2. Recompute with `python <thisfile> spherical3d`.
 GOLDEN_SPHERICAL3D = 4.069689334228e-03
+# Zhong l=2 surface and CMB topography coefficients recovered from the 3D
+# rotated-constraint reaction. Recompute with `python <thisfile> spherical3d_topo`.
+GOLDEN_SPHERICAL3D_TOPO = (4.205055186099e-01, 7.704049016458e-01)
 # NONLINEAR (power-law) box with rotated free-slip through the manual Newton loop
 # (consistent tangent): (velocity L2, nonlinear iteration count — the number of
 # Newton increments solved, == len(ksp_its); this solve exits on the step-norm
@@ -156,6 +159,52 @@ def _spherical3d_diagnostics():
     L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
     info = s._rotated_freeslip_info
     return L2, int(info["ksp_its"]), int(info["ksp_reason"])
+
+
+def _spherical3d_topography_diagnostics():
+    """Zhong l=2 topography from the 3D rotated-constraint reaction."""
+    RI, RO, RINT = 0.55, 1.0, 0.775
+    mesh = uw.meshing.SphericalShellInternalBoundary(
+        radiusOuter=RO, radiusInternal=RINT, radiusInner=RI,
+        cellSize=0.25, qdegree=2, degree=1)
+    v = uw.discretisation.MeshVariable(
+        "Vst", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable(
+        "Pst", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    theta = mesh.CoordinateSystem.xR[1]
+    unit_r = mesh.CoordinateSystem.unit_e_0
+    harmonic = sympy.assoc_legendre(2, 0, sympy.cos(theta))
+    s.add_natural_bc(harmonic * unit_r, "Internal")
+    s.add_rotated_freeslip_bc(0, "Upper", normal=unit_r)
+    s.add_rotated_freeslip_bc(0, "Lower", normal=-unit_r)
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.tolerance = 1.0e-5
+    s.solve()
+
+    def harmonic_coefficient(boundary, response_sign):
+        xs, sigma_nn = s.boundary_normal_traction(boundary)
+        local = {
+            tuple(np.round(x, 12)): -float(value)
+            for x, value in zip(xs, sigma_nn)
+        }
+        samples = {}
+        for rank_values in uw.mpi.comm.allgather(local):
+            samples.update(rank_values)
+        coords = np.asarray(list(samples))
+        topography = np.asarray(list(samples.values()))
+        radii = np.linalg.norm(coords, axis=1)
+        harmonic_values = 0.5 * (3.0 * (coords[:, 2] / radii) ** 2 - 1.0)
+        return float(
+            response_sign
+            * np.dot(topography, harmonic_values)
+            / np.dot(harmonic_values, harmonic_values)
+        )
+
+    return harmonic_coefficient("Upper", 1.0), harmonic_coefficient("Lower", -1.0)
 
 
 def _annulus_fmg_diagnostics():
@@ -360,6 +409,18 @@ def test_rotated_freeslip_spherical3d_partition_independent():
         f"{L2_ref} vs {L2}")
 
 
+def test_rotated_freeslip_spherical3d_topography_partition_independent():
+    """3D boundary-mass recovery gives partition-independent topography coefficients."""
+    surface, cmb = _spherical3d_topography_diagnostics()
+    surface_ref, cmb_ref = GOLDEN_SPHERICAL3D_TOPO
+    assert np.isclose(surface, surface_ref, rtol=1e-6, atol=0), (
+        f"3D surface topography differs serial vs np={uw.mpi.size}: "
+        f"{surface_ref} vs {surface}")
+    assert np.isclose(cmb, cmb_ref, rtol=1e-6, atol=0), (
+        f"3D CMB topography differs serial vs np={uw.mpi.size}: "
+        f"{cmb_ref} vs {cmb}")
+
+
 def test_rotated_freeslip_box_nonlinear_partition_independent():
     """NONLINEAR rotated free-slip is partition-independent: a power-law box solved by
     the manual Newton/Picard loop reproduces the serial velocity L2 and iteration count
@@ -428,6 +489,10 @@ if __name__ == "__main__":
         _L2, _its, _reason = _spherical3d_diagnostics()
         if uw.mpi.rank == 0:
             print(f"DIAG_SPHERICAL3D {_L2:.12e} its={_its} reason={_reason}")
+    elif _kind == "spherical3d_topo":
+        _surface, _cmb = _spherical3d_topography_diagnostics()
+        if uw.mpi.rank == 0:
+            print(f"DIAG_SPHERICAL3D_TOPO {_surface:.12e} {_cmb:.12e}")
     else:
         _L2, _verr = _box_diagnostics()
         if uw.mpi.rank == 0:
