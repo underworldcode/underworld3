@@ -44,5 +44,12 @@ jobs:
         # editable installs are project policy violation, see CLAUDE.md).
         run: pixi run -e dev build
 
+      # TEMPORARY (PR #394 debug): the test step was dying with no pytest
+      # output — a hard crash during `import underworld3` before the first
+      # stdout flush. Surface the crash point with faulthandler; remove this
+      # step once the cause is fixed.
+      - name: Import smoke test (faulthandler)
+        run: pixi run -e dev python -u -X faulthandler -c "import faulthandler; faulthandler.enable(); import underworld3; print('import OK', underworld3.__version__)"
+
       - name: Run tests
         run: pixi run -e dev ./scripts/test.sh --p 2
