@@ -3126,8 +3126,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         """Statistics for vector variables using magnitude."""
         import numpy as np
 
-        # Create temporary scalar variable for magnitude
-        magnitude_var = _BaseMeshVariable(f"_temp_mag_{id(self)}", self.mesh, 1, degree=self.degree)
+        # Temporary scalar variable for the magnitude. The name suffix must
+        # be rank-symmetric: variable creation/destruction performs
+        # collective DM operations keyed by field name, and id(self) is a
+        # rank-local address that differs across ranks (issue #384).
+        magnitude_var = _BaseMeshVariable(
+            f"_temp_mag_{self.clean_name}", self.mesh, 1, degree=self.degree
+        )
 
         try:
             # Compute magnitude: |v| = sqrt(v·v)
@@ -3164,9 +3169,10 @@ class _BaseMeshVariable(Stateful, uw_object):
         """Statistics for tensor variables using Frobenius norm."""
         import numpy as np
 
-        # Create temporary scalar variable for Frobenius norm
+        # Temporary scalar variable for the Frobenius norm — rank-symmetric
+        # name suffix for the same reason as _vector_stats (issue #384).
         frobenius_var = uw.discretisation.MeshVariable(
-            f"_temp_frob_{id(self)}", self.mesh, 1, degree=self.degree
+            f"_temp_frob_{self.clean_name}", self.mesh, 1, degree=self.degree
         )
 
         try:
