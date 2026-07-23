@@ -2406,9 +2406,11 @@ class SNES_Scalar(SolverBaseClass):
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if u_Field is None:
-            # TODO(BUG): num_components=mesh.dim for a SCALAR unknown looks wrong
-            # (a scalar has one component); kept as-is pending review (READ-22).
-            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim,
+            # A scalar unknown has one component. (MeshVariable already forced
+            # this: vtype=SCALAR overrides num_components, so the old
+            # num_components=mesh.dim here was ignored, never over-allocated —
+            # issue #367.)
+            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=1,
                                                       varname="Us{}".format(SNES_Scalar._obj_count),
                                                       vtype=uw.VarType.SCALAR, degree=degree, )
         else:

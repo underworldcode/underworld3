@@ -242,8 +242,10 @@ def test_nodal_swarm_advection_basic():
     """
     Test basic nodal swarm advection in parallel.
 
-    This is a simplified version of ptest_004 that verifies the advection
-    mechanism works without running a full simulation.
+    This carries the coverage of the retired ptest_004 script (issue #340):
+    it verifies the advection mechanism works without running a full
+    simulation. (The particle-count assertion ptest_004 made is obsolete —
+    the SL trace-back no longer allocates a nodal swarm.)
 
     Requires 4 ranks to test cross-processor particle movement.
     """
@@ -261,12 +263,14 @@ def test_nodal_swarm_advection_basic():
     # Vector being advected
     vec_tst = uw.discretisation.MeshVariable("Vn", mesh, mesh.dim, degree=2)
 
-    # Create semi-Lagrangian advection
+    # Create semi-Lagrangian advection (degree/continuous match vec_tst)
     DuDt = uw.systems.ddt.SemiLagrangian(
         mesh,
         vec_tst.sym,
         v.sym,
         vtype=uw.VarType.VECTOR,
+        degree=2,
+        continuous=vec_tst.continuous,
         order=2,
         smoothing=0.0,
     )

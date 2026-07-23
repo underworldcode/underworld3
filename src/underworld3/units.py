@@ -876,15 +876,16 @@ def non_dimensionalise(expression, model=None) -> Any:
 
             try:
                 scale = model.get_scale_for_dimensionality(dimensionality)
-                result_qty = expression / scale
-                # TODO(BUG): UWQuantity.__init__ has no `dimensionality`
-                # kwarg, so this raises TypeError whenever a raw
-                # pint.Quantity is non-dimensionalised with active scaling
-                # and a resolvable scale. Found while verifying BF-12
-                # (2026-07 audit). The uw.quantity (UWQuantity) path works
-                # and is the workaround.
-                # Return UWQuantity to preserve dimensionality
-                return UWQuantity(float(result_qty.magnitude), units="dimensionless", dimensionality=dimensionality)
+                # Convert to SI base units BEFORE dividing, matching the
+                # UnitAwareArray path above: the scale is computed in SI, so
+                # a non-SI input (km, cm/year, ...) must cancel through SI
+                # or the magnitude keeps the unit prefactor.
+                result_qty = expression.to_base_units() / scale
+                # A non-dimensionalised scalar is a plain float, matching the
+                # .magnitude returns above. (A dimensionless UWQuantity cannot
+                # carry the source dimensionality; use dimensionalise() with
+                # an explicit target_dimensionality to round-trip.)
+                return float(result_qty.magnitude)
             except ValueError as e:
                 raise ValueError(f"Cannot non-dimensionalise Pint quantity: {e}")
     except ImportError:
