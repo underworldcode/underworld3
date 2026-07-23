@@ -199,6 +199,11 @@ in `Stokes_Constrained` (#224), then made parallel-correct.
 - `selfp` Schur preconditioner default, viscosity-scaled penalty, and
   nullspace re-setup fix (#229); over-conservative serial guard removed
   (#240); gauge, convergence, knockout, and rotation-gauge fixes (#265).
+- The main `Stokes.penalty` (augmented-Lagrangian grad-div) is likewise
+  viscosity-scaled since June 2026: the parameter is now a dimensionless
+  O(1) number, not a large constant tuned against the viscosity magnitude.
+  Migration note for older scripts in `docs/advanced/troubleshooting.md`
+  (#292).
 
 ### Boundary Conditions: Local-h Nitsche and Boundary-Slip Surfaces (June 2026)
 
