@@ -96,11 +96,19 @@ def test_bounded_closure_single_cell_is_local():
 
 
 def test_shape_regularity_bounded_similarity_classes():
-    base = _base3(cellSize=0.6)
+    # The full-depth version of this bound (2.87M cells, 9 passes) was
+    # proven by the stage-1a oracle; the CI gate only needs the plateau
+    # SIGNATURE — the class count stops growing once every base cell has
+    # cycled its bisection edges (within two isotropic levels), and 36 is
+    # the theoretical ceiling it must plateau under.
+    base = _base3(cellSize=0.75)
     eng = TaggedBisectionMesh.from_dm(base.dm_hierarchy[-1])
-    for _ in range(9):                      # three full isotropic levels
+    for _ in range(5):
         eng.refine(list(eng.cells))
-    assert eng.similarity_classes() <= 36   # dim!·dim·2^(dim-2), dim=3
+    plateau = eng.similarity_classes()
+    eng.refine(list(eng.cells))             # sixth pass: two full levels
+    assert eng.similarity_classes() == plateau   # count has saturated
+    assert plateau <= 36                    # dim!·dim·2^(dim-2), dim=3
 
 
 # --------------------------------------------------------------------------- #

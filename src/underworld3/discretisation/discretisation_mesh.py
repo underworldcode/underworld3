@@ -3119,11 +3119,8 @@ class Mesh(Stateful, uw_object):
 
         all_labels = (tuple(boundary_labels) if boundary_labels is not None
                       else _auto_pinned_labels(self))
-        # TODO(follow-up): _pinned_mask expands labels through vertices/edges
-        # only, so a 3D boundary label that tags FACES alone (a mesh loaded with
-        # markVertices=False) leaves its boundary vertices unmarked. This is a
-        # pre-existing limitation of the shared helper used by every mover; the
-        # fix (close faces→edges→vertices) belongs with _pinned_mask itself.
+        # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
+        # down to its vertices, so face-only 3D labels classify correctly.
         is_bnd = _pinned_mask(dm, all_labels)
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
@@ -6159,12 +6156,12 @@ class Mesh(Stateful, uw_object):
         mesh in place.
 
         This method is how each mesh type controls whether (and how) it
-        can be modified: the base implementation supports **2D simplex
-        (triangle) meshes**, where it drives the Huang–Kamenski
-        variational MMPDE mover (non-folding by construction,
-        parallel-safe; scalar metric → isotropic equidistribution,
-        tensor metric → anisotropic clustering and alignment).
-        Quadrilateral / hexahedral meshes, 3D meshes and constrained
+        can be modified: the base implementation supports **2D
+        (triangle) and 3D (tetrahedral) simplex meshes**, where it
+        drives the Huang–Kamenski variational MMPDE mover (non-folding
+        by construction, parallel-safe; scalar metric → isotropic
+        equidistribution, tensor metric → anisotropic clustering and
+        alignment). Quadrilateral / hexahedral meshes and constrained
         manifolds raise ``NotImplementedError`` — no mover is
         implemented for them yet.
 
@@ -6202,16 +6199,16 @@ class Mesh(Stateful, uw_object):
                 f"manifold meshes (mesh.dim={self.dim} != mesh.cdim="
                 f"{self.cdim}): every node would have to be constrained "
                 "to the surface. Implemented today: 2D simplex (triangle) "
-                "meshes, via the MMPDE mover.")
-        if not bool(self.dm.isSimplex()) or self.cdim != 2:
+                "and 3D simplex (tetrahedral) meshes, via the MMPDE mover.")
+        if not bool(self.dm.isSimplex()) or self.cdim not in (2, 3):
             kind = "simplex" if bool(self.dm.isSimplex()) else "tensor-product (quad/hex)"
             raise NotImplementedError(
                 f"node redistribution is not implemented for {self.cdim}D "
                 f"{kind} meshes. Implemented today: 2D simplex (triangle) "
-                "meshes, via the MMPDE mover (its 3D / quad discretization "
-                "does not exist yet). To add resolution instead, use "
-                "mesh.adapt(metric_field, max_levels=...) — a topology "
-                "change.")
+                "and 3D simplex (tetrahedral) meshes, via the MMPDE mover "
+                "(no quad/hex discretization exists). To add resolution "
+                "instead, use mesh.adapt(metric_field, max_levels=...) — "
+                "a topology change.")
         from underworld3.meshing.smoothing import smooth_mesh_interior
         smooth_mesh_interior(self, metric=metric, method="mmpde",
                              verbose=verbose, **kwargs)

@@ -1,15 +1,17 @@
 """The Huang–Kamenski variational MMPDE mover (recommended for
-production adaptive meshing; 2D-only). See the package docstring for
-the module map.
+production adaptive meshing; triangle and tetrahedral meshes). See the
+package docstring for the module map.
 """
 
+import math
 import warnings
 
 import numpy as np
 
 import underworld3 as uw
 
-from .graph import (_tri_cells, _signed_areas, _owned_cell_mask,
+from .graph import (_tri_cells, _tet_cells, _signed_areas, _signed_volumes,
+                    _owned_cell_mask,
                     _owned_vertex_mask, _min_incident_edge_nd,
                     _global_sum, _global_min, _global_max, _global_mean)
 
@@ -94,10 +96,10 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
                    **_unknown_kwargs):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
     MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
-    arXiv:1410.7872). **2D (triangle meshes) only** and parallel-safe.
-    The underlying method is dimension-general, but the 3D (tetrahedral)
-    discretization has not been implemented — a 3D mesh raises
-    ``NotImplementedError`` immediately.
+    arXiv:1410.7872). Triangle (2D) and tetrahedral (3D) meshes,
+    parallel-safe. The per-element algebra is written over ``cdim``
+    throughout — the two dimensions differ only in the cell list, the
+    signed-measure primitive and the ``d!`` volume factor.
 
     Generates the physical mesh as the image of a **fixed computational
     (reference) mesh** under the inverse coordinate map, minimizing
@@ -160,14 +162,12 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             stacklevel=2)
     pinned_labels = tuple(pinned_labels)
     cdim = mesh.cdim
-    if cdim != 2:
-        # Guard here, before any metric parsing or DM work, so a 3D caller
-        # gets an honest message rather than a NameError from the (never
-        # implemented) 3D discretization deeper in the mover (READ-01).
+    if cdim not in (2, 3):
+        # Guard here, before any metric parsing or DM work, so the caller
+        # gets an honest message rather than a failure deeper in the mover.
         raise NotImplementedError(
-            "MMPDE mesh movement is currently 2D-only (triangle meshes): "
-            "the 3D tetrahedral discretization of the mover has not been "
-            f"implemented. Got a mesh with cdim={cdim}.")
+            "MMPDE mesh movement supports 2D (triangle) and 3D "
+            f"(tetrahedral) simplex meshes. Got a mesh with cdim={cdim}.")
     p = float(p); theta = float(theta); tau = float(tau)
     q = cdim * p / 2.0
     dq = float(cdim) ** q
@@ -230,14 +230,19 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
     n_verts = pEnd - pStart
-    # cdim == 2 is guaranteed by the guard at the top of this function.
-    # (The former 3D branch here referenced `_signed_volumes`, which was
-    # never implemented — READ-01.)
-    cells_all = _tri_cells(dm)
-    signed_vol = _signed_areas
+    # cdim in (2, 3) is guaranteed by the guard at the top; the rest of
+    # the mover is written over cdim and needs only the right cell list,
+    # signed-measure primitive and d! volume factor.
+    cells_all = _tri_cells(dm) if cdim == 2 else _tet_cells(dm)
+    signed_vol = _signed_areas if cdim == 2 else _signed_volumes
     if cells_all is None:
+        # TODO(BUG): rank-LOCAL early return — under MPI a rank with zero
+        # local cells (or a non-simplex local patch) returns here while the
+        # other ranks enter the collective energy/line-search reductions
+        # below, hanging the job. Pre-existing 2D posture, inherited by 3D
+        # (2026-07 review note); the fix is a collective emptiness check.
         return
-    fact = 2.0                                 # d! → |K| = |detE|/d!
+    fact = float(math.factorial(cdim))         # d! → |K| = |detE|/d!
     owned_cell = _owned_cell_mask(dm)
     cells_own = cells_all[owned_cell]
     is_owned_v = _owned_vertex_mask(dm)

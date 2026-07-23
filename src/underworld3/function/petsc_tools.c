@@ -16,7 +16,7 @@
 .seealso: DMInterpolationEvaluate(), DMInterpolationAddPoints(), DMInterpolationCreate()
 @*/
 
-PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool redundantPoints, PetscBool ignoreOutsideDomain, size_t *owning_cell)
+PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool redundantPoints, PetscBool ignoreOutsideDomain, size_t *owning_cell, PetscBool hintAuthoritative)
 {
   MPI_Comm           comm = ctx->comm;
   PetscScalar       *a;
@@ -68,10 +68,10 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   PetscCall(PetscMalloc2(N, &foundProcs, N, &globalProcs));
   for (p = 0; p < N; ++p) foundProcs[p] = size;
   cellSF = NULL;
-  if (owning_cell) {
+  if (owning_cell && hintAuthoritative) {
     /*
-      Bypass DMLocatePoints when the caller supplies a hint (ported from
-      feature/dminterp-bypass-element-check, 17a5a8d).
+      Bypass DMLocatePoints when the caller supplies an AUTHORITATIVE hint
+      (ported from feature/dminterp-bypass-element-check, 17a5a8d).
 
       The caller is expected to call this path only on meshes where the
       hint is authoritative for cell containment — simplex cells (planar
@@ -97,7 +97,18 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
       if (owning_cell[p] != (size_t)-1) foundProcs[p] = rank;
     }
   } else {
-    /* Build pointVec lazily — only the DMLocatePoints path needs it. */
+    /*
+      DMLocatePoints is authoritative. A non-authoritative `owning_cell`
+      hint (if supplied) is NOT used to bypass the search — it only
+      prefills `recovery_cells` below, rescuing points that PETSc's
+      _REMOVE flag silently drops (e.g. query points sitting exactly on
+      the domain's closed upper faces, where the grid-hash / in-cell
+      convention is half-open). Without that rescue such points fall
+      through to the explicit zero-fill in DMInterpolationEvaluate_UW —
+      the silent ψ*-corruption behind the VEP stability blow-up (#390).
+
+      Build pointVec lazily — only this DMLocatePoints path needs it.
+    */
     #if defined(PETSC_USE_COMPLEX)
     PetscCall(PetscMalloc1(N * ctx->dim, &globalPointsScalar));
     for (i = 0; i < N * ctx->dim; i++) globalPointsScalar[i] = globalPoints[i];
@@ -183,9 +194,9 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
 #else
   PetscCall(PetscFree2(foundProcs, globalProcs));
   PetscCall(PetscSFDestroy(&cellSF));
-  /* pointVec / globalPointsScalar are only constructed on the !owning_cell
-     (DMLocatePoints) branch above. */
-  if (!owning_cell) {
+  /* pointVec / globalPointsScalar are only constructed on the
+     DMLocatePoints branch above (pointVec stays NULL on the bypass). */
+  if (pointVec) {
     PetscCall(VecDestroy(&pointVec));
     if ((void *)globalPointsScalar != (void *)globalPoints) PetscCall(PetscFree(globalPointsScalar));
   }
