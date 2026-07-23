@@ -2558,22 +2558,6 @@ class IndexSwarmVariable(SwarmVariable):
                 # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
                 d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1, sqr_dists=False)
 
-                # Which (particle, node) pairs are valid:
-                # - node is at same distance as the nearest node
-                # - node is within radius_s
-                is_nearest = np.isclose(n_distance, n_distance[:, [0]])
-                within_radius = n_distance < self.radius_s
-                valid = is_nearest & within_radius
-
-                # IDW weights (only for valid pairs; others zeroed)
-                weights = 1.0 / (n_distance + 1e-16)
-                weights[~valid] = 0.0
-
-                # Total weight per node — material independent, compute once
-                n_mesh_nodes = self._meshLevelSetVars[0].data.shape[0]
-                w = np.zeros(n_mesh_nodes)
-                np.add.at(w, n_indices, weights)
-
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
 
@@ -2587,15 +2571,23 @@ class IndexSwarmVariable(SwarmVariable):
                 final_values = np.array(meshVar.data[:, 0], copy=True)
 
                 if not starved:
-                    # Material presence mask: (n_particles, 1) for broadcasting
-                    mat_mask = (self.data.flatten() == ii).astype(weights.dtype)[:, None]
-
-                    # Weighted sum per node
                     node_values = np.zeros(final_values.shape[0])
-                    np.add.at(node_values, n_indices, weights * mat_mask)
+                    w = np.zeros(final_values.shape[0])
 
-                    # Normalize
-                    node_values[w > 0] /= w[w > 0]
+                    for i in range(self.swarm.local_size):
+                        tem = np.isclose(n_distance[i, :], n_distance[i, 0])
+                        dist = n_distance[i, tem]
+                        indices = n_indices[i, tem]
+                        tem = dist < self.radius_s
+                        dist = dist[tem]
+                        indices = indices[tem]
+                        for j, ind in enumerate(indices):
+                            node_values[ind] += (
+                                np.isclose(self.data[i], ii) / (1.0e-16 + dist[j])
+                            )[0]
+                            w[ind] += 1.0 / (1.0e-16 + dist[j])
+
+                    node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
                     final_values = node_values
 
                     # if there is no material found,
@@ -2610,67 +2602,49 @@ class IndexSwarmVariable(SwarmVariable):
                 # current values, i.e. the proxy is left unchanged there)
                 meshVar.data[:, 0] = final_values
         elif self.update_type == 1:
-            if not starved:
-                kd = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
-                n_distance, n_indices = kd.query(
-                    self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=False
-                )
-
-                # IDW weights and validity mask for all (node, particle) pairs
-                valid = n_distance < self.radius_s
-                a = 1.0 / (n_distance + 1e-16)
-                a[~valid] = 0.0
-
-                # Total weight per node (material-independent)
-                w = a.sum(axis=1)
-
-                # Handle boundary nodes: restrict to nnn_bc particles
-                if hasattr(self, 'ind_bc') and self.ind_bc is not None:
-                    bc_idx = np.array(list(self.ind_bc))
-                    bc_idx = bc_idx[bc_idx < a.shape[0]]
-                    if len(bc_idx) > 0:
-                        valid_bc = n_distance[bc_idx, :self.nnn_bc] < self.radius_s
-                        a_bc = 1.0 / (n_distance[bc_idx, :self.nnn_bc] + 1e-16)
-                        a_bc[~valid_bc] = 0.0
-                        w_bc = a_bc.sum(axis=1)
-
-                        a[bc_idx] = 0.0
-                        a[bc_idx, :self.nnn_bc] = a_bc
-                        w[bc_idx] = w_bc
+            # NOTE: this branch performs data-dependent MeshVariable writes
+            # outside any access context, which is not parallel-safe
+            # independently of the starved-rank issue (pre-existing).
+            # The guard here only prevents the empty-rank KDTree crash.
+            if starved:
+                return
+            kd = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
+            n_distance, n_indices = kd.query(
+                self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=False
+            )
 
             for ii in range(self.indices):
                 meshVar = self._meshLevelSetVars[ii]
+                node_values = np.zeros((meshVar.data.shape[0],))
+                w = np.zeros((meshVar.data.shape[0],))
+                for i in range(meshVar.data.shape[0]):
+                    if i not in self.ind_bc:
+                        ind = np.where(n_distance[i, :] < self.radius_s)
+                        a = 1.0 / (n_distance[i, ind] + 1.0e-16)
+                        w[i] = np.sum(a)
+                        b = np.isclose(self.data[n_indices[i, ind]], ii)
+                        node_values[i] = np.sum(np.dot(a, b))
+                        if ind[0].size == 0:
+                            w[i] = 0
+                    else:
+                        ind = np.where(n_distance[i, : self.nnn_bc] < self.radius_s)
+                        a = 1.0 / (n_distance[i, : self.nnn_bc][ind] + 1.0e-16)
+                        w[i] = np.sum(a)
+                        b = np.isclose(self.data[n_indices[i, : self.nnn_bc][ind]], ii)
+                        node_values[i] = np.sum(np.dot(a, b))
+                        if ind[0].size == 0:
+                            w[i] = 0
 
-                # MeshVariable reads/writes perform collective ghost
-                # synchronisation, so every rank must execute exactly the
-                # same read-then-write sequence per level set (same pattern
-                # as update_type=0 above). Starved ranks read their current
-                # proxy values and write them back unchanged; populated ranks
-                # compute and write new values.
-                final_values = np.array(meshVar.data[:, 0], copy=True)
+                node_values[np.where(w > 0.0)[0]] /= w[np.where(w > 0.0)[0]]
+                meshVar.data[:, 0] = node_values[...]
 
-                if not starved:
-                    # Material presence at each (node, particle) pair
-                    # self.data has shape (n_particles, 1); flatten to (n_particles,)
-                    # so fancy indexing yields (n_nodes, nnn) — matching `a`.
-                    mat_present = (self.data.flatten()[n_indices] == ii).astype(a.dtype)
-
-                    # Weighted sum per node, then normalize
-                    node_values = (a * mat_present).sum(axis=1)
-                    node_values[w > 0] /= w[w > 0]
-                    final_values = node_values
-
-                    # if there is no material found,
-                    # impose a near-neighbour hunt for a valid material and set that one
-                    ind_w0 = np.where(w == 0.0)[0]
-                    if len(ind_w0) > 0:
-                        ind_ = np.where(self.data[n_indices[ind_w0]] == ii)[0]
-                        if len(ind_) > 0:
-                            final_values[ind_w0[ind_]] = 1.0
-
-                # single symmetric write (starved ranks write back their
-                # current values, i.e. the proxy is left unchanged there)
-                meshVar.data[:, 0] = final_values
+                # if there is no material found,
+                # impose a near-neighbour hunt for a valid material and set that one
+                ind_w0 = np.where(w == 0.0)[0]
+                if len(ind_w0) > 0:
+                    ind_ = np.where(self.data[n_indices[ind_w0]] == ii)[0]
+                    if len(ind_) > 0:
+                        meshVar.data[ind_w0[ind_]] = 1.0
         return
 
 
