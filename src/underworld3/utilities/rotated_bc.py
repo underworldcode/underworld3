@@ -181,23 +181,43 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     return out
 
 
-def build_rotation(solver, boundaries):
+def _eval_datum(dspec, coords, solver):
+    """Prescribed wall-normal velocity datum at an array of node coordinates. A number
+    is uniform; a sympy expression / MeshVariable ``.sym`` is evaluated (interpolated)
+    at the coordinates."""
+    if isinstance(dspec, (int, float, np.floating, np.integer)):
+        return np.full(len(coords), float(dspec))
+    import underworld3 as uw
+    return np.asarray(uw.function.evaluate(dspec, np.ascontiguousarray(coords))).flatten()
+
+
+def build_rotation(solver, boundaries, datum_specs=None):
     """Global sparse rotation Q on the composite saddle vector: identity except a
     per-node (normal,tangential) block at each velocity node of `boundaries`.
-    Returns (Q, Qt, normal_rows) where normal_rows are the global rows carrying
-    the rotated NORMAL velocity component (v_n = n̂·v), to be strongly constrained.
+    Returns ``(Q, Qt, normal_rows, datum_map)`` where normal_rows are the global rows
+    carrying the rotated NORMAL velocity component (v_n = n̂·v) to be strongly
+    constrained, and ``datum_map`` is ``{global_row: value}`` giving the prescribed
+    ``v_n`` at each simple (single-normal) constrained node — empty for pure free-slip
+    (``u.n = 0``). ``datum_specs`` maps a boundary name to its datum (a constant, sympy
+    expression, or field ``.sym``); absent/None ⇒ free-slip on that boundary.
     """
     dm = solver.dm
     lsec = dm.getLocalSection()
     l2g = dm.getLGMap()
     dim = solver.mesh.dim
 
-    # gather all normals per velocity node across the boundaries
+    # gather all normals per velocity node across the boundaries (and, per node, the
+    # datum of the boundary it came from — the surface's ũ_n for a prescribed-normal
+    # solve; None for free-slip).
     node_normals = {}
+    node_dspec = {}
     for spec in boundaries:
         name, normal = _boundary_spec(spec)
+        dspec = None if datum_specs is None else datum_specs.get(name)
         for q, nrm in _boundary_velocity_nodes(solver, name, normal=normal):
             node_normals.setdefault(q, []).append(nrm)
+            if dspec is not None:
+                node_dspec.setdefault(q, dspec)
 
     # Distributed Q with the assembled operator's ROW layout. Q is identity except a
     # per-node dim×dim orthonormal block; because a node's dim velocity components
@@ -218,6 +238,7 @@ def build_rotation(solver, boundaries):
         Q.setValue(i, i, 1.0)                    # identity default (owned rows)
 
     normal_rows = []
+    datum_nodes = []                             # (grows[0], q, dspec) for simple nodes
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
@@ -237,9 +258,38 @@ def build_rotation(solver, boundaries):
             for j in range(dim):
                 Q.setValue(grows[i], grows[j], float(Vt[i, j]))
         normal_rows.extend(grows[:r])            # constrain the r normal-space rows
+        # A prescribed v_n datum is only well-defined at a SIMPLE node (one normal,
+        # r=1): the rotated row grows[0] carries E[0]·v with E[0]=Vt[0]=±n̂ (SVD sign
+        # ambiguity), so the constrained component is sgn·v_n. Store sgn = sign(Vt[0]·n̂)
+        # to impose v_n=datum via row value sgn·datum. A corner/edge (r>1) has no single
+        # normal → free-slip there (datum ignored), consistent with u=0 pinning.
+        if r == 1 and q in node_dspec:
+            nn = M.sum(axis=0); nn = nn / (np.linalg.norm(nn) + 1e-30)
+            sgn = 1.0 if float(np.dot(Vt[0], nn)) >= 0.0 else -1.0
+            datum_nodes.append((grows[0], q, node_dspec[q], sgn))
     Q.assemble()
     Qt = Q.transpose(PETSc.Mat())
-    return Q, Qt, sorted(set(normal_rows))
+
+    # Evaluate the prescribed normal datum at each simple constrained node, batched per
+    # distinct datum spec (usually one — the surface). Rotated row grows[0] == v_n.
+    datum_map = {}
+    if datum_nodes:
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        v0, v1 = dm.getDepthStratum(0)
+        by_spec = {}
+        for grow0, q, dspec, sgn in datum_nodes:
+            by_spec.setdefault(id(dspec), (dspec, []))[1].append((grow0, q, sgn))
+        for dspec, items in by_spec.values():
+            coords = np.array([_point_coord(dm, dim, cvec, csec, v0, v1, q)
+                               for _, q, _ in items])
+            vals = _eval_datum(dspec, coords, solver)
+            for (grow0, _, sgn), val in zip(items, vals):
+                # A zero datum IS free-slip; leave those rows out so an all-zero datum
+                # takes the untouched free-slip RHS path and is bit-identical to it.
+                if val != 0.0:
+                    datum_map[grow0] = float(sgn * val)
+    return Q, Qt, sorted(set(normal_rows)), datum_map
 
 
 def _zero_rows_local(vec, normal_rows):
@@ -250,6 +300,18 @@ def _zero_rows_local(vec, normal_rows):
     loc = np.asarray([g - rs for g in normal_rows if rs <= g < re], dtype=np.int64)
     a = vec.getArray()
     a[loc] = 0.0
+    vec.setArray(a)
+
+
+def _set_rows_local(vec, row_val_map):
+    """Set ``vec[g] = val`` for ``{global_row: val}`` using ownership-relative local
+    indices (the np>1-safe counterpart of :func:`_zero_rows_local`). Used to restore a
+    prescribed rotated normal datum (v_n = ũ_n) after the solve's v_n=0 cleanup."""
+    rs, re = vec.getOwnershipRange()
+    a = vec.getArray()
+    for g, val in row_val_map.items():
+        if rs <= g < re:
+            a[g - rs] = val
     vec.setArray(a)
 
 
@@ -306,27 +368,41 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     dm.restoreGlobalVec(U0)
     dm.restoreGlobalVec(F0)
 
-    Q, Qt, normal_rows = build_rotation(solver, boundaries)
+    datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
+    Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
 
     # rotate: Â = Q A Qᵀ, b̂ = Q b
     Ahat = Aorig.ptap(Qt)
     bhat = b.duplicate()
     Q.mult(b, bhat)
 
-    # constrain rotated normal rows (v_n=0): zero the matrix rows/cols AND the RHS
-    # at those rows — zeroRowsColumns does NOT touch the RHS, so a nonzero b there
-    # would leak straight into the solution (û_i = b_i / diag), independent of the
-    # solver/tolerance.
-    # The constraint diagonal is set to the mean |diag(A_vv)| rather than 1.0: unit
-    # diagonals amid O(eta/h^2) viscous entries put a spectrum outlier on EVERY
-    # rotated boundary node (the whole surface on a sphere), which poisons
-    # diagonal-based Schur approximations and MG smoothing exactly in the boundary
-    # strip. Any positive diagonal is exact — the solution rows are explicitly
-    # zeroed after the solve.
-    # zeroRowsColumns takes GLOBAL row indices (correct); the RHS write goes through
-    # _zero_rows_local (ownership-relative indexing — the np>1 crash class).
-    Ahat.zeroRowsColumns(normal_rows, diag=_velocity_diag_scale(Ahat, solver))
-    _zero_rows_local(bhat, normal_rows)
+    # constrain rotated normal rows (v_n = datum, datum=0 for pure free-slip): zero the
+    # matrix rows/cols and set the RHS at those rows to the datum. The constraint
+    # diagonal is the mean |diag(A_vv)| rather than 1.0: unit diagonals amid O(eta/h^2)
+    # viscous entries put a spectrum outlier on every rotated boundary node, poisoning
+    # diagonal-based Schur approximations and MG smoothing in the boundary strip. Any
+    # positive diagonal is exact — the solution rows are set explicitly.
+    diag = _velocity_diag_scale(Ahat, solver)
+    if datum_map:
+        # v_n = ũ_n: pass the datum (rotated-frame normal component = v_n) as x so
+        # zeroRowsColumns(rows, diag, x, b) sets b[rows]=diag·x[rows] AND subtracts the
+        # eliminated columns' contribution A[:,cols]·x from the other rows. x=0
+        # reproduces the pure free-slip RHS exactly, so datum=0 is bit-identical.
+        xhat = bhat.duplicate()
+        xhat.zeroEntries()
+        rs, re = xhat.getOwnershipRange()
+        xa = xhat.getArray()
+        for g, val in datum_map.items():
+            if rs <= g < re:
+                xa[g - rs] = val
+        xhat.setArray(xa)
+        Ahat.zeroRowsColumns(normal_rows, diag=diag, x=xhat, b=bhat)
+        xhat.destroy()
+    else:
+        # zeroRowsColumns takes GLOBAL row indices; the RHS write goes through
+        # _zero_rows_local (ownership-relative indexing — the np>1 crash class).
+        Ahat.zeroRowsColumns(normal_rows, diag=diag)
+        _zero_rows_local(bhat, normal_rows)
 
     # ITERATIVE by default (LU is almost never right): a self-contained fieldsplit-
     # Schur solve whose velocity block is geometric FMG on the custom prolongation
@@ -368,6 +444,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
             solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose, Mp=Mp)
         ksp_its = ctx["ksp"].getIterationNumber()
         _destroy_rotated_ksp_ctx(ctx)
+
+    # a prescribed normal datum: the iterative path zeros the rotated normal rows of
+    # the solution (its exact v_n=0 cleanup); restore v_n = ũ_n before rotating back
+    # (the constrained matrix already drove the interior — only these rows were reset).
+    if datum_map:
+        _set_rows_local(Uhat, datum_map)
 
     # rotate back u = Qᵀ û  (U is returned in the result dict → create, don't
     # borrow from the pool)
@@ -589,7 +671,13 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
 
     # Q, the custom-FMG prolongation and the coupled null space depend only on the
     # geometry / normals (NOT the solution), so build them ONCE and reuse each step.
-    Q, Qt, normal_rows = build_rotation(solver, boundaries)
+    if getattr(solver, "_rotated_freeslip_datum", None):
+        raise NotImplementedError(
+            "a prescribed non-zero wall-normal datum (u.n = ũ_n) on rotated free-slip is "
+            "implemented only for the LINEAR solve path (solve_rotated_freeslip); the "
+            "nonlinear path still imposes u.n = 0. Use a linear model for a prescribed "
+            "normal velocity, or extend this path.")
+    Q, Qt, normal_rows, _ = build_rotation(solver, boundaries)
     custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
     nsp = _rotated_nullspace(solver, Q, normal_rows)
 
