@@ -455,3 +455,46 @@ def test_spherical_integral_then_bd_does_not_poison_boundary_path():
     assert volume > 0.0
     assert boundary_reference > 0.0
     assert abs(boundary_after - boundary_reference) < 1.0e-10
+
+
+def test_bd_integral_after_deform_matches_expected_areas():
+    """Boundary integrals must remain correct after mesh.deform().
+
+    Serial counterpart of
+    tests/parallel/test_0765_internal_boundary_integral_mpi.py::test_deformed_spherical_shell_boundary_area_parallel,
+    which only exercises this path under --parallel (MPI rank-ownership
+    edge case). Added 2026-06-25 after a regression in that MPI-only test
+    (an unmigrated mesh._deform_mesh() call tripped the new
+    _assert_coord_mutation_allowed() guard from commit f99c8aa2) went
+    unnoticed for over a week because nothing in the serial suite exercised
+    deformation + BdIntegral together. This test covers that basic
+    correctness path -- not the MPI-specific rank-ownership case, which
+    stays in the parallel-only test.
+    """
+
+    mesh_spherical = _build_spherical_shell_for_integrals()
+
+    coords = np.asarray(mesh_spherical.X.coords, dtype=np.float64).copy()
+    radii = np.linalg.norm(coords, axis=1)
+    thickness = 0.5
+    t = (radii - 0.5) / thickness
+    a = np.log(2.0)
+    mapped = (np.exp(a * t) - 1.0) / (np.exp(a) - 1.0)
+    new_radii = 0.5 + thickness * mapped
+    mesh_spherical.deform(coords * (new_radii / radii)[:, None])
+
+    expected_lower = 4.0 * np.pi * 0.5**2
+    expected_upper = 4.0 * np.pi * 1.0**2
+
+    lower = float(uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary="Lower").evaluate())
+    upper = float(uw.maths.BdIntegral(mesh_spherical, fn=1.0, boundary="Upper").evaluate())
+
+    rel_err_lower = abs(lower - expected_lower) / expected_lower
+    rel_err_upper = abs(upper - expected_upper) / expected_upper
+
+    assert rel_err_lower < 5.0e-2, (
+        f"Deformed lower area rel_err={rel_err_lower:.3e}, value={lower}, expected={expected_lower}"
+    )
+    assert rel_err_upper < 5.0e-2, (
+        f"Deformed upper area rel_err={rel_err_upper:.3e}, value={upper}, expected={expected_upper}"
+    )
