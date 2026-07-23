@@ -1066,7 +1066,14 @@ class _BaseMeshVariable(Stateful, uw_object):
         lvec = dmnew.getLocalVec()
         gvec = dmnew.getGlobalVec()
 
-        lvec.array[...] = self.coords.reshape(-1)[...]
+        # Frame contract (#269): the remap dataset stores MODEL-frame
+        # (non-dimensional) coordinates — the same frame as the mesh-file
+        # geometry and as a reading session's ``coords_nd``, independent of
+        # the units state of either session. ``.coords`` is frame-dependent
+        # (dimensional under an active units model) and baked a
+        # session-dependent frame into the file, which made
+        # ``read_timestep`` silently mis-match in any other session.
+        lvec.array[...] = numpy.asarray(self.coords_nd).reshape(-1)[...]
         dmnew.localToGlobal(lvec, gvec, addv=False)
         gvec.setName("coordinates")
 
@@ -1244,10 +1251,53 @@ class _BaseMeshVariable(Stateful, uw_object):
         landed_D = saved.array[:, 0, :]
 
         # ---- Phase 2: query swarm round-trips live DOFs to source rank ----
-        query_coords = self.coords
-        if hasattr(query_coords, "magnitude"):
-            query_coords = query_coords.magnitude
+        # Model-frame query to match the file's model-frame coordinates —
+        # the frame contract stated on ``write`` (#269). ``.coords`` is
+        # frame-dependent (dimensional under an active units model) and
+        # silently mis-matched whenever the writing and reading sessions
+        # differed in units state.
+        query_coords = np.asarray(self.coords_nd)
         n_query_local = query_coords.shape[0]
+
+        # Frame guard (#269): a checkpoint from the older writer under an
+        # active units model stores DIMENSIONAL coordinates instead of the
+        # model frame; nearest-neighbour matching across that scale
+        # mismatch returns a silently wrong, near-constant field. Compare
+        # the two clouds' extents and refuse loudly instead. (Collective:
+        # extents are reduced on every rank, so all ranks raise together.)
+        from mpi4py import MPI
+
+        file_diag = 0.0
+        if uw.mpi.rank == 0 and X_src.shape[0] > 0:
+            file_diag = float(np.linalg.norm(X_src.max(axis=0) - X_src.min(axis=0)))
+        file_diag = uw.mpi.comm.bcast(file_diag, root=0)
+
+        if n_query_local > 0:
+            local_min = np.ascontiguousarray(query_coords.min(axis=0), dtype=np.float64)
+            local_max = np.ascontiguousarray(query_coords.max(axis=0), dtype=np.float64)
+        else:
+            local_min = np.full(dim, np.inf)
+            local_max = np.full(dim, -np.inf)
+        q_min = np.empty(dim, dtype=np.float64)
+        q_max = np.empty(dim, dtype=np.float64)
+        uw.mpi.comm.Allreduce(local_min, q_min, op=MPI.MIN)
+        uw.mpi.comm.Allreduce(local_max, q_max, op=MPI.MAX)
+        query_diag = float(np.linalg.norm(q_max - q_min))
+
+        if file_diag > 0.0 and query_diag > 0.0:
+            scale_ratio = file_diag / query_diag
+            if scale_ratio > 10.0 or scale_ratio < 0.1:
+                raise RuntimeError(
+                    f"read_timestep: the saved coordinate cloud extent "
+                    f"({file_diag:.4g}) and the live DOF extent ({query_diag:.4g}) "
+                    f"differ by x{scale_ratio:.3g} — the coordinate frames do not "
+                    "match, and a nearest-neighbour remap would return silently "
+                    "wrong values. This usually means the checkpoint was written "
+                    "by an older writer with an active units model (dimensional "
+                    "coordinates in 'fields/coordinates'; issue #269). Re-write "
+                    "the checkpoint with current code, or read the raw dataset "
+                    "directly from the HDF5 file ('fields/<name>')."
+                )
         original_index = np.arange(n_query_local).reshape(-1, 1, 1)
 
         query_swarm = uw.swarm.Swarm(self.mesh)
