@@ -795,7 +795,22 @@ class Mesh(Stateful, uw_object):
                     coord_type_dict = json.loads(json_str)
                     coordinate_system_type = CoordinateSystemType(coord_type_dict["value"])
                 except KeyError:
-                    pass
+                    # A checkpointed mesh normally carries its coordinate
+                    # system; a missing entry means the metadata was lost
+                    # (or the file predates it). The construction defaults
+                    # to CARTESIAN (#397) — say so, because for an annulus
+                    # or spherical checkpoint that label is wrong and would
+                    # otherwise propagate silently into re-written files.
+                    if coordinate_system_type is None and uw.mpi.rank == 0:
+                        import warnings
+
+                        warnings.warn(
+                            f"{plex_or_meshfile} has no coordinate_system_type "
+                            "metadata; defaulting to CARTESIAN. Pass "
+                            "coordinate_system_type= explicitly if this mesh "
+                            "is not Cartesian.",
+                            stacklevel=2,
+                        )
 
                 regions = None
                 try:
@@ -4823,58 +4838,63 @@ class Mesh(Stateful, uw_object):
         # Use preferred selective_ranks pattern for metadata operations
         with uw.selective_ranks(0) as should_execute:
             if should_execute:
-                f = h5py.File(filename, "a")
-                g = f.create_group("metadata")
+                # Context manager: an exception mid-block must not leak the
+                # handle (a live handle keeps the HDF5 lock held).
+                with h5py.File(filename, "a") as f:
+                    g = f.create_group("metadata")
 
-                boundaries_dict = {i.name: i.value for i in self.boundaries}
-                g.attrs["boundaries"] = json.dumps(boundaries_dict)
+                    boundaries_dict = {i.name: i.value for i in self.boundaries}
+                    g.attrs["boundaries"] = json.dumps(boundaries_dict)
 
-                if self.regions is not None:
-                    regions_dict = {i.name: i.value for i in self.regions}
-                    g.attrs["regions"] = json.dumps(regions_dict)
+                    if self.regions is not None:
+                        regions_dict = {i.name: i.value for i in self.regions}
+                        g.attrs["regions"] = json.dumps(regions_dict)
 
-                coordinates_type_dict = {
-                    "name": self.CoordinateSystemType.name,
-                    "value": self.CoordinateSystemType.value,
-                }
-                g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
-
-                # Save ellipsoid metadata for geographic meshes
-                if hasattr(self.CoordinateSystem, "ellipsoid"):
-                    ellipsoid_ser = {}
-                    for k, v in self.CoordinateSystem.ellipsoid.items():
-                        if hasattr(v, "to"):  # uw.quantity
-                            ellipsoid_ser[k] = {
-                                "value": float(v.magnitude),
-                                "unit": str(v.units),
-                            }
-                        else:
-                            ellipsoid_ser[k] = v
-                    g.attrs["ellipsoid"] = json.dumps(ellipsoid_ser)
-
-                # Add coordinate units metadata
-                if hasattr(self, "coordinate_units"):
-                    coord_units_dict = {
-                        "coordinate_units": str(self.coordinate_units),
-                        "coordinate_dimensionality": (
-                            str(self.coordinate_dimensionality)
-                            if hasattr(self, "coordinate_dimensionality")
-                            else None
-                        ),
-                        "length_scale": (
-                            str(self.length_scale) if hasattr(self, "length_scale") else None
-                        ),
-                        "mesh_type": type(self).__name__,
-                        "dimension": self.dim,
+                    coordinates_type_dict = {
+                        "name": self.CoordinateSystemType.name,
+                        "value": self.CoordinateSystemType.value,
                     }
-                    g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
+                    g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
 
-                # Number of coarse multigrid levels in the hierarchy (= number
-                # of refinements from the stored coarsest level up to the fine
-                # mesh). Used on reload to rebuild the intermediate levels.
-                g.attrs["hierarchy_coarse_levels"] = len(self.dm_hierarchy) - 1
+                    # Save ellipsoid metadata for geographic meshes
+                    if hasattr(self.CoordinateSystem, "ellipsoid"):
+                        ellipsoid_ser = {}
+                        for k, v in self.CoordinateSystem.ellipsoid.items():
+                            if hasattr(v, "to"):  # uw.quantity
+                                ellipsoid_ser[k] = {
+                                    "value": float(v.magnitude),
+                                    "unit": str(v.units),
+                                }
+                            else:
+                                ellipsoid_ser[k] = v
+                        g.attrs["ellipsoid"] = json.dumps(ellipsoid_ser)
 
-                f.close()
+                    # Add coordinate units metadata
+                    if hasattr(self, "coordinate_units"):
+                        coord_units_dict = {
+                            "coordinate_units": str(self.coordinate_units),
+                            "coordinate_dimensionality": (
+                                str(self.coordinate_dimensionality)
+                                if hasattr(self, "coordinate_dimensionality")
+                                else None
+                            ),
+                            "length_scale": (
+                                str(self.length_scale) if hasattr(self, "length_scale") else None
+                            ),
+                            "mesh_type": type(self).__name__,
+                            "dimension": self.dim,
+                        }
+                        g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
+
+                    # Number of coarse multigrid levels in the hierarchy (= number
+                    # of refinements from the stored coarsest level up to the fine
+                    # mesh). Used on reload to rebuild the intermediate levels.
+                    g.attrs["hierarchy_coarse_levels"] = len(self.dm_hierarchy) - 1
+
+        # Same quiescence contract as Swarm.save (issue #330): every rank
+        # waits for rank 0's metadata append, so an immediate reopen of the
+        # mesh file cannot hit HDF5 file locking.
+        uw.mpi.barrier()
 
         # Persist the geometric-multigrid (FMG) hierarchy as a SINGLE sidecar
         # holding the coarsest level only. On reload the intermediate coarse
