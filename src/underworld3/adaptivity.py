@@ -502,6 +502,17 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
     stacked_bc_label = dm.getLabel(stacked_bc_label_name)
     vals = stacked_bc_label.getNonEmptyStratumValuesIS().getIndices()
 
+    # BUGFIX: ``vals`` is rank-local (a rank only sees stratum values that
+    # are non-empty on its own partition), but the loop below makes
+    # collective calls (``labelComplete``) once per value. If ranks
+    # iterate different value sets — routine at np>=4, where a partition
+    # quadrant may touch no facet of some boundary — the collective call
+    # counts diverge and the run deadlocks. Iterate the global union so
+    # every rank makes the same sequence of collective calls; guard the
+    # local stratum access to values that are live on this rank.
+    local_vals = set(int(v) for v in vals)
+    vals = sorted(set().union(*uw.mpi.comm.allgather(local_vals)))
+
     # Clear labels just in case
     for b in boundaries:
         dm.removeLabel(b.name)
@@ -520,8 +531,9 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
             continue
 
         b_dmlabel = dm.getLabel(b.name)
-        lab_is = stacked_bc_label.getStratumIS(v)
-        b_dmlabel.setStratumIS(v, lab_is)
+        if v in local_vals:
+            lab_is = stacked_bc_label.getStratumIS(v)
+            b_dmlabel.setStratumIS(v, lab_is)
 
         # BUGFIX(#162): expand the boundary label to include its closure
         # (the vertices and edges bordering the labeled facets). The
