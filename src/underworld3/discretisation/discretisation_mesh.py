@@ -1223,6 +1223,14 @@ class Mesh(Stateful, uw_object):
         # A unique set of vectors / names for each mesh instance
         #
 
+        # A mesh constructed without an explicit coordinate system (e.g.
+        # loaded directly from a .msh file, or from an h5 checkpoint with no
+        # coordinate metadata) is Cartesian — the default every uw.meshing
+        # constructor passes. Leaving None here crashed mesh.write()'s
+        # metadata block (issue #397).
+        if coordinate_system_type is None:
+            coordinate_system_type = CoordinateSystemType.CARTESIAN
+
         self.CoordinateSystemType = coordinate_system_type
 
         from sympy.vector import CoordSys3D
