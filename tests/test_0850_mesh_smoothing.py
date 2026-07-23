@@ -189,37 +189,25 @@ class TestPinningAPI:
 
 
 class TestMMPDEDimensionGuard:
-    """The MMPDE mover is 2D-only (READ-01/BF-09, 2026-07 audit): the 3D
-    branch used to reference `_signed_volumes`, which was never implemented,
-    so any 3D invocation died with a NameError deep in the mover. The
-    contract is now an immediate, honest NotImplementedError for cdim != 2,
-    while 2D invocation keeps working."""
+    """The MMPDE mover supports 2D (triangle) and 3D (tetrahedral)
+    simplex meshes (the 3D discretization landed with the adaptivity
+    capstone, round 2 — the mover core was dimension-general all along).
+    The guard now rejects only dimensions with no discretization, before
+    any metric parsing or DM work. The 3D capability itself is locked in
+    test_0764 (moves, no fold, boundary held)."""
 
-    def test_mmpde_3d_raises_not_implemented(self):
-        import sympy
-        mesh = uw.meshing.UnstructuredSimplexBox(
-            minCoords=(0.0, 0.0, 0.0),
-            maxCoords=(1.0, 1.0, 1.0),
-            cellSize=0.5,
-        )
-        with pytest.raises(NotImplementedError,
-                           match="MMPDE mesh movement is currently 2D-only"):
-            smooth_mesh_interior(
-                mesh, metric=sympy.sympify(1), method="mmpde",
-                method_kwargs=dict(n_outer=1))
-
-    def test_mmpde_3d_guard_fires_before_any_mesh_work(self):
+    def test_mmpde_unsupported_dim_guard_fires_before_any_mesh_work(self):
         """The guard reads only mesh.cdim, before metric parsing or DM
         access, so a minimal cdim stand-in locks the contract
         deterministically (same pattern as test_0762's non2d tests)."""
         from underworld3.meshing.smoothing import _mmpde_mover
 
-        class _Mesh3D:
-            cdim = 3
+        class _Mesh1D:
+            cdim = 1
 
         with pytest.raises(NotImplementedError,
-                           match="MMPDE mesh movement is currently 2D-only"):
-            _mmpde_mover(_Mesh3D(), metric=1, pinned_labels=(),
+                           match="2D .triangle. and 3D"):
+            _mmpde_mover(_Mesh1D(), metric=1, pinned_labels=(),
                            verbose=False)
 
     def test_mmpde_2d_smoke_still_works(self):
