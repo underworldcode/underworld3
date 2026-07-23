@@ -36,6 +36,7 @@ cdef extern from "petsc.h" nogil:
 cdef extern from "petsc_tools.h" nogil:
     PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell, int petscbool)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
+    PetscErrorCode DMInterpolationGetUnlocated_UW(DMInterpolationInfo ipInfo, PetscInt n, signed char* mask)
 
 cdef class CachedDMInterpolationInfo:
     """
@@ -62,7 +63,8 @@ cdef class CachedDMInterpolationInfo:
 
     cdef DMInterpolationInfo _ipInfo
     cdef public object coords  # numpy array - Python keeps alive
-    cdef public object cells   # numpy array - Python keeps alive
+    cdef public object cells   # numpy array - Python keeps alive (may be None)
+    cdef public object unlocated_mask  # bool ndarray: points with no owning cell
     cdef public int dofcount
     cdef public int dim
     cdef public bint is_valid
@@ -73,11 +75,12 @@ cdef class CachedDMInterpolationInfo:
         """Initialize - structure not yet created."""
         self.is_valid = False
         self.use_count = 0
+        self.unlocated_mask = None
         import time
         self.creation_time = time.time()
 
     def create_structure(self, mesh, np.ndarray[double, ndim=2] coords,
-                        np.ndarray[long, ndim=1] cells, int dofcount):
+                        object cells, int dofcount, bint hint_authoritative=False):
         """
         Create and set up the DMInterpolation structure.
 
@@ -89,10 +92,18 @@ cdef class CachedDMInterpolationInfo:
             The mesh object
         coords : ndarray (n_points, dim)
             Coordinates to interpolate at
-        cells : ndarray (n_points,)
-            Cell hints for each coordinate
+        cells : ndarray (n_points,) or None
+            Cell hints for each coordinate. With ``hint_authoritative=True``
+            the hint bypasses ``DMLocatePoints`` entirely; with ``None`` (or
+            ``hint_authoritative=False``) PETSc's search is authoritative and
+            unlocated points are reported in :attr:`unlocated_mask` for the
+            caller's RBF fallback.
         dofcount : int
             Total number of DOFs to interpolate
+        hint_authoritative : bool
+            Whether the supplied cells carry geometric authority — decided by
+            the mesh's measured capability
+            (``mesh._hint_is_authoritative(...)``), the single policy point.
         """
         cdef PetscErrorCode ierr
         cdef int n_points = coords.shape[0]
@@ -100,7 +111,7 @@ cdef class CachedDMInterpolationInfo:
 
         # Store references (Python keeps these alive)
         self.coords = coords.copy()  # CRITICAL: keep alive!
-        self.cells = cells.copy()
+        self.cells = None if cells is None else np.asarray(cells).copy()
         self.dofcount = dofcount
         self.dim = dim
 
@@ -141,31 +152,27 @@ cdef class CachedDMInterpolationInfo:
         # ignoreOutsideDomain=1: PETSc silently skips points it cannot locate
         # rather than crashing.
         #
-        # Hint policy — the hint is ALWAYS passed; what varies is its authority
-        # (the trailing hintAuthoritative flag):
+        # Hint policy — decided by the CALLER from the mesh's measured
+        # location capability (mesh._hint_is_authoritative, the single policy
+        # point) and passed in as hint_authoritative:
         #
-        # AUTHORITATIVE (bypass): simplex cells (planar faces, affine reference
-        # map) or manifold meshes (dim != cdim), where PETSc's own in-cell test
-        # is the unreliable party (pseudo-inverse chord-plane projection) and
-        # the barycentric hint correctly contains every query coord ->
-        # petsc_tools.c skips DMLocatePoints entirely (ported from 17a5a8d)
-        # and evaluates in the hinted cell. Independent of rank count, so it
-        # applies in serial too — the fast FE trace-back (PR #203). The hint
-        # *source* still follows mesh._eval_use_robust_location(): parallel ->
-        # _robust_owning_cells (correct owner across seams); serial -> the
-        # standard locator's cells.
+        # AUTHORITATIVE (bypass): the cell-wall estimator carries geometric
+        # authority — simplex/manifold meshes, and quad/hex meshes whose
+        # measured face planarity + convexity qualify ("exact", or
+        # "continuous" capability with all-continuous fields). petsc_tools.c
+        # skips DMLocatePoints entirely and evaluates in the hinted cell
+        # (with reference-coord clamping for on-face queries).
         #
-        # FALLBACK (non-simplex volume meshes — quad/hex, incl. deformed
-        # faces): PETSc DMLocatePoints remains authoritative (the
-        # kdtree-nearest hint can be wrong there), but the hint still prefills
-        # the recovery map so points DMLocatePoints DROPS — notably queries
-        # sitting exactly on the domain's closed upper faces, e.g. SL
-        # trace-back departure points sliding along the top boundary — are
-        # evaluated in the adjacent hinted cell (with reference-coord clamping)
-        # instead of silently zero-filled. Losing this recovery was the ψ*
-        # corruption behind the VEP stability blow-up (#390).
-        cdef bint hint_authoritative = (bool(mesh.dm.isSimplex()) or (mesh.dim != mesh.cdim))
-        if n_points > 0:
+        # NOT AUTHORITATIVE: PETSc DMLocatePoints runs. Points it drops (e.g.
+        # queries exactly on the domain's closed upper faces — the ψ*
+        # corruption behind the VEP blow-up, #390) get NaN in the interpolant
+        # and are reported in unlocated_mask; the caller fills them via the
+        # RBF fallback. A supplied non-authoritative hint would prefill the
+        # C recovery map instead, but the capability policy passes cells=None
+        # here precisely because that hint is not trustworthy on such meshes.
+        cdef np.ndarray mask_arr = np.zeros(n_points, dtype=np.int8)
+        cdef signed char[::1] mask_view = mask_arr
+        if n_points > 0 and self.cells is not None:
             cells_view = np.ascontiguousarray(self.cells)
             ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1,
                                            <size_t*> &cells_view[0],
@@ -175,6 +182,16 @@ cdef class CachedDMInterpolationInfo:
         if ierr != 0:
             DMInterpolationDestroy(&self._ipInfo)
             raise RuntimeError(f"DMInterpolationSetUp_UW failed with error {ierr}")
+
+        # Which points ended up with no owning cell (dropped by
+        # DMLocatePoints, or hinted -1 by the robust locator)? Their
+        # interpolant slots will be NaN; the caller fills them via RBF.
+        if n_points > 0:
+            ierr = DMInterpolationGetUnlocated_UW(self._ipInfo, n_points, &mask_view[0])
+            if ierr != 0:
+                DMInterpolationDestroy(&self._ipInfo)
+                raise RuntimeError(f"DMInterpolationGetUnlocated_UW failed with error {ierr}")
+        self.unlocated_mask = mask_arr.astype(bool)
 
         self.is_valid = True
 
