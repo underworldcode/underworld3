@@ -9,7 +9,7 @@ import numpy as np
 
 import underworld3 as uw
 
-from .graph import _tri_cells, _signed_areas, _global_sum
+from .graph import _tri_cells, _signed_areas, _global_sum, _global_max
 
 
 # Named adaptation strategies (off / vlow / low / med / high /
@@ -135,44 +135,48 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     import underworld3 as _uw
 
     coords = np.asarray(mesh.X.coords)
-    if mesh.cdim == 2:
-        tris = _tri_cells(mesh.dm)
-        A_actual = None if tris is None else np.abs(
-            _signed_areas(coords, tris))
+    cStart, cEnd = mesh.dm.getHeightStratum(0)
+    if cEnd > cStart:
+        if mesh.cdim == 2:
+            tris = _tri_cells(mesh.dm)
+            A_actual = None if tris is None else np.abs(
+                _signed_areas(coords, tris))
+        else:
+            from .graph import _tet_cells, _signed_volumes
+            tris = _tet_cells(mesh.dm)
+            A_actual = None if tris is None else np.abs(
+                _signed_volumes(coords, tris))
+        if tris is None:
+            raise NotImplementedError(
+                "mesh_metric_mismatch: simplex (triangle/tetrahedral) mesh "
+                "required")
+        centroids = coords[tris].mean(axis=1)
+        rho = np.asarray(_uw.function.evaluate(
+            metric, centroids)).reshape(-1)
+        rho = np.maximum(rho, 1.0e-12)   # guard
     else:
-        from .graph import _tet_cells, _signed_volumes
-        tris = _tet_cells(mesh.dm)
-        A_actual = None if tris is None else np.abs(
-            _signed_volumes(coords, tris))
-    if tris is None:
-        raise NotImplementedError(
-            "mesh_metric_mismatch: simplex (triangle/tetrahedral) mesh "
-            "required")
-    centroids = coords[tris].mean(axis=1)
-    rho = np.asarray(_uw.function.evaluate(
-        metric, centroids)).reshape(-1)
-    rho = np.maximum(rho, 1.0e-12)   # guard
-    inv_rho = 1.0 / rho
-    # TODO(BUG): A_target (and A_mean below) are built from rank-LOCAL
-    # sums, so under MPI the delta moments returned here (rms / max /
-    # median_abs) are partition-dependent diagnostics measured against a
-    # per-rank equidistribution target, not the global one the docstring
-    # describes. The skip signal consumed by smooth_mesh_interior
-    # (alignment / misalignment) is NOT affected — it is computed from
-    # globally reduced moment sums further down. Fix: reduce
-    # A_actual.sum(), inv_rho.sum() and the cell count globally before
-    # forming A_target / A_mean (delta stays a local array; its moments
-    # then need global reductions too).
-    A_target = A_actual.sum() * inv_rho / inv_rho.sum()
+        # A rank owning zero cells still participates in every global
+        # reduction below with empty contributions — raising or returning
+        # early here would desynchronise the collectives.
+        A_actual = np.empty(0)
+        rho = np.empty(0)
+    inv_rho = 1.0 / rho if rho.size else np.empty(0)
+    # Global equidistribution target (issue #351): the sums and the cell
+    # count are reduced across ranks — rank-local sums measured each
+    # rank's cells against a per-rank target, so the returned moments
+    # were partition-dependent and inconsistent with the docstring.
+    sum_A = _global_sum(A_actual.sum())
+    sum_inv_rho = _global_sum(inv_rho.sum())
+    A_target = sum_A * inv_rho / sum_inv_rho
     if resolution_ratio is not None:
         R = float(resolution_ratio)
-        A_mean = A_actual.sum() / len(A_actual)
+        A_mean = sum_A / _global_sum(A_actual.size)
         # Clip target areas to the mover's achievable band
         # [A_mean/R², A_mean·R²] (h in [h0/R, h0·R] ⇒
         # A in [h0²/R², h0²·R²] = [A_mean/R², A_mean·R²]).
         A_target = np.clip(A_target, A_mean / R ** 2,
                            A_mean * R ** 2)
-    delta = 0.5 * np.log(A_actual / A_target)
+    delta = 0.5 * np.log(A_actual / A_target) if A_actual.size else np.empty(0)
     abs_delta = np.abs(delta)
 
     # Alignment — Pearson r of log(1/A_c) with log(ρ_c).
@@ -210,9 +214,24 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     misalignment = float(
         np.sqrt(max(0.0, 1.0 - max(0.0, alignment) ** 2)))
 
-    return dict(rms=float(np.sqrt(np.mean(delta ** 2))),
-                max=float(abs_delta.max()),
-                median_abs=float(np.median(abs_delta)),
+    # Global moments of |δ| (issue #351): every rank reports the same
+    # diagnostics. The exact median needs the values in one place — this
+    # is a diagnostic at adapt cadence, so gather |δ| to rank 0 and
+    # broadcast the scalar.
+    n_cells = _global_sum(delta.size)
+    rms = float(np.sqrt(_global_sum((delta ** 2).sum()) / n_cells))
+    delta_max = _global_max(abs_delta.max() if abs_delta.size else 0.0)
+    if _uw.mpi.size > 1:
+        gathered = _uw.mpi.comm.gather(abs_delta, root=0)
+        median_abs = (float(np.median(np.concatenate(gathered)))
+                      if _uw.mpi.rank == 0 else None)
+        median_abs = _uw.mpi.comm.bcast(median_abs, root=0)
+    else:
+        median_abs = float(np.median(abs_delta))
+
+    return dict(rms=rms,
+                max=float(delta_max),
+                median_abs=median_abs,
                 alignment=alignment,
                 misalignment=misalignment)
 
