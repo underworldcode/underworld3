@@ -85,6 +85,14 @@ class SolverBaseClass(uw_object):
         self._needs_bc_reregister = True
         self._needs_function_rewire = True
 
+        # Warm-start status, public (read-only) via `has_solution`. Set True only
+        # after a converged solve; reset on a structural rebuild (is_setup=False)
+        # so a remesh / adapt / mesh-mover never warm-starts off stale field
+        # data. Kept through coefficient changes (viscosity, yield softness δ, BC
+        # values, time step). See has_solution / _record_convergence_status and
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        self._has_solution = False
+
         self.Unknowns = self._Unknowns(self)
 
         self._order = 0
@@ -790,6 +798,46 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
             self._needs_function_rewire = True
+            # A structural invalidation (mesh change / adaptivity / mesh-mover /
+            # explicit _force_setup) means any stored solution no longer matches
+            # the operators — drop the warm-start claim so the next solve()
+            # cold-starts rather than warming off a stale iterate. Coefficient-only
+            # updates (new viscosity, δ, BC values, time step) route through
+            # _update_constants / a direct _needs_function_rewire and keep
+            # has_solution, so continuation and time-stepping warm-start correctly.
+            self._has_solution = False
+
+    @property
+    def has_solution(self):
+        """``True`` when the solver holds a converged solution usable as a warm start.
+
+        Set ``True`` only after a solve whose SNES reported a converged reason
+        (``> 0``); ``False`` initially, after a diverged solve, and after any
+        structural rebuild (mesh change / adaptivity / mesh-mover / explicit
+        ``_force_setup`` — the ``is_setup = False`` invalidation hook). It
+        survives coefficient changes (viscosity, yield softness :math:`\\delta`,
+        boundary-condition *values*, time step) so parameter continuation and
+        time-stepping warm-start correctly.
+
+        Read-only status flag. Because a diverged solve leaves
+        ``has_solution == False``, the next :meth:`solve` automatically
+        cold-starts (Picard warm-up) rather than warming off a corrupted iterate.
+
+        See :doc:`nonlinear-solver-homotopy-warmstart` (Layer 1).
+        """
+        return self._has_solution
+
+    def _record_convergence_status(self, converged=None):
+        """Refresh :attr:`has_solution` from the just-completed solve.
+
+        Called at the end of every ``solve()``. With ``converged`` unset the
+        status is read from the SNES converged reason (``> 0`` ⇒ converged);
+        the rotated free-slip path, which runs its own KSP loop rather than
+        driving ``self.snes``, passes the flag from its result dict.
+        """
+        if converged is None:
+            converged = self.snes is not None and self.snes.getConvergedReason() > 0
+        self._has_solution = bool(converged)
 
     class _Unknowns:
         """
@@ -3484,6 +3532,8 @@ class SNES_Scalar(SolverBaseClass):
 
         self._warn_on_divergence()
 
+        self._record_convergence_status()
+
         return
 
     def _object_viewer(self):
@@ -4517,6 +4567,8 @@ class SNES_Vector(SolverBaseClass):
 
         self._warn_on_divergence()
 
+        self._record_convergence_status()
+
         return
 
     def _object_viewer(self):
@@ -5208,6 +5260,8 @@ class SNES_MultiComponent(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -8360,7 +8414,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     zero_init_guess=zero_init_guess, picard=picard)
             # This path solves via ksp.solve on the rotated operator (not self.snes),
             # so give it a report from the rotated result rather than leaving a stale one.
-            self._capture_rotated_report(self._rotated_freeslip_info)
+            _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
+            # The warm-start flag must follow the rotated solve's own verdict — the SNES
+            # was never run, so the generic reader would latch a stale reason.
+            self._record_convergence_status(converged=_rotated_report.converged)
             return
 
         if time is not None:
@@ -8412,6 +8469,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         else:
             self.atol = 0.0
+
+        # Automatic cold-start warm-up (Layer 1): a single Picard (frozen-
+        # coefficient) step moves a cold guess into the Newton basin — it is
+        # defect-correction iteration 1, contractive and cheap. Taken only on a
+        # genuine cold start (zero_init_guess) under the consistent-Newton
+        # tangent, which is the opt-in nonlinear-yield regime that needs it; the
+        # default (frozen) tangent path is left bit-identical. Skipped when the
+        # caller set an explicit Picard count, and under the "continuation"
+        # tangent (which already warm-starts internally). See
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        if picard == 0 and zero_init_guess and self.consistent_jacobian is True:
+            picard = 1
 
         if verbose and uw.mpi.rank == 0:
             print(f"SNES solve - picard = {picard}", flush=True)
@@ -8505,6 +8574,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
