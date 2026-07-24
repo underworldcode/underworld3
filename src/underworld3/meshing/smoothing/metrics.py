@@ -134,6 +134,16 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
     """
     import underworld3 as _uw
 
+    # Rank-SYMMETRIC refusal for non-simplex meshes: mesh.isSimplex is a
+    # rank-uniform property, so every rank raises together. (The per-rank
+    # tris-is-None check below cannot serve — a starved rank has no cells
+    # to inspect and would sail into the collective reductions while the
+    # populated ranks raise; issue #351 review.)
+    if not mesh.isSimplex:
+        raise NotImplementedError(
+            "mesh_metric_mismatch: simplex (triangle/tetrahedral) mesh "
+            "required")
+
     coords = np.asarray(mesh.X.coords)
     cStart, cEnd = mesh.dm.getHeightStratum(0)
     if cEnd > cStart:
@@ -155,9 +165,17 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
             metric, centroids)).reshape(-1)
         rho = np.maximum(rho, 1.0e-12)   # guard
     else:
-        # A rank owning zero cells still participates in every global
-        # reduction below with empty contributions — raising or returning
-        # early here would desynchronise the collectives.
+        # A rank owning zero cells participates in the global reductions
+        # below with empty contributions — raising or returning early here
+        # would desynchronise the collectives.
+        #
+        # KNOWN LIMIT: this skips uw.function.evaluate, which is itself
+        # collective for metrics containing MESH-VARIABLE data — a starved
+        # rank then deadlocks the populated ranks inside evaluate. Full
+        # starved-rank support for field-valued metrics needs the
+        # evaluate/points_in_domain layer to be empty-rank safe first
+        # (tracked with the #399 follow-up issue). Analytic (pure-sympy)
+        # metrics are fine: their evaluation is rank-local.
         A_actual = np.empty(0)
         rho = np.empty(0)
     inv_rho = 1.0 / rho if rho.size else np.empty(0)

@@ -3199,15 +3199,20 @@ class _BaseMeshVariable(Stateful, uw_object):
         )
 
         try:
-            # Compute Frobenius norm: ||A||_F = sqrt(sum(A_ij^2))
-            # Components are read through the FLAT layout: a tensor's
-            # .array is structured (N, d, d), so indexing it with the flat
-            # component count d*d walked off the axis (issue #400).
+            # Compute Frobenius norm: ||A||_F = sqrt(sum_ij(A_ij^2))
+            # Structured (N, d, d) reads (issue #400): correct for full
+            # tensors AND for symmetric storage — the .array view mirrors
+            # the Voigt components, so off-diagonals are counted twice as
+            # the Frobenius sum requires. (Flat component reads counted
+            # each Voigt entry once and under-measured SYM_TENSOR norms;
+            # the original structured read with the FLAT component count
+            # walked off the axis.)
             with uw.synchronised_array_update():
+                arr = np.asarray(self.array)
                 sum_squares = 0.0
-                for i in range(self.num_components):
-                    component = np.asarray(self.data[:, i]).flatten()
-                    sum_squares += component**2
+                for i in range(self.shape[0]):
+                    for j in range(self.shape[1]):
+                        sum_squares = sum_squares + arr[:, i, j] ** 2
                 frobenius_var.array[:, 0, 0] = np.sqrt(sum_squares)
 
             # Get scalar stats on Frobenius norm

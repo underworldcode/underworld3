@@ -624,7 +624,9 @@ cdef class KDTree:
         # Note: query() returns sqr_dists=True by default, and we use the converted coords
         distance_n, closest_n = self.query(coords, k=nnn)
 
-        if np.any(closest_n > self.n):
+        # valid indices are 0..n-1; the empty-tree sentinel (0 with n=0)
+        # must trip this guard, so the comparison is >= (issue #399).
+        if np.any(closest_n >= self.n):
             raise RuntimeError(
                 "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
             )

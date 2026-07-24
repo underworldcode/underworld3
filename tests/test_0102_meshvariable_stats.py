@@ -25,16 +25,37 @@ def mesh():
 def test_tensor_stats_computes_frobenius(mesh):
     T = uw.discretisation.MeshVariable(
         "T400", mesh, (mesh.dim, mesh.dim), vtype=uw.VarType.TENSOR, degree=1)
-    # Identity everywhere: ||I||_F = sqrt(d)
+    # Non-symmetric, spatially varying — compare against numpy directly.
     with uw.synchronised_array_update():
-        T.array[:, :, :] = np.eye(mesh.dim)
+        x = np.asarray(T.coords)[:, 0]
+        T.array[:, 0, 0] = 1.0 + x
+        T.array[:, 0, 1] = 2.0
+        T.array[:, 1, 0] = -3.0 * x
+        T.array[:, 1, 1] = 0.5
 
+    expected = np.sqrt((np.asarray(T.array) ** 2).sum(axis=(1, 2)))
     result = T.stats()
     assert result["type"] == "tensor"
-    expected = np.sqrt(mesh.dim)
+    assert np.isclose(result["mean"], expected.mean(), rtol=1e-12)
+    assert np.isclose(result["max"], expected.max(), rtol=1e-12)
+    assert np.isclose(result["min"], expected.min(), rtol=1e-12)
+
+
+def test_sym_tensor_stats_counts_off_diagonals_twice(mesh):
+    # SYM_TENSOR stores Voigt components; the Frobenius norm must count
+    # the mirrored off-diagonals twice (adversarial-review finding: a flat
+    # single-count read under-measured ||A||_F silently).
+    S = uw.discretisation.MeshVariable(
+        "S400", mesh, (mesh.dim, mesh.dim), vtype=uw.VarType.SYM_TENSOR, degree=1)
+    with uw.synchronised_array_update():
+        S.data[:, 0] = 1.0   # xx
+        S.data[:, 1] = 2.0   # yy
+        S.data[:, 2] = 3.0   # xy (mirrored)
+
+    expected = np.sqrt(1.0 + 4.0 + 2.0 * 9.0)
+    result = S.stats()
     assert np.isclose(result["mean"], expected, rtol=1e-12)
     assert np.isclose(result["max"], expected, rtol=1e-12)
-    assert np.isclose(result["min"], expected, rtol=1e-12)
 
 
 def test_vector_stats_repeat_and_cleanup(mesh):
