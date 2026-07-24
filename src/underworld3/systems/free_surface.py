@@ -168,8 +168,12 @@ class FreeSurface:
         self._build_consistent()
         self._build_interior_diffuser()
         self._filter_iters = int(surface_filter)
-        if self._filter_iters:
-            self._build_surface_filter()
+        # Global along-surface-ordered ring (theta on an annulus, x on a box), gathered
+        # across ranks. Both the surface filter and the tangential transport run on it, so
+        # both are parallel-correct and free of the x-extreme degeneracy that collapses
+        # ring nodes near theta=0/pi. The surface deforms only along the normal, so the
+        # ordering is invariant and is built once.
+        self._build_ring_gather()
         if composition is not None:
             self._build_composition_transport()
 
@@ -458,25 +462,68 @@ class FreeSurface:
             self._conserve_rate = uw.maths.Integral(self.mesh, shift_rate)
             self._conserve_target = float(self._conserve_area.evaluate())
 
-    def _build_surface_filter(self):
-        """Taubin low-pass over the surface graph, to attenuate the facet-scale (CBF
-        boundary) node-noise in the recovered equilibrium topography while leaving the
-        long-wavelength swell. Built on the extracted surface submesh (parallel-safe);
-        the ring is mapped to the submesh DOFs by coordinate."""
-        self._surf_mesh = self.mesh.extract_surface(self.surface)
-        self._filter_field = uw.discretisation.MeshVariable(
-            "h_filter", self._surf_mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
-        )
-        order = np.argsort(self._surf_coords[:, 0])
-        ring_sorted = np.ascontiguousarray(self._surf_coords[order])
-        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._filter_field.coords))
-        self._ring_to_surf = np.asarray(tree.query(ring_sorted, 1)[1]).flatten()
+    def _build_ring_gather(self):
+        """Map the local (x-sorted) surface arrays to/from a GLOBALLY sorted ring — by
+        the along-surface coordinate ``s`` (``theta`` on a cylindrical annulus, ``x`` on
+        a Cartesian box) — present on every rank. Both the surface filter and the
+        tangential transport run on this ring, so a launch point / smoothing stencil that
+        crosses a partition boundary is handled, and the x-extreme degeneracy (an x-sorted
+        ring collapses the many nodes near ``theta=0`` / ``theta=pi``, where ``dx/dtheta ->
+        0``) is avoided. The surface deforms only along the normal, so ``s`` and its order
+        are invariant — built once."""
+        comm = uw.mpi.comm
+        rc = self._ring_coords                         # local nodes, x-sorted order
+        if self._cylindrical:
+            s_local = np.arctan2(rc[:, 1], rc[:, 0])
+            self._ring_period = 2.0 * np.pi
+        else:
+            s_local = rc[:, 0].astype(float)
+            self._ring_period = None
+        self._s_local_n = int(s_local.size)
+        counts = comm.allgather(self._s_local_n)
+        self._ring_offset = int(np.sum(counts[: comm.rank]))
+        s_global = (np.concatenate(comm.allgather(s_local))
+                    if comm.size > 1 else s_local.copy())
+        self._ring_order = np.argsort(s_global, kind="stable")     # concat -> s-sorted
+        self._ring_inv = np.empty_like(self._ring_order)
+        self._ring_inv[self._ring_order] = np.arange(self._ring_order.size)
+        self._s_sorted = s_global[self._ring_order]
+
+    def _ring_gather(self, local_vals):
+        """Local (x-sorted-order) surface values -> the globally s-sorted ring."""
+        comm = uw.mpi.comm
+        v = (np.concatenate(comm.allgather(np.ascontiguousarray(local_vals)))
+             if comm.size > 1 else np.asarray(local_vals, dtype=float))
+        return v[self._ring_order]
+
+    def _ring_scatter(self, v_sorted):
+        """Globally s-sorted ring values -> this rank's local (x-sorted-order) nodes."""
+        v = v_sorted[self._ring_inv]                   # back to rank-concatenated order
+        return v[self._ring_offset: self._ring_offset + self._s_local_n]
+
+    def _ring_taubin(self, v_sorted, n_iters, lam=0.33, mu=-0.34):
+        """1-D Taubin low-pass on the s-sorted ring: periodic (closed annulus) or fixed
+        ends (open Cartesian surface). ``lam``/``mu`` are the standard shrink/unshrink
+        pair (near volume-neutral, no long-wavelength bias)."""
+        periodic = self._ring_period is not None
+        v = np.asarray(v_sorted, dtype=float).copy()
+        for _ in range(int(n_iters)):
+            for step in (lam, mu):
+                if periodic:
+                    lap = 0.5 * (np.roll(v, 1) + np.roll(v, -1)) - v
+                else:
+                    lap = np.zeros_like(v)
+                    lap[1:-1] = 0.5 * (v[:-2] + v[2:]) - v[1:-1]
+                v = v + step * lap
+        return v
 
     def _filter_surface(self, values):
-        """Taubin-smooth a ring-ordered surface array through the submesh field."""
-        self._filter_field.array[self._ring_to_surf, 0, 0] = values
-        uw.meshing.smooth_surface_field(self._filter_field, n_iters=self._filter_iters, taubin=True)
-        return np.asarray(self._filter_field.array[self._ring_to_surf, 0, 0]).flatten()
+        """Periodic Taubin low-pass on the globally s-sorted surface ring — parallel-
+        correct, and free of the submesh-mapping collision at the along-surface-coordinate
+        extremes (the theta=0 / theta=pi seam)."""
+        return self._ring_scatter(
+            self._ring_taubin(self._ring_gather(values), self._filter_iters))
+
 
     # -- public step ----------------------------------------------------------
 
@@ -599,21 +646,20 @@ class FreeSurface:
             u_n = u_n * self._surface_mask  # pin the surface rate near driven walls
         return u_n
 
-    def _along_surface(self):
-        """The along-surface coordinate ``s``, the tangential velocity in ``s``-units,
-        and the period (``None`` = open). Cartesian: ``s = x``, ``v_t = v_x``, open.
-        Cylindrical annulus: ``s = theta``, ``v_t = omega = v_theta/r``, period ``2*pi``.
-        All in the ring-array (x-sorted) order the surface fields are held in."""
+    def _tangential_velocity(self):
+        """Along-surface (tangential) velocity per LOCAL ring node, in the local
+        (x-sorted) order the surface arrays use, in ``s``-units: Cartesian ``v_x`` (so
+        ``s_dep = x - v_x*dt``); cylindrical the angular rate ``omega = v_theta/r`` (so
+        ``s_dep = theta - omega*dt``)."""
         order = np.argsort(self._surf_coords[:, 0])
         v_x = np.asarray(function.evaluate(self._v_p1.sym[0], self._surf_coords)).flatten()[order]
         if not self._cylindrical:
-            return self._surf_x, v_x, None
+            return v_x
         v_y = np.asarray(function.evaluate(self._v_p1.sym[1], self._surf_coords)).flatten()[order]
         cx, cy = self._ring_coords[:, 0], self._ring_coords[:, 1]
         r = np.hypot(cx, cy)
-        theta = np.arctan2(cy, cx)
         v_theta = (-cy * v_x + cx * v_y) / r        # v . theta-hat
-        return theta, v_theta / r, 2.0 * np.pi
+        return v_theta / r
 
     def _launch_interp(self, s, field, s_dep, period):
         """Interpolate ``field(s)`` at the launch point ``s_dep``. Open surface: linear
@@ -649,30 +695,33 @@ class FreeSurface:
         return design(s_dep) @ coef
 
     def _apply_tangential_transport(self, shape, h_inf, u_n, dt):
-        """First-pass along-surface transport: barycentric-interpolate the surface
-        fields at the tangential launch point ``s - v_t*dt`` and report the correction.
-
-        The 1-D interpolation is a convex combination of the bracketing nodal values,
-        so it is bounded (cannot overshoot) even when the launch point is crudely
-        located. Geometry sets the parametrisation (:meth:`_along_surface`): the
-        Cartesian ``x`` with clamped ends, or the annulus ``theta`` with periodic wrap.
-        Serial first pass — the interpolation runs over this rank's local ring only (a
-        parallel version gathers the ring).
+        """Along-surface semi-Lagrangian transport on the GLOBALLY s-sorted ring:
+        barycentric-interpolate the surface fields at the tangential launch point
+        ``s - v_t*dt``. Parallel-correct — the launch point may lie on another rank's arc,
+        so the fields and the tangential velocity are gathered to the full ring, the
+        interpolation runs globally, and the result is scattered back to local nodes. The
+        1-D interpolation is a convex combination of bracketing nodal values, so it is
+        bounded (cannot overshoot); the annulus wraps periodically, the box clamps ends.
         """
-        s, v_t, period = self._along_surface()
+        s = self._s_sorted                               # global s-sorted ring
+        period = self._ring_period
+        v_t = self._ring_gather(self._tangential_velocity())
         s_dep = s - v_t * dt
-        shape_up = self._launch_interp(s, shape, s_dep, period)
-        h_inf_up = self._launch_interp(s, h_inf, s_dep, period)
-        u_n_up = self._launch_interp(s, u_n, s_dep, period)
+        shape_g, hinf_g, un_g = (self._ring_gather(shape), self._ring_gather(h_inf),
+                                 self._ring_gather(u_n))
+        shape_up = self._ring_scatter(self._launch_interp(s, shape_g, s_dep, period))
+        h_inf_up = self._ring_scatter(self._launch_interp(s, hinf_g, s_dep, period))
+        u_n_up = self._ring_scatter(self._launch_interp(s, un_g, s_dep, period))
         if self.verbose:
-            h_scale = np.abs(shape).max() + 1.0e-300
-            u_scale = np.abs(u_n).max() + 1.0e-300
-            uw.pprint(
-                "FreeSurface tangential correction: "
-                f"shape {np.abs(shape_up - shape).max() / h_scale:.2e}, "
-                f"h_inf {np.abs(h_inf_up - h_inf).max() / h_scale:.2e}, "
-                f"u_n {np.abs(u_n_up - u_n).max() / u_scale:.2e}  (relative)"
-            )
+            comm = uw.mpi.comm
+            h_scale = comm.allreduce(float(np.abs(shape).max() if shape.size else 0.0), op=MPI.MAX) + 1e-300
+            u_scale = comm.allreduce(float(np.abs(u_n).max() if u_n.size else 0.0), op=MPI.MAX) + 1e-300
+            dshape = comm.allreduce(float(np.abs(shape_up - shape).max() if shape.size else 0.0), op=MPI.MAX)
+            dhinf = comm.allreduce(float(np.abs(h_inf_up - h_inf).max() if shape.size else 0.0), op=MPI.MAX)
+            dun = comm.allreduce(float(np.abs(u_n_up - u_n).max() if u_n.size else 0.0), op=MPI.MAX)
+            uw.pprint("FreeSurface tangential correction: "
+                      f"shape {dshape / h_scale:.2e}, h_inf {dhinf / h_scale:.2e}, "
+                      f"u_n {dun / u_scale:.2e}  (relative)")
         if self.tangent_advect == "shape":
             return shape_up, h_inf, u_n
         if self.tangent_advect == "fields":
