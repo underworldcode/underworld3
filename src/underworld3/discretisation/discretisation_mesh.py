@@ -3136,7 +3136,14 @@ class Mesh(Stateful, uw_object):
         # labels (dict ``False``) still slide-without-restore regardless of
         # kind (handled in ``project`` below). A label with no boundary facets
         # at all stays unusable → its vertices pin (the safe default).
-        surf = dict(self.bounding_surfaces)
+        # INTERIOR surfaces (embedded interfaces, e.g. the Internal circle/
+        # sphere of the *InternalBoundary meshes) are never slip-eligible:
+        # interface motion is physics-owned (deform / free-surface
+        # machinery), so their nodes fall through to the pinned default —
+        # exactly as when no surface was registered. Their registration
+        # exists for adapt()'s refinement snapping.
+        surf = {lab: s for lab, s in dict(self.bounding_surfaces).items()
+                if not getattr(s, "interior", False)}
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
             facets, _opp = _boundary_facets(self, cdim)

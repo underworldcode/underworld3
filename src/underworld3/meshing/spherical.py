@@ -780,6 +780,17 @@ def SphericalShellInternalBoundary(
         sympy.Matrix([-y, x, 0]),
     ]
 
+    # Radial bounding surfaces: Upper/Lower slip+snap as usual; the embedded
+    # Internal sphere is INTERIOR — adapt() snaps refinement onto its true
+    # radius, but the movers keep its nodes pinned (interface motion is
+    # physics-owned, 2026-07 round-3b ruling).
+    from underworld3.meshing.bounding_surface import register_radial_surfaces
+    register_radial_surfaces(
+        new_mesh, centre=(0.0, 0.0, 0.0),
+        label_radius={"Upper": radiusOuter, "Lower": radiusInner,
+                      "Internal": radiusInternal},
+        interior=("Internal",))
+
     return new_mesh
 
 
