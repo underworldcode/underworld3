@@ -102,3 +102,23 @@ def test_save_read_roundtrip_with_scaling(scaled_model, tmp_path):
         "unit system (physically scaled, outside the model-unit mesh domain)"
     )
     np.testing.assert_allclose(restored, original, rtol=1e-12)
+
+
+def test_points_label_matches_magnitudes(scaled_model):
+    """#386: the deprecated swarm.points snapshot scales model coordinates
+    by the SI length scale (metres) — the unit label must be 'meter', not
+    mesh.units (kilometres here: a 1000x label/value mismatch)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        units="km")
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.populate(fill_param=2)
+
+    with pytest.warns(DeprecationWarning):
+        pts = swarm.points
+
+    if getattr(mesh.CoordinateSystem, "_scaled", False):
+        assert str(pts.units) in ("meter", "metre"), f"label = {pts.units}"
+        model_coords = np.asarray(swarm._particle_coordinates.data)
+        scale = mesh.CoordinateSystem._length_scale
+        assert np.allclose(np.asarray(pts), model_coords * scale)
