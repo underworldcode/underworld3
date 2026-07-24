@@ -547,17 +547,25 @@ class FreeSurface:
         if self._filter_iters:
             self._h_inf = self._demean(self._filter_surface(self._h_inf))
 
-    def estimate_dt(self):
+    def estimate_dt(self, advect_scale=1.0):
         """A step size that respects both advection and surface-motion limits.
 
         The advective limit comes from the material transport (or a velocity CFL if
         there is no composition); the surface limit keeps the per-step displacement
         below ``max_surface_cfl`` cell sizes so the mesh stays well-shaped.
-        """
+
+        ``advect_scale`` multiplies the ADVECTIVE limit only: the semi-Lagrangian
+        transport is unconditionally stable, so a value > 1 takes larger steps (fewer
+        steps to traverse a slow spin-up transient, where a tiny advective step would
+        otherwise keep the surface near-flat and the solves ill-conditioned) — while the
+        surface-motion cap still binds, so the mesh cannot be over-deformed and the
+        surface-flow feedback cannot run away. Scale the advective step, never the
+        surface safety."""
         if self.composition is not None:
             dt_advect = float(self._comp_adv.estimate_dt())
         else:
             dt_advect = self._velocity_cfl()
+        dt_advect *= float(advect_scale)
         u_n = self._surface_normal_velocity()
         speed = uw.mpi.comm.allreduce(float(np.abs(u_n).max()) if u_n.size else 0.0,
                                       op=MPI.MAX)
