@@ -15,13 +15,38 @@ residual; the complete reaction at a boundary node shared across a partition cut
 assembled here in ``_desmear`` by SUMMING each rank's partial contribution by coordinate
 (the same rock-solid gather used for the boundary mass — no hand-rolled global assembly).
 
-``mass="lumped"`` (default) uses the diagonal boundary mass: being an M-matrix it cannot
-overshoot where the flux jumps (no Gibbs wiggle) and is a purely local division.
+``mass="auto"`` (default) uses a diagonal lumped mass where the trace basis admits
+positive row sums (the 2D P2 line trace and the 3D P1 triangle trace), and the consistent
+mass otherwise. A 3D P2 triangle has exactly zero row sum at every vertex, so its
+pointwise recovery requires the consistent surface-mass solve.
 ``remove_mean=False`` (default) keeps the physical mean flux (the Nusselt number);
 set ``remove_mean=True`` for a gauge-free field (e.g. dynamic topography).
 """
 import numpy as np
 from mpi4py import MPI
+
+
+# M_e = (area / 12) * _P1_TRIANGLE_MASS.
+_P1_TRIANGLE_MASS = np.array(
+    (
+        (2.0, 1.0, 1.0),
+        (1.0, 2.0, 1.0),
+        (1.0, 1.0, 2.0),
+    )
+)
+
+# M_e = (area / 180) * _P2_TRIANGLE_MASS. Node order: vertices
+# (0, 1, 2), then edge nodes (01, 12, 20).
+_P2_TRIANGLE_MASS = np.array(
+    (
+        (6.0, -1.0, -1.0, 0.0, -4.0, 0.0),
+        (-1.0, 6.0, -1.0, 0.0, 0.0, -4.0),
+        (-1.0, -1.0, 6.0, -4.0, 0.0, 0.0),
+        (0.0, 0.0, -4.0, 32.0, 16.0, 16.0),
+        (-4.0, 0.0, 0.0, 16.0, 32.0, 16.0),
+        (0.0, -4.0, 0.0, 16.0, 16.0, 32.0),
+    )
+)
 
 
 def _key(c, dim):
@@ -140,13 +165,11 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
+    if mass not in ("auto", "lumped", "consistent"):
+        raise ValueError("mass must be 'auto', 'lumped', or 'consistent'.")
     if dim == 3:
-        if mass != "lumped":
-            raise NotImplementedError(
-                "3D boundary-flux recovery currently supports mass='lumped' only."
-            )
-
         lsec = dm.getLocalSection()
+        ncomp = lsec.getFieldComponents(0)
         f0, f1 = dm.getHeightStratum(1)
         e0, e1 = dm.getDepthStratum(1)
 
@@ -158,7 +181,7 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
         facets = [] if not (sis and sis.getSize() > 0) else [
             int(q) for q in sis.getIndices() if f0 <= int(q) < f1
         ]
-        local_triangles = []
+        local_elements = []
 
         for facet in facets:
             closure = [int(q) for q in dm.getTransitiveClosure(facet)[0]]
@@ -168,12 +191,22 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
                 raise NotImplementedError(
                     "3D boundary-flux recovery currently requires triangular facets."
                 )
+            if lsec.getFieldDof(facet, 0) > 0:
+                raise NotImplementedError(
+                    "3D boundary-flux recovery supports P1 or P2 triangular traces."
+                )
 
-            vertex_keys = {_key(coord(q), dim): q for q in vertices}
+            vertex_coords = [np.asarray(coord(q), dtype=float) for q in vertices]
+            vertex_keys = [_key(value, dim) for value in vertex_coords]
             edge_midpoints = {}
             for edge in edges:
-                if lsec.getFieldDof(edge, 0) <= 0:
+                edge_dof = lsec.getFieldDof(edge, 0)
+                if edge_dof <= 0:
                     continue
+                if edge_dof != ncomp:
+                    raise NotImplementedError(
+                        "3D boundary-flux recovery supports P1 or P2 triangular traces."
+                    )
                 edge_vertices = [
                     int(q)
                     for q in dm.getTransitiveClosure(edge)[0]
@@ -183,24 +216,24 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
                     edge_key = frozenset(_key(coord(q), dim) for q in edge_vertices)
                     edge_midpoints[edge_key] = _key(coord(edge), dim)
 
-            vk = list(vertex_keys)
+            a, b, c = vertex_coords
+            area = 0.5 * float(np.linalg.norm(np.cross(b - a, c - a)))
             if not edge_midpoints:
-                local_triangles.append(tuple(vk))
+                local_elements.append((1, tuple(vertex_keys), area))
                 continue
             if len(edge_midpoints) != 3:
                 raise NotImplementedError(
-                    "3D lumped recovery supports P1 or complete P2 triangular traces."
+                    "3D boundary-flux recovery supports P1 or complete P2 triangular traces."
                 )
 
-            m01 = edge_midpoints[frozenset((vk[0], vk[1]))]
-            m12 = edge_midpoints[frozenset((vk[1], vk[2]))]
-            m20 = edge_midpoints[frozenset((vk[2], vk[0]))]
-            local_triangles.extend(
+            m01 = edge_midpoints[frozenset((vertex_keys[0], vertex_keys[1]))]
+            m12 = edge_midpoints[frozenset((vertex_keys[1], vertex_keys[2]))]
+            m20 = edge_midpoints[frozenset((vertex_keys[2], vertex_keys[0]))]
+            local_elements.append(
                 (
-                    (vk[0], m01, m20),
-                    (vk[1], m12, m01),
-                    (vk[2], m20, m12),
-                    (m01, m12, m20),
+                    2,
+                    tuple(vertex_keys) + (m01, m12, m20),
+                    area,
                 )
             )
 
@@ -211,32 +244,72 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
                     R_by.get(key, 0.0) + value if partial_reaction else value
                 )
 
-        triangles = {}
-        for rank_triangles in comm.allgather(local_triangles):
-            for triangle in rank_triangles:
-                triangles[tuple(sorted(triangle))] = triangle
+        elements = {}
+        for rank_elements in comm.allgather(local_elements):
+            for order, nodes, area in rank_elements:
+                elements[(order, tuple(sorted(nodes)))] = (order, nodes, area)
+
+        orders = {order for order, _nodes, _area in elements.values()}
+        if len(orders) != 1:
+            raise RuntimeError(
+                f"Expected one trace order on boundary {boundary!r}, found {sorted(orders)}."
+            )
+        order = orders.pop()
+        if mass == "auto":
+            mass = "consistent" if order == 2 else "lumped"
+        if order == 2 and mass == "lumped":
+            raise ValueError(
+                "A 3D P2 triangular trace has zero row-sum mass at its vertices; "
+                "use mass='consistent' for pointwise boundary-flux recovery."
+            )
 
         keys = sorted(R_by)
         global_index = {key: i for i, key in enumerate(keys)}
         reaction = np.array([R_by[key] for key in keys], dtype=float)
-        lumped_mass = np.zeros(len(keys), dtype=float)
+        if mass == "lumped":
+            boundary_mass = np.zeros(len(keys), dtype=float)
+            for _order, nodes, area in elements.values():
+                for key in nodes:
+                    boundary_mass[global_index[key]] += area / 3.0
+            missing = np.flatnonzero(boundary_mass <= 0.0)
+            if missing.size:
+                raise RuntimeError(
+                    f"Boundary mass is zero at {missing.size} nodes on {boundary!r}."
+                )
+            flux = reaction / boundary_mass
+        elif mass == "consistent":
+            from scipy.sparse import coo_matrix
+            from scipy.sparse.linalg import spsolve
 
-        for triangle in triangles.values():
-            a, b, c = (np.asarray(key, dtype=float) for key in triangle)
-            area = 0.5 * float(np.linalg.norm(np.cross(b - a, c - a)))
-            for key in triangle:
-                if key in global_index:
-                    lumped_mass[global_index[key]] += area / 3.0
-
-        missing = np.flatnonzero(lumped_mass <= 0.0)
-        if missing.size:
-            raise RuntimeError(
-                f"Boundary mass is zero at {missing.size} nodes on {boundary!r}."
+            rows = []
+            cols = []
+            values = []
+            reference_mass = (
+                _P1_TRIANGLE_MASS if order == 1 else _P2_TRIANGLE_MASS
             )
-
-        flux = reaction / lumped_mass
+            mass_scale = 12.0 if order == 1 else 180.0
+            for _order, nodes, area in elements.values():
+                indices = [global_index[key] for key in nodes]
+                element_mass = (area / mass_scale) * reference_mass
+                for i, row in enumerate(indices):
+                    for j, col in enumerate(indices):
+                        rows.append(row)
+                        cols.append(col)
+                        values.append(element_mass[i, j])
+            surface_mass = coo_matrix(
+                (values, (rows, cols)), shape=(len(keys), len(keys))
+            ).tocsr()
+            surface_mass.sum_duplicates()
+            flux = np.asarray(spsolve(surface_mass, reaction), dtype=float)
+            boundary_mass = np.asarray(
+                surface_mass @ np.ones(len(keys), dtype=float)
+            )
+            if not np.all(np.isfinite(flux)):
+                raise RuntimeError(
+                    f"Consistent boundary-mass solve failed on boundary {boundary!r}."
+                )
         if remove_mean:
-            mean = float(np.dot(flux, lumped_mass) / np.sum(lumped_mass))
+            mean = float(np.dot(flux, boundary_mass) / np.sum(boundary_mass))
             flux -= mean
         return np.array([flux[global_index[_key(x, dim)]] for x in xs])
 
@@ -244,6 +317,8 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
         raise NotImplementedError(
             f"Boundary-flux recovery is not implemented for mesh dimension {dim}."
         )
+    if mass == "auto":
+        mass = "lumped"
 
     e0, e1 = dm.getDepthStratum(1)
     def vcoord(q): return cvec[csec.getOffset(q) // dim]
@@ -296,7 +371,7 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     return np.array([sig[gi[_key(x, dim)]] for x in xs])
 
 
-def boundary_flux(solver, boundary, mass="lumped", remove_mean=False, normal=None):
+def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None):
     """See ``SolverBaseClass.boundary_flux``. Returns ``(xs, flux)`` for this rank's
     boundary nodes; scalar solver → normal flux, vector solver → traction (or its normal
     component if ``normal`` is given)."""
@@ -351,7 +426,7 @@ def write_boundary_scalar_field(solver, field, value_by_key, dim):
     return field
 
 
-def boundary_flux_field(solver, boundary, field, mass="lumped",
+def boundary_flux_field(solver, boundary, field, mass="auto",
                         remove_mean=False, scale=1.0, normal=None):
     r"""See ``SolverBaseClass.boundary_flux_field`` (the documented entry point;
     this free function is its implementation and shares its name). Writes

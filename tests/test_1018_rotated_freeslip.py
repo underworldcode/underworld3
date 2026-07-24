@@ -156,7 +156,19 @@ def _spherical3d_reaction_topography():
     stokes.tolerance = 1.0e-5
     stokes.solve()
 
-    def harmonic_coefficient(boundary, response_sign):
+    dm = mesh.dm
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, mesh.dim)
+    vertex_start, vertex_end = dm.getDepthStratum(0)
+    local_vertex_keys = {
+        tuple(np.round(cvec[csec.getOffset(point) // mesh.dim], 12))
+        for point in range(vertex_start, vertex_end)
+    }
+    vertex_keys = set()
+    for rank_keys in uw.mpi.comm.allgather(local_vertex_keys):
+        vertex_keys.update(rank_keys)
+
+    def harmonic_coefficients(boundary, response_sign):
         xs, sigma_nn = stokes.boundary_normal_traction(boundary)
         local = {
             tuple(np.round(x, 12)): -float(value)
@@ -169,24 +181,36 @@ def _spherical3d_reaction_topography():
         topography = np.asarray(list(samples.values()))
         radii = np.linalg.norm(coords, axis=1)
         harmonic_values = 0.5 * (3.0 * (coords[:, 2] / radii) ** 2 - 1.0)
-        return float(
-            response_sign
-            * np.dot(topography, harmonic_values)
-            / np.dot(harmonic_values, harmonic_values)
-        )
+        is_vertex = np.array([key in vertex_keys for key in samples], dtype=bool)
 
-    surface = harmonic_coefficient("Upper", 1.0)
-    cmb = harmonic_coefficient("Lower", -1.0)
-    return surface, cmb
+        def fit(mask):
+            return float(
+                response_sign
+                * np.dot(topography[mask], harmonic_values[mask])
+                / np.dot(harmonic_values[mask], harmonic_values[mask])
+            )
+
+        return fit(np.ones(len(coords), dtype=bool)), fit(is_vertex), fit(~is_vertex)
+
+    return (
+        *harmonic_coefficients("Upper", 1.0),
+        *harmonic_coefficients("Lower", -1.0),
+    )
 
 
 @pytest.mark.level_2
 def test_rotated_freeslip_spherical3d_reaction_topography():
     """3D reaction loads must be divided by boundary mass to recover pointwise stress."""
 
-    surface, cmb = _spherical3d_reaction_topography()
+    surface, surface_vertices, surface_midpoints, cmb, cmb_vertices, cmb_midpoints = (
+        _spherical3d_reaction_topography()
+    )
     assert np.isclose(surface, 0.41920, rtol=0.10)
     assert np.isclose(cmb, 0.77060, rtol=0.10)
+    assert np.isclose(surface_vertices, 0.41920, rtol=0.12)
+    assert np.isclose(surface_midpoints, 0.41920, rtol=0.12)
+    assert np.isclose(cmb_vertices, 0.77060, rtol=0.12)
+    assert np.isclose(cmb_midpoints, 0.77060, rtol=0.12)
 
 
 def test_rotated_freeslip_annulus_zero_leakage():

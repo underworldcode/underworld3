@@ -59,6 +59,47 @@ def test_boundary_flux_scalar_heatflux_serial():
     assert abs(bd_q) > 0.0                                    # field populated + usable
 
 
+def _uniform_flux_3d(degree, mass):
+    """Unit-cube conduction with exact pointwise outward flux -1 on Bottom."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0),
+        maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.45,
+        regular=True,
+        qdegree=3,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        f"Tbf3d_p{degree}", mesh, 1, degree=degree
+    )
+    poisson = uw.systems.Poisson(mesh, u_Field=temperature)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(0.0, "Bottom")
+    poisson.add_dirichlet_bc(1.0, "Top")
+    poisson.tolerance = 1.0e-11
+    poisson.petsc_options["snes_type"] = "ksponly"
+    poisson.solve()
+    xs, flux = poisson.boundary_flux("Bottom", mass=mass)
+    return poisson, np.asarray(xs), np.asarray(flux)
+
+
+@pytest.mark.level_2
+@pytest.mark.parametrize(("degree", "mass"), ((1, "lumped"), (2, "auto")))
+def test_boundary_flux_3d_pointwise_uniform_serial(degree, mass):
+    """P1 and P2 recovery reproduce constant flux at every triangular-trace node."""
+    _poisson, _xs, flux = _uniform_flux_3d(degree, mass)
+    assert np.allclose(flux, -1.0, rtol=0.0, atol=1.0e-8)
+
+
+@pytest.mark.level_2
+def test_boundary_flux_3d_p2_lumped_rejected():
+    """P2 triangle vertex row sums are zero, so nodal lumping is not pointwise valid."""
+    poisson, _xs, _flux = _uniform_flux_3d(2, "consistent")
+    with pytest.raises(ValueError, match="zero row-sum mass"):
+        poisson.boundary_flux("Bottom", mass="lumped")
+
+
 if __name__ == "__main__":
     _f, _a, _b = _heatflux_diagnostics()
     c = np.dot(_f, _a) / (np.linalg.norm(_f) * np.linalg.norm(_a))

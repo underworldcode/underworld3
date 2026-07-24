@@ -51,9 +51,17 @@ GOLDEN_ANNULUS_FMG = (1.906961759626e-02, 5.428193e-06, 1.177002e-06)
 # 3D spherical shell (free-slip both boundaries, all 3 rotation nullspace modes):
 # velocity L2. Recompute with `python <thisfile> spherical3d`.
 GOLDEN_SPHERICAL3D = 4.069689334228e-03
-# Zhong l=2 surface and CMB topography coefficients recovered from the 3D
-# rotated-constraint reaction. Recompute with `python <thisfile> spherical3d_topo`.
-GOLDEN_SPHERICAL3D_TOPO = (4.205055186099e-01, 7.704049016458e-01)
+# Zhong l=2 topography coefficients recovered from the 3D rotated-constraint
+# reaction: surface (all, vertices, midpoints), CMB (all, vertices, midpoints).
+# Recompute with `python <thisfile> spherical3d_topo`.
+GOLDEN_SPHERICAL3D_TOPO = (
+    4.149689252074e-01,
+    3.952301937705e-01,
+    4.215939953379e-01,
+    7.932177563075e-01,
+    8.426041179682e-01,
+    7.762363224500e-01,
+)
 # NONLINEAR (power-law) box with rotated free-slip through the manual Newton loop
 # (consistent tangent): (velocity L2, nonlinear iteration count — the number of
 # Newton increments solved, == len(ksp_its); this solve exits on the step-norm
@@ -185,7 +193,19 @@ def _spherical3d_topography_diagnostics():
     s.tolerance = 1.0e-5
     s.solve()
 
-    def harmonic_coefficient(boundary, response_sign):
+    dm = mesh.dm
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, mesh.dim)
+    vertex_start, vertex_end = dm.getDepthStratum(0)
+    local_vertex_keys = {
+        tuple(np.round(cvec[csec.getOffset(point) // mesh.dim], 12))
+        for point in range(vertex_start, vertex_end)
+    }
+    vertex_keys = set()
+    for rank_keys in uw.mpi.comm.allgather(local_vertex_keys):
+        vertex_keys.update(rank_keys)
+
+    def harmonic_coefficients(boundary, response_sign):
         xs, sigma_nn = s.boundary_normal_traction(boundary)
         local = {
             tuple(np.round(x, 12)): -float(value)
@@ -198,13 +218,21 @@ def _spherical3d_topography_diagnostics():
         topography = np.asarray(list(samples.values()))
         radii = np.linalg.norm(coords, axis=1)
         harmonic_values = 0.5 * (3.0 * (coords[:, 2] / radii) ** 2 - 1.0)
-        return float(
-            response_sign
-            * np.dot(topography, harmonic_values)
-            / np.dot(harmonic_values, harmonic_values)
-        )
+        is_vertex = np.array([key in vertex_keys for key in samples], dtype=bool)
 
-    return harmonic_coefficient("Upper", 1.0), harmonic_coefficient("Lower", -1.0)
+        def fit(mask):
+            return float(
+                response_sign
+                * np.dot(topography[mask], harmonic_values[mask])
+                / np.dot(harmonic_values[mask], harmonic_values[mask])
+            )
+
+        return fit(np.ones(len(coords), dtype=bool)), fit(is_vertex), fit(~is_vertex)
+
+    return (
+        *harmonic_coefficients("Upper", 1.0),
+        *harmonic_coefficients("Lower", -1.0),
+    )
 
 
 def _annulus_fmg_diagnostics():
@@ -411,14 +439,22 @@ def test_rotated_freeslip_spherical3d_partition_independent():
 
 def test_rotated_freeslip_spherical3d_topography_partition_independent():
     """3D boundary-mass recovery gives partition-independent topography coefficients."""
-    surface, cmb = _spherical3d_topography_diagnostics()
-    surface_ref, cmb_ref = GOLDEN_SPHERICAL3D_TOPO
-    assert np.isclose(surface, surface_ref, rtol=1e-6, atol=0), (
-        f"3D surface topography differs serial vs np={uw.mpi.size}: "
-        f"{surface_ref} vs {surface}")
-    assert np.isclose(cmb, cmb_ref, rtol=1e-6, atol=0), (
-        f"3D CMB topography differs serial vs np={uw.mpi.size}: "
-        f"{cmb_ref} vs {cmb}")
+    coefficients = _spherical3d_topography_diagnostics()
+    labels = (
+        "surface all",
+        "surface vertices",
+        "surface midpoints",
+        "CMB all",
+        "CMB vertices",
+        "CMB midpoints",
+    )
+    for label, value, reference in zip(
+        labels, coefficients, GOLDEN_SPHERICAL3D_TOPO
+    ):
+        assert np.isclose(value, reference, rtol=1e-6, atol=0), (
+            f"3D {label} differs serial vs np={uw.mpi.size}: "
+            f"{reference} vs {value}"
+        )
 
 
 def test_rotated_freeslip_box_nonlinear_partition_independent():
@@ -490,9 +526,12 @@ if __name__ == "__main__":
         if uw.mpi.rank == 0:
             print(f"DIAG_SPHERICAL3D {_L2:.12e} its={_its} reason={_reason}")
     elif _kind == "spherical3d_topo":
-        _surface, _cmb = _spherical3d_topography_diagnostics()
+        _coefficients = _spherical3d_topography_diagnostics()
         if uw.mpi.rank == 0:
-            print(f"DIAG_SPHERICAL3D_TOPO {_surface:.12e} {_cmb:.12e}")
+            print(
+                "DIAG_SPHERICAL3D_TOPO "
+                + " ".join(f"{value:.12e}" for value in _coefficients)
+            )
     else:
         _L2, _verr = _box_diagnostics()
         if uw.mpi.rank == 0:

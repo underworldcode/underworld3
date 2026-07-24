@@ -1042,7 +1042,7 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
     return viol < tol
 
 
-def boundary_normal_traction(solver, boundary, solve_result, mass="lumped"):
+def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     """Boundary normal traction σ_nn on `boundary` from the constraint reaction of the
     last rotated-free-slip solve (``solve_result`` is the dict returned by
     ``solve_rotated_freeslip`` / ``solve_rotated_freeslip_nonlinear`` — see their
@@ -1055,22 +1055,19 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="lumped"):
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
     normals, but n̂·r_c is the true normal traction for this boundary. The pointwise
-    σ_nn is the boundary-mass de-smear of R (2D).
+    σ_nn is the boundary-mass de-smear of R.
 
     ``mass`` selects the de-smear:
-      * ``"lumped"`` (default) — the diagonal (row-sum) boundary mass. Being an M-matrix
-        it CANNOT overshoot at a stress discontinuity (no Gibbs wiggle where the traction
-        jumps, e.g. across a viscosity contrast), it is a purely local division (no global
-        mass solve → trivially parallel), and it is marginally more accurate than the
-        consistent mass on SolCx. Recommended for driving a free surface, where an
-        overshoot at a sharp feature injects a spurious surface-velocity pulse.
-      * ``"consistent"`` — the full consistent P2 line mass. Marginally sharper on smooth
-        tractions but overshoots at discontinuities.
+      * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles, consistent for
+        3D P2 triangles.
+      * ``"lumped"`` — the diagonal row-sum mass. It is monotone for supported traces,
+        but invalid for 3D P2 triangles because their vertex row sums are exactly zero.
+      * ``"consistent"`` — the full trace mass. Required for pointwise 3D P2 recovery.
 
     Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
     section offset; the boundary mass is assembled globally by a coordinate-keyed
     allgather of the boundary elements, so every rank produces the same de-smear and the
-    mean-removal gauge is global.
+    mean-removal gauge is global. In 3D, only triangular P1/P2 traces are supported.
     """
     dm = solver.dm
     dim = solver.mesh.dim
@@ -1119,12 +1116,12 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="lumped"):
 
 
 def dynamic_topography_field(solver, boundary, solve_result, field,
-                             buoyancy_scale=1.0, mass="lumped"):
+                             buoyancy_scale=1.0, mass="auto"):
     """Populate a scalar MeshVariable ``field`` with the dynamic topography
     :math:`h = -(\\sigma_{nn}-\\overline{\\sigma_{nn}})/(\\Delta\\rho\\,g)` on ``boundary``,
-    recovered from the rotated-free-slip constraint reaction (lumped by default —
-    monotone, no Gibbs overshoot at a stress jump). Interior nodes are left untouched.
-    Returns ``field``.
+    recovered from the rotated-free-slip constraint reaction. ``mass="auto"`` uses
+    lumped recovery where valid and the consistent surface mass for 3D P2 triangles.
+    Interior nodes are left untouched. Returns ``field``.
 
     This is the hand-off to the free-surface machinery: the 3-number topography
     integrator drives node motion from a surface field, so σ_nn is written onto the

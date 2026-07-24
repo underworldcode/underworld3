@@ -15,6 +15,7 @@ import numpy as np
 import sympy
 import pytest
 import underworld3 as uw
+from mpi4py import MPI
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(180)]
 
@@ -71,6 +72,41 @@ def test_boundary_flux_partition_independent():
     assert np.isclose(bd_q, GOLDEN_BDFLUX, rtol=1e-5, atol=0), (
         f"BdIntegral flux differs serial vs np={uw.mpi.size}: {GOLDEN_BDFLUX} vs {bd_q}")
     assert relL2 < 0.01, f"heat flux relL2 vs analytic {relL2:.4f} too large at np={uw.mpi.size}"
+
+
+def _uniform_flux_3d_error(degree, mass):
+    """Maximum pointwise error for unit-cube conduction on the Bottom trace."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0),
+        maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.45,
+        regular=True,
+        qdegree=3,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        f"Tbf3dp_p{degree}", mesh, 1, degree=degree
+    )
+    poisson = uw.systems.Poisson(mesh, u_Field=temperature)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(0.0, "Bottom")
+    poisson.add_dirichlet_bc(1.0, "Top")
+    poisson.tolerance = 1.0e-11
+    poisson.petsc_options["snes_type"] = "ksponly"
+    poisson.solve()
+    _xs, flux = poisson.boundary_flux("Bottom", mass=mass)
+    local_error = float(np.max(np.abs(np.asarray(flux) + 1.0))) if len(flux) else 0.0
+    return uw.mpi.comm.allreduce(local_error, op=MPI.MAX)
+
+
+@pytest.mark.parametrize(("degree", "mass"), ((1, "lumped"), (2, "auto")))
+def test_boundary_flux_3d_pointwise_uniform_partition_independent(degree, mass):
+    """P1 and P2 constant-flux recovery is pointwise exact on every MPI partition."""
+    max_error = _uniform_flux_3d_error(degree, mass)
+    assert max_error < 1.0e-8, (
+        f"P{degree} pointwise flux error {max_error:.3e} at np={uw.mpi.size}"
+    )
 
 
 if __name__ == "__main__":
