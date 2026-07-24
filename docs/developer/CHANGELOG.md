@@ -95,6 +95,13 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
 - A general **consistent boundary flux (CBF) primitive** recovers boundary
   fluxes for any solver — surface heat flux / Nusselt number for scalar
   diffusion, boundary traction σ·n for Stokes (#294).
+- Three-dimensional CBF recovery now assembles the exact triangular trace mass:
+  P1 supports lumped or consistent recovery, while P2 uses the required
+  consistent six-node surface-mass solve. The default `mass="auto"` selects the
+  valid method; explicit P2 lumping and non-triangular 3D traces raise instead
+  of returning a non-pointwise reaction scaling. Strict MPI invariance of a
+  vector normal projection requires an analytic normal; geometric facet-normal
+  seam sensitivity is unchanged (#404).
 - Recorded as the preferred free-slip BC in the project guidance (#300);
   conda PETSc floor raised to ≥ 3.25 for FMG/rotation API consistency (#304).
 

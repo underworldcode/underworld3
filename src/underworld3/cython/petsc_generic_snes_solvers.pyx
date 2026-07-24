@@ -2304,7 +2304,7 @@ class SolverBaseClass(uw_object):
             self.dm.restoreLocalVec(xlocal)
             self.dm.restoreGlobalVec(gvec)
 
-    def boundary_flux(self, boundary, mass="lumped", remove_mean=False, normal=None):
+    def boundary_flux(self, boundary, mass="auto", remove_mean=False, normal=None):
         r"""Consistent boundary flux on ``boundary``, recovered from the essential-BC
         reaction of the last solve (the Consistent Boundary Flux method).
 
@@ -2314,15 +2314,21 @@ class SolverBaseClass(uw_object):
         number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
         ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
 
-        ``mass`` de-smears the nodal reaction with the ``"lumped"`` (diagonal, monotone —
-        no overshoot at a flux jump) or ``"consistent"`` boundary mass. ``remove_mean``
-        subtracts the boundary mean — leave ``False`` for a physical flux (the mean is
-        the Nusselt number); ``True`` gives a gauge-free field (e.g. dynamic topography).
-        Parallel-safe and partition-independent."""
+        ``mass`` de-smears the nodal reaction with ``"lumped"`` or ``"consistent"``
+        boundary mass. ``"auto"`` (default) selects lumped recovery for 2D traces and
+        3D P1 triangles, and the required consistent solve for 3D P2 triangles.
+        ``remove_mean`` subtracts the boundary mean — leave ``False`` for a physical
+        flux (the mean is the Nusselt number); ``True`` gives a gauge-free field.
+
+        Three-dimensional recovery supports triangular P1/P2 traces; quadrilateral
+        traces raise explicitly. Reaction and mass assembly are partition-independent.
+        For vector fluxes, supply an analytic ``normal`` when strict partition
+        independence of the normal projection is required; geometric facet-normal
+        averaging at partition seams has a small pre-existing partition sensitivity."""
         from underworld3.utilities.boundary_flux import boundary_flux as _bf
         return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
 
-    def boundary_flux_field(self, boundary, field, mass="lumped",
+    def boundary_flux_field(self, boundary, field, mass="auto",
                             remove_mean=False, scale=1.0, normal=None):
         r"""Write the consistent boundary flux (see :meth:`boundary_flux`) onto a scalar
         MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
@@ -5374,7 +5380,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             J1.destroy(); J2.destroy()
         return rel > tol
 
-    def boundary_normal_traction(self, boundary, mass="lumped"):
+    def boundary_normal_traction(self, boundary, mass="auto"):
         r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
         rotated-free-slip ``boundary`` as the constraint reaction from the last
         solve — the smooth, bounded quantity used for dynamic topography
@@ -5382,18 +5388,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
         :meth:`solve`.
 
-        ``mass`` chooses the boundary-mass de-smear of the nodal reaction:
-        ``"lumped"`` (default) is monotone — it cannot overshoot where the traction
-        jumps (e.g. across a viscosity contrast), so it is the safe choice for driving
-        a free surface; ``"consistent"`` uses the full P2 line mass (marginally sharper
-        on smooth tractions, but overshoots at discontinuities)."""
+        ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
+        triangles, and the required consistent surface-mass solve for 3D P2 triangles.
+        Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
+        mathematically valid. Three-dimensional recovery currently supports triangular
+        P1/P2 traces only."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
                 "boundary_normal_traction requires a completed rotated-free-slip solve.")
         from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
         return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
 
-    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="lumped"):
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="auto"):
         r"""Write the dynamic topography
         :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
         rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
@@ -5403,9 +5409,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         pass it here after each :meth:`solve`; its boundary nodes are filled and the
         interior left untouched.
 
-        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length). ``mass`` selects
-        the recovery de-smear (``"lumped"`` default is monotone — no overshoot at a
-        stress jump — and is the safe choice for a free surface). Requires a prior
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
+        ``mass="auto"`` selects lumped recovery where valid and the consistent
+        surface-mass solve for 3D P2 triangles. Requires a prior
         :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
