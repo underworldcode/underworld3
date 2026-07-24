@@ -330,6 +330,7 @@ def test_curved_boundary_snaps_every_generation():
             f"max radius error {np.abs(r[mask]-R).max():.2e}")
     # ... and the intermediate MG levels are snapped too (the ruling's
     # point: every level is a valid mesh)
+    checked = 0
     for i, lvl in enumerate(child._custom_mg_coarse_meshes[-2:]):
         dm = lvl.dm if hasattr(lvl, "dm") else lvl
         Xl = dm.getCoordinatesLocal().array.reshape(-1, 2)
@@ -337,3 +338,6 @@ def test_curved_boundary_snaps_every_generation():
         on_out = _pinned_mask(dm, ("Upper",))
         if on_out.any():
             assert np.abs(rl[on_out] - 1.0).max() < 1.0e-12
+            checked += 1
+    # a label-carry regression must not make this gate silently vacuous
+    assert checked >= 1, "no intermediate level exposed the Upper label"

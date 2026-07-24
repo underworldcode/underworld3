@@ -6526,6 +6526,12 @@ class Mesh(Stateful, uw_object):
         # geometry. On plane surfaces (boxes) the chord midpoint already
         # lies in the plane, so the snap is exactly a no-op and the flat
         # confluence gates are untouched.
+        # NOTE: surfaces must be disjoint or intersect only where each
+        # projection is an exact no-op (concentric radial pairs; orthogonal
+        # planes, whose corner vertices are fixed points of both). Sequential
+        # restore does not converge to the intersection of two CURVED
+        # surfaces — junction handling as in boundary_slip is a follow-up
+        # for the day such a mesh registers surfaces.
         _snap_surfs = [s for s in dict(self.bounding_surfaces).values()
                        if getattr(s, "kind", None) in ("radial", "plane")
                        and not getattr(s, "is_free", False)]
@@ -6534,13 +6540,69 @@ class Mesh(Stateful, uw_object):
             if not _snap_surfs:
                 return
             from underworld3.meshing.smoothing import _pinned_mask
+
+            def sync_mask(mask):
+                # In 3D a boundary-edge midpoint can live on a rank whose
+                # only cells containing it are INTERIOR members of the
+                # edge's star — that rank sees no labelled face and would
+                # skip the snap the face-owning rank applies, leaving one
+                # global vertex with two coordinates. Reduce the mask over
+                # the point SF (ADD ≡ logical-or here) so every rank
+                # holding the vertex agrees; pre-snap coordinates are
+                # rank-consistent and restore is a pure function of them,
+                # so a consistent mask gives a consistent snap.
+                if uw.mpi.size == 1:
+                    return mask
+                from underworld3.meshing.smoothing.graph import (
+                    _build_scalar_dm)
+                dm_s = _build_scalar_dm(dm)
+                lvec = dm_s.createLocalVector()
+                gvec = dm_s.createGlobalVector()
+                lvec.array[:] = mask.astype(float)
+                dm_s.localToGlobal(lvec, gvec, addv=True)
+                dm_s.globalToLocal(gvec, lvec)
+                out = numpy.asarray(lvec.array) > 0.5
+                lvec.destroy(); gvec.destroy(); dm_s.destroy()
+                return out
+
             vec = dm.getCoordinatesLocal()
             arr = vec.array.reshape(-1, self.cdim)
+            pre = arr.copy()
+            snapped_any = numpy.zeros(arr.shape[0], dtype=bool)
             for s in _snap_surfs:
-                mask = _pinned_mask(dm, (s.label,))
+                mask = sync_mask(_pinned_mask(dm, (s.label,)))
                 if mask.any():
                     arr[mask] = s.restore(arr[mask])
+                    snapped_any |= mask
             dm.setCoordinatesLocal(vec)
+            if snapped_any.any():
+                # A snap moves boundary vertices by the chord sagitta
+                # (~h²/8R); on a base coarse enough that h ≈ R this could
+                # invert a sliver silently. Fail loudly instead: no cell
+                # incident to a snapped vertex may flip orientation.
+                cs_, ce_ = dm.getHeightStratum(0)
+                vS_, vE_ = dm.getDepthStratum(0)
+                flipped = 0
+                for c in range(cs_, ce_):
+                    vs = [p - vS_ for p in dm.getTransitiveClosure(c)[0]
+                          if vS_ <= p < vE_]
+                    if not any(snapped_any[v] for v in vs):
+                        continue
+                    e0 = pre[vs[1:]] - pre[vs[0]]
+                    e1 = arr[vs[1:]] - arr[vs[0]]
+                    if (numpy.sign(numpy.linalg.det(e0))
+                            != numpy.sign(numpy.linalg.det(e1))):
+                        flipped += 1
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
+                if flipped:
+                    raise RuntimeError(
+                        f"adapt: snapping boundary vertices to the analytic "
+                        f"surfaces inverted {flipped} cell(s) — the base mesh "
+                        "is too coarse for the boundary curvature (chord "
+                        "sagitta ~ cell size). Refine the base mesh or adapt "
+                        "without registered bounding surfaces.")
 
         # Refine from the mesh's CURRENT geometry. Node redistribution
         # (redistribute_nodes) moves mesh.dm's coordinates while the static
