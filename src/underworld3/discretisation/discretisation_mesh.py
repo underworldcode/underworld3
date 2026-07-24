@@ -5171,7 +5171,12 @@ class Mesh(Stateful, uw_object):
             control_points_list.append(cell_centroid)
             control_points_cell_list.append(cell_id)
 
-        self._indexCoords = numpy.array(control_points_list)
+        # A rank can own zero cells (small mesh / imbalanced partition):
+        # shape the point arrays explicitly so an empty list becomes a
+        # well-formed (0, cdim) array rather than a 1-D numpy.array([]),
+        # which crashed the KDTree construction (issue #399).
+        self._indexCoords = numpy.array(
+            control_points_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._index = uw.kdtree.KDTree(self._indexCoords)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
@@ -5182,7 +5187,8 @@ class Mesh(Stateful, uw_object):
         # We keep _nav_centroids separate from _centroids (which is
         # the main-DM cell centroids set in __init__) so the FE-side
         # ``_centroids`` semantics are unchanged on manifold meshes.
-        self._nav_centroids = numpy.array(centroids_list)
+        self._nav_centroids = numpy.array(
+            centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         return
