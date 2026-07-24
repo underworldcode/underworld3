@@ -328,3 +328,18 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v", "--with-mpi"]))
+
+
+@pytest.mark.mpi(min_size=4)
+def test_empty_rank_mesh_construction():
+    """#399: mesh construction must survive ranks that own zero cells.
+
+    A 2x2 quad box at np4 starves at least one rank; the navigation
+    kd-tree build then received a 1-D empty array and crashed (with the
+    other ranks dying on the resulting collective divergence).
+    """
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    uw.discretisation.MeshVariable("T399", mesh, 1, degree=1)
+
+    area = float(uw.maths.Integral(mesh, 1.0).evaluate())
+    assert np.isclose(area, 1.0, rtol=1e-10), f"domain area = {area}"

@@ -5171,7 +5171,12 @@ class Mesh(Stateful, uw_object):
             control_points_list.append(cell_centroid)
             control_points_cell_list.append(cell_id)
 
-        self._indexCoords = numpy.array(control_points_list)
+        # A rank can own zero cells (small mesh / imbalanced partition):
+        # shape the point arrays explicitly so an empty list becomes a
+        # well-formed (0, cdim) array rather than a 1-D numpy.array([]),
+        # which crashed the KDTree construction (issue #399).
+        self._indexCoords = numpy.array(
+            control_points_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._index = uw.kdtree.KDTree(self._indexCoords)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
@@ -5182,7 +5187,8 @@ class Mesh(Stateful, uw_object):
         # We keep _nav_centroids separate from _centroids (which is
         # the main-DM cell centroids set in __init__) so the FE-side
         # ``_centroids`` semantics are unchanged on manifold meshes.
-        self._nav_centroids = numpy.array(centroids_list)
+        self._nav_centroids = numpy.array(
+            centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         return
@@ -5797,7 +5803,9 @@ class Mesh(Stateful, uw_object):
 
         if len(model_coords) > 0:
             dist, closest_points = self._index.query(model_coords, k=1, sqr_dists=False)
-            if np.any(closest_points > self._index.n):
+            # >= : valid indices are 0..n-1, and the empty-tree sentinel
+            # (0 with n=0) must trip this guard, not index _indexMap (#399).
+            if np.any(closest_points >= self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
                 )
@@ -5870,7 +5878,9 @@ class Mesh(Stateful, uw_object):
 
         if len(coords) > 0:
             dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
-            if np.any(closest_points > self._index.n):
+            # >= : valid indices are 0..n-1, and the empty-tree sentinel
+            # (0 with n=0) must trip this guard, not index _indexMap (#399).
+            if np.any(closest_points >= self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
                 )
@@ -6273,7 +6283,18 @@ class Mesh(Stateful, uw_object):
         import numpy as np
         from underworld3.utilities import gather_data
 
-        domain_centroid = self._centroids.mean(axis=0)
+        # A rank owning zero cells has no centroid; mean() of the empty
+        # array is NaN, and gather_data silently STRIPS NaN rows — the
+        # gathered table's row index then no longer equals rank, and
+        # _route_by_nearest_centroid mis-routes particles to the wrong
+        # rank (issue #399 review). A huge FINITE sentinel keeps the row
+        # (row == rank) while a nearest-centroid search can never select
+        # it, so starved ranks correctly receive no particles. (Finite,
+        # not inf: infinities poison the kd-tree's bounding boxes.)
+        if self._centroids.shape[0] > 0:
+            domain_centroid = self._centroids.mean(axis=0)
+        else:
+            domain_centroid = np.full(self.cdim, 1.0e30)
         all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.cdim)
         return all_centroids
 

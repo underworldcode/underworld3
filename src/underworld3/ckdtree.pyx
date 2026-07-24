@@ -91,6 +91,16 @@ cdef class KDTree:
         import underworld3.function.unit_conversion as unit_conv
         self.coord_units = unit_conv.get_units(points_input) if unit_conv.has_units(points_input) else None
 
+        # A legible error beats the memoryview's "Buffer has wrong number
+        # of dimensions" — the common trigger is numpy.array([]) from an
+        # empty point list, which is 1-D (issue #399).
+        if points_input.ndim != 2:
+            raise RuntimeError(
+                f"KDTree points must be a 2-D (n_points, dim) array, "
+                f"got shape {points_input.shape}. (An empty point set must "
+                f"still be shaped (0, dim).)"
+            )
+
         # Extract raw numpy array for C++ interface
         cdef const double[:,::1] points
         if unit_conv.has_units(points_input):
@@ -101,7 +111,13 @@ cdef class KDTree:
         if points.shape[1] not in (2,3):
             raise RuntimeError(f"Provided points array dimensionality must be 2 or 3, not {points.shape[1]}.")
         self.points = points
-        self.index = new KDTree_Interface(<const double *> &points[0][0], points.shape[0], points.shape[1])
+        # An empty point cloud is legitimate — a parallel rank can own zero
+        # cells (issue #399). No C++ index is built (taking &points[0][0]
+        # would be invalid); the query methods return honest empties.
+        if points.shape[0] > 0:
+            self.index = new KDTree_Interface(<const double *> &points[0][0], points.shape[0], points.shape[1])
+        else:
+            self.index = NULL
 
         global _live_instances, _total_constructed
         _live_instances += 1
@@ -190,6 +206,8 @@ cdef class KDTree:
         """
         Build the kd-tree index.
         """
+        if self.index is NULL:
+            return
         self.index.build_index()
 
     def kdtree_points(self):
@@ -234,6 +252,14 @@ cdef class KDTree:
         indices  = np.empty(count, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(count, dtype=np.float64, order='C')
         found    = np.empty(count, dtype=np.bool_,   order='C')
+
+        # Empty index (a rank owning zero points, issue #399): nothing can
+        # be found — report that honestly for every query.
+        if self.index is NULL or count == 0:
+            indices[...] = 0
+            dist_sqr[...] = np.inf
+            found[...] = False
+            return indices, dist_sqr, found
 
         cdef long unsigned int[::1]  c_indices = indices
         cdef            double[::1] c_dist_sqr = dist_sqr
@@ -280,6 +306,13 @@ cdef class KDTree:
 
         n_indices  = np.empty((coords.shape[0], nCount), dtype=np.uint64,  order='C')
         n_dist_sqr = np.empty((coords.shape[0], nCount), dtype=np.float64,  order='C')
+
+        # Empty index (a rank owning zero points, issue #399): no
+        # neighbours exist — infinite distances, sentinel indices.
+        if self.index is NULL or nInput == 0:
+            n_indices[...] = 0
+            n_dist_sqr[...] = np.inf
+            return n_indices, n_dist_sqr
 
         indices  = np.empty(nCount, dtype=np.uint64,  order='C')
         dist_sqr = np.empty(nCount, dtype=np.float64, order='C')
@@ -591,7 +624,9 @@ cdef class KDTree:
         # Note: query() returns sqr_dists=True by default, and we use the converted coords
         distance_n, closest_n = self.query(coords, k=nnn)
 
-        if np.any(closest_n > self.n):
+        # valid indices are 0..n-1; the empty-tree sentinel (0 with n=0)
+        # must trip this guard, so the comparison is >= (issue #399).
+        if np.any(closest_n >= self.n):
             raise RuntimeError(
                 "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
             )

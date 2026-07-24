@@ -3247,8 +3247,10 @@ class Swarm(Stateful, uw_object):
         # Scale model coordinates to physical coordinates
         if hasattr(self.mesh.CoordinateSystem, "_scaled") and self.mesh.CoordinateSystem._scaled:
             coords = model_coords * self.mesh.CoordinateSystem._length_scale
+            scaled_to_si = True
         else:
             coords = model_coords
+            scaled_to_si = False
 
         coords.flags.writeable = False
         coords = coords.view(_ReadOnlyCoordinateSnapshot)
@@ -3256,7 +3258,13 @@ class Swarm(Stateful, uw_object):
         if hasattr(self.mesh, "units") and self.mesh.units is not None:
             from underworld3.utilities.unit_aware_array import UnitAwareArray
 
-            return UnitAwareArray(coords, units=self.mesh.units)
+            # The _length_scale factor converts model coordinates to SI
+            # metres, so scaled values are labelled "meter" — the same
+            # convention as mesh.X.coords. Labelling metre magnitudes with
+            # mesh.units (e.g. kilometres) was a 1000x label/value
+            # mismatch (issue #386).
+            return UnitAwareArray(
+                coords, units="meter" if scaled_to_si else self.mesh.units)
 
         return coords
 

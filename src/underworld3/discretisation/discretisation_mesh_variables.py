@@ -3190,17 +3190,29 @@ class _BaseMeshVariable(Stateful, uw_object):
                 f"Cannot compute tensor stats: a variable named '{temp_name}' "
                 "already exists on this mesh (reserved as a stats temporary)."
             )
-        frobenius_var = uw.discretisation.MeshVariable(
+        # _BaseMeshVariable, matching _vector_stats: the enhanced wrapper's
+        # __getattr__ refuses underscore-name delegation, so the
+        # _scalar_stats call below would raise AttributeError through it
+        # (second latent defect under issue #400).
+        frobenius_var = _BaseMeshVariable(
             temp_name, self.mesh, 1, degree=self.degree
         )
 
         try:
-            # Compute Frobenius norm: ||A||_F = sqrt(sum(A_ij^2))
+            # Compute Frobenius norm: ||A||_F = sqrt(sum_ij(A_ij^2))
+            # Structured (N, d, d) reads (issue #400): correct for full
+            # tensors AND for symmetric storage — the .array view mirrors
+            # the Voigt components, so off-diagonals are counted twice as
+            # the Frobenius sum requires. (Flat component reads counted
+            # each Voigt entry once and under-measured SYM_TENSOR norms;
+            # the original structured read with the FLAT component count
+            # walked off the axis.)
             with uw.synchronised_array_update():
+                arr = np.asarray(self.array)
                 sum_squares = 0.0
-                for i in range(self.num_components):
-                    component = self.array[:, 0, i].flatten()
-                    sum_squares += component**2
+                for i in range(self.shape[0]):
+                    for j in range(self.shape[1]):
+                        sum_squares = sum_squares + arr[:, i, j] ** 2
                 frobenius_var.array[:, 0, 0] = np.sqrt(sum_squares)
 
             # Get scalar stats on Frobenius norm
