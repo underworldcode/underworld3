@@ -95,6 +95,44 @@ def test_bounded_closure_single_cell_is_local():
     assert added < 200, f"closure drained: +{added} cells for one mark"
 
 
+def test_reseed_after_deform_is_fresh():
+    """DMLabelSetValue does NOT remove a point from its previous stratum,
+    so RE-seeding the tagged state over an existing label left every cell
+    in two strata and readers got the OLD (pre-deform) state back — the
+    driver then ran the moved geometry with the stale seed and the
+    conforming drain deadlocked (the redistribute-then-adapt composition
+    stall, round 3a). write_tagged_state_label must produce a label whose
+    per-cell values match a single fresh seed of the same geometry."""
+    from underworld3.utilities.nvb import (write_tagged_state_label,
+                                           TAGGED_STATE_LABEL)
+
+    base = _base3(cellSize=0.6)
+    dm = base.dm_hierarchy[-1].clone()
+    write_tagged_state_label(dm)            # first seed (original coords)
+
+    # deform enough to change the coordinate-lex coloring order
+    v = dm.getCoordinatesLocal().duplicate()
+    arr = dm.getCoordinatesLocal().array.copy().reshape(-1, 3)
+    interior = np.all((arr > 0.05) & (arr < 0.95), axis=1)
+    rng = np.random.default_rng(7)
+    arr[interior] += 0.08 * (rng.random((int(interior.sum()), 3)) - 0.5)
+    v.array[:] = arr.ravel()
+    dm.setCoordinatesLocal(v)
+    write_tagged_state_label(dm)            # RE-seed on moved geometry
+
+    fresh = dm.clone()
+    fresh.removeLabel(TAGGED_STATE_LABEL)
+    write_tagged_state_label(fresh)         # single seed, same geometry
+
+    lab, flab = dm.getLabel(TAGGED_STATE_LABEL), fresh.getLabel(
+        TAGGED_STATE_LABEL)
+    cS, cE = dm.getHeightStratum(0)
+    stale = [c for c in range(cS, cE)
+             if lab.getValue(c) != flab.getValue(c)]
+    assert not stale, (f"{len(stale)} cells read a stale state after "
+                       "re-seed (double-stratum label)")
+
+
 def test_shape_regularity_bounded_similarity_classes():
     # The full-depth version of this bound (2.87M cells, 9 passes) was
     # proven by the stage-1a oracle; the CI gate only needs the plateau
@@ -187,3 +225,27 @@ def test_poisson_fmg_on_3d_nvb_child_matches_gamg():
     err = np.linalg.norm(s.Unknowns.u.data[:, 0] - s.Unknowns.u.coords[:, 2]) / (
         np.linalg.norm(s.Unknowns.u.coords[:, 2]) + 1e-30)
     assert err < 1e-8, f"Dirichlet labels wrong on 3D NVB child: err {err}"
+
+
+def test_shell_boundary_snaps_every_generation():
+    """3D version of the round-3b snap ruling: an adapted SphericalShell
+    child holds BOTH spheres to analytic radius at every level."""
+    import underworld3 as uw
+    from underworld3.meshing.smoothing import _pinned_mask
+
+    mesh = uw.meshing.SphericalShell(radiusInner=0.55, radiusOuter=1.0,
+                                     cellSize=0.3, refinement=1, qdegree=2)
+
+    def metric(centroids):
+        r = np.linalg.norm(np.asarray(centroids), axis=1)
+        return 1.0 / np.minimum(0.08 + 0.6 * np.abs(r - 0.55), 0.35) ** 2
+
+    child = mesh.adapt(metric, max_levels=1)
+    X = np.asarray(child.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    for label, R in (("Lower", 0.55), ("Upper", 1.0)):
+        mask = _pinned_mask(child.dm, (label,))
+        assert mask.any()
+        assert np.abs(r[mask] - R).max() < 1.0e-12, (
+            f"{label} sphere not snapped: "
+            f"max radius error {np.abs(r[mask]-R).max():.2e}")

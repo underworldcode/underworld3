@@ -626,6 +626,26 @@ worked example (3D box or annulus fault: metric-driven redistribution of the
 base + NVB band on the fault + Stokes FMG + advection-diffusion with field
 transfer across re-adaptation), plus a short how-to in `docs/advanced/`.
 
+**Round-3a status: 3D combination WORKS (2026-07-24, worktree
+`adaptivity-round3`).** First run stalled the refinement drain — and the
+cause was a PETSc label-semantics trap, not the driver: `DMLabelSetValue`
+does not remove a point from its previous stratum, so RE-seeding the
+tagged refinement state on the moved base left every cell in two strata
+and readers got the *old* (unmoved-order) state back — the driver was
+silently running the moved geometry with a stale seed. (The driver
+itself was first cleared by exhaustive oracle sweeps: all 72 single-tet
+states × 3 passes, and all 3,456 engine-valid two-tet state pairs with
+single-cell marking — native vs Python engine, all equal.)
+`write_tagged_state_label` now destroys and recreates the label;
+regression test in `test_0840`. Result on the dipping-fault box (ml=2):
+mover+adapt gives **33,570 cells vs 36,040 adapt-only**, slightly finer
+on-fault (med h 0.0282 vs 0.0292) with the over-refinement fraction
+down from 46% to 39% — the same budget-spends-better behaviour as 2D.
+MG on the combined child: 3 iterations, exact solution to 9e-10.
+Renders: `~/+Simulations/nvb_3d_adapt_evaluation/combo3d_*.png`. The
+worked example + `docs/advanced/` how-to remain the landing
+deliverable.
+
 ### Round 3b — spherical geometry + curved/internal-boundary clean-ups
 
 - **MMPDE on shells**: `SphericalShell` (solid, `dim==cdim==3`) is a valid
@@ -650,6 +670,44 @@ transfer across re-adaptation), plus a short how-to in `docs/advanced/`.
   already (per-node analytic normals `X/|X|`; the reaction/dynamic-topography
   path is boundary-label-driven). Validation: shell response benchmark
   (test_1064 pattern) on an NVB child.
+
+**Round-3b probe results (2026-07-24):**
+
+* *MMPDE on `SphericalShell`: validated, zero new code.* With the
+  registered radial `BoundingSurface`s, a boundary-layer metric toward
+  the inner sphere gives zero folds and holds BOTH spheres to machine
+  precision (radius drift ≤ 2e-16) while the radial cell-size profile
+  grades to ratio ~1.32 (better than the box's 1.12 — the boundary-layer
+  metric shape suits the mover well).
+* *The chord error is real and measured*: adapted annulus children carry
+  an outer-boundary radius error of 1.8e-3 at base h≈0.125
+  (the h²/8R chord sag), frozen at base resolution regardless of depth.
+* *Snap is safe on every gate*: projecting the child's boundary vertices
+  onto the analytic circles gives zero folds, radius error → 2e-16, and
+  the custom-P MG on the snapped child is untouched (2 iterations,
+  solution identical to the GAMG reference) — the coordinate-built
+  transfers tolerate the slightly non-nested snapped boundary exactly as
+  designed. **The chord-vs-snap ruling is now a pure decision** — no
+  technical blocker either way.
+* *A real MG gap found and fixed on the way*: the mesh-owned FMG
+  auto-pickup rejected any square finest transfer as "no coarsening" —
+  but a generation whose new vertices all land on a Dirichlet boundary
+  adds only constrained dofs, making the free-dof counts of the last two
+  levels coincide. Boundary-focused metrics (what curved domains invite)
+  hit this every time, so every annulus boundary-layer adapt was
+  silently falling back to the default preconditioner. Guard relaxed to
+  genuine row/operator mismatches; annulus children now solve with
+  custom MG in 2 iterations.
+* *Internal interfaces resolved (maintainer discussion, 2026-07-24):*
+  refinement always preserved embedded interfaces topologically
+  (conforming bisection + label carry), but they were chord-frozen and
+  invisible to the snap. The Internal circle/sphere of the
+  *InternalBoundary meshes now registers as a radial surface flagged
+  `interior=True`: adapt() snaps refinement onto the true interface
+  radius, while the movers keep interface nodes FULLY pinned (no normal
+  or tangential motion, even with slip_surfaces=True) — interface
+  motion is physics-owned. Tangential slide along an interface is a
+  one-flag change if ever wanted.
 
 ## Effort and risk, honestly
 

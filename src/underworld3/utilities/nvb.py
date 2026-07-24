@@ -70,8 +70,15 @@ def write_tagged_state_label(dm):
     perms = {p: i for i, p in enumerate(itertools.permutations(range(4)))}
     cS, cE = dm.getHeightStratum(0)
     vS, vE = dm.getDepthStratum(0)
-    if not dm.hasLabel(TAGGED_STATE_LABEL):
-        dm.createLabel(TAGGED_STATE_LABEL)
+    # RE-seeding must start from a FRESH label: DMLabelSetValue does not
+    # remove a point from its previous stratum, so overwriting an existing
+    # seed leaves every cell in TWO strata and readers get the OLD value
+    # back — the driver then runs the new geometry with the stale seed and
+    # the conforming drain deadlocks (found by the moved-base composition,
+    # 2026-07 round 3a).
+    if dm.hasLabel(TAGGED_STATE_LABEL):
+        dm.removeLabel(TAGGED_STATE_LABEL)
+    dm.createLabel(TAGGED_STATE_LABEL)
     label = dm.getLabel(TAGGED_STATE_LABEL)
     comm = dm.comm.tompi4py()
 
