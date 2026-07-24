@@ -3190,16 +3190,23 @@ class _BaseMeshVariable(Stateful, uw_object):
                 f"Cannot compute tensor stats: a variable named '{temp_name}' "
                 "already exists on this mesh (reserved as a stats temporary)."
             )
-        frobenius_var = uw.discretisation.MeshVariable(
+        # _BaseMeshVariable, matching _vector_stats: the enhanced wrapper's
+        # __getattr__ refuses underscore-name delegation, so the
+        # _scalar_stats call below would raise AttributeError through it
+        # (second latent defect under issue #400).
+        frobenius_var = _BaseMeshVariable(
             temp_name, self.mesh, 1, degree=self.degree
         )
 
         try:
             # Compute Frobenius norm: ||A||_F = sqrt(sum(A_ij^2))
+            # Components are read through the FLAT layout: a tensor's
+            # .array is structured (N, d, d), so indexing it with the flat
+            # component count d*d walked off the axis (issue #400).
             with uw.synchronised_array_update():
                 sum_squares = 0.0
                 for i in range(self.num_components):
-                    component = self.array[:, 0, i].flatten()
+                    component = np.asarray(self.data[:, i]).flatten()
                     sum_squares += component**2
                 frobenius_var.array[:, 0, 0] = np.sqrt(sum_squares)
 
