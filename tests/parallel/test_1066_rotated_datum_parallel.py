@@ -13,8 +13,8 @@ with parallel-safe reductions only, that:
 
 Run with::
 
-    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1064_rotated_datum_parallel.py
-    mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_1064_rotated_datum_parallel.py
+    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1066_rotated_datum_parallel.py
+    mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_1066_rotated_datum_parallel.py
 """
 import numpy as np
 import pytest
