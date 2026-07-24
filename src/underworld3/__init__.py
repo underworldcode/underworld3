@@ -228,8 +228,14 @@ from .utilities import retention_curves
 # Unit utilities (top-level convenience for user code)
 from .function.unit_conversion import _extract_value
 
-# KDTree backend is ckdtree (nanoflann); see src/underworld3/kdtree.py
+# KDTree backend is ckdtree (nanoflann). Register the submodule alias in
+# sys.modules so `import underworld3.kdtree` and the `underworld3.kdtree`
+# attribute are the SAME module object. A separate shim file used to shadow
+# this attribute on the first `import underworld3.kdtree` (submodule import
+# rebinds the package attribute), silently dropping the memprobe counters
+# for every later test in the run — issue #316.
 import underworld3.ckdtree as kdtree
+sys.modules["underworld3.kdtree"] = kdtree
 import underworld3.cython
 import underworld3.scaling
 import underworld3.visualisation

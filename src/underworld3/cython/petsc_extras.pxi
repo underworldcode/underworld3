@@ -63,6 +63,7 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetConstants(PetscDS, PetscInt, const PetscScalar[])
     PetscErrorCode DMPlexSNESComputeBoundaryFEM( PetscDM, void *, void *)
     PetscErrorCode DMPlexSNESComputeResidualFEM( PetscDM, PetscVec, PetscVec, void *)
+    PetscErrorCode DMPlexInsertBoundaryValues( PetscDM, PetscBool, PetscVec, PetscReal, PetscVec, PetscVec, PetscVec )
     PetscErrorCode DMPlexComputeResidualByKey( PetscDM, PetscFormKey, PetscIS, PetscReal, PetscVec, PetscVec, PetscReal, PetscVec, void *)
     PetscErrorCode DMPlexComputeBdResidualSingle( PetscDM, PetscWeakForm, PetscFormKey, PetscVec, PetscVec, PetscReal, PetscVec )
     # PetscErrorCode DMPlexSetSNESLocalFEM( PetscDM, void *, void *, void *)

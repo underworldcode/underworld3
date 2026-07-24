@@ -2250,6 +2250,7 @@ class SolverBaseClass(uw_object):
             t_nd = self._nondimensional_time(time)
             _time_dm_reaction = self.dm
             UW_DMSetTime(_time_dm_reaction.dm, <PetscReal>t_nd)
+            residual_time = <PetscReal>t_nd
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -2280,6 +2281,15 @@ class SolverBaseClass(uw_object):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Constrained (Dirichlet) DOFs are ABSENT from the global vector,
+            # so the localToGlobal/globalToLocal round trip above leaves them
+            # ZERO in xlocal. Insert the essential boundary values before
+            # integrating: without this the residual is evaluated against a
+            # state whose boundary values are wrong wherever g != 0, and the
+            # 'reaction' on inhomogeneous Dirichlet boundaries is garbage
+            # (issue #407 — g=0 boundaries were accidentally correct).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
 
             # Return the RAW local residual: each rank has computed its OWNED cells'

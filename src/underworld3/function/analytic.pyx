@@ -220,10 +220,27 @@ class SolCx:
         return out
 
     def velocity_error(self, velocity_var):
-        """Relative L2 error of a velocity MeshVariable against the analytic."""
+        """GLOBAL relative L2 error of a velocity MeshVariable against the
+        analytic solution — the same value on every rank.
+
+        The previous rank-local norms measured each rank's own partition:
+        the rank owning the hardest region (e.g. the SolCx viscosity jump)
+        reported an error 10-20x larger than its neighbours, so tests
+        asserting the value were partition-dependent (issue #370: the np4
+        'tolerance miss' was one rank's local norm, not the solution).
+
+        Shared partition-boundary DOFs contribute once per owning rank to
+        the reductions — a small seam-weighting approximation, acceptable
+        for a benchmark diagnostic.
+        """
         import numpy as _np
+        import underworld3 as _uw
+        from mpi4py import MPI as _MPI
         ua = self.evaluate_velocity(velocity_var.coords)
-        return float(_np.linalg.norm(velocity_var.data - ua) / _np.linalg.norm(ua))
+        diff = _np.asarray(velocity_var.data) - ua
+        e2 = _uw.mpi.comm.allreduce(float((diff * diff).sum()), op=_MPI.SUM)
+        a2 = _uw.mpi.comm.allreduce(float((ua * ua).sum()), op=_MPI.SUM)
+        return float(_np.sqrt(e2 / a2))
 
     def evaluate_stress(self, coords):
         """Exact total (Cauchy) stress at ``coords`` (N×2 array), via the
