@@ -299,11 +299,11 @@ def prepare_for_cache_key(fn, constants_subs_map):
     3. Unwrap the remaining UW atoms to pure SymPy so the hash is
        deterministic.
     """
-    # Phase 1: reveal constants nested inside other UWexpressions
-    try:
-        fn_structural = _reveal_constants(fn)
-    except Exception:
-        fn_structural = fn
+    # Phase 1: reveal constants nested inside other UWexpressions. Loud on
+    # failure, exactly like the codegen path — a silent fallback here would
+    # hash constant VALUES into the cache key and force a recompile on
+    # every ramp (adversarial-review finding).
+    fn_structural = _reveal_constants(fn)
 
     # Phase 2: Substitute constants with _JITConstant placeholders
     if constants_subs_map and fn_structural is not None:
