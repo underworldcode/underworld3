@@ -300,3 +300,40 @@ def test_nvb_3d_serial_returns_child():
     child = base3.adapt(H, max_levels=1, engine="nvb")
     assert child.parent is base3
     assert _ncell(child) > _ncell(base3)
+
+
+def test_curved_boundary_snaps_every_generation():
+    """Round-3b ruling (2026-07-24): new boundary vertices on curved
+    domains snap onto the registered analytic surfaces at EVERY
+    generation, so each intermediate level is a valid mesh in its own
+    right and boundary geometry converges with refinement (chords froze
+    it at base resolution: radius error ~h_base^2/8R)."""
+    import underworld3 as uw
+
+    mesh = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0,
+                              cellSize=0.25, refinement=1, qdegree=2)
+
+    def metric(centroids):
+        r = np.linalg.norm(np.asarray(centroids)[:, :2], axis=1)
+        return 1.0 / np.minimum(0.03 + 0.5 * np.abs(1.0 - r), 0.3) ** 2
+
+    child = mesh.adapt(metric, max_levels=2)
+    from underworld3.meshing.smoothing import _pinned_mask
+
+    X = np.asarray(child.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    for label, R in (("Lower", 0.5), ("Upper", 1.0)):
+        mask = _pinned_mask(child.dm, (label,))
+        assert mask.any()
+        assert np.abs(r[mask] - R).max() < 1.0e-12, (
+            f"{label} boundary not snapped: "
+            f"max radius error {np.abs(r[mask]-R).max():.2e}")
+    # ... and the intermediate MG levels are snapped too (the ruling's
+    # point: every level is a valid mesh)
+    for i, lvl in enumerate(child._custom_mg_coarse_meshes[-2:]):
+        dm = lvl.dm if hasattr(lvl, "dm") else lvl
+        Xl = dm.getCoordinatesLocal().array.reshape(-1, 2)
+        rl = np.linalg.norm(Xl, axis=1)
+        on_out = _pinned_mask(dm, ("Upper",))
+        if on_out.any():
+            assert np.abs(rl[on_out] - 1.0).max() < 1.0e-12

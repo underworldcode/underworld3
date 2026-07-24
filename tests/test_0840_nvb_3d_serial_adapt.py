@@ -225,3 +225,27 @@ def test_poisson_fmg_on_3d_nvb_child_matches_gamg():
     err = np.linalg.norm(s.Unknowns.u.data[:, 0] - s.Unknowns.u.coords[:, 2]) / (
         np.linalg.norm(s.Unknowns.u.coords[:, 2]) + 1e-30)
     assert err < 1e-8, f"Dirichlet labels wrong on 3D NVB child: err {err}"
+
+
+def test_shell_boundary_snaps_every_generation():
+    """3D version of the round-3b snap ruling: an adapted SphericalShell
+    child holds BOTH spheres to analytic radius at every level."""
+    import underworld3 as uw
+    from underworld3.meshing.smoothing import _pinned_mask
+
+    mesh = uw.meshing.SphericalShell(radiusInner=0.55, radiusOuter=1.0,
+                                     cellSize=0.3, refinement=1, qdegree=2)
+
+    def metric(centroids):
+        r = np.linalg.norm(np.asarray(centroids), axis=1)
+        return 1.0 / np.minimum(0.08 + 0.6 * np.abs(r - 0.55), 0.35) ** 2
+
+    child = mesh.adapt(metric, max_levels=1)
+    X = np.asarray(child.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    for label, R in (("Lower", 0.55), ("Upper", 1.0)):
+        mask = _pinned_mask(child.dm, (label,))
+        assert mask.any()
+        assert np.abs(r[mask] - R).max() < 1.0e-12, (
+            f"{label} sphere not snapped: "
+            f"max radius error {np.abs(r[mask]-R).max():.2e}")

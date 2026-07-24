@@ -6516,6 +6516,32 @@ class Mesh(Stateful, uw_object):
                 vol_scaled = numpy.sqrt(numpy.abs(numpy.linalg.det(G)))
             return X.mean(axis=1), vol_scaled ** (1.0 / dim), cs
 
+        # Analytic boundary surfaces to snap each generation onto. New
+        # boundary vertices are CHORD midpoints, so without snapping the
+        # boundary geometry of a curved domain stays frozen at base
+        # resolution no matter how deep the refinement. Per the 2026-07
+        # round-3b ruling, EVERY generation snaps (not just the returned
+        # child): each intermediate level is a valid mesh in its own
+        # right — extractable for solvers — and the metric marks on true
+        # geometry. On plane surfaces (boxes) the chord midpoint already
+        # lies in the plane, so the snap is exactly a no-op and the flat
+        # confluence gates are untouched.
+        _snap_surfs = [s for s in dict(self.bounding_surfaces).values()
+                       if getattr(s, "kind", None) in ("radial", "plane")
+                       and not getattr(s, "is_free", False)]
+
+        def snap_level_boundaries(dm):
+            if not _snap_surfs:
+                return
+            from underworld3.meshing.smoothing import _pinned_mask
+            vec = dm.getCoordinatesLocal()
+            arr = vec.array.reshape(-1, self.cdim)
+            for s in _snap_surfs:
+                mask = _pinned_mask(dm, (s.label,))
+                if mask.any():
+                    arr[mask] = s.restore(arr[mask])
+            dm.setCoordinatesLocal(vec)
+
         # Refine from the mesh's CURRENT geometry. Node redistribution
         # (redistribute_nodes) moves mesh.dm's coordinates while the static
         # base hierarchy keeps the originals — without this carry, an adapt
@@ -6588,6 +6614,7 @@ class Mesh(Stateful, uw_object):
                 for cidx in marked:
                     lab.setValue(cidx, DM_ADAPT_REFINE)
                 current_dm = _nvbx.refine(d, "adapt")
+                snap_level_boundaries(current_dm)
                 level_dms.append(current_dm)
                 if verbose:
                     fs, fe = current_dm.getHeightStratum(0)
@@ -6628,6 +6655,24 @@ class Mesh(Stateful, uw_object):
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
                 nvb.refine(set(marked))
+                # Snap INSIDE the engine: its own coordinates feed the next
+                # generation's marking AND the next midpoints, so snapping
+                # only the exported DM would leave the engine's geometry on
+                # the chords.
+                if _snap_surfs:
+                    _val2surf = {v: s for s in _snap_surfs
+                                 for (nm, v) in carry if nm == s.label}
+                    _sv = {}
+                    for _fkey, _val in nvb.facet_label.items():
+                        _s = _val2surf.get(_val)
+                        if _s is not None:
+                            _sv.setdefault(id(_s), (_s, set()))[1].update(_fkey)
+                    for _s, _vs in _sv.values():
+                        _idx = numpy.fromiter(_vs, dtype=numpy.int64)
+                        _snapped = _s.restore(
+                            numpy.array([nvb.coords[i] for i in _idx]))
+                        for _k, _i in enumerate(_idx):
+                            nvb.coords[_i] = _snapped[_k]
                 level_dms.append(nvb.to_dm(boundaries=carry, regions=rcarry,
                                            comm=self.dm.comm))
                 if verbose:
@@ -6664,6 +6709,7 @@ class Mesh(Stateful, uw_object):
                     uw.pprint(0, f"[adapt] level {level}: refining {len(cell_ids)} "
                                  f"of {ncells} cells")
                 current_dm = custom_mg.sbr_refine(current_dm, cell_ids)
+                snap_level_boundaries(current_dm)
                 level_dms.append(current_dm)
 
         if verbose:
