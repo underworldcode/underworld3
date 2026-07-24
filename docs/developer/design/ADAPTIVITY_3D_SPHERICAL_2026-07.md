@@ -698,6 +698,16 @@ deliverable.
   silently falling back to the default preconditioner. Guard relaxed to
   genuine row/operator mismatches; annulus children now solve with
   custom MG in 2 iterations.
+* *Internal interfaces resolved (maintainer discussion, 2026-07-24):*
+  refinement always preserved embedded interfaces topologically
+  (conforming bisection + label carry), but they were chord-frozen and
+  invisible to the snap. The Internal circle/sphere of the
+  *InternalBoundary meshes now registers as a radial surface flagged
+  `interior=True`: adapt() snaps refinement onto the true interface
+  radius, while the movers keep interface nodes FULLY pinned (no normal
+  or tangential motion, even with slip_surfaces=True) — interface
+  motion is physics-owned. Tangential slide along an interface is a
+  one-flag change if ever wanted.
 
 ## Effort and risk, honestly
 
