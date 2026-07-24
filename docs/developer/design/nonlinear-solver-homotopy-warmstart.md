@@ -179,8 +179,19 @@ The only knobs a user ever touches are the two deliberate opt-outs: force-fresh
 
 ## Implementation stages (for the dedicated session)
 
-1. **Layer 1a — `has_solution` property + Picard-on-cold warm-up**, behind the
-   existing `zero_init_guess` semantics (no default flip yet). Additive, low-risk.
+1. **Layer 1a — `has_solution` property + Picard-on-cold warm-up** — **LANDED**
+   (`petsc_generic_snes_solvers.pyx`; test `test_0201`). Behind the existing
+   `zero_init_guess` semantics (no default flip). Additive, low-risk. As built:
+   `has_solution` lives on `SolverBaseClass`, is recorded by
+   `_record_convergence_status()` at the end of every `solve()` (the rotated
+   free-slip path records from its info dict, since it runs its own KSP loop),
+   and resets in the `is_setup = False` setter. The cold Picard warm-up is scoped
+   to a cold Stokes solve **under the consistent-Newton tangent**
+   (`consistent_jacobian is True`) — the opt-in nonlinear regime that needs it —
+   so the default (frozen) tangent path is bit-identical and the common linear
+   solve pays nothing. Broadening the warm-up to all nonlinear solvers (a cached
+   nonlinearity probe rather than the tangent proxy) is a natural Layer-1b
+   extension. Recipe + config-trap-list captured in the `nonlinear-solver` skill.
 2. **Layer 1b — flip `zero_init_guess` to auto-detect.** The benchmarked default
    change. Gate the free-surface-chain and mover cases first (below).
 3. **Layer 3 — non-symmetry-safe smoother default under the consistent tangent.**
