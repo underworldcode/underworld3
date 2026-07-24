@@ -120,7 +120,7 @@ def test_rotated_freeslip_spherical_shell_3d():
         assert rotfrac < 1e-8, f"rotation mode {k} gauge {rotfrac:.2e} not removed"
 
 
-def _spherical3d_reaction_topography():
+def _spherical3d_reaction_topography(cell_size=0.25):
     """Zhong l=2 topography recovered directly from rotated constraint reactions."""
 
     radius_inner = 0.55
@@ -130,7 +130,7 @@ def _spherical3d_reaction_topography():
         radiusOuter=radius_outer,
         radiusInternal=radius_internal,
         radiusInner=radius_inner,
-        cellSize=0.25,
+        cellSize=cell_size,
         qdegree=2,
         degree=1,
     )

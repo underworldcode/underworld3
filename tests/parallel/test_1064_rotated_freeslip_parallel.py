@@ -169,12 +169,12 @@ def _spherical3d_diagnostics():
     return L2, int(info["ksp_its"]), int(info["ksp_reason"])
 
 
-def _spherical3d_topography_diagnostics():
+def _spherical3d_topography_diagnostics(cell_size=0.25):
     """Zhong l=2 topography from the 3D rotated-constraint reaction."""
     RI, RO, RINT = 0.55, 1.0, 0.775
     mesh = uw.meshing.SphericalShellInternalBoundary(
         radiusOuter=RO, radiusInternal=RINT, radiusInner=RI,
-        cellSize=0.25, qdegree=2, degree=1)
+        cellSize=cell_size, qdegree=2, degree=1)
     v = uw.discretisation.MeshVariable(
         "Vst", mesh, mesh.dim, degree=2, continuous=True)
     p = uw.discretisation.MeshVariable(
@@ -526,10 +526,11 @@ if __name__ == "__main__":
         if uw.mpi.rank == 0:
             print(f"DIAG_SPHERICAL3D {_L2:.12e} its={_its} reason={_reason}")
     elif _kind == "spherical3d_topo":
-        _coefficients = _spherical3d_topography_diagnostics()
+        _cell_size = float(sys.argv[2]) if len(sys.argv) > 2 else 0.25
+        _coefficients = _spherical3d_topography_diagnostics(_cell_size)
         if uw.mpi.rank == 0:
             print(
-                "DIAG_SPHERICAL3D_TOPO "
+                f"DIAG_SPHERICAL3D_TOPO cell_size={_cell_size:.8f} "
                 + " ".join(f"{value:.12e}" for value in _coefficients)
             )
     else:
