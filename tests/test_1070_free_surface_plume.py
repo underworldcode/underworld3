@@ -163,3 +163,39 @@ def test_free_surface_plume_parallel():
     amplitude = _surface_amplitude(fs)
     # coarse res-40 reference is O(1e-4); assert the right sign and magnitude band.
     assert 1.0e-5 < amplitude < 1.0e-3, f"parallel surface amplitude off: {amplitude}"
+
+
+@pytest.mark.level_1
+def test_freesurface_annulus_ring_filter_no_seam():
+    """The theta-ordered global-ring surface filter must not seam at the along-surface
+    coordinate extremes (theta=0, theta=pi) the way the old extract_surface KDTree mapping
+    did (106 ring nodes -> 104 submesh DOFs collided there -> a 5 km jump). Filter a smooth
+    ring field and check the max node-to-node jump is uniform around the ring; and the
+    gather/scatter round-trip is the identity."""
+    mesh = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.06, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    rhat = sympy.Matrix([[x / r, y / r]])
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.bodyforce = rhat
+    stokes.add_essential_bc((0.0, 0.0), "Lower")
+    fs = uw.systems.FreeSurface(stokes, "Upper", buoyancy_scale=1.0, normal=rhat,
+                                tangent_advect="shape", surface_filter=20)
+
+    rc = fs._ring_coords                         # local ring nodes, x-sorted order
+    th = np.arctan2(rc[:, 1], rc[:, 0])
+    field = np.cos(2.0 * th) + 0.1 * np.cos(9.0 * th)     # smooth swell + a little noise
+
+    # gather -> scatter is the identity (serial: full ring on the one rank)
+    assert np.allclose(fs._ring_scatter(fs._ring_gather(field)), field, atol=1e-12)
+
+    filt = fs._filter_surface(field)
+    o = np.argsort(th)
+    ff = filt[o]
+    jump = np.abs(np.diff(np.r_[ff, ff[0]]))     # node-to-node around the closed ring
+    thf = th[o]
+    at_ext = ((np.abs(thf) < 0.12) | (np.abs(np.abs(thf) - np.pi) < 0.12))
+    assert jump[at_ext].max() < 4.0 * np.median(jump), \
+        f"filter seams at theta=0/pi: extreme jump {jump[at_ext].max():.2e} vs median {np.median(jump):.2e}"
