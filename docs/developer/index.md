@@ -161,6 +161,7 @@ design/SWARM_MODERNIZATION_DESIGN_2026-07
 design/PROJECTED_NORMALS_API_DESIGN
 design/TURBULENCE_MODEL_DESIGN
 design/declined-coord-units-proposal
+design/nonlinear-solver-homotopy-warmstart
 ```
 
 ```{toctree}
