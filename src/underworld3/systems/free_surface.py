@@ -447,7 +447,16 @@ class FreeSurface:
             self.mesh, self.composition.sym, self._adv_velocity.sym,
             vtype=uw.VarType.SCALAR, degree=self.composition.degree, continuous=True,
             varsymbol="phi", bcs=[], order=1, smoothing=0.0,
-            monotone_mode=None, theta=0.5, old_frame_traceback=True,
+            # monotone_mode="clamp" is REQUIRED here, not optional: with
+            # old_frame_traceback=True the departure point is deliberately NOT clamped to
+            # the domain (the foot is sampled on the OLD geometry, which covers the layer
+            # a moving surface vacated), and the limiter is then the ONLY thing bounding a
+            # foot that lands outside the old mesh — see SemiLagrangian._trace_back. With
+            # monotone_mode=None such a foot falls through to the evaluator's RBF/Shepard
+            # fallback, which averages distant DOFs: on a deforming free surface that
+            # injects HOT material into the cold boundary layer at the inflow/outflow
+            # stagnation points, and the field loses boundedness (T well outside [0,1]).
+            monotone_mode="clamp", theta=0.5, old_frame_traceback=True,
         )
         self._comp_adv = uw.systems.AdvDiffusionSLCN(
             self.mesh, u_Field=self.composition, V_fn=self._adv_velocity.sym,

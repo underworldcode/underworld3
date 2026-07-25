@@ -401,7 +401,15 @@ class Mesh(Stateful, uw_object):
         self.coarsening_callback = coarsening_callback
         self.name = name
         self.sf1 = None
-        self.return_coords_to_bounds = return_coords_to_bounds
+        # The mesh-specific ANALYTIC restore (radial on an annulus/sphere, box faces on a
+        # Cartesian box). Valid only while the boundary still has the shape the closure
+        # was written for: it is captured at construction with the ORIGINAL radii/extent.
+        # Once the geometry is deformed (a moving free surface) it is silently wrong — the
+        # true boundary is no longer that surface — so `return_coords_to_bounds` switches
+        # to the general facet-based restore. See the property below.
+        self._analytic_return_coords_to_bounds = return_coords_to_bounds
+        self._geometry_deformed = False
+        self._bnd_restore_cache = None
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
@@ -2966,6 +2974,99 @@ class Mesh(Stateful, uw_object):
     #  self.boundaries (the persisted gmsh/DMPlex labelling, untouched).
     # ===================================================================
     @property
+    def return_coords_to_bounds(self):
+        r"""Callable ``coords -> coords`` returning out-of-domain points to the mesh.
+
+        Used by the semi-Lagrangian trace-back (``systems.ddt``) and by swarm advection
+        to pull a departure point / particle that has left the domain back inside.
+
+        Two implementations, selected by the state of the geometry:
+
+        * **analytic** (default) — the closure installed by the mesh constructor
+          (radial on an annulus/sphere, face clamps on a box). Cheap and exact **while
+          the boundary keeps the shape it was written for**.
+        * **general facet restore** (once :meth:`deform` has moved the geometry) — the
+          nearest point on the mesh's CURRENT boundary facets, with an outward-normal
+          side test (:meth:`_facet_return_coords_to_bounds`).
+
+        The switch matters for a moving free surface: the analytic closure is captured at
+        construction with the ORIGINAL radii/extent, so on a deformed mesh it tests the
+        wrong surface — where the surface has moved inward a point beyond the true
+        boundary is not detected as outside, is never restored, and falls through to the
+        evaluator's RBF/Shepard fallback, which averages distant DOFs (hot material
+        appearing in a cold boundary layer). The general restore follows the deformed
+        boundary, so it stays correct.
+
+        Assigning to this attribute overrides both (the setter replaces the analytic
+        closure and is honoured until the geometry deforms).
+        """
+        if getattr(self, "_geometry_deformed", False):
+            return self._facet_return_coords_to_bounds
+        return self._analytic_return_coords_to_bounds
+
+    @return_coords_to_bounds.setter
+    def return_coords_to_bounds(self, fn):
+        self._analytic_return_coords_to_bounds = fn
+
+    def _boundary_facet_geometry(self):
+        """Boundary facets of the CURRENT geometry as ``(facet_pts, outward_normals)``,
+        cached against the coordinate-array version so it refreshes after a deform."""
+        from underworld3.meshing.smoothing.graph import _boundary_facets
+
+        coords = numpy.ascontiguousarray(self.data)
+        stamp = (coords.shape, float(coords.sum()))
+        cache = getattr(self, "_bnd_restore_cache", None)
+        if cache is not None and cache[0] == stamp:
+            return cache[1], cache[2]
+
+        cdim = self.cdim
+        facets, opp = _boundary_facets(self, cdim)
+        if facets is None:                      # non-simplicial: no general restore
+            self._bnd_restore_cache = (stamp, None, None)
+            return None, None
+        fpts = coords[facets]                   # (nf, k, cdim)
+        if cdim == 2:
+            e = fpts[:, 1] - fpts[:, 0]
+            n = numpy.column_stack([e[:, 1], -e[:, 0]])
+        else:
+            n = numpy.cross(fpts[:, 1] - fpts[:, 0], fpts[:, 2] - fpts[:, 0])
+        n = n / (numpy.linalg.norm(n, axis=1, keepdims=True) + 1e-300)
+        # orient outward: away from the opposite cell vertex
+        inward = coords[opp] - fpts[:, 0]
+        flip = numpy.einsum("ij,ij->i", n, inward) > 0.0
+        n[flip] *= -1.0
+        self._bnd_restore_cache = (stamp, fpts, n)
+        return fpts, n
+
+    def _facet_return_coords_to_bounds(self, coords):
+        """General restore: snap points lying OUTSIDE the current boundary to just inside
+        the nearest boundary facet. Interior points are returned untouched (the
+        outward-normal side test), so this is safe to apply to every trace-back foot."""
+        from underworld3.meshing.smoothing.graph import (
+            _nearest_on_facets_2d, _nearest_on_facets_3d)
+
+        fpts, nrm = self._boundary_facet_geometry()
+        if fpts is None:                        # fall back to the analytic closure
+            fn = self._analytic_return_coords_to_bounds
+            return fn(coords) if fn is not None else coords
+
+        pts = numpy.ascontiguousarray(numpy.asarray(coords, dtype=float))
+        cdim = self.cdim
+        if cdim == 2:
+            closest = _nearest_on_facets_2d(pts, fpts)
+        else:
+            closest = _nearest_on_facets_3d(pts, fpts)
+        # side test against the normal of the facet owning `closest` (nearest centroid)
+        tree = uw.kdtree.KDTree(numpy.ascontiguousarray(fpts.mean(axis=1)))
+        owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
+        nvec = nrm[owner]
+        outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
+        if numpy.any(outside):
+            eps = 1.0e-3 * float(self.get_min_radius())
+            pts[outside] = closest[outside] - eps * nvec[outside]
+        return pts
+
+    @property
     def bounding_surfaces(self):
         """Mapping ``{label: BoundingSurface}`` of this mesh's registered
         bounding-surface objects (tangent-slip + restore).
@@ -3410,6 +3511,17 @@ class Mesh(Stateful, uw_object):
         from underworld3.discretisation.remesh import remesh_with_field_transfer
 
         _nc = numpy.asarray(new_coords)
+
+        # The geometry is about to move, so any ANALYTIC return_coords_to_bounds closure
+        # (captured with the original radii/extent) no longer describes the boundary:
+        # switch to the general facet restore, which follows the deformed surface. Also
+        # release any registered analytic BoundingSurface on this mesh for the same
+        # reason — a rigid `radial`/`plane` surface would keep restoring to the old shape.
+        self._geometry_deformed = True
+        self._bnd_restore_cache = None
+        for _surf in getattr(self, "_bounding_surfaces", {}).values():
+            if getattr(_surf, "kind", None) in ("radial", "plane") and hasattr(_surf, "release"):
+                _surf.release()
 
         def _do_move():
             self._deform_mesh(_nc)
