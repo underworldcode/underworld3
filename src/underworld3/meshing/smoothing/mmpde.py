@@ -323,9 +323,21 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
 
     a0 = signed_vol(coords, cells_all)
     orient = np.sign(np.median(a0)) or 1.0
-    a0_own_med = float(np.median(np.abs(signed_vol(coords, cells_own))))
-    a0_own_med = _global_mean(a0_own_med)
-    a_min_floor = float(area_floor_frac) * a0_own_med
+    # Collapse guard reference: EACH cell's own starting volume. The floor
+    # is then "no cell may shrink below area_floor_frac of what it started
+    # as" -- scale-free and grading-free.
+    #
+    # It used to be one absolute floor, area_floor_frac x the median cell
+    # volume, which is only meaningful on a near-uniform mesh. On a graded
+    # mesh (anything out of mesh.adapt) the finest cells are orders of
+    # magnitude below the median and so start *already under* the floor:
+    # every trial step is rejected, the line search backtracks to scale=0
+    # and the mover silently does nothing. Worse, the median was a
+    # _global_mean of per-rank medians, so which cells fell foul of it
+    # depended on the partition -- the same mesh moved in serial and stood
+    # still on 2 ranks. See #419.
+    a0_own = np.abs(signed_vol(coords, cells_own))
+    a0_own = np.maximum(a0_own, 1.0e-300)
     # Representative background cell size h0 (mean reference edge length over
     # owned cells), used to make the convergence test SCALE-RELATIVE: a move
     # of dmax < tol·h0 is negligible vs the cell size, so the adapt has
@@ -361,8 +373,11 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         K = np.abs(detE) / fact
         return _global_sum(np.sum(K * G))
 
-    def _min_area(X):
-        return _global_min((signed_vol(X, cells_own) * orient).min())
+    def _min_area_frac(X):
+        """Smallest cell volume as a FRACTION of that cell's starting
+        volume (global). > 0 also certifies no cell has folded."""
+        return _global_min(
+            (signed_vol(X, cells_own) * orient / a0_own).min(initial=np.inf))
 
     prevI = _energy(coords)
     _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
@@ -538,7 +553,8 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             trial = _halo_sync(trial)
             # reject any non-finite trial (defense-in-depth: projection/halo
             # could still introduce inf/NaN) so `_energy` never queries NaN.
-            if np.all(np.isfinite(trial)) and _min_area(trial) > a_min_floor:
+            if (np.all(np.isfinite(trial))
+                    and _min_area_frac(trial) > float(area_floor_frac)):
                 Itr = _energy(trial)
                 if Itr < prevI:
                     accepted = trial; Inew = Itr; break
