@@ -155,11 +155,37 @@ non-symmetry-safe smoother, `mg_levels_ksp_type = gmres` (with `mg_levels_pc_typ
 sor`).
 
 This is a consequence of `consistent_jacobian=True`, **not** of homotopy — anyone
-using the consistent tangent with FMG hits it. The clean fix is therefore: **when the
-consistent tangent is active, default the multigrid smoother to a non-symmetric-safe
-one.** That removes the single worst trap for all consistent-Newton users, not just
-homotopy. It is a core default change and must be benchmarked before it is made
-automatic.
+using the consistent tangent with FMG hits it.
+
+**LANDED, and the benchmark changed the shape of the fix.** The smoother is now
+`gmres` + `sor` unconditionally in the FMG bundle, with `mg_levels_ksp_norm_type =
+none` (a fixed-cost V-cycle: exactly `max_it` smoother iterations, no residual norm,
+no early exit). Two findings drove that:
+
+- **The gmres margin grows with multigrid depth.** Measured on the Spiegelman notch
+  (Drucker–Prager, `η_bg=1e26`, `V=10`, `δ=0.01`) over a *nested* hierarchy built by
+  uniformly refining an ultra-coarse 492-cell base, per-V-cycle contraction ρ at
+  `ξ=0.01` and the same four smoother iterations: 3 levels — 0.722 richardson vs
+  0.686 gmres (5 %); 4 levels — 0.746 vs **0.560** (25 %). A deeper cycle applies the
+  smoother on more coarse operators, each non-symmetric under the consistent tangent,
+  so smoother quality compounds. A measurement on a 2-level hierarchy shows almost no
+  effect and is **misleading** — a two-level cycle is a coarse-grid correction, not a
+  V-cycle.
+- **Therefore no gate.** Since shallow hierarchies are not worth having (maintainer
+  ruling), the default is set for the deep case unconditionally — no level-count gate
+  and no `consistent_jacobian` gate. Four smoother iterations, not more: per unit work
+  gmres/4 (ρ^(1/4) = 0.87) beats gmres/8 (0.91).
+
+**What this does not fix.** At the hard small-`ξ` corner the inner solve fails under
+every smoother tried — richardson outright, and gmres with **ρ > 1** (the V-cycle
+diverges) at 4 levels, where the 3-level run still returned a finite ρ≈0.9. The
+coarsest grid cannot represent the weak-zone/notch viscosity contrast, so geometric
+interpolation cannot carry it: this is *operator conditioning*, and the lever for it is
+the δ/ξ continuation (Layer 2), not the smoother. Do not expect a smoother to rescue
+small ξ.
+
+Measured with `fmg_contraction_probe.py` / `smoother_depth_sweep.py` in the Spiegelman
+hard-case study (ρ_MG = per-V-cycle contraction of the velocity block).
 
 ## The user-facing result
 
@@ -194,8 +220,11 @@ The only knobs a user ever touches are the two deliberate opt-outs: force-fresh
    extension. Recipe + config-trap-list captured in the `nonlinear-solver` skill.
 2. **Layer 1b — flip `zero_init_guess` to auto-detect.** The benchmarked default
    change. Gate the free-surface-chain and mover cases first (below).
-3. **Layer 3 — non-symmetry-safe smoother default under the consistent tangent.**
-   Independent of homotopy; benchmark against the existing consistent-Newton tests.
+3. **Layer 3 — non-symmetry-safe smoother default** — **LANDED** (`gmres`+`sor`+
+   `norm_type=none` in the FMG bundle; test `test_1014`). Independent of homotopy.
+   Benchmarked as described in the Layer 3 section: applied unconditionally rather
+   than gated on the consistent tangent, because the gain scales with multigrid depth
+   and shallow hierarchies are not worth special-casing.
 4. **Layer 2 — `supports_yield_homotopy` / `_yield_homotopy_control` model hook and
    the `solve(homotopy=True)` continuation.** The continuation logic already exists as
    a reference implementation (`underworld3.systems.yield_continuation`, the extracted

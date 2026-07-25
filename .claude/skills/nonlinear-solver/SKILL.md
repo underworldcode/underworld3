@@ -76,7 +76,7 @@ case felt like whack-a-mole. Check them first.
 
 | Trap | Symptom | Fix |
 |---|---|---|
-| Consistent Newton makes the velocity block **non-symmetric**; default Chebyshev/Richardson MG smoother assumes SPD | smoother diverges / stalls → `DIVERGED_LINEAR_SOLVE` or an endless grind | `fieldsplit_velocity_mg_levels_ksp_type=gmres` + `mg_levels_pc_type=sor` |
+| Consistent Newton makes the velocity block **non-symmetric**; a Chebyshev/Richardson MG smoother assumes SPD | smoother diverges / stalls → `DIVERGED_LINEAR_SOLVE` or an endless grind | **Now the default** — the FMG bundle ships `mg_levels_ksp_type=gmres` + `pc_type=sor` + `norm_type=none`. Only an issue if you override it, or on GAMG (which uses PETSc's chebyshev default) |
 | `preconditioner="fmg"` (vs explicit `pc_type=mg` + manual mg opts) | outer KSP "converges" in **1 iteration** → no real Newton correction → stall → `DIVERGED_LINE_SEARCH` | use explicit `pc_type=mg` with the smoother opts above; bound the outer KSP (`ksp_max_it`~80) so a hostile step fails fast |
 | Cold plastic start `v=0` | `ε̇=0 → τ_y/0 → NaN` on iteration 0 | start δ **large** (power-mean → harmonic, bounded by `η_bg`) + one Picard step |
 | LU velocity block with all-Dirichlet-ish BC | pressure nullspace singular | attach the Stokes nullspace / avoid a bare LU there |
@@ -117,14 +117,48 @@ if stokes.has_solution:
 - **Layer 1b — planned:** flip `zero_init_guess` default to auto-detect (cold-vs-warm
   from `has_solution`). Benchmark; gate the free-surface chain-of-solves and the
   mover/adapt reset first.
-- **Layer 3 — planned:** default the FMG velocity smoother to non-symmetry-safe
-  (gmres/sor) when `consistent_jacobian` is on. Benchmark vs the consistent-Newton tests.
+- **Layer 3 — DONE:** the FMG velocity smoother defaults to `gmres`+`sor` with
+  `mg_levels_ksp_norm_type=none` (fixed-cost V-cycle), unconditionally — see
+  "Multigrid depth" below.
 - **Layer 2 — planned:** constitutive model advertises the homotopy
   (`supports_yield_homotopy` / `_yield_homotopy_control`) and
   `stokes.solve(homotopy=True, homotopy_options=...)` runs the continuation
   (folding in `yield_continuation`) with residual-guided auto-descent.
 
 ---
+
+## Multigrid depth — how to measure a smoother honestly
+
+**A two-level hierarchy is a coarse-grid correction, not a V-cycle.** Smoother
+comparisons made on one are misleading: the gmres-over-richardson margin measured on
+the Spiegelman notch is only 5 % at 3 levels but **25 % at 4** (ρ per V-cycle 0.746 →
+0.560), because a deeper cycle applies the smoother on more coarse operators. Judge a
+smoother at depth or not at all.
+
+To get depth without a monster problem, refine a **deliberately ultra-coarse NESTED
+base**: `make_notch_mesh.py 1` (492 cells) + uniform `refinement=N` gives 3 levels /
+7,872 cells at `N=2` and 4 levels / 31,488 at `N=3` — deeper *and* smaller than the old
+2-level 38,580-cell setup. In MG you want the coarsest grid as coarse as it can be
+before the problem breaks down.
+
+- **Never use a non-nested hierarchy** here — it does not give strong MG convergence
+  (maintainer ruling). Uniform refinement nests by construction.
+- Accepted tradeoff: uniform refinement does **not** snap new boundary nodes back to
+  the analytic notch arcs (no CAD/EGADS model attached), so the corner geometry is
+  frozen at the coarse mesh's chords on every level.
+
+Measure with `fmg_contraction_probe.py` (ρ_MG per V-cycle; `<0.5` healthy, `0.8–0.95`
+struggling, `≥0.98` hangs) or `smoother_depth_sweep.py` (pays the mesh build + viscous
+seed once, sweeps smoothers in-process) in the Spiegelman study.
+
+**`solve_report` cannot see the smoother.** It records the *Newton* contraction; the
+outer KSP is Eisenstat–Walker-collapsed to ~1 iteration/step, so the smoother's work
+hides inside the velocity sub-block. Probe the `fieldsplit_velocity_` sub-KSP directly.
+
+**A smoother will not rescue small ξ.** At the hard corner the failure is operator
+conditioning — the coarsest grid cannot represent the viscosity contrast — and at 4
+levels *every* smoother fails there (richardson outright, gmres with ρ>1). Use the δ/ξ
+continuation to stay in the solvable region.
 
 ## Gotchas
 
