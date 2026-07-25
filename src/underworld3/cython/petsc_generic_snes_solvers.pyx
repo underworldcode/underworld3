@@ -847,6 +847,33 @@ class SolverBaseClass(uw_object):
         """
         return self._has_solution
 
+    def _solve_yield_homotopy(self, homotopy_options=None, verbose=False,
+                              solve_kwargs=None):
+        """Run ``solve(homotopy=True)``: a multi-solve δ-continuation on the yield law.
+
+        The constitutive model advertises the homotopy (``supports_yield_homotopy``)
+        and describes it (``_yield_homotopy_control()``: how to set δ, and which
+        tangent to pair with it); the continuation driver marches δ from a large,
+        benign value down to the sharp yield surface, warm-starting each step from the
+        previous converged solution. See
+        :func:`~underworld3.systems.yield_continuation.yield_continuation` and
+        :doc:`nonlinear-solver-homotopy-warmstart` (Layer 2).
+        """
+        cm = self.constitutive_model
+        if cm is None or not getattr(cm, "supports_yield_homotopy", False):
+            raise TypeError(
+                f"solve(homotopy=True) needs a constitutive model with a yield law to "
+                f"sharpen, but {type(cm).__name__ if cm is not None else None} does not "
+                f"advertise supports_yield_homotopy. Use a viscoplastic (or VEP) model, "
+                f"or solve without homotopy."
+            )
+        from underworld3.systems.yield_continuation import yield_continuation
+        # The march's own options win: an explicit homotopy_options["verbose"] is a
+        # deliberate choice about the march, distinct from the solve's verbosity.
+        options = dict(homotopy_options or {})
+        options.setdefault("verbose", verbose)
+        return yield_continuation(self, solve_kwargs=solve_kwargs, **options)
+
     def _record_convergence_status(self, converged=None):
         """Refresh :attr:`has_solution` from the just-completed solve.
 
@@ -8413,7 +8440,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
               debug_name=None,
               _force_setup: bool =False,
               time=None,
-              divergence_retries: int = 0, ):
+              divergence_retries: int = 0,
+              homotopy: bool = False,
+              homotopy_options: dict = None, ):
         """
         Solve the Stokes system for velocity and pressure.
 
@@ -8449,11 +8478,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
             yield-surface kink divergences. 0 preserves legacy behaviour.
+        homotopy : bool, default=False
+            Solve a yielding (viscoplastic) model by a **yield homotopy** instead of
+            a single solve: the constitutive model is put in its smooth,
+            δ-parameterised yield mode and δ is marched down to the sharp yield
+            surface as a sequence of warm-started solves. This is the robust route
+            for a hard Drucker-Prager problem, which does not converge from a cold
+            start on the sharp surface. Requires a model with
+            ``supports_yield_homotopy`` (raises otherwise). Returns the march
+            summary rather than ``None``.
+        homotopy_options : dict, optional
+            March settings passed to
+            :func:`~underworld3.systems.yield_continuation.yield_continuation` —
+            ``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
+            ``retries``. All are defaulted; tuning them is optional.
 
         Returns
         -------
-        None
-            Solution stored in ``self.u`` (velocity) and ``self.p`` (pressure).
+        None or dict
+            ``None`` normally — the solution is stored in ``self.u`` (velocity) and
+            ``self.p`` (pressure). With ``homotopy=True``, the march summary
+            (``settled_delta``, ``reason``, ``steps``, ``reached_dmin``,
+            ``converged``).
 
         Examples
         --------
@@ -8470,6 +8516,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ...     # Update boundary conditions, material properties...
         ...     stokes.solve(zero_init_guess=False)
 
+        >>> # Hard viscoplastic (Drucker-Prager) yield: march the yield homotopy
+        >>> report = stokes.solve(homotopy=True)
+        >>> report["settled_delta"]        # smallest yield softness reached
+
         Notes
         -----
         This is a **collective operation** - all MPI ranks must call it.
@@ -8484,6 +8534,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         p : Pressure solution variable.
         constitutive_model : Viscosity and stress definitions.
         """
+
+        if homotopy:
+            # The march runs a SEQUENCE of ordinary solves at successively sharper
+            # yield surfaces; each one re-enters this method with homotopy=False.
+            return self._solve_yield_homotopy(homotopy_options, verbose=verbose)
 
         if _force_setup:
             self.is_setup = False

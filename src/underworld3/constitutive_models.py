@@ -646,6 +646,18 @@ class Constitutive_Model(uw_object):
         return False
 
     @property
+    def supports_yield_homotopy(self):
+        """Whether this model can be solved by a single-parameter yield homotopy.
+
+        ``True`` on the yielding models, which carry a δ-parameterised soft-min
+        yield law that sharpens to the exact ``Min`` as δ→0 — see
+        :meth:`_yield_homotopy_control`. ``solver.solve(homotopy=True)`` refuses a
+        model that returns ``False`` (a purely viscous model has no yield surface to
+        sharpen, so there is nothing to march).
+        """
+        return False
+
+    @property
     def stress_history_ddt_kwargs(self):
         """Extra kwargs passed to the auto-DDt creation when this model
         triggers it via ``requires_stress_history = True``.
@@ -1069,6 +1081,69 @@ class ViscousFlowModel(Constitutive_Model):
             return sympy.Max(value, floor)
         return uw.maths.smooth_max(value, floor, self._get_yield_softness() * floor)
 
+    # Tangent this model wants while the yield homotopy marches. Newton is right for
+    # a purely viscous-plastic yield; the elastic (VEP) subclasses override to the
+    # frozen/Picard tangent, because the consistent yield tangent taken across the
+    # elastic stress-history block makes the Jacobian indefinite and the linear
+    # solve fails outright (DIVERGED_LINEAR_SOLVE).
+    _yield_homotopy_tangent = True
+
+    def _yield_homotopy_control(self):
+        """Put this model in its smooth (δ-parameterised) yield mode and describe
+        how to march it.
+
+        The model owns what the homotopy *means* for it: which knob is the
+        continuation parameter, how to set it, and which tangent to pair it with.
+        The solver only marches the number. Called by
+        ``solver.solve(homotopy=True)``; see
+        :doc:`nonlinear-solver-homotopy-warmstart` (Layer 2).
+
+        Selects the power-mean soft-min family, whose large-δ limit is the harmonic
+        mean — bounded by the background viscosity even as :math:`\\dot\\varepsilon
+        \\to 0`, so the first (cold) solve of the march is well posed and no separate
+        viscous pre-solve is needed.
+
+        Returns
+        -------
+        YieldHomotopyControl
+            ``set_delta`` (model-owned setter for δ), ``tangent`` (the
+            ``consistent_jacobian`` value to use), and ``delta`` (the ``constants[]``
+            atom itself, for diagnostics).
+        """
+        from underworld3.systems.yield_continuation import YieldHomotopyControl
+
+        self.yield_mode = "softmin"
+        self.yield_smoother = "powermean"
+
+        # Cold-start safety. The plastic viscosity is tau_y / (2 edot_II), so a cold
+        # v = 0 start makes it 0/0 and the first residual is NaN
+        # (DIVERGED_FNORM_NAN). The march is *designed* to start from a cold solve at
+        # large delta, so floor the strain-rate invariant with the vanishing constant
+        # (1e-18) — far below any physical rate, and it makes eta_yield merely huge
+        # rather than undefined, which the soft-min then discards in favour of the
+        # viscous branch. Applied once; the flag keeps a repeated call idempotent.
+        # TODO(BUG): this hazard is not specific to the homotopy — ANY cold
+        # solve() of a ViscoPlasticFlowModel with a finite yield_stress diverges
+        # with FNORM_NAN for the same reason. The floor arguably belongs in the
+        # model's own _strainrate_inv_II. Raised with the maintainer 2026-07-25.
+        if not getattr(self, "_yield_homotopy_regularised", False):
+            strainrate_inv = getattr(self, "_strainrate_inv_II", None)
+            if strainrate_inv is not None:
+                strainrate_inv.sym = strainrate_inv.sym + uw.maths.functions.vanishing
+                self._yield_homotopy_regularised = True
+
+        def set_delta(value):
+            # Go through the property, not the atom: `yield_softness` updates BOTH
+            # the stored value and the constants[] atom, so a later
+            # _get_yield_softness() cannot silently reset δ to a stale number.
+            self.yield_softness = value
+
+        return YieldHomotopyControl(
+            set_delta=set_delta,
+            tangent=self._yield_homotopy_tangent,
+            delta=self._get_yield_softness(),
+        )
+
 
 ## NOTE - retrofit VEP into here
 
@@ -1250,6 +1325,12 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         # Returns an expression that has a different description
         return self._plastic_eff_viscosity
+
+    @property
+    def supports_yield_homotopy(self):
+        """This model carries a δ-parameterised yield law — ``solve(homotopy=True)``
+        can march it. See :meth:`_yield_homotopy_control`."""
+        return True
 
     @property
     def yield_mode(self):
@@ -2209,6 +2290,18 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
     def requires_stress_history(self):
         """VEP models always require stress history tracking."""
         return True
+
+    @property
+    def supports_yield_homotopy(self):
+        """This model carries a δ-parameterised yield law — ``solve(homotopy=True)``
+        can march it. See :meth:`_yield_homotopy_control`."""
+        return True
+
+    # Picard, not Newton: the consistent yield tangent taken across the elastic
+    # stress-history block makes the Jacobian indefinite, and the linear solve fails
+    # outright (DIVERGED_LINEAR_SOLVE at 0 iterations). The frozen tangent is
+    # contractive, and with the δ-march it still converges to the exact yield surface.
+    _yield_homotopy_tangent = False
 
     @property
     def plastic_fraction(self):
@@ -3708,6 +3801,18 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     def requires_stress_history(self):
         """Transverse isotropic VEP requires stress history tracking."""
         return True
+
+    @property
+    def supports_yield_homotopy(self):
+        """This model carries a δ-parameterised yield law — ``solve(homotopy=True)``
+        can march it. Note this model's ``yield_softness`` setter re-triggers a
+        rebuild, so each δ step costs a recompile (the isotropic models update δ as a
+        ``constants[]`` atom instead). See :meth:`_yield_homotopy_control`."""
+        return True
+
+    # Picard, not Newton — as for the isotropic VEP model, the consistent yield
+    # tangent over the elastic stress-history block is indefinite.
+    _yield_homotopy_tangent = False
 
     @property
     def plastic_fraction(self):

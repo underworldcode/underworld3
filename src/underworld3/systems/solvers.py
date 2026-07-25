@@ -1419,6 +1419,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         order=None,
         picard: int = 0,
         divergence_retries: int = 0,
+        homotopy: bool = False,
+        homotopy_options: dict = None,
     ):
         """Solve the Stokes system, with optional viscoelastic stress history.
 
@@ -1453,7 +1455,28 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             kinks) to step off a bad Newton iterate. ``0`` preserves legacy
             behaviour (divergence is terminal). Typical useful value is 1.
             Only applies in the VE/VEP branch (``DFDt is not None``).
+        homotopy : bool, default=False
+            Solve a yielding model by marching the **yield homotopy** — the model's
+            δ-parameterised yield law is sharpened toward the exact ``Min`` over a
+            sequence of warm-started solves — instead of attempting the sharp surface
+            in one go. Requires ``constitutive_model.supports_yield_homotopy``.
+            Returns the march summary instead of ``None``.
+        homotopy_options : dict, optional
+            March settings for
+            :func:`~underworld3.systems.yield_continuation.yield_continuation`
+            (``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
+            ``retries``). All defaulted.
         """
+
+        if homotopy:
+            # Each δ-step re-enters this method with homotopy=False. A VEP model's
+            # solves need the timestep, so forward it to every inner solve.
+            inner = {}
+            if timestep is not None:
+                inner["timestep"] = timestep
+            return self._solve_yield_homotopy(
+                homotopy_options, verbose=verbose, solve_kwargs=inner
+            )
 
         has_stress_history = self.Unknowns.DFDt is not None
 
