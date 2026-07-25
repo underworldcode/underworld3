@@ -29,19 +29,25 @@ Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-sol
 2. **Multi-solve δ-continuation** (NOT an in-solve ramp). Hold δ **constant** for a
    full nonlinear solve to tolerance; warm-start the next, smaller δ from that
    converged state; march δ down to the sharp surface. δ is a `constants[]` atom,
-   so each step is a recompile-free `PetscDSSetConstants` update. Reference driver:
+   so each step is a recompile-free `PetscDSSetConstants` update.
+
+   **This is now one call** — the model advertises the homotopy and `solve()` marches it:
 
    ```python
-   from underworld3.systems import yield_continuation
-   cm.yield_mode = "softmin"; cm.yield_smoother = "powermean"
-   stokes.consistent_jacobian = True                      # per plasticity-solvers
-   # non-symmetry-safe smoother (see trap list):
-   stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "gmres"
-   stokes.petsc_options["fieldsplit_velocity_mg_levels_pc_type"]  = "sor"
-   # a viscous (no-yield) presolve gives the warm start the driver expects
-   result = yield_continuation(stokes, delta0=1.0, down=0.5, dmin=1e-3)
-   # result["settled_delta"] is the smallest δ that converged
+   stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+   cm.Parameters.shear_viscosity_0 = ...
+   cm.Parameters.yield_stress = ...          # a plain pressure-dependent yield
+   report = stokes.solve(homotopy=True)      # smooth mode, tangent, march: automatic
+   report["settled_delta"]                   # smallest δ that converged
    ```
+
+   `solve(homotopy=True)` sets the smooth mode (softmin + power-mean), picks the
+   tangent the model asks for (Newton for DP, Picard for elastic VEP), floors `ε̇_II`
+   so a cold start does not NaN, and runs a residual-guided march that accelerates on
+   easy steps and reverts + retries a failed δ more gently. Tune with
+   `homotopy_options=dict(delta0=…, down=…, dmin=…, entry_maxit=…, step_maxit=…)`;
+   the driver is also callable directly as
+   `underworld3.systems.yield_continuation`.
 
 3. **Consistent-Newton tangent** for non-elastic DP (`consistent_jacobian=True`);
    **Picard** for elastic VEP — see `plasticity-solvers` for the per-model table.
@@ -78,7 +84,7 @@ case felt like whack-a-mole. Check them first.
 |---|---|---|
 | Consistent Newton makes the velocity block **non-symmetric**; a Chebyshev/Richardson MG smoother assumes SPD | smoother diverges / stalls → `DIVERGED_LINEAR_SOLVE` or an endless grind | **Now the default** — the FMG bundle ships `mg_levels_ksp_type=gmres` + `pc_type=sor` + `norm_type=none`. Only an issue if you override it, or on GAMG (which uses PETSc's chebyshev default) |
 | `preconditioner="fmg"` (vs explicit `pc_type=mg` + manual mg opts) | outer KSP "converges" in **1 iteration** → no real Newton correction → stall → `DIVERGED_LINE_SEARCH` | use explicit `pc_type=mg` with the smoother opts above; bound the outer KSP (`ksp_max_it`~80) so a hostile step fails fast |
-| Cold plastic start `v=0` | `ε̇=0 → τ_y/0 → NaN` on iteration 0 | start δ **large** (power-mean → harmonic, bounded by `η_bg`) + one Picard step |
+| Cold plastic start `v=0` | `ε̇=0 → τ_y/(2·0) → NaN`, `DIVERGED_FNORM_NAN` at iteration 0 | floor `ε̇_II` (`+ uw.maths.functions.vanishing`). `solve(homotopy=True)` now does this for you. **Large δ alone does NOT save it** — the singularity is in `η_pl`, before the soft-min sees it |
 | LU velocity block with all-Dirichlet-ish BC | pressure nullspace singular | attach the Stokes nullspace / avoid a bare LU there |
 | Hand-rolled `snes_monitor` to "see what's happening" | you read residuals but miss the tell | use `solve_with_diagnostics` / `get_snes_diagnostics` instead (below) |
 
@@ -120,10 +126,10 @@ if stokes.has_solution:
 - **Layer 3 — DONE:** the FMG velocity smoother defaults to `gmres`+`sor` with
   `mg_levels_ksp_norm_type=none` (fixed-cost V-cycle), unconditionally — see
   "Multigrid depth" below.
-- **Layer 2 — planned:** constitutive model advertises the homotopy
+- **Layer 2 — DONE:** the model advertises the homotopy
   (`supports_yield_homotopy` / `_yield_homotopy_control`) and
-  `stokes.solve(homotopy=True, homotopy_options=...)` runs the continuation
-  (folding in `yield_continuation`) with residual-guided auto-descent.
+  `stokes.solve(homotopy=True, homotopy_options=...)` runs the residual-guided
+  continuation, returning the march summary.
 
 ---
 
