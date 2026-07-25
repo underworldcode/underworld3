@@ -67,6 +67,96 @@ def test_rotated_freeslip_box_reproduces_essential():
     assert sol.velocity_error(v) < 1e-3
 
 
+def test_rotated_linear_workspace_reuses_unchanged_operator():
+    """Repeated linear solves update the RHS without rebuilding GAMG."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "Tcache", mesh, 1, degree=1, continuous=True
+    )
+    viscosity = uw.discretisation.MeshVariable(
+        "Etacache", mesh, 1, degree=1, continuous=True
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "Vcache", mesh, mesh.dim, degree=2, continuous=True
+    )
+    pressure = uw.discretisation.MeshVariable(
+        "Pcache", mesh, 1, degree=1, continuous=False
+    )
+    with mesh.access(temperature, viscosity):
+        temperature.data[:, 0] = 1.0 + temperature.coords[:, 0]
+        viscosity.data[:, 0] = 1.0
+
+    stokes = uw.systems.Stokes(
+        mesh, velocityField=velocity, pressureField=pressure
+    )
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity.sym[0]
+    stokes.bodyforce = sympy.Matrix([[0.0, -temperature.sym[0]]])
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.petsc_options["snes_type"] = "ksponly"
+    stokes.tolerance = 1.0e-8
+
+    stokes.solve()
+    velocity_1 = velocity.data.copy()
+    cache_1 = stokes._rotated_linear_cache
+    handles_1 = (
+        cache_1["Q"].handle,
+        cache_1["Ahat"].handle,
+        cache_1["ctx"]["ksp"].handle,
+    )
+    assert not stokes._rotated_freeslip_info["workspace_reused"]
+
+    with mesh.access(temperature):
+        temperature.data[:, 0] *= 2.0
+    stokes.solve(zero_init_guess=False)
+
+    cache_2 = stokes._rotated_linear_cache
+    handles_2 = (
+        cache_2["Q"].handle,
+        cache_2["Ahat"].handle,
+        cache_2["ctx"]["ksp"].handle,
+    )
+    assert handles_2 == handles_1
+    assert stokes._rotated_freeslip_info["workspace_reused"]
+    relative_scaling_error = (
+        np.linalg.norm(velocity.data - 2.0 * velocity_1)
+        / np.linalg.norm(2.0 * velocity_1)
+    )
+    assert relative_scaling_error < 1.0e-6
+
+    velocity_2 = velocity.data.copy()
+    old_cache = stokes._rotated_linear_cache
+    with mesh.access(viscosity):
+        viscosity.data[:, 0] *= 2.0
+    stokes.solve(zero_init_guess=False)
+
+    assert not stokes._rotated_freeslip_info["workspace_reused"]
+    assert old_cache["ctx"]["ksp"] is None
+    viscosity_scaling_error = (
+        np.linalg.norm(velocity.data - 0.5 * velocity_2)
+        / np.linalg.norm(0.5 * velocity_2)
+    )
+    assert viscosity_scaling_error < 1.0e-6
+
+    refreshed_cache = stokes._rotated_linear_cache
+    refreshed_velocity = velocity.data.copy()
+    stokes.solve(zero_init_guess=False, time=0.5)
+    assert stokes._rotated_freeslip_info["workspace_reused"]
+    assert (
+        stokes._rotated_linear_cache["ctx"]["ksp"].handle
+        == refreshed_cache["ctx"]["ksp"].handle
+    )
+    time_refresh_error = (
+        np.linalg.norm(velocity.data - refreshed_velocity)
+        / np.linalg.norm(refreshed_velocity)
+    )
+    assert time_refresh_error < 1.0e-6
+
+
 @pytest.mark.level_2
 def test_rotated_freeslip_spherical_shell_3d():
     """3D spherical shell, free-slip inner+outer (the Zhong #248 configuration):

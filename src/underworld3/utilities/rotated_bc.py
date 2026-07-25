@@ -253,10 +253,111 @@ def _zero_rows_local(vec, normal_rows):
     vec.setArray(a)
 
 
+def _build_matrix_probe(matrix):
+    """Build two deterministic matrix-vector products for reuse detection."""
+    probes = []
+    for phase in (0.6180339887498948, 1.4142135623730951):
+        x = matrix.createVecRight()
+        row_start, row_end = x.getOwnershipRange()
+        indices = np.arange(row_start, row_end, dtype=float) + 1.0
+        values = x.getArray()
+        values[:] = np.sin(phase * indices) + np.cos(
+            (phase + 0.5) * indices
+        )
+        y = matrix.createVecLeft()
+        work = matrix.createVecLeft()
+        matrix.mult(x, y)
+        probes.append((x, y, work))
+    return probes
+
+
+def _matrix_matches_probe(matrix, probes, rtol=5.0e-13):
+    """Test whether an assembled operator matches two cached products.
+
+    Exact ``Mat.equal`` rejects harmless distributed-assembly roundoff, while
+    copying CSR values on every solve creates its own allocator high-water
+    growth. Two deterministic products provide a tight, allocation-free check.
+    """
+    for x, reference, work in probes:
+        matrix.mult(x, work)
+        work.axpy(-1.0, reference)
+        relative_error = work.norm() / (reference.norm() + 1.0e-300)
+        if relative_error > rtol:
+            return False
+    return True
+
+
+def _refresh_matrix_probe(matrix, probes):
+    """Replace cached matrix-vector products after an operator change."""
+    for x, reference, _ in probes:
+        matrix.mult(x, reference)
+
+
+def _destroy_matrix_probe(probes):
+    """Release vectors owned by an operator-reuse probe."""
+    if probes is None:
+        return
+    for vectors in probes:
+        for vector in vectors:
+            vector.destroy()
+
+
+def _operator_coefficient_variables(solver):
+    """Return mutable mesh variables that can change the linear Stokes operator."""
+    from underworld3.function.expressions import mesh_vars_in_expression
+
+    expressions = [solver.constraints, solver.penalty]
+    saddle_preconditioner = getattr(solver, "saddle_preconditioner", None)
+    if saddle_preconditioner is not None:
+        expressions.append(saddle_preconditioner)
+
+    parameters = getattr(solver.constitutive_model, "Parameters", None)
+    if parameters is not None:
+        for name in parameters._list_valid_parameters(type(parameters)):
+            try:
+                expressions.append(getattr(parameters, name))
+            except (AttributeError, TypeError):
+                pass
+
+    variables = set()
+    for expression in expressions:
+        expression = getattr(expression, "sym", expression)
+        if expression is None or not hasattr(expression, "args"):
+            continue
+        try:
+            _, regular, derivatives = mesh_vars_in_expression(expression)
+        except (AttributeError, TypeError):
+            continue
+        variables.update(fn.meshvar() for fn in regular)
+        variables.update(derivatives)
+
+    unknowns = {
+        getattr(variable, "_base_var", variable)
+        for variable in solver.fields.values()
+    }
+    variables = {
+        getattr(variable, "_base_var", variable)
+        for variable in variables
+    }
+    variables.difference_update(unknowns)
+    return tuple(sorted(variables, key=lambda variable: variable._uw_id))
+
+
+def _coefficient_states(variables):
+    """Return UW data-version counters for operator coefficient variables."""
+    return tuple(variable._state for variable in variables)
+
+
 # --------------------------------------------------------------------------- #
 #  The rotated solve
 # --------------------------------------------------------------------------- #
-def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbose=False):
+def solve_rotated_freeslip(
+    solver,
+    boundaries,
+    remove_rotation_gauge=True,
+    verbose=False,
+    force_operator_refresh=False,
+):
     """Assemble + solve the rotated strong-free-slip Stokes saddle. Fills the
     solver's velocity/pressure fields with the (rotated-back, gauge-removed)
     solution.
@@ -271,14 +372,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         ``dynamic_topography_field`` (as their ``solve_result`` argument), with keys:
 
         * ``"Q"``, ``"Qt"`` — the rotation and its transpose (PETSc Mats);
-        * ``"A"``, ``"b"`` — the unrotated operator and RHS, kept so the reaction
-          ``A·u − b`` can be reconstructed (linear path only);
+        * ``"reaction"`` — the Cartesian nodal reaction ``A·u − b``;
         * ``"U"``, ``"Uhat"`` — the Cartesian and rotated-frame solutions;
         * ``"normal_rows"`` — global rows of the constrained normal components;
         * ``"boundaries"`` — the boundary specs the rotation was built from;
         * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
         * ``"ksp_reason"``, ``"ksp_its"`` — outer KSP converged-reason and iteration count.
     """
+    _destroy_rotated_solve_result(getattr(solver, "_rotated_freeslip_info", None))
+    solver._rotated_freeslip_info = None
+
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
         solver._setup_discretisation()
@@ -286,18 +389,36 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     dm = solver.dm
     snes = solver.snes
 
-    # Assemble the operator FIRST so its parallel row layout is final before we build
-    # Q against it (A = exact Jacobian at 0 — linear; b = -F(0)). The Pmat is
-    # assembled alongside: its p-p block is the native 1/mu pressure mass (the
-    # DS JacobianPreconditioner term) that preconditions the Schur complement —
-    # petsc4py's computeJacobian(x, J) would silently pass J as its own Pmat and
-    # the mass block would never be assembled.
     snes.setUp()
     U0 = dm.getGlobalVec()
     U0.set(0.0)
     J, Jp = snes.getJacobian()[:2]
-    snes.computeJacobian(U0, J, Jp)
-    Aorig = J.copy()
+
+    use_lu = bool(getattr(solver, "_rotated_use_lu", False))
+    cache = getattr(solver, "_rotated_linear_cache", None)
+    if use_lu and cache is not None:
+        _destroy_rotated_linear_cache(cache)
+        solver._rotated_linear_cache = None
+        cache = None
+
+    if cache is None:
+        coefficient_variables = _operator_coefficient_variables(solver)
+    else:
+        coefficient_variables = cache["coefficient_variables"]
+    coefficient_states = _coefficient_states(coefficient_variables)
+    coefficients_unchanged = (
+        cache is not None
+        and coefficient_states == cache["coefficient_states"]
+        and not force_operator_refresh
+    )
+
+    # Assemble J/Jp only when a coefficient used by the linear operator changed.
+    # A time-dependent body force changes F(0), not J, so repeated constant-
+    # viscosity Stokes solves can reuse the transformed matrix and GAMG hierarchy
+    # without paying distributed finite-element assembly every timestep.
+    if not coefficients_unchanged:
+        snes.computeJacobian(U0, J, Jp)
+
     F0 = dm.getGlobalVec()
     snes.computeFunction(U0, F0)
     b = F0.copy()
@@ -306,12 +427,27 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     dm.restoreGlobalVec(U0)
     dm.restoreGlobalVec(F0)
 
-    Q, Qt, normal_rows = build_rotation(solver, boundaries)
-
-    # rotate: Â = Q A Qᵀ, b̂ = Q b
-    Ahat = Aorig.ptap(Qt)
-    bhat = b.duplicate()
-    Q.mult(b, bhat)
+    operator_reused = False
+    if cache is None:
+        Q, Qt, normal_rows = build_rotation(solver, boundaries)
+        Ahat = J.ptap(Qt)
+        operator_probe = _build_matrix_probe(J)
+        diag_scale = _velocity_diag_scale(Ahat, solver)
+    else:
+        Q = cache["Q"]
+        Qt = cache["Qt"]
+        normal_rows = cache["normal_rows"]
+        Ahat = cache["Ahat"]
+        operator_probe = cache["operator_probe"]
+        operator_reused = coefficients_unchanged or _matrix_matches_probe(
+            J, operator_probe
+        )
+        if operator_reused:
+            diag_scale = cache["diag_scale"]
+        else:
+            J.ptap(Qt, result=Ahat)
+            _refresh_matrix_probe(J, operator_probe)
+            diag_scale = _velocity_diag_scale(Ahat, solver)
 
     # constrain rotated normal rows (v_n=0): zero the matrix rows/cols AND the RHS
     # at those rows — zeroRowsColumns does NOT touch the RHS, so a nonzero b there
@@ -325,14 +461,19 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     # zeroed after the solve.
     # zeroRowsColumns takes GLOBAL row indices (correct); the RHS write goes through
     # _zero_rows_local (ownership-relative indexing — the np>1 crash class).
-    Ahat.zeroRowsColumns(normal_rows, diag=_velocity_diag_scale(Ahat, solver))
+    if not operator_reused:
+        Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
+
+    bhat = b.duplicate()
+    Q.mult(b, bhat)
     _zero_rows_local(bhat, normal_rows)
 
     # ITERATIVE by default (LU is almost never right): a self-contained fieldsplit-
     # Schur solve whose velocity block is geometric FMG on the custom prolongation
     # when a hierarchy is registered (set_custom_fmg), else GAMG. Direct LU only when
     # explicitly opted in via solver._rotated_use_lu.
-    if getattr(solver, "_rotated_use_lu", False):
+    if use_lu:
+        Aorig = J.copy()
         # Pin one pressure DOF (datum) — row only, keeps the B^T coupling. Only the
         # direct solve needs it; the iterative path fixes the pressure gauge with the
         # constant-pressure null space instead.
@@ -362,12 +503,37 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         ksp_reason = ksp.getConvergedReason()
         ksp_its = ksp.getIterationNumber()
         _warn_if_ksp_diverged(ksp, kind="rotated direct-LU")
+        ksp.destroy()
+        Ahat.destroy()
+        _destroy_matrix_probe(operator_probe)
+        owns_rotation = True
     else:
-        Mp = _pressure_mass_schur_pmat(solver)
+        if cache is None or not operator_reused:
+            if cache is not None:
+                _destroy_rotated_ksp_ctx(cache["ctx"])
+            Mp = _pressure_mass_schur_pmat(solver)
+            ctx = None
+        else:
+            Mp = cache["ctx"]["Mp"]
+            ctx = cache["ctx"]
         Uhat, ksp_reason, ctx = _solve_rotated_iterative(
-            solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose, Mp=Mp)
+            solver, Ahat, bhat, Q, Qt, normal_rows, verbose=verbose, Mp=Mp,
+            ctx=ctx, refresh_operator=not operator_reused)
         ksp_its = ctx["ksp"].getIterationNumber()
-        _destroy_rotated_ksp_ctx(ctx)
+        cache = {
+            "Q": Q,
+            "Qt": Qt,
+            "normal_rows": normal_rows,
+            "Ahat": Ahat,
+            "operator_probe": operator_probe,
+            "coefficient_variables": coefficient_variables,
+            "coefficient_states": coefficient_states,
+            "diag_scale": diag_scale,
+            "ctx": ctx,
+            "boundaries": list(boundaries),
+        }
+        solver._rotated_linear_cache = cache
+        owns_rotation = False
 
     # rotate back u = Qᵀ û  (U is returned in the result dict → create, don't
     # borrow from the pool)
@@ -376,10 +542,21 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
 
     removed = _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
 
-    return {"Q": Q, "Qt": Qt, "A": Aorig, "b": b, "U": U, "Uhat": Uhat,
+    reaction = J.createVecLeft()
+    J.mult(U, reaction)
+    reaction.axpy(-1.0, b)
+    bhat.destroy()
+
+    result = {"Q": Q, "Qt": Qt, "reaction": reaction, "U": U, "Uhat": Uhat,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed, "ksp_reason": ksp_reason,
-            "ksp_its": ksp_its}
+            "ksp_its": ksp_its, "workspace_reused": operator_reused,
+            "_owns_rotation": owns_rotation}
+    if use_lu:
+        result.update({"A": Aorig, "b": b})
+    else:
+        b.destroy()
+    return result
 
 
 def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge):
@@ -560,6 +737,12 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
           of Newton increments solved, ``== len(ksp_its)``) and status;
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired.
     """
+    _destroy_rotated_solve_result(getattr(solver, "_rotated_freeslip_info", None))
+    solver._rotated_freeslip_info = None
+    if getattr(solver, "_rotated_linear_cache", None) is not None:
+        _destroy_rotated_linear_cache(solver._rotated_linear_cache)
+        solver._rotated_linear_cache = None
+
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
         solver._setup_discretisation()
@@ -725,7 +908,8 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its,
-            "continuation_switched": continuation and phase == "newton"}
+            "continuation_switched": continuation and phase == "newton",
+            "_owns_rotation": True}
 
 
 def _build_rotated_custom_Pl(solver, Q, normal_rows):
@@ -779,17 +963,57 @@ def _velocity_diag_scale(Ahat, solver):
 
 
 def _destroy_rotated_ksp_ctx(ctx):
-    """Release the reusable rotated-KSP context (KSP and the owned Schur pmat)."""
+    """Release a reusable rotated-KSP context and its owned PETSc objects."""
     if ctx is None:
         return
     if ctx.get("ksp") is not None:
         ctx["ksp"].destroy()
+        ctx["ksp"] = None
     if ctx.get("Mp") is not None:
         ctx["Mp"].destroy()
+        ctx["Mp"] = None
+    if ctx.get("nsp") is not None:
+        ctx["nsp"].destroy()
+        ctx["nsp"] = None
+    if ctx.get("cns") is not None:
+        ctx["cns"].destroy()
+        ctx["cns"] = None
+
+
+def _destroy_rotated_solve_result(result):
+    """Release PETSc objects owned by one completed rotated solve result."""
+    if not result:
+        return
+    for key in ("reaction", "U", "Uhat", "A", "b"):
+        obj = result.get(key)
+        if obj is not None:
+            obj.destroy()
+            result[key] = None
+    if result.get("_owns_rotation", True):
+        for key in ("Q", "Qt"):
+            obj = result.get(key)
+            if obj is not None:
+                obj.destroy()
+                result[key] = None
+
+
+def _destroy_rotated_linear_cache(cache):
+    """Release the persistent linear rotated-free-slip workspace."""
+    if not cache:
+        return
+    _destroy_rotated_ksp_ctx(cache.get("ctx"))
+    _destroy_matrix_probe(cache.get("operator_probe"))
+    cache["operator_probe"] = None
+    for key in ("Ahat", "Q", "Qt"):
+        obj = cache.get(key)
+        if obj is not None:
+            obj.destroy()
+            cache[key] = None
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
-                             custom_Pl=None, nsp=None, Mp=None, ctx=None):
+                             custom_Pl=None, nsp=None, Mp=None, ctx=None,
+                             refresh_operator=True):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
     (PR#290, rotated) when a hierarchy is registered (``set_custom_fmg``), else GAMG
@@ -820,7 +1044,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     across Newton iterations — the fieldsplit ISs, Schur USER pmat and FMG
     prolongations survive; only the operator-values refresh is paid. The caller
     must keep ``Ahat``/``Mp`` the SAME Mat objects (values updated in place) and
-    release the context with ``_destroy_rotated_ksp_ctx`` when done."""
+    release the context with ``_destroy_rotated_ksp_ctx`` when done.
+
+    ``refresh_operator=False`` is the cross-solve fast path for an exactly
+    unchanged matrix. It leaves the KSP/PC/GAMG hierarchy untouched and updates
+    only the right-hand side."""
     from underworld3.utilities import custom_mg
     dm = solver.dm
     vel_is = solver._subdict["velocity"][0]
@@ -935,7 +1163,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         nsp = ctx["nsp"]
         # Same Mat objects, new values (ptap-with-result / createSubMatrix-with-
         # submat) — poke the KSP so PCSetUp refreshes on the changed operator.
-        ksp.setOperators(Ahat)
+        if refresh_operator:
+            ksp.setOperators(Ahat)
 
     if nsp is not None:
         nsp.remove(bhat)                              # project EVERY rhs

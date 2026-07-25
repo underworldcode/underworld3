@@ -1411,6 +1411,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         self,
         zero_init_guess: bool = True,
         timestep: float = None,
+        time=None,
         _force_setup: bool = False,
         verbose: bool = False,
         debug: bool = False,
@@ -1432,6 +1433,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             If True, use zero initial guess. Otherwise use current field values.
         timestep : float, optional
             Advection timestep. Required when stress history is active.
+        time : float or Quantity, optional
+            Physical evaluation time for expressions using ``mesh.t``. This is
+            distinct from the viscoelastic integration ``timestep``.
         _force_setup : bool
             Force rebuild of pointwise functions.
         verbose : bool
@@ -1513,6 +1517,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 _force_setup=_force_setup,
                 verbose=verbose,
                 picard=picard,
+                time=time,
                 divergence_retries=divergence_retries,
             )
 
@@ -1570,6 +1575,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 _force_setup=_force_setup,
                 verbose=verbose,
                 picard=picard,
+                time=time,
                 divergence_retries=divergence_retries,
             )
 

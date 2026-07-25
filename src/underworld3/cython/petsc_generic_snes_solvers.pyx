@@ -898,6 +898,7 @@ class SolverBaseClass(uw_object):
 
     def _reset(self):
 
+        self._reset_rotated_solver_cache()
         self.natural_bcs = []
         self.essential_bcs = []
 
@@ -915,6 +916,21 @@ class SolverBaseClass(uw_object):
         self.is_setup = False
 
         return
+
+    def _reset_rotated_solver_cache(self):
+        """Release rotated-free-slip state before solver/DM teardown."""
+        result = getattr(self, "_rotated_freeslip_info", None)
+        cache = getattr(self, "_rotated_linear_cache", None)
+        if result is not None or cache is not None:
+            from underworld3.utilities.rotated_bc import (
+                _destroy_rotated_linear_cache,
+                _destroy_rotated_solve_result,
+            )
+            _destroy_rotated_solve_result(result)
+            _destroy_rotated_linear_cache(cache)
+        self._rotated_freeslip_info = None
+        self._rotated_linear_cache = None
+        self._rotated_residual_is_nonlinear = None
 
     def get_snes_diagnostics(self):
         """
@@ -1228,6 +1244,11 @@ class SolverBaseClass(uw_object):
 
         if self.is_setup:
             return
+
+        # Rotated matrices and KSP/PC objects reference the current DM/SNES
+        # layout. Any requested solver rebuild invalidates the whole workspace
+        # and the cached linear/nonlinear classification.
+        self._reset_rotated_solver_cache()
 
         # Resolve the preconditioner choice (auto/fmg/gamg) against the current
         # mesh hierarchy and push the option bundle before the per-class
@@ -5098,6 +5119,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # reaction = sigma_nn). Empty by default → the solve path is unchanged.
         self._rotated_freeslip_bcs = []
         self._rotated_freeslip_info = None
+        self._rotated_linear_cache = None
+        self._rotated_residual_is_nonlinear = None
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -8066,9 +8089,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             #    consistent_jacobian tangent (Picard / Newton / continuation).
             from underworld3.utilities.rotated_bc import (
                 solve_rotated_freeslip, solve_rotated_freeslip_nonlinear)
-            if not self._residual_is_nonlinear():
+            if self._rotated_residual_is_nonlinear is None:
+                self._rotated_residual_is_nonlinear = self._residual_is_nonlinear()
+            if not self._rotated_residual_is_nonlinear:
                 self._rotated_freeslip_info = solve_rotated_freeslip(
-                    self, self._rotated_freeslip_bcs, verbose=verbose)
+                    self, self._rotated_freeslip_bcs, verbose=verbose,
+                    force_operator_refresh=time is not None)
             else:
                 self._rotated_freeslip_info = solve_rotated_freeslip_nonlinear(
                     self, self._rotated_freeslip_bcs, verbose=verbose,
