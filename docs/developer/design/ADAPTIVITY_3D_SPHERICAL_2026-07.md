@@ -709,6 +709,86 @@ deliverable.
   motion is physics-owned. Tangential slide along an interface is a
   one-flag change if ever wanted.
 
+## Refinement-mechanism study: centroid (Alfeld) vs bisection (2026-07-25)
+
+Maintainer proposal: split marked tets at the CENTROID instead of
+bisecting an edge. A centroid split leaves the parent's four faces
+untouched, so a refined cell stays conforming with unrefined neighbours
+at ANY depth difference — no closure, and therefore none of the
+refinement "escape" (the halo of forced neighbour splits) that bisection
+pays. Probes in `~/+Simulations/nvb_3d_adapt_evaluation/`
+(`centroid_refine_probe.py`, `centroid_solver_quality_probe.py`).
+
+**The geometry side confirms the proposal exactly.** At matched on-fault
+cell size the centroid child needs HALF the cells (19,136 vs 37,446),
+the over-refinement fraction collapses from 45.8% to 8.9% (the residue
+is just the metric's own quantisation), the mesh is conforming by
+construction (zero non-conforming faces; passes the full `DMPlexCheck`
+battery), and in parallel it would need no cross-rank reconciliation at
+all — every new point is interior to its cell.
+
+**The solver side kills it as a DEEP mechanism.** Solving a manufactured
+Poisson problem on both meshes (P1, relative L2 error, in-band and
+global), the bisection error falls monotonically with refinement while
+the centroid error STALLS and creeps up — ending slightly worse than the
+unrefined base while spending more dofs:
+
+| on-fault target | bisection in-band err | centroid in-band err | max dihedral (bis / cen) |
+|---|---|---|---|
+| base | 0.114 | 0.114 | 148° |
+| 0.12 | 0.111 | 0.119 | 167° / 170° |
+| 0.09 | 0.100 | 0.122 | 173° / 176° |
+| 0.06 | 0.086 | 0.124 | 172° / **179.0°** |
+| 0.045 | 0.079 | 0.124 | 173° / **179.6°** |
+
+The mechanism is the maximum-angle (Babuska-Aziz) condition, not the
+minimum angle: at 179.6 degrees the elements are flat and P1
+interpolation on them is no better than on the coarse parent, however
+many are added. Jacobi-CG iterations also double (230 vs 113). Element
+quality halves per generation (q_med 0.62 → 0.50 → 0.31 → 0.14 → 0.08),
+so a well-shaped starting mesh buys a constant, not a slope.
+
+**Ruling: centroid refinement is a SHALLOW tool.** At one-to-two
+generations the two methods are at parity (1.07x the error, 1.02x the
+iterations, 109% of the dofs) and centroid gets there with no closure —
+which is also how Alfeld splits are used in practice (one split of a
+good mesh, for Scott-Vogelius stability). The open follow-up worth
+testing: ONE centroid pass as the FINAL generation on top of a bisection
+hierarchy, where the halo costs the most cells and only the first
+quality step is paid. PETSc already ships the uniform Alfeld transform
+(`DMPLEXREFINEALFELD`); it does not consult the framework's active
+label, so a selective version would be our own — but a far simpler
+transform than the bisection one (no closure, no state label, no
+cross-rank fixed point).
+
+## Base-mesh provenance: where the starting quality goes (2026-07-25)
+
+Prompted by the 148-degree max dihedral of the standard base. Findings:
+
+* PETSc's uniform 1:8 tet refinement splits the interior octahedron
+  along a FIXED reference diagonal (`plexrefregular.c`, all four inner
+  children share the 3-7 pair), not the shortest physical one. It costs
+  a ONE-TIME hit — identical statistics at refinement levels 1 and 2
+  (148.4 degrees, q_min 0.275 both) — and the degraded cells are
+  INTERIOR, not boundary slivers (at level 2 the worst 50 cells are 32%
+  boundary-incident against 55% for the mesh as a whole).
+* **But gmsh is not a 120-degree mesher.** The 120.6 degrees measured on
+  the cellSize=0.4 base is a 184-cell artefact where every cell is
+  boundary-fitted; at a realistic 699 cells (cellSize 0.2) gmsh's own
+  worst dihedral is 155 degrees — worse than the uniform split's 148.
+  Median quality is the honest discriminator: 0.74 (raw gmsh) vs 0.62
+  (uniformly refined).
+* Adapting from a raw gmsh base of the same resolution (no uniform
+  refinement — admissible because the refinement generations are
+  themselves MG levels and the custom-P transfers accept non-nested
+  pairs) gives **~11% lower solution error at equal dofs** (8.0e-2 vs
+  9.0e-2 at ~2,100 dofs), with better q_med (0.407 vs 0.379) and q_min.
+  Real but modest; worth offering as an option rather than a default.
+* Worth noting for both studies: a bisection child carries a max
+  dihedral of 171-174 degrees and still converges cleanly. The
+  discriminator is not the worst angle but the FRACTION of
+  near-degenerate cells (bisection 1.9% below q=0.1; centroid 70.7%).
+
 ## Effort and risk, honestly
 
 | round | new-code size | risk | notes |
