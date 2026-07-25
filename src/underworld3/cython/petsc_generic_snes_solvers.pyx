@@ -1291,8 +1291,24 @@ class SolverBaseClass(uw_object):
 
         return
 
+    def _reset_rotated_solver_cache(self):
+        """Release the rotated-free-slip cross-solve workspace (rotated_bc
+        cache: Q/Qt, the PtAP'd operator, the fieldsplit KSP/PC) before any
+        solver/DM teardown — those PETSc objects reference the current DM row
+        layout and must not survive it. No-op for solvers without the cache
+        (getattr guard: only SNES_Stokes_SaddlePt ever populates it). The
+        last solve's result dict (``_rotated_freeslip_info``) is NOT dropped:
+        its reaction vector is independent of the cache and the σ_nn /
+        dynamic-topography recoveries may still need it."""
+        cache = getattr(self, "_rotated_linear_cache", None)
+        if cache is not None:
+            from underworld3.utilities.rotated_bc import _destroy_rotated_linear_cache
+            _destroy_rotated_linear_cache(cache)
+        self._rotated_linear_cache = None
+
     def _reset(self):
 
+        self._reset_rotated_solver_cache()
         self.natural_bcs = []
         self.essential_bcs = []
         # A teardown means the next solve is a different discrete problem: a resume
@@ -2065,6 +2081,15 @@ class SolverBaseClass(uw_object):
         # sequence; this brings _build() into line with it.
         # NB self.snes / self.dm_hierarchy may not exist yet on the first
         # build, so use getattr/hasattr-style guards rather than `is not None`.
+
+        # The rotated free-slip cross-solve workspace (rotation Q, PtAP'd
+        # operator, fieldsplit KSP/PC) was built against the SNES/DM we are
+        # about to destroy — release it first. Fast paths 1 and 2 above keep
+        # the DM/SNES, so the workspace legitimately survives them (a rewire's
+        # new kernels are caught by the workspace's own JIT-key/constants
+        # invalidation signature).
+        self._reset_rotated_solver_cache()
+
         if getattr(self, "snes", None) is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver SNES", flush=True)
@@ -5904,6 +5929,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._rotated_freeslip_bcs = []
         self._rotated_freeslip_datum = {}
         self._rotated_freeslip_info = None
+        # Cross-solve rotated workspace (rotated_bc cache, issue #417):
+        # populated/keyed/invalidated entirely inside solve_rotated_freeslip;
+        # torn down here by _reset_rotated_solver_cache on any DM rebuild.
+        self._rotated_linear_cache = None
         # Split-fault interface conditions (add_fault_bc): fault names whose
         # coincident DOF pairs carry a contact (the laws themselves live in
         # _fault_interface_laws, set lazily by utilities/fault_contact.py).
@@ -9366,7 +9395,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             from underworld3.utilities.rotated_bc import solve_rotated_freeslip
             self._rotated_freeslip_info = solve_rotated_freeslip(
                 self, self._rotated_freeslip_bcs, verbose=verbose,
-                zero_init_guess=zero_init_guess, picard=picard)
+                zero_init_guess=zero_init_guess, picard=picard,
+                # An explicit `time=` reaches the kernels through petsc_t on
+                # the DM — invisible to every state counter and constant
+                # value, so it must veto the cached-operator fast path.
+                force_operator_refresh=time is not None)
             # This path solves via ksp.solve on the rotated operator (not self.snes),
             # so give it a report from the rotated result rather than leaving a stale one.
             _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
