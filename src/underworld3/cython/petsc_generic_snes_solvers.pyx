@@ -621,13 +621,28 @@ class SolverBaseClass(uw_object):
             opts[f"{prefix}pc_type"] = "mg"
             opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
             opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
-            # richardson+sor (not chebyshev): chebyshev needs eigenvalue
-            # estimates of the smoothed operator, which are fragile on the
-            # indefinite / variable-viscosity Stokes velocity block and diverge;
-            # richardson+sor is the benchmark-validated, mesh-independent choice.
-            opts[f"{prefix}mg_levels_ksp_type"] = "richardson"
+            # gmres+sor, sized for a DEEP hierarchy (the only kind worth having:
+            # a two-level cycle is a coarse-grid correction, not a V-cycle, and is
+            # not worth special-casing). Chebyshev needs eigenvalue estimates of the
+            # smoothed operator, which are fragile on the indefinite /
+            # variable-viscosity velocity block and diverge. Richardson is
+            # stationary and degrades on the NON-SYMMETRIC operator produced by the
+            # consistent-Newton tangent. Measured on the Spiegelman notch (Drucker-
+            # Prager, eta contrast 1e26) over a nested 4-level hierarchy: contraction
+            # per V-cycle rho = 0.75 (richardson) vs 0.56 (gmres) at the SAME four
+            # smoother iterations -- and the gmres margin GROWS with depth (5% at 3
+            # levels, 25% at 4), because deeper cycles apply the smoother on more
+            # coarse operators. Four iterations, not more: per unit work gmres/4
+            # (rho^(1/4) = 0.87) beats gmres/8 (0.91).
+            opts[f"{prefix}mg_levels_ksp_type"] = "gmres"
             opts[f"{prefix}mg_levels_pc_type"] = "sor"
             opts[f"{prefix}mg_levels_ksp_max_it"] = 4
+            # Run EXACTLY max_it smoother iterations: no residual-norm computation
+            # and no convergence test, so every V-cycle costs the same. A Krylov
+            # smoother makes the cycle non-stationary, which is why the velocity
+            # block is fgmres (flexible) rather than gmres -- see the fieldsplit
+            # defaults in the Stokes __init__.
+            opts[f"{prefix}mg_levels_ksp_norm_type"] = "none"
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
             # redundant+lu, not bare lu: a bare serial LU cannot factor a
             # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
@@ -658,7 +673,8 @@ class SolverBaseClass(uw_object):
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
             # Clear stale geometric-MG-only keys.
             for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
-                        "mg_levels_pc_type", "mg_coarse_pc_type",
+                        "mg_levels_pc_type", "mg_levels_ksp_norm_type",
+                        "mg_coarse_pc_type",
                         "mg_coarse_redundant_pc_type"):
                 opts.delValue(f"{prefix}{key}")
             self._pc_managed_value = "gamg"

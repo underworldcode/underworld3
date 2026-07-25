@@ -150,12 +150,19 @@ def test_geometric_mg_without_galerkin_is_repaired():
 def test_default_fmg_bundle_is_parallel_safe():
     # The property's OWN default FMG bundle must be usable at np>1 unaided: a
     # parallel-safe coarse solver (redundant+lu, not bare serial lu) and a
-    # robust smoother (richardson+sor, not eigen-estimate-fragile chebyshev).
+    # smoother sized for a DEEP hierarchy — gmres+sor, not eigen-estimate-fragile
+    # chebyshev and not stationary richardson, which degrades on the non-symmetric
+    # consistent-Newton operator (measured: per-V-cycle contraction 0.75 richardson
+    # vs 0.56 gmres over 4 nested levels on the Spiegelman notch).
     stokes = _make_stokes(mesh_refined)
     stokes.preconditioner = "fmg"
     stokes.solve()
     vp = "fieldsplit_velocity_"
     assert stokes.petsc_options.getString(vp + "mg_coarse_pc_type") == "redundant"
     assert stokes.petsc_options.getString(vp + "mg_coarse_redundant_pc_type") == "lu"
-    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_type") == "richardson"
+    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_type") == "gmres"
+    assert stokes.petsc_options.getString(vp + "mg_levels_pc_type") == "sor"
+    # Fixed-cost V-cycle: exactly mg_levels_ksp_max_it smoother iterations, no
+    # residual-norm computation and no early exit.
+    assert stokes.petsc_options.getString(vp + "mg_levels_ksp_norm_type") == "none"
     assert stokes.snes.getConvergedReason() > 0
