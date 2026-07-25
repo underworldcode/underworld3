@@ -226,9 +226,22 @@ The only knobs a user ever touches are the two deliberate opt-outs: force-fresh
    than gated on the consistent tangent, because the gain scales with multigrid depth
    and shallow hierarchies are not worth special-casing.
 4. **Layer 2 — `supports_yield_homotopy` / `_yield_homotopy_control` model hook and
-   the `solve(homotopy=True)` continuation.** The continuation logic already exists as
+   the `solve(homotopy=True)` continuation** — **LANDED** (test `test_1057`). As built:
+   the control is a `YieldHomotopyControl` carrying a **model-owned δ setter** (the
+   isotropic models update the `constants[]` atom, TI-VEP rebuilds — and going through
+   the model's own `yield_softness` property is what stops a later
+   `_get_yield_softness()` resetting δ to a stale value), the recommended tangent, and
+   the δ atom. The march is residual-guided as designed, and additionally *reverts and
+   retries a failed δ more gently* before settling. A VEP model's `timestep` is
+   forwarded to the inner solves. **Cold-start caveat found in implementation:**
+   `τ_y/(2 ε̇_II)` is `0/0` at `v=0`, so the first residual is NaN — large δ alone does
+   *not* save it, because the singularity is in `η_pl` before the soft-min ever sees
+   it. `_yield_homotopy_control` therefore floors `ε̇_II` with the `vanishing`
+   constant. That hazard is **not** homotopy-specific (any cold viscoplastic solve with
+   a finite yield stress hits it) and is flagged `TODO(BUG)` for a decision on moving
+   the floor into the model itself. The continuation logic existed as
    a reference implementation (`underworld3.systems.yield_continuation`, the extracted
-   form of `convergence.py::run_continuation`); fold it in, driven by the model hook
+   form of `convergence.py::run_continuation`); it is folded in, driven by the model hook
    and Layer 1's warm-start.
 
 ## Open verification points / risks
