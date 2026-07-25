@@ -92,7 +92,7 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
                    stol=None, stol_k=3,
                    fd_eps=1.0e-6, metric_eval="rbf", rbf_k=None,
                    accel="cg", momentum=0.0,
-                   resolution_ratio=None,
+                   resolution_ratio=None, reference="mesh",
                    **_unknown_kwargs):
     r"""Anisotropic variational moving-mesh adaptation (Huang–Kamenski
     MMPDE; the direct simplex discretization of JCP 301 (2015) 322,
@@ -146,6 +146,27 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     every accelerator fold-safe. (Previously controlled by the ``MMPDE_ACCEL`` /
     ``MMPDE_MOMENTUM`` environment variables, now removed — pass as kwargs, e.g.
     ``method_kwargs={"accel": "cg"}`` through ``smooth_mesh_interior``.)
+
+    ``reference`` selects what the fixed computational mesh — the thing
+    the physical mesh is the image OF — actually is, and so what the
+    shape term measures deviation *from*:
+
+    * ``"mesh"`` (default, the **redistribution** frame): the reference
+      is the mesh at the first call. This is the classical MMPDE and the
+      right frame for moving an existing well-shaped mesh onto a metric.
+      Its fixed point is the mesh it started from: with ``M = I`` the
+      identity map already minimises the functional, so calling the
+      mover to "tidy up" a mesh moves nothing at all.
+    * ``"ideal"`` (the **relaxation** frame): the reference is a single
+      regular simplex, scaled to the reference mesh's typical cell
+      volume. Deviation is then measured from *equilateral-in-the-metric*
+      rather than from the supplied mesh, so distortion the mesh arrived
+      with is no longer self-justifying. This is the frame to use after
+      a topological refinement (``mesh.adapt``), where node positions
+      were fixed by inherited combinatorics — bisection's needles and
+      centroid refinement's slivers — rather than by any geometric
+      criterion. Same metric, same grading, same non-folding guarantee;
+      only the shape target moves.
 
     ``resolution_ratio`` is accepted but unused: the strategy dispatch in
     ``_smooth_mesh_interior_bare`` injects it into ``method_kwargs`` for
@@ -321,11 +342,79 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
     Eh = _edge_mats(ref, cells_own)
     detEh = np.linalg.det(Eh)
 
+    if reference in ("ideal", "ideal-metric"):
+        # RELAXATION frame (see the ``reference`` docstring): replace the
+        # per-cell reference by ONE regular simplex, so "deviation from the
+        # reference" means "deviation from equilateral-in-the-metric"
+        # instead of "deviation from the mesh I was handed". This is what
+        # lets the mover repair the needles/slivers that refinement leaves
+        # behind: with reference="mesh" a distorted start is its own
+        # optimum (𝕁 = I ⇒ zero shape gradient), which is why a
+        # post-refinement mover call moves nothing under M = I.
+        # Only the SHAPE target changes — the size/equidistribution term
+        # (r = detEh/detE against detM) is untouched, so the metric still
+        # sets the grading exactly as before.
+        # Unit regular simplex, columns c_k = v_k - v_0: |c_k| = 1 and
+        # c_i·c_j = 1/2 (so every edge, including v_i-v_j, has length 1).
+        # That Gram matrix factors exactly, so take its Cholesky.
+        G = 0.5 * (np.eye(cdim) + np.ones((cdim, cdim)))
+        R = np.linalg.cholesky(G).T                 # R^T R = G
+        detR = math.sqrt(cdim + 1.0) / 2.0 ** (cdim / 2.0)
+        # Scale EACH cell's reference to ITS OWN current volume, and match
+        # the cell orientation. Then r = detEh/detE = 1 for every cell at
+        # entry, so the size/equidistribution term already sits at its
+        # optimum and the existing size distribution is what gets
+        # preserved — the mover has nothing to say about size and only
+        # the shape term does work. That is what makes this a RELAXATION
+        # (keep the resolution the refinement installed, repair the
+        # element shapes it had no way to choose) rather than a
+        # re-adaptation. Under M = I this is pure shape repair.
+        # Per-cell orientation (flip one column where the cell is negative)
+        # and per-cell scale, so det(Eh) == detEh exactly, cell by cell.
+        # No reduction and no median => correct on a rank that owns no
+        # cells, where a global orientation vote would have to be faked.
+        _sgn = np.sign(detEh)
+        _sgn[_sgn == 0.0] = 1.0
+        Rb = np.broadcast_to(R, (detEh.shape[0], cdim, cdim)).copy()
+        Rb[_sgn < 0.0, :, -1] *= -1.0
+        if reference == "ideal":
+            _vol = np.abs(detEh)                    # keep each cell's size
+        else:
+            # "ideal-metric": ONE reference volume for every cell, so the
+            # metric alone sets size. Needed whenever the sizes we were
+            # handed are themselves the problem — a sliver cannot be
+            # repaired while being told to keep its (near-zero) volume,
+            # because its volume is half of what is wrong with it.
+            _n = int(detEh.shape[0])
+            _loc = float(np.median(np.abs(detEh))) if _n else 0.0
+            _tot = _global_sum(float(_n))
+            _vol = np.full(_n, (_global_sum(_loc * _n) / _tot) if _tot else 1.0)
+        Eh = ((_vol / detR) ** (1.0 / cdim))[:, None, None] * Rb
+        detEh = np.linalg.det(Eh)
+    elif reference != "mesh":
+        raise ValueError(
+            f"_mmpde_mover: reference={reference!r}; use 'mesh' (the "
+            f"metric-redistribution frame, default), 'ideal' (shape "
+            f"relaxation at fixed per-cell size) or 'ideal-metric' "
+            f"(shape relaxation with the metric setting size).")
+
     a0 = signed_vol(coords, cells_all)
     orient = np.sign(np.median(a0)) or 1.0
-    a0_own_med = float(np.median(np.abs(signed_vol(coords, cells_own))))
-    a0_own_med = _global_mean(a0_own_med)
-    a_min_floor = float(area_floor_frac) * a0_own_med
+    # Collapse guard reference: EACH cell's own starting volume. The floor
+    # is then "no cell may shrink below area_floor_frac of what it started
+    # as" — scale-free and grading-free.
+    #
+    # It used to be one absolute floor, area_floor_frac x the median cell
+    # volume, which is only meaningful on a near-uniform mesh. On a graded
+    # mesh (anything out of mesh.adapt) the finest cells are orders of
+    # magnitude below the median and so start *already under* the floor:
+    # every trial step is rejected, the line search backtracks to scale=0
+    # and the mover silently does nothing. Worse, the median was a
+    # _global_mean of per-rank medians, so which cells fell foul of it
+    # depended on the partition — the same mesh moved in serial and stood
+    # still on 2 ranks.
+    a0_own = np.abs(signed_vol(coords, cells_own))
+    a0_own = np.maximum(a0_own, 1.0e-300)
     # Representative background cell size h0 (mean reference edge length over
     # owned cells), used to make the convergence test SCALE-RELATIVE: a move
     # of dmax < tol·h0 is negligible vs the cell size, so the adapt has
@@ -361,8 +450,11 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
         K = np.abs(detE) / fact
         return _global_sum(np.sum(K * G))
 
-    def _min_area(X):
-        return _global_min((signed_vol(X, cells_own) * orient).min())
+    def _min_area_frac(X):
+        """Smallest cell volume as a FRACTION of that cell's starting
+        volume (global). > 0 also certifies no cell has folded."""
+        return _global_min(
+            (signed_vol(X, cells_own) * orient / a0_own).min(initial=np.inf))
 
     prevI = _energy(coords)
     _Iwin = [prevI]   # accepted-energy history for the stol stagnation test
@@ -538,7 +630,8 @@ def _mmpde_mover(mesh, metric, pinned_labels, verbose,
             trial = _halo_sync(trial)
             # reject any non-finite trial (defense-in-depth: projection/halo
             # could still introduce inf/NaN) so `_energy` never queries NaN.
-            if np.all(np.isfinite(trial)) and _min_area(trial) > a_min_floor:
+            if (np.all(np.isfinite(trial))
+                    and _min_area_frac(trial) > float(area_floor_frac)):
                 Itr = _energy(trial)
                 if Itr < prevI:
                     accepted = trial; Inew = Itr; break

@@ -6220,8 +6220,88 @@ class Mesh(Stateful, uw_object):
         smooth_mesh_interior(self, metric=metric, method="mmpde",
                              verbose=verbose, **kwargs)
 
+    def relax(self, metric=None, *, verbose=False, **kwargs):
+        r"""Improve this mesh's element **shapes** without changing its
+        size distribution or its topology.
+
+        The companion to :meth:`adapt`. Refinement chooses where new
+        nodes go from *combinatorics* — which edge the tagging rule
+        nominated (bisection), or the cell centroid (Alfeld) — never
+        from geometry, so a refined mesh carries needles and slivers
+        that reflect the base mesh's arbitrary choices rather than
+        anything about the problem. Relaxation moves those nodes to
+        where the geometry wants them, keeping the resolution the
+        refinement installed::
+
+            child = mesh.adapt(metric, max_levels=3)
+            child.relax()
+
+        Implemented with the same MMPDE mover as
+        :meth:`redistribute_nodes`, in its **ideal reference frame**
+        (``reference="ideal"``): each cell's reference element is a
+        regular simplex scaled to that cell's own current volume. Two
+        consequences, and they are the whole point:
+
+        * the size term starts and stays at its optimum, so the graded
+          spacing is preserved rather than re-derived;
+        * "distortion" is measured against *equilateral*, not against
+          the mesh as supplied — so a distorted mesh is no longer its
+          own optimum, which is exactly why
+          ``redistribute_nodes(metric)`` cannot do this job (its
+          reference IS the mesh it was handed, so under a uniform
+          metric it moves nothing at all).
+
+        Non-folding by construction, and the parallel partition, vertex
+        count and DOF layout are unchanged.
+
+        **2D only, on the evidence.** In 2D this measures a 13% drop in
+        fault-localised P1 interpolation error when applied per generation
+        (`adapt(..., relax=True)`), 7% applied once at the end. In **3D the
+        same operation is a wash** (+0.5% on a 74k-cell mesh, unchanged at
+        120 iterations) — it runs and it is safe, but nothing yet shows it
+        helps, so do not turn it on in 3D expecting a win.
+
+        Parameters
+        ----------
+        metric : sympy expression, MeshVariable, or sympy Matrix, optional
+            Usually omitted. ``None`` (default) relaxes under a uniform
+            metric — pure shape repair at fixed size. Passing a metric
+            additionally regrades toward it, which makes this a
+            redistribution-plus-relaxation rather than a pure relax.
+        verbose : bool, default False
+            Print mover progress.
+        **kwargs
+            Forwarded to :meth:`redistribute_nodes` — e.g.
+            ``pinned_labels``, ``slip_surfaces``, ``method_kwargs``
+            (mover tunables such as ``n_outer``).
+
+        See Also
+        --------
+        adapt : Add resolution (topology change, returns a child mesh).
+        redistribute_nodes : Move nodes to follow a metric (changes the
+            size distribution; the reference is the mesh as supplied).
+        """
+        import sympy
+
+        method_kwargs = dict(kwargs.pop("method_kwargs", None) or {})
+        # No metric  -> keep each cell's own size, repair shape only.
+        # With one   -> the metric sets size (a uniform reference volume),
+        #               so sizes that are themselves wrong can be fixed.
+        default_ref = "ideal" if metric is None else "ideal-metric"
+        ref = method_kwargs.setdefault("reference", default_ref)
+        if ref not in ("ideal", "ideal-metric"):
+            raise ValueError(
+                "mesh.relax() is an ideal-reference-frame operation; "
+                f"method_kwargs['reference']={ref!r} contradicts it. For "
+                "the mesh-reference frame call "
+                "mesh.redistribute_nodes(metric).")
+        return self.redistribute_nodes(
+            sympy.sympify(1) if metric is None else metric,
+            verbose=verbose, method_kwargs=method_kwargs, **kwargs)
+
     def adapt(self, metric_field, max_levels=None, node_budget=None,
-              builder=None, adapter=None, engine=None, verbose=False):
+              builder=None, adapter=None, engine=None, verbose=False,
+              relax=False, relax_kwargs=None):
         r"""
         Nested **adapt-on-top**: return a refined **child** mesh.
 
@@ -6387,10 +6467,12 @@ class Mesh(Stateful, uw_object):
         return self._adapt_nested(
             metric_field, max_levels=max_levels, node_budget=node_budget,
             builder=builder, engine=engine, verbose=verbose,
+            relax=relax, relax_kwargs=relax_kwargs,
         )
 
     def _adapt_nested(self, metric_field, max_levels=2, node_budget=None,
-                      builder="barycentric", engine="nvb", verbose=False):
+                      builder="barycentric", engine="nvb", verbose=False,
+                      relax=False, relax_kwargs=None):
         """Core nested adapt-on-top (SBR or NVB engine). See :meth:`adapt`."""
         import math
         from underworld3.utilities import custom_mg
@@ -6642,6 +6724,38 @@ class Mesh(Stateful, uw_object):
                 write_tagged_state_label(base_finest)
 
         markers_per_level = []
+        def _relax_generation(engine_obj, carry, rcarry):
+            """Relax THIS generation in place INSIDE the refinement engine.
+
+            The engine's own coordinates feed the next generation's marking
+            and its next midpoints, so a relaxation that only touched the
+            exported DM would be discarded by the following generation (the
+            same reason the boundary snap is applied inside the engine).
+
+            Coordinates are matched by POSITION, not by index: ``to_dm``
+            goes through ``createFromCellList`` and PETSc renumbers the
+            vertices. The match is exact because it is taken before
+            anything moves.
+            """
+            from scipy.spatial import cKDTree
+            _dmg = engine_obj.to_dm(boundaries=carry, regions=rcarry,
+                                    comm=self.dm.comm)
+            _mg = Mesh(_dmg, simplex=self.dm.isSimplex(),
+                       coordinate_system_type=(
+                           self.CoordinateSystem.coordinate_type),
+                       qdegree=self.qdegree, boundaries=self.boundaries,
+                       verbose=False)
+            _cd = _mg.cdim
+            _pre = _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd).copy()
+            _src = numpy.asarray([numpy.asarray(c, dtype=float)
+                                  for c in engine_obj.coords])
+            _idx = cKDTree(_src).query(_pre, k=1)[1]
+            _mg.relax(None if relax is True else relax,
+                      **(relax_kwargs or {}))
+            _post = _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd)
+            for _k, _i in enumerate(_idx):
+                engine_obj.coords[_i] = _post[_k]
+
         level_dms = []                       # one DM per refinement level
 
         if engine == "nvb" and _nvbx is not None:
@@ -6684,6 +6798,23 @@ class Mesh(Stateful, uw_object):
                     lab.setValue(cidx, DM_ADAPT_REFINE)
                 current_dm = _nvbx.refine(d, "adapt")
                 snap_level_boundaries(current_dm)
+                if relax:
+                    # Relax THIS generation before the next one marks from it:
+                    # the moved coordinates are what the next pass measures and
+                    # bisects, which is the whole point of relaxing in the loop
+                    # rather than once at the end. A clone keeps the plex
+                    # numbering, so the coordinate vectors align index-for-index
+                    # and no positional matching is needed.
+                    _mg = Mesh(current_dm.clone(),
+                               simplex=self.dm.isSimplex(),
+                               coordinate_system_type=(
+                                   self.CoordinateSystem.coordinate_type),
+                               qdegree=self.qdegree,
+                               boundaries=self.boundaries, verbose=False)
+                    _mg.relax(None if relax is True else relax,
+                              **(relax_kwargs or {}))
+                    current_dm.setCoordinatesLocal(
+                        _mg.dm.getCoordinatesLocal())
                 level_dms.append(current_dm)
                 if verbose:
                     fs, fe = current_dm.getHeightStratum(0)
@@ -6742,6 +6873,8 @@ class Mesh(Stateful, uw_object):
                             numpy.array([nvb.coords[i] for i in _idx]))
                         for _k, _i in enumerate(_idx):
                             nvb.coords[_i] = _snapped[_k]
+                if relax:
+                    _relax_generation(nvb, carry, rcarry)
                 level_dms.append(nvb.to_dm(boundaries=carry, regions=rcarry,
                                            comm=self.dm.comm))
                 if verbose:
