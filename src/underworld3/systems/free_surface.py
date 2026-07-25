@@ -387,13 +387,23 @@ class FreeSurface:
         )
         self._un_target_rows, _ = self._field_rows(self._un_target, self._surf_coords)
         self._un_target.array[...] = 0.0
-        # Strong rotated u.n = ũ_n on the surface. The datum is read along the rotated
-        # per-node normal — the same deform direction the rate was measured along, so no
-        # spurious tangential-slope term on a bumpy/rotating surface. `normal=None` uses
-        # the FE facet normal (fine on a flat/near-flat top); pass an analytic normal for
-        # a curved surface.
-        self.consistent.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
-        self.consistent._rotated_freeslip_datum = {self.surface: self._un_target.sym[0]}
+        # PRESCRIBED-FLUX datum on a CLOSED boundary must be imposed WEAKLY. A penalty
+        # natural BC tolerates the small discrete incompatibility between the demeaned
+        # target and the incompressibility constraint (∮u.n dA = 0); a STRONG rotated
+        # constraint over-determines it, and the material-boundary error then GROWS
+        # (measured: penalty settles to ~1.8% by step 5, the strong datum degrades
+        # 16%->22% by step 30, letting material cross the surface — which is exactly the
+        # inconsistency this third solve exists to remove, and which shows up downstream
+        # as SL feet reaching outside the domain and hot material in the cold TBL).
+        # The rotated prescribed-normal datum primitive remains available in
+        # utilities.rotated_bc for boundaries where discrete compatibility is guaranteed.
+        n_hat = self.normal if self.normal is not None else self.mesh.boundary_normal(self.surface)
+        v_sym = self.consistent.u.sym
+        penalty = 1.0e5
+        self.consistent.add_natural_bc(
+            penalty * (n_hat.dot(v_sym) - self._un_target.sym[0]) * n_hat, self.surface
+        )
+        self.consistent.petsc_options["snes_type"] = "ksponly"   # linear: no line search
         self.consistent.petsc_use_pressure_nullspace = True
         self._adv_velocity = self.consistent.u
 
