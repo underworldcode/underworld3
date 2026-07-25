@@ -6254,12 +6254,20 @@ class Mesh(Stateful, uw_object):
         Non-folding by construction, and the parallel partition, vertex
         count and DOF layout are unchanged.
 
-        **2D only, on the evidence.** In 2D this measures a 13% drop in
-        fault-localised P1 interpolation error when applied per generation
-        (`adapt(..., relax=True)`), 7% applied once at the end. In **3D the
-        same operation is a wash** (+0.5% on a 74k-cell mesh, unchanged at
-        120 iterations) — it runs and it is safe, but nothing yet shows it
-        helps, so do not turn it on in 3D expecting a win.
+        **What it buys, measured.** In 2D, a 13% drop in fault-localised
+        P1 interpolation error applied per generation
+        (``adapt(..., relax=True)``), 7% applied once at the end.
+
+        In **3D it improves mesh QUALITY but not interpolation error** —
+        two different things, and worth keeping apart. On an adapted 3D
+        mesh it halves the near-degenerate population (cells with q < 0.1:
+        3.6% -> 1.8%), lifts median quality 0.32 -> 0.39 and pulls the 99th
+        percentile dihedral angle back from 153 to 146 degrees; but the
+        interpolation error of an isotropic feature is unchanged (+0.5%).
+        That is consistent: relaxation holds the size distribution, and in
+        2D the error gain came from cells ALIGNING onto the feature, which
+        an isotropic metric gives no reason to do in 3D. Use it in 3D for
+        conditioning and element quality, not expecting an accuracy win.
 
         Parameters
         ----------
