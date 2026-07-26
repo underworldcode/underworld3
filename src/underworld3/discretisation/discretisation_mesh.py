@@ -6631,13 +6631,13 @@ class Mesh(Stateful, uw_object):
         Non-folding by construction, and the parallel partition, vertex
         count and DOF layout are unchanged.
 
-        ```{warning}
-        In **3D** this can make the mesh-owned custom-P geometric-MG
-        hierarchy fail to build (a moved fine DOF leaves its coarse
-        parent, giving a zero transfer column), in which case the solver
-        SILENTLY falls back to GAMG. 2D is unaffected. Check the
-        preconditioner type if you rely on geometric MG in 3D. See #424.
-        ```
+        Moving the nodes can upset the custom-P geometric-MG transfers,
+        which are built by geometric point location rather than from the
+        refinement relation: the local-support ``barycentric`` builder can
+        be left with a coarse DOF that has no fine image. The FMG build
+        now retries with the global-support ``rbf`` builder before giving
+        up, so the hierarchy survives (measured in 3D: GAMG at 23
+        iterations before the retry, ``pc=mg`` at 2 after). See #424.
 
         **Two valid placements, neither dominant.** ``adapt(metric, ...,
         relax=True)`` relaxes once at the end — the recommended default.

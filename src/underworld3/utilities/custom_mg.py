@@ -871,15 +871,39 @@ def auto_inject_custom_mg(solver, field_id=None):
         return                              # nothing to inject
 
     builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
-    h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=builder,
-                          field_id=field_id)
-    try:
-        Ps = h.build(solver)
-    except Exception as exc:                # pragma: no cover - defensive
-        import warnings
-        warnings.warn(f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
-                      "solver's default preconditioner.")
-        return
+    # Retry with the RBF builder before abandoning geometric MG. The
+    # barycentric builder has LOCAL support: it re-triangulates the coarse
+    # DOF cloud and locates each fine DOF in one simplex, so a coarse DOF
+    # is only reached if some fine DOF lands in a simplex touching it. Move
+    # the fine coordinates — which is exactly what mesh.relax() does — and a
+    # coarse DOF can lose every fine image, giving a zero column and a
+    # singular Galerkin coarse operator. The RBF builder has GLOBAL support
+    # (every coarse DOF is reached through the RBF solve), so it does not
+    # have that failure mode: measured on a relaxed 3D adapt child,
+    # barycentric fell back to GAMG at 23 its while RBF kept pc=mg at 2.
+    # Falling back to GAMG loses the hierarchy entirely, so try the cheaper
+    # degradation first. See #424.
+    _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
+    h = Ps = None
+    for _i, _b in enumerate(_attempts):
+        h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=_b,
+                              field_id=field_id)
+        try:
+            Ps = h.build(solver)
+            break
+        except Exception as exc:            # pragma: no cover - defensive
+            import warnings
+            if _i + 1 < len(_attempts):
+                warnings.warn(
+                    f"custom_mg: {_b} transfer build failed ({exc}); "
+                    f"retrying with the '{_attempts[_i + 1]}' builder, which "
+                    f"has global support and cannot leave a coarse DOF "
+                    f"without a fine image.")
+                continue
+            warnings.warn(
+                f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
+                "solver's default preconditioner.")
+            return
 
     # Dimensional guard (checkable for the monolithic operator, field_id is None):
     # the finest transfer must chain to the operator PCMG will Galerkin against.

@@ -101,25 +101,34 @@ Poisson: full `pc=mg` in every configuration, no fallback, solutions agreeing
 to four significant figures, and the at-end case one Krylov iteration
 *cheaper*.
 
-```{warning}
-In **3D** relaxation can make the custom-P hierarchy fail to build, and the
-failure is **silent** — a `UserWarning` and a fall back to GAMG:
+### Why relaxation can disturb it, and why it no longer costs you the hierarchy
 
-    custom_mg: mesh-owned FMG build failed (transfer 6->7 has 26 zero
-    columns (coarse DOFs with no fine image) ...); using the solver's
-    default preconditioner.
+The custom-P prolongation is built **geometrically, not topologically**. The
+`barycentric` builder re-triangulates the coarse DOF *point cloud*
+(`Delaunay(coarse_coords)`) and locates each fine DOF in one simplex of it; it
+never consults the parent/child refinement relation. That is deliberate — it is
+exactly what lets custom-P accept non-nested coarse/fine pairs — but it means a
+preserved topology buys the transfer nothing.
 
-Measured on a 3D Poisson gate: adapt-only and adapt+relax-at-end both gave
-`pc=mg` at 2 iterations, but `relax="per-generation"` fell back to `pc=gamg`
-at 23; in a larger demo (~36k cells) relax-at-end failed too. Both placements
-are affected and it appears to depend on mesh size and depth.
+So the builder has **local support**: a coarse DOF is reached only if some fine
+DOF lands in a simplex touching it. Move the fine coordinates, which is what
+relaxation does, and a coarse DOF can lose every fine image. Its column in `P`
+goes to zero, the Galerkin coarse operator `PᵀAP` acquires a zero row and
+column, and it is singular. 3D is more exposed: a Delaunay triangulation of a
+graded 3D cloud is full of slivers, each simplex has only four vertices, and
+proportionally more DOFs sit near the hull.
 
-The prolongation is built by locating fine DOFs inside coarse cells;
-relaxation moves the fine coordinates and some coarse DOF ends up with no
-fine image, giving a zero column and a singular coarse operator. **If you
-rely on geometric MG in 3D, check the preconditioner type after adapting
-with relaxation.** Tracked as issue #424.
-```
+The `rbf` builder has **global support** — every coarse DOF is reached through
+the RBF solve — so it cannot produce a zero column. The FMG build therefore
+**retries with `rbf` automatically** before giving up, and warns that it did:
+
+    custom_mg: barycentric transfer build failed (transfer 2->3 has 1 zero
+    columns ...); retrying with the 'rbf' builder, which has global support
+    and cannot leave a coarse DOF without a fine image.
+
+Measured on a relaxed 3D adapt child: barycentric alone fell back to GAMG at
+23 iterations; with the retry it keeps `pc=mg` at 2. Set
+`mesh._custom_mg_builder = "rbf"` to skip the first attempt.
 
 ## What relaxation cannot do
 
