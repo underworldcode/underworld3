@@ -184,12 +184,49 @@ def test_solve_homotopy_marches_and_reports():
                           homotopy_options=dict(delta0=1.0, dmin=0.05, verbose=False))
 
     assert report["converged"] is True
-    assert report["steps"] >= 1
-    # Settled at (or below) the starting δ, and never below the requested floor.
+    # The march must actually DESCEND, not just solve once at delta0 and stop.
+    assert report["steps"] > 1, "the march did not take a second step"
     assert report["settled_delta"] is not None
-    assert report["settled_delta"] <= 1.0
+    assert report["settled_delta"] < 1.0, (
+        f"delta never descended below delta0 (settled at {report['settled_delta']})"
+    )
+    assert report["reached_dmin"] is True
     assert stokes.has_solution is True
     # The model is left holding the δ that actually converged.
     assert stokes.constitutive_model.yield_softness == pytest.approx(
         report["settled_delta"]
     )
+
+
+def test_homotopy_restores_the_solver_tangent():
+    """The march sets the tangent the model asks for, but must hand the solver back
+    as it found it (adversarial review, M5)."""
+    _, stokes = _viscoplastic_stokes()
+    stokes.consistent_jacobian = False
+    stokes.solve(homotopy=True, homotopy_options=dict(delta0=1.0, dmin=0.1))
+    assert stokes.consistent_jacobian is False, (
+        "solve(homotopy=True) left the user's tangent permanently changed"
+    )
+
+
+def test_homotopy_refuses_a_stress_history_solver():
+    """A march is several solves; on a VEP solver each one would advance the elastic
+    stress history by a full timestep (adversarial review, C3). Refuse loudly rather
+    than silently integrating N steps for one requested dt."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5
+    )
+    v = uw.discretisation.MeshVariable("Vve", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Pve", mesh, 1, degree=1, continuous=True)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel
+    cm = stokes.constitutive_model
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 10.0
+    cm.Parameters.dt_elastic = 0.1
+    cm.Parameters.yield_stress = 5.0
+    stokes.bodyforce = sympy.Matrix([0.0, -1.0])
+    stokes.add_essential_bc((0.0, 0.0), "Bottom")
+
+    with pytest.raises(NotImplementedError, match="stress history"):
+        stokes.solve(homotopy=True, timestep=0.1)

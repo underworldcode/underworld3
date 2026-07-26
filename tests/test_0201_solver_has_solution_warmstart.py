@@ -134,6 +134,30 @@ def test_zero_init_guess_is_tristate_and_auto_detects():
     assert poisson._resolve_zero_init_guess(None) is True
 
 
+def test_force_setup_cold_starts_through_the_public_path():
+    """`_force_setup=True` is a structural invalidation, so the solve it is passed to
+    must COLD start.
+
+    Regression (adversarial review, M1): `zero_init_guess` was resolved at the top of
+    solve(), before the `_force_setup` block that clears `has_solution`, so the call
+    that triggered the invalidation warm-started off the flag it was about to clear.
+    Driven through the public `solve()` rather than the private resolver, so it
+    actually exercises the ordering.
+    """
+    _, poisson = _poisson()
+    poisson.solve()
+    assert poisson.has_solution is True
+
+    poisson.solve(_force_setup=True)
+    # The rebuild must have dropped the claim during that call, not after it.
+    assert poisson._needs_dm_rebuild is False   # rebuilt during the solve
+    assert poisson.has_solution is True         # ... and re-established by convergence
+
+    # The ordering itself: resolving now (post-invalidation) must say COLD.
+    poisson.is_setup = False
+    assert poisson._resolve_zero_init_guess(None) is True
+
+
 def test_repeated_default_solve_agrees_to_solver_tolerance():
     """A bare solve() called repeatedly (the linear chain-of-solves pattern) must give
     the same answer once auto-detect starts warming the later calls.
