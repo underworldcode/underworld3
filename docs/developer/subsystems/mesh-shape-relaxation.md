@@ -92,15 +92,34 @@ changes which cells get marked, so it spends ~3% more cells.
 Every column beats no relaxation. The default is at-end because it is the
 cheaper and less invasive of the two.
 
-## Multigrid is unaffected
+## Multigrid: fine in 2D, can break in 3D
 
-Relaxation moves only the finest level's coordinates. The custom-P geometric-MG
-tail needs the *topological* hierarchy preserved in its operators, and the
-coarse levels keep their own coordinates, so nothing downstream is disturbed —
-the transfers already accept non-nested coarse/fine pairs. Measured with the
-Stokes velocity block on custom-P FMG: full 4-level `pc=mg` in every
-configuration, no fallback to GAMG, solutions agreeing to four significant
-figures, and the at-end case one Krylov iteration *cheaper*.
+In **2D** relaxation is transparent to the custom-P geometric-MG tail. The
+operators need only the *topological* hierarchy, and the coarse levels keep
+their own coordinates. Measured with the Stokes velocity block and with
+Poisson: full `pc=mg` in every configuration, no fallback, solutions agreeing
+to four significant figures, and the at-end case one Krylov iteration
+*cheaper*.
+
+```{warning}
+In **3D** relaxation can make the custom-P hierarchy fail to build, and the
+failure is **silent** — a `UserWarning` and a fall back to GAMG:
+
+    custom_mg: mesh-owned FMG build failed (transfer 6->7 has 26 zero
+    columns (coarse DOFs with no fine image) ...); using the solver's
+    default preconditioner.
+
+Measured on a 3D Poisson gate: adapt-only and adapt+relax-at-end both gave
+`pc=mg` at 2 iterations, but `relax="per-generation"` fell back to `pc=gamg`
+at 23; in a larger demo (~36k cells) relax-at-end failed too. Both placements
+are affected and it appears to depend on mesh size and depth.
+
+The prolongation is built by locating fine DOFs inside coarse cells;
+relaxation moves the fine coordinates and some coarse DOF ends up with no
+fine image, giving a zero column and a singular coarse operator. **If you
+rely on geometric MG in 3D, check the preconditioner type after adapting
+with relaxation.** Tracked as issue #424.
+```
 
 ## What relaxation cannot do
 
