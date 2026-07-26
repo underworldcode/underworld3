@@ -233,13 +233,15 @@ The only knobs a user ever touches are the two deliberate opt-outs: force-fresh
    `_get_yield_softness()` resetting δ to a stale value), the recommended tangent, and
    the δ atom. The march is residual-guided as designed, and additionally *reverts and
    retries a failed δ more gently* before settling. A VEP model's `timestep` is
-   forwarded to the inner solves. **Cold-start caveat found in implementation:**
-   `τ_y/(2 ε̇_II)` is `0/0` at `v=0`, so the first residual is NaN — large δ alone does
-   *not* save it, because the singularity is in `η_pl` before the soft-min ever sees
-   it. `_yield_homotopy_control` therefore floors `ε̇_II` with the `vanishing`
-   constant. That hazard is **not** homotopy-specific (any cold viscoplastic solve with
-   a finite yield stress hits it) and is flagged `TODO(BUG)` for a decision on moving
-   the floor into the model itself. The continuation logic existed as
+   forwarded to the inner solves. **Cold-start finding:** a cold power-mean solve died
+   with `DIVERGED_FNORM_NAN`, and the first diagnosis (a `0/0` needing a strain-rate
+   floor) was **wrong**. At `ε̇=0` the plastic viscosity is `+inf`, which `Min` and the
+   sqrt soft-min carry correctly to the viscous branch — both cold-start fine. Only the
+   power-mean broke, because it formed its harmonic mean as
+   `η_ve·η_pl/(η_ve+η_pl)` = `inf/inf`. Rewriting that as the identical `η_ve/(1+f)`
+   fixes it with no floor and no numerical change. The bug was never homotopy-specific
+   or cold-start-specific: `η_pl` is infinite at *every rigid (unyielded) point*, so it
+   could poison a converged solve wherever a plug forms. The continuation logic existed as
    a reference implementation (`underworld3.systems.yield_continuation`, the extracted
    form of `convergence.py::run_continuation`); it is folded in, driven by the model hook
    and Layer 1's warm-start.
