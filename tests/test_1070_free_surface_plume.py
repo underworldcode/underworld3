@@ -199,3 +199,90 @@ def test_freesurface_annulus_ring_filter_no_seam():
     at_ext = ((np.abs(thf) < 0.12) | (np.abs(np.abs(thf) - np.pi) < 0.12))
     assert jump[at_ext].max() < 4.0 * np.median(jump), \
         f"filter seams at theta=0/pi: extreme jump {jump[at_ext].max():.2e} vs median {np.median(jump):.2e}"
+
+
+def _annulus_freesurface(constraint):
+    """Isoviscous annulus convection cell driven by a mode-4 thermal perturbation, with
+    the free surface managed by ``uw.systems.FreeSurface``."""
+    r_in, r_out = 0.5, 1.0
+    mesh = uw.meshing.Annulus(radiusInner=r_in, radiusOuter=r_out, cellSize=0.1, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    rhat = sympy.Matrix([[x / r, y / r]])
+    theta = sympy.atan2(y, x)
+    T = uw.discretisation.MeshVariable(f"Tfs{constraint}", mesh, 1, degree=2, continuous=True)
+    profile = ((r_out - r) / (r_out - r_in)
+               + 0.1 * sympy.sin(4 * theta) * sympy.sin(sympy.pi * (r - r_in) / (r_out - r_in)))
+    T.array[:, 0, 0] = np.clip(
+        np.asarray(uw.function.evaluate(profile, T.coords)).flatten(), 0.0, 1.0)
+
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.bodyforce = (3.0e4 / (r_out - r_in) ** 3) * T.sym[0] * rhat
+    stokes.add_essential_bc((0.0, 0.0), "Lower")
+    stokes.tolerance = 1.0e-5
+    fs = uw.systems.FreeSurface(stokes, "Upper", buoyancy_scale=5.0e5, normal=rhat,
+                                composition=T, tangent_advect="shape", surface_filter=20,
+                                smooth_length=0.2, consistent_constraint=constraint)
+    fs._comp_adv.constitutive_model.Parameters.diffusivity = 1.0
+    fs._comp_adv.add_dirichlet_bc(1.0, "Lower")
+    fs._comp_adv.add_dirichlet_bc(0.0, "Upper")
+    return mesh, fs, rhat
+
+
+@pytest.mark.level_2
+def test_freesurface_prescribed_rate_is_flux_free():
+    r"""The rate handed to the consistent solve must carry no NET flux.
+
+    An incompressible interior over a closed no-slip base can neither gain nor lose
+    volume, so the prescribed :math:`\tilde u_n` must satisfy :math:`\oint \tilde u_n
+    \,\mathrm{d}s = 0`. Surface nodes are unevenly spaced, so removing the *nodal* mean
+    does not achieve this — it leaves ~1% of net flux, which a strong rotated constraint
+    cannot absorb (it is then asking for a flow that does not exist). ``_surface_mean``
+    weights the demean by arc length instead. Measured with exact FE boundary quadrature,
+    not the nodal sum the manager itself uses, so it cannot pass by construction."""
+    mesh, fs, rhat = _annulus_freesurface("strong")
+    net = uw.maths.BdIntegral(mesh=mesh, fn=fs._un_target.sym[0], boundary="Upper")
+    gross = uw.maths.BdIntegral(mesh=mesh, fn=sympy.Abs(fs._un_target.sym[0]),
+                                boundary="Upper")
+    for _ in range(3):
+        fs.solve()
+        fs.advance(fs.estimate_dt(advect_scale=10.0))
+    ratio = abs(float(net.evaluate())) / abs(float(gross.evaluate()))
+    assert ratio < 5.0e-3, f"prescribed rate carries {ratio:.2e} of net flux (nodal demean?)"
+
+
+@pytest.mark.level_2
+def test_freesurface_strong_constraint_beats_penalty():
+    r"""With a flux-free datum the STRONG rotated constraint holds the surface as a
+    material boundary far better than the weak penalty, and does not leak volume.
+
+    This is the reason ``consistent_constraint`` defaults to ``"strong"``: the penalty
+    both misses the prescribed rate and passes a net volume flux through the surface,
+    and material crossing the surface is what puts semi-Lagrangian departure points
+    outside the domain."""
+    errors, leaks = {}, {}
+    for constraint in ("strong", "penalty"):
+        mesh, fs, rhat = _annulus_freesurface(constraint)
+        net = uw.maths.BdIntegral(mesh=mesh, fn=fs._adv_velocity.sym.dot(rhat),
+                                  boundary="Upper")
+        gross = uw.maths.BdIntegral(mesh=mesh, fn=sympy.Abs(fs._adv_velocity.sym.dot(rhat)),
+                                    boundary="Upper")
+        for _ in range(4):
+            fs.solve()
+            fs.advance(fs.estimate_dt(advect_scale=10.0))
+        coords = fs._ring_coords                       # LIVE surface nodes, ring order
+        normal = fs._normal_direction(coords)
+        realised = sum(
+            np.asarray(uw.function.evaluate(fs._adv_velocity.sym[i], coords)).flatten()
+            * normal[:, i] for i in range(mesh.dim))
+        target = np.asarray(fs._un_target.array[fs._un_target_rows, 0, 0]).flatten()
+        errors[constraint] = np.abs(realised - target).max() / np.abs(target).max()
+        leaks[constraint] = abs(float(net.evaluate())) / abs(float(gross.evaluate()))
+
+    assert errors["strong"] < 0.5 * errors["penalty"], (
+        f"strong constraint not better: {errors['strong']:.2e} vs "
+        f"penalty {errors['penalty']:.2e}")
+    assert leaks["strong"] < 1.0e-3, \
+        f"strong constraint leaks net volume flux {leaks['strong']:.2e}"

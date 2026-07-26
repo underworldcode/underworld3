@@ -84,6 +84,16 @@ class FreeSurface:
         predicted surface displacement stays below this fraction of the local cell
         size. The exponential update is unconditionally stable, so this bounds mesh
         distortion (and keeps a multigrid hierarchy rebuild valid), not stability.
+    consistent_constraint : {"strong", "penalty"}, optional
+        How the consistent solve imposes :math:`\mathbf{u}\cdot\hat{\mathbf n} =
+        \tilde u_n`, the condition that keeps the surface a *material* boundary.
+        ``"strong"`` (default) uses the rotated per-node constraint — free-slip is
+        then simply the :math:`\tilde u_n = 0` member of the same family — and
+        imposes the rate exactly. ``"penalty"`` imposes it weakly; it tolerates a
+        datum carrying a small net flux but leaks, both in the rate it delivers and
+        in the volume it passes through the surface.
+    consistent_penalty : float, optional
+        Penalty magnitude used when ``consistent_constraint="penalty"``.
     verbose : bool, optional
         Report per-step surface diagnostics through :func:`uw.mpi.rank`-safe output.
     """
@@ -104,6 +114,8 @@ class FreeSurface:
         tangent_spectral_modes=0,
         surface_mask=None,
         surface_filter=0,
+        consistent_constraint="strong",
+        consistent_penalty=1.0e5,
         verbose=False,
     ):
         self.free = stokes
@@ -124,6 +136,15 @@ class FreeSurface:
         # periodic ring instead of linear; the mode count also caps facet-scale noise.
         self._spectral_modes = int(tangent_spectral_modes)
         self._surface_mask_fn = surface_mask
+        # How the consistent solve imposes u.n = ũ_n: "strong" (rotated per-node
+        # constraint, exact) or "penalty" (weak natural BC). See _build_consistent.
+        if consistent_constraint not in ("strong", "penalty"):
+            raise ValueError(
+                f"consistent_constraint must be 'strong' or 'penalty', "
+                f"got {consistent_constraint!r}"
+            )
+        self.consistent_constraint = consistent_constraint
+        self._consistent_penalty = float(consistent_penalty)
         self.verbose = verbose
 
         # Continuous pressure is required for the CBF reaction on a simplex free
@@ -141,12 +162,19 @@ class FreeSurface:
             self.mesh.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL2D
         )
         self._walls = self._classify_walls()
+        # Reference-configuration surface nodes: used ONCE to match each surface node to
+        # its row in the mesh coordinate field and in the derived surface fields. Row
+        # indices are identities, so they stay valid as the mesh deforms — but these
+        # COORDINATES do not, and nothing at run time may sample the solution at them
+        # (see the _ring_coords property).
         self._surf_coords = self._surface_node_coords()
         self._surf_rows, self._surf_x = self._field_rows(self.mesh.X, self._surf_coords)
-        # Ring coordinates in the array (x-sorted) order the surface fields are held in.
-        self._ring_coords = np.ascontiguousarray(
-            self._surf_coords[np.argsort(self._surf_coords[:, 0])]
-        )
+        # Global along-surface-ordered ring (theta on an annulus, x on a box), gathered
+        # across ranks. The surface filter, the tangential transport and the arc-length
+        # datum weights all run on it, so all three are parallel-correct and free of the
+        # x-extreme degeneracy that collapses ring nodes near theta=0/pi. The surface
+        # deforms only along the normal, so the ordering is invariant and is built once.
+        self._build_ring_gather()
 
         # Optional taper on the surface rate: h_dot -> h_dot * mask(x). A mask that
         # falls to zero near a driven wall pins the surface where a stress-free top
@@ -168,18 +196,32 @@ class FreeSurface:
         self._build_consistent()
         self._build_interior_diffuser()
         self._filter_iters = int(surface_filter)
-        # Global along-surface-ordered ring (theta on an annulus, x on a box), gathered
-        # across ranks. Both the surface filter and the tangential transport run on it, so
-        # both are parallel-correct and free of the x-extreme degeneracy that collapses
-        # ring nodes near theta=0/pi. The surface deforms only along the normal, so the
-        # ordering is invariant and is built once.
-        self._build_ring_gather()
         if composition is not None:
             self._build_composition_transport()
 
         self._h_inf = None  # recovered in solve(), consumed in advance()
 
     # -- geometry / boundary bookkeeping -------------------------------------
+
+    @property
+    def _ring_coords(self):
+        r"""LIVE surface-node coordinates, in the fixed ring order the surface arrays use.
+
+        Read from the mesh coordinate field every time, because the surface moves: a
+        snapshot taken at construction falls behind the deforming boundary and any
+        solution sampled at it is read from the *interior*, a growing fraction of a cell
+        below the true surface. That corrupts :math:`\dot h` itself — and hence
+        :math:`\gamma`, the tangential transport and the realised rate the consistent
+        solve is asked to reproduce — with an error that grows with the deformation.
+        :meth:`_current_shape` already reads the geometry live; this keeps the velocity
+        sampling consistent with it.
+
+        The ordering is fixed at construction (``_surf_rows``) and is NOT re-derived
+        here: the surface moves only along the normal, so the along-surface order is
+        invariant, whereas re-sorting live coordinates by ``x`` could permute neighbours
+        near the annulus ``theta = 0, pi`` extremes where ``dx/dtheta -> 0``.
+        """
+        return np.ascontiguousarray(self.mesh.X.coords[self._surf_rows])
 
     def _surface_height(self, coords):
         """The coordinate along the topography direction: the last axis on a Cartesian
@@ -263,13 +305,46 @@ class FreeSurface:
         order = np.argsort(coords[:, 0])
         return rows[order], coords[order, 0]
 
+    def _ring_weights(self):
+        r"""Arc-length quadrature weights on the globally s-sorted surface ring.
+
+        The trapezoidal weight of node :math:`i` is half the distance to each neighbour
+        — :math:`\tfrac12 (s_{i+1}-s_{i-1}) r_i` on a cylindrical ring, :math:`\tfrac12
+        (x_{i+1}-x_{i-1})` on an open Cartesian surface (with half-cells at the ends).
+        Radii are read live, so the weights follow the deforming surface.
+        """
+        s = self._s_sorted
+        if s.size == 0:
+            return s
+        if self._ring_period is not None:
+            ds = 0.5 * np.mod(np.roll(s, -1) - np.roll(s, 1), self._ring_period)
+            radius = self._ring_gather(np.linalg.norm(self._ring_coords, axis=1))
+            return ds * radius
+        ds = np.empty_like(s)
+        ds[1:-1] = 0.5 * (s[2:] - s[:-2])
+        ds[0] = 0.5 * (s[1] - s[0])
+        ds[-1] = 0.5 * (s[-1] - s[-2])
+        return ds
+
     def _surface_mean(self, values):
-        """Global mean of a surface-node array, identical on every rank (a datum
-        gauge must be single-valued across the partition)."""
-        comm = uw.mpi.comm
-        total = comm.allreduce(float(values.sum()))
-        count = comm.allreduce(int(values.size))
-        return total / count if count else 0.0
+        r"""Area-weighted global mean of a surface-node array, identical on every rank
+        (a datum gauge must be single-valued across the partition).
+
+        Weighted by arc length, NOT by node count. The distinction is not cosmetic for
+        the one place it matters most: :math:`\tilde u_n`, the normal velocity the
+        consistent solve is asked to reproduce, must satisfy :math:`\oint \tilde u_n
+        \,\mathrm{d}s = 0` — an incompressible interior over a closed base can neither
+        gain nor lose volume. Surface nodes are not equally spaced (and less so as the
+        mesh deforms), so removing the *nodal* mean leaves a net flux — measured at
+        0.4-1.0% of the total here. A penalty absorbs that residue quietly; a STRONG
+        rotated datum cannot, because it is then asking for a flow that does not exist.
+        The same weighting makes the ``h`` / ``h_inf`` datum volume-preserving rather
+        than node-count-preserving.
+        """
+        weights = self._ring_weights()
+        gathered = self._ring_gather(values)
+        total = float(weights.sum())
+        return float((gathered * weights).sum() / total) if total else 0.0
 
     def _demean(self, values):
         """Remove the global surface mean (topography datum floats)."""
@@ -368,17 +443,27 @@ class FreeSurface:
         self.held.petsc_use_pressure_nullspace = True
 
     def _build_consistent(self):
-        r"""The consistent solve: walls as the free solve, and a STRONG rotated
-        constraint prescribing :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n` (the
-        realised relaxed rate) so the advection velocity keeps the surface a material
-        boundary.
+        r"""The consistent solve: walls as the free solve, plus a constraint prescribing
+        :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n` (the realised relaxed rate) so
+        the advection velocity keeps the surface a material boundary.
 
-        The per-node rotated constraint enforces the datum to machine precision (no
-        penalty leak) and, crucially, routes the solve through the rotated LINEAR solver
-        (a direct KSP solve) rather than a Newton line search — so a linear (isoviscous)
-        flow does not thrash ``newtonls`` the way the old penalty natural BC did. The
-        datum is the ``ũ_n`` field, re-evaluated at each solve, so refreshing
-        ``_un_target`` each step refreshes the constraint (see #403)."""
+        ``consistent_constraint`` selects how that datum is imposed:
+
+        ``"strong"``
+            A rotated per-node constraint — the same primitive as the held lid, differing
+            only in the constraint right-hand side, so free-slip is the ``\tilde u_n = 0``
+            member of the same family. It enforces the datum to machine precision (no
+            penalty leak) and routes the solve through the rotated LINEAR path (a direct
+            KSP solve) rather than a Newton line search, so an isoviscous flow does not
+            thrash ``newtonls``. It requires the datum to be discretely flux-free, which
+            :meth:`_surface_mean` now guarantees by weighting the demean by arc length.
+
+        ``"penalty"``
+            A weak natural BC. It tolerates a datum that carries a small net flux, at the
+            cost of a leak set by the penalty magnitude.
+
+        The datum is the ``ũ_n`` field, re-read at each solve, so refreshing
+        ``_un_target`` refreshes the constraint (see #403)."""
         self.consistent = self._new_stokes("cons")
         self.consistent.bodyforce = self.free.bodyforce
         self._apply_walls(self.consistent)
@@ -387,23 +472,21 @@ class FreeSurface:
         )
         self._un_target_rows, _ = self._field_rows(self._un_target, self._surf_coords)
         self._un_target.array[...] = 0.0
-        # PRESCRIBED-FLUX datum on a CLOSED boundary must be imposed WEAKLY. A penalty
-        # natural BC tolerates the small discrete incompatibility between the demeaned
-        # target and the incompressibility constraint (∮u.n dA = 0); a STRONG rotated
-        # constraint over-determines it, and the material-boundary error then GROWS
-        # (measured: penalty settles to ~1.8% by step 5, the strong datum degrades
-        # 16%->22% by step 30, letting material cross the surface — which is exactly the
-        # inconsistency this third solve exists to remove, and which shows up downstream
-        # as SL feet reaching outside the domain and hot material in the cold TBL).
-        # The rotated prescribed-normal datum primitive remains available in
-        # utilities.rotated_bc for boundaries where discrete compatibility is guaranteed.
-        n_hat = self.normal if self.normal is not None else self.mesh.boundary_normal(self.surface)
-        v_sym = self.consistent.u.sym
-        penalty = 1.0e5
-        self.consistent.add_natural_bc(
-            penalty * (n_hat.dot(v_sym) - self._un_target.sym[0]) * n_hat, self.surface
-        )
-        self.consistent.petsc_options["snes_type"] = "ksponly"   # linear: no line search
+        if self.consistent_constraint == "strong":
+            # The datum is read along the rotated per-node normal — the same deform
+            # direction the rate was measured along, so no spurious tangential-slope term
+            # on a bumpy or rotating surface.
+            self.consistent.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
+            self.consistent._rotated_freeslip_datum = {self.surface: self._un_target.sym[0]}
+        else:
+            n_hat = (self.normal if self.normal is not None
+                     else self.mesh.boundary_normal(self.surface))
+            self.consistent.add_natural_bc(
+                self._consistent_penalty
+                * (n_hat.dot(self.consistent.u.sym) - self._un_target.sym[0]) * n_hat,
+                self.surface,
+            )
+            self.consistent.petsc_options["snes_type"] = "ksponly"  # linear: no line search
         self.consistent.petsc_use_pressure_nullspace = True
         self._adv_velocity = self.consistent.u
 
@@ -661,13 +744,12 @@ class FreeSurface:
         transport and grows the surface out of round-off. With the deform-direction normal
         a rigid rotation gives :math:`\dot h=0` exactly."""
         self._v_p1_proj.solve()
-        coords = self._surf_coords
+        coords = self._ring_coords                  # live, already in ring order
         n = self._normal_direction(coords)          # unit vectors, same as the deform
-        dot = np.zeros(coords.shape[0])
+        u_n = np.zeros(coords.shape[0])
         for i in range(self.mesh.dim):
             v_i = np.asarray(function.evaluate(self._v_p1.sym[i], coords)).flatten()
-            dot += v_i * n[:, i]
-        u_n = dot[np.argsort(coords[:, 0])]
+            u_n += v_i * n[:, i]
         u_n = self._demean(u_n)
         if self._surface_mask is not None:
             u_n = u_n * self._surface_mask  # pin the surface rate near driven walls
@@ -678,12 +760,12 @@ class FreeSurface:
         (x-sorted) order the surface arrays use, in ``s``-units: Cartesian ``v_x`` (so
         ``s_dep = x - v_x*dt``); cylindrical the angular rate ``omega = v_theta/r`` (so
         ``s_dep = theta - omega*dt``)."""
-        order = np.argsort(self._surf_coords[:, 0])
-        v_x = np.asarray(function.evaluate(self._v_p1.sym[0], self._surf_coords)).flatten()[order]
+        coords = self._ring_coords                  # live, already in ring order
+        v_x = np.asarray(function.evaluate(self._v_p1.sym[0], coords)).flatten()
         if not self._cylindrical:
             return v_x
-        v_y = np.asarray(function.evaluate(self._v_p1.sym[1], self._surf_coords)).flatten()[order]
-        cx, cy = self._ring_coords[:, 0], self._ring_coords[:, 1]
+        v_y = np.asarray(function.evaluate(self._v_p1.sym[1], coords)).flatten()
+        cx, cy = coords[:, 0], coords[:, 1]
         r = np.hypot(cx, cy)
         v_theta = (-cy * v_x + cx * v_y) / r        # v . theta-hat
         return v_theta / r
