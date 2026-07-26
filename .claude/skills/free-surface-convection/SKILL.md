@@ -152,6 +152,43 @@ runs/flexure_D*}`.
 - `unified_penalty_solver.py` — the one-solver penalty formulation probe
 - `resolve_timing_probe.py` — repeated-solve / lag-Jacobian / reuse-PC timing
 
+## ★★ Body force must be FULL Boussinesq on a deforming mesh (2026-07-26)
+
+**On any run where the mesh surface actually moves, the body force must retain the
+ρ₀ background: `bodyforce = (thermal_buoyancy − rho_0_g)·r̂` (i.e. ρ = ρ₀(1−αΔT)).**
+The reduced (driving-only) form has **NO restoring force for surface deformation
+anywhere in the momentum system** — `buoyancy_scale` enters only the kinematic target
+h∞ = −σ_nn/ρg, which exerts zero force on the flow. Consequences and evidence (all
+measured, `~/+Simulations/FreeSurface/annulus_fs_convection/teaching/`):
+
+- **Relaxation A/B (`relaxation_test.py`)** — imposed 5% mode-4 topography, no thermal
+  driving: reduced form = surface FROZEN (velocities are round-off); full density =
+  **262→5 km in 10 steps at the Cathles rate** (measured 2.1e4 vs ρ₀g/(2ηk) = 2.5e4,
+  within 20% at res 0.06).
+- **Convection A/B (`restoring_force_demo.png`, gap-Ra 3e4, ρ₀g 1e6)** — reduced h
+  grows monotonically without limit; full density *rings* about its supported amplitude
+  early (damped), then tracks the developing flow ~35% lower with HIGHER Nu (1.93 vs
+  1.65). Without the term, soft surfaces run away entirely (measured to 50% of radius).
+- **The FreeSurface manager needs NO change** — held/consistent solves inherit
+  `stokes.bodyforce`; h∞ then self-consistently includes the self-load (a moving target
+  the integrator follows cleanly — verified in the relaxation test).
+
+Rules that come with it:
+1. **ρ₀g and Ra are COUPLED: αΔT = (thermal buoyancy coeff)/ρ₀g must be ≲ 0.3.**
+   Softness is not a free knob — the old "soft" runs at ρg=2e5 were αΔT = 1.2–4 (no
+   such fluid) and their runaway was partly parameter nonsense. Soft surfaces require
+   weak driving.
+2. **Tighten the solver tolerance (~1e-8)**: the hydrostatic RHS dominates the dynamic
+   signal by 1e3–1e4, and a relative tolerance judges the total.
+3. Prefer `snes_type=ksponly` for the isoviscous solves; the huge RHS makes `newtonls`
+   thrash worse.
+4. Driver switch: `fs_convection.py -uw_full 1`.
+
+Related transport fact (same campaign): the serial T-blow-up on deforming FS meshes was
+the **old-frame SL reach-back** amplifying per loop cycle (issue #423; smaller dt makes
+it WORSE) — retired in `b507aca1`; the manager now uses the standard ALE path + clamp +
+deform-aware foot restore. The parallel datum defect is #421.
+
 ## Failure modes — symptom → cause
 
 | Symptom | Cause |
@@ -159,6 +196,8 @@ runs/flexure_D*}`.
 | Surface deforms but `u_n` RUNS AWAY (e.g. u_n 42→125→285→445), cold lid leaks in, plumes punch through | **RESOLVED**: material-surface advection inconsistency — T advected with stress-free `u_n` while surface moves by relaxed `ũ_n`. Fix = `--advect-velocity consistent` (Hardening §1). NOT an h_∞ bug, NOT fixed by FSSA. |
 | `held` solve 22 s / `DIVERGED_LINEAR_SOLVE`, throughflow blows up, with `--inner freeslip` | rigid-rotation `[-y,x]` attached as a nullspace on the DEFORMED (non-circular) surface — invalid. Don't attach it on the moving surface; use the post-solve projection (Hardening §3). |
 | Graded-mesh surface "destroys itself" (q→0.2, h_max 2% at step 1) | surface-detection tolerance scooped the first interior ring → 2%-thick band, NOT real deformation. Tie tolerance to finest cell (Hardening §4). The diffuser is innocent. |
+| Topography GROWS without saturating; flow-through persists even at huge deformation | **missing ρ₀ background** — reduced body force has no surface restoring force (see the Full-Boussinesq section above). Fix = ρ = ρ₀(1−αΔT); check αΔT ≲ 0.3 |
+| T leaves [0,1] on a deforming mesh, mesh-locked hot/cold spikes in the squeezed band, worse at SMALLER dt | old-frame SL reach-back amplifying per loop cycle (issue #423) — use the standard ALE path (`old_frame_traceback=False`, the manager default since b507aca1) |
 | Stress-free top but surface not updated each step | nothing stops throughflow (the stress-free top is an open boundary unless the integrator moves the surface to track `u_n`) |
 | Nu decays when it should be steady (kinematic free surface) | LAG: the SL foot reaches beyond an under-moved surface → cold pump. Fix = the h_∞ relaxation, not more smoothing |
 | Surface "mountain" / one-step spike on adaptive mesh | held-lid Nitsche penalty over-stiffened by GLOBAL h; use `local_h=True` (default, PR #275) = `mesh.cell_size()` |
