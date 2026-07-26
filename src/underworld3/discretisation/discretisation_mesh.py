@@ -7200,6 +7200,12 @@ class Mesh(Stateful, uw_object):
                 engine_obj.coords[_i] = _post[_k]
 
         level_dms = []                       # one DM per refinement level
+        # Nested (topological) MG prolongations, one per refinement generation.
+        # `from_dm` numbers engine vertices as `DM point - vS`, so the base map
+        # is that offset; each generation's map comes back from `to_dm`.
+        _nested_Ps = []
+        _vS0, _vE0 = base_finest.getDepthStratum(0)
+        _coarse_vmap = {i: _vS0 + i for i in range(_vE0 - _vS0)}
 
         if engine == "nvb" and _nvbx is not None:
             # Native uwnvb DMPlexTransform. Each pass marks the cells whose current
@@ -7239,7 +7245,16 @@ class Mesh(Stateful, uw_object):
                 lab.setDefaultValue(0)
                 for cidx in marked:
                     lab.setValue(cidx, DM_ADAPT_REFINE)
+                _coarse_for_P = current_dm
                 current_dm = _nvbx.refine(d, "adapt")
+                # Capture the exact parent/child prolongation NOW, in the one
+                # window where the coordinates are still pristine: the snap
+                # below moves boundary midpoints off their parent edges, and
+                # relaxation moves everything, after which the relation can no
+                # longer be recovered by matching. See #425.
+                from underworld3.utilities.nvb import (
+                    nested_prolongation_from_dms as _nested_from_dms)
+                _nested_Ps.append(_nested_from_dms(_coarse_for_P, current_dm))
                 snap_level_boundaries(current_dm)
                 if _relax_mode == "per-generation":
                     # Relax THIS generation before the next one marks from it:
@@ -7273,7 +7288,8 @@ class Mesh(Stateful, uw_object):
             # bound. A bisection halves the cell volume, so h shrinks by
             # 2^(1/dim) per generation and one isotropic-equivalent
             # ``max_levels`` is dim generations.
-            from underworld3.utilities.nvb import NVBMesh, TaggedBisectionMesh
+            from underworld3.utilities.nvb import (NVBMesh, TaggedBisectionMesh,
+                                                   nested_prolongation)
             _Engine = TaggedBisectionMesh if self.dim == 3 else NVBMesh
             carry = [(b.name, b.value) for b in self.boundaries
                      if b.name not in ("Null_Boundary", "All_Boundaries")]
@@ -7296,6 +7312,7 @@ class Mesh(Stateful, uw_object):
                     sel = sel[order[:node_budget]]
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
+                _n_coarse_verts = len(nvb.coords)   # before this generation
                 nvb.refine(set(marked))
                 # Snap INSIDE the engine: its own coordinates feed the next
                 # generation's marking AND the next midpoints, so snapping
@@ -7317,8 +7334,20 @@ class Mesh(Stateful, uw_object):
                             nvb.coords[_i] = _snapped[_k]
                 if _relax_mode == "per-generation":
                     _relax_generation(nvb, carry, rcarry)
-                level_dms.append(nvb.to_dm(boundaries=carry, regions=rcarry,
-                                           comm=self.dm.comm))
+                _gen_dm = nvb.to_dm(boundaries=carry, regions=rcarry,
+                                    comm=self.dm.comm)
+                level_dms.append(_gen_dm)
+                # Record the EXACT prolongation for this generation while the
+                # engine still knows the parent/child relation. Built from
+                # `edge2mid`, not by point location, so it is full rank by
+                # construction and survives any later node motion (relax /
+                # snap / deformation). See design/nested-vs-geometric-mg-transfers.
+                _vSg, _vEg = _gen_dm.getDepthStratum(0)
+                _fine_map = dict(nvb.dm_vertex_of_engine)
+                _nested_Ps.append(nested_prolongation(
+                    nvb, _coarse_vmap, _fine_map, _n_coarse_verts,
+                    _vSg, _vEg - _vSg))
+                _coarse_vmap = _fine_map
                 if verbose:
                     uw.pprint(0, f"[adapt] nvb gen {level}: marked {len(marked)} "
                                  f"-> {len(nvb.cells)} cells")
@@ -7388,6 +7417,10 @@ class Mesh(Stateful, uw_object):
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
         child._adapt_engine = engine
+        # Exact per-generation prolongations when the engine could supply them
+        # (cell-list path). Empty for the native transform path, which falls
+        # back to the geometric builder. See #425.
+        child._adapt_prolongation = _nested_Ps
         # Mesh-owned custom-P geometric-MG tail. EVERY refinement level is its own
         # MG level (one custom-P transfer per refinement step), not a single
         # base-finest -> child jump: the tail is

@@ -168,6 +168,179 @@ def _fs(a, b):
     return (a, b) if a < b else (b, a)
 
 
+def nested_prolongation_from_dms(coarse_dm, fine_dm, tol=1.0e-10):
+    """Recover a refinement pass's exact P1 prolongation from the two DMs.
+
+    For engines that do not expose their parent/child map (the native
+    ``DMPlexTransform`` path), the relation can still be recovered exactly
+    **while the coordinates are pristine** — after refinement but BEFORE any
+    boundary snap or relaxation moves a midpoint off its parent edge.
+
+    One ``refine`` pass is not necessarily one bisection *level*: the
+    conforming closure cascades, so a vertex can be the midpoint of an
+    already-split half-edge and therefore sit at the quarter point of the
+    original coarse edge. Resolution is iterative:
+
+    1. a fine vertex coincident with a coarse vertex is inherited (weight 1);
+       one coincident with a coarse edge midpoint gets 1/2, 1/2;
+    2. any still-unresolved vertex that is the midpoint of two ALREADY-RESOLVED
+       fine neighbours takes the average of their weights;
+    3. repeat until nothing new resolves.
+
+    Weights compose exactly, so the result is the true FE embedding at any
+    cascade depth. Returns ``(rows, cols, vals)`` as in
+    :func:`nested_prolongation`, or ``None`` if any vertex remains unresolved
+    — in which case the caller should fall back to the geometric builder
+    rather than guess.
+    """
+    from scipy.spatial import cKDTree
+
+    cvS, cvE = coarse_dm.getDepthStratum(0)
+    ceS, ceE = coarse_dm.getDepthStratum(1)
+    cdim = coarse_dm.getCoordinateDim()
+    cxyz = coarse_dm.getCoordinatesLocal().array.reshape(-1, cdim)
+
+    edges = [(c[0] - cvS, c[1] - cvS)
+             for e in range(ceS, ceE)
+             for c in (coarse_dm.getCone(e),)
+             if len(c) == 2 and all(cvS <= q < cvE for q in c)]
+    if not edges:
+        return None
+    edges = np.asarray(edges, dtype=np.int64)
+
+    fvS, fvE = fine_dm.getDepthStratum(0)
+    feS, feE = fine_dm.getDepthStratum(1)
+    fxyz = fine_dm.getCoordinatesLocal().array.reshape(-1, cdim)
+    n_f = fvE - fvS
+    if fxyz.shape[0] != n_f:
+        return None
+    scale = float(np.abs(cxyz).max()) or 1.0
+    atol = tol * scale
+
+    # --- round 1: coarse vertices and coarse edge midpoints ---------------
+    targets = np.vstack([cxyz, 0.5 * (cxyz[edges[:, 0]] + cxyz[edges[:, 1]])])
+    dist, idx = cKDTree(targets).query(fxyz)
+    nc = cxyz.shape[0]
+    weights = [None] * n_f
+    for r in range(n_f):
+        if dist[r] > atol:
+            continue
+        t = int(idx[r])
+        if t < nc:
+            weights[r] = {t: 1.0}
+        else:
+            a, b = edges[t - nc]
+            weights[r] = {int(a): 0.5, int(b): 0.5}
+
+    # --- rounds 2+: midpoints of already-resolved fine neighbours ---------
+    unresolved = [r for r in range(n_f) if weights[r] is None]
+    if unresolved:
+        nbr = [[] for _ in range(n_f)]
+        for e in range(feS, feE):
+            c = fine_dm.getCone(e)
+            if len(c) == 2 and all(fvS <= q < fvE for q in c):
+                u, v = int(c[0] - fvS), int(c[1] - fvS)
+                nbr[u].append(v)
+                nbr[v].append(u)
+        while unresolved:
+            progressed = False
+            still = []
+            for r in unresolved:
+                done = False
+                cand = [q for q in nbr[r] if weights[q] is not None]
+                for i in range(len(cand)):
+                    for j in range(i + 1, len(cand)):
+                        p, q = cand[i], cand[j]
+                        if np.linalg.norm(
+                                fxyz[r] - 0.5 * (fxyz[p] + fxyz[q])) <= atol:
+                            w = {}
+                            for src in (p, q):
+                                for pt, ww in weights[src].items():
+                                    w[pt] = w.get(pt, 0.0) + 0.5 * ww
+                            weights[r] = w
+                            progressed = done = True
+                            break
+                    if done:
+                        break
+                if not done:
+                    still.append(r)
+            if not progressed:
+                return None              # cannot be explained by bisection
+            unresolved = still
+
+    rows, cols, vals = [], [], []
+    for r in range(n_f):
+        for pt, w in weights[r].items():
+            rows.append(r)
+            cols.append(pt)
+            vals.append(w)
+    return (np.asarray(rows, dtype=np.int64),
+            np.asarray(cols, dtype=np.int64),
+            np.asarray(vals, dtype=float))
+
+
+def nested_prolongation(engine, coarse_map, fine_map, n_coarse, vS_fine,
+                        n_fine):
+    """Exact P1 prolongation for ONE bisection generation, in DM numbering.
+
+    A bisection generation adds exactly one kind of vertex: the midpoint of a
+    coarse edge. So every fine vertex is either
+
+    * **inherited** from the coarse level -> weight 1 on itself, or
+    * the **midpoint of edge (a, b)** -> weight 1/2 on each of ``a``, ``b``.
+
+    That is the FE embedding of the coarse P1 space in the fine one, and unlike
+    a point-located transfer it is **structurally full rank**: every coarse DOF
+    carries weight 1 into its own inherited fine DOF, so no coarse DOF can be
+    left without a fine image (the zero-column failure of #424 cannot arise).
+    It is also purely topological, so relaxing or snapping the mesh afterwards
+    does not disturb it.
+
+    ``coarse_map`` / ``fine_map`` are engine-vertex-id -> DM-point for the two
+    levels (recorded by :meth:`to_dm`); ``n_coarse`` is the engine vertex count
+    *before* this generation refined, which is what separates inherited
+    vertices from new ones.
+
+    Midpoints whose own parents were created earlier in the SAME generation
+    (possible when the conforming closure cascades) are resolved recursively
+    and their weights composed, so the result is correct regardless of the
+    order in which the closure fired.
+
+    Returns ``(rows, cols, vals)`` for a ``(n_fine, n_coarse_dm)`` matrix in
+    DM vertex indices local to each level's vertex stratum.
+    """
+    mid2edge = {m: e for e, m in engine.edge2mid.items()}
+    memo = {}
+
+    def _weights(eid):
+        """Coarse-DM-point -> weight for engine vertex ``eid``."""
+        if eid in memo:
+            return memo[eid]
+        if eid < n_coarse:
+            out = {coarse_map[eid]: 1.0}
+        else:
+            a, b = mid2edge[eid]
+            out = {}
+            for parent, half in ((a, 0.5), (b, 0.5)):
+                for pt, w in _weights(parent).items():
+                    out[pt] = out.get(pt, 0.0) + half * w
+        memo[eid] = out
+        return out
+
+    rows, cols, vals = [], [], []
+    for eid, fpt in fine_map.items():
+        r = fpt - vS_fine
+        if r < 0 or r >= n_fine:
+            continue
+        for pt, w in _weights(eid).items():
+            rows.append(r)
+            cols.append(pt)
+            vals.append(w)
+    return (np.asarray(rows, dtype=np.int64),
+            np.asarray(cols, dtype=np.int64),
+            np.asarray(vals, dtype=float))
+
+
 class NVBMesh:
     """A 2D newest-vertex-bisection triangulation with boundary-edge and
     region-cell labels carried across bisections.
@@ -442,6 +615,13 @@ class NVBMesh:
         dm_vcoords = dm.getCoordinatesLocal().array.reshape(-1, 2)
         _, nearest = cKDTree(np.array(self.coords)).query(dm_vcoords)
         nvb_of_dmvert = {vS + i: int(nearest[i]) for i in range(vE - vS)}
+        # Engine-id <-> DM-point map for THIS export, kept so the nested MG
+        # prolongation can be built from the exact parent/child relation
+        # (``edge2mid``) instead of re-deriving it by point location. Recorded
+        # here because this is the only place the two numberings meet; a caller
+        # that snaps or relaxes afterwards would no longer be able to recover
+        # it by coordinate matching. See design/nested-vs-geometric-mg-transfers.
+        self.dm_vertex_of_engine = {v: k for k, v in nvb_of_dmvert.items()}
 
         # outer geometric boundary (UW convention)
         dm.markBoundaryFaces("All_Boundaries", 1001)
@@ -833,6 +1013,9 @@ class TaggedBisectionMesh:
             -1, dm.getCoordinateDim())
         _, nearest = cKDTree(np.array(self.coords)).query(dm_vcoords)
         eng_of_dmvert = {vS + i: int(nearest[i]) for i in range(vE - vS)}
+        # See the note in NVBMesh.to_dm: engine-id -> DM-point, recorded at the
+        # one point the two numberings meet, for the nested MG prolongation.
+        self.dm_vertex_of_engine = {v: k for k, v in eng_of_dmvert.items()}
 
         dm.markBoundaryFaces("All_Boundaries", 1001)
 
