@@ -847,6 +847,23 @@ class SolverBaseClass(uw_object):
         """
         return self._has_solution
 
+    def _resolve_zero_init_guess(self, zero_init_guess):
+        """Resolve the tri-state ``zero_init_guess`` argument of ``solve()``.
+
+        ``None`` (the default) auto-detects: cold when the solver holds no converged
+        solution, warm when it does. Detection is safe by construction — guessing
+        *cold* when a solution was in fact available costs one extra iteration from a
+        good starting point, while the harmful direction (warming off stale field data
+        after a remesh or a diverged solve) cannot happen, because
+        :attr:`has_solution` is cleared by both.
+
+        ``True`` forces a fresh start (discard any solution); ``False`` insists on
+        warming from the current field values.
+        """
+        if zero_init_guess is None:
+            return not self.has_solution
+        return bool(zero_init_guess)
+
     def _solve_yield_homotopy(self, homotopy_options=None, verbose=False,
                               solve_kwargs=None):
         """Run ``solve(homotopy=True)``: a multi-solve δ-continuation on the yield law.
@@ -3537,7 +3554,7 @@ class SNES_Scalar(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose:         bool=False,
               debug:           bool=False,
@@ -3553,10 +3570,15 @@ class SNES_Scalar(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in the solution variable(s) as the initial guess, which can
-            improve convergence for time-stepping or continuation methods.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up. Useful after
             changing boundary conditions or constitutive parameters.
@@ -3603,6 +3625,9 @@ class SNES_Scalar(SolverBaseClass):
         --------
         snes : Access to underlying PETSc SNES object for advanced control.
         """
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         import petsc4py
 
@@ -4601,7 +4626,7 @@ class SNES_Vector(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose=False,
               debug=False,
@@ -4616,9 +4641,15 @@ class SNES_Vector(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in ``self.u`` as the initial guess.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up.
         verbose : bool, default=False
@@ -4644,6 +4675,9 @@ class SNES_Vector(SolverBaseClass):
         --------
         u : The solution vector field variable.
         """
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         if _force_setup:
             self.is_setup = False
@@ -5346,7 +5380,7 @@ class SNES_MultiComponent(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               _force_setup:    bool = False,
               verbose=False,
               debug=False,
@@ -5364,6 +5398,9 @@ class SNES_MultiComponent(SolverBaseClass):
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. 0 preserves legacy behaviour.
         """
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         if _force_setup:
             self.is_setup = False
@@ -8433,7 +8470,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               picard: int = 0,
               verbose=False,
               debug=False,
@@ -8452,11 +8489,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use current
-            values in ``self.u`` (velocity) and ``self.p`` (pressure) as
-            initial guess. Using False can improve convergence for
-            time-stepping or parameter continuation.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         picard : int, default=0
             Number of Picard iterations before switching to Newton.
             Picard iterations use a simplified Jacobian and can help
@@ -8534,6 +8575,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         p : Pressure solution variable.
         constitutive_model : Viscosity and stress definitions.
         """
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         if homotopy:
             # The march runs a SEQUENCE of ordinary solves at successively sharper

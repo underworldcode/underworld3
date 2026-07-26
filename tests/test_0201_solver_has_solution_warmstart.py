@@ -110,6 +110,57 @@ def test_has_solution_resets_on_mesh_deform():
     )
 
 
+def test_zero_init_guess_is_tristate_and_auto_detects():
+    """Layer 1b: the default (None) resolves cold-vs-warm from has_solution, while
+    True/False remain explicit overrides."""
+    _, poisson = _poisson()
+
+    # Fresh solver: nothing to warm from -> auto resolves COLD.
+    assert poisson.has_solution is False
+    assert poisson._resolve_zero_init_guess(None) is True
+
+    poisson.solve()
+    assert poisson.has_solution is True
+    # A converged solution is present -> auto resolves WARM.
+    assert poisson._resolve_zero_init_guess(None) is False
+
+    # Explicit values are honoured regardless of has_solution.
+    assert poisson._resolve_zero_init_guess(True) is True
+    assert poisson._resolve_zero_init_guess(False) is False
+
+    # After a structural rebuild the claim is dropped, so auto is cold again — this
+    # is what stops a remesh warm-starting off stale field data.
+    poisson.is_setup = False
+    assert poisson._resolve_zero_init_guess(None) is True
+
+
+def test_repeated_default_solve_agrees_to_solver_tolerance():
+    """A bare solve() called repeatedly (the linear chain-of-solves pattern) must give
+    the same answer once auto-detect starts warming the later calls.
+
+    "Same" means *to the requested convergence tolerance*, not bitwise: an iterative
+    solve stops anywhere inside the tolerance ball, and a warm start enters that ball
+    from a different direction than a cold one. The difference is therefore
+    tolerance-sized and shrinks with it (measured: 2.4e-5 at tol=1e-4, 7.4e-10 at
+    1e-8, 2.0e-14 at 1e-12) — the flip to auto-detected warm starts changes results
+    at that level and no more.
+    """
+    import numpy as np
+
+    mesh, poisson = _poisson()
+    poisson.tolerance = 1.0e-10
+    poisson.solve()
+    first = poisson.u.array[:, 0, 0].copy()
+
+    poisson.solve()   # now warm by auto-detect
+    second = poisson.u.array[:, 0, 0].copy()
+
+    assert np.abs(first - second).max() < 1.0e-6, (
+        "warm and cold solutions of a linear problem must agree to the solver "
+        f"tolerance (got max|diff| = {np.abs(first - second).max():.2e})"
+    )
+
+
 def test_cold_warmstart_under_consistent_newton_converges():
     """A cold consistent-Newton Stokes solve exercises the automatic
     single-Picard warm-up branch — it must converge and set has_solution."""
