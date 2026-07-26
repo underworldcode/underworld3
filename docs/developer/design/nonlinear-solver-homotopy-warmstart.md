@@ -1,7 +1,8 @@
 # Nonlinear solver: automatic warm-start and single-parameter yield homotopy
 
-**Status: PROPOSED.** Design only — implementation is deferred to a dedicated,
-carefully-benchmarked session because it changes core `solve()` behaviour.
+**Status: IMPLEMENTED** (2026-07, branch `feature/nonlinear-warmstart-homotopy`).
+All four stages have landed; each section below records what was built and, where
+measurement contradicted the design, what was corrected.
 (Design captured 2026-07, from the Spiegelman viscoplastic hardening work.)
 
 ## Why this exists
@@ -218,8 +219,16 @@ The only knobs a user ever touches are the two deliberate opt-outs: force-fresh
    solve pays nothing. Broadening the warm-up to all nonlinear solvers (a cached
    nonlinearity probe rather than the tangent proxy) is a natural Layer-1b
    extension. Recipe + config-trap-list captured in the `nonlinear-solver` skill.
-2. **Layer 1b — flip `zero_init_guess` to auto-detect.** The benchmarked default
-   change. Gate the free-surface-chain and mover cases first (below).
+2. **Layer 1b — flip `zero_init_guess` to auto-detect** — **LANDED** (`test_0201`).
+   Tri-state: `None` (default) auto-detects from `has_solution`, `True` forces fresh,
+   `False` insists on warm. Both gates cleared before flipping — the free-surface
+   chain's repeated bare `solve()` is a *linear* Poisson mesh-displacement solve, so a
+   warm start cannot change its converged answer; the mover/adapt reset is covered by
+   the `is_setup` hook and its test. **Measured consequence:** warm and cold agree to
+   the *convergence tolerance*, not bitwise (2.4e-5 at `tol=1e-4`, 7.4e-10 at `1e-8`,
+   2.0e-14 at `1e-12`), because an iterative solve stops anywhere in the tolerance
+   ball and a warm start enters it from a different direction. A test with a threshold
+   tighter than its own solver tolerance can therefore shift.
 3. **Layer 3 — non-symmetry-safe smoother default** — **LANDED** (`gmres`+`sor`+
    `norm_type=none` in the FMG bundle; test `test_1014`). Independent of homotopy.
    Benchmarked as described in the Layer 3 section: applied unconditionally rather
