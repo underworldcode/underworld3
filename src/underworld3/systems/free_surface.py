@@ -682,10 +682,15 @@ class FreeSurface:
 
     def _velocity_cfl(self):
         """Courant limit from the free-solve velocity magnitude (used when there is
-        no material field to set the advective step)."""
-        speed = function.evaluate(self.free.u.sym.dot(self.free.u.sym), self.mesh.X.coords)
-        vmax = uw.mpi.comm.allreduce(float(np.sqrt(np.asarray(speed)).max()),
-                                     op=MPI.MAX)
+        no material field to set the advective step).
+
+        Reads the nodal DOF data directly rather than ``evaluate``-ing at the mesh
+        vertices: a max-speed bound needs no interpolation, and on-vertex point
+        location on a deformed mesh can legitimately fail and return NaN (the loud
+        fallback policy), which would poison the timestep."""
+        v = np.asarray(self.free.u.data)
+        local_max = float(np.linalg.norm(v, axis=1).max()) if v.size else 0.0
+        vmax = uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
         h_cell = self.mesh.get_min_radius()
         return np.inf if vmax == 0.0 else self.max_surface_cfl * h_cell / vmax
 
