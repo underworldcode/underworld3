@@ -356,14 +356,20 @@ def _coarse_reduced_map(solver, coarse_mesh, field_id=None):
     return _reduced_map(cdm, field_id)
 
 
+def _reduced_from_node_transfer(Pn, r2f_c, r2f_f, ncomp):
+    """Interleave ``ncomp`` components of a node-level scalar ``Pn`` and drop the
+    BC rows/columns — the half of :func:`_reduced_transfer` that does not care
+    where the node weights came from."""
+    import scipy.sparse as sp
+    Pv = sp.kron(Pn, sp.eye(ncomp), format="csr")          # interleaved full vector
+    return Pv.tocsr()[r2f_f, :][:, r2f_c]                  # reduced -> reduced
+
+
 def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
     """Build one prolongation reduced(coarse) -> reduced(fine):
     node-level scalar P -> interleave ``ncomp`` components -> drop BC rows/cols."""
-    import scipy.sparse as sp
     Pn = builder(coarse_coords, fine_coords)               # (n_f_nodes, n_c_nodes)
-    Pv = sp.kron(Pn, sp.eye(ncomp), format="csr")          # interleaved full vector
-    Pr = Pv.tocsr()[r2f_f, :][:, r2f_c]                    # reduced -> reduced
-    return Pr
+    return _reduced_from_node_transfer(Pn, r2f_c, r2f_f, ncomp)
 
 
 # --------------------------------------------------------------------------- #
@@ -725,6 +731,45 @@ class CustomMGHierarchy:
         self.cross_partition = cross_partition
         self.transfers = None
 
+    def _recorded_node_transfer(self, level, nlev, degree, n_coarse, n_fine):
+        """The EXACT nested prolongation recorded by ``mesh.adapt`` for this
+        transfer, or ``None`` to fall back to point location.
+
+        ``adapt`` maintains the parent/child relation, so for a bisection
+        hierarchy the coarse-to-fine embedding is known exactly — every fine
+        vertex is an inherited coarse vertex (weight 1) or an edge midpoint
+        (1/2, 1/2). Using it avoids re-deriving an approximation by Delaunay
+        point location, and it is **structurally full rank**: no coarse DOF can
+        be left without a fine image, so the zero-column failure (#424) cannot
+        arise on this path.
+
+        Restricted to ``degree == 1``: the recorded relation is vertex-level,
+        and a higher-degree field also has edge/face DOFs that it says nothing
+        about. Those still go through the geometric builder — see #425 for the
+        any-degree extension (record the parent CELL, then evaluate the coarse
+        basis at the fine DOF reference coordinates).
+
+        The recorded list covers the ADAPT generations only; the uniform coarse
+        tail beneath them is not a bisection hierarchy, so its transfers keep
+        using the builder. Shapes are checked rather than assumed — a mismatch
+        means the levels do not line up as expected and it is safer to fall
+        back than to install a silently wrong transfer.
+        """
+        import scipy.sparse as sp
+        if degree != 1:
+            return None
+        recorded = getattr(self.level_meshes[-1], "_adapt_prolongation", None)
+        if not recorded:
+            return None
+        idx = level - (nlev - len(recorded))
+        if idx < 0 or idx >= len(recorded) or recorded[idx] is None:
+            return None
+        rows, cols, vals = recorded[idx]
+        if (rows.size == 0 or int(rows.max()) >= n_fine
+                or int(cols.max()) >= n_coarse):
+            return None
+        return sp.csr_matrix((vals, (rows, cols)), shape=(n_fine, n_coarse))
+
     def build(self, solver):
         """Build the BC-reduced prolongations. ``solver`` is the (built) finest
         solver. Each COARSE level's BC-constrained reduced map is derived directly
@@ -810,8 +855,13 @@ class CustomMGHierarchy:
                 _assert_no_zero_columns_parallel(P, comm)
                 Ps.append(P)
             else:
-                Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
-                                       maps[l], nc, self.builder)
+                Pn = self._recorded_node_transfer(
+                    l, nlev, degree, coords[l - 1].shape[0], coords[l].shape[0])
+                if Pn is not None:
+                    Pr = _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc)
+                else:
+                    Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
+                                           maps[l], nc, self.builder)
                 _assert_no_zero_columns_serial(Pr, l)
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
