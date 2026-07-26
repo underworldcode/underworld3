@@ -695,7 +695,7 @@ class SNES_Darcy(SNES_Scalar):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         verbose: bool = False,
         _force_setup: bool = False,
@@ -940,7 +940,7 @@ class SNES_TransientDarcy(SNES_Darcy):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep=None,
         _force_setup: bool = False,
         verbose=False,
@@ -1409,7 +1409,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @memprobe.instrument("Stokes.solve")
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         _force_setup: bool = False,
         verbose: bool = False,
@@ -1430,8 +1430,15 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         Parameters
         ----------
-        zero_init_guess : bool
-            If True, use zero initial guess. Otherwise use current field values.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         timestep : float, optional
             Advection timestep. Required when stress history is active.
         _force_setup : bool
@@ -4145,7 +4152,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         _force_setup: bool = False,
         _evalf=False,
@@ -4457,7 +4464,7 @@ class SNES_Diffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         evalf: bool = False,
         _force_setup: bool = False,
@@ -4876,7 +4883,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @memprobe.instrument("NavierStokes.solve")
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         _force_setup: bool = False,
         verbose=False,
