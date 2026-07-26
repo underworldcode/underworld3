@@ -56,6 +56,7 @@ def yield_continuation(
     entry_maxit=30,
     step_maxit=10,
     retries=2,
+    max_steps=60,
     solve_kwargs=None,
     verbose=True,
 ):
@@ -99,6 +100,9 @@ def yield_continuation(
         a tight budget lets a too-hard step abort cheaply.
     retries : int
         How many times to retry a failed δ with a gentler step before settling.
+    max_steps : int
+        Hard cap on the number of δ-solves, so a march that is easing off in small
+        steps cannot run unbounded.
     solve_kwargs : dict, optional
         Extra arguments forwarded to every inner ``solver.solve()`` — notably
         ``timestep`` for a visco-elastic-plastic model, whose solves need one.
@@ -114,6 +118,8 @@ def yield_continuation(
     """
     if not (0.0 < down < 1.0):
         raise ValueError(f"down must satisfy 0 < down < 1, got {down}")
+    if not delta0 > 0.0:
+        raise ValueError(f"delta0 must be positive, got {delta0}")
 
     if control is None:
         cm = getattr(solver, "constitutive_model", None)
@@ -125,13 +131,36 @@ def yield_continuation(
             )
         control = cm._yield_homotopy_control()
 
+    # A march is a SEQUENCE of solves, so a solver that integrates history in time
+    # would advance that history once per delta-step rather than once per timestep.
+    # Refuse rather than silently corrupt it -- see the design note.
+    if getattr(getattr(solver, "Unknowns", None), "DFDt", None) is not None:
+        raise NotImplementedError(
+            "solve(homotopy=True) is not available on a solver carrying stress "
+            "history (visco-elastic-plastic): the march runs several solves, each of "
+            "which would advance the elastic stress history by a full timestep. Solve "
+            "the VEP model without the homotopy, or drive the march yourself around a "
+            "single history update."
+        )
+
+    # Iteration budgets have to be applied where they survive the solve path's own
+    # setFromOptions (which pushes a hardcoded snes_max_it); petsc_options alone is
+    # silently overwritten. This is the same hook estimate_difficulty() uses.
+    saved_probe = solver._difficulty_probe
+    saved_probe_maxit = solver._difficulty_max_it
+    saved_resume = solver._resume_abs_target
+    saved_tangent = solver.consistent_jacobian
+
     solver.consistent_jacobian = control.tangent
 
     u, p = solver.Unknowns.u, solver.Unknowns.p
     # Warm-state snapshot: a raw copy of the (already consistent) solution values,
-    # restored if a too-hard δ corrupts the iterate.
+    # restored if a too-hard delta corrupts the iterate.
     u_good, p_good = u.data.copy(), p.data.copy()
-    saved_maxit = solver.petsc_options.getInt("snes_max_it", 50)
+
+    # Whether there is a solution to warm-start the FIRST delta from. Read before the
+    # rebuild below, which invalidates the solver and clears the flag.
+    warm_entry = solver.has_solution
 
     d = float(delta0)
     step = float(down)
@@ -142,65 +171,80 @@ def yield_continuation(
     reached_dmin = False
     first = True
 
-    while True:
-        control.set_delta(d)
-        if first:
-            solver.is_setup = False       # build the operators once, at delta0
-        else:
-            solver._update_constants()    # recompile-free δ update
-        solver.petsc_options["snes_max_it"] = entry_maxit if first else step_maxit
+    try:
+        while steps < max_steps:
+            control.set_delta(d)
+            if first:
+                solver.is_setup = False       # build the operators once, at delta0
+            else:
+                solver._update_constants()    # recompile-free delta update
 
-        # Cold only if there is genuinely nothing to warm-start from; Layer 1's
-        # automatic Picard step handles that first solve at the large, benign δ.
-        solver.solve(zero_init_guess=not solver.has_solution,
-                     **dict(solve_kwargs or {}))
-        reason = int(solver.snes.getConvergedReason())
-        nit = int(solver.snes.getIterationNumber())
-        budget = entry_maxit if first else step_maxit
-        steps += 1
-        first = False
+            budget = entry_maxit if first else step_maxit
+            solver._difficulty_probe = True
+            solver._difficulty_max_it = budget
+            solver._resume_abs_target = None
 
-        if reason > 0:
-            settled = d
-            u_good[...] = u.data
-            p_good[...] = p.data
-            if verbose:
-                uw.pprint(0, f"  [yield-continuation] δ={d:<11g} its={nit:3d} → converged")
-            if d <= dmin:
-                reached_dmin = True
-                break
-            # Residual-guided: plenty of slack ⇒ take a bigger bite next time; near the
-            # iteration budget ⇒ ease off. Clamped so the march can neither stall (step
-            # → 1) nor leap past the feasible edge in one go.
-            if nit <= max(2, budget // 5):
-                step = max(step * step, 0.05)
-            elif nit >= 0.8 * budget:
-                step = min(step ** 0.5, 0.95)
-            d *= step
-        else:
-            with uw.synchronised_array_update("yield_continuation revert"):
-                u.data[...] = u_good
-                p.data[...] = p_good
-            failures += 1
-            if settled is None or failures > retries:
+            warm = warm_entry if first else True
+            solver.solve(zero_init_guess=not warm, **dict(solve_kwargs or {}))
+            reason = int(solver.snes.getConvergedReason())
+            nit = int(solver.snes.getIterationNumber())
+            steps += 1
+            first = False
+
+            if reason > 0:
+                settled = d
+                u_good[...] = u.data
+                p_good[...] = p.data
                 if verbose:
-                    uw.pprint(0, f"  [yield-continuation] δ={d:<11g} its={nit:3d} → failed "
-                                 f"(reason={reason}); settling at δ={settled}")
-                break
-            # Retry from the last good δ with a gentler step.
-            step = min(step ** 0.5, 0.95)
-            d = settled * step
+                    uw.pprint(f"  [yield-continuation] d={d:<11g} its={nit:3d} -> converged")
+                if d <= dmin:
+                    reached_dmin = True
+                    break
+                # Residual-guided: plenty of slack => take a bigger bite next time;
+                # near the iteration budget => ease off. Clamped so the march can
+                # neither stall (step -> 1) nor leap past the feasible edge in one go.
+                if nit <= max(2, budget // 5):
+                    step = max(step * step, 0.05)
+                elif nit >= 0.8 * budget:
+                    step = min(step ** 0.5, 0.95)
+                d *= step
+            else:
+                failed_delta = d
+                with uw.synchronised_array_update("yield_continuation revert"):
+                    u.data[...] = u_good
+                    p.data[...] = p_good
+                # The reverted fields ARE a converged state, so say so: otherwise the
+                # retry (and the caller's next solve) would auto-cold-start off a
+                # solution that is perfectly good.
+                if settled is not None:
+                    solver._record_convergence_status(converged=True)
+                failures += 1
+                if settled is None or failures > retries:
+                    if verbose:
+                        uw.pprint(f"  [yield-continuation] d={failed_delta:<11g} its={nit:3d} "
+                                  f"-> failed (reason={reason}); settling at d={settled}")
+                    break
+                # Retry from the last good delta with a gentler step.
+                step = min(step ** 0.5, 0.95)
+                d = settled * step
+                if verbose:
+                    uw.pprint(f"  [yield-continuation] d={failed_delta:<11g} its={nit:3d} "
+                              f"-> failed (reason={reason}); retrying at d={d:g}")
+        else:
             if verbose:
-                uw.pprint(0, f"  [yield-continuation] δ={d / step:<11g} its={nit:3d} → failed "
-                             f"(reason={reason}); retrying at δ={d:g}")
+                uw.pprint(f"  [yield-continuation] stopped at the {max_steps}-step cap; "
+                          f"settled at d={settled}")
+    finally:
+        # Leave the model holding the delta that actually converged, and restore every
+        # setting the march borrowed -- including on the exception path.
+        if settled is not None and settled != d:
+            control.set_delta(settled)
+            solver._update_constants()
+        solver._difficulty_probe = saved_probe
+        solver._difficulty_max_it = saved_probe_maxit
+        solver._resume_abs_target = saved_resume
+        solver.consistent_jacobian = saved_tangent
 
-    # Leave the model holding the δ that actually converged, and the solver holding
-    # its solution, so the caller can use the result directly.
-    if settled is not None and settled != d:
-        control.set_delta(settled)
-        solver._update_constants()
-
-    solver.petsc_options["snes_max_it"] = saved_maxit
     return {
         "settled_delta": settled,
         "reason": reason,

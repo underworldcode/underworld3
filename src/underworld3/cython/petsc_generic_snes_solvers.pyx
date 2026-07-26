@@ -3519,8 +3519,6 @@ class SNES_Scalar(SolverBaseClass):
         snes : Access to underlying PETSc SNES object for advanced control.
         """
 
-        # Tri-state: None auto-detects cold-vs-warm from has_solution.
-        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         import petsc4py
 
@@ -3531,6 +3529,11 @@ class SNES_Scalar(SolverBaseClass):
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -4569,8 +4572,6 @@ class SNES_Vector(SolverBaseClass):
         u : The solution vector field variable.
         """
 
-        # Tri-state: None auto-detects cold-vs-warm from has_solution.
-        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         if _force_setup:
             self.is_setup = False
@@ -4578,6 +4579,11 @@ class SNES_Vector(SolverBaseClass):
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -5292,8 +5298,6 @@ class SNES_MultiComponent(SolverBaseClass):
             start up to this many times. 0 preserves legacy behaviour.
         """
 
-        # Tri-state: None auto-detects cold-vs-warm from has_solution.
-        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         if _force_setup:
             self.is_setup = False
@@ -5301,6 +5305,11 @@ class SNES_MultiComponent(SolverBaseClass):
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -8469,8 +8478,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         constitutive_model : Viscosity and stress definitions.
         """
 
-        # Tri-state: None auto-detects cold-vs-warm from has_solution.
-        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         if homotopy:
             # The march runs a SEQUENCE of ordinary solves at successively sharper
@@ -8483,6 +8490,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
