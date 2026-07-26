@@ -52,9 +52,42 @@ __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
 #  Prolongation builders (return scipy CSR matrices)
 # --------------------------------------------------------------------------- #
 def barycentric_prolongation(coarse_coords, fine_coords):
-    """FE-exact prolongation: each fine DOF interpolated by the coarse element
-    that contains it (barycentric weights). Partition of unity (row sums = 1);
-    fine points outside the coarse hull fall back to the nearest coarse DOF."""
+    """Prolongation by linear interpolation over a Delaunay triangulation of the
+    coarse DOF cloud. Partition of unity (row sums = 1) and linear fields are
+    reproduced exactly; fine points outside the coarse hull fall back to the
+    nearest coarse DOF, and orphaned coarse DOFs are repaired below.
+
+    .. note::
+
+       This is **not** the coarse FE space's embedding, despite what this
+       docstring claimed until 2026-07. It triangulates the coarse DOF *point
+       cloud* from scratch and never consults the coarse mesh's cells, so
+       "the coarse element containing the fine DOF" is only what gets used when
+       the Delaunay triangulation happens to coincide with the mesh. Measured
+       agreement between the two:
+
+       ===========================  ==========  ==========  ==========
+       case                         mesh cells  Delaunay    agreement
+       ===========================  ==========  ==========  ==========
+       2D uniform base, P1                 168         168       100 %
+       2D adapt child, P1                  238         238      90.8 %
+       3D uniform base, P1                 800         812      58.8 %
+       3D adapt child, P1                 4685        5201      17.1 %
+       3D adapt child, P2                 4685       39597         --
+       ===========================  ==========  ==========  ==========
+
+       Reproducing linears is enough for multigrid to converge well, which is
+       why this works. But two limits follow. For P2 and above the coarse
+       space is not represented exactly. And because Delaunay simplices do not
+       respect mesh topology, on a non-convex domain or one with an internal
+       interface (a fault) a simplex can bridge across the discontinuity and
+       smear the coarse correction over it — predicted from the algorithm,
+       not yet measured.
+
+       Where a parent/child relation exists, prefer the exact nested transfer
+       (#425), which is the true FE embedding, cannot bridge across features,
+       and cannot orphan a coarse DOF.
+    """
     import scipy.sparse as sp
     from scipy.spatial import Delaunay, cKDTree
 
