@@ -136,6 +136,47 @@ def test_cold_viscoplastic_solve_survives_zero_strain_rate(mode, smoother):
     )
 
 
+def test_yield_stress_is_floored_at_zero_by_default():
+    """The yield stress is compared against the second invariant of the stress, so a
+    negative tau_y is meaningless. `yield_stress_min` therefore defaults to 0 and the
+    floor is active without the user asking.
+
+    Regression: the default used to be the "unset" sentinel -oo (so sympy could cancel
+    the term away), which left a pressure-dependent Drucker-Prager yield
+    C + sin(phi)*p free to go negative in tension. Hard `Min` hid that (it discarded
+    the resulting negative eta_pl); the power-mean the homotopy switches to raised a
+    negative base to a non-integer power and produced NaN.
+    """
+    _, stokes = _viscoplastic_stokes()
+    cm = stokes.constitutive_model
+    assert cm.Parameters.yield_stress_min.sym == 0
+
+
+@pytest.mark.parametrize("mode,smoother",
+                         [("min", None), ("softmin", "powermean")])
+def test_pressure_dependent_yield_survives_tension(mode, smoother):
+    """A Drucker-Prager yield that goes NEGATIVE in tension must not poison the
+    viscosity in any yield mode — the zero floor must catch it first."""
+    import numpy as np
+
+    mesh, stokes = _viscoplastic_stokes(cellSize=0.5)
+    cm = stokes.constitutive_model
+    x, y = mesh.X
+    # C + sin(phi)*p with the pressure driven strongly negative (tension) over part
+    # of the domain, so the raw yield stress changes sign inside the mesh.
+    cm.Parameters.yield_stress = 1.0 + 0.5 * stokes.p.sym[0]
+    cm.yield_mode = mode
+    if smoother is not None:
+        cm.yield_smoother = smoother
+
+    eta = cm.viscosity.sym
+    vals = uw.function.evaluate(eta, mesh.X.coords)
+    assert np.all(np.isfinite(vals)), (
+        f"viscosity is non-finite for yield_mode={mode!r} smoother={smoother!r} "
+        f"where the pressure-dependent yield stress goes negative"
+    )
+
+
 def test_solve_homotopy_marches_and_reports():
     """A viscoplastic solve driven by the homotopy converges and reports the march."""
     _, stokes = _viscoplastic_stokes()
