@@ -540,16 +540,21 @@ class FreeSurface:
             self.mesh, self.composition.sym, self._adv_velocity.sym,
             vtype=uw.VarType.SCALAR, degree=self.composition.degree, continuous=True,
             varsymbol="phi", bcs=[], order=1, smoothing=0.0,
-            # monotone_mode="clamp" is REQUIRED here, not optional: with
-            # old_frame_traceback=True the departure point is deliberately NOT clamped to
-            # the domain (the foot is sampled on the OLD geometry, which covers the layer
-            # a moving surface vacated), and the limiter is then the ONLY thing bounding a
-            # foot that lands outside the old mesh — see SemiLagrangian._trace_back. With
-            # monotone_mode=None such a foot falls through to the evaluator's RBF/Shepard
-            # fallback, which averages distant DOFs: on a deforming free surface that
-            # injects HOT material into the cold boundary layer at the inflow/outflow
-            # stagnation points, and the field loses boundedness (T well outside [0,1]).
-            monotone_mode="clamp", theta=0.5, old_frame_traceback=True,
+            # old_frame_traceback must be FALSE on a per-step-deforming mesh
+            # (underworldcode/underworld3#423). The old-frame reach-back — introduced as
+            # the fix for the earlier high-Ra blow-up — is itself an exponential
+            # amplifier once the surface deformation squeezes the near-boundary cells
+            # (onset ~5% of radius): the record→trace→solve loop then grows both T
+            # extremes ~10% per CYCLE (worse at smaller dt), mesh-locked, until T is
+            # unbounded. A minimal reproducer with no free surface at all (prescribed
+            # velocity + a ±0.1%/step mesh wobble) shows the same runaway with old-frame
+            # ON at any theta and is bounded with it OFF. The standard ALE path is safe
+            # here because the hazards that motivated old-frame are covered by fixes
+            # landed since: departure feet are restored by the deform-aware
+            # return_coords_to_bounds, and the monotone clamp bounds the sample.
+            # Measured on this problem (rho_g 2e5): old-frame ON is unusable beyond
+            # ~5.4% deformation; OFF holds T in [0,1] to 1e-3 through 17% deformation.
+            monotone_mode="clamp", theta=0.5, old_frame_traceback=False,
         )
         self._comp_adv = uw.systems.AdvDiffusionSLCN(
             self.mesh, u_Field=self.composition, V_fn=self._adv_velocity.sym,
