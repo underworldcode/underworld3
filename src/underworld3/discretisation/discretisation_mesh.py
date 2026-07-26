@@ -6254,9 +6254,26 @@ class Mesh(Stateful, uw_object):
         Non-folding by construction, and the parallel partition, vertex
         count and DOF layout are unchanged.
 
-        **What it buys, measured.** In 2D, a 13% drop in fault-localised
-        P1 interpolation error applied per generation
-        (``adapt(..., relax=True)``), 7% applied once at the end.
+        **Two valid placements, neither dominant.** ``adapt(metric, ...,
+        relax=True)`` relaxes once at the end — the recommended default.
+        ``relax="per-generation"`` relaxes inside the refinement loop, so
+        each generation marks from already-relaxed coordinates. Both beat
+        no relaxation; which is *better* depends on which property you
+        weight, and we deliberately do not rank them:
+
+        =========================  ==========  ==========  ===============
+        property                   unrelaxed   at end      per generation
+        =========================  ==========  ==========  ===============
+        P1 interpolation error     2.75e-2     2.56e-2     2.38e-2
+        99th pct max angle         112 deg     110 deg     96 deg
+        on-fault size spread       2.80        2.31        2.31
+        far-field closure halo     42.8        27.7        43.9
+        =========================  ==========  ==========  ===============
+
+        Relaxing at the end keeps the cell count identical to the
+        unrelaxed mesh and cuts the far-field halo most; relaxing per
+        generation gives the cleanest element shapes and the lowest
+        error, but spends ~3% more cells to do it.
 
         In **3D it improves mesh QUALITY but not interpolation error** —
         two different things, and worth keeping apart. On an adapted 3D
@@ -6732,6 +6749,33 @@ class Mesh(Stateful, uw_object):
                 write_tagged_state_label(base_finest)
 
         markers_per_level = []
+        # relax=True is the RECOMMENDED default: relax once, at the end.
+        # relax="per-generation" relaxes inside the refinement loop instead.
+        # Both measure better than no relaxation and neither dominates the
+        # other across the properties we care about (element quality, size
+        # uniformity along the feature, and refinement leakage away from
+        # it), so this is a genuine choice rather than a ranking.
+        if relax in (False, None):
+            _relax_mode = None
+        elif relax is True:
+            _relax_mode = "end"
+        elif str(relax).lower().replace("_", "-") in ("end", "at-end"):
+            _relax_mode = "end"
+        elif str(relax).lower().replace("_", "-") in ("per-generation",
+                                                      "generation"):
+            _relax_mode = "per-generation"
+        else:
+            raise ValueError(
+                f"adapt(relax={relax!r}); use True (relax once at the end, "
+                f"the recommended default), 'per-generation' (relax inside "
+                f"the refinement loop) or False.")
+
+        # The metric handed to the relaxation, resolved ONCE. A callable
+        # (numpy) metric cannot go to the mover, so those relax in the pure
+        # shape frame at fixed size; a sympy / MeshVariable metric gives the
+        # ideal-metric frame. NB `relax` is a MODE, never a metric.
+        _relax_metric = None if callable(metric_field) else metric_field
+
         def _relax_generation(engine_obj, carry, rcarry):
             """Relax THIS generation in place INSIDE the refinement engine.
 
@@ -6758,8 +6802,7 @@ class Mesh(Stateful, uw_object):
             _src = numpy.asarray([numpy.asarray(c, dtype=float)
                                   for c in engine_obj.coords])
             _idx = cKDTree(_src).query(_pre, k=1)[1]
-            _mg.relax(None if relax is True else relax,
-                      **(relax_kwargs or {}))
+            _mg.relax(_relax_metric, **(relax_kwargs or {}))
             _post = _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd)
             for _k, _i in enumerate(_idx):
                 engine_obj.coords[_i] = _post[_k]
@@ -6806,7 +6849,7 @@ class Mesh(Stateful, uw_object):
                     lab.setValue(cidx, DM_ADAPT_REFINE)
                 current_dm = _nvbx.refine(d, "adapt")
                 snap_level_boundaries(current_dm)
-                if relax:
+                if _relax_mode == "per-generation":
                     # Relax THIS generation before the next one marks from it:
                     # the moved coordinates are what the next pass measures and
                     # bisects, which is the whole point of relaxing in the loop
@@ -6819,8 +6862,7 @@ class Mesh(Stateful, uw_object):
                                    self.CoordinateSystem.coordinate_type),
                                qdegree=self.qdegree,
                                boundaries=self.boundaries, verbose=False)
-                    _mg.relax(None if relax is True else relax,
-                              **(relax_kwargs or {}))
+                    _mg.relax(_relax_metric, **(relax_kwargs or {}))
                     current_dm.setCoordinatesLocal(
                         _mg.dm.getCoordinatesLocal())
                 level_dms.append(current_dm)
@@ -6881,7 +6923,7 @@ class Mesh(Stateful, uw_object):
                             numpy.array([nvb.coords[i] for i in _idx]))
                         for _k, _i in enumerate(_idx):
                             nvb.coords[_i] = _snapped[_k]
-                if relax:
+                if _relax_mode == "per-generation":
                     _relax_generation(nvb, carry, rcarry)
                 level_dms.append(nvb.to_dm(boundaries=carry, regions=rcarry,
                                            comm=self.dm.comm))
@@ -6938,6 +6980,12 @@ class Mesh(Stateful, uw_object):
             boundaries=self.boundaries,
             verbose=False,
         )
+
+        if _relax_mode == "end":
+            # A sympy/MeshVariable metric gives the ideal-metric frame (the
+            # metric sets size); a plain callable cannot be handed to the
+            # mover, so those fall back to pure shape repair at fixed size.
+            child.relax(_relax_metric, **(relax_kwargs or {}))
 
         # Lineage (parent/child DAG) and mesh-owned custom-P hierarchy.
         child.parent = self
