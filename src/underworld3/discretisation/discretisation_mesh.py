@@ -6289,10 +6289,17 @@ class Mesh(Stateful, uw_object):
         Parameters
         ----------
         metric : sympy expression, MeshVariable, or sympy Matrix, optional
-            Usually omitted. ``None`` (default) relaxes under a uniform
-            metric — pure shape repair at fixed size. Passing a metric
-            additionally regrades toward it, which makes this a
-            redistribution-plus-relaxation rather than a pure relax.
+            Usually omitted, and **omitting it is what makes this a shape
+            guarantee**. ``None`` (default) relaxes under a uniform metric
+            — pure shape repair at fixed size.
+
+            Passing a metric switches to the ideal-*metric* frame, which
+            re-grades as well as reshapes, and it will trade element shape
+            away to chase the size field. Measured on a 4-level graded box,
+            the 99th-percentile max angle went 117.9 -> 113.8 degrees with
+            no metric but 117.9 -> **127.4** with one. Pass a metric when
+            you want the sizes corrected too, and accept that shape is no
+            longer the objective.
         verbose : bool, default False
             Print mover progress.
         **kwargs
