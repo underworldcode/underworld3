@@ -1009,7 +1009,13 @@ class ViscousFlowModel(Constitutive_Model):
             s = 1 / (delta + sympy.Float(0.001))
             a = 1 + f
             b = 1 + 1 / f
-            N = eta_ve * eta_pl / (eta_ve + eta_pl)
+            # Harmonic mean written as eta_ve/(1+f), NOT eta_ve*eta_pl/(eta_ve+eta_pl).
+            # The two are algebraically identical, but the product-over-sum form
+            # evaluates to inf/inf = NaN when eta_pl is infinite — which is exactly
+            # what a rigid (unyielded) point gives, since eta_pl = tau_y/(2 edot_II)
+            # and edot_II = 0 there. That includes every point of a cold v=0 start.
+            # In this form f -> 0 and N -> eta_ve, the correct viscous limit.
+            N = eta_ve / a
             return N * (a ** (-s) + b ** (-s)) ** (-1 / s)
 
         # default "sqrt" soft-min: η_ve / g(f), g(0)=1, g ≈ max(1, f), exact Min at δ=0.
@@ -1115,22 +1121,11 @@ class ViscousFlowModel(Constitutive_Model):
         self.yield_mode = "softmin"
         self.yield_smoother = "powermean"
 
-        # Cold-start safety. The plastic viscosity is tau_y / (2 edot_II), so a cold
-        # v = 0 start makes it 0/0 and the first residual is NaN
-        # (DIVERGED_FNORM_NAN). The march is *designed* to start from a cold solve at
-        # large delta, so floor the strain-rate invariant with the vanishing constant
-        # (1e-18) — far below any physical rate, and it makes eta_yield merely huge
-        # rather than undefined, which the soft-min then discards in favour of the
-        # viscous branch. Applied once; the flag keeps a repeated call idempotent.
-        # TODO(BUG): this hazard is not specific to the homotopy — ANY cold
-        # solve() of a ViscoPlasticFlowModel with a finite yield_stress diverges
-        # with FNORM_NAN for the same reason. The floor arguably belongs in the
-        # model's own _strainrate_inv_II. Raised with the maintainer 2026-07-25.
-        if not getattr(self, "_yield_homotopy_regularised", False):
-            strainrate_inv = getattr(self, "_strainrate_inv_II", None)
-            if strainrate_inv is not None:
-                strainrate_inv.sym = strainrate_inv.sym + uw.maths.functions.vanishing
-                self._yield_homotopy_regularised = True
+        # No strain-rate floor is needed for the cold (v = 0) start the march begins
+        # from: eta_pl = tau_y/(2 edot_II) is +inf there, which the soft-min carries
+        # correctly to the viscous branch. See the harmonic-mean note in
+        # _combine_yield for the one form that must be written carefully to keep it
+        # so.
 
         def set_delta(value):
             # Go through the property, not the atom: `yield_softness` updates BOTH

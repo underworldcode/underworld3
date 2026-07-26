@@ -106,6 +106,36 @@ def test_solve_homotopy_on_unsupported_model_raises():
         stokes.solve(homotopy=True)
 
 
+@pytest.mark.parametrize(
+    "mode,smoother",
+    [("min", None), ("softmin", "sqrt"), ("softmin", "powermean")],
+)
+def test_cold_viscoplastic_solve_survives_zero_strain_rate(mode, smoother):
+    """A COLD (v=0) viscoplastic solve must not produce NaN in ANY yield mode.
+
+    Regression: at v=0 the strain-rate invariant is 0, so the plastic viscosity
+    tau_y/(2 edot_II) is +inf. That is fine — the soft-min should carry it to the
+    viscous branch. But the power-mean form computed its harmonic mean as
+    eta_ve*eta_pl/(eta_ve+eta_pl), which is inf/inf = NaN, so a cold power-mean solve
+    died with DIVERGED_FNORM_NAN while `min` and `sqrt` converged. Rewriting that
+    mean as eta_ve/(1+f) — algebraically identical — keeps the infinite-eta_pl limit
+    finite. The same singularity occurs at any rigid (unyielded) point, not only on a
+    cold start.
+    """
+    _, stokes = _viscoplastic_stokes(cellSize=0.5)
+    cm = stokes.constitutive_model
+    cm.yield_mode = mode
+    if smoother is not None:
+        cm.yield_smoother = smoother
+
+    stokes.solve()  # cold: zero_init_guess defaults True
+    reason = int(stokes.snes.getConvergedReason())
+    assert reason > 0, (
+        f"cold viscoplastic solve failed for yield_mode={mode!r} "
+        f"smoother={smoother!r} (reason={reason}; -4 is FNORM_NAN)"
+    )
+
+
 def test_solve_homotopy_marches_and_reports():
     """A viscoplastic solve driven by the homotopy converges and reports the march."""
     _, stokes = _viscoplastic_stokes()
