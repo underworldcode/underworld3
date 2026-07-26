@@ -1083,9 +1083,22 @@ class ViscousFlowModel(Constitutive_Model):
         such scale and is rounded by its own physical parameter via
         ``uw.maths.smooth_max`` at the call site instead.
         """
-        if getattr(self, "_yield_mode", "min") == "min":
-            return sympy.Max(value, floor)
-        return uw.maths.smooth_max(value, floor, self._get_yield_softness() * floor)
+        # smooth_max is 1/2 (a + b + sqrt((a-b)^2 + eps^2)) — pure arithmetic on the
+        # operands, so `floor` stays the symbolic Parameter that the JIT routes
+        # through constants[], and sympy is never asked for the ordering test that
+        # recurses on an opaque UWexpression. At eps = 0 this is exactly
+        # Max(value, floor), but written without a comparison.
+        #
+        # TODO(DESIGN): the rounding scale is RELATIVE (delta * floor), so it
+        # collapses for a tension cutoff at floor = 0 — now the default for
+        # yield_stress_min. That leaves a hard corner: the floored yield stress is
+        # exactly 0 in tension, hence eta_pl = tau_y/(2 edot_II) is exactly 0 and the
+        # tangent through the soft-min is undefined there. A properly rounded cap
+        # (Griffith / parabolic) needs an ABSOLUTE stress scale, which this signature
+        # cannot supply. Maintainer decision pending (2026-07-26).
+        rounding = 0 if getattr(self, "_yield_mode", "min") == "min" \
+            else self._get_yield_softness() * floor
+        return uw.maths.smooth_max(value, floor, rounding)
 
     # Tangent this model wants while the yield homotopy marches. Newton is right for
     # a purely viscous-plastic yield; the elastic (VEP) subclasses override to the
@@ -1251,7 +1264,7 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
-            lambda inner_self: -sympy.oo,
+            lambda inner_self: 0,
             "Yield stress (DP) minimum cutoff",
             units="Pa",
         )
@@ -1287,9 +1300,14 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         # Don't put conditional behaviour in the constitutive law
         # when it is not needed
 
-        # Numerical lower bound on the yield stress. The "unset" sentinel is -∞
-        # (per the Parameters convention that ±∞ defaults simplify away), so a
-        # user-supplied yield_stress_min of exactly 0 is honoured as a real floor.
+        # Lower bound on the yield stress, defaulting to ZERO and therefore normally
+        # active. tau_y is compared against the second invariant of the stress, so a
+        # negative tau_y is meaningless — a pressure-dependent Drucker-Prager yield
+        # C + sin(phi)*p goes negative in tension and must be cut off there rather
+        # than propagated into tau_y/(2 edot_II). (The ±oo defaults elsewhere in
+        # Parameters exist so sympy can cancel an unused term away; that trick is
+        # wrong here, so this one defaults to 0 — maintainer ruling 2026-07-26.)
+        # An explicit -oo still disables the floor.
         if inner_self.yield_stress_min.sym != -sympy.oo:
             yield_stress = self._apply_floor(
                 inner_self.yield_stress, inner_self.yield_stress_min
@@ -1598,7 +1616,7 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
 
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
-            lambda inner_self: -sympy.oo,
+            lambda inner_self: 0,
             "Yield stress (DP) minimum cutoff",
             units="Pa",
         )
@@ -2027,10 +2045,19 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             "Strain rate 2nd Invariant including elastic strain rate term",
         )
 
-        if parameters.yield_stress_min.sym != 0:
-            yield_stress = sympy.Max(
-                parameters.yield_stress_min, parameters.yield_stress
-            )  # .rewrite(sympy.Piecewise)
+        # Guard on the DISABLING sentinel, not on zero: zero is the default and a
+        # physically meaningful floor (the yield stress is compared against the second
+        # invariant of the stress, so a negative tau_y is meaningless). Only an
+        # explicit -oo turns the floor off.
+        if parameters.yield_stress_min.sym != -sympy.oo:
+            # Literal 0 for the default floor, not the parameter atom: sympy cannot
+            # fuzzy-compare an opaque UWexpression and Max canonicalisation recurses.
+            # smooth_max keeps both operands symbolic (the JIT routes the floor
+            # through constants[]) and needs no ordering test, which sympy cannot
+            # resolve against an opaque UWexpression. eps = 0 makes it exactly Max.
+            yield_stress = uw.maths.smooth_max(
+                parameters.yield_stress, parameters.yield_stress_min, 0
+            )
         else:
             yield_stress = parameters.yield_stress
 
@@ -3168,7 +3195,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         )
         yield_stress_min = api_tools.Parameter(
             R"{\tau_{y, \mathrm{min}}}",
-            lambda inner_self: -sympy.oo,
+            lambda inner_self: 0,
             "Yield stress minimum cutoff", units="Pa",
         )
         strainrate_inv_II_min = api_tools.Parameter(
@@ -3531,8 +3558,13 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         gamma_dot_abs = sympy.sqrt(sympy.Max(gamma_dot_sq, 0))
 
         tau_y = parameters.yield_stress
-        if parameters.yield_stress_min.sym != 0:
-            tau_y = sympy.Max(parameters.yield_stress_min, tau_y)
+        # Guard on the DISABLING sentinel, not on zero — zero is the default and a
+        # real floor (a negative yield stress is meaningless against an invariant).
+        if parameters.yield_stress_min.sym != -sympy.oo:
+            # Literal 0 for the default floor (sympy fuzzy-compare recursion on atoms).
+            # smooth_max: keeps the floor symbolic, no ordering test (see the note
+            # in Constitutive_Model._apply_floor). eps = 0 is exactly Max.
+            tau_y = uw.maths.smooth_max(tau_y, parameters.yield_stress_min, 0)
 
         if parameters.strainrate_inv_II_min.sym != 0:
             viscosity_yield = tau_y / (
