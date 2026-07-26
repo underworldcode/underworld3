@@ -838,12 +838,25 @@ class FreeSurface:
         return shape, h_inf, u_n
 
     def _solve_consistent(self, increment, dt):
-        r"""Prescribe :math:`\tilde u_n = \Delta h/\Delta t` (mean-removed, net flux
-        zero) on the surface and solve for the material-consistent velocity."""
+        r"""Prescribe :math:`\tilde u_n = \Delta h/\Delta t` (mean-removed by arc length,
+        so the net flux is zero) on the surface and solve for the material-consistent
+        velocity."""
         u_tilde = self._demean(increment / dt)
         self._un_target.array[...] = 0.0
         self._un_target.array[self._un_target_rows, 0, 0] = u_tilde
-        self.consistent.solve(zero_init_guess=True)
+        try:
+            self.consistent.solve(zero_init_guess=True)
+        except NotImplementedError as exc:
+            # The rotated datum is implemented on the LINEAR rotated path only; the solve
+            # dispatches by a measured residual probe, so this fires exactly when the
+            # rheology is genuinely nonlinear. Name the knob rather than leaving the
+            # caller with the primitive's message.
+            raise NotImplementedError(
+                "FreeSurface: the strong rotated constraint cannot prescribe u.n = ũ_n "
+                "for a nonlinear rheology (the rotated datum is implemented on the linear "
+                "path only). Construct the manager with consistent_constraint='penalty' "
+                "to impose the material-surface rate weakly instead."
+            ) from exc
 
     def _conserve_composition(self):
         r"""Hold :math:`\int` (conserve integrand) fixed by a uniform shift of the
