@@ -118,17 +118,19 @@ column, and it is singular. 3D is more exposed: a Delaunay triangulation of a
 graded 3D cloud is full of slivers, each simplex has only four vertices, and
 proportionally more DOFs sit near the hull.
 
-The `rbf` builder has **global support** — every coarse DOF is reached through
-the RBF solve — so it cannot produce a zero column. The FMG build therefore
-**retries with `rbf` automatically** before giving up, and warns that it did:
+The builder now **repairs orphaned coarse DOFs directly**: each is given its
+nearest fine DOF as a pure injection (weight 1), which is the same fallback
+already used for fine points outside the coarse hull. Partition of unity and
+sparsity (~d+1 non-zeros per row) are both preserved, and the column is no
+longer empty. Measured on a relaxed 3D adapt child: `pc=mg` at 2 iterations,
+where before the repair it fell back to GAMG at 23.
 
-    custom_mg: barycentric transfer build failed (transfer 2->3 has 1 zero
-    columns ...); retrying with the 'rbf' builder, which has global support
-    and cannot leave a coarse DOF without a fine image.
-
-Measured on a relaxed 3D adapt child: barycentric alone fell back to GAMG at
-23 iterations; with the retry it keeps `pc=mg` at 2. Set
-`mesh._custom_mg_builder = "rbf"` to skip the first attempt.
+If a pathological pair still leaves an orphan, the build retries with the
+global-support `rbf` builder before giving up. That is a **last resort, not a
+scalable transfer**: the RBF prolongation is fully dense (measured
+`nnz/row == n_coarse` exactly — 200 of 200, 800 of 800), so `PᵀAP` is dense
+too. It rescues correctness on small problems; it is not something to rely on
+at production sizes.
 
 ## What relaxation cannot do
 

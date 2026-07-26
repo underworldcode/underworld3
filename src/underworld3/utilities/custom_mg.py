@@ -78,8 +78,46 @@ def barycentric_prolongation(coarse_coords, fine_coords):
             rows.append(i)
             cols.append(int(verts[k]))
             vals.append(float(w[k]))
-    return sp.csr_matrix((vals, (rows, cols)),
-                         shape=(fine_coords.shape[0], coarse_coords.shape[0]))
+    P = sp.csr_matrix((vals, (rows, cols)),
+                      shape=(fine_coords.shape[0], coarse_coords.shape[0]))
+
+    # Repair orphaned coarse DOFs (columns with no fine image). Point location
+    # has LOCAL support, so a coarse DOF is reached only if some fine DOF lands
+    # in a simplex touching it; move the fine coordinates (mesh.relax, boundary
+    # snapping, free-surface deformation) and a coarse DOF can lose every fine
+    # image. Its column goes to zero and the Galerkin coarse operator PᵀAP is
+    # singular (#424).
+    #
+    # Give each orphan its nearest fine DOF as a pure injection (weight 1) —
+    # exactly the fallback already used above for fine points outside the
+    # coarse hull. Partition of unity is preserved (the row still sums to 1),
+    # sparsity is preserved (~d+1 nnz/row), and the column is no longer empty.
+    # Distinct rows are used so two orphans cannot claim the same fine DOF.
+    # The alternative — switching to the global-support RBF builder — removes
+    # the singularity but returns a DENSE transfer (nnz/row == n_coarse), which
+    # makes PᵀAP dense and is unusable at production sizes.
+    orphans = np.nonzero(np.asarray((P != 0).sum(axis=0)).ravel() == 0)[0]
+    if orphans.size:
+        k = int(min(orphans.size + 8, fine_coords.shape[0]))
+        _, cand = cKDTree(fine_coords).query(coarse_coords[orphans], k=k)
+        cand = np.atleast_2d(cand)
+        claimed, fixes = set(), {}
+        for i, c in enumerate(orphans):
+            for f in cand[i]:
+                f = int(f)
+                if f not in claimed:
+                    claimed.add(f)
+                    fixes[f] = int(c)
+                    break
+        if fixes:
+            keep = ~np.isin(np.asarray(rows), list(fixes))
+            rows = list(np.asarray(rows)[keep]) + list(fixes.keys())
+            cols = list(np.asarray(cols)[keep]) + list(fixes.values())
+            vals = list(np.asarray(vals)[keep]) + [1.0] * len(fixes)
+            P = sp.csr_matrix((vals, (rows, cols)),
+                              shape=(fine_coords.shape[0],
+                                     coarse_coords.shape[0]))
+    return P
 
 
 def rbf_prolongation(coarse_coords, fine_coords, smooth=0.0):
