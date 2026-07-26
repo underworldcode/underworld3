@@ -19,12 +19,13 @@ Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-sol
 
 ## The recipe (what actually converges)
 
-1. **Warm start.** A cold plastic start (`v=0 ⇒ ε̇=0 ⇒ τ_y/0 ⇒ NaN`) is avoided by
-   starting the continuation at **large δ** (the power-mean is then the harmonic
-   mean, bounded by `η_bg` even at `ε̇→0`) and taking **one Picard step** into the
-   Newton basin. One Picard step is defect-correction iteration 1 — contractive,
-   cheap. From a *warm* iterate, take **no** Picard step (it wastes the good
-   quadratic start).
+1. **Warm start.** Start the continuation at **large δ**, where the yield surface is
+   smooth and the problem is easy, and take **one Picard step** into the Newton
+   basin. One Picard step is defect-correction iteration 1 — contractive, cheap. From
+   a *warm* iterate, take **no** Picard step (it wastes the good quadratic start).
+   A cold `v=0` start is safe on its own terms: `ε̇=0` makes `η_pl` infinite, which
+   the soft-min carries to the viscous branch (see the trap list for the one form
+   that must be written carefully).
 
 2. **Multi-solve δ-continuation** (NOT an in-solve ramp). Hold δ **constant** for a
    full nonlinear solve to tolerance; warm-start the next, smaller δ from that
@@ -42,9 +43,9 @@ Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-sol
    ```
 
    `solve(homotopy=True)` sets the smooth mode (softmin + power-mean), picks the
-   tangent the model asks for (Newton for DP, Picard for elastic VEP), floors `ε̇_II`
-   so a cold start does not NaN, and runs a residual-guided march that accelerates on
-   easy steps and reverts + retries a failed δ more gently. Tune with
+   tangent the model asks for (Newton for DP, Picard for elastic VEP), and runs a
+   residual-guided march that accelerates on easy steps and reverts + retries a
+   failed δ more gently. Tune with
    `homotopy_options=dict(delta0=…, down=…, dmin=…, entry_maxit=…, step_maxit=…)`;
    the driver is also callable directly as
    `underworld3.systems.yield_continuation`.
@@ -120,9 +121,9 @@ if stokes.has_solution:
 
 - **Layer 1a — DONE:** `has_solution` + cold consistent-Newton Picard warm-up
   (`petsc_generic_snes_solvers.pyx`; test `test_0201`).
-- **Layer 1b — planned:** flip `zero_init_guess` default to auto-detect (cold-vs-warm
-  from `has_solution`). Benchmark; gate the free-surface chain-of-solves and the
-  mover/adapt reset first.
+- **Layer 1b — DONE:** `zero_init_guess` is tri-state — `None` (default) auto-detects
+  from `has_solution`, `True` forces fresh, `False` insists on warm. Note warm and cold
+  agree only to the *convergence tolerance*, not bitwise.
 - **Layer 3 — DONE:** the FMG velocity smoother defaults to `gmres`+`sor` with
   `mg_levels_ksp_norm_type=none` (fixed-cost V-cycle), unconditionally — see
   "Multigrid depth" below.
