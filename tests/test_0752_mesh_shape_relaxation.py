@@ -143,8 +143,13 @@ def test_adapt_relax_placements_run_and_at_end_keeps_the_cell_count():
 
 
 def test_adapt_relax_placements_run_in_3d():
-    """3D goes through the cell-list refinement engine (the native uwnvb
-    transform is 2D-only), so this covers the OTHER relax hook."""
+    """Relaxation composes with adapt in 3D.
+
+    NB this does NOT cover the cell-list refinement engine: 3D prefers the
+    native uwnvb transform too when it is built (the cell-list engine is the
+    np=1 fallback), so both this and the 2D case exercise the native path.
+    The cell-list relax hook remains uncovered.
+    """
     def metric3d(c):
         d = np.sqrt((c[:, 0] - 0.5)**2 + (c[:, 1] - 0.5)**2)
         return 1.0/np.minimum(
