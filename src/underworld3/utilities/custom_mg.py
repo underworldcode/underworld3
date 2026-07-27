@@ -52,9 +52,42 @@ __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
 #  Prolongation builders (return scipy CSR matrices)
 # --------------------------------------------------------------------------- #
 def barycentric_prolongation(coarse_coords, fine_coords):
-    """FE-exact prolongation: each fine DOF interpolated by the coarse element
-    that contains it (barycentric weights). Partition of unity (row sums = 1);
-    fine points outside the coarse hull fall back to the nearest coarse DOF."""
+    """Prolongation by linear interpolation over a Delaunay triangulation of the
+    coarse DOF cloud. Partition of unity (row sums = 1) and linear fields are
+    reproduced exactly; fine points outside the coarse hull fall back to the
+    nearest coarse DOF, and orphaned coarse DOFs are repaired below.
+
+    .. note::
+
+       This is **not** the coarse FE space's embedding, despite what this
+       docstring claimed until 2026-07. It triangulates the coarse DOF *point
+       cloud* from scratch and never consults the coarse mesh's cells, so
+       "the coarse element containing the fine DOF" is only what gets used when
+       the Delaunay triangulation happens to coincide with the mesh. Measured
+       agreement between the two:
+
+       ===========================  ==========  ==========  ==========
+       case                         mesh cells  Delaunay    agreement
+       ===========================  ==========  ==========  ==========
+       2D uniform base, P1                 168         168       100 %
+       2D adapt child, P1                  238         238      90.8 %
+       3D uniform base, P1                 800         812      58.8 %
+       3D adapt child, P1                 4685        5201      17.1 %
+       3D adapt child, P2                 4685       39597         --
+       ===========================  ==========  ==========  ==========
+
+       Reproducing linears is enough for multigrid to converge well, which is
+       why this works. But two limits follow. For P2 and above the coarse
+       space is not represented exactly. And because Delaunay simplices do not
+       respect mesh topology, on a non-convex domain or one with an internal
+       interface (a fault) a simplex can bridge across the discontinuity and
+       smear the coarse correction over it — predicted from the algorithm,
+       not yet measured.
+
+       Where a parent/child relation exists, prefer the exact nested transfer
+       (#425), which is the true FE embedding, cannot bridge across features,
+       and cannot orphan a coarse DOF.
+    """
     import scipy.sparse as sp
     from scipy.spatial import Delaunay, cKDTree
 
@@ -78,8 +111,46 @@ def barycentric_prolongation(coarse_coords, fine_coords):
             rows.append(i)
             cols.append(int(verts[k]))
             vals.append(float(w[k]))
-    return sp.csr_matrix((vals, (rows, cols)),
-                         shape=(fine_coords.shape[0], coarse_coords.shape[0]))
+    P = sp.csr_matrix((vals, (rows, cols)),
+                      shape=(fine_coords.shape[0], coarse_coords.shape[0]))
+
+    # Repair orphaned coarse DOFs (columns with no fine image). Point location
+    # has LOCAL support, so a coarse DOF is reached only if some fine DOF lands
+    # in a simplex touching it; move the fine coordinates (mesh.relax, boundary
+    # snapping, free-surface deformation) and a coarse DOF can lose every fine
+    # image. Its column goes to zero and the Galerkin coarse operator PᵀAP is
+    # singular (#424).
+    #
+    # Give each orphan its nearest fine DOF as a pure injection (weight 1) —
+    # exactly the fallback already used above for fine points outside the
+    # coarse hull. Partition of unity is preserved (the row still sums to 1),
+    # sparsity is preserved (~d+1 nnz/row), and the column is no longer empty.
+    # Distinct rows are used so two orphans cannot claim the same fine DOF.
+    # The alternative — switching to the global-support RBF builder — removes
+    # the singularity but returns a DENSE transfer (nnz/row == n_coarse), which
+    # makes PᵀAP dense and is unusable at production sizes.
+    orphans = np.nonzero(np.asarray((P != 0).sum(axis=0)).ravel() == 0)[0]
+    if orphans.size:
+        k = int(min(orphans.size + 8, fine_coords.shape[0]))
+        _, cand = cKDTree(fine_coords).query(coarse_coords[orphans], k=k)
+        cand = np.atleast_2d(cand)
+        claimed, fixes = set(), {}
+        for i, c in enumerate(orphans):
+            for f in cand[i]:
+                f = int(f)
+                if f not in claimed:
+                    claimed.add(f)
+                    fixes[f] = int(c)
+                    break
+        if fixes:
+            keep = ~np.isin(np.asarray(rows), list(fixes))
+            rows = list(np.asarray(rows)[keep]) + list(fixes.keys())
+            cols = list(np.asarray(cols)[keep]) + list(fixes.values())
+            vals = list(np.asarray(vals)[keep]) + [1.0] * len(fixes)
+            P = sp.csr_matrix((vals, (rows, cols)),
+                              shape=(fine_coords.shape[0],
+                                     coarse_coords.shape[0]))
+    return P
 
 
 def rbf_prolongation(coarse_coords, fine_coords, smooth=0.0):
@@ -318,14 +389,20 @@ def _coarse_reduced_map(solver, coarse_mesh, field_id=None):
     return _reduced_map(cdm, field_id)
 
 
+def _reduced_from_node_transfer(Pn, r2f_c, r2f_f, ncomp):
+    """Interleave ``ncomp`` components of a node-level scalar ``Pn`` and drop the
+    BC rows/columns — the half of :func:`_reduced_transfer` that does not care
+    where the node weights came from."""
+    import scipy.sparse as sp
+    Pv = sp.kron(Pn, sp.eye(ncomp), format="csr")          # interleaved full vector
+    return Pv.tocsr()[r2f_f, :][:, r2f_c]                  # reduced -> reduced
+
+
 def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
     """Build one prolongation reduced(coarse) -> reduced(fine):
     node-level scalar P -> interleave ``ncomp`` components -> drop BC rows/cols."""
-    import scipy.sparse as sp
     Pn = builder(coarse_coords, fine_coords)               # (n_f_nodes, n_c_nodes)
-    Pv = sp.kron(Pn, sp.eye(ncomp), format="csr")          # interleaved full vector
-    Pr = Pv.tocsr()[r2f_f, :][:, r2f_c]                    # reduced -> reduced
-    return Pr
+    return _reduced_from_node_transfer(Pn, r2f_c, r2f_f, ncomp)
 
 
 # --------------------------------------------------------------------------- #
@@ -687,6 +764,45 @@ class CustomMGHierarchy:
         self.cross_partition = cross_partition
         self.transfers = None
 
+    def _recorded_node_transfer(self, level, nlev, degree, n_coarse, n_fine):
+        """The EXACT nested prolongation recorded by ``mesh.adapt`` for this
+        transfer, or ``None`` to fall back to point location.
+
+        ``adapt`` maintains the parent/child relation, so for a bisection
+        hierarchy the coarse-to-fine embedding is known exactly — every fine
+        vertex is an inherited coarse vertex (weight 1) or an edge midpoint
+        (1/2, 1/2). Using it avoids re-deriving an approximation by Delaunay
+        point location, and it is **structurally full rank**: no coarse DOF can
+        be left without a fine image, so the zero-column failure (#424) cannot
+        arise on this path.
+
+        Restricted to ``degree == 1``: the recorded relation is vertex-level,
+        and a higher-degree field also has edge/face DOFs that it says nothing
+        about. Those still go through the geometric builder — see #425 for the
+        any-degree extension (record the parent CELL, then evaluate the coarse
+        basis at the fine DOF reference coordinates).
+
+        The recorded list covers the ADAPT generations only; the uniform coarse
+        tail beneath them is not a bisection hierarchy, so its transfers keep
+        using the builder. Shapes are checked rather than assumed — a mismatch
+        means the levels do not line up as expected and it is safer to fall
+        back than to install a silently wrong transfer.
+        """
+        import scipy.sparse as sp
+        if degree != 1:
+            return None
+        recorded = getattr(self.level_meshes[-1], "_adapt_prolongation", None)
+        if not recorded:
+            return None
+        idx = level - (nlev - len(recorded))
+        if idx < 0 or idx >= len(recorded) or recorded[idx] is None:
+            return None
+        rows, cols, vals = recorded[idx]
+        if (rows.size == 0 or int(rows.max()) >= n_fine
+                or int(cols.max()) >= n_coarse):
+            return None
+        return sp.csr_matrix((vals, (rows, cols)), shape=(n_fine, n_coarse))
+
     def build(self, solver):
         """Build the BC-reduced prolongations. ``solver`` is the (built) finest
         solver. Each COARSE level's BC-constrained reduced map is derived directly
@@ -772,8 +888,13 @@ class CustomMGHierarchy:
                 _assert_no_zero_columns_parallel(P, comm)
                 Ps.append(P)
             else:
-                Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
-                                       maps[l], nc, self.builder)
+                Pn = self._recorded_node_transfer(
+                    l, nlev, degree, coords[l - 1].shape[0], coords[l].shape[0])
+                if Pn is not None:
+                    Pr = _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc)
+                else:
+                    Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
+                                           maps[l], nc, self.builder)
                 _assert_no_zero_columns_serial(Pr, l)
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
@@ -871,15 +992,44 @@ def auto_inject_custom_mg(solver, field_id=None):
         return                              # nothing to inject
 
     builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
-    h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=builder,
-                          field_id=field_id)
-    try:
-        Ps = h.build(solver)
-    except Exception as exc:                # pragma: no cover - defensive
-        import warnings
-        warnings.warn(f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
-                      "solver's default preconditioner.")
-        return
+    # Retry with the RBF builder before abandoning geometric MG. The
+    # barycentric builder has LOCAL support: it re-triangulates the coarse
+    # DOF cloud and locates each fine DOF in one simplex, so a coarse DOF
+    # is only reached if some fine DOF lands in a simplex touching it. Move
+    # the fine coordinates — which is exactly what mesh.relax() does — and a
+    # coarse DOF can lose every fine image, giving a zero column and a
+    # singular Galerkin coarse operator. The RBF builder has GLOBAL support
+    # (every coarse DOF is reached through the RBF solve), so it does not
+    # have that failure mode: measured on a relaxed 3D adapt child,
+    # barycentric fell back to GAMG at 23 its while RBF kept pc=mg at 2.
+    # Falling back to GAMG loses the hierarchy entirely, so try the cheaper
+    # degradation first. See #424.
+    _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
+    h = Ps = None
+    for _i, _b in enumerate(_attempts):
+        h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=_b,
+                              field_id=field_id)
+        try:
+            Ps = h.build(solver)
+            break
+        except Exception as exc:            # pragma: no cover - defensive
+            import warnings
+            if _i + 1 < len(_attempts):
+                warnings.warn(
+                    f"custom_mg: {_b} transfer build failed ({exc}); "
+                    f"retrying with the '{_attempts[_i + 1]}' builder, which "
+                    f"has global support and cannot leave a coarse DOF "
+                    f"without a fine image. NOTE the RBF transfer is DENSE "
+                    f"(nnz/row == n_coarse), so the Galerkin coarse operators "
+                    f"are dense too — this rescues correctness but does not "
+                    f"scale. If it fires on a production-sized problem, treat "
+                    f"it as a performance cliff and fix the cause, not the "
+                    f"symptom (#424).")
+                continue
+            warnings.warn(
+                f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
+                "solver's default preconditioner.")
+            return
 
     # Dimensional guard (checkable for the monolithic operator, field_id is None):
     # the finest transfer must chain to the operator PCMG will Galerkin against.

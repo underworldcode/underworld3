@@ -179,6 +179,7 @@ CHANGELOG
 :caption: Subsystems
 
 subsystems/meshing
+subsystems/mesh-shape-relaxation
 subsystems/discretisation
 subsystems/solvers
 subsystems/boundary-stress-and-projection-postprocessing
