@@ -1516,9 +1516,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             0 (constants only, inverse distance). Drops to 0 automatically on a
             rank holding too few particles to determine the affine tail.
         monotone : bool or str, default=False
-            Bound each value to the min/max of its own particle stencil. Note
-            this discards linear exactness wherever the target sits outside the
-            convex hull of its neighbours.
+            Limit the non-affine part of the interpolant to the non-affine
+            variation present in the particle stencil. The local linear trend
+            is preserved, so this does not cost linear exactness.
 
         Returns
         -------

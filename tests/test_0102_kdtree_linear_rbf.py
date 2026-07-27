@@ -180,25 +180,69 @@ def test_kdtree_order0_is_unchanged_by_the_new_arguments():
     assert np.array_equal(positional, explicit)
 
 
-def test_kdtree_monotone_clamps_to_the_stencil_range():
-    """order=1 weights are signed and can overshoot; monotone bounds them."""
-    dim = 2
+@pytest.mark.parametrize("dim", [2, 3])
+def test_monotone_does_not_touch_a_linear_field(dim):
+    """The limiter must not cost the guarantee the scheme exists to provide.
+
+    A naive clamp against the stencil's raw min/max does exactly that: a
+    target outside the convex hull of its own neighbours has a value outside
+    their range even for an exactly linear field, so such a clamp cannot tell
+    legitimate extrapolation from ringing. The limiter therefore bounds the
+    non-affine part only, leaving the linear reconstruction alone.
+    """
     nnn = 2 * (dim + 1)
-    rng = np.random.default_rng(77)
-    source = rng.random((600, dim))
-    target = rng.random((200, dim))
+    rng = np.random.default_rng(77 + dim)
+    source = rng.random((1500, dim))
+    target = rng.random((250, dim))
     data = _linear(source)[:, None]
+    expected = _linear(target)
 
     kdt = uw.kdtree.KDTree(source)
-    unbounded = kdt.rbf_interpolator_local(target, data, nnn, 2, False, order=1)
-    clamped = kdt.rbf_interpolator_local(target, data, nnn, 2, False, order=1,
+    unlimited = kdt.rbf_interpolator_local(target, data, nnn, 2, False, order=1)
+    limited = kdt.rbf_interpolator_local(target, data, nnn, 2, False, order=1,
                                          monotone=True)
 
-    lo, hi = data.min(), data.max()
-    assert clamped.min() >= lo - 1.0e-12 and clamped.max() <= hi + 1.0e-12
-    # Sanity: the clamp is doing something on this configuration, otherwise the
-    # test would pass vacuously.
-    assert np.abs(clamped - unbounded).max() > 0.0
+    assert np.abs(limited[:, 0] - expected).max() < 1.0e-12, (
+        "the limiter destroyed linear reproduction"
+    )
+    assert np.abs(limited - unlimited).max() < 1.0e-12, (
+        "the limiter should be a no-op on a field the scheme reproduces exactly"
+    )
+
+
+def test_monotone_bounds_the_correction_on_a_curved_field():
+    """It must still do something: bound the RBF correction to the non-affine
+    variation actually present in the stencil."""
+    dim = 2
+    nnn = 2 * (dim + 1)
+    rng = np.random.default_rng(4242)
+    source = rng.random((800, dim))
+    target = rng.random((200, dim))
+    values = 0.5 + (source ** 2).sum(axis=1) + np.sin(6.0 * source[:, 0])
+    data = values[:, None]
+
+    kdt = uw.kdtree.KDTree(source)
+    unlimited = kdt.rbf_interpolator_local(target, data, nnn, 2, False, order=1)
+    limited = kdt.rbf_interpolator_local(target, data, nnn, 2, False, order=1,
+                                         monotone=True)
+
+    assert np.abs(limited - unlimited).max() > 1.0e-6, (
+        "the limiter had no effect on a curved field, so it is not limiting"
+    )
+
+    # The stated guarantee: the deviation from the local affine trend never
+    # exceeds the deviation the stencil itself shows.
+    from underworld3.utilities.rbf_stencil import affine_trend
+
+    _, stencil = _stencils(source, target, nnn)
+    idx, _ = _stencils(source, target, nnn)
+    stencil_values = data[idx]
+    at_target, at_stencil = affine_trend(target, stencil, stencil_values)
+    residual = stencil_values - at_stencil
+    correction = limited - at_target
+
+    assert (correction <= residual.max(axis=1) + 1.0e-12).all()
+    assert (correction >= residual.min(axis=1) - 1.0e-12).all()
 
 
 def test_kdtree_rejects_bad_order_and_monotone_mode():

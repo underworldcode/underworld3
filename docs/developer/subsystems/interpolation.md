@@ -10,8 +10,13 @@ points, one mesh to another after adaptation. The tool for that is a *local*
 interpolant — for each target point, take its `nnn` nearest source points from
 a kd-tree and form a weighted average.
 
-The only question that matters is **which fields the weights reproduce
-exactly**. That is what `order` selects on
+This is general-purpose numerical machinery, and the goal is straightforward:
+**the interpolation should be accurate**. The single question that determines
+that is **which fields the weights reproduce exactly**. A scheme that cannot
+reproduce a uniform gradient will smear every field that has one, everywhere it
+is used, and no amount of tuning elsewhere recovers what it threw away.
+
+That is what `order` selects on
 {py:meth}`underworld3.ckdtree.KDTree.rbf_interpolator_local`.
 
 ## The two schemes
@@ -80,9 +85,9 @@ of the measured error is particle-to-node transfer error.
 | quadratic, rms | 2.0e-3 | 2.3e-5 |
 
 Two things to read off. First, the linear-field column is the clean statement:
-one scheme is exact, the other is not. Second — and this is the part that
-actually matters for physics — the improvement carries over to a field with
-curvature, by roughly two orders of magnitude in rms.
+one scheme is exact, the other is not. Second — and this is the part that makes
+it a general accuracy improvement rather than a special case — the gain carries
+over to a field with curvature, by roughly two orders of magnitude in rms.
 
 Widening the `order=0` stencil does **not** close the gap. At `nnn=12` the
 inverse-distance error is unchanged to two significant figures, because the
@@ -121,26 +126,48 @@ The implementation (`underworld3.utilities.rbf_stencil.linear_exact_weights`):
    geometric fallback is the failure mode behind issue #424; a per-point
    warning would be unusable, a single counted one is not.
 
-## Boundedness: `monotone`
+## Limiting: `monotone`
 
-`monotone=True` (or `"clamp"`, matching the vocabulary of
-{py:func}`underworld3.function.evaluate`) bounds each result to the min/max of
-its own stencil's source values, restoring the boundedness that `order=1` gives
-up.
+`order=1` weights are signed, so the interpolant can oscillate where the data
+is rough. `monotone=True` (or `"clamp"`) bounds that.
+
+The important part is *what* it bounds. The obvious limiter — clip the result
+to the min/max of the stencil's source values — is **wrong for a linear-exact
+scheme**, and wrong in a way that is easy to miss:
 
 ```{warning}
-Clamping and linear exactness are in genuine conflict. Where the target lies
-outside the convex hull of its neighbours the exact linear value is *outside*
-the stencil range, so the clamp discards it.
-
-Measured on the 2D case above, `order=1` with `monotone=True` gives a max error
-of 4.0e-3 on a linear field — back to the inverse-distance level — while
-keeping the interior nodes exact. Use it when a consumer genuinely requires
-bounded values, not as a default safety net.
+A target that lies outside the convex hull of its own `nnn` neighbours has a
+value outside their range **even for an exactly linear field**. Proxy nodes are
+routinely in that position, and not only at domain boundaries. A raw min/max
+clip therefore cannot distinguish legitimate extrapolation from ringing, and
+fires on the linear part — destroying the one guarantee the scheme exists to
+provide.
 ```
 
-Consumers that do depend on boundedness, and are therefore deliberately left on
-`order=0`:
+So the limiter here follows the slope-limiter discipline instead: **never limit
+the linear reconstruction, limit only the correction on top of it.**
+
+1. Fit an affine function to the stencil data by least squares.
+2. Keep that trend at the target untouched.
+3. Bound the remaining RBF correction to the range of the non-affine residual
+   the stencil actually exhibits.
+
+Consequences, both measured:
+
+- On any field the scheme already reproduces exactly, the limiter is a **no-op**
+  (it moves the answer by ~1e-15). Linear reproduction survives it.
+- On a rough field it does bite — and, like any limiter, it trades accuracy for
+  boundedness where the correction genuinely exceeds the observed residual. On
+  a `sin(6x) + |x|²` test field it moved the answer by 2e-3 (2D) and 5e-2 (3D);
+  in 3D that made the max error slightly worse (9.0e-2 → 1.3e-1), still well
+  below inverse distance (2.7e-1).
+
+Note what this does and does not promise: it bounds *new oscillation relative
+to the local trend*, not absolute range. A quantity that must stay inside hard
+physical bounds (a fraction in $[0,1]$) needs its own clip on top.
+
+Consumers that depend on absolute boundedness, and are therefore deliberately
+left on `order=0`:
 
 - The **RBF rung of the point-location fallback ladder** in
   `uw.function.evaluate` — `docs/developer/design/point-location-capability.md`

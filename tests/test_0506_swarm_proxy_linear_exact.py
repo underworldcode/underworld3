@@ -104,17 +104,17 @@ def test_proxy_still_reproduces_a_constant_exactly(proxied_swarm):
     assert error < 1.0e-12, f"constant field carries error {error:.3e}"
 
 
-def test_proxy_monotone_bounds_values_to_the_particle_range(proxied_swarm):
-    """order=1 weights are signed, so bounded quantities can opt back in."""
+def test_proxy_monotone_keeps_the_linear_field_exact(proxied_swarm):
+    """Turning the limiter on must not cost the proxy its exactness.
+
+    Proxy nodes routinely sit outside the convex hull of their own particle
+    stencil — not only at the domain boundary — so a limiter that clipped
+    against the stencil's raw min/max would fire on the linear part. This one
+    limits only the non-affine correction.
+    """
     _, var = proxied_swarm
-    proxy = var._meshVar
-    particle_coords = var.swarm._particle_coordinates.data.copy()
-
-    var.data[:, 0] = _linear(particle_coords)
-    lo, hi = var.data[:, 0].min(), var.data[:, 0].max()
-
-    var._rbf_to_meshVar(proxy, monotone=True)
-    values = np.asarray(proxy.data[:, 0])
-
-    assert values.min() >= lo - 1.0e-12
-    assert values.max() <= hi + 1.0e-12
+    limited = _proxy_error(var, _linear, monotone=True)
+    assert limited < 1.0e-12, (
+        f"proxy with the limiter on carries {limited:.3e} on an exactly linear "
+        "field; the limiter is clipping the linear reconstruction"
+    )

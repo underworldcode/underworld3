@@ -49,6 +49,50 @@ _REPRODUCTION_TOL = 1.0e-6  # residual of the two reproduction identities
 _CHUNK_BYTES = 64 * 1024 * 1024
 
 
+def affine_trend(target_coords, neighbour_coords, values):
+    """Least-squares affine fit of ``values`` over each stencil.
+
+    Returns the fit evaluated at the target and at each neighbour, which is
+    what a limiter needs in order to bound the *non-affine* part of an
+    interpolant without touching its linear part.
+
+    Parameters
+    ----------
+    target_coords : numpy.ndarray
+        Shape ``(n_targets, dim)``.
+    neighbour_coords : numpy.ndarray
+        Shape ``(n_targets, nnn, dim)``.
+    values : numpy.ndarray
+        Stencil data, shape ``(n_targets, nnn, n_components)``.
+
+    Returns
+    -------
+    at_target : numpy.ndarray
+        Shape ``(n_targets, n_components)``.
+    at_neighbours : numpy.ndarray
+        Shape ``(n_targets, nnn, n_components)``.
+    """
+    target_coords = np.ascontiguousarray(target_coords, dtype=np.float64)
+    neighbour_coords = np.ascontiguousarray(neighbour_coords, dtype=np.float64)
+
+    n_targets, nnn, _ = neighbour_coords.shape
+
+    # Local frame again, so the constant column and the coordinate columns are
+    # comparably scaled and the fit is not dominated by the offset.
+    offsets = neighbour_coords - target_coords[:, None, :]
+    radius = np.linalg.norm(offsets, axis=2).max(axis=1)
+    y = offsets / np.where(radius > 0.0, radius, 1.0)[:, None, None]
+
+    P = np.concatenate([np.ones((n_targets, nnn, 1)), y], axis=2)
+    # pinv rather than solve: a rank-deficient stencil gives the minimum-norm
+    # fit instead of raising, and those points are limited conservatively.
+    coefficients = np.linalg.pinv(P) @ values
+
+    # The target sits at the origin of the local frame, so its affine value is
+    # the constant coefficient.
+    return coefficients[:, 0, :], P @ coefficients
+
+
 def _polyharmonic(r):
     """:math:`\\varphi(r) = r^2 \\log r`, with :math:`\\varphi(0) = 0`."""
     # The clip only keeps log() finite at coincident points; r**2 drives the

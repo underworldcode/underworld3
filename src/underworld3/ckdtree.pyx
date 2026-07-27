@@ -480,11 +480,14 @@ cdef class KDTree:
         order : int, optional
             Polynomial reproduction order, 0 (default) or 1.
         monotone : bool or str, optional
-            Bound each interpolated value to the min/max of its own stencil's
-            source values. ``False`` (default) or ``True`` / ``"clamp"``.
-            Restores boundedness at ``order=1``, but note that clamping
-            necessarily discards linear exactness wherever the target lies
-            outside the convex hull of its neighbours (boundary points).
+            ``False`` (default) or ``True`` / ``"clamp"``. Limits the
+            **non-affine part** of the interpolant: the local least-squares
+            affine trend is preserved exactly, and only the RBF correction on
+            top of it is bounded by the correction actually present in the
+            stencil. This is the slope-limiter discipline — the linear
+            reconstruction is never clipped — so linear reproduction survives
+            the limiter and it is a no-op on any field the scheme already
+            reproduces exactly. It bounds new oscillation, not absolute range.
 
         Returns
         -------
@@ -754,9 +757,31 @@ cdef class KDTree:
         # print(valz)
 
         if monotone_clamp:
-            # Bound to the stencil's own range. This is what restores the
-            # convex-combination property that order=1 gives up.
-            vals = np.clip(vals, kdata.min(axis=1), kdata.max(axis=1))
+            if order == 0:
+                # Already a convex combination; the clip is exact-arithmetic
+                # redundant and only guards round-off.
+                vals = np.clip(vals, kdata.min(axis=1), kdata.max(axis=1))
+            else:
+                # Limit the CORRECTION, never the linear part -- the same
+                # discipline as a slope limiter in a second-order FV scheme.
+                #
+                # Clipping the total against the stencil's raw min/max would
+                # be wrong here: a target outside the convex hull of its own
+                # neighbours has a value outside their range even for an
+                # exactly linear field, so the naive clip cannot distinguish
+                # legitimate extrapolation from ringing and destroys the
+                # reproduction guarantee.
+                from underworld3.utilities.rbf_stencil import affine_trend
+
+                trend_at_target, trend_at_stencil = affine_trend(
+                    coords_converted, stencil_coords, kdata
+                )
+                residual = kdata - trend_at_stencil
+                vals = trend_at_target + np.clip(
+                    vals - trend_at_target,
+                    residual.min(axis=1),
+                    residual.max(axis=1),
+                )
 
         if verbose and uw.mpi.rank == 0:
             print(f"Mapping values  ... finished", flush=True)
