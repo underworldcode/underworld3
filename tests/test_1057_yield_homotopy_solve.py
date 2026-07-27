@@ -231,6 +231,93 @@ def test_homotopy_restores_the_solver_tangent():
     )
 
 
+def _yielding_box(tag, tau_y, cellSize=0.2):
+    """A box sheared hard enough to yield over a large fraction of the domain.
+
+    NOTE the horizontally-VARYING body force. A uniform one is hydrostatic — pressure
+    balances gravity, nothing moves, the strain rate is zero and the yield law never
+    engages. Every earlier "viscoplastic" fixture in this file yields 0% for exactly
+    that reason, which is why the homotopy went so long without being exercised.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=cellSize
+    )
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("Vy" + tag, mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Py" + tag, mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    cm = s.constitutive_model
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.yield_stress = tau_y
+    s.bodyforce = sympy.Matrix([[0.0, -2.0 * sympy.cos(sympy.pi * x)]])
+    s.add_essential_bc((sympy.oo, 0.0), "Top")
+    s.add_essential_bc((sympy.oo, 0.0), "Bottom")
+    s.add_essential_bc((0.0, sympy.oo), "Left")
+    s.add_essential_bc((0.0, sympy.oo), "Right")
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1.0e-8
+    return mesh, s, cm
+
+
+@pytest.mark.level_2
+def test_homotopy_rescues_a_solve_the_cold_start_cannot_do():
+    """THE user-level guarantee: ``solve(homotopy=True)`` converges on a genuinely
+    yielding problem where a direct cold solve of the sharp law does not.
+
+    This is a CAPABILITY test, deliberately asserting both halves on the same problem,
+    so the feature cannot silently regress into "runs without error but no longer
+    rescues anything". At tau_y = 0.30 (~45% of the domain yielding) the cold hard-Min
+    solve gives DIVERGED_MAX_IT; the march settles near 1e-4 and converges.
+    """
+    import numpy as np
+
+    # (a) the direct cold solve of the sharp law FAILS
+    mesh, cold, cm_cold = _yielding_box("c", 0.30)
+    cm_cold.yield_mode = "min"
+    cold.solve()
+    cold_reason = int(cold.snes.getConvergedReason())
+
+    # (b) the homotopy, same problem, SUCCEEDS
+    mesh2, warm, cm_warm = _yielding_box("h", 0.30)
+    report = warm.solve(homotopy=True,
+                        homotopy_options=dict(delta0=1.0, dmin=1.0e-3, verbose=False))
+
+    eta = uw.function.evaluate(cm_warm.viscosity.sym, mesh2.X.coords)
+    yielding = float(np.mean(eta < 0.99))
+
+    assert yielding > 0.2, (
+        f"fixture is not exercising the yield law (only {yielding:.0%} yielding) — "
+        "the comparison would be vacuous"
+    )
+    assert cold_reason < 0, (
+        f"the cold sharp solve unexpectedly converged (reason={cold_reason}); this "
+        "fixture no longer demonstrates a rescue, retune tau_y"
+    )
+    assert report["converged"] is True, (
+        f"HOMOTOPY REGRESSION: the march no longer rescues a case the cold solve "
+        f"cannot do ({report})"
+    )
+    assert warm.has_solution is True
+
+
+@pytest.mark.level_2
+def test_rate_regularisation_is_wired_into_the_plastic_viscosity():
+    """``strainrate_inv_II_min`` caps eta_pl at tau_y/(2 edot_min), bounding the
+    viscosity contrast — the knob the xi-style regularisation needs.
+
+    Regression: it was declared on this model but never applied (the elastic models
+    always used it), so setting it had no effect at all.
+    """
+    _, _, cm = _yielding_box("r", 0.30)
+    before = str(cm.viscosity.sym)
+    cm.Parameters.strainrate_inv_II_min = 0.05
+    after = str(cm.viscosity.sym)
+    assert after != before, (
+        "strainrate_inv_II_min does not change the viscosity — it is being ignored"
+    )
+
+
 @pytest.mark.parametrize("kwargs", [dict(zero_init_guess=True), dict(picard=2)])
 def test_homotopy_rejects_arguments_it_would_have_to_ignore(kwargs):
     """The march decides cold-vs-warm and its own warm-up per step, so an argument
