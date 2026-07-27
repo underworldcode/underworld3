@@ -1166,12 +1166,11 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             else:
                 raise RuntimeError("Cannot map a swarm to a different mesh")
 
-        # TODO(BUG): issue #426 — MeshVariable.coords is dimensionalised when
-        # the model has reference quantities active, but the swarm kd-tree is
-        # built from non-dimensional particle coordinates, so this raises from
-        # ckdtree._convert_coords_to_tree_units. Should be `coords_nd`.
-        # Same defect at _update_proxy_variables (IndexSwarmVariable).
-        new_coords = meshVar.coords
+        # coords_nd, NOT coords: the swarm kd-tree is built from
+        # _particle_coordinates.data, which is always non-dimensional, while
+        # MeshVariable.coords dimensionalises once the model has reference
+        # quantities (issue #426).
+        new_coords = meshVar.coords_nd
 
         # Starved-rank guard (SWARM-07): with <= 1 local particles there is
         # nothing meaningful to interpolate — rbf_interpolate would return
@@ -2594,7 +2593,11 @@ class IndexSwarmVariable(SwarmVariable):
                 )
                 kd_swarm = self.swarm._get_kdtree()
                 # n, d, b = kd_swarm.find_closest_point(self._meshLevelSetVars[0].coords)
-                d, n = kd_swarm.query(self._meshLevelSetVars[0].coords, k=1, sqr_dists=False)
+                # coords_nd: kd_swarm indexes non-dimensional particle
+                # coordinates (issue #426).
+                d, n = kd_swarm.query(
+                    self._meshLevelSetVars[0].coords_nd, k=1, sqr_dists=False
+                )
 
                 # Which (particle, node) pairs are valid:
                 # - node is at same distance as the nearest node
@@ -2650,8 +2653,9 @@ class IndexSwarmVariable(SwarmVariable):
         elif self.update_type == 1:
             if not starved:
                 kd = uw.kdtree.KDTree(self.swarm._particle_coordinates.data)
+                # coords_nd: the tree above is non-dimensional (issue #426).
                 n_distance, n_indices = kd.query(
-                    self._meshLevelSetVars[0].coords, k=self.nnn, sqr_dists=False
+                    self._meshLevelSetVars[0].coords_nd, k=self.nnn, sqr_dists=False
                 )
 
                 # IDW weights and validity mask for all (node, particle) pairs

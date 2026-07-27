@@ -1,3 +1,5 @@
+import collections
+
 import numpy as np
 import sympy
 
@@ -108,6 +110,23 @@ class SolverBaseClass(uw_object):
         # -> no hook is installed and the solve path is unchanged. See
         # add_update_callback().
         self._snes_update_callbacks = []
+
+        # Solver difficulty / convergence reporting (default-on; see the
+        # solve_report / solve_history properties and _capture_solve_report).
+        # A SolveReport is recorded after every solve; solve_history keeps a
+        # short bounded trail so continuation / time-stepping loops can read
+        # trends without logging each step themselves.
+        self._solve_report = None
+        self._solve_history = collections.deque(maxlen=32)
+        # Bounded/resumable difficulty probe state (see estimate_difficulty).
+        # _difficulty_probe gates probe-only behaviour (iteration-cap solves,
+        # suppressed divergence warnings, restart anchoring); _difficulty_max_it
+        # is the active cap; _resume_abs_target anchors a chunked start/stop/restart
+        # chain to the ORIGINAL ||F0|| so it terminates at the same point an
+        # uninterrupted solve would. None = not in a resumable chain.
+        self._difficulty_probe = False
+        self._difficulty_max_it = None
+        self._resume_abs_target = None
 
         # Preconditioner selection — see the `preconditioner` property.
         # `_pc_option_prefix` is set by subclasses that participate in the easy
@@ -916,6 +935,166 @@ class SolverBaseClass(uw_object):
 
         return
 
+    @property
+    def solve_report(self):
+        """Difficulty / convergence record of the most recent solve (read-only).
+
+        A :class:`~underworld3.systems.solve_report.SolveReport` populated by default after
+        every ``solve()`` — no opt-in. ``None`` before the first solve. Exposes the converged
+        reason, nonlinear/linear iteration counts, final and initial ‖F‖, the residual
+        reduction and contraction ρ, and the residual ladder. See also ``solve_history`` and
+        ``estimate_difficulty``.
+        """
+        return self._solve_report
+
+    @solve_report.setter
+    def solve_report(self, value):
+        raise AttributeError("solve_report is read-only (set by solve()).")
+
+    @property
+    def solve_history(self):
+        """Bounded trail of recent :class:`SolveReport`s (read-only, most recent last).
+
+        A ``collections.deque`` (``maxlen=32``) so continuation / time-stepping loops can read
+        difficulty trends without logging each solve themselves.
+        """
+        return self._solve_history
+
+    @solve_history.setter
+    def solve_history(self, value):
+        raise AttributeError("solve_history is read-only (set by solve()).")
+
+    def _capture_solve_report(self, *, bounded=False):
+        """Record a SolveReport for the just-completed solve into ``self._solve_report`` and
+        append it to ``self._solve_history``. Reads SNES state only (side-effect free).
+
+        INVARIANT: every physical ``self.snes.solve(...)`` site must be followed by a call to
+        this method, so that reporting covers every solve path — including any that returns
+        early and bypasses ``_snes_solve_with_retries`` / ``_warn_on_divergence`` (e.g. the
+        rotated-free-slip handoff in ``utilities/rotated_bc.py``). Do NOT anchor capture on
+        ``_warn_on_divergence`` (some paths skip it).
+        """
+        from underworld3.systems.solve_report import (
+            SolveReport, reason_string, contraction,
+        )
+
+        if getattr(self, "snes", None) is None:
+            self._solve_report = None
+            return None
+
+        reason = int(self.snes.getConvergedReason())
+        nl_its = int(self.snes.getIterationNumber())
+        ksp_its = int(self.snes.getLinearSolveIterations())
+        try:
+            fnorm = float(self.snes.getFunctionNorm())
+        except Exception:
+            fnorm = float("nan")
+        try:
+            fev = int(self.snes.getFunctionEvaluations())
+        except Exception:
+            fev = None
+        try:
+            hist = tuple(float(h) for h in self.snes.getConvergenceHistory()[0])
+        except Exception:
+            hist = ()
+        fnorm0 = hist[0] if hist else None
+        reduction = (fnorm / fnorm0) if (fnorm0 not in (None, 0.0)) else None
+        rho = contraction(hist)
+
+        report = SolveReport(
+            reason=reason,
+            reason_str=reason_string(reason),
+            converged=reason > 0,
+            nl_its=nl_its,
+            ksp_its=ksp_its,
+            fnorm=fnorm,
+            fnorm0=fnorm0,
+            reduction=reduction,
+            rho=rho,
+            fev=fev,
+            history=hist,
+            bounded=bool(bounded),
+        )
+        self._solve_report = report
+        self._solve_history.append(report)
+        return report
+
+    def _capture_rotated_report(self, info):
+        """Record a SolveReport for a rotated-free-slip solve, which runs its own
+        ``ksp.solve()`` on the rotated operator (``utilities/rotated_bc.py``) and never
+        touches ``self.snes`` — so the generic reader would see stale SNES state. Build the
+        report from the rotated result dict (``ksp_reason`` / ``ksp_its``) so a rotated solve
+        also leaves a (read-only) report rather than a stale one. Best-effort, never raises."""
+        from underworld3.systems.solve_report import SolveReport, reason_string
+        try:
+            info = info or {}
+            reason = int(info.get("ksp_reason", 0))
+            ksp_its = int(info.get("ksp_its", 0))
+            nl_its = int(info.get("newton_its", 1))     # linear path = one outer solve
+            fnorm = float(info.get("rnorm", float("nan")))
+            report = SolveReport(
+                reason=reason, reason_str=reason_string(reason), converged=reason > 0,
+                nl_its=nl_its, ksp_its=ksp_its, fnorm=fnorm,
+                fnorm0=None, reduction=None, rho=None, fev=None, history=(), bounded=False,
+            )
+            self._solve_report = report
+            self._solve_history.append(report)
+            return report
+        except Exception:
+            self._solve_report = None
+            return None
+
+    def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):
+        """Run a bounded, resumable solve to *estimate solver difficulty* and return its report.
+
+        Caps the solve at ``max_nl_its`` nonlinear iterations (for THIS call only), runs the
+        normal ``solve()`` — which leaves the partial iterate in the fields — and returns the
+        :class:`SolveReport` (``bounded=True``). The reported effort (iterations, residual
+        reduction, contraction ρ) IS the difficulty estimate. Continue losslessly with another
+        ``estimate_difficulty(warm=True)`` (a large cap runs it to completion); a chunked
+        start/stop/restart chain terminates at the same point an uninterrupted solve would,
+        because the chain anchors convergence to the original ‖F0‖.
+
+        This bounds *solver work predictably* (an iteration count) — it is NOT a wall-time limit.
+
+        Parameters
+        ----------
+        max_nl_its : int
+            Cap on nonlinear (SNES) iterations for this call.
+        warm : bool, default True
+            ``True`` continues from the current fields (a restart within a chain);
+            ``False`` starts a fresh chain from a zero initial guess.
+        **solve_kwargs
+            Forwarded to ``solve()`` (e.g. ``timestep``, ``picard`` for Stokes/VE).
+
+        Returns
+        -------
+        SolveReport
+            The (``bounded=True``) report for this capped solve; also available as
+            ``self.solve_report``.
+        """
+        if not warm:
+            self._resume_abs_target = None      # fresh chain: forget any prior anchor
+        self._difficulty_probe = True
+        self._difficulty_max_it = int(max_nl_its)
+        try:
+            self.solve(zero_init_guess=(not warm), **solve_kwargs)
+        finally:
+            self._difficulty_probe = False
+            self._difficulty_max_it = None
+
+        # Anchor a NEW chain to the original ||F0||. Subsequent warm restarts via
+        # estimate_difficulty(warm=True) — including a large-cap call to run to
+        # completion — terminate at tolerance*||F0||, the same point an uninterrupted
+        # solve would, regardless of where the caps fell. The anchor is consulted ONLY
+        # under _difficulty_probe (see _snes_solve_with_retries), so plain solves are
+        # unaffected and cannot inherit a stale anchor.
+        if self._resume_abs_target is None and self._solve_report is not None:
+            f0 = self._solve_report.fnorm0
+            if f0:
+                self._resume_abs_target = self.tolerance * float(f0)
+        return self._solve_report
+
     def get_snes_diagnostics(self):
         """
         Extract comprehensive SNES convergence diagnostics with string representations.
@@ -1129,6 +1308,11 @@ class SolverBaseClass(uw_object):
         if phase == "picard" and reason == -5:
             return
 
+        # Bounded difficulty probe: hitting the iteration cap (DIVERGED_MAX_IT) is
+        # the intended stop, not a failure — the effort is reported, not warned.
+        if self._difficulty_probe and reason == -5:
+            return
+
         its = self.snes.getIterationNumber()
         _entry = self._convergence_reasons.get(reason)
         reason_str = _entry[0] if _entry is not None else f"UNKNOWN({reason})"
@@ -1169,23 +1353,61 @@ class SolverBaseClass(uw_object):
         # Attach the per-iteration callback dispatcher here (after all
         # setFromOptions in the solve path). No-op when no callbacks registered.
         self._attach_snes_update_hook()
-        if self.consistent_jacobian == "continuation":
-            self._continuation_solve(gvec, verbose=verbose)
-        else:
-            self.snes.solve(None, gvec)
-        if divergence_retries <= 0:
-            return
-        for _r in range(divergence_retries):
-            reason = self.snes.getConvergedReason()
-            if reason >= 0:
-                return
-            if verbose and uw.mpi.rank == 0:
-                print(
-                    f"SNES DIVERGED (reason={reason}); "
-                    f"warm-start retry {_r + 1}/{divergence_retries}",
-                    flush=True,
-                )
-            self.snes.solve(None, gvec)
+        # Arm the residual-history buffer for THIS solve (reset clears stale data so the
+        # reported contraction is computed on the current ladder only). Done here — every
+        # solve funnels through this method and reads self.snes freshly — so a recreated
+        # SNES (new object after a setup-dirtying _build) is armed automatically. Guarded:
+        # not all PETSc builds expose it identically.
+        try:
+            self.snes.setConvergenceHistory(reset=True)
+        except Exception:
+            pass
+
+        # Single control point for the bounded/resumable difficulty solve. Runs AFTER
+        # every per-solve setFromOptions (base and Stokes), so overrides here win. Gated
+        # on _difficulty_probe so it is active ONLY inside estimate_difficulty — a plain
+        # solve() is byte-for-byte unchanged and can never pick up a stale chain anchor.
+        #   - iteration cap: cap nonlinear iterations for this probe;
+        #   - resume anchor: once a chain is established (_resume_abs_target set from the
+        #     first solve's ||F0||), terminate at the ORIGINAL ||F0|| via an absolute tol
+        #     = tolerance*||F0||. This abs tol is LOOSER than the restart-relative
+        #     rtol*||F_restart||, so it fires first — no need to zero rtol. So a chunked
+        #     start/stop/restart terminates at the same point an uninterrupted solve would.
+        # Tolerances are saved and restored so nothing leaks into later solves.
+        _probe = bool(self._difficulty_probe)
+        _saved_tol = None
+        if _probe:
+            _saved_tol = self.snes.getTolerances()
+            if self._difficulty_max_it is not None:
+                self.snes.setTolerances(max_it=int(self._difficulty_max_it))
+            if self._resume_abs_target is not None:
+                self.snes.setTolerances(atol=float(self._resume_abs_target))
+
+        try:
+            if self.consistent_jacobian == "continuation":
+                self._continuation_solve(gvec, verbose=verbose)
+            else:
+                self.snes.solve(None, gvec)
+            if divergence_retries > 0:
+                for _r in range(divergence_retries):
+                    reason = self.snes.getConvergedReason()
+                    if reason >= 0:
+                        break
+                    if verbose and uw.mpi.rank == 0:
+                        print(
+                            f"SNES DIVERGED (reason={reason}); "
+                            f"warm-start retry {_r + 1}/{divergence_retries}",
+                            flush=True,
+                        )
+                    self.snes.solve(None, gvec)
+        finally:
+            if _saved_tol is not None:
+                self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
+                                        stol=_saved_tol[2], max_it=_saved_tol[3])
+
+        # Default-on difficulty report — single tail so every path is covered.
+        # bounded=True marks a report produced under an estimate_difficulty cap.
+        self._capture_solve_report(bounded=_probe)
 
     def _continuation_solve(self, gvec, verbose=False):
         """Picard -> Newton continuation via the constants[]-routed alpha.
@@ -8073,6 +8295,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 self._rotated_freeslip_info = solve_rotated_freeslip_nonlinear(
                     self, self._rotated_freeslip_bcs, verbose=verbose,
                     zero_init_guess=zero_init_guess, picard=picard)
+            # This path solves via ksp.solve on the rotated operator (not self.snes),
+            # so give it a report from the rotated result rather than leaving a stale one.
+            self._capture_rotated_report(self._rotated_freeslip_info)
             return
 
         if time is not None:

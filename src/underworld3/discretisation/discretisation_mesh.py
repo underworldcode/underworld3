@@ -6597,8 +6597,128 @@ class Mesh(Stateful, uw_object):
         smooth_mesh_interior(self, metric=metric, method="mmpde",
                              verbose=verbose, **kwargs)
 
+    def relax(self, metric=None, *, verbose=False, **kwargs):
+        r"""Improve this mesh's element **shapes** without changing its
+        size distribution or its topology.
+
+        The companion to :meth:`adapt`. Refinement chooses where new
+        nodes go from *combinatorics* — which edge the tagging rule
+        nominated (bisection), or the cell centroid (Alfeld) — never
+        from geometry, so a refined mesh carries needles and slivers
+        that reflect the base mesh's arbitrary choices rather than
+        anything about the problem. Relaxation moves those nodes to
+        where the geometry wants them, keeping the resolution the
+        refinement installed::
+
+            child = mesh.adapt(metric, max_levels=3)
+            child.relax()
+
+        Implemented with the same MMPDE mover as
+        :meth:`redistribute_nodes`, in its **ideal reference frame**
+        (``reference="ideal"``): each cell's reference element is a
+        regular simplex scaled to that cell's own current volume. Two
+        consequences, and they are the whole point:
+
+        * the size term starts and stays at its optimum, so the graded
+          spacing is preserved rather than re-derived;
+        * "distortion" is measured against *equilateral*, not against
+          the mesh as supplied — so a distorted mesh is no longer its
+          own optimum, which is exactly why
+          ``redistribute_nodes(metric)`` cannot do this job (its
+          reference IS the mesh it was handed, so under a uniform
+          metric it moves nothing at all).
+
+        Non-folding by construction, and the parallel partition, vertex
+        count and DOF layout are unchanged.
+
+        Moving the nodes can upset the custom-P geometric-MG transfers,
+        which are built by geometric point location rather than from the
+        refinement relation: the local-support ``barycentric`` builder can
+        be left with a coarse DOF that has no fine image. The FMG build
+        now retries with the global-support ``rbf`` builder before giving
+        up, so the hierarchy survives (measured in 3D: GAMG at 23
+        iterations before the retry, ``pc=mg`` at 2 after). See #424.
+
+        **Two valid placements, neither dominant.** ``adapt(metric, ...,
+        relax=True)`` relaxes once at the end — the recommended default.
+        ``relax="per-generation"`` relaxes inside the refinement loop, so
+        each generation marks from already-relaxed coordinates. Both beat
+        no relaxation; which is *better* depends on which property you
+        weight, and we deliberately do not rank them:
+
+        =========================  ==========  ==========  ===============
+        property                   unrelaxed   at end      per generation
+        =========================  ==========  ==========  ===============
+        P1 interpolation error     2.75e-2     2.56e-2     2.38e-2
+        99th pct max angle         112 deg     110 deg     96 deg
+        on-fault size spread       2.80        2.31        2.31
+        far-field closure halo     42.8        27.7        43.9
+        =========================  ==========  ==========  ===============
+
+        Relaxing at the end keeps the cell count identical to the
+        unrelaxed mesh and cuts the far-field halo most; relaxing per
+        generation gives the cleanest element shapes and the lowest
+        error, but spends ~3% more cells to do it.
+
+        In **3D it improves mesh QUALITY but not interpolation error** —
+        two different things, and worth keeping apart. On an adapted 3D
+        mesh it halves the near-degenerate population (cells with q < 0.1:
+        3.6% -> 1.8%), lifts median quality 0.32 -> 0.39 and pulls the 99th
+        percentile dihedral angle back from 153 to 146 degrees; but the
+        interpolation error of an isotropic feature is unchanged (+0.5%).
+        That is consistent: relaxation holds the size distribution, and in
+        2D the error gain came from cells ALIGNING onto the feature, which
+        an isotropic metric gives no reason to do in 3D. Use it in 3D for
+        conditioning and element quality, not expecting an accuracy win.
+
+        Parameters
+        ----------
+        metric : sympy expression, MeshVariable, or sympy Matrix, optional
+            Usually omitted, and **omitting it is what makes this a shape
+            guarantee**. ``None`` (default) relaxes under a uniform metric
+            — pure shape repair at fixed size.
+
+            Passing a metric switches to the ideal-*metric* frame, which
+            re-grades as well as reshapes, and it will trade element shape
+            away to chase the size field. Measured on a 4-level graded box,
+            the 99th-percentile max angle went 117.9 -> 113.8 degrees with
+            no metric but 117.9 -> **127.4** with one. Pass a metric when
+            you want the sizes corrected too, and accept that shape is no
+            longer the objective.
+        verbose : bool, default False
+            Print mover progress.
+        **kwargs
+            Forwarded to :meth:`redistribute_nodes` — e.g.
+            ``pinned_labels``, ``slip_surfaces``, ``method_kwargs``
+            (mover tunables such as ``n_outer``).
+
+        See Also
+        --------
+        adapt : Add resolution (topology change, returns a child mesh).
+        redistribute_nodes : Move nodes to follow a metric (changes the
+            size distribution; the reference is the mesh as supplied).
+        """
+        import sympy
+
+        method_kwargs = dict(kwargs.pop("method_kwargs", None) or {})
+        # No metric  -> keep each cell's own size, repair shape only.
+        # With one   -> the metric sets size (a uniform reference volume),
+        #               so sizes that are themselves wrong can be fixed.
+        default_ref = "ideal" if metric is None else "ideal-metric"
+        ref = method_kwargs.setdefault("reference", default_ref)
+        if ref not in ("ideal", "ideal-metric"):
+            raise ValueError(
+                "mesh.relax() is an ideal-reference-frame operation; "
+                f"method_kwargs['reference']={ref!r} contradicts it. For "
+                "the mesh-reference frame call "
+                "mesh.redistribute_nodes(metric).")
+        return self.redistribute_nodes(
+            sympy.sympify(1) if metric is None else metric,
+            verbose=verbose, method_kwargs=method_kwargs, **kwargs)
+
     def adapt(self, metric_field, max_levels=None, node_budget=None,
-              builder=None, adapter=None, engine=None, verbose=False):
+              builder=None, adapter=None, engine=None, verbose=False,
+              relax=False, relax_kwargs=None):
         r"""
         Nested **adapt-on-top**: return a refined **child** mesh.
 
@@ -6764,10 +6884,12 @@ class Mesh(Stateful, uw_object):
         return self._adapt_nested(
             metric_field, max_levels=max_levels, node_budget=node_budget,
             builder=builder, engine=engine, verbose=verbose,
+            relax=relax, relax_kwargs=relax_kwargs,
         )
 
     def _adapt_nested(self, metric_field, max_levels=2, node_budget=None,
-                      builder="barycentric", engine="nvb", verbose=False):
+                      builder="barycentric", engine="nvb", verbose=False,
+                      relax=False, relax_kwargs=None):
         """Core nested adapt-on-top (SBR or NVB engine). See :meth:`adapt`."""
         import math
         from underworld3.utilities import custom_mg
@@ -7019,7 +7141,78 @@ class Mesh(Stateful, uw_object):
                 write_tagged_state_label(base_finest)
 
         markers_per_level = []
+        # relax=True is the RECOMMENDED default: relax once, at the end.
+        # relax="per-generation" relaxes inside the refinement loop instead.
+        # Both measure better than no relaxation and neither dominates the
+        # other across the properties we care about (element quality, size
+        # uniformity along the feature, and refinement leakage away from
+        # it), so this is a genuine choice rather than a ranking.
+        if relax in (False, None):
+            _relax_mode = None
+        elif relax is True:
+            _relax_mode = "end"
+        elif str(relax).lower().replace("_", "-") in ("end", "at-end"):
+            _relax_mode = "end"
+        elif str(relax).lower().replace("_", "-") in ("per-generation",
+                                                      "generation"):
+            _relax_mode = "per-generation"
+        else:
+            raise ValueError(
+                f"adapt(relax={relax!r}); use True (relax once at the end, "
+                f"the recommended default), 'per-generation' (relax inside "
+                f"the refinement loop) or False.")
+
+        # The metric handed to the relaxation, resolved ONCE. A callable
+        # (numpy) metric cannot go to the mover, so those relax in the pure
+        # shape frame at fixed size; a sympy / MeshVariable metric gives the
+        # ideal-metric frame. NB `relax` is a MODE, never a metric.
+        _relax_metric = None if callable(metric_field) else metric_field
+
+        def _relax_generation(engine_obj, carry, rcarry):
+            """Relax THIS generation in place INSIDE the refinement engine.
+
+            The engine's own coordinates feed the next generation's marking
+            and its next midpoints, so a relaxation that only touched the
+            exported DM would be discarded by the following generation (the
+            same reason the boundary snap is applied inside the engine).
+
+            Coordinates are matched by POSITION, not by index: ``to_dm``
+            goes through ``createFromCellList`` and PETSc renumbers the
+            vertices. The match is exact because it is taken before
+            anything moves.
+            """
+            _dmg = engine_obj.to_dm(boundaries=carry, regions=rcarry,
+                                    comm=self.dm.comm)
+            _mg = Mesh(_dmg, simplex=self.dm.isSimplex(),
+                       coordinate_system_type=(
+                           self.CoordinateSystem.coordinate_type),
+                       qdegree=self.qdegree, boundaries=self.boundaries,
+                       verbose=False)
+            _cd = _mg.cdim
+            _pre = numpy.ascontiguousarray(
+                _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd))
+            _src = numpy.ascontiguousarray(
+                numpy.asarray([numpy.asarray(c, dtype=float)
+                               for c in engine_obj.coords]))
+            # EXACT identification: the DM was built from these very
+            # coordinates, so byte equality is the correct test. No spatial
+            # index, no tolerance, no nearest-neighbour guess.
+            _key = {row.tobytes(): i for i, row in enumerate(_src)}
+            _idx = numpy.asarray([_key[row.tobytes()] for row in _pre],
+                                 dtype=numpy.int64)
+            _mg.relax(_relax_metric, **(relax_kwargs or {}))
+            _post = _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd)
+            for _k, _i in enumerate(_idx):
+                engine_obj.coords[_i] = _post[_k]
+
         level_dms = []                       # one DM per refinement level
+        # Nested (topological) MG prolongations, one per refinement generation.
+        # `from_dm` numbers engine vertices as `DM point - vS`, so the base map
+        # is that offset; each generation's map comes back from `to_dm`.
+        _nested_Ps = []
+        _nested_parent_cells = []
+        _vS0, _vE0 = base_finest.getDepthStratum(0)
+        _coarse_vmap = {i: _vS0 + i for i in range(_vE0 - _vS0)}
 
         if engine == "nvb" and _nvbx is not None:
             # Native uwnvb DMPlexTransform. Each pass marks the cells whose current
@@ -7059,8 +7252,41 @@ class Mesh(Stateful, uw_object):
                 lab.setDefaultValue(0)
                 for cidx in marked:
                     lab.setValue(cidx, DM_ADAPT_REFINE)
+                _coarse_for_P = current_dm
                 current_dm = _nvbx.refine(d, "adapt")
+                # Capture the exact parent/child prolongation NOW, in the one
+                # window where the coordinates are still pristine: the snap
+                # below moves boundary midpoints off their parent edges, and
+                # relaxation moves everything, after which the relation can no
+                # longer be recovered by matching. See #425.
+                from underworld3.utilities.nvb import (
+                    nested_prolongation_from_dms as _nested_from_dms,
+                    nested_cell_parents as _nested_parents)
+                _vP = _nested_from_dms(_coarse_for_P, current_dm)
+                _nested_Ps.append(_vP)
+                # Parent CELL map as well: with it a fine DOF's weights are the
+                # coarse basis evaluated inside its parent, which is exact at
+                # ANY degree — the vertex map alone only covers P1. (#425)
+                _nested_parent_cells.append(
+                    None if _vP is None
+                    else _nested_parents(_coarse_for_P, current_dm, _vP))
                 snap_level_boundaries(current_dm)
+                if _relax_mode == "per-generation":
+                    # Relax THIS generation before the next one marks from it:
+                    # the moved coordinates are what the next pass measures and
+                    # bisects, which is the whole point of relaxing in the loop
+                    # rather than once at the end. A clone keeps the plex
+                    # numbering, so the coordinate vectors align index-for-index
+                    # and no positional matching is needed.
+                    _mg = Mesh(current_dm.clone(),
+                               simplex=self.dm.isSimplex(),
+                               coordinate_system_type=(
+                                   self.CoordinateSystem.coordinate_type),
+                               qdegree=self.qdegree,
+                               boundaries=self.boundaries, verbose=False)
+                    _mg.relax(_relax_metric, **(relax_kwargs or {}))
+                    current_dm.setCoordinatesLocal(
+                        _mg.dm.getCoordinatesLocal())
                 level_dms.append(current_dm)
                 if verbose:
                     fs, fe = current_dm.getHeightStratum(0)
@@ -7077,7 +7303,8 @@ class Mesh(Stateful, uw_object):
             # bound. A bisection halves the cell volume, so h shrinks by
             # 2^(1/dim) per generation and one isotropic-equivalent
             # ``max_levels`` is dim generations.
-            from underworld3.utilities.nvb import NVBMesh, TaggedBisectionMesh
+            from underworld3.utilities.nvb import (NVBMesh, TaggedBisectionMesh,
+                                                   nested_prolongation)
             _Engine = TaggedBisectionMesh if self.dim == 3 else NVBMesh
             carry = [(b.name, b.value) for b in self.boundaries
                      if b.name not in ("Null_Boundary", "All_Boundaries")]
@@ -7100,6 +7327,7 @@ class Mesh(Stateful, uw_object):
                     sel = sel[order[:node_budget]]
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
+                _n_coarse_verts = len(nvb.coords)   # before this generation
                 nvb.refine(set(marked))
                 # Snap INSIDE the engine: its own coordinates feed the next
                 # generation's marking AND the next midpoints, so snapping
@@ -7119,8 +7347,22 @@ class Mesh(Stateful, uw_object):
                             numpy.array([nvb.coords[i] for i in _idx]))
                         for _k, _i in enumerate(_idx):
                             nvb.coords[_i] = _snapped[_k]
-                level_dms.append(nvb.to_dm(boundaries=carry, regions=rcarry,
-                                           comm=self.dm.comm))
+                if _relax_mode == "per-generation":
+                    _relax_generation(nvb, carry, rcarry)
+                _gen_dm = nvb.to_dm(boundaries=carry, regions=rcarry,
+                                    comm=self.dm.comm)
+                level_dms.append(_gen_dm)
+                # Record the EXACT prolongation for this generation while the
+                # engine still knows the parent/child relation. Built from
+                # `edge2mid`, not by point location, so it is full rank by
+                # construction and survives any later node motion (relax /
+                # snap / deformation). See design/nested-vs-geometric-mg-transfers.
+                _vSg, _vEg = _gen_dm.getDepthStratum(0)
+                _fine_map = dict(nvb.dm_vertex_of_engine)
+                _nested_Ps.append(nested_prolongation(
+                    nvb, _coarse_vmap, _fine_map, _n_coarse_verts,
+                    _vSg, _vEg - _vSg))
+                _coarse_vmap = _fine_map
                 if verbose:
                     uw.pprint(0, f"[adapt] nvb gen {level}: marked {len(marked)} "
                                  f"-> {len(nvb.cells)} cells")
@@ -7175,6 +7417,12 @@ class Mesh(Stateful, uw_object):
             verbose=False,
         )
 
+        if _relax_mode == "end":
+            # A sympy/MeshVariable metric gives the ideal-metric frame (the
+            # metric sets size); a plain callable cannot be handed to the
+            # mover, so those fall back to pure shape repair at fixed size.
+            child.relax(_relax_metric, **(relax_kwargs or {}))
+
         # Lineage (parent/child DAG) and mesh-owned custom-P hierarchy.
         child.parent = self
         child._relationship_kind = "refinement"
@@ -7184,6 +7432,11 @@ class Mesh(Stateful, uw_object):
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
         child._adapt_engine = engine
+        # Exact per-generation prolongations when the engine could supply them
+        # (cell-list path). Empty for the native transform path, which falls
+        # back to the geometric builder. See #425.
+        child._adapt_prolongation = _nested_Ps
+        child._adapt_parent_cells = _nested_parent_cells
         # Mesh-owned custom-P geometric-MG tail. EVERY refinement level is its own
         # MG level (one custom-P transfer per refinement step), not a single
         # base-finest -> child jump: the tail is
