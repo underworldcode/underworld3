@@ -708,7 +708,9 @@ class SNES_Darcy(SNES_Scalar):
         Parameters
         ----------
         zero_init_guess : bool, optional
-            If True (default), start from zero initial guess.
+            Cold or warm start. The default (``None``) auto-detects from
+            :attr:`has_solution`; ``True`` forces a fresh start, ``False`` insists
+            on warming from the current field values.
             If False, use current field values as initial guess.
         timestep : float, optional
             Timestep value for inertial terms (if applicable).
@@ -952,7 +954,9 @@ class SNES_TransientDarcy(SNES_Darcy):
         Parameters
         ----------
         zero_init_guess : bool, optional
-            Start from zero initial guess (default True).
+            Cold or warm start. The default (``None``) auto-detects from
+            :attr:`has_solution`; ``True`` forces a fresh start, ``False`` insists
+            on warming from the current field values.
         timestep : float, optional
             Timestep size. Updates ``self.delta_t`` if provided.
         _force_setup : bool, optional
@@ -1476,11 +1480,29 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         """
 
         if homotopy:
-            # Each δ-step re-enters this method with homotopy=False. A VEP model's
-            # solves need the timestep, so forward it to every inner solve.
+            # Each δ-step re-enters this method with homotopy=False, so per-solve
+            # arguments are forwarded to EVERY step of the march rather than dropped.
             inner = {}
-            if timestep is not None:
-                inner["timestep"] = timestep
+            for name, value in (("timestep", timestep), ("evalf", evalf),
+                                ("order", order), ("debug", debug),
+                                ("debug_name", debug_name),
+                                ("divergence_retries", divergence_retries)):
+                if value:
+                    inner[name] = value
+            # The march owns these: it sets the cold/warm decision per step (Layer 1)
+            # and its own per-step iteration budget, so accepting a contradicting
+            # value silently would be worse than saying so.
+            if zero_init_guess is not None:
+                raise ValueError(
+                    "solve(homotopy=True) chooses cold-vs-warm for each step of the "
+                    "march itself; do not also pass zero_init_guess."
+                )
+            if picard:
+                raise ValueError(
+                    "solve(homotopy=True) manages its own warm-up; do not also pass "
+                    "picard. Use homotopy_options={'entry_maxit': ...} to size the "
+                    "first solve."
+                )
             return self._solve_yield_homotopy(
                 homotopy_options, verbose=verbose, solve_kwargs=inner
             )

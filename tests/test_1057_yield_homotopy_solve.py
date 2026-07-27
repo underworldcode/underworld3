@@ -231,6 +231,15 @@ def test_homotopy_restores_the_solver_tangent():
     )
 
 
+@pytest.mark.parametrize("kwargs", [dict(zero_init_guess=True), dict(picard=2)])
+def test_homotopy_rejects_arguments_it_would_have_to_ignore(kwargs):
+    """The march decides cold-vs-warm and its own warm-up per step, so an argument
+    that contradicts it is refused rather than silently dropped (review, m7)."""
+    _, stokes = _viscoplastic_stokes(cellSize=0.5)
+    with pytest.raises(ValueError):
+        stokes.solve(homotopy=True, **kwargs)
+
+
 def test_homotopy_refuses_a_stress_history_solver():
     """A march is several solves; on a VEP solver each one would advance the elastic
     stress history by a full timestep (adversarial review, C3). Refuse loudly rather
