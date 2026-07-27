@@ -183,6 +183,14 @@ Rules that come with it:
 3. Prefer `snes_type=ksponly` for the isoviscous solves; the huge RHS makes `newtonls`
    thrash worse.
 4. Driver switch: `fs_convection.py -uw_full 1`.
+5. **`FreeSurface(background_buoyancy="analytic")` is REQUIRED with full density**
+   (98961147): the recovered reaction contains the self-load +h_current and the
+   reduced-form negation otherwise flips it -> h_inf = -h + drive/rho_g (parks at HALF
+   equilibrium; -1 eigenvalue = period-2 ringing; steady flow THROUGH the stationary
+   surface). "analytic" subtracts the geometric height - no extra solve. The CBF
+   recovery itself is exact (probe lesson: select boundary DOFs by LABEL, never a
+   radius mask, on a deformed mesh). `background_buoyancy=<expr>` = exact two-reaction
+   reference mode.
 
 Related transport fact (same campaign): the serial T-blow-up on deforming FS meshes was
 the **old-frame SL reach-back** amplifying per loop cycle (issue #423; smaller dt makes
