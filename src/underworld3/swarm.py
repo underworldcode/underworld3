@@ -1140,9 +1140,15 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         return
 
     # Maybe rbf_interpolate for this one and meshVar is a special case
-    def _rbf_to_meshVar(self, meshVar, nnn=None, verbose=False):
+    def _rbf_to_meshVar(self, meshVar, nnn=None, verbose=False, order=1,
+                        monotone=False):
         """
-        Here is how it works: for each particle, create a distance-weighted average on the node data
+        Refresh a proxy mesh variable from the particles.
+
+        Each proxy node gathers from its ``nnn`` nearest particles. The
+        default weights reproduce linear fields exactly (``order=1``), so a
+        field with a uniform gradient transfers without smearing; ``nnn`` and
+        ``order`` are resolved in :meth:`rbf_interpolate`.
 
         Todo: caching the k-d trees etc for the proxy-mesh-variable nodal points
         Todo: some form of global fall-back for when there are no particles on a processor
@@ -1150,9 +1156,6 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         # Mapping to the coordinates of the variable from the
         # particle coords
-
-        if nnn is None:
-            nnn = self.swarm.mesh.dim + 1
 
         if meshVar.mesh != self.swarm.mesh:
             # If this is our own proxy variable and mesh has changed, recreate it
@@ -1163,6 +1166,11 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             else:
                 raise RuntimeError("Cannot map a swarm to a different mesh")
 
+        # TODO(BUG): issue #426 — MeshVariable.coords is dimensionalised when
+        # the model has reference quantities active, but the swarm kd-tree is
+        # built from non-dimensional particle coordinates, so this raises from
+        # ckdtree._convert_coords_to_tree_units. Should be `coords_nd`.
+        # Same defect at _update_proxy_variables (IndexSwarmVariable).
         new_coords = meshVar.coords
 
         # Starved-rank guard (SWARM-07): with <= 1 local particles there is
@@ -1190,7 +1198,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 )
             Values = current_values
         else:
-            Values = self.rbf_interpolate(new_coords, verbose=verbose, nnn=nnn)
+            Values = self.rbf_interpolate(
+                new_coords, verbose=verbose, nnn=nnn, order=order, monotone=monotone
+            )
 
         meshVar.data[...] = Values[...]
 
@@ -1479,12 +1489,16 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         display(self.data),
         return
 
-    def rbf_interpolate(self, new_coords, verbose=False, nnn=None):
+    def rbf_interpolate(self, new_coords, verbose=False, nnn=None, order=1,
+                        monotone=False):
         """
         Radial basis function interpolation of particle data to arbitrary points.
 
-        Uses inverse-distance weighting to interpolate particle values
-        to new coordinate locations.
+        By default this reproduces constant *and linear* fields exactly
+        (``order=1``): a polyharmonic kernel with an affine tail over the
+        ``nnn`` nearest particles. Inverse-distance weighting (``order=0``)
+        reproduces only constants, so any field with a gradient is smeared by
+        an error that does not vanish as the particles crowd together.
 
         Parameters
         ----------
@@ -1493,7 +1507,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         verbose : bool, default=False
             Print diagnostic information during interpolation.
         nnn : int, optional
-            Number of nearest neighbors to use. Defaults to ``mesh.dim + 1``.
+            Number of nearest neighbours to use. Defaults to
+            ``2 * (mesh.dim + 1)`` — comfortably above the ``dim + 2`` that the
+            affine tail needs, so that near-degenerate particle neighbourhoods
+            do not have to fall back.
+        order : int, default=1
+            Polynomial reproduction order: 1 (constants and linears exact) or
+            0 (constants only, inverse distance). Drops to 0 automatically on a
+            rank holding too few particles to determine the affine tail.
+        monotone : bool or str, default=False
+            Bound each value to the min/max of its own particle stencil. Note
+            this discards linear exactness wherever the target sits outside the
+            convex hull of its neighbours.
 
         Returns
         -------
@@ -1528,15 +1553,23 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             return np.zeros((new_coords.shape[0], data_size[1]))
 
         if nnn is None:
-            nnn = self.swarm.mesh.dim + 1
+            nnn = 2 * (self.swarm.mesh.dim + 1)
 
         if nnn > data_size[0]:
             nnn = data_size[0]
 
+        # A rank holding fewer particles than the affine tail needs cannot
+        # support a linear fit at all. Inverse distance still gives a sensible
+        # answer there, so degrade rather than fail the whole refresh.
+        if order == 1 and nnn < self.swarm.mesh.dim + 2:
+            order = 0
+
         # Use direct PETSc access to avoid callback circular dependency
         D = raw_data.copy()
         kdt = self.swarm._get_kdtree()
-        values = kdt.rbf_interpolator_local(new_coords, D, nnn, 2, verbose)
+        values = kdt.rbf_interpolator_local(
+            new_coords, D, nnn, 2, verbose, order=order, monotone=monotone
+        )
 
         return values
 

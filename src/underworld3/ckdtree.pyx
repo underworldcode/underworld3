@@ -34,6 +34,28 @@ def total_constructed():
     return _total_constructed
 
 
+def _normalise_monotone(monotone):
+    """Resolve the ``monotone`` argument to a bool, using UW3's one vocabulary.
+
+    The canonical spelling lives with the evaluator
+    (``function.functions_unit_system._normalize_monotone``) and is reused here
+    so there is a single definition of what the word accepts. Only the
+    ``"clamp"`` mode has meaning for a local stencil: ``"pick"`` re-evaluates
+    out-of-bounds points through the FE path, which a kd-tree knows nothing
+    about.
+    """
+    from underworld3.function.functions_unit_system import _normalize_monotone
+
+    mode = _normalize_monotone(monotone)
+    if mode == "pick":
+        raise ValueError(
+            "monotone='pick' has no meaning for a local kd-tree stencil — it "
+            "re-evaluates out-of-bounds points through the finite-element path. "
+            "Use monotone='clamp' here, or uw.function.evaluate(..., monotone='pick')."
+        )
+    return mode == "clamp"
+
+
 cdef class KDTree:
     """
     Unit-aware KD-Tree for spatial indexing and queries.
@@ -408,14 +430,29 @@ cdef class KDTree:
             nnn = 4,
             p=2,
             verbose = False,
+            order = 0,
+            monotone = False,
         ):
         """
-        Interpolate data to target coordinates using inverse distance weighting.
+        Interpolate data from the KD-tree points to arbitrary target coordinates.
 
-        This is a convenience wrapper around :meth:`rbf_interpolator_local_from_kdtree`.
-        It performs radial basis function (RBF) interpolation using inverse distance
-        weighting to map known data values from the KD-tree points to arbitrary
-        target coordinates.
+        Two local schemes are available, selected by ``order`` — the highest
+        degree of polynomial the weights reproduce exactly:
+
+        ``order=0`` (default)
+            Inverse-distance (Shepard) weighting. Weights are positive and sum
+            to one, so a **constant** field is reproduced exactly and the result
+            is a convex combination of the neighbouring values — bounded, but a
+            field with a gradient is smeared and the error does not vanish as
+            the stencil tightens.
+
+        ``order=1``
+            Polyharmonic RBF with an affine tail, so **constant and linear**
+            fields are reproduced exactly (:math:`\\sum_j w_j = 1` and
+            :math:`\\sum_j w_j x_j = x^*`). Weights may be negative, so the
+            result can overshoot the neighbouring values; see ``monotone``.
+
+        Both are local: ``nnn`` non-zero weights per target point.
 
         Parameters
         ----------
@@ -428,10 +465,20 @@ cdef class KDTree:
         nnn : int, optional
             Number of nearest neighbours to use for interpolation (default 4).
             If 1, returns raw nearest-neighbour values without distance weighting.
+            ``order=1`` requires ``nnn >= dim + 2``.
         p : int, optional
-            Power index for distance weighting: ``weight = 1/distance^p`` (default 2).
+            Power index for distance weighting: ``weight = 1/distance^p``
+            (default 2). Used by ``order=0`` only.
         verbose : bool, optional
             Print progress messages (default False).
+        order : int, optional
+            Polynomial reproduction order, 0 (default) or 1.
+        monotone : bool or str, optional
+            Bound each interpolated value to the min/max of its own stencil's
+            source values. ``False`` (default) or ``True`` / ``"clamp"``.
+            Restores boundedness at ``order=1``, but note that clamping
+            necessarily discards linear exactness wherever the target lies
+            outside the convex hull of its neighbours (boundary points).
 
         Returns
         -------
@@ -444,7 +491,7 @@ cdef class KDTree:
         query : Find nearest neighbours without interpolation.
         """
         return self.rbf_interpolator_local_from_kdtree(
-            coords, data, nnn, p, verbose,
+            coords, data, nnn, p, verbose, order, monotone,
         )
 
     def old_rbf_interpolator_local_from_kdtree(self,
@@ -576,9 +623,10 @@ cdef class KDTree:
         return Values
 
 
-    def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose):
+    def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose,
+                                           order=0, monotone=False):
         """
-        Performs an inverse distance (squared) mapping of data to the target `coords`.
+        Map data held on the KD-tree points onto the target `coords`.
 
         This method is unit-aware: if the KD-tree was built with unit-aware coordinates,
         it will automatically convert query coordinates to match before interpolation.
@@ -596,15 +644,29 @@ cdef class KDTree:
         nnn : int
             The number of neighbour points to sample from. If `1`, no distance averaging is done.
         p : int
-            The power index to calculate weights, i.e., pow(distance, -p)
+            The power index to calculate weights, i.e., pow(distance, -p).
+            Used by ``order=0`` only.
         verbose : bool
             Print when mapping occurs
+        order : int, optional
+            Polynomial reproduction order: 0 for inverse-distance (constants
+            exact), 1 for polyharmonic + affine tail (constants and linears
+            exact). See :meth:`rbf_interpolator_local`.
+        monotone : bool or str, optional
+            ``False``, ``True`` or ``"clamp"`` — bound each result to the
+            min/max of its own stencil's source values.
 
         Returns
         -------
         ndarray
             Interpolated data values at target coordinates
         """
+        if order not in (0, 1):
+            raise ValueError(
+                f"order must be 0 (inverse distance) or 1 (linear-exact), got {order!r}."
+            )
+        monotone_clamp = _normalise_monotone(monotone)
+
         # Convert coordinates to match tree's coordinate system
         coords_converted = self._convert_coords_to_tree_units(coords)
 
@@ -638,18 +700,57 @@ cdef class KDTree:
 
         if nnn == 1:
             # only use nearest neighbour raw data
+            if order == 1:
+                raise ValueError(
+                    "order=1 needs at least dim + 2 neighbours to determine the "
+                    f"affine tail; nnn=1 selects the raw nearest-neighbour path."
+                )
             return data[closest_n]
 
         # can decompose weighting vecotrs as IDW is a linear relationship
         # build normalise weight vectors and multiply that with known data
+        # TODO(BUG): issue #427 — `distance_n` holds SQUARED distances (query
+        # defaults to sqr_dists=True), so the decay is r^(-2p), not the
+        # documented r^(-p), and `epsilon` floors r at ~1e-6 rather than 1e-12.
         epsilon = 1e-12
         weights = 1 / np.power(epsilon + distance_n[:], p)
         n_weights = (weights.T / np.sum(weights, axis=1)).T
         kdata = data[closest_n[:]]
 
+        if order == 1:
+            from underworld3.utilities.rbf_stencil import linear_exact_weights
+
+            stencil_coords = np.asarray(self.points)[closest_n[:]]
+            linear_weights, degenerate = linear_exact_weights(
+                coords_converted, stencil_coords
+            )
+            # A stencil that cannot support an affine fit (collinear in 2D,
+            # coplanar in 3D) keeps the inverse-distance weights: less accurate
+            # there, but finite and bounded. Report it once — a silent
+            # geometric fallback is the failure mode of issue #424.
+            linear_weights[degenerate] = n_weights[degenerate]
+            n_weights = linear_weights
+
+            n_degenerate = int(degenerate.sum())
+            if n_degenerate:
+                import warnings
+
+                warnings.warn(
+                    f"rbf_interpolator_local(order=1): {n_degenerate} of "
+                    f"{degenerate.size} stencils could not support an affine fit "
+                    "(collinear/coplanar neighbours) and fell back to inverse-"
+                    "distance weighting. Increasing nnn usually removes them.",
+                    stacklevel=2,
+                )
+
         # magic with einstein summation power
         vals = np.einsum("sdc,sd->sc", kdata, n_weights)
         # print(valz)
+
+        if monotone_clamp:
+            # Bound to the stencil's own range. This is what restores the
+            # convex-combination property that order=1 gives up.
+            vals = np.clip(vals, kdata.min(axis=1), kdata.max(axis=1))
 
         if verbose and uw.mpi.rank == 0:
             print(f"Mapping values  ... finished", flush=True)
