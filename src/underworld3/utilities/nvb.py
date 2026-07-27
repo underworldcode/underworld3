@@ -168,37 +168,40 @@ def _fs(a, b):
     return (a, b) if a < b else (b, a)
 
 
-def nested_prolongation_from_dms(coarse_dm, fine_dm, tol=1.0e-10):
+def nested_prolongation_from_dms(coarse_dm, fine_dm):
     """Recover a refinement pass's exact P1 prolongation from the two DMs.
 
-    For engines that do not expose their parent/child map (the native
-    ``DMPlexTransform`` path), the relation can still be recovered exactly
-    **while the coordinates are pristine** — after refinement but BEFORE any
-    boundary snap or relaxation moves a midpoint off its parent edge.
+    Every fine vertex of a bisection pass is an **inherited** coarse vertex or
+    the **exact average of two already-known vertices**. Both are identified by
+    EXACT equality — the midpoints are the same float arithmetic on both sides,
+    so no search, no tolerance and no spatial index are involved. This is
+    identification, not geometric mapping.
 
-    One ``refine`` pass is not necessarily one bisection *level*: the
-    conforming closure cascades, so a vertex can be the midpoint of an
-    already-split half-edge and therefore sit at the quarter point of the
-    original coarse edge. Resolution is iterative:
+    One ``refine`` pass is not necessarily one bisection *level*: the conforming
+    closure cascades, so a vertex can be the midpoint of an already-split
+    half-edge and therefore sit at the quarter point of the original coarse
+    edge. Resolution is iterative:
 
-    1. a fine vertex coincident with a coarse vertex is inherited (weight 1);
-       one coincident with a coarse edge midpoint gets 1/2, 1/2;
-    2. any still-unresolved vertex that is the midpoint of two ALREADY-RESOLVED
+    1. a fine vertex equal to a coarse vertex is inherited (weight 1); one equal
+       to a coarse edge midpoint gets 1/2, 1/2;
+    2. any still-unresolved vertex equal to the average of two ALREADY-RESOLVED
        fine neighbours takes the average of their weights;
     3. repeat until nothing new resolves.
 
     Weights compose exactly, so the result is the true FE embedding at any
-    cascade depth. Returns ``(rows, cols, vals)`` as in
-    :func:`nested_prolongation`, or ``None`` if any vertex remains unresolved
-    — in which case the caller should fall back to the geometric builder
-    rather than guess.
-    """
-    from scipy.spatial import cKDTree
+    cascade depth. Returns ``(rows, cols, vals)``, or ``None`` if any vertex
+    remains unresolved — the caller should then fall back rather than guess.
 
+    NB this reads coordinates only to *identify* points, so it must be called
+    while they are still pristine (before any snap or relaxation). The
+    dependency-free endpoint is to take the relation straight from the
+    refinement transform instead; see #425.
+    """
     cvS, cvE = coarse_dm.getDepthStratum(0)
     ceS, ceE = coarse_dm.getDepthStratum(1)
     cdim = coarse_dm.getCoordinateDim()
-    cxyz = coarse_dm.getCoordinatesLocal().array.reshape(-1, cdim)
+    cxyz = np.ascontiguousarray(
+        coarse_dm.getCoordinatesLocal().array.reshape(-1, cdim))
 
     edges = [(c[0] - cvS, c[1] - cvS)
              for e in range(ceS, ceE)
@@ -210,29 +213,31 @@ def nested_prolongation_from_dms(coarse_dm, fine_dm, tol=1.0e-10):
 
     fvS, fvE = fine_dm.getDepthStratum(0)
     feS, feE = fine_dm.getDepthStratum(1)
-    fxyz = fine_dm.getCoordinatesLocal().array.reshape(-1, cdim)
+    fxyz = np.ascontiguousarray(
+        fine_dm.getCoordinatesLocal().array.reshape(-1, cdim))
     n_f = fvE - fvS
     if fxyz.shape[0] != n_f:
         return None
-    scale = float(np.abs(cxyz).max()) or 1.0
-    atol = tol * scale
 
-    # --- round 1: coarse vertices and coarse edge midpoints ---------------
-    targets = np.vstack([cxyz, 0.5 * (cxyz[edges[:, 0]] + cxyz[edges[:, 1]])])
-    dist, idx = cKDTree(targets).query(fxyz)
-    nc = cxyz.shape[0]
+    # --- round 1: exact lookup against coarse vertices and edge midpoints ---
+    known = {row.tobytes(): ("v", i) for i, row in enumerate(cxyz)}
+    mids = np.ascontiguousarray(0.5 * (cxyz[edges[:, 0]] + cxyz[edges[:, 1]]))
+    for i, row in enumerate(mids):
+        known.setdefault(row.tobytes(), ("e", i))
+
     weights = [None] * n_f
-    for r in range(n_f):
-        if dist[r] > atol:
+    for r, row in enumerate(fxyz):
+        hit = known.get(row.tobytes())
+        if hit is None:
             continue
-        t = int(idx[r])
-        if t < nc:
-            weights[r] = {t: 1.0}
+        kind, i = hit
+        if kind == "v":
+            weights[r] = {int(i): 1.0}
         else:
-            a, b = edges[t - nc]
+            a, b = edges[i]
             weights[r] = {int(a): 0.5, int(b): 0.5}
 
-    # --- rounds 2+: midpoints of already-resolved fine neighbours ---------
+    # --- rounds 2+: averages of already-resolved fine neighbours ------------
     unresolved = [r for r in range(n_f) if weights[r] is None]
     if unresolved:
         nbr = [[] for _ in range(n_f)]
@@ -243,29 +248,30 @@ def nested_prolongation_from_dms(coarse_dm, fine_dm, tol=1.0e-10):
                 nbr[u].append(v)
                 nbr[v].append(u)
         while unresolved:
-            progressed = False
             still = []
             for r in unresolved:
-                done = False
+                target = fxyz[r].tobytes()
                 cand = [q for q in nbr[r] if weights[q] is not None]
+                found = None
                 for i in range(len(cand)):
                     for j in range(i + 1, len(cand)):
                         p, q = cand[i], cand[j]
-                        if np.linalg.norm(
-                                fxyz[r] - 0.5 * (fxyz[p] + fxyz[q])) <= atol:
-                            w = {}
-                            for src in (p, q):
-                                for pt, ww in weights[src].items():
-                                    w[pt] = w.get(pt, 0.0) + 0.5 * ww
-                            weights[r] = w
-                            progressed = done = True
+                        avg = np.ascontiguousarray(0.5 * (fxyz[p] + fxyz[q]))
+                        if avg.tobytes() == target:
+                            found = (p, q)
                             break
-                    if done:
+                    if found:
                         break
-                if not done:
+                if found is None:
                     still.append(r)
-            if not progressed:
-                return None              # cannot be explained by bisection
+                    continue
+                w = {}
+                for src in found:
+                    for pt, ww in weights[src].items():
+                        w[pt] = w.get(pt, 0.0) + 0.5 * ww
+                weights[r] = w
+            if len(still) == len(unresolved):
+                return None          # cannot be explained by bisection
             unresolved = still
 
     rows, cols, vals = [], [], []

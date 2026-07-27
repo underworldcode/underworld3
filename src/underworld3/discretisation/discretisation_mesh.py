@@ -7181,7 +7181,6 @@ class Mesh(Stateful, uw_object):
             vertices. The match is exact because it is taken before
             anything moves.
             """
-            from scipy.spatial import cKDTree
             _dmg = engine_obj.to_dm(boundaries=carry, regions=rcarry,
                                     comm=self.dm.comm)
             _mg = Mesh(_dmg, simplex=self.dm.isSimplex(),
@@ -7190,10 +7189,17 @@ class Mesh(Stateful, uw_object):
                        qdegree=self.qdegree, boundaries=self.boundaries,
                        verbose=False)
             _cd = _mg.cdim
-            _pre = _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd).copy()
-            _src = numpy.asarray([numpy.asarray(c, dtype=float)
-                                  for c in engine_obj.coords])
-            _idx = cKDTree(_src).query(_pre, k=1)[1]
+            _pre = numpy.ascontiguousarray(
+                _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd))
+            _src = numpy.ascontiguousarray(
+                numpy.asarray([numpy.asarray(c, dtype=float)
+                               for c in engine_obj.coords]))
+            # EXACT identification: the DM was built from these very
+            # coordinates, so byte equality is the correct test. No spatial
+            # index, no tolerance, no nearest-neighbour guess.
+            _key = {row.tobytes(): i for i, row in enumerate(_src)}
+            _idx = numpy.asarray([_key[row.tobytes()] for row in _pre],
+                                 dtype=numpy.int64)
             _mg.relax(_relax_metric, **(relax_kwargs or {}))
             _post = _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd)
             for _k, _i in enumerate(_idx):
