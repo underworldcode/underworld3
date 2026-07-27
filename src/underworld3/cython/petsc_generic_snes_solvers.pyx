@@ -847,6 +847,26 @@ class SolverBaseClass(uw_object):
         """
         return self._has_solution
 
+    def _solution_is_trivially_zero(self):
+        """True when the solution field is still identically zero.
+
+        The design's *secondary* cold signal: a solver may be told to warm-start
+        (``zero_init_guess=False``) while its solution variable has never been
+        written, which is a cold start in everything but name. It matters because a
+        viscoplastic tangent is undefined there — the plastic viscosity is
+        :math:`\\tau_y / (2\\dot\\varepsilon_{II})`, so at :math:`v = 0` the
+        *residual* is finite (the soft-min carries the infinite plastic branch to
+        the viscous one) but its derivative is not, and assembling the consistent
+        tangent produces NaN.
+
+        Uses the PETSc vector norm, which is collective and therefore rank-uniform,
+        so every rank reaches the same decision.
+        """
+        u = getattr(self, "u", None)
+        if u is None:
+            return False
+        return float(u.vec.norm()) == 0.0
+
     def _resolve_zero_init_guess(self, zero_init_guess):
         """Resolve the tri-state ``zero_init_guess`` argument of ``solve()``.
 
@@ -8716,14 +8736,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # Automatic cold-start warm-up (Layer 1): a single Picard (frozen-
         # coefficient) step moves a cold guess into the Newton basin — it is
-        # defect-correction iteration 1, contractive and cheap. Taken only on a
-        # genuine cold start (zero_init_guess) under the consistent-Newton
-        # tangent, which is the opt-in nonlinear-yield regime that needs it; the
-        # default (frozen) tangent path is left bit-identical. Skipped when the
-        # caller set an explicit Picard count, and under the "continuation"
-        # tangent (which already warm-starts internally). See
+        # defect-correction iteration 1, contractive and cheap. The default
+        # (frozen) tangent path is left bit-identical, and an explicit Picard count
+        # is honoured as given.
+        #
+        # This is a DESIGN REQUIREMENT, not an optimisation: under the consistent
+        # tangent a viscoplastic Jacobian is NaN at zero strain rate (the residual
+        # survives, its derivative does not), so the machinery has to make that
+        # state unreachable. Both routes to it are covered — an explicit cold start,
+        # and a nominally warm one whose solution has never been written. The
+        # "continuation" tangent needs no help: it opens on a Picard stage
+        # (alpha = 0) by construction. See
         # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
-        if picard == 0 and zero_init_guess and self.consistent_jacobian is True:
+        if (picard == 0 and self.consistent_jacobian is True
+                and (zero_init_guess or self._solution_is_trivially_zero())):
             picard = 1
 
         if verbose and uw.mpi.rank == 0:

@@ -136,6 +136,28 @@ def test_cold_viscoplastic_solve_survives_zero_strain_rate(mode, smoother):
     )
 
 
+@pytest.mark.parametrize("zero_init_guess", [True, False])
+def test_consistent_newton_never_assembles_at_zero_strain_rate(zero_init_guess):
+    """A viscoplastic Jacobian is NaN at zero strain rate, so the warm/cold machinery
+    must make that state unreachable — including when the caller asks for a WARM start
+    on a solution that has never been written (adversarial review, M9).
+
+    The residual survives v=0 (the soft-min carries the infinite plastic branch to the
+    viscous one); the tangent does not. Only the interposed Picard step keeps the
+    consistent-Newton path off it.
+    """
+    _, stokes = _viscoplastic_stokes(cellSize=0.5)
+    stokes.consistent_jacobian = True
+    assert stokes._solution_is_trivially_zero() is True   # never solved
+
+    stokes.solve(zero_init_guess=zero_init_guess)
+    reason = int(stokes.snes.getConvergedReason())
+    assert reason > 0, (
+        f"consistent-Newton solve from an all-zero field failed with reason={reason} "
+        f"(-4 is FNORM_NAN) for zero_init_guess={zero_init_guess}"
+    )
+
+
 def test_yield_stress_is_floored_at_zero_by_default():
     """The yield stress is compared against the second invariant of the stress, so a
     negative tau_y is meaningless. `yield_stress_min` therefore defaults to 0 and the
