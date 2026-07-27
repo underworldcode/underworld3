@@ -16,7 +16,6 @@ MUMPS LU is opt-in via ``solver._rotated_use_lu``.
 """
 import numpy as np
 import sympy
-from mpi4py import MPI
 from petsc4py import PETSc
 
 # Rank-safe printing only (mpi.pprint). Safe at module top: underworld3.mpi is a
@@ -372,16 +371,24 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
 
     datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
     Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
-    # COLLECTIVE datum-activity flag: datum_map is RANK-LOCAL (only owners of
-    # datum boundary nodes hold entries), so branching on it directly desyncs the
-    # ranks' collective sequences (the two zeroRowsColumns variants below scatter
-    # differently) — the np>1 deadlock class. One reduction decides for everyone.
-    datum_active = dm.comm.tompi4py().allreduce(len(datum_map), MPI.SUM) > 0
 
     # rotate: Â = Q A Qᵀ, b̂ = Q b
     Ahat = Aorig.ptap(Qt)
     bhat = b.duplicate()
     Q.mult(b, bhat)
+
+    # x̂ carries the prescribed rotated-frame datum (sgn·ũ_n at the constrained
+    # rows) and does DOUBLE DUTY: its collective norm is the rank-consistent
+    # datum-activity flag. datum_map itself is RANK-LOCAL (only owners of datum
+    # boundary nodes hold entries), so branching on it per-rank desyncs the ranks'
+    # collective sequences (the two zeroRowsColumns variants below scatter
+    # differently) — the np>1 deadlock class. The reduction rides a PETSc Vec norm
+    # rather than a bare MPI call; a true surface submesh would make the datum a
+    # boundary field and this flag a field norm (the 1D-manifold gap, #202 lineage).
+    xhat = bhat.duplicate()
+    xhat.zeroEntries()
+    _set_rows_local(xhat, datum_map)
+    datum_active = xhat.norm() > 0.0
 
     # constrain rotated normal rows (v_n = datum, datum=0 for pure free-slip): zero the
     # matrix rows/cols and set the RHS at those rows to the datum. The constraint
@@ -395,21 +402,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         # zeroRowsColumns(rows, diag, x, b) sets b[rows]=diag·x[rows] AND subtracts the
         # eliminated columns' contribution A[:,cols]·x from the other rows. x=0
         # reproduces the pure free-slip RHS exactly, so datum=0 is bit-identical.
-        xhat = bhat.duplicate()
-        xhat.zeroEntries()
-        rs, re = xhat.getOwnershipRange()
-        xa = xhat.getArray()
-        for g, val in datum_map.items():
-            if rs <= g < re:
-                xa[g - rs] = val
-        xhat.setArray(xa)
         Ahat.zeroRowsColumns(normal_rows, diag=diag, x=xhat, b=bhat)
-        xhat.destroy()
     else:
         # zeroRowsColumns takes GLOBAL row indices; the RHS write goes through
         # _zero_rows_local (ownership-relative indexing — the np>1 crash class).
         Ahat.zeroRowsColumns(normal_rows, diag=diag)
         _zero_rows_local(bhat, normal_rows)
+    xhat.destroy()
 
     # ITERATIVE by default (LU is almost never right): a self-contained fieldsplit-
     # Schur solve whose velocity block is geometric FMG on the custom prolongation
@@ -730,11 +729,20 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     # viscosity response instead; every later iterate is feasible and the
     # increments are homogeneous. A warm start is assumed smooth (the previous
     # converged state) and takes the exact affine snap directly.
-    # COLLECTIVE datum-activity flag (see the linear path): datum_map is rank-local,
-    # and the lift branch changes both the zeroRowsColumns variant and the
-    # line-search collectives — branching per-rank deadlocks at np>1.
-    datum_active = dm.comm.tompi4py().allreduce(len(datum_map), MPI.SUM) > 0
+    # x̂ (the prescribed rotated-frame datum as a composite vector) does double
+    # duty, as in the linear path: its collective PETSc norm is the rank-consistent
+    # datum-activity flag (datum_map is rank-local — per-rank branching on it
+    # desyncs the zeroRowsColumns variant and the line-search collectives, the
+    # np>1 deadlock class), and it is the ready-made lift vector for the
+    # cold-start first increment.
+    xhat = dm.createGlobalVec()
+    xhat.set(0.0)
+    _set_rows_local(xhat, datum_map)
+    datum_active = xhat.norm() > 0.0
     lift_datum = datum_active and zero_init_guess
+    if not lift_datum:
+        xhat.destroy()
+        xhat = None
     if zero_init_guess:
         u = dm.createGlobalVec()
         u.set(0.0)
@@ -813,11 +821,9 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
             # b̂[rows] = diag·x̂ and the eliminated columns' A[:,cols]·x̂ are
             # subtracted from the other rows (see the linear one-shot, which this
             # reproduces operation-for-operation at the rest-state tangent).
-            xhat = bhat.duplicate()
-            xhat.zeroEntries()
-            _set_rows_local(xhat, datum_map)
             Ahat.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
             xhat.destroy()
+            xhat = None
         else:
             Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
         dhat, last_reason, ctx = _solve_rotated_iterative(
@@ -879,6 +885,8 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
     if Ahat is not None:
         Ahat.destroy()                       # the reused rotated operator
+    if xhat is not None:
+        xhat.destroy()                       # unused lift vector (loop exited before it)
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
