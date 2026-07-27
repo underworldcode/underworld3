@@ -1056,6 +1056,10 @@ class SolverBaseClass(uw_object):
         self._resume_abs_target = None
 
         if self.snes is not None:
+            # Drop the instrumentation's references to this SNES's KSP hierarchy first,
+            # or destroy() only decrements and the old hierarchy stays resident.
+            if getattr(self, "_instrumentation", None) is not None:
+                self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
 
@@ -1231,7 +1235,10 @@ class SolverBaseClass(uw_object):
         wall_per_step : float
             Seconds of wall clock allowed per Newton step. The clock restarts at the
             beginning of every step, so a solve taking ``n`` steps may run for up to
-            roughly ``n * wall_per_step`` seconds.
+            roughly ``n * wall_per_step`` seconds. Once the deadline fires it stays
+            fired for the rest of that ``solve()`` call, so a Picard-to-Newton
+            continuation or a warm-start retry cannot quietly buy itself a fresh
+            budget.
 
         Notes
         -----
@@ -1810,6 +1817,12 @@ class SolverBaseClass(uw_object):
         if getattr(self, "snes", None) is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver SNES", flush=True)
+            # Instrumentation holds petsc4py references to this SNES's KSP and its
+            # fieldsplit blocks, which reference-count the PC and the whole multigrid
+            # hierarchy. Drop them BEFORE the destroy or the old hierarchy survives
+            # alongside the new one -- the leak BUGFIX(#157) above exists to prevent.
+            if getattr(self, "_instrumentation", None) is not None:
+                self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
 
@@ -8639,6 +8652,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             #    F(u), J(u) and the v_n=0 constraint every iteration. It honours
             #    zero_init_guess (warm start), the Picard warmup count, and the
             #    consistent_jacobian tangent (Picard / Newton / continuation).
+            # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
+            # Re-check here: this path never reaches the instrumentation, so an armed
+            # guard would be silently inert -- the exact state guard() exists to refuse.
+            if (getattr(self, "_instrumentation", None) is not None
+                    and self._instrumentation.armed):
+                raise NotImplementedError(
+                    "a wall-clock guard is armed but this solve takes the rotated "
+                    "free-slip path, which runs its own Krylov loop outside self.snes "
+                    "and cannot be bounded by it. Call unguard() first."
+                )
             from underworld3.utilities.rotated_bc import (
                 solve_rotated_freeslip, solve_rotated_freeslip_nonlinear)
             if not self._residual_is_nonlinear():

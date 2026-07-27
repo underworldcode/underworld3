@@ -34,6 +34,16 @@ solve absorbed 36 truncated velocity solves and still reported CONVERGED. Return
 ``DIVERGED_BREAKDOWN`` marks the sub-preconditioner failed, which surfaces at the outer
 KSP as ``DIVERGED_PC_FAILED`` and at the SNES as ``DIVERGED_LINEAR_SOLVE``.
 
+**The guard does not replace PETSc's convergence test, it runs in front of it.**
+``KSP.addConvergenceTest(..., prepend=True)`` composes with whatever native test the KSP
+is configured with, so returning ``ITERATING`` hands the decision straight back to
+``KSPConvergedDefault`` -- with its options-configured context intact
+(``-ksp_converged_maxits``, the non-zero-initial-guess residual convention, the
+norm-type early return, and the rest). Verified: a prepended test that always returns
+``ITERATING`` gives bit-identical iteration count and reason to an uninstrumented solve.
+A disarmed guard is therefore genuinely inert rather than approximately inert, which a
+hand-rolled reimplementation of the default test could never be.
+
 See ``docs/developer/design/solver-wall-clock-guard.md``.
 """
 
@@ -51,6 +61,12 @@ from petsc4py import PETSc
 # Marking the sub-preconditioner failed is the whole point -- see the module docstring.
 _DEADLINE_REASON = PETSc.KSP.ConvergedReason.DIVERGED_BREAKDOWN
 
+# KSP types whose behaviour changes when a monitor is attached (both are gated on
+# ksp->numbermonitors in PETSc): preonly.c computes norms it would otherwise skip, and
+# rich.c abandons the fused PCApplyRichardson path. Neither iterates, so there is
+# nothing here for the gauge to count or the guard to bound.
+_MONITOR_SENSITIVE_KSPS = ("preonly", "richardson")
+
 
 @dataclass(frozen=True)
 class SubSolveReport:
@@ -59,8 +75,10 @@ class SubSolveReport:
     Attributes
     ----------
     name
-        Block name taken from the sub-KSP's options prefix -- ``"velocity"`` or
-        ``"pressure"`` for the Stokes saddle-point solver.
+        Block name taken from the sub-KSP's options prefix -- ``"velocity"`` and
+        ``"pressure"`` for the Stokes saddle-point solver. A solver that builds its
+        splits by DM field index instead (the block-constrained Stokes path) names them
+        ``"0"``, ``"1"``, ...; read the keys rather than assuming them.
     its
         Iterations summed over every application of this sub-solve. For the velocity
         block under ``pc_type=mg`` this is the multigrid cycle count, i.e. the honest
@@ -98,35 +116,12 @@ def _block_name(ksp):
     return tail.strip("_") or prefix.strip("_") or "sub"
 
 
-def _default_convergence(ksp, its, rnorm, state):
-    """Reproduce ``KSPConvergedDefault``'s verdict for this iteration.
-
-    A custom convergence test *replaces* the default -- petsc4py exposes no way to chain
-    to it -- so a guard has to carry the ordinary rtol / atol / divtol semantics itself,
-    or a healthy KSP would never converge. Tolerances are read fresh each iteration
-    because Eisenstat--Walker rewrites the outer rtol before every Newton step.
-    """
-    R = PETSc.KSP.ConvergedReason
-    if its == 0:
-        state["r0"] = rnorm if rnorm > 0.0 else 1.0
-    rtol, atol, divtol, _max_it = ksp.getTolerances()
-    if rnorm != rnorm:                                    # NaN
-        return R.DIVERGED_NANORINF
-    if rnorm <= atol:
-        return R.CONVERGED_ATOL
-    if rnorm <= rtol * state["r0"]:
-        return R.CONVERGED_RTOL
-    if rnorm >= divtol * state["r0"]:
-        return R.DIVERGED_DTOL
-    return R.ITERATING
-
-
 class _InstrumentedKSP:
     """One KSP the instrumentation is attached to, and everything it needs.
 
-    Holds the iteration counters (fed by a monitor, which cannot affect the solve) and,
-    when the guard is armed, the deadline-checking convergence test that replaces the
-    default one.
+    Holds the iteration counters (fed by a monitor, which cannot affect the solve) and
+    the deadline-checking convergence test, which runs *in front of* the KSP's native
+    test rather than replacing it.
     """
 
     def __init__(self, ksp, name, instrumentation, is_outer, mid_solve):
@@ -137,7 +132,7 @@ class _InstrumentedKSP:
         self.complete = not mid_solve
         self._instrumentation = instrumentation
         self.is_outer = is_outer
-        self._state = {"r0": 1.0}
+        self._test_installed = False
         ksp.setMonitor(self._monitor)
 
     def reset(self):
@@ -167,20 +162,31 @@ class _InstrumentedKSP:
 
     def _test(self, ksp, its, rnorm):
         if self.is_outer and its == 0:
-            # PETSc does not fix the order of the monitor and the convergence test, so
-            # whichever runs first at iteration 0 opens the step. Both are idempotent.
+            # PETSc does not fix the order of the monitor and the convergence test at
+            # iteration 0, so whichever runs first opens the step. The second call
+            # re-reads the clock and pushes the deadline out by the gap between them --
+            # microseconds against a multigrid cycle, and never in the unsafe direction.
             self._instrumentation.open_step()
             self._instrumentation.attach_sub_ksps(ksp, mid_solve=True)
         if self._instrumentation.deadline_passed():
             self._instrumentation.deadline_expired = True
             return _DEADLINE_REASON
-        return _default_convergence(ksp, its, rnorm, self._state)
+        # Hand the decision back to the KSP's own test, whatever it is configured to be.
+        return PETSc.KSP.ConvergedReason.ITERATING
 
     def install_test(self):
-        self.ksp.setConvergenceTest(self._test)
+        """Prepend the deadline test, once and for all.
 
-    def remove_test(self):
-        self.ksp.setConvergenceTest(None)                 # restores KSPConvergedDefault
+        PETSc allows exactly one ``addConvergenceTest`` per KSP and offers no way to
+        take it off again, so the test is installed on first arming and left in place;
+        ``disarm()`` makes it inert instead of removing it. That is a true restore
+        rather than an approximate one: with no budget set the test returns ``ITERATING``
+        immediately and the KSP's native test decides exactly as it would have.
+        """
+        if self._test_installed:
+            return
+        self.ksp.addConvergenceTest(self._test, prepend=True)
+        self._test_installed = True
 
 
 class SolverInstrumentation:
@@ -194,7 +200,7 @@ class SolverInstrumentation:
 
     def __init__(self):
         self.wall_per_step = None            # None => guard disarmed
-        self.deadline_expired = False
+        self.deadline_expired = False        # latched for the whole of one solve
         self._ksps: Dict[int, _InstrumentedKSP] = {}      # keyed by PETSc handle
         self._outer_handle = None
         self._expires = math.inf
@@ -222,8 +228,21 @@ class SolverInstrumentation:
     def disarm(self):
         self.wall_per_step = None
         self._expires = math.inf
-        for entry in self._ksps.values():
-            entry.remove_test()
+        # The prepended tests stay installed -- PETSc has no way to remove them -- but
+        # with no budget they return ITERATING and the native test decides, which is
+        # exactly the uninstrumented behaviour.
+
+    def release(self):
+        """Drop every PETSc reference, keeping the arming state.
+
+        petsc4py increments the reference count of a KSP handed out by ``getKSP`` or
+        ``getFieldSplitSubKSP``, so holding these entries keeps a destroyed solver's KSP,
+        PC and whole multigrid hierarchy alive. A solver that rebuilds in a loop would
+        then carry two hierarchies at once -- the leak BUGFIX(#157) was written to close.
+        Called from the solver when it tears its SNES down.
+        """
+        self._ksps.clear()
+        self._outer_handle = None
 
     # ------------------------------------------------------------ attachment
 
@@ -235,9 +254,15 @@ class SolverInstrumentation:
         a recreated SNES is picked up automatically.
         """
         self.deadline_expired = False
-        self._expires = math.inf
 
         outer = snes.getKSP()
+        if outer.getType() in _MONITOR_SENSITIVE_KSPS:
+            # These two change what they DO when a monitor is attached: KSPSolve_PREONLY
+            # adds a norm, a matvec and a second norm purely to have something to report,
+            # and KSPRICHARDSON gives up the fused PCApplyRichardson path. Neither has
+            # outer iterations to bound or to count, so instrumenting them would be all
+            # cost and no information.
+            return
         if self._outer_handle not in (None, outer.handle):
             # A rebuilt solver (remesh, adapt, new discretisation) carries a new SNES,
             # and everything attached to the old one went with it. Start over rather
@@ -248,6 +273,13 @@ class SolverInstrumentation:
         for entry in self._ksps.values():
             entry.reset()
         self._attach(outer, name="outer", is_outer=True, mid_solve=False)
+        # Start the clock HERE, not at the outer KSP's first iteration. Under left
+        # preconditioning -- PETSc's default for GMRES, which is the Stokes outer solver
+        # -- KSPInitialResidual applies the preconditioner BEFORE iteration 0, so a
+        # clock that only started at iteration 0 would leave one full velocity solve
+        # plus one pressure solve outside the budget on every single solve. Measured:
+        # the sub-block monitors fire before the outer monitor for pc_side LEFT.
+        self.open_step()
 
     def attach_sub_ksps(self, ksp, mid_solve):
         """Attach to the fieldsplit blocks of ``ksp``'s preconditioner.
@@ -276,11 +308,24 @@ class SolverInstrumentation:
     # ------------------------------------------------------------ the deadline
 
     def open_step(self):
-        """Start the clock for one Newton step."""
-        if self.armed:
-            self._expires = time.monotonic() + self.wall_per_step
-        else:
-            self._expires = math.inf
+        """Start the clock for one Newton step.
+
+        Once the deadline has fired it stays fired for the rest of the solve, so a
+        solve that runs the SNES more than once -- the Picard-to-Newton continuation, or
+        a warm-start retry after divergence -- cannot hand each attempt a fresh full
+        budget.
+
+        MEASURED: PETSc already prevents this on its own. After a deadline exit the
+        sub-preconditioner is marked failed, and the next ``snes.solve`` bails before it
+        reaches an iteration, so neither a retry nor a continuation stage re-armed even
+        with the latch removed (tick counts 32 against 34). The latch is kept because
+        that protection is an implicit consequence of PC-failure propagation rather than
+        a guarantee, and because it makes the intended semantics explicit -- but it is
+        belt-and-braces, and there is deliberately no test claiming to prove otherwise.
+        """
+        if not self.armed or self.deadline_expired:
+            return
+        self._expires = time.monotonic() + self.wall_per_step
 
     def deadline_passed(self):
         """Has the budget run out? The answer must be identical on every rank.
@@ -292,7 +337,9 @@ class SolverInstrumentation:
         against a multigrid cycle -- and every iteration already pays for at least one
         norm reduction, so it does not change the communication character of the solve.
         """
-        if self._expires == math.inf:
+        if self.deadline_expired:
+            return True            # latched, and latched identically on every rank
+        if not self.armed:
             return False
         local = 1 if time.monotonic() > self._expires else 0
         if self._comm is None or self._comm.size == 1:
