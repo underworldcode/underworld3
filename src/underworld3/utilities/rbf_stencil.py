@@ -137,9 +137,19 @@ def linear_exact_weights(target_coords, neighbour_coords):
     degenerate : numpy.ndarray
         Boolean, shape ``(n_targets,)``. True where the stencil could not
         support an affine fit — collinear neighbours in 2D, coplanar in 3D,
-        or a stencil that collapsed onto its target. **Rows flagged here are
-        returned as zeros**; the caller must substitute its own fallback
-        (Shepard weights over the same neighbours are the natural choice).
+        or a stencil that collapsed onto its target.
+
+    Warnings
+    --------
+    **Rows flagged ``degenerate`` are returned as ZEROS.** A caller that
+    ignores the mask gets a silent interpolation to zero, which is worse than
+    an inaccurate answer. This is a raw kernel: it has no kd-tree, so it can
+    neither widen the stencil nor fall back to inverse distance.
+
+    Prefer :meth:`underworld3.ckdtree.KDTree.interpolation_matrix` unless you
+    genuinely need the bare weights. It builds the same weights, then widens
+    degenerate stencils and falls back to inverse distance with a warning, so
+    its rows are never empty.
 
     Notes
     -----

@@ -433,7 +433,7 @@ cdef class KDTree:
     def rbf_interpolator_local(self,
             coords,
             data,
-            nnn = 4,
+            nnn = None,
             p=2,
             verbose = False,
             order = 0,
@@ -469,9 +469,11 @@ cdef class KDTree:
             Known data values at KD-tree points.
             Shape should be ``(n_points,)`` or ``(n_points, n_components)``.
         nnn : int, optional
-            Number of nearest neighbours to use for interpolation (default 4).
-            If 1, returns raw nearest-neighbour values without distance weighting.
-            ``order=1`` requires ``nnn >= dim + 2``.
+            Number of nearest neighbours to use. Defaults to 4 for ``order=0``
+            and ``2 * (dim + 1)`` for ``order=1`` — the default has to depend
+            on both, because ``order=1`` requires ``nnn >= dim + 2`` and a
+            fixed default of 4 would raise in 3D. If 1, returns raw
+            nearest-neighbour values without distance weighting.
         p : int, optional
             Power index for distance weighting: ``weight = 1/distance^p``
             (default 2). Used by ``order=0`` only.
@@ -632,8 +634,15 @@ cdef class KDTree:
         return Values
 
 
-    def _retry_degenerate_stencils(self, coords_converted, data, tree_points,
-                                   vals, degenerate, nnn):
+    def _resolve_nnn(self, nnn, order):
+        """Default stencil size. ``order=1`` needs at least ``dim + 2``, so a
+        fixed default cannot serve both schemes (it would raise in 3D)."""
+        if nnn is not None:
+            return nnn
+        return 2 * (self.ndim + 1) if order == 1 else 4
+
+    def _retry_degenerate_stencils(self, coords_converted, tree_points,
+                                   degenerate, nnn):
         """Re-solve the failed points on a wider stencil.
 
         A neighbourhood that cannot support an affine fit is usually a local
@@ -641,14 +650,15 @@ cdef class KDTree:
         Only the failed points are re-queried, so the cost is set by how many
         actually failed (measured: a handful in tens of thousands).
 
-        Returns the updated values and the mask of points that failed even on
-        the wider stencil, which keep their inverse-distance values.
+        Returns ``(rows, indices, weights, remaining)`` — the recovered rows and
+        their wider stencils, plus the mask of points that failed even after
+        widening and so keep their inverse-distance weights.
         """
         from underworld3.utilities.rbf_stencil import linear_exact_weights
 
         wide = min(4 * nnn, self.n)
         if wide <= nnn:
-            return vals, degenerate
+            return None, None, None, degenerate
 
         failed = np.flatnonzero(degenerate)
         targets = np.ascontiguousarray(coords_converted[failed], dtype=np.float64)
@@ -657,21 +667,197 @@ cdef class KDTree:
         # unit-aware `query` would reject it when the tree carries units.
         indices, _ = self.find_closest_n_points(wide, targets)
         if np.any(indices >= self.n):
-            return vals, degenerate
+            return None, None, None, degenerate
 
         weights, still_degenerate = linear_exact_weights(
             targets, tree_points[indices]
         )
 
-        recovered = ~still_degenerate
-        if recovered.any():
-            vals[failed[recovered]] = np.einsum(
-                "sdc,sd->sc", data[indices[recovered]], weights[recovered]
-            )
-
         remaining = degenerate.copy()
         remaining[failed] = still_degenerate
-        return vals, remaining
+
+        recovered = ~still_degenerate
+        if not recovered.any():
+            return None, None, None, remaining
+
+        return (failed[recovered], indices[recovered], weights[recovered],
+                remaining)
+
+    def _local_stencil(self, coords_converted, nnn, p, order):
+        """Neighbour indices and weights for every target point.
+
+        The single source of the interpolation weights: both
+        :meth:`rbf_interpolator_local` and :meth:`interpolation_matrix` are
+        built on this, so the operator and the values it produces cannot drift
+        apart.
+
+        Returns
+        -------
+        indices, weights : ndarray
+            Shape ``(n_targets, nnn)``. The primary stencil.
+        wide : tuple or None
+            ``(rows, indices, weights)`` for targets re-solved on a wider
+            stencil after their primary one proved degenerate. Their primary
+            row is superseded and must be discarded by the caller.
+        degenerate : ndarray
+            Bool, shape ``(n_targets,)``. Targets still degenerate after
+            widening; these carry inverse-distance weights, which are bounded
+            but not linear-exact.
+        """
+        # find_closest_n_points returns (indices, dist_sqr) -- the reverse of
+        # query()'s (dist, indices). It is used here rather than query()
+        # because coords_converted is already in tree units, and query() would
+        # convert a second time.
+        closest_n, distance_n = self.find_closest_n_points(
+            nnn, np.ascontiguousarray(coords_converted, dtype=np.float64)
+        )
+
+        # valid indices are 0..n-1; the empty-tree sentinel (0 with n=0)
+        # must trip this guard, so the comparison is >= (issue #399).
+        if np.any(closest_n >= self.n):
+            raise RuntimeError(
+                "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
+            )
+
+        # np.bool_, not bool: this module cimports the C++ `bool` from libcpp,
+        # which shadows the Python builtin and will not compile here.
+        degenerate = np.zeros(coords_converted.shape[0], dtype=np.bool_)
+
+        if nnn == 1:
+            return closest_n, np.ones(closest_n.shape), None, degenerate
+
+        # can decompose weighting vecotrs as IDW is a linear relationship
+        # build normalise weight vectors and multiply that with known data
+        # TODO(BUG): issue #427 — `distance_n` holds SQUARED distances, so the
+        # decay is r^(-2p), not the documented r^(-p), and `epsilon` floors r
+        # at ~1e-6 rather than 1e-12.
+        epsilon = 1e-12
+        weights = 1 / np.power(epsilon + distance_n[:], p)
+        n_weights = (weights.T / np.sum(weights, axis=1)).T
+
+        if order == 0:
+            return closest_n, n_weights, None, degenerate
+
+        from underworld3.utilities.rbf_stencil import linear_exact_weights
+
+        tree_points = np.asarray(self.points)
+        linear_weights, degenerate = linear_exact_weights(
+            coords_converted, tree_points[closest_n[:]]
+        )
+        # A stencil that cannot support an affine fit (collinear in 2D,
+        # coplanar in 3D) keeps the inverse-distance weights: finite and
+        # bounded, but not linear-exact.
+        linear_weights[degenerate] = n_weights[degenerate]
+
+        wide = None
+        if degenerate.any():
+            # Widen before surrendering. A single non-exact node sitting among
+            # exact ones is an isolated SPIKE, far more damaging to derivatives
+            # and integrals than a smooth error of the same size.
+            rows, wide_indices, wide_weights, degenerate = (
+                self._retry_degenerate_stencils(
+                    coords_converted, tree_points, degenerate, nnn
+                )
+            )
+            if rows is not None:
+                wide = (rows, wide_indices, wide_weights)
+
+        n_degenerate = int(degenerate.sum())
+        if n_degenerate:
+            import warnings
+
+            warnings.warn(
+                f"rbf_interpolator_local(order=1): {n_degenerate} of "
+                f"{degenerate.size} stencils could not support an affine fit "
+                "(collinear/coplanar neighbours) even after widening, and fell "
+                "back to inverse-distance weighting.",
+                stacklevel=3,
+            )
+
+        return closest_n, linear_weights, wide, degenerate
+
+    def interpolation_matrix(self, coords, nnn=None, p=2, order=0):
+        """Sparse operator mapping values on the KD-tree points to ``coords``.
+
+        ``T @ data`` is exactly what :meth:`rbf_interpolator_local` returns for
+        the same arguments — both are built from the same weights.
+
+        Use this instead of the value API when the same transfer is applied
+        more than once, or when the operator itself is the product (a multigrid
+        prolongation, for example). The weights depend only on geometry, so one
+        build serves every field and every component; the value API re-solves
+        each time.
+
+        Parameters
+        ----------
+        coords : array-like
+            Target coordinates, shape ``(n_coords, dim)``.
+        nnn : int, optional
+            Neighbours per target. Defaults to 4 for ``order=0`` and
+            ``2 * (dim + 1)`` for ``order=1``.
+        p : int, optional
+            Inverse-distance power; used by ``order=0`` only.
+        order : int, optional
+            Polynomial reproduction order, 0 or 1. See
+            :meth:`rbf_interpolator_local`.
+
+        Returns
+        -------
+        scipy.sparse.csr_matrix
+            Shape ``(n_coords, self.n)``. Rows carry ``nnn`` non-zeros, except
+            those re-solved on a wider stencil.
+
+        Notes
+        -----
+        Degenerate stencils are handled exactly as in the value path — widened,
+        then fall back to inverse-distance weights with a warning. Rows are
+        never empty.
+
+        **Row-wise construction gives no column guarantee.** Every row has
+        ``nnn`` non-zeros, but a source point that is not among the neighbours
+        of any target produces an empty column. Consumers that need full column
+        rank -- a Galerkin coarse operator :math:`P^{T} A P`, for instance --
+        must check for and repair empty columns themselves (see issue #424).
+        """
+        import scipy.sparse as sp
+
+        if order not in (0, 1):
+            raise ValueError(
+                f"order must be 0 (inverse distance) or 1 (linear-exact), got {order!r}."
+            )
+        coords_converted = self._convert_coords_to_tree_units(coords)
+        if coords_converted.shape[1] != self.ndim:
+            raise RuntimeError(
+                f"Interpolation coordinates dimensionality "
+                f"({coords_converted.shape[1]}) is different to kD-tree "
+                f"dimensionality ({self.ndim})."
+            )
+        nnn = self._resolve_nnn(nnn, order)
+
+        indices, weights, wide, _ = self._local_stencil(
+            coords_converted, nnn, p, order
+        )
+
+        n_targets = coords_converted.shape[0]
+        keep = np.ones(n_targets, dtype=np.bool_)
+        if wide is not None:
+            keep[wide[0]] = False
+
+        rows = np.repeat(np.flatnonzero(keep), nnn)
+        cols = indices[keep].ravel()
+        vals = weights[keep].ravel()
+
+        if wide is not None:
+            wide_rows, wide_indices, wide_weights = wide
+            rows = np.concatenate(
+                [rows, np.repeat(wide_rows, wide_indices.shape[1])]
+            )
+            cols = np.concatenate([cols, wide_indices.ravel()])
+            vals = np.concatenate([vals, wide_weights.ravel()])
+
+        return sp.csr_matrix(
+            (vals, (rows, cols.astype(np.int64))), shape=(n_targets, self.n)
+        )
 
     def rbf_interpolator_local_from_kdtree(self, coords, data, nnn, p, verbose,
                                            order=0, monotone=False):
@@ -729,28 +915,10 @@ cdef class KDTree:
                 f"Data does not match kd-tree size array ({data.shape[0]} v ({self.n}))"
             )
 
-        coords_contiguous = np.ascontiguousarray(coords_converted)
-        # query nnn points to the coords
-        # distance_n is a list of distance to the nearest neighbours for all coords_contiguous
-        # closest_n is the index of the neighbours from ncoords for all coords_contiguous
-        # Note: query() returns sqr_dists=True by default, and we use the converted coords
-        distance_n, closest_n = self.query(coords, k=nnn)
-
-        # valid indices are 0..n-1; the empty-tree sentinel (0 with n=0)
-        # must trip this guard, so the comparison is >= (issue #399).
-        if np.any(closest_n >= self.n):
-            raise RuntimeError(
-                "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
-            )
+        nnn = self._resolve_nnn(nnn, order)
 
         if verbose and uw.mpi.rank == 0:
-            # For Debugging
-            # print(f"kd-tree diagnostics: d.shape - {distance_n.shape}, c.shape - {closest_n.shape}")
             print(f"Mapping values with nnn - {nnn} & p {p}  ... start", flush=True)
-
-        # np.bool_, not bool: this module cimports the C++ `bool` from libcpp,
-        # which shadows the Python builtin and will not compile here.
-        degenerate = np.zeros(coords_converted.shape[0], dtype=np.bool_)
 
         if nnn == 1:
             # only use nearest neighbour raw data
@@ -759,57 +927,31 @@ cdef class KDTree:
                     "order=1 needs at least dim + 2 neighbours to determine the "
                     f"affine tail; nnn=1 selects the raw nearest-neighbour path."
                 )
+            closest_n, _ = self.find_closest_n_points(
+                1, np.ascontiguousarray(coords_converted, dtype=np.float64)
+            )
+            # (n, 1) -> (n,): the nearest-neighbour path returns data rows
+            # directly, so the stencil axis must not survive into the result.
+            # query(k=1) used to do this reshape for us.
+            closest_n = closest_n.reshape(-1)
+            if np.any(closest_n >= self.n):
+                raise RuntimeError(
+                    "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
+                )
             return data[closest_n]
 
-        # can decompose weighting vecotrs as IDW is a linear relationship
-        # build normalise weight vectors and multiply that with known data
-        # TODO(BUG): issue #427 — `distance_n` holds SQUARED distances (query
-        # defaults to sqr_dists=True), so the decay is r^(-2p), not the
-        # documented r^(-p), and `epsilon` floors r at ~1e-6 rather than 1e-12.
-        epsilon = 1e-12
-        weights = 1 / np.power(epsilon + distance_n[:], p)
-        n_weights = (weights.T / np.sum(weights, axis=1)).T
+        closest_n, n_weights, wide, degenerate = self._local_stencil(
+            coords_converted, nnn, p, order
+        )
         kdata = data[closest_n[:]]
-
-        if order == 1:
-            from underworld3.utilities.rbf_stencil import linear_exact_weights
-
-            tree_points = np.asarray(self.points)
-            stencil_coords = tree_points[closest_n[:]]
-            linear_weights, degenerate = linear_exact_weights(
-                coords_converted, stencil_coords
-            )
-            # A stencil that cannot support an affine fit (collinear in 2D,
-            # coplanar in 3D) keeps the inverse-distance weights for now: finite
-            # and bounded, but not linear-exact.
-            linear_weights[degenerate] = n_weights[degenerate]
-            n_weights = linear_weights
 
         # magic with einstein summation power
         vals = np.einsum("sdc,sd->sc", kdata, n_weights)
-        # print(valz)
 
-        if order == 1 and degenerate.any():  # noqa: F821 - set in the order==1 block
-            # Widen the stencil for the few points that failed, rather than
-            # accepting inverse distance there. A degenerate neighbourhood is
-            # usually a local accident of point placement, and reaching further
-            # fixes it -- worth doing because a single non-exact node sitting
-            # among exact ones is an isolated SPIKE, which is far more damaging
-            # to derivatives and integrals than a smooth error of the same size.
-            vals, degenerate = self._retry_degenerate_stencils(
-                coords_converted, data, tree_points, vals, degenerate, nnn
-            )
-
-        n_degenerate = int(degenerate.sum())
-        if n_degenerate:
-            import warnings
-
-            warnings.warn(
-                f"rbf_interpolator_local(order=1): {n_degenerate} of "
-                f"{degenerate.size} stencils could not support an affine fit "
-                "(collinear/coplanar neighbours) even after widening, and fell "
-                "back to inverse-distance weighting.",
-                stacklevel=2,
+        if wide is not None:
+            wide_rows, wide_indices, wide_weights = wide
+            vals[wide_rows] = np.einsum(
+                "sdc,sd->sc", data[wide_indices], wide_weights
             )
 
         if monotone_clamp:
@@ -829,8 +971,12 @@ cdef class KDTree:
                 # reproduction guarantee.
                 from underworld3.utilities.rbf_stencil import affine_trend
 
+                # The bound comes from the primary stencil even for the few
+                # rows re-solved on a wider one: it is still a legitimate local
+                # bound, and the affine trend -- the part being preserved -- is
+                # what matters here.
                 trend_at_target, trend_at_stencil = affine_trend(
-                    coords_converted, stencil_coords, kdata
+                    coords_converted, np.asarray(self.points)[closest_n[:]], kdata
                 )
                 residual = kdata - trend_at_stencil
                 vals = trend_at_target + np.clip(

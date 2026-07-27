@@ -94,6 +94,39 @@ inverse-distance error is unchanged to two significant figures, because the
 error is set by the asymmetry of the neighbourhood, not by how many points are
 in it.
 
+## Getting the operator, not just the values
+
+When the same transfer is applied more than once — or when the operator *is*
+the product, as for a multigrid prolongation — build it once:
+
+```python
+T = kdt.interpolation_matrix(target_coords, order=1)   # scipy CSR
+values = T @ data                                      # identical to the value API
+```
+
+The weights depend only on geometry, so one build serves every field and every
+component; the value API re-solves each call. `T @ data` is asserted equal to
+`rbf_interpolator_local(...)` in the test suite so the two cannot drift.
+
+```{warning}
+`rbf_stencil.linear_exact_weights` is the raw kernel underneath, and it returns
+**zeros** for degenerate rows plus a mask. It has no kd-tree, so it can neither
+widen a stencil nor fall back. A caller that ignores the mask silently
+interpolates to zero. Use `interpolation_matrix` unless you specifically need
+the bare weights — its rows are never empty.
+```
+
+### Row-wise construction carries no column guarantee
+
+Every row has `nnn` non-zeros. **Nothing guarantees every column is non-empty.**
+A source point that is not among the `nnn` nearest neighbours of any target
+produces an empty column, and a consumer forming a Galerkin coarse operator
+$P^{T} A P$ then gets a singular matrix — the failure mode of issue #424.
+
+This is a property of *any* row-wise kNN construction, not of this kernel, and
+it is not fixed by the scheme being linear-exact. Consumers that need full
+column rank must check for and repair empty columns themselves.
+
 ## Choosing `nnn`
 
 `order=1` requires **`nnn >= dim + 2`** and raises `ValueError` below that.
@@ -105,7 +138,37 @@ the neighbour simplex**. That is singular whenever those `dim + 1` points are
 collinear (2D) or coplanar (3D) — common near boundaries and on graded meshes.
 
 The swarm proxy default is `nnn = 2 * (dim + 1)` (6 in 2D, 8 in 3D), which
-leaves enough slack that degenerate neighbourhoods are rare.
+leaves enough slack that degenerate neighbourhoods are rare. That is also what
+`nnn=None` resolves to at `order=1`; `order=0` keeps its historical default of
+4. The default has to depend on `order` *and* dimension — a fixed default of 4
+is below the enforced minimum in 3D and would simply raise.
+
+## Things that fail silently if you get them wrong
+
+- **Build kd-trees from `.coords_nd`, never `.coords`.** `MeshVariable.coords`
+  dimensionalises once the model has reference quantities set, while particle
+  coordinates and `MeshVariable._get_kdtree` are non-dimensional. Mixing them
+  raises from `_convert_coords_to_tree_units` (issue #426).
+- **The output carries no units.** Coordinates are converted into the tree's
+  frame, but `data` passes through untouched and the return is a plain array.
+  Re-attach units at the boundary if the caller needs them.
+- **`order=1` costs about 5x `order=0`** — a dense $(nnn+d+1)^3$ solve per
+  target point. Irrelevant if you build an operator once; think twice in a hot
+  loop.
+- **Do not validate against `uw.function.evaluate`.** It returns wrong values
+  for P1 fields at points lying exactly on cell edges in 3D (issue #432), and
+  proxy nodes sit on cell boundaries routinely. Compare against an analytic
+  field, or against an independent implementation, instead.
+
+## Determinism
+
+The weights are a pure function of the geometry: no global state, no random
+numbers, no accumulation across calls. Repeated calls, and separate `KDTree`
+instances built from equal point sets, return bit-identical results.
+
+Where several source points are exactly equidistant from a target, *which* of
+them the kNN search selects is unspecified — but the choice is deterministic,
+so results reproduce run to run. Both properties are pinned by tests.
 
 ## Degenerate stencils
 
