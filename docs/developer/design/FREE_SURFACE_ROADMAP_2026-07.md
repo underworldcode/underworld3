@@ -81,6 +81,18 @@ Acceptance: the spherical-shell topographic relaxation benchmark (the 3D analogu
 the annulus Cathles test — decay of an imposed Y_lm topography at the analytic rate),
 then a low-Ra spherical convection case with bounded T.
 
+**Open design question for C (Louis, 2026-07-27): sub-meshing.** The 2D ring replaced
+an earlier `extract_surface` submesh because of a KDTree seam collision — but in 3D the
+balance may flip: a genuine DMPlex surface submesh with its own FE spaces could host
+the filter (surface Laplacian/Taubin as an actual operator), the datum gauge (a real
+surface mass matrix rather than hand-built weights), and tangential transport (surface
+FE advection) natively — replacing three hand-rolled gather structures with one
+standard object. The known hazards to weigh: submesh↔parent DOF mapping at partition
+seams (the 2D lesson: each physical node exactly once), the cost of rebuilding the
+submesh as the surface deforms, and the earlier 1D-manifold solver blockers (the
+BdIntegral/manifold work). Decide this BEFORE assigning C — it changes the shape of
+the work substantially. To be discussed with Louis + Thyagi.
+
 Sequencing note: C does not depend on B (different code areas: boundary utilities vs
 pyx dispatch) and can run in parallel once #404's P1 question is decided. Both depend
 on A being merged so they branch from `development`.
