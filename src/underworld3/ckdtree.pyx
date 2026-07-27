@@ -44,6 +44,12 @@ def _normalise_monotone(monotone):
     out-of-bounds points through the FE path, which a kd-tree knows nothing
     about.
     """
+    # Early out before the import: the overwhelmingly common call has no
+    # limiter, and ckdtree is a low-level module that should not take a
+    # dependency on the evaluator just to be told "no".
+    if monotone is False or monotone is None:
+        return False
+
     from underworld3.function.functions_unit_system import _normalize_monotone
 
     mode = _normalize_monotone(monotone)

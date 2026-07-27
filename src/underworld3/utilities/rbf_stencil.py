@@ -127,8 +127,13 @@ def linear_exact_weights(target_coords, neighbour_coords):
     weights = np.zeros((n_targets, nnn), dtype=np.float64)
     degenerate = np.zeros(n_targets, dtype=bool)
 
+    # Budget the two largest per-row temporaries: the stacked saddle matrices
+    # (size x size) and the pairwise offset array (nnn x nnn x dim) that the
+    # kernel distances are formed from. The latter is easy to overlook and is
+    # the bigger of the two in 3D.
     size = nnn + dim + 1
-    rows_per_chunk = max(1, _CHUNK_BYTES // (size * size * 8))
+    bytes_per_row = 8 * (size * size + nnn * nnn * dim)
+    rows_per_chunk = max(1, _CHUNK_BYTES // bytes_per_row)
 
     for start in range(0, n_targets, rows_per_chunk):
         stop = min(start + rows_per_chunk, n_targets)
