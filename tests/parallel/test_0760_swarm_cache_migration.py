@@ -17,6 +17,7 @@ Run with:
 import pytest
 import numpy as np
 import underworld3 as uw
+from underworld3.function._function import _global_fallback_indices
 from mpi4py import MPI
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(60)]
@@ -100,6 +101,21 @@ def test_global_evaluate_displaced_nodes():
     assert result.shape[0] == node_coords.shape[0], (
         f"Rank {uw.mpi.rank}: expected {node_coords.shape[0]} results, "
         f"got {result.shape[0]}"
+    )
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_global_fallback_includes_nonfinite_located_values():
+    """Located NaN values must enter the same recovery path as lost points."""
+    values = np.ones((4, 1, 2))
+    values[1, 0, 0] = np.nan
+    mask = np.zeros((4, 1, 1), dtype=bool)
+    mask[2, 0, 0] = True
+
+    assert np.array_equal(
+        _global_fallback_indices(values, mask),
+        np.array([1, 2]),
     )
 
 
