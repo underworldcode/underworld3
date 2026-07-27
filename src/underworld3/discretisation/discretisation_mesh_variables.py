@@ -886,11 +886,19 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         return self._kdtree
 
-    def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None, rubbish=None):
+    def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None,
+                        rubbish=None, order=0, monotone=False):
         """Interpolate variable data to new coordinates using RBF.
 
         Uses inverse distance weighting with k-nearest neighbors to
         interpolate values from mesh nodes to arbitrary coordinates.
+
+        The default ``order=0`` is deliberate and differs from the swarm proxy
+        path: this method is the RBF rung of the point-location fallback ladder
+        in :func:`underworld3.function.evaluate`, whose documented contract is
+        that it is *bounded*. Inverse-distance weights are a convex combination
+        and so cannot overshoot; ``order=1`` weights can. Pass ``order=1``
+        explicitly where linear exactness matters more than boundedness.
 
         Parameters
         ----------
@@ -898,12 +906,21 @@ class _BaseMeshVariable(Stateful, uw_object):
             Target coordinates of shape ``(n_points, dim)``.
         meth : int, optional
             Interpolation method (reserved, currently unused).
+            TODO(BUG): issue #428 — ``meth`` and ``rubbish`` are dead
+            parameters, and ``tests/test_0505_rbf_swarm_mesh.py`` passes its
+            ``nnn`` into ``meth`` positionally, so that test silently
+            discards it.
         p : float, optional
             Power parameter for inverse distance weighting (default: 2).
         verbose : bool, optional
             Print progress information.
         nnn : int, optional
             Number of nearest neighbors (default: 4 for 3D, 3 for 2D).
+        order : int, optional
+            Polynomial reproduction order, 0 (default, bounded) or 1
+            (constants and linears exact; requires ``nnn >= dim + 2``).
+        monotone : bool or str, optional
+            Bound each value to the min/max of its own stencil.
 
         Returns
         -------
@@ -928,7 +945,9 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         # Use cached KDTree for interpolation
         kdt = self._get_kdtree()
-        values = kdt.rbf_interpolator_local(new_coords, D, nnn, p=p, verbose=verbose)
+        values = kdt.rbf_interpolator_local(
+            new_coords, D, nnn, p=p, verbose=verbose, order=order, monotone=monotone
+        )
 
         return values
 
