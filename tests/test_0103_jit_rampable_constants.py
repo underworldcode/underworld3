@@ -40,7 +40,13 @@ def _build():
 
 
 def _mean(poisson, T):
-    poisson.solve()
+    # COLD every time. The diffusivity depends on T, so this is a nonlinear solve and
+    # its answer is only pinned to the SNES tolerance — a warm start stops at a
+    # different point in that same tolerance ball. This test compares solutions at
+    # rtol 1e-12 to check that a constant was read from its slot rather than baked as a
+    # literal, so it must hold the initial guess fixed or it measures the warm-start
+    # policy instead of the thing it is about.
+    poisson.solve(zero_init_guess=True)
     return float(np.asarray(T.data)[:, 0].mean())
 
 
