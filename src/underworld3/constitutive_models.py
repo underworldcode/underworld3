@@ -1320,7 +1320,19 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
         else:
             yield_stress = inner_self.yield_stress
 
-        viscosity_yield = yield_stress / (2 * self._strainrate_inv_II)
+        # Rate regularisation. eta_pl = tau_y / (2 edot_II) is unbounded as edot -> 0;
+        # adding a floor to the strain rate caps it at tau_y/(2 edot_min) and so bounds
+        # the viscosity CONTRAST, which is what conditions the velocity block (the same
+        # role the Perzyna/rate-strengthening xi plays in the Spiegelman studies). The
+        # parameter was declared on this model but never applied — the elastic models
+        # (ViscoElasticPlastic, TransverseIsotropicVEP) have always used it. Default 0
+        # = off, so the unregularised law is unchanged.
+        if inner_self.strainrate_inv_II_min.sym != 0:
+            viscosity_yield = yield_stress / (
+                2 * (self._strainrate_inv_II + inner_self.strainrate_inv_II_min)
+            )
+        else:
+            viscosity_yield = yield_stress / (2 * self._strainrate_inv_II)
 
         # Combine the viscous and plastic (yield) viscosities. The default
         # yield_mode="min" gives the exact hard Min(η_0, η_yield); yield_mode="softmin"
