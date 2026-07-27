@@ -16,6 +16,7 @@ MUMPS LU is opt-in via ``solver._rotated_use_lu``.
 """
 import numpy as np
 import sympy
+from mpi4py import MPI
 from petsc4py import PETSc
 
 # Rank-safe printing only (mpi.pprint). Safe at module top: underworld3.mpi is a
@@ -371,6 +372,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
 
     datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
     Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
+    # COLLECTIVE datum-activity flag: datum_map is RANK-LOCAL (only owners of
+    # datum boundary nodes hold entries), so branching on it directly desyncs the
+    # ranks' collective sequences (the two zeroRowsColumns variants below scatter
+    # differently) — the np>1 deadlock class. One reduction decides for everyone.
+    datum_active = dm.comm.tompi4py().allreduce(len(datum_map), MPI.SUM) > 0
 
     # rotate: Â = Q A Qᵀ, b̂ = Q b
     Ahat = Aorig.ptap(Qt)
@@ -384,7 +390,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     # diagonal-based Schur approximations and MG smoothing in the boundary strip. Any
     # positive diagonal is exact — the solution rows are set explicitly.
     diag = _velocity_diag_scale(Ahat, solver)
-    if datum_map:
+    if datum_active:
         # v_n = ũ_n: pass the datum (rotated-frame normal component = v_n) as x so
         # zeroRowsColumns(rows, diag, x, b) sets b[rows]=diag·x[rows] AND subtracts the
         # eliminated columns' contribution A[:,cols]·x from the other rows. x=0
@@ -451,7 +457,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     # (the constrained matrix already drove the interior — only these rows were reset).
     # Restored BEFORE the residual report below, so the reported norm describes the
     # solution actually returned (the datum rows are consistent with b̂ by construction).
-    if datum_map:
+    # (_set_rows_local is purely local surgery — datum_active keeps the branch
+    # rank-consistent for readability, an empty local map is simply a no-op.)
+    if datum_active:
         _set_rows_local(Uhat, datum_map)
 
     # True rotated residual ‖Â·û − b̂‖ for the solve report (one matvec). Computed
@@ -547,25 +555,32 @@ def _gather_fields_to_global(solver):
     return U
 
 
-def _project_out_normal_component(u, Q, Qt, normal_rows):
-    """Impose the strong ``v_n = 0`` constraint exactly on the composite vector
-    ``u``, in place: rotate to the boundary frame (``û = Q u``), zero the
-    constrained normal rows, rotate back (``u = Qᵀ û``). Q is orthogonal, so this
-    is the exact projection onto the constraint-satisfying subspace."""
+def _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map=None):
+    """Impose the strong affine constraint ``v_n = ũ_n`` exactly on the composite
+    vector ``u``, in place: rotate to the boundary frame (``û = Q u``), zero the
+    constrained normal rows, set the prescribed-datum rows to ``sgn·ũ_n``
+    (``datum_map``; empty/None ⇒ pure free-slip ``v_n = 0``), rotate back
+    (``u = Qᵀ û``). Q is orthogonal, so this is the exact affine projection onto
+    the constraint-satisfying set. Keeping every Newton iterate feasible this way
+    is what lets the increment problem stay HOMOGENEOUS (``n̂·δ = 0``) — the
+    datum never touches the tangent or the increment RHS."""
     uh = u.duplicate()                       # transient projection buffer
     Q.mult(u, uh)
     _zero_rows_local(uh, normal_rows)
+    if datum_map:
+        _set_rows_local(uh, datum_map)
     Qt.mult(uh, u)
     uh.destroy()
 
 
 def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
-                              max_halvings=8):
+                              datum_map=None, max_halvings=8):
     """Backtracking line search on ‖F̂‖ for the rotated Newton/Picard update
     ``u + α d`` (full step α=1 first, halved on failure). Cheap insurance far from
     the solution; α=1 is accepted immediately near it. Every trial iterate is
-    projected back onto the strong v_n=0 constraint before its residual is
-    measured.
+    snapped back onto the strong ``v_n = ũ_n`` constraint (``datum_map``; free-slip
+    when empty) before its residual is measured, so ‖F̂‖ is always evaluated at a
+    feasible point.
 
     Owns all its temporaries' destroys: on acceptance the input ``u`` is destroyed
     and replaced by the accepted iterate. Returns ``(u, improved)``; ``improved``
@@ -576,7 +591,7 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
     for _ls in range(max_halvings):
         utry = u.copy()
         utry.axpy(alpha, d)
-        _project_out_normal_component(utry, Q, Qt, normal_rows)
+        _impose_normal_constraint(utry, Q, Qt, normal_rows, datum_map)
         Ftry = rotated_residual(utry)
         fnorm = Ftry.norm()
         Ftry.destroy()
@@ -592,8 +607,10 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
                                      verbose=False, zero_init_guess=True, picard=0,
                                      rtol=None, atol=1.0e-11, stol=1.0e-8, max_it=50):
     """Nonlinear rotated strong-free-slip solve: a manual outer Newton/Picard loop
-    that rotates the residual F(u), the Jacobian J(u) and the v_n=0 constraint EVERY
-    iteration, reusing the validated self-contained rotated fieldsplit-Schur solve
+    that rotates the residual F(u), the Jacobian J(u) and the strong ``v_n = ũ_n``
+    constraint (``ũ_n = 0`` for pure free-slip; a prescribed wall-normal datum via
+    ``solver._rotated_freeslip_datum``) EVERY iteration, reusing the validated
+    self-contained rotated fieldsplit-Schur solve
     (``_solve_rotated_iterative``, incl. custom geometric FMG / GAMG velocity block
     and the rotated coupled null space) for each Newton increment.
 
@@ -605,14 +622,20 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     strong constraint exactly at every iterate.
 
     Each iteration (unknown carried in the CARTESIAN frame ``u``; the increment is
-    solved in the rotated frame ``û = Q u``):
+    solved in the rotated frame ``û = Q u``). Every ACCEPTED iterate is FEASIBLE
+    (``v_n = ũ_n`` imposed exactly), so increments satisfy the homogeneous
+    constraint ``n̂·δ = 0`` and the datum never enters the tangent. The one
+    exception is a cold start with a non-zero datum, where the first increment
+    carries the datum jump through the affine lift (see the initial-guess comment
+    in the body — snapping the zero state onto the datum creates a boundary-strip
+    strain state whose nonlinear tangent is unusable):
       * ``F = computeFunction(u)``  → Cartesian residual (native essential BCs on
         other boundaries already applied by the DM);
       * ``F̂ = Q F``, zero ``F̂`` at the constrained normal rows (the constraint
-        residual is 0 there); converge on ‖F̂‖;
+        residual is 0 there — the iterate is feasible); converge on ‖F̂‖;
       * ``Ĵ = Q J(u) Qᵀ`` with ``zeroRowsColumns(normal_rows)``;
       * solve ``Ĵ δ̂ = −F̂``, ``δ = Qᵀ δ̂``, with a ‖F̂‖ backtracking line search;
-      * ``u += α δ`` and re-impose ``v_n = 0`` exactly.
+      * ``u += α δ`` and re-impose ``v_n = ũ_n`` exactly.
 
     The tangent used by ``computeJacobian`` is the solver's own (``consistent_jacobian``
     → Picard / Newton / continuation), so the rotated loop inherits the same tangent
@@ -683,26 +706,42 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
     if continuation:
         solver._set_newton_alpha(0.0)            # start in the Picard phase
 
-    # Q, the custom-FMG prolongation and the coupled null space depend only on the
-    # geometry / normals (NOT the solution), so build them ONCE and reuse each step.
-    if getattr(solver, "_rotated_freeslip_datum", None):
-        raise NotImplementedError(
-            "a prescribed non-zero wall-normal datum (u.n = ũ_n) on rotated free-slip is "
-            "implemented only for the LINEAR solve path (solve_rotated_freeslip); the "
-            "nonlinear path still imposes u.n = 0. Use a linear model for a prescribed "
-            "normal velocity, or extend this path.")
-    Q, Qt, normal_rows, _ = build_rotation(solver, boundaries)
+    # Q, the custom-FMG prolongation, the coupled null space and the datum values
+    # depend only on the geometry / normals / prescribed surface field (NOT the
+    # solution), so build them ONCE and reuse each step. The datum ũ_n enters the
+    # iteration ONLY through the feasible-iterate projection below: every iterate
+    # carries v_n = ũ_n exactly, so the Newton increment satisfies the HOMOGENEOUS
+    # constraint n̂·δ = 0 and the per-iteration operator treatment (zeroRowsColumns
+    # with no lift, tangent transparency, custom_Pl, nullspace) is unchanged from
+    # pure free-slip.
+    datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
+    Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
     custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
     nsp = _rotated_nullspace(solver, Q, normal_rows)
 
-    # initial guess (cartesian, composite): warm-start from the fields or zero, then
-    # impose v_n=0 exactly on it so the iteration starts feasible.
+    # initial guess (cartesian, composite): warm-start from the fields or zero.
+    # A prescribed datum on a COLD start is imposed through the FIRST increment's
+    # affine lift (zeroRowsColumns x/b — the same treatment as the linear one-shot),
+    # NOT by snapping the zero state: v_n = ũ_n over a zero interior manufactures an
+    # extreme boundary-strip strain rate whose shear-thinning tangent linearises so
+    # badly that no line-searched step descends (measured: first step 4 orders too
+    # large, f(α) > f(0) down to α=2⁻¹¹). Assembling the first tangent at rest and
+    # letting the increment carry the datum jump gives the smooth regularised-
+    # viscosity response instead; every later iterate is feasible and the
+    # increments are homogeneous. A warm start is assumed smooth (the previous
+    # converged state) and takes the exact affine snap directly.
+    # COLLECTIVE datum-activity flag (see the linear path): datum_map is rank-local,
+    # and the lift branch changes both the zeroRowsColumns variant and the
+    # line-search collectives — branching per-rank deadlocks at np>1.
+    datum_active = dm.comm.tompi4py().allreduce(len(datum_map), MPI.SUM) > 0
+    lift_datum = datum_active and zero_init_guess
     if zero_init_guess:
         u = dm.createGlobalVec()
         u.set(0.0)
     else:
         u = _gather_fields_to_global(solver)
-    _project_out_normal_component(u, Q, Qt, normal_rows)
+    if not lift_datum:
+        _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
 
     J, Jp = snes.getJacobian()[:2]
     pres_is = solver._subdict["pressure"][0]
@@ -767,9 +806,20 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
             Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
             diag_scale = _velocity_diag_scale(Ahat, solver)
-        Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
         bhat = Fhat.copy()
         bhat.scale(-1.0)
+        if lift_datum and iters == 0:
+            # cold-start lift: the increment FROM ZERO carries the datum jump —
+            # b̂[rows] = diag·x̂ and the eliminated columns' A[:,cols]·x̂ are
+            # subtracted from the other rows (see the linear one-shot, which this
+            # reproduces operation-for-operation at the rest-state tangent).
+            xhat = bhat.duplicate()
+            xhat.zeroEntries()
+            _set_rows_local(xhat, datum_map)
+            Ahat.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
+            xhat.destroy()
+        else:
+            Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
         dhat, last_reason, ctx = _solve_rotated_iterative(
             solver, Ahat, bhat, Q, Qt, normal_rows,
             custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
@@ -782,9 +832,18 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         # level). ‖u‖=0 on a cold start ⇒ this never fires prematurely (d is large).
         step_converged = d.norm() <= stol * (u.norm() + 1e-30)
         improved = False
-        if not step_converged:
+        if lift_datum and iters == 0:
+            # accept the lift step unconditionally (it is the smooth rest-state
+            # response — the standard first-Picard warmup; a line search against
+            # ‖F̂(0)‖, which ignores the datum mismatch, would be meaningless) and
+            # snap the datum rows exactly (the KSP cleanup zeroed them).
+            u.axpy(1.0, d)
+            _impose_normal_constraint(u, Q, Qt, normal_rows, datum_map)
+            step_converged = False
+            improved = True
+        elif not step_converged:
             u, improved = _backtracking_line_search(
-                u, d, rnorm, rotated_residual, Q, Qt, normal_rows)
+                u, d, rnorm, rotated_residual, Q, Qt, normal_rows, datum_map)
         # every per-iteration temporary dies HERE, on all exit paths
         dhat.destroy()
         d.destroy()

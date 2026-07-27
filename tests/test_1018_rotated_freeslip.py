@@ -668,3 +668,47 @@ def test_rotated_freeslip_prescribed_normal_datum():
     err = np.abs(vn - target).max()
     assert err < 1e-8, f"prescribed u.n=cos(theta) not imposed: max nodal error {err:.2e}"
     assert vn.max() > 0.9 and vn.min() < -0.9, "prescribed normal velocity magnitude wrong"
+
+
+def test_rotated_freeslip_nonlinear_prescribed_normal_datum():
+    """The prescribed wall-normal datum u.n = cos(theta) through the NONLINEAR rotated
+    path (power-law annulus): the loop genuinely iterates and every iterate is kept
+    feasible, so the converged solution carries the datum to the same (machine)
+    precision as the linear path — the constraint is exact independent of where the
+    nonlinear iteration stops."""
+    RI, RO = 0.5, 1.0
+    mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.2, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    nhat = sympy.Matrix([[x / r, y / r]])
+    v = uw.discretisation.MeshVariable("Vdn", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("Pdn", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    g = sympy.Matrix([[v.sym[0].diff(x), v.sym[0].diff(y)],
+                      [v.sym[1].diff(x), v.sym[1].diff(y)]])
+    e = 0.5 * (g + g.T)
+    eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
+    s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / 3.0 - 1.0)
+    blob = sympy.exp(-(((x - 0.75) ** 2 + y ** 2) / 0.05))
+    s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
+    s.add_essential_bc((0.0, 0.0), "Lower")          # no-slip inner (pins rotation gauge)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
+    s._rotated_freeslip_datum = {"Upper": x / r}     # u.n = cos(theta), mean-zero flux
+    s.consistent_jacobian = True                     # Newton tangent (few iterations)
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1e-7
+    s.solve()
+
+    info = s._rotated_freeslip_info
+    assert info["nonlinear_iterations"] > 1, "nonlinear datum solve did not genuinely iterate"
+    assert info["converged"], "nonlinear datum solve did not converge"
+    vc = v.coords
+    rr = np.hypot(vc[:, 0], vc[:, 1])
+    outer = np.abs(rr - RO) < 4.0e-2                 # outer velocity nodes (incl. edge mids)
+    rhat = vc[outer] / rr[outer, None]
+    vn = np.einsum("ij,ij->i", v.data[outer], rhat)
+    target = vc[outer, 0] / rr[outer]                # cos(theta) at the same node coords
+    err = np.abs(vn - target).max()
+    assert err < 1e-8, f"nonlinear u.n=cos(theta) not imposed: max nodal error {err:.2e}"
+    assert vn.max() > 0.9 and vn.min() < -0.9, "prescribed normal velocity magnitude wrong"
