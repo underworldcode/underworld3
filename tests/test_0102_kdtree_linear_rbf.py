@@ -440,6 +440,43 @@ def test_interpolation_matrix_agrees_with_the_value_path(dim, order):
 
 
 @pytest.mark.parametrize("dim", [2, 3])
+def test_both_entry_points_reject_nnn_1_with_order_1(dim):
+    """The guard must live below both APIs, not in one of them (issue #443).
+
+    `_local_stencil` early-returns for nnn == 1 before any `order` handling,
+    so a guard placed in the value path alone left `interpolation_matrix`
+    silently returning a nearest-neighbour operator — constants-only — when a
+    linear-exact one was asked for, with nothing recording the downgrade.
+    """
+    rng = np.random.default_rng(300 + dim)
+    source = rng.random((200, dim))
+    target = rng.random((15, dim))
+    data = _linear(source)[:, None]
+    kdt = uw.kdtree.KDTree(source)
+
+    with pytest.raises(ValueError, match="dim . 2 neighbours"):
+        kdt.rbf_interpolator_local(target, data, 1, 2, False, order=1)
+
+    with pytest.raises(ValueError, match="dim . 2 neighbours"):
+        kdt.interpolation_matrix(target, nnn=1, order=1)
+
+    # nnn=1 at order=0 stays legal on both.
+    assert kdt.rbf_interpolator_local(target, data, 1, 2, False).shape == (15, 1)
+    assert kdt.interpolation_matrix(target, nnn=1).shape == (15, 200)
+
+
+def test_stencil_larger_than_the_cloud_reports_what_went_wrong():
+    """The old message named a function the caller never invoked."""
+    rng = np.random.default_rng(17)
+    source = rng.random((5, 3))
+    target = rng.random((4, 3))
+    kdt = uw.kdtree.KDTree(source)
+
+    with pytest.raises(RuntimeError, match="20-point stencil.*holds 5 point"):
+        kdt.interpolation_matrix(target, nnn=20, order=1)
+
+
+@pytest.mark.parametrize("dim", [2, 3])
 def test_interpolation_matrix_rows_are_never_empty(dim):
     """The raw-weights helper zeroes degenerate rows; the operator must not.
 

@@ -716,7 +716,9 @@ cdef class KDTree:
         # must trip this guard, so the comparison is >= (issue #399).
         if np.any(closest_n >= self.n):
             raise RuntimeError(
-                "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
+                f"Cannot build a {nnn}-point stencil: the kd-tree holds "
+                f"{self.n} point(s) and a nearest neighbour wasn't found. "
+                "Reduce nnn, or check that the tree is not empty."
             )
 
         # np.bool_, not bool: this module cimports the C++ `bool` from libcpp,
@@ -724,6 +726,16 @@ cdef class KDTree:
         degenerate = np.zeros(coords_converted.shape[0], dtype=np.bool_)
 
         if nnn == 1:
+            # The guard lives HERE, not in the callers: this early return
+            # precedes all `order` handling, so a caller-side check leaves the
+            # other entry point silently returning a nearest-neighbour stencil
+            # when a linear-exact one was asked for (issue #443).
+            if order == 1:
+                raise ValueError(
+                    "order=1 needs at least dim + 2 neighbours to determine "
+                    "the affine tail; nnn=1 selects the raw nearest-neighbour "
+                    "path, which reproduces constants only."
+                )
             return closest_n, np.ones(closest_n.shape), None, degenerate
 
         # can decompose weighting vecotrs as IDW is a linear relationship
@@ -771,7 +783,10 @@ cdef class KDTree:
                 f"{degenerate.size} stencils could not support an affine fit "
                 "(collinear/coplanar neighbours) even after widening, and fell "
                 "back to inverse-distance weighting.",
-                stacklevel=3,
+                # 2 = whichever public method called _local_stencil. The two
+                # entry points sit at different depths below that, so this is
+                # the deepest frame that is correct for both.
+                stacklevel=2,
             )
 
         return closest_n, linear_weights, wide, degenerate
@@ -921,24 +936,14 @@ cdef class KDTree:
             print(f"Mapping values with nnn - {nnn} & p {p}  ... start", flush=True)
 
         if nnn == 1:
-            # only use nearest neighbour raw data
-            if order == 1:
-                raise ValueError(
-                    "order=1 needs at least dim + 2 neighbours to determine the "
-                    f"affine tail; nnn=1 selects the raw nearest-neighbour path."
-                )
-            closest_n, _ = self.find_closest_n_points(
-                1, np.ascontiguousarray(coords_converted, dtype=np.float64)
+            # Only the raw nearest-neighbour value; _local_stencil holds the
+            # order=1 guard so both entry points share it (issue #443).
+            closest_n, _, _, _ = self._local_stencil(
+                coords_converted, nnn, p, order
             )
-            # (n, 1) -> (n,): the nearest-neighbour path returns data rows
-            # directly, so the stencil axis must not survive into the result.
-            # query(k=1) used to do this reshape for us.
-            closest_n = closest_n.reshape(-1)
-            if np.any(closest_n >= self.n):
-                raise RuntimeError(
-                    "Error in rbf_interpolator_local_from_kdtree - a nearest neighbour wasn't found"
-                )
-            return data[closest_n]
+            # (n, 1) -> (n,): this path returns data rows directly, so the
+            # stencil axis must not survive into the result.
+            return data[closest_n.reshape(-1)]
 
         closest_n, n_weights, wide, degenerate = self._local_stencil(
             coords_converted, nnn, p, order
