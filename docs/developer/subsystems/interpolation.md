@@ -25,6 +25,11 @@ That is what `order` selects on
 
 $$ w_j = \frac{d_j^{-p}}{\sum_k d_k^{-p}} $$
 
+$d_j$ is the **actual** distance to the neighbour, and `p` defaults to 1 — so
+the default really is inverse distance. (Until #427 the kd-tree's squared
+distances were used directly, making the decay $r^{-2p}$: the documented
+default of `p=2` was in fact $1/r^4$.)
+
 Weights are positive and sum to one. Consequences, both of them important:
 
 - A **constant** field is reproduced exactly.

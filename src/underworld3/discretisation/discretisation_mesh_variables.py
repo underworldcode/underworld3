@@ -886,7 +886,7 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         return self._kdtree
 
-    def rbf_interpolate(self, new_coords, nnn=None, p=2, verbose=False,
+    def rbf_interpolate(self, new_coords, nnn=None, p=1, verbose=False,
                         order=0, monotone=False):
         """Interpolate variable data to new coordinates using RBF.
 
@@ -907,7 +907,8 @@ class _BaseMeshVariable(Stateful, uw_object):
         nnn : int, optional
             Number of nearest neighbours (default: 4 for 3D, 3 for 2D).
         p : float, optional
-            Power parameter for inverse distance weighting (default: 2).
+            Power parameter for inverse distance weighting on the actual
+            distance (default: 1, i.e. inverse distance).
         verbose : bool, optional
             Print progress information.
         order : int, optional
@@ -1352,7 +1353,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             # ``nnn=1`` — exact match for round-trip reads, sensible
             # nearest-neighbour fallback for cross-mesh reads.
             result.array[:, 0, :] = kdt.rbf_interpolator_local(
-                local_query, landed_D, 1, 2, verbose
+                local_query, landed_D, nnn=1, verbose=verbose
             )
         elif local_query.shape[0] > 0:
             # No saved data landed on this rank — leave query payload zero
