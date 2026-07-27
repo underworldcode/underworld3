@@ -97,6 +97,37 @@ stress_history = self.Unknowns.DFDt.psi_star[0]  # Correct $\psi^*[0]$
 ```
 ```
 
+### Retargeting a model to another solver
+
+Because a constitutive model reads the solver's unknowns, its parameter expressions
+carry that solver's *identity*. A strain-rate-dependent viscosity — say
+`shear_viscosity_0 = eps_II(v)**(1/n - 1)` — is built from a specific solver's
+velocity `u` and velocity-gradient `Unknowns.L`, and every one of those atoms is
+tagged with that solver's variable id.
+
+So you **cannot copy a nonlinear model's parameters onto another solver by value**.
+Doing so silently binds the new solver's viscosity to the *source* solver's solution:
+the copied expression still references the source velocity, so it evaluates the
+viscosity from whatever the source last solved, not the target's own iterate. The
+symptom is subtle — the target solve still converges, to the wrong (frozen-viscosity)
+problem.
+
+The fix is a **rebind**: substitute the source solver's `u` and `Unknowns.L` atoms with
+the target solver's, then set the result on the target model. Two gotchas:
+
+- The atoms are hidden inside a wrapped `UWexpression`, so `.subs(...)` reaches nothing
+  until you `unwrap(...)` the value first (the same "unwrap before extracting atoms"
+  rule that applies to JIT compilation).
+- Velocity and its first gradient cover strain-rate rheology; a pressure- or
+  higher-gradient-dependent law would extend the substitution map.
+
+This is a general **solver-copy** operation, not a free-surface quirk. It is needed
+anywhere one solver is derived from another that shares a rheology — the
+`FreeSurface` held/consistent solves, and equally an **adjoint operator** built to
+share the forward model's viscosity. Reference implementation:
+`FreeSurface._velocity_rebind_map` / `_copy_constitutive_model` in
+`src/underworld3/systems/free_surface.py`.
+
 ### Key Material Models
 
 | Model Class | Physics | Documentation |

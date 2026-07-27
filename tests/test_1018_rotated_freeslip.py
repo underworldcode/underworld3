@@ -608,3 +608,63 @@ def test_rotated_freeslip_dynamic_topography_field():
     bdl2 = float(np.sqrt(uw.maths.BdIntegral(
         mesh=mesh, fn=hf.sym[0] ** 2, boundary="Top").evaluate()))
     assert bdl2 > 0.0
+
+
+# --- Prescribed non-zero wall-normal datum (u.n = ũ_n) ---------------------------
+# The rotated constraint imposes u.n = datum strongly: datum=0 is pure free-slip (the
+# held lid); a non-zero datum is the "consistent" material-surface velocity. Both share
+# the same rotated matrix and differ only in the constraint RHS, so datum=0 must be
+# BIT-IDENTICAL to plain free-slip. (Set via solver._rotated_freeslip_datum until the
+# add_rotated_freeslip_bc datum argument lands — underworldcode/underworld3 tracking.)
+
+def _annulus_datum_solve(mode, tag):
+    RI, RO = 0.5, 1.0
+    mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.1, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    nhat = sympy.Matrix([[x / r, y / r]])
+    v = uw.discretisation.MeshVariable("Vd" + tag, mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("Pd" + tag, mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    blob = sympy.exp(-(((x - 0.75) ** 2 + y ** 2) / 0.05))
+    s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
+    s.add_essential_bc((0.0, 0.0), "Lower")          # no-slip inner (pins rotation gauge)
+    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
+    if mode == "zero":
+        s._rotated_freeslip_datum = {"Upper": 0.0}
+    elif mode == "cos":
+        s._rotated_freeslip_datum = {"Upper": x / r}   # u.n = cos(theta), mean-zero => ∮u.n=0
+    s.petsc_use_pressure_nullspace = True
+    s.petsc_options["snes_type"] = "ksponly"
+    s.tolerance = 1e-9
+    s.solve()
+    return mesh, v
+
+
+def test_rotated_freeslip_datum_zero_matches_freeslip():
+    """datum={'Upper': 0} (the prescribed-datum path with a zero datum) reproduces plain
+    rotated free-slip to iterative round-off — the held / free-slip case is untouched.
+    (A zero datum takes the same free-slip RHS path; the residual is the iterative
+    solver's run-to-run round-off, ~1e-15, not a code-path difference.)"""
+    _, v0 = _annulus_datum_solve("plain", "0")
+    _, vz = _annulus_datum_solve("zero", "z")
+    d = np.abs(vz.data - v0.data).max()
+    assert d < 1e-10, f"zero datum perturbs the free-slip solution by {d:.2e} (> round-off)"
+
+
+def test_rotated_freeslip_prescribed_normal_datum():
+    """A prescribed non-zero wall-normal datum u.n = cos(theta) is imposed to the SAME
+    (machine) precision as u.n = 0 at the constrained surface nodes."""
+    RO = 1.0
+    mesh, v = _annulus_datum_solve("cos", "c")
+    vc = v.coords
+    rr = np.hypot(vc[:, 0], vc[:, 1])
+    outer = np.abs(rr - RO) < 2.0e-2                    # outer velocity nodes (incl. edge mids)
+    rhat = vc[outer] / rr[outer, None]
+    vn = np.einsum("ij,ij->i", v.data[outer], rhat)
+    target = vc[outer, 0] / rr[outer]                   # cos(theta) at the same node coords
+    err = np.abs(vn - target).max()
+    assert err < 1e-8, f"prescribed u.n=cos(theta) not imposed: max nodal error {err:.2e}"
+    assert vn.max() > 0.9 and vn.min() < -0.9, "prescribed normal velocity magnitude wrong"

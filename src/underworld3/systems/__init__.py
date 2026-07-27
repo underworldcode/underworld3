@@ -77,6 +77,8 @@ from .solvers import SNES_NavierStokes as NavierStokesSwarm
 from .solvers import SNES_NavierStokes as NavierStokesSLCN
 from .solvers import SNES_NavierStokes as NavierStokes
 
+from .free_surface import FreeSurface
+
 # are the Lagrangian implementations actually distinct in reality ?
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
