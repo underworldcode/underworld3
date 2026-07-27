@@ -986,12 +986,7 @@ class ViscousFlowModel(Constitutive_Model):
         - ``"softmin"``: the δ-parameterised soft-min, in the family chosen by
           ``self.yield_smoother`` — ``"sqrt"`` (default; overshoots τ_y in the
           transition) or ``"powermean"`` (undershoots τ_y, ``η_eff ≤ Min`` always).
-          The ``sqrt`` family is exactly ``Min`` at ``δ = 0``; the ``powermean``
-          family is not — its sharpness ``s = 1/(δ + 0.001)`` saturates at 1000, so it
-          approaches ``Min`` only to about 0.3 %. Measured on a 45 %-yielded box, that
-          leaves the converged solution satisfying the exact yield law to 6e-10 of the
-          initial residual — an order of magnitude INSIDE a 1e-8 solver tolerance, so
-          the difference is not observable in practice (2026-07-27).
+          Both approach exact ``Min`` as ``δ → 0``.
 
         Behaviour at the stock settings (``yield_mode`` per model default,
         ``yield_smoother="sqrt"``) is identical to the previous inline law — δ merely
@@ -3514,12 +3509,17 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         if self.is_viscoplastic:
             vp_eff = self._plastic_effective_viscosity
-            # Same yield envelope as the isotropic models: _combine_yield owns the
-            # harmonic / soft-min / hard-Min choice, reads delta from the
-            # constants[] atom (so a homotopy can ramp it without a recompile) and
-            # honours yield_smoother. Previously inlined here, which pinned this
-            # model to the sqrt family and to a baked float delta.
-            eta_1_eff = self._combine_yield(eta_1_eff, vp_eff)
+            if self._yield_mode == "harmonic":
+                eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
+            elif self._yield_mode == "softmin":
+                delta = self._yield_softness
+                f = eta_1_eff / vp_eff
+                import math  # float offset avoids sympy expression blowup in tensor
+                offset = (-1 + math.sqrt(1 + delta**2)) / 2
+                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
+                eta_1_eff = eta_1_eff / g
+            else:
+                eta_1_eff = sympy.Min(eta_1_eff, vp_eff)
 
         return inner_self.shear_viscosity_0
 
@@ -3607,12 +3607,17 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
         if apply_yield and self.is_viscoplastic:
             vp_eff = self._plastic_effective_viscosity
-            # Same yield envelope as the isotropic models: _combine_yield owns the
-            # harmonic / soft-min / hard-Min choice, reads delta from the
-            # constants[] atom (so a homotopy can ramp it without a recompile) and
-            # honours yield_smoother. Previously inlined here, which pinned this
-            # model to the sqrt family and to a baked float delta.
-            eta_1_eff = self._combine_yield(eta_1_eff, vp_eff)
+            if self._yield_mode == "harmonic":
+                eta_1_eff = 1 / (1 / eta_1_eff + 1 / vp_eff)
+            elif self._yield_mode == "softmin":
+                delta = self._yield_softness
+                f = eta_1_eff / vp_eff
+                import math
+                offset = (-1 + math.sqrt(1 + delta**2)) / 2
+                g = 1 + (f - 1 + sympy.sqrt((f - 1)**2 + delta**2)) / 2 - offset
+                eta_1_eff = eta_1_eff / g
+            else:
+                eta_1_eff = sympy.Min(eta_1_eff, vp_eff)
         return eta_0, eta_1_eff
 
     def _assemble_c_tensor(self, eta_0, eta_1_eff):
@@ -3816,11 +3821,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
     @yield_softness.setter
     def yield_softness(self, value):
-        self._yield_softness = float(value)
-        # Keep the constants[] atom in step: this model now shares the isotropic
-        # _combine_yield, which reads δ from that atom rather than from the float.
-        if getattr(self, "_yield_softness_expr", None) is not None:
-            self._yield_softness_expr.sym = sympy.Float(self._yield_softness)
+        self._yield_softness = value
         self._reset()
 
     @property
@@ -3831,10 +3832,9 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     @property
     def supports_yield_homotopy(self):
         """This model carries a δ-parameterised yield law — ``solve(homotopy=True)``
-        can march it. It shares the isotropic yield envelope (:meth:`_combine_yield`),
-        so ``yield_smoother`` applies here too; its ``yield_softness`` setter still
-        triggers a rebuild, so a δ step costs a recompile the isotropic models avoid.
-        See :meth:`_yield_homotopy_control`."""
+        can march it. Note this model's ``yield_softness`` setter re-triggers a
+        rebuild, so each δ step costs a recompile (the isotropic models update δ as a
+        ``constants[]`` atom instead). See :meth:`_yield_homotopy_control`."""
         return True
 
     # Picard, not Newton — as for the isotropic VEP model, the consistent yield
@@ -4015,12 +4015,17 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             return eta_par
 
         vp_eff = self._plastic_effective_viscosity
-        # Same yield envelope as the isotropic models: _combine_yield owns the
-        # harmonic / soft-min / hard-Min choice, reads delta from the
-        # constants[] atom (so a homotopy can ramp it without a recompile) and
-        # honours yield_smoother. Previously inlined here, which pinned this
-        # model to the sqrt family and to a baked float delta.
-        return self._combine_yield(eta_par, vp_eff)
+        if self._yield_mode == "harmonic":
+            return 1 / (1 / eta_par + 1 / vp_eff)
+        elif self._yield_mode == "softmin":
+            delta = self._yield_softness
+            f = eta_par / vp_eff
+            import math
+            offset = (-1 + math.sqrt(1 + delta**2)) / 2
+            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
+            return eta_par / g
+        else:
+            return sympy.Min(eta_par, vp_eff)
 
     def _eta_par_eff_lagged(self):
         """Yield-clipped ``η_∥_eff`` using the **lagged** strain rate
@@ -4073,12 +4078,17 @@ class TransverseIsotropicVEPSplitFlowModel(TransverseIsotropicVEPFlowModel):
             2 * (gamma_dot_abs_lag + sympy.Float(edot_min_val))
         )
 
-        # Same yield envelope as the isotropic models: _combine_yield owns the
-        # harmonic / soft-min / hard-Min choice, reads delta from the
-        # constants[] atom (so a homotopy can ramp it without a recompile) and
-        # honours yield_smoother. Previously inlined here, which pinned this
-        # model to the sqrt family and to a baked float delta.
-        return self._combine_yield(eta_par, vp_eff_lag)
+        if self._yield_mode == "harmonic":
+            return 1 / (1 / eta_par + 1 / vp_eff_lag)
+        elif self._yield_mode == "softmin":
+            delta = self._yield_softness
+            f = eta_par / vp_eff_lag
+            import math
+            offset = (-1 + math.sqrt(1 + delta ** 2)) / 2
+            g = 1 + (f - 1 + sympy.sqrt((f - 1) ** 2 + delta ** 2)) / 2 - offset
+            return eta_par / g
+        else:
+            return sympy.Min(eta_par, vp_eff_lag)
 
     def _build_split_c_tensors(self, eta_perp, eta_par):
         r"""Build ``C_⊥ = 2·η_⊥·P_⊥`` and ``C_∥ = 2·η_∥·P_∥``.
