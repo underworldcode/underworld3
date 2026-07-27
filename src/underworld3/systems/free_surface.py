@@ -116,6 +116,7 @@ class FreeSurface:
         surface_filter=0,
         consistent_constraint="strong",
         consistent_penalty=1.0e5,
+        background_buoyancy=None,
         verbose=False,
     ):
         self.free = stokes
@@ -145,6 +146,13 @@ class FreeSurface:
             )
         self.consistent_constraint = consistent_constraint
         self._consistent_penalty = float(consistent_penalty)
+        # Full-density (Boussinesq with the rho_0 background retained) runs must pass
+        # the BACKGROUND part of the body force (e.g. -rho_0*g*rhat) here. h_inf is then
+        # computed from the DIFFERENCE of two held-lid reactions — full minus
+        # background-only, on the same geometry — which cancels the discretely-defective
+        # current-shape-load leg of the recovery and isolates the driving support.
+        # None (default) = the single-reaction reduced-formulation path, unchanged.
+        self.background_buoyancy = background_buoyancy
         self.verbose = verbose
 
         # Continuous pressure is required for the CBF reaction on a simplex free
@@ -441,6 +449,19 @@ class FreeSurface:
         self._apply_walls(self.held)
         self.held.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
         self.held.petsc_use_pressure_nullspace = True
+        if self.background_buoyancy is not None:
+            # Twin of the held lid with the BACKGROUND body force only — same walls,
+            # same rotated surface, same geometry — whose recovered reaction carries
+            # the identical (defective) current-shape-load leg. See solve().
+            self.held_bg = self._new_stokes("heldbg")
+            self.held_bg.bodyforce = self.background_buoyancy
+            self._apply_walls(self.held_bg)
+            self.held_bg.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
+            self.held_bg.petsc_use_pressure_nullspace = True
+            self._hinf_bg_field = uw.discretisation.MeshVariable(
+                "h_inf_bg", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            )
+            self._hinf_bg_rows, _ = self._field_rows(self._hinf_bg_field, self._surf_coords)
 
     def _build_consistent(self):
         r"""The consistent solve: walls as the free solve, plus a constraint prescribing
@@ -648,6 +669,23 @@ class FreeSurface:
             mass=self._mass,
         )
         h = np.asarray(self._hinf_field.array[self._hinf_rows, 0, 0], dtype=float)
+        if self.background_buoyancy is not None:
+            # TWO-REACTION h_inf (full-density formulation). On a deformed boundary the
+            # recovered reaction mixes the CURRENT-SHAPE load rho_0*g*h with the driving
+            # support sigma', and the discrete recovery of the load leg is defective
+            # (measured ~0.16 of its continuum value at 5% deformation) while the
+            # driving leg is exact. Running the SAME held recovery with the background
+            # body force alone, on the same geometry, reproduces the identical defective
+            # load leg — so the DIFFERENCE isolates sigma' exactly, and
+            # h_inf = sigma'/(rho_0 g) is the true equilibrium topography.
+            self.held_bg.solve(zero_init_guess=True)
+            self.held_bg.dynamic_topography(
+                self.surface, self._hinf_bg_field, buoyancy_scale=self.buoyancy_scale,
+                mass=self._mass,
+            )
+            h_bg = np.asarray(
+                self._hinf_bg_field.array[self._hinf_bg_rows, 0, 0], dtype=float)
+            h = h - h_bg
         # dynamic_topography returns a depression over a rising load; negate for the
         # physical uplift and float the datum.
         self._h_inf = self._demean(-self._demean(h))
