@@ -2688,6 +2688,11 @@ class Mesh(Stateful, uw_object):
             uw.pprint(f"PETScDS - (re) initialised")
 
         self._coord_array = {}
+        # Cleared with _coord_array because both describe the same node layout:
+        # the coordinates and which cell owns each of them. Topology only, so it
+        # survives node motion — but it is invalidated by the same re-creation
+        # of the DS that invalidates the coordinates.
+        self._cell_node_array = {}
 
         # let's go ahead and do an initial projection from linear (the default)
         # to linear. this really is a nothing operation, but a
@@ -5442,13 +5447,14 @@ class Mesh(Stateful, uw_object):
             self._coord_array[key] = self._get_coords_for_basis(var.degree, var.continuous)
             return self._coord_array[key]
 
-    def _get_coords_for_basis(self, degree, continuous):
-        """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+    def _basis_coordinate_dm(self, degree, continuous):
+        """Coordinate DM carrying a degree-``degree`` Lagrange field.
 
+        Its local section defines the node layout that
+        :meth:`_get_coords_for_basis` reads, so anything that needs to know
+        WHICH node is which — as opposed to just where the nodes are — has to
+        come from this same DM. The caller destroys it.
+        """
         dmold = self.dm.getCoordinateDM()
         dmold.createDS()
         dmnew = dmold.clone()
@@ -5469,6 +5475,73 @@ class Mesh(Stateful, uw_object):
 
         dmnew.setField(0, dmfe)
         dmnew.createDS()
+        dmfe.destroy()          # DMSetField took its own reference
+        return dmnew
+
+    def _cell_node_indices(self, degree, continuous):
+        """Rows of each cell's degrees of freedom, indexing exactly the array
+        :meth:`_get_coords_for_basis` returns for the same ``(degree,
+        continuous)``.
+
+        Returns an ``(n_cells, nodes_per_cell)`` integer array; row ``k`` lists
+        cell ``cStart + k``'s DOF rows in closure order. The order within a row
+        is arbitrary but self-consistent, which is all any consumer needs: the
+        weights are computed from the coordinates read at these same rows, so
+        no reference-element node ordering is ever assumed. (Element assembly
+        WOULD care — the two DOFs on an edge follow the edge's own orientation,
+        not the cell's — so do not repurpose this for that.)
+
+        Knowing a cell's nodes is what turns the adapt parent-CELL map into an
+        exact transfer at any polynomial degree: for a Lagrange element the
+        basis is dual to its nodal points, so a coarse cell's own DOF
+        coordinates determine the coarse interpolant inside it (#425).
+        """
+        from math import comb
+
+        key = (self.isSimplex, degree, continuous)
+        if key in self._cell_node_array:
+            return self._cell_node_array[key]
+
+        dmnew = self._basis_coordinate_dm(degree, continuous)
+        section = dmnew.getLocalSection()
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        cdim = self.cdim
+
+        rows = []
+        for cell in range(cStart, cEnd):
+            cell_rows = []
+            for point in dmnew.getTransitiveClosure(cell)[0]:
+                ndof = section.getDof(point) // cdim
+                if ndof:
+                    offset = section.getOffset(point) // cdim
+                    cell_rows.extend(range(offset, offset + ndof))
+            rows.append(cell_rows)
+        dmnew.destroy()
+
+        expected = comb(degree + self.dim, self.dim)
+        if not self.isSimplex or any(len(r) != expected for r in rows):
+            # A tensor-product Q_k cell carries (k+1)^dim nodes, so the monomial
+            # basis of total degree <= k would not be square against them and
+            # the dual-basis construction does not apply. Say so here rather
+            # than return a ragged array the caller has to second-guess.
+            got = sorted({len(r) for r in rows})
+            raise NotImplementedError(
+                f"_cell_node_indices needs a simplex mesh: expected "
+                f"{expected} nodes per cell for degree {degree} in {self.dim}D, "
+                f"got {got}")
+
+        self._cell_node_array[key] = numpy.asarray(rows, dtype=numpy.int64)
+        return self._cell_node_array[key]
+
+    def _get_coords_for_basis(self, degree, continuous):
+        """
+        This function returns the vertex array for the
+        provided variable. If the array does not already exist,
+        it is first created and then returned.
+        """
+
+        dmold = self.dm.getCoordinateDM()
+        dmnew = self._basis_coordinate_dm(degree, continuous)
 
         matInterp, vecScale = dmold.createInterpolation(dmnew)
         coordsOld = self.dm.getCoordinates()
@@ -5489,7 +5562,6 @@ class Mesh(Stateful, uw_object):
         if vecScale is not None:
             vecScale.destroy()
         dmnew.destroy()
-        dmfe.destroy()
 
         return arrcopy
 
