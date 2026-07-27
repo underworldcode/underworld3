@@ -94,6 +94,12 @@ from .field_projection import (
     write_cell_field_to_viewer,
 )
 
+# DMField evaluation — FE-exact field and gradient evaluation at arbitrary points
+from .dmfield_evaluate import (
+    dmfield_evaluate,
+    dmfield_evaluate_clear_cache,
+)
+
 
 def with_units(sympy_expr, name=None, units=None):
     """

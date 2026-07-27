@@ -2706,6 +2706,12 @@ class Mesh(Stateful, uw_object):
         if self.dm is not self.dm_hierarchy[-1]:
             self.dm.copyDS(self.dm_hierarchy[-1])
 
+        # Cell volumes via PETSc's FVM geometry (one call per cell).
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        self._cell_volumes = numpy.abs(numpy.array(
+            [self.dm.computeCellGeometryFVM(c)[0]
+             for c in range(cStart, cEnd)]))
+
         # Invalidate projected boundary normals (rebuilt lazily on access)
         self._projected_normals = None
         # Per-boundary deformation-tracking normals are stale now too. The
