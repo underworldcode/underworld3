@@ -36,11 +36,17 @@ So the only code that runs during a grind is PETSc's own. The guard has to live 
 
 Three pieces, each chosen for a reason that was measured rather than assumed.
 
-**Where the clock starts.** The outer KSP runs exactly once per Newton step, so its
-iteration 0 is the natural place to restart the budget. No SNES hook is needed — the
-original design proposed resetting the deadline from a custom SNES convergence test, but
-that would mean reimplementing `SNESConvergedDefault` (petsc4py exposes no way to chain to
-it) for no gain.
+**Where the clock starts.** At the beginning of each solve, and again at each outer KSP
+iteration 0 — the outer KSP runs exactly once per Newton step, so that is the per-step
+restart. No SNES hook is needed.
+
+Starting it at the beginning of the solve rather than only at outer iteration 0 is not
+cosmetic. Under left preconditioning — PETSc's default for GMRES, which is the Stokes
+outer solver — `KSPInitialResidual` applies the preconditioner *before* iteration 0. An
+earlier version of this guard armed only at iteration 0 and therefore left one full
+velocity solve plus one pressure solve outside the budget on **every** solve, not just
+the first. Measured: for `pc_side` LEFT the sub-block monitors fire before the outer
+monitor.
 
 **Where the deadline is checked.** In convergence tests on the outer KSP *and on every
 fieldsplit sub-KSP*. The sub-KSPs are where the granularity is: in a representative solve
@@ -56,10 +62,20 @@ solves and reported CONVERGED. Returning `DIVERGED_BREAKDOWN` marks the sub-prec
 failed, which surfaces as `DIVERGED_PC_FAILED` at the outer KSP and `DIVERGED_LINEAR_SOLVE`
 at the SNES.
 
-Because a custom convergence test *replaces* the default rather than composing with it,
-the guard also carries the ordinary rtol / atol / divtol semantics itself. Tolerances are
-re-read every iteration, because Eisenstat–Walker rewrites the outer rtol before each
-Newton step.
+**How it coexists with PETSc's own test.** `KSP.addConvergenceTest(..., prepend=True)`
+runs the guard *in front of* whatever native test the KSP is configured with; returning
+`ITERATING` hands the decision straight back to `KSPConvergedDefault`, with its
+options-configured context intact (`-ksp_converged_maxits`, the non-zero-initial-guess
+residual convention, the norm-type early return, `-ksp_min_it`). Verified: a prepended
+test that always returns `ITERATING` gives identical iteration count and reason to an
+uninstrumented solve.
+
+An earlier version of this guard used `setConvergenceTest`, which *replaces* the default,
+and so had to reimplement rtol/atol/divtol — silently dropping four `KSPConvergedDefault`
+behaviours and mis-reporting an infinite residual as converged. Prepending removes that
+whole class of divergence. It also makes `unguard()` exact rather than approximate: PETSc
+offers no way to remove an added test, so the test stays installed and simply goes inert
+when there is no budget, which is precisely the uninstrumented behaviour.
 
 ### Parallel
 
@@ -75,8 +91,17 @@ already pays for at least one norm reduction — so it does not change the commu
 character of the solve.
 
 `tests/parallel/ptest_0203_wallclock_guard_parallel.py` provokes the hazard deliberately
-with deliberately skewed per-rank clocks. With the reduction it passes at np=2 and np=4;
-with the reduction removed it deadlocks (confirmed at a 90 s limit).
+with skewed per-rank clocks, and is registered in `tests/parallel/mpi_runner.sh`. With the
+reduction it passes at np=2 and np=4; with the reduction removed it deadlocks (confirmed
+at a 90 s limit). Note the failure mode: a dropped reduction *hangs* rather than fails, so
+it must be run under a timeout.
+
+**After a deadline exit, PETSc will not restart the grind by itself.** Once the
+sub-preconditioner is marked failed, a subsequent `snes.solve` in the same call — a
+warm-start retry, or the second stage of a Picard-to-Newton continuation — bails before it
+reaches an iteration. Measured with the expiry latch removed: 34 clock ticks against 32
+with it. The latch is kept because relying on PC-failure propagation is implicit rather
+than guaranteed, but it is belt-and-braces, and no test claims to prove otherwise.
 
 The extra reductions are paid only on the guarded path — an unarmed solver installs no
 convergence tests at all, so the default solve is untouched.
@@ -87,19 +112,22 @@ convergence tests at all, so the default solve is untouched.
 (`utilities/rotated_bc.py`), which the deadline cannot reach. `guard()` raises there
 rather than pretending, matching `estimate_difficulty()`.
 
-**A `preonly` outer KSP.** With no outer iterations there is no convergence test to start
-the clock, so the guard is inert. A direct solve is not the thing this guard exists to
-bound, but it is worth knowing that it is silent rather than protective.
+**A `preonly` or `richardson` outer KSP.** These are skipped entirely, because both change
+what they *do* when a monitor is attached — `KSPSolve_PREONLY` computes a norm, a matvec
+and a second norm purely to have something to report, and `KSPRICHARDSON` gives up the
+fused `PCApplyRichardson` path. Neither iterates, so there is nothing for the gauge to
+count or the deadline to bound; instrumenting them would be all cost and no information.
+A direct solve is not what this guard exists to bound, but it is silent there rather than
+protective.
 
-**The first preconditioner application.** On a solver's **first** solve the fieldsplit
-blocks do not exist when the solve begins:
-they are created by `PCSetUp`, which runs inside the first `KSPSolve`. The guard attaches
-to them at the earliest reachable moment — the outer KSP's iteration 0 — which is *after*
-the preconditioner has been applied once. So one preconditioner application on the first
-solve is outside the deadline. Every solve after that is fully covered, because the blocks
-persist.
+**The first solve's sub-KSP counts.** On a solver's **first** solve the fieldsplit blocks
+do not exist when the solve begins: they are created by `PCSetUp`, which runs inside the
+first `KSPSolve`. The guard attaches to them at the earliest reachable moment, which is
+after the preconditioner has been applied once — so that solve's block counts are a lower
+bound and `SubSolveReport.complete` is `False` to say so. The *deadline* is unaffected,
+because the clock is already running from the start of the solve.
 
-A driver that cares should do one cheap solve before arming the guard, which it usually
+A driver that wants exact work should do one cheap solve before arming, which it usually
 does anyway to pay for the JIT compile.
 
 ## The work gauge
@@ -121,6 +149,11 @@ is exact.
 Cost of leaving the gauge always on: 624 monitor callbacks in a 280 ms solve, no measurable
 change in wall time (medians 282 ms instrumented against 284 ms not, run alternately;
 run-to-run noise is larger than the difference).
+
+The instrumentation holds petsc4py references to the KSPs it watches, and those
+reference-count the PC and the whole multigrid hierarchy. It therefore releases them when
+the solver tears its SNES down, or a rebuilding solver would carry two hierarchies at once
+— the leak `BUGFIX(#157)` exists to prevent.
 
 ## Usage
 

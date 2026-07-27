@@ -79,9 +79,7 @@ from .solvers import SNES_NavierStokes as NavierStokes
 
 from .free_surface import FreeSurface
 
-# Records left by every solve — read via solver.solve_report. SubSolveReport is what
-# solve_report.sub holds, one entry per fieldsplit block (see solver_health).
-from .solve_report import SolveReport
+# What solve_report.sub holds — one entry per fieldsplit block (see solver_health).
 from .solver_health import SubSolveReport
 
 # are the Lagrangian implementations actually distinct in reality ?

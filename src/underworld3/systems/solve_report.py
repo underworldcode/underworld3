@@ -12,7 +12,10 @@ See ``underworld3.cython.petsc_generic_snes_solvers.SolverBaseClass``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Mapping, Optional, Tuple
+
+if TYPE_CHECKING:                       # keeps this module importable on its own
+    from underworld3.systems.solver_health import SubSolveReport
 
 # PETSc SNESConvergedReason codes -> short names. Mirrors the compact map in
 # SolverBaseClass._convergence_reasons; duplicated here so this module imports without the
