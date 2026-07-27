@@ -669,7 +669,18 @@ class FreeSurface:
             mass=self._mass,
         )
         h = np.asarray(self._hinf_field.array[self._hinf_rows, 0, 0], dtype=float)
-        if self.background_buoyancy is not None:
+        if isinstance(self.background_buoyancy, str) and self.background_buoyancy == "analytic":
+            # SINGLE-SOLVE full-density h_inf. The recovered reaction under full density
+            # is (self-load + driving) and the recovery is essentially exact (probes:
+            # load leg 0.976, driving leg 0.972, exact superposition). The self-load
+            # component of the returned field equals +h_current, and the reduced-form
+            # negation below would flip it (h_inf = -h + drive: fixed point at HALF the
+            # equilibrium, period-2 ringing). Subtracting the ANALYTIC current height --
+            # read from the geometry, no extra solve -- cancels the self-load so the
+            # negation applies to the driving part alone, as validated on the reduced
+            # formulation. Residual error ~2.4% of h (the recovery's own accuracy).
+            h = h - self._current_shape()
+        elif self.background_buoyancy is not None:
             # TWO-REACTION h_inf (full-density formulation). On a deformed boundary the
             # recovered reaction mixes the CURRENT-SHAPE load rho_0*g*h with the driving
             # support sigma', and the discrete recovery of the load leg is defective
