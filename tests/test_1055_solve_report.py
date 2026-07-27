@@ -150,3 +150,114 @@ def test_solve_report_helpers():
     assert reason_string(999).startswith("UNKNOWN")
     assert contraction([50.0, 1e-3, 1e-6, 1e-9]) is not None
     assert contraction([50.0]) is None        # < 2 points -> undefined
+
+
+# --------------------------------------------------------------------------- #
+#  Rotated free-slip paths (solve outside self.snes -> report from the rotated
+#  result dicts; regression for the review findings on PR #377)
+# --------------------------------------------------------------------------- #
+
+def _rotated_stokes(nonlinear=False):
+    """Box Stokes with rotated strong free-slip on all four walls."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25
+    )
+    v = uw.discretisation.MeshVariable("Ur", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("Pr", mesh, 1, degree=1, continuous=True)
+    st = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    if nonlinear:
+        edot = st.Unknowns.Einv2 + 1.0e-8
+        st.constitutive_model.Parameters.shear_viscosity_0 = (1.0e-2 + edot) ** (-0.4)
+    else:
+        st.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    st.tolerance = 1.0e-6
+    x, y = mesh.X
+    st.bodyforce = sympy.Matrix([0, sympy.sin(np.pi * x) * sympy.sin(np.pi * y)])
+    for w in ("Bottom", "Top", "Left", "Right"):
+        st.add_rotated_freeslip_bc(0, w)
+    st.petsc_use_pressure_nullspace = True
+    return st, v
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_rotated_linear_solve_report():
+    """The linear rotated path leaves a populated report: KSP-namespace reason,
+    a real residual norm (not NaN), and one entry in the history trail."""
+    st, _ = _rotated_stokes(nonlinear=False)
+    st.solve()
+    r = st.solve_report
+    assert isinstance(r, SolveReport)
+    assert r.converged and r.ksp_its >= 1
+    assert r.nl_its == 1                       # one outer solve on the linear path
+    assert r.fnorm == r.fnorm                  # finite: rnorm is in the result dict
+    assert r.reason_str.startswith("KSP_")     # KSP namespace, not the SNES table
+    assert len(st.solve_history) == 1
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_rotated_nonlinear_solve_report():
+    """The manual nonlinear rotated loop reports its OUTER verdict and effort:
+    nl_its from nonlinear_iterations, ksp_its summed over the per-Newton list."""
+    st, _ = _rotated_stokes(nonlinear=True)
+    st.solve()
+    info = st._rotated_freeslip_info
+    r = st.solve_report
+    assert isinstance(r, SolveReport), "nonlinear rotated solve left no report"
+    assert r.converged == info["converged"]
+    assert r.nl_its == info["nonlinear_iterations"] and r.nl_its >= 2
+    assert r.ksp_its == sum(info["ksp_its"])
+    assert r.fnorm == r.fnorm and r.fnorm0 is not None and r.fnorm < r.fnorm0
+    assert r.reason_str.startswith("KSP_")
+    assert len(st.solve_history) == 1
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_estimate_difficulty_rejects_rotated_and_bad_kwargs():
+    st, _ = _rotated_stokes(nonlinear=False)
+    with pytest.raises(NotImplementedError):
+        st.estimate_difficulty(max_nl_its=2)
+    st2, _ = _nonlinear_stokes()
+    with pytest.raises(TypeError):
+        st2.estimate_difficulty(max_nl_its=2, zero_init_guess=True)
+    with pytest.raises(TypeError):
+        st2.estimate_difficulty(max_nl_its=2, divergence_retries=1)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_warm_probe_on_converged_state_does_not_poison_anchor():
+    """A warm estimate_difficulty on an already-converged state must not arm an
+    anchor at tolerance*||F_converged|| (an unreachable target that would make the
+    next probe grind and mislabel its exit)."""
+    st, _ = _nonlinear_stokes()
+    st.solve(zero_init_guess=True)
+    rep = st.estimate_difficulty(max_nl_its=10, warm=True)
+    assert rep.converged
+    assert st._resume_abs_target is None       # converged probe leaves no armed anchor
+    rep2 = st.estimate_difficulty(max_nl_its=10, warm=True)
+    assert rep2.converged and rep2.nl_its <= 1  # no grinding on a converged state
+    assert st._resume_abs_target is None
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_ksp_reason_table_matches_petsc():
+    """The KSP reason table is hand-written (this module must import without petsc4py
+    at build-doc time) — pin it to the real enum so a PETSc renumbering is caught."""
+    from petsc4py import PETSc
+    from underworld3.systems.solve_report import KSP_REASON_STRINGS, ksp_reason_string
+
+    enum_names = {}
+    for name, value in vars(PETSc.KSP.ConvergedReason).items():
+        if isinstance(value, int) and not name.startswith("_"):
+            enum_names.setdefault(value, name)
+    for code, label in KSP_REASON_STRINGS.items():
+        if code == 0:
+            continue                           # petsc4py spells 0 CONVERGED_ITERATING
+        assert label == f"KSP_{enum_names[code]}", (code, label, enum_names[code])
+    assert ksp_reason_string(-3) == "KSP_DIVERGED_MAX_IT"
+    assert ksp_reason_string(999).startswith("KSP_UNKNOWN")

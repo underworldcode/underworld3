@@ -42,6 +42,40 @@ def reason_string(reason: int) -> str:
     return REASON_STRINGS.get(int(reason), f"UNKNOWN_{reason}")
 
 
+# PETSc KSPConvergedReason codes -> short names. This is a DIFFERENT namespace from the
+# SNES table above: the integers overlap but name different outcomes (e.g. -3 is
+# SNES DIVERGED_LINEAR_SOLVE but KSP DIVERGED_MAX_IT). Rotated free-slip solves report
+# KSP codes and must be rendered with this table. Names carry the KSP_ prefix so a
+# report string is unambiguous about which namespace it came from. Verified against
+# petsc4py's PETSc.KSP.ConvergedReason (see test_1055).
+KSP_REASON_STRINGS = {
+    1: "KSP_CONVERGED_RTOL_NORMAL_EQUATIONS",
+    2: "KSP_CONVERGED_RTOL",
+    3: "KSP_CONVERGED_ATOL",
+    4: "KSP_CONVERGED_ITS",
+    5: "KSP_CONVERGED_NEG_CURVE",
+    6: "KSP_CONVERGED_STEP_LENGTH",
+    7: "KSP_CONVERGED_HAPPY_BREAKDOWN",
+    9: "KSP_CONVERGED_ATOL_NORMAL_EQUATIONS",
+    0: "KSP_ITERATING",
+    -2: "KSP_DIVERGED_NULL",
+    -3: "KSP_DIVERGED_MAX_IT",
+    -4: "KSP_DIVERGED_DTOL",
+    -5: "KSP_DIVERGED_BREAKDOWN",
+    -6: "KSP_DIVERGED_BREAKDOWN_BICG",
+    -7: "KSP_DIVERGED_NONSYMMETRIC",
+    -8: "KSP_DIVERGED_INDEFINITE_PC",
+    -9: "KSP_DIVERGED_NANORINF",
+    -10: "KSP_DIVERGED_INDEFINITE_MAT",
+    -11: "KSP_DIVERGED_PCSETUP_FAILED",
+}
+
+
+def ksp_reason_string(reason: int) -> str:
+    """Human-readable name for a PETSc KSP converged-reason code."""
+    return KSP_REASON_STRINGS.get(int(reason), f"KSP_UNKNOWN_{reason}")
+
+
 def contraction(history) -> Optional[float]:
     """Geometric-mean per-iteration contraction factor ρ from a residual ladder.
 

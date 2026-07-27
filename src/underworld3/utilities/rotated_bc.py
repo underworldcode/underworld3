@@ -277,7 +277,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         * ``"normal_rows"`` — global rows of the constrained normal components;
         * ``"boundaries"`` — the boundary specs the rotation was built from;
         * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
-        * ``"ksp_reason"``, ``"ksp_its"`` — outer KSP converged-reason and iteration count.
+        * ``"ksp_reason"``, ``"ksp_its"`` — outer KSP converged-reason and iteration count;
+        * ``"rnorm"`` — true rotated residual ‖Â·û − b̂‖ (feeds the solve report).
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -369,6 +370,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
         ksp_its = ctx["ksp"].getIterationNumber()
         _destroy_rotated_ksp_ctx(ctx)
 
+    # True rotated residual ‖Â·û − b̂‖ for the solve report (one matvec). Computed
+    # explicitly rather than read off the KSP: preonly/LU never computes a norm, and
+    # the iterative norm can be the preconditioned one.
+    _res = bhat.duplicate()
+    Ahat.mult(Uhat, _res)
+    _res.axpy(-1.0, bhat)
+    rnorm = float(_res.norm())
+    _res.destroy()
+
     # rotate back u = Qᵀ û  (U is returned in the result dict → create, don't
     # borrow from the pool)
     U = dm.createGlobalVec()
@@ -379,7 +389,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True, verbo
     return {"Q": Q, "Qt": Qt, "A": Aorig, "b": b, "U": U, "Uhat": Uhat,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed, "ksp_reason": ksp_reason,
-            "ksp_its": ksp_its}
+            "ksp_its": ksp_its, "rnorm": rnorm}
 
 
 def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge):
@@ -558,6 +568,8 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
         * ``"ksp_its"`` — list of linear iteration counts, one per Newton iteration;
         * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count (the number
           of Newton increments solved, ``== len(ksp_its)``) and status;
+        * ``"rnorm"``, ``"rnorm0"`` — final and initial rotated residual norms ‖F̂‖
+          (feed the solve report);
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired.
     """
     if getattr(solver, "snes", None) is None:
@@ -724,7 +736,7 @@ def solve_rotated_freeslip_nonlinear(solver, boundaries, remove_rotation_gauge=T
             "normal_rows": normal_rows, "boundaries": list(boundaries),
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
-            "ksp_its": lin_its,
+            "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
             "continuation_switched": continuation and phase == "newton"}
 
 
