@@ -94,6 +94,18 @@ class FreeSurface:
         in the volume it passes through the surface.
     consistent_penalty : float, optional
         Penalty magnitude used when ``consistent_constraint="penalty"``.
+    background_buoyancy : None, "analytic", or sympy expression, optional
+        REQUIRED (non-None) whenever the body force retains the :math:`\rho_0`
+        background (full Boussinesq, :math:`\rho = \rho_0(1-\alpha\Delta T)`) — the
+        formulation needed for the surface restoring force. The recovered held-lid
+        reaction then contains the self-load of the current shape, which must be
+        removed before the reduced-form sign conversion (otherwise
+        :math:`h_\infty = -h + \mathrm{drive}/\rho g`: the surface parks at half its
+        equilibrium with steady flow through it). ``"analytic"`` (recommended)
+        subtracts the geometric current height — no extra solve. A sympy expression
+        (the background body force, e.g. ``-rho_g * rhat``) instead runs a twin held
+        solve and subtracts its recovery — the exact reference mode. ``None``
+        (default) is the reduced/driving-only formulation, unchanged.
     verbose : bool, optional
         Report per-step surface diagnostics through :func:`uw.mpi.rank`-safe output.
     """
