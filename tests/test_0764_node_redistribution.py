@@ -7,9 +7,10 @@ algorithm names (NVB, MMPDE) live in internals and docs. Locked here:
   fixed-topology node redistribution — dispatches through the
   mesh-controlled ``Mesh.redistribute_nodes`` method (mesh types control
   how they can be modified);
-* supported: 2D simplex (triangle) meshes, warning-free;
-* unsupported mesh types (quad/hex, 3D simplex, manifolds) raise an
-  honest ``NotImplementedError`` stating what exists;
+* supported: 2D (triangle) and 3D (tetrahedral) simplex meshes,
+  warning-free;
+* unsupported mesh types (quad/hex, manifolds) raise an honest
+  ``NotImplementedError`` stating what exists;
 * ``mesh.adapt(metric, max_levels=...)`` needs no ``engine=`` and
   defaults to the graded NVB engine on 2D meshes.
 """
@@ -68,17 +69,49 @@ class TestNodeRedistribution:
                            match="2D simplex"):
             uw.meshing.node_redistribution(mesh, sympy.sympify(1))
 
-    def test_3d_simplex_raises_not_implemented(self):
+    def test_3d_simplex_moves_no_fold_boundary_held(self):
+        """3D node redistribution landed with the adaptivity capstone
+        (round 2): the same MMPDE mover drives tetrahedral meshes. One
+        compact run walks the ladder — nodes move, nothing folds (every
+        tet keeps its orientation sign), and slip keeps boundary nodes
+        EXACTLY on their box faces (the face-only 3D labels close down
+        to vertices now). Callback-sync failures (#376's trigger exists
+        identically in 3D) RAISE since the #379 rework, so a clean run
+        is itself the guard — no log capture needed."""
+        from underworld3.meshing.smoothing.graph import (
+            _tet_cells, _signed_volumes)
+
         mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
-            cellSize=0.5)
-        with pytest.raises(NotImplementedError,
-                           match="2D simplex"):
-            uw.meshing.node_redistribution(mesh, sympy.sympify(1))
+            cellSize=0.3)
+        x, y, z = mesh.X
+        d = sympy.Abs((x - 0.35) * 0.866 + (z - 1.0) * 0.5)
+        rho = 1.0 + 15.0 * sympy.exp(-((d / 0.15) ** 2))
+
+        before = np.asarray(mesh.X.coords).copy()
+        tets = _tet_cells(mesh.dm)
+        sign0 = np.sign(_signed_volumes(before, tets))
+
+        uw.meshing.node_redistribution(
+            mesh, rho, slip_surfaces=True,
+            method_kwargs=dict(n_outer=15))
+
+        after = np.asarray(mesh.X.coords)
+        assert after.shape == before.shape            # topology preserved
+        assert np.all(np.isfinite(after))
+        assert not np.allclose(before, after)         # nodes actually moved
+        # no fold: every tet keeps its original orientation sign
+        assert np.array_equal(np.sign(_signed_volumes(after, tets)), sign0)
+        # slip holds boundary nodes exactly on their planes
+        for k in range(3):
+            for v in (0.0, 1.0):
+                onf = np.isclose(before[:, k], v, atol=1.0e-9)
+                assert np.allclose(after[onf, k], v, atol=1.0e-9)
 
     def test_exported_from_meshing_namespace(self):
         assert "node_redistribution" in uw.meshing.__all__
         assert callable(uw.meshing.node_redistribution)
+
 
 
 class TestEngineLessAdapt:
@@ -107,18 +140,72 @@ class TestEngineLessAdapt:
         assert child is not base
         assert child.parent is base
 
-    def test_engine_less_adapt_3d_raises_not_implemented(self):
-        # Maintainer ruling 2026-07-17: an engine-less 3D adapt must refuse
-        # honestly (3D refinement is planned work), not silently select SBR.
-        # engine="sbr" remains the explicit 3D opt-in.
+    def test_engine_less_adapt_3d_returns_child(self):
+        # The 2026-07-17 "refuse honestly" placeholder is retired: 3D
+        # refinement landed with the adaptivity capstone (round 1), so the
+        # engine-less call now returns a graded tetrahedral child. Full 3D
+        # gates live in test_0840/test_0842.
         base3d = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
             cellSize=0.5, refinement=1,
         )
         M = uw.discretisation.MeshVariable("M3d", base3d, 1, degree=1)
-        M.data[:, 0] = 1.0
-        with pytest.raises(NotImplementedError, match="planned work"):
-            base3d.adapt(M, max_levels=1)
+        M.data[:, 0] = 1.0 / 0.12**2      # finer than the refined base (~0.22)
+        child = base3d.adapt(M, max_levels=1)
+        assert child.parent is base3d
+        cs, ce = child.dm.getHeightStratum(0)
+        bs, be = base3d.dm.getHeightStratum(0)
+        assert ce - cs > be - bs
+
+    def test_redistribute_then_adapt_composition(self, caplog):
+        """adapt() after redistribute_nodes refines the MOVED geometry and
+        must not touch the parent's static hierarchy: DMClone shares the
+        coordinates Vec by reference, so the moved-coordinate carry has to
+        install a duplicate (review finding, 2026-07 capstone close-out).
+
+        The same mover run also guards #376: masked in-place updates
+        (``data[mask] /= s``) must not fire the canonical PETSc-sync
+        callback on the fancy-indexed COPY — in serial that surfaced as
+        swallowed 'Callback error ... could not broadcast' log warnings;
+        in parallel the partition-dependent mask made the collective sync
+        rank-asymmetric and hung the mover. The refinement=1 box is the
+        trigger (`Gamma_P1` has one zero-magnitude corner normal, so the
+        mask drops one node)."""
+        import logging
+
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+            cellSize=0.4, refinement=1, qdegree=2)
+        hier_before = mesh.dm_hierarchy[-1].getCoordinatesLocal().array.copy()
+
+        x, y = mesh.X
+        d = sympy.Abs((x - 0.35) * 0.866 + (y - 1.0) * 0.5)
+        h = sympy.sqrt(0.08**2 + (1.6 * d) ** 2)
+        with caplog.at_level(logging.WARNING,
+                             logger="underworld3.utilities.nd_array_callback"):
+            mesh.redistribute_nodes(1.0 / h**2, slip_surfaces=True)
+        bad = [r.message for r in caplog.records
+               if "allback error" in r.message]
+        assert not bad, f"swallowed canonical-callback errors: {bad[:3]}"
+        moved = mesh.dm.getCoordinatesLocal().array.copy()
+        assert not np.array_equal(moved, hier_before)   # mover moved nodes
+
+        def metric(centroids):
+            dd = np.abs((np.asarray(centroids)[:, :2]
+                         - np.array([0.35, 1.0])) @ np.array([0.866, 0.5]))
+            return 1.0 / np.minimum(np.sqrt(0.02**2 + (1.6 * dd) ** 2),
+                                    0.4) ** 2
+
+        child = mesh.adapt(metric, max_levels=2)
+        # the child's base generation is the MOVED mesh, vertex for vertex
+        base_verts = moved.reshape(-1, 2)
+        child_verts = np.asarray(child.X.coords)
+        from scipy.spatial import cKDTree
+        dist, _ = cKDTree(child_verts).query(base_verts)
+        assert dist.max() < 1e-12
+        # ... and the parent's static hierarchy is untouched
+        hier_after = mesh.dm_hierarchy[-1].getCoordinatesLocal().array
+        assert np.array_equal(hier_after, hier_before)
 
     def test_engine_less_adapt_is_nvb(self):
         """The engine-less child matches an explicit engine='nvb' child

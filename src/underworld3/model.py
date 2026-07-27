@@ -542,6 +542,7 @@ class Model(PintNativeModelMixin, BaseModel):
         try:
             # Import global_evaluate for mesh-to-mesh transfer
             import underworld3 as uw
+            import numpy as np
 
             # Get target coordinates based on variable type
             from .discretisation import MeshVariable
@@ -552,8 +553,12 @@ class Model(PintNativeModelMixin, BaseModel):
                 # Mesh variable (direct or wrapped)
                 target_coords = target_var.coords
             elif hasattr(target_var, "swarm"):
-                # Swarm variable
-                target_coords = target_var.swarm.points
+                # Swarm variable: model-unit coordinates, matching the
+                # non-dimensional space evaluate() works in. (swarm.coords
+                # returns a pint Quantity under active units, which
+                # evaluate cannot consume — the blanket except below then
+                # silently skipped the transfer.)
+                target_coords = np.asarray(target_var.swarm._particle_coordinates.data)
             else:
                 raise ValueError(f"Unsupported target variable type: {type(target_var)}")
 
@@ -4402,12 +4407,11 @@ class Model(PintNativeModelMixin, BaseModel):
         if swarm_count > 0 and verbose >= 1:
             for swarm_id, swarm in list(self._swarms.items()):
                 try:
-                    if hasattr(swarm, "data") and swarm.data is not None:
-                        particle_count = len(swarm.data)
-                        lines.append(f"  - Swarm {swarm_id}: {particle_count:,} particles")
-                    else:
-                        lines.append(f"  - Swarm {swarm_id}: unknown size")
-                except:
+                    particle_count = swarm.local_size
+                    lines.append(f"  - Swarm {swarm_id}: {particle_count:,} particles")
+                except Exception:
+                    # Summary display only: a partially built swarm (no DM
+                    # yet) should not break the model overview.
                     lines.append(f"  - Swarm {swarm_id}: {type(swarm).__name__}")
         lines.append("")
 

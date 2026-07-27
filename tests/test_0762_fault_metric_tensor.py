@@ -10,7 +10,8 @@ refining a thin band ACROSS one or more faults. These tests pin:
   metric=M) centres TWO close faults on their lines (|offset| < one refined
   cell) with the topology preserved (r-adapt, not h-adapt);
 * the builder accepts Surface objects equivalently to raw segments;
-* 3D raises NotImplementedError (the mover is 2D-only).
+* 3D raises NotImplementedError (the BUILDER's polyline-band
+  construction is planar; the MMPDE mover itself handles 3D).
 """
 import numpy as np
 import sympy

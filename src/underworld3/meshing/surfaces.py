@@ -267,7 +267,7 @@ def _profile_to_edge_lengths(
     width : float
         Transition distance from h_near to h_far.
     profile : str
-        One of "linear", "smoothstep", or "gaussian".
+        One of "linear", "smoothstep", "gaussian", or "hyperbolic".
 
     Returns
     -------
@@ -285,9 +285,21 @@ def _profile_to_edge_lengths(
         sigma = width / 3.0
         gaussian = np.exp(-(dist_values**2) / (2 * sigma**2))
         return h_far - (h_far - h_near) * gaussian
+    elif profile == "hyperbolic":
+        # h(d) = sqrt(h_near² + (s·d)²), capped at h_far: cell size grows
+        # in proportion to distance once clear of the surface, so each
+        # bisection generation fills a band about as wide as its own cell
+        # size. Of the profiles this one buys the most transition fidelity
+        # per cell (2026-07 3D adaptivity evaluation); prefer "gaussian"
+        # when a corridor of UNIFORM h around the surface is wanted (e.g.
+        # resolving a weak zone), "linear" for the minimum cell count.
+        slope = np.sqrt(np.maximum(h_far**2 - h_near**2, 0.0)) / width
+        return np.minimum(
+            np.sqrt(h_near**2 + (slope * dist_values) ** 2), h_far)
     else:
         raise ValueError(
-            f"Unknown profile: {profile}. Use 'linear', 'smoothstep', or 'gaussian'"
+            f"Unknown profile: {profile}. "
+            "Use 'linear', 'smoothstep', 'gaussian', or 'hyperbolic'"
         )
 
 
@@ -1628,8 +1640,11 @@ class Surface:
             Distance over which to transition from h_near to h_far.
             If None, defaults to 2 * h_far.  Same unit handling as *h_near*.
         profile : str, optional
-            Transition profile: "linear", "smoothstep", or "gaussian".
-            Default is "linear".
+            Transition profile: "linear", "smoothstep", "gaussian", or
+            "hyperbolic". Default is "linear". In short: "hyperbolic"
+            gives the best transition fidelity per cell (size grows with
+            distance), "gaussian" holds a corridor of uniform size around
+            the surface, "linear" needs the fewest cells.
         name : str, optional
             Name for the metric MeshVariable. Defaults to "{surface_name}_metric".
 
@@ -1756,8 +1771,12 @@ class Surface:
             as :meth:`refinement_metric`).
         width : float or quantity, optional
             Transition distance; defaults to ``2 * h_far``.
-        profile : {"linear", "smoothstep", "gaussian"}
-            Distance-to-size profile. Default ``"linear"``.
+        profile : {"linear", "smoothstep", "gaussian", "hyperbolic"}
+            Distance-to-size profile. Default ``"linear"``. "hyperbolic"
+            (h ∝ distance once clear of the surface) gives the best
+            transition fidelity per cell and pairs well with adapt();
+            "gaussian" holds a uniform-size corridor around the surface;
+            "linear" needs the fewest cells.
 
         Returns
         -------
@@ -2456,7 +2475,8 @@ class SurfaceCollection:
         width : float or quantity, optional
             Transition distance.  Defaults to ``2 * h_far``.
         profile : str
-            ``"linear"``, ``"smoothstep"``, or ``"gaussian"``.
+            ``"linear"``, ``"smoothstep"``, ``"gaussian"``, or
+            ``"hyperbolic"``.
         variable_name : str
             Name for the metric MeshVariable.
 
@@ -2727,7 +2747,10 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     Parameters
     ----------
     mesh : Mesh
-        2D mesh (the anisotropic mover is 2D-only).
+        2D mesh. (The metric CONSTRUCTION here is 2D — polyline
+        normals and in-plane bumps; the MMPDE mover itself now
+        handles 3D, so a 3D generalisation of this builder is a
+        geometry exercise, not a mover limitation.)
     faults : Surface | array | list
         The fault geometry, in **mesh coordinate space**: a :class:`Surface`
         (uses its control-point polyline), an ``(N>=2, 2|3)`` polyline array,
@@ -2758,7 +2781,10 @@ def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "fault_metric_tensor is 2D only (matches the anisotropic mover)")
+            "fault_metric_tensor is 2D only: the polyline-normal band\n"
+            "construction is planar. The MMPDE mover itself handles 3D —\n"
+            "build a 3D metric directly (e.g. from a plane/surface\n"
+            "distance) and pass it to redistribute_nodes.")
     R = float(refinement)
     if isinstance(width, str):
         if width.strip().lower() != "auto":
@@ -2850,9 +2876,10 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     Parameters
     ----------
     mesh : Mesh
-        2D mesh. (The MMPDE mover is 2D-only; 3D would need a 3D
-        discretization of the mover, which does not yet exist, so this
-        builder is 2D-only.)
+        2D mesh. (The comb construction — teeth along a polyline,
+        rows across it — is planar geometry; the MMPDE mover itself
+        now handles 3D, so a 3D comb would be a geometry exercise,
+        not a mover limitation.)
     faults : Surface | array | list
         Fault geometry in mesh coordinate space — a :class:`Surface`, an
         ``(N>=2, 2|3)`` polyline array, or a list mixing those. Each fault's
@@ -2885,8 +2912,9 @@ def fault_comb_metric(mesh, faults, cell_size, n_across=4, amplitude=6.0,
     cdim = mesh.cdim
     if cdim != 2:
         raise NotImplementedError(
-            "fault_comb_metric is 2D only (the MMPDE mover is 2D; 3D needs "
-            "a 3D discretization of the mover)")
+            "fault_comb_metric is 2D only: the comb construction is\n"
+            "planar. The MMPDE mover itself handles 3D — build a 3D\n"
+            "metric directly and pass it to redistribute_nodes.")
     dx = float(cell_size)
     if not (dx > 0.0):
         raise ValueError(f"cell_size must be positive; got {cell_size}")

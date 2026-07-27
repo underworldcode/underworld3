@@ -1,4 +1,5 @@
 #include "petsc_tools.h"
+#include <math.h>
 
 /*@C
   DMInterpolationSetUp - Compute spatial indices for point location during interpolation
@@ -16,7 +17,7 @@
 .seealso: DMInterpolationEvaluate(), DMInterpolationAddPoints(), DMInterpolationCreate()
 @*/
 
-PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool redundantPoints, PetscBool ignoreOutsideDomain, size_t *owning_cell)
+PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool redundantPoints, PetscBool ignoreOutsideDomain, size_t *owning_cell, PetscBool hintAuthoritative)
 {
   MPI_Comm           comm = ctx->comm;
   PetscScalar       *a;
@@ -68,10 +69,10 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   PetscCall(PetscMalloc2(N, &foundProcs, N, &globalProcs));
   for (p = 0; p < N; ++p) foundProcs[p] = size;
   cellSF = NULL;
-  if (owning_cell) {
+  if (owning_cell && hintAuthoritative) {
     /*
-      Bypass DMLocatePoints when the caller supplies a hint (ported from
-      feature/dminterp-bypass-element-check, 17a5a8d).
+      Bypass DMLocatePoints when the caller supplies an AUTHORITATIVE hint
+      (ported from feature/dminterp-bypass-element-check, 17a5a8d).
 
       The caller is expected to call this path only on meshes where the
       hint is authoritative for cell containment — simplex cells (planar
@@ -97,7 +98,18 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
       if (owning_cell[p] != (size_t)-1) foundProcs[p] = rank;
     }
   } else {
-    /* Build pointVec lazily — only the DMLocatePoints path needs it. */
+    /*
+      DMLocatePoints is authoritative. A non-authoritative `owning_cell`
+      hint (if supplied) is NOT used to bypass the search — it only
+      prefills `recovery_cells` below, rescuing points that PETSc's
+      _REMOVE flag silently drops (e.g. query points sitting exactly on
+      the domain's closed upper faces, where the grid-hash / in-cell
+      convention is half-open). Without that rescue such points fall
+      through to the explicit zero-fill in DMInterpolationEvaluate_UW —
+      the silent ψ*-corruption behind the VEP stability blow-up (#390).
+
+      Build pointVec lazily — only this DMLocatePoints path needs it.
+    */
     #if defined(PETSC_USE_COMPLEX)
     PetscCall(PetscMalloc1(N * ctx->dim, &globalPointsScalar));
     for (i = 0; i < N * ctx->dim; i++) globalPointsScalar[i] = globalPoints[i];
@@ -183,9 +195,9 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
 #else
   PetscCall(PetscFree2(foundProcs, globalProcs));
   PetscCall(PetscSFDestroy(&cellSF));
-  /* pointVec / globalPointsScalar are only constructed on the !owning_cell
-     (DMLocatePoints) branch above. */
-  if (!owning_cell) {
+  /* pointVec / globalPointsScalar are only constructed on the
+     DMLocatePoints branch above (pointVec stays NULL on the bypass). */
+  if (pointVec) {
     PetscCall(VecDestroy(&pointVec));
     if ((void *)globalPointsScalar != (void *)globalPoints) PetscCall(PetscFree(globalPointsScalar));
   }
@@ -256,17 +268,16 @@ PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ctx, DM dm, Vec x,
 
       if (ctx->cells[p] < 0) {
         // Point couldn't be located in any cell (DMLocatePoints
-        // returned -1 — typically happens for query points sitting
-        // exactly on inter-cell boundaries or just outside the
-        // domain). Skipping the FE evaluation leaves
-        // interpolant[p*dof + ...] holding whatever was in
-        // PETSc-allocated memory at v's creation, which presents to
-        // the caller as physics-violating outliers (values ~1e+246,
-        // -5e+92, etc. observed at degree=2 interior nodes during
-        // Phase H). Zero the slot explicitly so unlocatable points
-        // are visible as zeros rather than garbage.
+        // returned -1 and no hint recovered it). Fill with NaN, not
+        // zero: a zero here is a plausible-looking field value that
+        // propagates silently (the psi* corruption behind the VEP
+        // blow-up, #390), while NaN is loud. The caller retrieves the
+        // unlocated mask (DMInterpolationGetUnlocated_UW) and fills
+        // these slots via the RBF fallback; NaN survives only if that
+        // plumbing is bypassed — which is exactly when it should be
+        // visible.
         for (PetscInt fc = 0; fc < ctx->dof; ++fc)
-          interpolant[p * ctx->dof + fc] = 0.0;
+          interpolant[p * ctx->dof + fc] = (PetscScalar)NAN;
         continue;
       }
       for (d = 0; d < cdim; ++d) pcoords[d] = PetscRealPart(coords[p * cdim + d]);
@@ -356,5 +367,24 @@ PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ctx, DM dm, Vec x,
     //   }
     // }
   }
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/*
+  DMInterpolationGetUnlocated_UW - report which of the context's owned points
+  have no owning cell (ctx->cells[p] < 0). These are the points DMLocatePoints
+  dropped and no hint recovered; their interpolant slots hold NaN. The caller
+  uses this mask to fill those slots via the RBF fallback.
+
+  mask must have length n == ctx->n (the number of locally owned points, which
+  on the evaluator's COMM_SELF context equals the number of input points, in
+  input order).
+*/
+PetscErrorCode DMInterpolationGetUnlocated_UW(DMInterpolationInfo ctx, PetscInt n, signed char *mask)
+{
+  PetscFunctionBegin;
+  PetscCheck(n == ctx->n, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ,
+             "Mask length %" PetscInt_FMT " != %" PetscInt_FMT " owned points", n, ctx->n);
+  for (PetscInt p = 0; p < ctx->n; ++p) mask[p] = (ctx->cells[p] < 0) ? 1 : 0;
   PetscFunctionReturn(PETSC_SUCCESS);
 }

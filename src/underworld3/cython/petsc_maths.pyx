@@ -346,8 +346,10 @@ class BdIntegral:
     for some scalar function :math:`f` over a named boundary :math:`\partial \Omega`
     of the mesh. In 2D this is a line integral; in 3D a surface integral.
 
-    The integrand may reference the outward unit normal via ``mesh.Gamma_N``
-    (components map to ``petsc_n[0], petsc_n[1], ...`` in the generated C code).
+    The integrand may reference the outward unit normal via ``mesh.Gamma``
+    (on external boundaries the components map to ``petsc_n[0], petsc_n[1],
+    ...`` in the generated C code; on internal boundaries they resolve to the
+    mesh's declared analytic normal — see ``Mesh._resolve_boundary_normals``).
 
     Parameters
     ----------
@@ -421,9 +423,15 @@ class BdIntegral:
 
         mesh = self.mesh
 
+        # mesh.Gamma is resolved per boundary: external boundaries keep the
+        # exact per-quadrature petsc_n[]; internal boundaries substitute the
+        # declared analytic normal (petsc_n is orientation-ambiguous there,
+        # see Mesh._resolve_boundary_normals / issue #327).
+        fn = mesh._resolve_boundary_normals(self.fn, self.boundary)
+
         # Compile integrand using the boundary residual slot (includes petsc_n[] in signature)
         _getext_result = getext(
-            self.mesh, JITCallbackSet(bd_residual=(self.fn,)),
+            self.mesh, JITCallbackSet(bd_residual=(fn,)),
             self.mesh.vars.values(), verbose=verbose)
         cdef PtrContainer ext = _getext_result.ptrobj
 

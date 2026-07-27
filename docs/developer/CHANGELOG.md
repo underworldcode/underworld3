@@ -95,6 +95,13 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
 - A general **consistent boundary flux (CBF) primitive** recovers boundary
   fluxes for any solver — surface heat flux / Nusselt number for scalar
   diffusion, boundary traction σ·n for Stokes (#294).
+- Three-dimensional CBF recovery now assembles the exact triangular trace mass:
+  P1 supports lumped or consistent recovery, while P2 uses the required
+  consistent six-node surface-mass solve. The default `mass="auto"` selects the
+  valid method; explicit P2 lumping and non-triangular 3D traces raise instead
+  of returning a non-pointwise reaction scaling. Strict MPI invariance of a
+  vector normal projection requires an analytic normal; geometric facet-normal
+  seam sensitivity is unchanged (#404).
 - Recorded as the preferred free-slip BC in the project guidance (#300);
   conda PETSc floor raised to ≥ 3.25 for FMG/rotation API consistency (#304).
 
@@ -199,6 +206,11 @@ in `Stokes_Constrained` (#224), then made parallel-correct.
 - `selfp` Schur preconditioner default, viscosity-scaled penalty, and
   nullspace re-setup fix (#229); over-conservative serial guard removed
   (#240); gauge, convergence, knockout, and rotation-gauge fixes (#265).
+- The main `Stokes.penalty` (augmented-Lagrangian grad-div) is likewise
+  viscosity-scaled since June 2026: the parameter is now a dimensionless
+  O(1) number, not a large constant tuned against the viscosity magnitude.
+  Migration note for older scripts in `docs/advanced/troubleshooting.md`
+  (#292).
 
 ### Boundary Conditions: Local-h Nitsche and Boundary-Slip Surfaces (June 2026)
 

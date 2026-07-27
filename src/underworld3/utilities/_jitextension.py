@@ -260,32 +260,60 @@ class JITCallbackSet:
                 len(self.bd_residual), len(self.bd_jacobian))
 
 
+def _reveal_constants(fn):
+    """Expand non-constant UWexpressions to fixpoint, KEEPING truly-constant
+    atoms symbolic — so constants nested at ANY depth surface as atoms.
+
+    This must run BEFORE the ``constants[]`` substitution: a top-level
+    ``xreplace`` cannot see a constant hidden inside a nested UWexpression
+    (every ``Parameters.*`` value is template-wrapped in one), so nested
+    constants were silently folded to C literals while the manifest still
+    listed them as live — issue #302. The keep-constants predicate here is
+    the same ``_is_truly_constant`` used to build the manifest, so the set
+    of atoms revealed is exactly the set the manifest routes to
+    ``constants[]``.
+    """
+    from underworld3.function.expressions import (
+        unwrap_expression,
+        UWDerivativeExpression,
+    )
+
+    if fn is None:
+        return fn
+    if isinstance(fn, UWDerivativeExpression):
+        fn = fn.doit()
+    if isinstance(fn, sympy.MatrixBase):
+        return fn.applyfunc(
+            lambda e: unwrap_expression(e, mode='symbolic_keep_constants'))
+    return unwrap_expression(fn, mode='symbolic_keep_constants')
+
+
 def prepare_for_cache_key(fn, constants_subs_map):
     """Prepare a single expression for JIT cache hashing.
 
-    Two-phase process:
-    1. Substitute constant UWexpressions with ``_JITConstant`` placeholders
+    Three-phase process (mirrors the codegen lowering in ``_createext`` so
+    the cache key and the generated C agree — issue #302):
+    1. Reveal nested constants (``_reveal_constants``).
+    2. Substitute manifested constants with ``_JITConstant`` placeholders
        so that changing a constant's *value* does not invalidate the cache.
-    2. Unwrap remaining (non-constant) UWexpressions to pure SymPy so the
-       hash is deterministic.
-
-    Parameters
-    ----------
-    fn : sympy expression or None
-        The expression to expand.
-    constants_subs_map : dict or None
-        Mapping from UWexpression symbols to ``_JITConstant`` placeholders.
+    3. Unwrap the remaining UW atoms to pure SymPy so the hash is
+       deterministic.
     """
-    # Phase 1: Substitute constants with _JITConstant placeholders
-    if constants_subs_map and fn is not None:
-        try:
-            fn_structural = fn.xreplace(constants_subs_map) if hasattr(fn, "xreplace") else fn
-        except Exception:
-            fn_structural = fn
-    else:
-        fn_structural = fn
+    # Phase 1: reveal constants nested inside other UWexpressions. Loud on
+    # failure, exactly like the codegen path — a silent fallback here would
+    # hash constant VALUES into the cache key and force a recompile on
+    # every ramp (adversarial-review finding).
+    fn_structural = _reveal_constants(fn)
 
-    # Phase 2: Unwrap remaining (non-constant) expressions
+    # Phase 2: Substitute constants with _JITConstant placeholders
+    if constants_subs_map and fn_structural is not None:
+        try:
+            if hasattr(fn_structural, "xreplace"):
+                fn_structural = fn_structural.xreplace(constants_subs_map)
+        except Exception:
+            pass
+
+    # Phase 3: Unwrap remaining (non-constant) expressions
     return underworld3.function.expressions.unwrap(
         fn_structural, keep_constants=False, return_self=False
     )
@@ -962,8 +990,32 @@ def generate_c_source(
         # Save original for debugging
         fn_original = fn
 
-        # Two-phase unwrap:
-        # Phase 1: Substitute constant UWexpressions with _JITConstant symbols
+        # Three-phase lowering (issue #302 — must match prepare_for_cache_key):
+        # Phase 1: reveal constants nested inside other UWexpressions, so the
+        #          substitution below can reach them. A top-level xreplace
+        #          missed constants inside template-wrapped parameters and
+        #          baked them as C literals while the manifest listed them.
+        fn = _reveal_constants(fn)
+
+        # A truly-constant atom the manifest does NOT know about would be
+        # silently folded to a literal in phase 3 — the manifest and the
+        # C source must never disagree (issue #302).
+        from underworld3.function.expressions import UWexpression as _UWexpr
+        if constants_subs_map is not None and hasattr(fn, 'atoms'):
+            unmanifested = [
+                a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                if isinstance(a, _UWexpr)
+                and _is_truly_constant(a, _UWexpr)
+                and a not in constants_subs_map
+            ]
+            if unmanifested:
+                raise RuntimeError(
+                    f"JIT constants manifest is incomplete: constant expression(s) "
+                    f"{unmanifested} appear in a kernel but have no constants[] "
+                    f"slot — they would be baked into the C source (issue #302)."
+                )
+
+        # Phase 2: Substitute constant UWexpressions with _JITConstant symbols
         #          These survive into C code as constants[i]
         if constants_subs_map and fn is not None:
             try:
@@ -971,8 +1023,21 @@ def generate_c_source(
             except Exception:
                 pass
 
-        # Phase 2: Unwrap remaining non-constant UWexpressions to numerical values
+        # Phase 3: Unwrap remaining non-constant UWexpressions to numerical values
         fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
+
+        # A manifested constant surviving to here bypassed its constants[]
+        # slot and is about to be baked — refuse rather than freeze the
+        # parameter silently (issue #302).
+        if constants_subs_map and hasattr(fn, 'atoms'):
+            baked = [a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                     if a in constants_subs_map]
+            if baked:
+                raise RuntimeError(
+                    f"Manifested constant(s) {baked} were not routed through "
+                    f"constants[] and would be baked into the C source "
+                    f"(issue #302)."
+                )
 
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]

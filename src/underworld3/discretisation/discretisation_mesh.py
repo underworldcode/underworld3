@@ -16,6 +16,10 @@ import underworld3 as uw
 from underworld3.utilities._api_tools import Stateful
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities._utils import gather_data
+from underworld3.utilities.nd_array_callback import (
+    fire_canonical_callbacks,
+    register_collective_flush,
+)
 
 from underworld3.coordinates import CoordinateSystem, CoordinateSystemType
 
@@ -244,7 +248,23 @@ def _mesh_coords_update_callback(array, change_context):
         uw.pprint(f"Mesh update callback - mesh deform")
 
     coords = array.reshape(-1, mesh.cdim)
-    mesh._deform_mesh(coords, verbose=verbose)
+    try:
+        mesh._deform_mesh(coords, verbose=verbose)
+    except Exception:
+        # The user's write landed in the canonical array BEFORE this
+        # callback ran. A rejected/failed deform must not leave
+        # mesh.X.coords disagreeing with the DM — the guard's message
+        # says the write "is rejected", so make that true by restoring
+        # the canonical from the DM, then let the error surface.
+        # (np.copyto bypasses callbacks; this restore must not re-fire.)
+        dm_coords = mesh.dm.getCoordinatesLocal().array.reshape(-1, mesh.cdim)
+        cached = numpy.asarray(mesh._coords).reshape(-1, mesh.cdim)
+        if cached.shape == dm_coords.shape:
+            numpy.copyto(cached, dm_coords)
+        # else: the failure replaced the coordinate Vec at a different size
+        # (mid-rebuild) — restoring is impossible and a broadcast error here
+        # would mask the original exception (round-2 review).
+        raise
 
     # Increment mesh version to notify registered swarms of coordinate changes
     with mesh._mesh_update_lock:
@@ -783,7 +803,22 @@ class Mesh(Stateful, uw_object):
                     coord_type_dict = json.loads(json_str)
                     coordinate_system_type = CoordinateSystemType(coord_type_dict["value"])
                 except KeyError:
-                    pass
+                    # A checkpointed mesh normally carries its coordinate
+                    # system; a missing entry means the metadata was lost
+                    # (or the file predates it). The construction defaults
+                    # to CARTESIAN (#397) — say so, because for an annulus
+                    # or spherical checkpoint that label is wrong and would
+                    # otherwise propagate silently into re-written files.
+                    if coordinate_system_type is None and uw.mpi.rank == 0:
+                        import warnings
+
+                        warnings.warn(
+                            f"{plex_or_meshfile} has no coordinate_system_type "
+                            "metadata; defaulting to CARTESIAN. Pass "
+                            "coordinate_system_type= explicitly if this mesh "
+                            "is not Cartesian.",
+                            stacklevel=2,
+                        )
 
                 regions = None
                 try:
@@ -1176,7 +1211,26 @@ class Mesh(Stateful, uw_object):
             numpy.ndarray.view(self.dm.getCoordinatesLocal().array.reshape(-1, self.cdim)),
             owner=self,
         )
-        self._coords.add_callback(_mesh_coords_update_callback)
+        # Canonical registration: the guard keeps derived views/copies from
+        # firing a full-mesh deform (#376-class), and — because the deform
+        # is COLLECTIVE — the mesh joins the synchronised-update flush
+        # registry so coordinate writes inside uw.synchronised_array_update
+        # defer to the single rank-agreed flush instead of replaying a
+        # rank-local deform at exit.
+        self._coords.add_canonical_callback(_mesh_coords_update_callback)
+        if not hasattr(self, "_collective_flush_id"):
+            # Register once per mesh: re-installs (submesh re-extraction,
+            # adaptation) replace the array, not the mesh's flush identity.
+            self._collective_flush_id = register_collective_flush(self)
+
+    def _deferred_canonical_flush(self):
+        """Collective flush target for ``uw.synchronised_array_update``.
+
+        Coordinate writes made inside the context land in the canonical
+        array immediately; the deform they imply runs here, once, on every
+        rank in the agreed flush order.
+        """
+        fire_canonical_callbacks(self._coords)
 
     def _setup_symbolic_coordinates(self, coordinate_system_type):
         """Create the sympy coordinate systems and their JIT code bindings.
@@ -1191,6 +1245,14 @@ class Mesh(Stateful, uw_object):
         # Set sympy constructs. First a generic, symbolic, Cartesian coordinate system
         # A unique set of vectors / names for each mesh instance
         #
+
+        # A mesh constructed without an explicit coordinate system (e.g.
+        # loaded directly from a .msh file, or from an h5 checkpoint with no
+        # coordinate metadata) is Cartesian — the default every uw.meshing
+        # constructor passes. Leaving None here crashed mesh.write()'s
+        # metadata block (issue #397).
+        if coordinate_system_type is None:
+            coordinate_system_type = CoordinateSystemType.CARTESIAN
 
         self.CoordinateSystemType = coordinate_system_type
 
@@ -2515,6 +2577,12 @@ class Mesh(Stateful, uw_object):
         #
         #
 
+        # Geometry generation counter. First call (construction) -> 0; every
+        # later call means the coordinates changed (deform / adapt /
+        # re-extract), which invalidates factory-declared analytic boundary
+        # normals (see the boundary_normals setter and canonical_normal).
+        self._geometry_version = getattr(self, "_geometry_version", -1) + 1
+
         self.dm.clearDS()
         self.dm.createDS()
 
@@ -2787,17 +2855,14 @@ class Mesh(Stateful, uw_object):
         self._assemble_boundary_normal(var, name)
         return var.sym
 
-    def _assemble_boundary_normal(self, var, name):
-        """Fill ``var`` with the area-weighted outward facet normal assembled
-        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
-        from scipy.spatial import cKDTree
-        cdim = self.cdim
-        dm = self.dm
-        coords = numpy.ascontiguousarray(var.coords)
-        accum = numpy.zeros((coords.shape[0], cdim))
+    def _boundary_facets(self, name):
+        """This rank's facet (height-1) points carrying boundary label ``name``.
 
-        # faces carrying this boundary label: DM label named after the boundary,
-        # stratum keyed by the boundary's value (same access the BC code uses).
+        Uses the DM label named after the boundary with the stratum keyed by
+        the boundary's value (the same access the BC code uses). Returns an
+        empty list when this rank owns no facets of the boundary.
+        """
+        dm = self.dm
         bvalue = None
         for b in (self.boundaries or []):
             if b.name == name:
@@ -2813,6 +2878,8 @@ class Mesh(Stateful, uw_object):
                 vis = label.getValueIS()
                 live = set(int(x) for x in vis.getIndices()) if vis.getSize() else set()
             except Exception:
+                # Sanctioned: no value IS on this rank means no facets here —
+                # fall through to the empty list.
                 live = set()
             if int(bvalue) in live:
                 pis = label.getStratumIS(bvalue)
@@ -2821,6 +2888,18 @@ class Mesh(Stateful, uw_object):
                     for p in pis.getIndices():
                         if fS <= int(p) < fE:
                             face_pts.append(int(p))
+        return face_pts
+
+    def _assemble_boundary_normal(self, var, name):
+        """Fill ``var`` with the area-weighted outward facet normal assembled
+        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
+        from scipy.spatial import cKDTree
+        cdim = self.cdim
+        dm = self.dm
+        coords = numpy.ascontiguousarray(var.coords)
+        accum = numpy.zeros((coords.shape[0], cdim))
+
+        face_pts = self._boundary_facets(name)
 
         tree = cKDTree(coords)
         # P1 vertices per facet, counted from the facet's own closure so this
@@ -2955,18 +3034,203 @@ class Mesh(Stateful, uw_object):
 
     @property
     def Gamma_P1(self):
-        """Projected P1 boundary normals as a sympy Matrix.
+        """Deprecated — use :attr:`Gamma` in integrands and BCs, or
+        :meth:`boundary_normal` for a per-boundary P1 normal field.
 
-        Returns the normalised, vertex-averaged PETSc face normals
-        as a smooth P1 field. Preferred over :attr:`Gamma_N` for
-        penalty and Nitsche BCs on curved boundaries — gives
-        consistent orientation and better convergence in 3D.
+        This global field point-evaluates :attr:`Gamma` at every mesh
+        vertex, but the underlying ``petsc_n`` only exists inside
+        surface-integral kernels; off-kernel evaluation falls back to a
+        coordinate-based direction and, on internal boundaries, averages
+        oppositely-oriented facet normals into sub-unit vectors. Retained
+        unchanged for back-compat (mesh-smoothing internals).
 
         Automatically updated when the mesh deforms.
         """
         if not hasattr(self, '_projected_normals') or self._projected_normals is None:
             self._update_projected_normals()
         return self._projected_normals.sym
+
+    @property
+    def boundary_normals(self):
+        """Declared analytic boundary normals (Enum or mapping), or ``None``.
+
+        Assigning stamps the declaration against the mesh's current
+        geometry: any later coordinate change (``deform``, ``adapt``,
+        direct coordinate writes) marks it stale, and
+        :meth:`canonical_normal` then refuses to serve it. Re-assign after
+        a deformation to re-declare normals that are valid for the new
+        geometry (e.g. a radial normal after a radius-preserving remesh).
+        """
+        return getattr(self, "_boundary_normals", None)
+
+    @boundary_normals.setter
+    def boundary_normals(self, value):
+        self._boundary_normals = value
+        self._boundary_normals_geometry_version = getattr(
+            self, "_geometry_version", 0)
+
+    def canonical_normal(self, boundary_name):
+        r"""Analytic outward-pointing normal for a boundary, or ``None``
+        if no analytic normal was declared for that boundary.
+
+        Sourced from the mesh factory's ``boundary_normals`` Enum: for
+        axis-aligned box boundaries this is a constant sympy Matrix, for
+        annulus / spherical-shell radial boundaries it is the analytic
+        radial unit vector, and so on.
+
+        The primary caller is code that needs a **partition-safe** normal
+        on an *internal* boundary — see :issue:`327`. On an internal
+        boundary at a partition seam, PETSc's per-quadrature ``petsc_n[]``
+        (surfacing as :attr:`Gamma` / :attr:`Gamma_N`) is derived from
+        ``support[0]`` of the DMPlex facet closure, which is
+        partition-dependent; different ranks disagree on which cell is
+        "support[0]" for the one seam facet, and the outward normal of
+        that facet flips sign. A signed integral of ``Gamma[k]`` is then
+        wrong by O(seam-facets / total-facets). The analytic normal
+        returned here is partition-independent and does not touch
+        ``petsc_n``, so it sidesteps the defect entirely for the mesh
+        classes that know their internal-boundary geometry
+        (:class:`BoxInternalBoundary`, :class:`AnnulusInternalBoundary`,
+        :class:`SphericalShellInternalBoundary`).
+
+        Parameters
+        ----------
+        boundary_name : str
+            Name of the boundary label to look up (case-sensitive; must
+            match one of :attr:`boundaries`).
+
+        Returns
+        -------
+        sympy.Matrix or None
+            Row matrix of length :attr:`cdim` giving the outward-pointing
+            normal, or ``None`` if this mesh factory did not declare
+            an analytic normal for ``boundary_name``.
+
+        Raises
+        ------
+        RuntimeError
+            If the mesh coordinates have changed since the normals were
+            declared (``deform`` / ``adapt``): the declaration describes
+            the original geometry and may no longer match the deformed
+            surface. Re-assign :attr:`boundary_normals` to re-declare
+            normals valid for the current geometry.
+
+        See Also
+        --------
+        Gamma : the raw per-quadrature normal — use for external
+            boundaries; may be partition-dependent on internal seams.
+        Gamma_N : normalised :attr:`Gamma`.
+        Gamma_P1 : projected P1 normals, useful for curved external
+            boundaries.
+        """
+        bn = self.boundary_normals
+        if bn is None:
+            return None
+        declared_at = getattr(self, "_boundary_normals_geometry_version", 0)
+        if declared_at != getattr(self, "_geometry_version", 0):
+            raise RuntimeError(
+                f"The declared analytic boundary normals for this mesh "
+                f"describe its original (factory) geometry, but the mesh "
+                f"coordinates have changed since (deform / adapt). The "
+                f"declaration for '{boundary_name}' may no longer match the "
+                f"deformed surface. If the normals are still valid for the "
+                f"new geometry (e.g. a radial normal after a "
+                f"radius-preserving remesh), re-declare them:\n"
+                f"    mesh.boundary_normals = mesh.boundary_normals\n"
+                f"or assign a new Enum / dict of normal expressions. "
+                f"Otherwise use an explicit normal expression in place of "
+                f"mesh.Gamma / canonical_normal on this boundary."
+            )
+        try:
+            member = bn[boundary_name]
+        except (KeyError, AttributeError):
+            return None
+        value = getattr(member, "value", member)
+        return value
+
+    def _boundary_is_internal(self, boundary_name):
+        """True if boundary ``boundary_name`` is an internal surface — its
+        facets have a cell on BOTH sides (support size 2) — rather than part
+        of the mesh exterior (support size 1).
+
+        Collective on first call per boundary (the local answer is
+        MAX-reduced so every rank agrees even when it owns no facets of the
+        boundary); cached thereafter.
+        """
+        import underworld3 as uw
+        from mpi4py import MPI
+
+        if not hasattr(self, "_internal_boundary_cache") or \
+                self._internal_boundary_cache is None:
+            self._internal_boundary_cache = {}
+        cached = self._internal_boundary_cache.get(boundary_name)
+        if cached is not None:
+            return cached
+
+        dm = self.dm
+        local = 0
+        for f in self._boundary_facets(boundary_name):
+            if dm.getSupportSize(f) == 2:
+                local = 1
+                break
+        result = bool(uw.mpi.comm.allreduce(local, op=MPI.MAX))
+        self._internal_boundary_cache[boundary_name] = result
+        return result
+
+    def _resolve_boundary_normals(self, fn, boundary_name):
+        r"""Return ``fn`` with :attr:`Gamma` resolved for ``boundary_name``.
+
+        ``mesh.Gamma`` is the single user-facing boundary-normal symbol. On
+        an EXTERNAL boundary its components compile directly to PETSc's
+        exact per-quadrature outward unit normal (``petsc_n[]``) and ``fn``
+        is returned unchanged. On an INTERNAL boundary ``petsc_n[]`` is
+        orientation-ambiguous — the facet has two support cells and the sign
+        follows the partition-dependent ``support[0]`` — so a signed integral
+        of ``Gamma`` components is partition-dependent (issue #327). Here the
+        ``Gamma`` components are substituted with the mesh factory's declared
+        analytic normal (:meth:`canonical_normal`), which is
+        partition-independent by construction.
+
+        Called by every boundary-integrand consumer that knows its boundary
+        (``uw.maths.BdIntegral``, natural boundary conditions), so users
+        write ``mesh.Gamma`` everywhere and never choose an implementation.
+
+        Raises
+        ------
+        RuntimeError
+            If ``boundary_name`` is internal and the mesh declares no
+            analytic normal for it. There is no orientation convention for
+            an arbitrary internal surface until the surface itself is
+            oriented (PETSc ``DMPlexOrientLabel``, open-surface support
+            pending upstream), so failing loudly beats integrating a
+            partition-dependent sign.
+        """
+        import underworld3 as uw
+
+        gamma_syms = tuple(self._Gamma.base_scalars()[0:self.cdim])
+        expr = uw.function.expressions.unwrap(
+            fn, keep_constants=False, return_self=False)
+        if not isinstance(expr, sympy.MatrixBase):
+            expr = sympy.sympify(expr)
+        free = expr.free_symbols
+        if not any(g in free for g in gamma_syms):
+            return fn
+        if not self._boundary_is_internal(boundary_name):
+            return fn
+
+        normal = self.canonical_normal(boundary_name)
+        if normal is None:
+            raise RuntimeError(
+                f"The integrand references mesh.Gamma on the internal "
+                f"boundary '{boundary_name}', but this mesh declares no "
+                f"analytic normal for it. On an internal surface the "
+                f"discrete facet normal has no well-defined orientation "
+                f"(issue #327). Declare one in the mesh factory's "
+                f"'boundary_normals' Enum, or use an explicit normal "
+                f"expression in place of mesh.Gamma."
+            )
+        subs = {g: normal[i] for i, g in enumerate(gamma_syms)}
+        return expr.xreplace(subs)
 
     # ===================================================================
     #  Bounding surfaces — per-surface tangent-slip + restore.
@@ -3181,11 +3445,8 @@ class Mesh(Stateful, uw_object):
 
         all_labels = (tuple(boundary_labels) if boundary_labels is not None
                       else _auto_pinned_labels(self))
-        # TODO(follow-up): _pinned_mask expands labels through vertices/edges
-        # only, so a 3D boundary label that tags FACES alone (a mesh loaded with
-        # markVertices=False) leaves its boundary vertices unmarked. This is a
-        # pre-existing limitation of the shared helper used by every mover; the
-        # fix (close faces→edges→vertices) belongs with _pinned_mask itself.
+        # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
+        # down to its vertices, so face-only 3D labels classify correctly.
         is_bnd = _pinned_mask(dm, all_labels)
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
@@ -3201,7 +3462,14 @@ class Mesh(Stateful, uw_object):
         # labels (dict ``False``) still slide-without-restore regardless of
         # kind (handled in ``project`` below). A label with no boundary facets
         # at all stays unusable → its vertices pin (the safe default).
-        surf = dict(self.bounding_surfaces)
+        # INTERIOR surfaces (embedded interfaces, e.g. the Internal circle/
+        # sphere of the *InternalBoundary meshes) are never slip-eligible:
+        # interface motion is physics-owned (deform / free-surface
+        # machinery), so their nodes fall through to the pinned default —
+        # exactly as when no surface was registered. Their registration
+        # exists for adapt()'s refinement snapping.
+        surf = {lab: s for lab, s in dict(self.bounding_surfaces).items()
+                if not getattr(s, "interior", False)}
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
             facets, _opp = _boundary_facets(self, cdim)
@@ -3529,6 +3797,15 @@ class Mesh(Stateful, uw_object):
         result = remesh_with_field_transfer(
             self, _do_move, dt=dt, extra_zero=zero, verbose=verbose)
 
+        # Notify registered swarms: solve-entry sync compares this version
+        # and marks them for deferred migration (#379 item 1 retired the
+        # read-trigger that consumed this channel). The bump lives HERE,
+        # not in _deform_mesh: the internal primitive also runs on
+        # snapshot restore, whose integrity check treats a moved version
+        # as invalidation and would refuse its own recovery.
+        if result:
+            self._mesh_version += 1
+
         # Refresh deformation-tracking per-boundary normals so Nitsche/penalty
         # BCs that captured ``boundary_normal(...).sym`` at setup read the new
         # geometry (the JIT reads the variable's .data, which would otherwise
@@ -3609,7 +3886,17 @@ class Mesh(Stateful, uw_object):
                 owner=self,
             )
             for cb in old_callbacks:
-                self._coords.add_callback(cb)
+                original = getattr(cb, "_wrapped", None)
+                if original is not None:
+                    # Canonical dispatch wrappers are bound (by weakref) to
+                    # the OLD array's identity — copied verbatim they never
+                    # fire on the replacement, so a SECOND coords write
+                    # would silently do nothing (round-2 review; same
+                    # class as the sync_data re-homing). Re-register the
+                    # original function against the new canonical.
+                    self._coords.add_canonical_callback(original)
+                else:
+                    self._coords.add_callback(cb)
 
             # BUGFIX(#122): mark registered solvers for rebuild. Since PR #127
             # ("Trust JIT cache: skip DM rebuild on constant-only parameter
@@ -3828,11 +4115,11 @@ class Mesh(Stateful, uw_object):
 
     @property
     def Gamma_N(self) -> sympy.Matrix:
-        r"""Normalised boundary/surface normal as a row matrix.
+        r"""Deprecated alias — use :attr:`Gamma`.
 
-        Returns ``Gamma / |Gamma|`` so that the result is a unit normal
-        regardless of element size. Use this for penalty and Nitsche BCs
-        where mesh-independent scaling is required.
+        Retained for back-compatibility: returns ``Gamma / |Gamma|``, which
+        is numerically identical to :attr:`Gamma` (the quadrature-point
+        normal is already unit length).
 
         Returns
         -------
@@ -3844,15 +4131,24 @@ class Mesh(Stateful, uw_object):
 
     @property
     def Gamma(self) -> sympy.Matrix:
-        r"""Raw (un-normalised) boundary coordinate scalars as a row matrix.
+        r"""The boundary unit normal, as a symbolic row matrix.
 
-        The magnitude scales with face edge length (2D) or face area (3D).
-        For a unit normal, use :attr:`Gamma_N` instead.
+        This is the single user-facing normal symbol: use it in boundary
+        integrands (:class:`uw.maths.BdIntegral`) and natural boundary
+        conditions on any boundary, external or internal.
+
+        The consumer that compiles the integrand resolves the symbol per
+        boundary: on an external boundary the components map to PETSc's
+        exact per-quadrature outward unit normal (``petsc_n[]``); on an
+        internal boundary — where the discrete facet normal has no
+        well-defined orientation (issue #327) — they are substituted with
+        the mesh factory's declared analytic normal (see
+        :meth:`canonical_normal` and :meth:`_resolve_boundary_normals`).
 
         Returns
         -------
         sympy.Matrix
-            Row matrix of boundary coordinate scalars.
+            Row matrix of boundary normal components.
         """
         return sympy.Matrix(self._Gamma.base_scalars()[0 : self.cdim]).T
 
@@ -4661,58 +4957,63 @@ class Mesh(Stateful, uw_object):
         # Use preferred selective_ranks pattern for metadata operations
         with uw.selective_ranks(0) as should_execute:
             if should_execute:
-                f = h5py.File(filename, "a")
-                g = f.create_group("metadata")
+                # Context manager: an exception mid-block must not leak the
+                # handle (a live handle keeps the HDF5 lock held).
+                with h5py.File(filename, "a") as f:
+                    g = f.create_group("metadata")
 
-                boundaries_dict = {i.name: i.value for i in self.boundaries}
-                g.attrs["boundaries"] = json.dumps(boundaries_dict)
+                    boundaries_dict = {i.name: i.value for i in self.boundaries}
+                    g.attrs["boundaries"] = json.dumps(boundaries_dict)
 
-                if self.regions is not None:
-                    regions_dict = {i.name: i.value for i in self.regions}
-                    g.attrs["regions"] = json.dumps(regions_dict)
+                    if self.regions is not None:
+                        regions_dict = {i.name: i.value for i in self.regions}
+                        g.attrs["regions"] = json.dumps(regions_dict)
 
-                coordinates_type_dict = {
-                    "name": self.CoordinateSystemType.name,
-                    "value": self.CoordinateSystemType.value,
-                }
-                g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
-
-                # Save ellipsoid metadata for geographic meshes
-                if hasattr(self.CoordinateSystem, "ellipsoid"):
-                    ellipsoid_ser = {}
-                    for k, v in self.CoordinateSystem.ellipsoid.items():
-                        if hasattr(v, "to"):  # uw.quantity
-                            ellipsoid_ser[k] = {
-                                "value": float(v.magnitude),
-                                "unit": str(v.units),
-                            }
-                        else:
-                            ellipsoid_ser[k] = v
-                    g.attrs["ellipsoid"] = json.dumps(ellipsoid_ser)
-
-                # Add coordinate units metadata
-                if hasattr(self, "coordinate_units"):
-                    coord_units_dict = {
-                        "coordinate_units": str(self.coordinate_units),
-                        "coordinate_dimensionality": (
-                            str(self.coordinate_dimensionality)
-                            if hasattr(self, "coordinate_dimensionality")
-                            else None
-                        ),
-                        "length_scale": (
-                            str(self.length_scale) if hasattr(self, "length_scale") else None
-                        ),
-                        "mesh_type": type(self).__name__,
-                        "dimension": self.dim,
+                    coordinates_type_dict = {
+                        "name": self.CoordinateSystemType.name,
+                        "value": self.CoordinateSystemType.value,
                     }
-                    g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
+                    g.attrs["coordinate_system_type"] = json.dumps(coordinates_type_dict)
 
-                # Number of coarse multigrid levels in the hierarchy (= number
-                # of refinements from the stored coarsest level up to the fine
-                # mesh). Used on reload to rebuild the intermediate levels.
-                g.attrs["hierarchy_coarse_levels"] = len(self.dm_hierarchy) - 1
+                    # Save ellipsoid metadata for geographic meshes
+                    if hasattr(self.CoordinateSystem, "ellipsoid"):
+                        ellipsoid_ser = {}
+                        for k, v in self.CoordinateSystem.ellipsoid.items():
+                            if hasattr(v, "to"):  # uw.quantity
+                                ellipsoid_ser[k] = {
+                                    "value": float(v.magnitude),
+                                    "unit": str(v.units),
+                                }
+                            else:
+                                ellipsoid_ser[k] = v
+                        g.attrs["ellipsoid"] = json.dumps(ellipsoid_ser)
 
-                f.close()
+                    # Add coordinate units metadata
+                    if hasattr(self, "coordinate_units"):
+                        coord_units_dict = {
+                            "coordinate_units": str(self.coordinate_units),
+                            "coordinate_dimensionality": (
+                                str(self.coordinate_dimensionality)
+                                if hasattr(self, "coordinate_dimensionality")
+                                else None
+                            ),
+                            "length_scale": (
+                                str(self.length_scale) if hasattr(self, "length_scale") else None
+                            ),
+                            "mesh_type": type(self).__name__,
+                            "dimension": self.dim,
+                        }
+                        g.attrs["coordinate_units"] = json.dumps(coord_units_dict)
+
+                    # Number of coarse multigrid levels in the hierarchy (= number
+                    # of refinements from the stored coarsest level up to the fine
+                    # mesh). Used on reload to rebuild the intermediate levels.
+                    g.attrs["hierarchy_coarse_levels"] = len(self.dm_hierarchy) - 1
+
+        # Same quiescence contract as Swarm.save (issue #330): every rank
+        # waits for rank 0's metadata append, so an immediate reopen of the
+        # mesh file cannot hit HDF5 file locking.
+        uw.mpi.barrier()
 
         # Persist the geometric-multigrid (FMG) hierarchy as a SINGLE sidecar
         # holding the coarsest level only. On reload the intermediate coarse
@@ -4989,7 +5290,12 @@ class Mesh(Stateful, uw_object):
             control_points_list.append(cell_centroid)
             control_points_cell_list.append(cell_id)
 
-        self._indexCoords = numpy.array(control_points_list)
+        # A rank can own zero cells (small mesh / imbalanced partition):
+        # shape the point arrays explicitly so an empty list becomes a
+        # well-formed (0, cdim) array rather than a 1-D numpy.array([]),
+        # which crashed the KDTree construction (issue #399).
+        self._indexCoords = numpy.array(
+            control_points_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._index = uw.kdtree.KDTree(self._indexCoords)
         # self._index.build_index()
         self._indexMap = numpy.array(control_points_cell_list, dtype=numpy.int64)
@@ -5000,7 +5306,8 @@ class Mesh(Stateful, uw_object):
         # We keep _nav_centroids separate from _centroids (which is
         # the main-DM cell centroids set in __init__) so the FE-side
         # ``_centroids`` semantics are unchanged on manifold meshes.
-        self._nav_centroids = numpy.array(centroids_list)
+        self._nav_centroids = numpy.array(
+            centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         return
@@ -5615,7 +5922,9 @@ class Mesh(Stateful, uw_object):
 
         if len(model_coords) > 0:
             dist, closest_points = self._index.query(model_coords, k=1, sqr_dists=False)
-            if np.any(closest_points > self._index.n):
+            # >= : valid indices are 0..n-1, and the empty-tree sentinel
+            # (0 with n=0) must trip this guard, not index _indexMap (#399).
+            if np.any(closest_points >= self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
                 )
@@ -5688,7 +5997,9 @@ class Mesh(Stateful, uw_object):
 
         if len(coords) > 0:
             dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
-            if np.any(closest_points > self._index.n):
+            # >= : valid indices are 0..n-1, and the empty-tree sentinel
+            # (0 with n=0) must trip this guard, not index _indexMap (#399).
+            if np.any(closest_points >= self._index.n):
                 raise RuntimeError(
                     "An error was encountered attempting to find the closest cells to the provided coordinates."
                 )
@@ -5888,14 +6199,132 @@ class Mesh(Stateful, uw_object):
             dtype=numpy.int64,
         )
 
+    def _audit_cell_face_geometry(self):
+        """Measure the two quantities that bound the cell-wall estimator's
+        authority on quad/hex meshes: worst face non-planarity (sagitta) and
+        worst outward half-space violation by a cell's own vertices, both
+        relative to the face diameter.
+
+        The in-cell test (:meth:`_test_if_points_in_cells_internal`) is a
+        half-space intersection over the face planes the control points
+        define. It is exact when every face is planar and every cell is
+        convex; a warped face confines misclassification to a slab of
+        thickness ~sagitta at that face (and the misassigned cell is the
+        face-adjacent neighbour, where continuous FE interpolants agree).
+        The violation term catches non-convex / tangled cells, whose
+        half-space intersection no longer represents the cell at all.
+
+        Returns ``(max_sagitta_rel, max_violation_rel)`` over local cells;
+        ``(0.0, 0.0)`` on an empty local mesh.
+        """
+        nav_dm = self._nav_dm if self._nav_dm is not None else self.dm
+        nav_coords = self._nav_coords
+
+        cStart, cEnd = nav_dm.getHeightStratum(0)
+        if cEnd == cStart:
+            return 0.0, 0.0
+        cell_num_faces = self.element.entities[1]
+        cell_num_points = self.element.entities[self.dim]
+        face_num_points = self.element.face_entities[self.dim]
+
+        max_sag = 0.0
+        max_viol = 0.0
+        for cell_id in range(cStart, cEnd):
+            cell_faces = nav_dm.getCone(cell_id)
+            cpoints = nav_dm.getTransitiveClosure(cell_id)[0][-cell_num_points:]
+            cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, cpoints)]
+            cell_centroid = cell_point_coords.mean(axis=0)
+            for face in range(cell_num_faces):
+                fpoints = nav_dm.getTransitiveClosure(cell_faces[face])[0][-face_num_points:]
+                point_coords = nav_coords[self._coord_rows_for_points(nav_dm, fpoints)]
+                face_centroid = point_coords.mean(axis=0)
+                normal = self._facet_outward_unit_normal(
+                    point_coords, face_centroid, cell_centroid,
+                    cell_point_coords=cell_point_coords,
+                )
+                diam = float(numpy.linalg.norm(
+                    point_coords.max(axis=0) - point_coords.min(axis=0)))
+                if diam == 0.0:
+                    continue
+                sag = float(numpy.abs((point_coords - face_centroid) @ normal).max())
+                viol = float(((cell_point_coords - face_centroid) @ normal).max())
+                max_sag = max(max_sag, sag / diam)
+                max_viol = max(max_viol, viol / diam)
+        return max_sag, max_viol
+
+    # Capability thresholds. EXACT demands machine-planar faces and convex
+    # cells; CONTINUOUS admits face warp up to 5% of the face diameter (the
+    # cubed sphere measures ~1e-2 on its spherical faces; a smoothly deformed
+    # hex box ~1e-2). Beyond that the estimator's error bound is no longer
+    # small against per-cell field variation and it loses authority entirely.
+    _LOCATION_EXACT_TOL = 1.0e-9
+    _LOCATION_CONTINUOUS_TOL = 5.0e-2
+
+    def _location_capability(self) -> str:
+        """Measured point-location capability of this mesh's cell-wall
+        estimator: ``"exact"``, ``"continuous"``, or ``"none"``.
+
+        * ``"exact"`` — the estimator is authoritative for every field type:
+          simplex meshes, manifold meshes (dim != cdim, where PETSc's own
+          in-cell test is the unreliable party), and any quad/hex mesh whose
+          measured face sagitta and convexity violation are at machine level
+          (rectilinear boxes, affine images, and *all valid 2-D quad meshes* —
+          straight edges are always planar and convexity is equivalent to an
+          untangled mesh).
+        * ``"continuous"`` — authoritative for continuous fields only: warped
+          hexes within the sagitta tolerance (cubed-sphere class). A point in
+          the misclassification slab lands in the face-adjacent neighbour,
+          where continuous FE interpolants agree to O(sagitta x gradient) —
+          but a field with a face-aligned jump would see O(jump) errors, so
+          discontinuous evaluation must not trust the estimator here.
+        * ``"none"`` — badly warped or non-convex cells: the estimator carries
+          no authority and dropped points take the RBF fallback.
+
+        The audit is computed per rank over local cells and cached against
+        ``(_mesh_version, _topology_version)`` — ``deform()`` and adaptation
+        both bump these. It is deliberately NOT reduced across ranks: the
+        evaluator runs on COMM_SELF, so a (pathological) capability split at
+        a threshold is rank-local and safe, while a collective reduction here
+        could deadlock (petsc_interpolate is reached only by ranks holding
+        points).
+        """
+        key = (self._mesh_version, self._topology_version)
+        cached = getattr(self, "_location_capability_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        if bool(self.dm.isSimplex()) or (self.dim != self.cdim):
+            cap = "exact"
+        else:
+            sag_rel, viol_rel = self._audit_cell_face_geometry()
+            worst = max(sag_rel, viol_rel)
+            if worst < self._LOCATION_EXACT_TOL:
+                cap = "exact"
+            elif worst < self._LOCATION_CONTINUOUS_TOL:
+                cap = "continuous"
+            else:
+                cap = "none"
+        self._location_capability_cache = (key, cap)
+        return cap
+
+    def _hint_is_authoritative(self, all_fields_continuous: bool = True) -> bool:
+        """Whether the cell-wall hint may bypass ``DMLocatePoints`` for an
+        evaluation involving the given field continuity. See
+        :meth:`_location_capability` for the regimes; ``"continuous"``
+        capability is only authoritative when every interpolated variable is
+        continuous.
+        """
+        cap = self._location_capability()
+        return cap == "exact" or (cap == "continuous" and bool(all_fields_continuous))
+
     def _eval_use_robust_location(self) -> bool:
         """Single switch for the parallel evaluation cell-location strategy.
 
         Returns True when ``uw.function`` evaluation should locate cells with
         the bulletproof barycentric hint (:meth:`_robust_owning_cells`) and the
         ``DMLocatePoints`` bypass (``petsc_tools.c``), rather than PETSc's
-        ``DMLocatePoints``. This is the *one place* the policy lives; the
-        evaluate_nd classifier, the petsc_interpolate hint, and the
+        ``DMLocatePoints``. This is the *one place* the parallel policy lives;
+        the evaluate_nd classifier, the petsc_interpolate hint, and the
         DMInterpolation wrapper all defer to it so the three stay consistent.
 
         Two conditions, both required:
@@ -5905,16 +6334,15 @@ class Mesh(Stateful, uw_object):
           are reliable with a single domain, so serial keeps the validated path
           bit-for-bit. The parallel-only failure is the rank-local RBF / wrong-
           region value at partition-seam node points.
-        * **hint is authoritative** — simplex cells (``dm.isSimplex()``: planar
-          faces, affine reference map, exact face containment) or manifold
-          meshes (``dim != cdim``: PETSc's in-cell test is unreliable near
-          2-manifold simplex edges in 3-D). On non-simplex volume meshes
-          (quads/hexes) deformed faces can be non-planar and the kdtree-nearest
-          cell can be wrong, so those keep PETSc's DMLocatePoints search.
+        * **the estimator carries geometric authority** — measured capability
+          ``"exact"`` or ``"continuous"`` (:meth:`_location_capability`). For
+          in/out *classification* the continuous regime is sufficient: the
+          only ambiguity is within the sagitta slab of the domain boundary,
+          which is exactly the tolerance the classifier already accepts.
+          Capability ``"none"`` (badly warped / non-convex quad meshes) keeps
+          PETSc's DMLocatePoints search.
         """
-        return (uw.mpi.size > 1) and (
-            bool(self.dm.isSimplex()) or (self.dim != self.cdim)
-        )
+        return (uw.mpi.size > 1) and (self._location_capability() != "none")
 
     def _get_mesh_sizes(self, verbose=False):
         """
@@ -5974,7 +6402,18 @@ class Mesh(Stateful, uw_object):
         import numpy as np
         from underworld3.utilities import gather_data
 
-        domain_centroid = self._centroids.mean(axis=0)
+        # A rank owning zero cells has no centroid; mean() of the empty
+        # array is NaN, and gather_data silently STRIPS NaN rows — the
+        # gathered table's row index then no longer equals rank, and
+        # _route_by_nearest_centroid mis-routes particles to the wrong
+        # rank (issue #399 review). A huge FINITE sentinel keeps the row
+        # (row == rank) while a nearest-centroid search can never select
+        # it, so starved ranks correctly receive no particles. (Finite,
+        # not inf: infinities poison the kd-tree's bounding boxes.)
+        if self._centroids.shape[0] > 0:
+            domain_centroid = self._centroids.mean(axis=0)
+        else:
+            domain_centroid = np.full(self.cdim, 1.0e30)
         all_centroids = gather_data(domain_centroid, bcast=True).reshape(-1, self.cdim)
         return all_centroids
 
@@ -6213,12 +6652,12 @@ class Mesh(Stateful, uw_object):
         mesh in place.
 
         This method is how each mesh type controls whether (and how) it
-        can be modified: the base implementation supports **2D simplex
-        (triangle) meshes**, where it drives the Huang–Kamenski
-        variational MMPDE mover (non-folding by construction,
-        parallel-safe; scalar metric → isotropic equidistribution,
-        tensor metric → anisotropic clustering and alignment).
-        Quadrilateral / hexahedral meshes, 3D meshes and constrained
+        can be modified: the base implementation supports **2D
+        (triangle) and 3D (tetrahedral) simplex meshes**, where it
+        drives the Huang–Kamenski variational MMPDE mover (non-folding
+        by construction, parallel-safe; scalar metric → isotropic
+        equidistribution, tensor metric → anisotropic clustering and
+        alignment). Quadrilateral / hexahedral meshes and constrained
         manifolds raise ``NotImplementedError`` — no mover is
         implemented for them yet.
 
@@ -6256,22 +6695,142 @@ class Mesh(Stateful, uw_object):
                 f"manifold meshes (mesh.dim={self.dim} != mesh.cdim="
                 f"{self.cdim}): every node would have to be constrained "
                 "to the surface. Implemented today: 2D simplex (triangle) "
-                "meshes, via the MMPDE mover.")
-        if not bool(self.dm.isSimplex()) or self.cdim != 2:
+                "and 3D simplex (tetrahedral) meshes, via the MMPDE mover.")
+        if not bool(self.dm.isSimplex()) or self.cdim not in (2, 3):
             kind = "simplex" if bool(self.dm.isSimplex()) else "tensor-product (quad/hex)"
             raise NotImplementedError(
                 f"node redistribution is not implemented for {self.cdim}D "
                 f"{kind} meshes. Implemented today: 2D simplex (triangle) "
-                "meshes, via the MMPDE mover (its 3D / quad discretization "
-                "does not exist yet). To add resolution instead, use "
-                "mesh.adapt(metric_field, max_levels=...) — a topology "
-                "change.")
+                "and 3D simplex (tetrahedral) meshes, via the MMPDE mover "
+                "(no quad/hex discretization exists). To add resolution "
+                "instead, use mesh.adapt(metric_field, max_levels=...) — "
+                "a topology change.")
         from underworld3.meshing.smoothing import smooth_mesh_interior
         smooth_mesh_interior(self, metric=metric, method="mmpde",
                              verbose=verbose, **kwargs)
 
+    def relax(self, metric=None, *, verbose=False, **kwargs):
+        r"""Improve this mesh's element **shapes** without changing its
+        size distribution or its topology.
+
+        The companion to :meth:`adapt`. Refinement chooses where new
+        nodes go from *combinatorics* — which edge the tagging rule
+        nominated (bisection), or the cell centroid (Alfeld) — never
+        from geometry, so a refined mesh carries needles and slivers
+        that reflect the base mesh's arbitrary choices rather than
+        anything about the problem. Relaxation moves those nodes to
+        where the geometry wants them, keeping the resolution the
+        refinement installed::
+
+            child = mesh.adapt(metric, max_levels=3)
+            child.relax()
+
+        Implemented with the same MMPDE mover as
+        :meth:`redistribute_nodes`, in its **ideal reference frame**
+        (``reference="ideal"``): each cell's reference element is a
+        regular simplex scaled to that cell's own current volume. Two
+        consequences, and they are the whole point:
+
+        * the size term starts and stays at its optimum, so the graded
+          spacing is preserved rather than re-derived;
+        * "distortion" is measured against *equilateral*, not against
+          the mesh as supplied — so a distorted mesh is no longer its
+          own optimum, which is exactly why
+          ``redistribute_nodes(metric)`` cannot do this job (its
+          reference IS the mesh it was handed, so under a uniform
+          metric it moves nothing at all).
+
+        Non-folding by construction, and the parallel partition, vertex
+        count and DOF layout are unchanged.
+
+        Moving the nodes can upset the custom-P geometric-MG transfers,
+        which are built by geometric point location rather than from the
+        refinement relation: the local-support ``barycentric`` builder can
+        be left with a coarse DOF that has no fine image. The FMG build
+        now retries with the global-support ``rbf`` builder before giving
+        up, so the hierarchy survives (measured in 3D: GAMG at 23
+        iterations before the retry, ``pc=mg`` at 2 after). See #424.
+
+        **Two valid placements, neither dominant.** ``adapt(metric, ...,
+        relax=True)`` relaxes once at the end — the recommended default.
+        ``relax="per-generation"`` relaxes inside the refinement loop, so
+        each generation marks from already-relaxed coordinates. Both beat
+        no relaxation; which is *better* depends on which property you
+        weight, and we deliberately do not rank them:
+
+        =========================  ==========  ==========  ===============
+        property                   unrelaxed   at end      per generation
+        =========================  ==========  ==========  ===============
+        P1 interpolation error     2.75e-2     2.56e-2     2.38e-2
+        99th pct max angle         112 deg     110 deg     96 deg
+        on-fault size spread       2.80        2.31        2.31
+        far-field closure halo     42.8        27.7        43.9
+        =========================  ==========  ==========  ===============
+
+        Relaxing at the end keeps the cell count identical to the
+        unrelaxed mesh and cuts the far-field halo most; relaxing per
+        generation gives the cleanest element shapes and the lowest
+        error, but spends ~3% more cells to do it.
+
+        In **3D it improves mesh QUALITY but not interpolation error** —
+        two different things, and worth keeping apart. On an adapted 3D
+        mesh it halves the near-degenerate population (cells with q < 0.1:
+        3.6% -> 1.8%), lifts median quality 0.32 -> 0.39 and pulls the 99th
+        percentile dihedral angle back from 153 to 146 degrees; but the
+        interpolation error of an isotropic feature is unchanged (+0.5%).
+        That is consistent: relaxation holds the size distribution, and in
+        2D the error gain came from cells ALIGNING onto the feature, which
+        an isotropic metric gives no reason to do in 3D. Use it in 3D for
+        conditioning and element quality, not expecting an accuracy win.
+
+        Parameters
+        ----------
+        metric : sympy expression, MeshVariable, or sympy Matrix, optional
+            Usually omitted, and **omitting it is what makes this a shape
+            guarantee**. ``None`` (default) relaxes under a uniform metric
+            — pure shape repair at fixed size.
+
+            Passing a metric switches to the ideal-*metric* frame, which
+            re-grades as well as reshapes, and it will trade element shape
+            away to chase the size field. Measured on a 4-level graded box,
+            the 99th-percentile max angle went 117.9 -> 113.8 degrees with
+            no metric but 117.9 -> **127.4** with one. Pass a metric when
+            you want the sizes corrected too, and accept that shape is no
+            longer the objective.
+        verbose : bool, default False
+            Print mover progress.
+        **kwargs
+            Forwarded to :meth:`redistribute_nodes` — e.g.
+            ``pinned_labels``, ``slip_surfaces``, ``method_kwargs``
+            (mover tunables such as ``n_outer``).
+
+        See Also
+        --------
+        adapt : Add resolution (topology change, returns a child mesh).
+        redistribute_nodes : Move nodes to follow a metric (changes the
+            size distribution; the reference is the mesh as supplied).
+        """
+        import sympy
+
+        method_kwargs = dict(kwargs.pop("method_kwargs", None) or {})
+        # No metric  -> keep each cell's own size, repair shape only.
+        # With one   -> the metric sets size (a uniform reference volume),
+        #               so sizes that are themselves wrong can be fixed.
+        default_ref = "ideal" if metric is None else "ideal-metric"
+        ref = method_kwargs.setdefault("reference", default_ref)
+        if ref not in ("ideal", "ideal-metric"):
+            raise ValueError(
+                "mesh.relax() is an ideal-reference-frame operation; "
+                f"method_kwargs['reference']={ref!r} contradicts it. For "
+                "the mesh-reference frame call "
+                "mesh.redistribute_nodes(metric).")
+        return self.redistribute_nodes(
+            sympy.sympify(1) if metric is None else metric,
+            verbose=verbose, method_kwargs=method_kwargs, **kwargs)
+
     def adapt(self, metric_field, max_levels=None, node_budget=None,
-              builder=None, adapter=None, engine=None, verbose=False):
+              builder=None, adapter=None, engine=None, verbose=False,
+              relax=False, relax_kwargs=None):
         r"""
         Nested **adapt-on-top**: return a refined **child** mesh.
 
@@ -6284,23 +6843,26 @@ class Mesh(Stateful, uw_object):
 
         The default call needs no engine choice —
         ``mesh.adapt(metric, max_levels=...)`` refines with the graded
-        newest-vertex-bisection engine. This is **2D (triangle meshes) only**
-        for now: an engine-less 3D call raises ``NotImplementedError`` (3D
-        refinement is planned work; ``engine="sbr"`` opts a 3D mesh into the
-        simple isotropic engine explicitly). ``engine=`` remains available
-        as an **advanced / internal selector** (the algorithm names live
-        here, not in the everyday call):
+        newest-vertex-bisection engine, on **2D triangle and 3D tetrahedral
+        meshes, serial and parallel** (the refined mesh is
+        partition-independent: the same mesh at any communicator size).
+        ``engine=`` remains available as an **advanced / internal selector**
+        (the algorithm names live here, not in the everyday call):
 
         * ``"nvb"`` (default) — newest-vertex bisection, a **graded** engine with a
           *bounded* conforming closure: a marked cell adds O(1) cells locally, so
           successive levels grade (a level+1 ring around a finer core) and DOFs
-          concentrate near the feature. Runs **in parallel** via the native
-          ``uwnvb`` ``DMPlexTransform`` (in-place, co-partitioned with the parent,
-          bit-confluent serial↔parallel); when that compiled extension is absent it
-          falls back to the serial ``NVBMesh`` cell-list engine
-          (``NotImplementedError`` at np>1). Bisects 1→2, so one
-          isotropic-equivalent ``max_levels`` is run as **two** NVB passes.
-        * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection. Each
+          concentrate near the feature. Runs **in parallel** in both
+          dimensions via the native ``uwnvb`` ``DMPlexTransform`` driver
+          (in-place, co-partitioned with the parent, bit-confluent
+          serial↔parallel; in 3D the per-cell refinement state is seeded
+          identically on every rank from geometry). When the compiled
+          extension is absent it falls back to the serial cell-list engines
+          (``NVBMesh`` / ``TaggedBisectionMesh``; ``NotImplementedError`` at
+          np>1). Bisects 1→2 (volume halves), so one isotropic-equivalent
+          ``max_levels`` is run as **dim** bisection generations.
+        * ``"sbr"`` — PETSc skeleton-based (longest-edge) bisection, **2D
+          only** (PETSc's SBR transform cannot handle tetrahedra). Each
           pass refines marked cells isotropically (1→4). Its conforming closure is
           *unbounded for region marking*, so it produces a **uniform-finest patch**,
           not a graded mesh (a marked cell drains the longest-edge path to the patch
@@ -6410,18 +6972,12 @@ class Mesh(Stateful, uw_object):
             adapter = "sbr"
         if engine is None:
             # NVB is the default refinement engine (2026-07 naming ruling):
-            # graded, bounded conforming closure, parallel via the native
-            # uwnvb transform. NVB is 2D (triangles) only, and the maintainer
-            # ruled (2026-07-17) that an engine-less 3D adapt must say so
-            # honestly rather than silently selecting a different algorithm —
-            # 3D refinement is committed future work (the MMPDE+NVB capstone).
-            if self.cdim != 2:
-                raise NotImplementedError(
-                    "Default adaptive mesh refinement is 2D (triangle meshes) "
-                    "only in this release: the NVB refinement engine has no 3D "
-                    "(tetrahedral) implementation yet — 3D refinement is "
-                    "planned work. To use the simple isotropic SBR engine on "
-                    "a 3D mesh explicitly, call mesh.adapt(..., engine='sbr').")
+            # graded, bounded conforming closure, parallel (2D) via the
+            # native uwnvb transform. In 3D the serial tagged-simplex engine
+            # serves np=1; an np>1 3D call raises honestly inside the engine
+            # guard (the parallel tetrahedral transform is capstone stage
+            # 1c). Note engine='sbr' is NOT a 3D fallback: PETSc's SBR
+            # transform handles triangles only (error 56 on tetrahedra).
             engine = "nvb"
 
         if adapter == "mmg":
@@ -6440,10 +6996,12 @@ class Mesh(Stateful, uw_object):
         return self._adapt_nested(
             metric_field, max_levels=max_levels, node_budget=node_budget,
             builder=builder, engine=engine, verbose=verbose,
+            relax=relax, relax_kwargs=relax_kwargs,
         )
 
     def _adapt_nested(self, metric_field, max_levels=2, node_budget=None,
-                      builder="barycentric", engine="nvb", verbose=False):
+                      builder="barycentric", engine="nvb", verbose=False,
+                      relax=False, relax_kwargs=None):
         """Core nested adapt-on-top (SBR or NVB engine). See :meth:`adapt`."""
         import math
         from underworld3.utilities import custom_mg
@@ -6461,29 +7019,52 @@ class Mesh(Stateful, uw_object):
             )
         # The native uwnvb DMPlexTransform (Route B) is the parallel NVB engine:
         # in-place (co-partitioned with the parent), graded, and bit-confluent
-        # serial<->parallel. Prefer it whenever the compiled extension is present;
-        # fall back to the serial NVBMesh cell-list engine only when it is not
-        # (which then restricts engine='nvb' to np=1).
+        # serial<->parallel. It bisects triangles only, so it serves the 2D
+        # path; 3D (tetrahedra) runs the serial dimension-general tagged-
+        # simplex engine until the native transform adopts the tagged rule
+        # (adaptivity capstone stage 1c).
         _nvbx = None
         if engine == "nvb":
-            if self.dim != 2:
+            if not bool(self.dm.isSimplex()) or self.dim not in (2, 3):
                 raise NotImplementedError(
-                    "adapt(engine='nvb') is 2D only this pass (tets are a follow-up)."
+                    "adapt(engine='nvb') supports 2D triangle and 3D "
+                    "tetrahedral meshes."
                 )
-            try:
-                from underworld3.utilities import _nvb_transform as _nvbx
-            except ImportError:
-                _nvbx = None
-            if _nvbx is None and uw.mpi.size > 1:
-                raise NotImplementedError(
-                    "adapt(engine='nvb') at np>1 needs the native uwnvb transform "
-                    "(underworld3.utilities._nvb_transform), which is not built in "
-                    "this environment. Build the custom-PETSc/amr env, or use "
-                    "engine='sbr' at np>1."
-                )
+            if self.dim == 2:
+                try:
+                    from underworld3.utilities import _nvb_transform as _nvbx
+                except ImportError:
+                    _nvbx = None
+                if _nvbx is None and uw.mpi.size > 1:
+                    raise NotImplementedError(
+                        "adapt(engine='nvb') at np>1 needs the native uwnvb "
+                        "transform (underworld3.utilities._nvb_transform), "
+                        "which is not built in this environment. Build the "
+                        "custom-PETSc/amr env, or use engine='sbr' at np>1."
+                    )
+            else:
+                # 3D: prefer the native driver when built (same preference
+                # order as 2D); the serial cell-list engine is the np=1
+                # fallback. The native driver needs the per-cell refinement
+                # state seeded on the base mesh first (partition-independent
+                # by construction — see write_tagged_state_label).
+                try:
+                    from underworld3.utilities import _nvb_transform as _nvbx
+                except ImportError:
+                    _nvbx = None
+                if _nvbx is None and uw.mpi.size > 1:
+                    raise NotImplementedError(
+                        "adapt(engine='nvb') at np>1 needs the native uwnvb "
+                        "transform (underworld3.utilities._nvb_transform), "
+                        "which is not built in this environment. Build the "
+                        "custom-PETSc/amr env."
+                    )
+                if _nvbx is not None:
+                    from underworld3.utilities.nvb import (
+                        write_tagged_state_label)
+                    write_tagged_state_label(self.dm_hierarchy[-1])
 
         dim = self.dim
-        edge_factor = math.factorial(dim)   # h ≈ (dim! · vol)**(1/dim) for a simplex
         DM_ADAPT_REFINE = 1                  # PETSc DMAdaptFlag: refine this cell
 
         # The metric is normalised to a single callable `eval_metric(centroids)
@@ -6525,8 +7106,225 @@ class Mesh(Stateful, uw_object):
             def eval_metric(centroids):
                 return numpy.asarray(_sampler(metric_sym, centroids)).reshape(-1)
 
+        def cell_geometry(dm):
+            """Per-cell centroid and size for every cell of a simplicial DM.
+
+            A simplex centroid is the vertex mean and its volume is
+            |det(edge vectors)|/dim!, so h = (dim!·vol)^(1/dim) reduces to
+            |det|^(1/dim) — one vectorised det over the cell list. (The
+            per-cell petsc4py ``computeCellGeometryFVM`` calls this replaces
+            dominated the marking cost at bisection depth ≥ 3.)
+            """
+            cs, ce = dm.getHeightStratum(0)
+            n = ce - cs
+            if n == 0:
+                return numpy.empty((0, self.cdim)), numpy.empty(0), cs
+            vS, vE = dm.getDepthStratum(0)
+            verts = numpy.empty((n, dim + 1), dtype=numpy.int64)
+            for i, c in enumerate(range(cs, ce)):
+                verts[i] = [p for p in dm.getTransitiveClosure(c)[0]
+                            if vS <= p < vE]
+            X = dm.getCoordinatesLocal().array.reshape(-1, self.cdim)[
+                verts - vS]
+            e = X[:, 1:, :] - X[:, :1, :]
+            if self.cdim == dim:
+                vol_scaled = numpy.abs(numpy.linalg.det(e))
+            else:                        # manifold: Gram determinant
+                G = e @ e.transpose(0, 2, 1)
+                vol_scaled = numpy.sqrt(numpy.abs(numpy.linalg.det(G)))
+            return X.mean(axis=1), vol_scaled ** (1.0 / dim), cs
+
+        # Analytic boundary surfaces to snap each generation onto. New
+        # boundary vertices are CHORD midpoints, so without snapping the
+        # boundary geometry of a curved domain stays frozen at base
+        # resolution no matter how deep the refinement. Per the 2026-07
+        # round-3b ruling, EVERY generation snaps (not just the returned
+        # child): each intermediate level is a valid mesh in its own
+        # right — extractable for solvers — and the metric marks on true
+        # geometry. On plane surfaces (boxes) the chord midpoint already
+        # lies in the plane, so the snap is exactly a no-op and the flat
+        # confluence gates are untouched.
+        # NOTE: surfaces must be disjoint or intersect only where each
+        # projection is an exact no-op (concentric radial pairs; orthogonal
+        # planes, whose corner vertices are fixed points of both). Sequential
+        # restore does not converge to the intersection of two CURVED
+        # surfaces — junction handling as in boundary_slip is a follow-up
+        # for the day such a mesh registers surfaces.
+        _snap_surfs = [s for s in dict(self.bounding_surfaces).values()
+                       if getattr(s, "kind", None) in ("radial", "plane")
+                       and not getattr(s, "is_free", False)]
+
+        def snap_level_boundaries(dm):
+            if not _snap_surfs:
+                return
+            from underworld3.meshing.smoothing import _pinned_mask
+
+            def sync_mask(mask):
+                # In 3D a boundary-edge midpoint can live on a rank whose
+                # only cells containing it are INTERIOR members of the
+                # edge's star — that rank sees no labelled face and would
+                # skip the snap the face-owning rank applies, leaving one
+                # global vertex with two coordinates. Reduce the mask over
+                # the point SF (ADD ≡ logical-or here) so every rank
+                # holding the vertex agrees; pre-snap coordinates are
+                # rank-consistent and restore is a pure function of them,
+                # so a consistent mask gives a consistent snap.
+                if uw.mpi.size == 1:
+                    return mask
+                from underworld3.meshing.smoothing.graph import (
+                    _build_scalar_dm)
+                dm_s = _build_scalar_dm(dm)
+                lvec = dm_s.createLocalVector()
+                gvec = dm_s.createGlobalVector()
+                lvec.array[:] = mask.astype(float)
+                dm_s.localToGlobal(lvec, gvec, addv=True)
+                dm_s.globalToLocal(gvec, lvec)
+                out = numpy.asarray(lvec.array) > 0.5
+                lvec.destroy(); gvec.destroy(); dm_s.destroy()
+                return out
+
+            vec = dm.getCoordinatesLocal()
+            arr = vec.array.reshape(-1, self.cdim)
+            pre = arr.copy()
+            snapped_any = numpy.zeros(arr.shape[0], dtype=bool)
+            for s in _snap_surfs:
+                mask = sync_mask(_pinned_mask(dm, (s.label,)))
+                if mask.any():
+                    arr[mask] = s.restore(arr[mask])
+                    snapped_any |= mask
+            dm.setCoordinatesLocal(vec)
+            if snapped_any.any():
+                # A snap moves boundary vertices by the chord sagitta
+                # (~h²/8R); on a base coarse enough that h ≈ R this could
+                # invert a sliver silently. Fail loudly instead: no cell
+                # incident to a snapped vertex may flip orientation.
+                cs_, ce_ = dm.getHeightStratum(0)
+                vS_, vE_ = dm.getDepthStratum(0)
+                flipped = 0
+                for c in range(cs_, ce_):
+                    vs = [p - vS_ for p in dm.getTransitiveClosure(c)[0]
+                          if vS_ <= p < vE_]
+                    if not any(snapped_any[v] for v in vs):
+                        continue
+                    e0 = pre[vs[1:]] - pre[vs[0]]
+                    e1 = arr[vs[1:]] - arr[vs[0]]
+                    if (numpy.sign(numpy.linalg.det(e0))
+                            != numpy.sign(numpy.linalg.det(e1))):
+                        flipped += 1
+                if uw.mpi.size > 1:
+                    from mpi4py import MPI as _MPI
+                    flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
+                if flipped:
+                    raise RuntimeError(
+                        f"adapt: snapping boundary vertices to the analytic "
+                        f"surfaces inverted {flipped} cell(s) — the base mesh "
+                        "is too coarse for the boundary curvature (chord "
+                        "sagitta ~ cell size). Refine the base mesh or adapt "
+                        "without registered bounding surfaces.")
+
+        # Refine from the mesh's CURRENT geometry. Node redistribution
+        # (redistribute_nodes) moves mesh.dm's coordinates while the static
+        # base hierarchy keeps the originals — without this carry, an adapt
+        # after a redistribution would silently refine the unmoved mesh.
+        # When moved, the base-finest MG tail level is swapped for the moved
+        # copy below; the coarser tail levels keep their original geometry
+        # (the coordinate-based custom-P transfers accept non-nested pairs).
+        base_finest = self.dm_hierarchy[-1]
+        _cur_coords = self.dm.getCoordinatesLocal().array
+        _moved = not numpy.array_equal(
+            _cur_coords, base_finest.getCoordinatesLocal().array)
+        if uw.mpi.size > 1:
+            from mpi4py import MPI
+            _moved = uw.mpi.comm.allreduce(_moved, op=MPI.LOR)
+        if _moved:
+            base_finest = base_finest.clone()
+            # DMClone shares the coordinates Vec by reference — writing
+            # through getCoordinatesLocal().array here would silently move
+            # the "static" hierarchy level (self.dm_hierarchy[-1]) under
+            # the parent mesh. Install a duplicate instead; the clone gets
+            # the moved geometry, the hierarchy keeps the original.
+            _v = base_finest.getCoordinatesLocal().duplicate()
+            _v.array[:] = _cur_coords
+            base_finest.setCoordinatesLocal(_v)
+            if engine == "nvb" and self.dim == 3 and _nvbx is not None:
+                # the refinement-state seed was written on the unmoved base
+                # (in the guard above); re-seed on the moved geometry
+                from underworld3.utilities.nvb import write_tagged_state_label
+                write_tagged_state_label(base_finest)
+
         markers_per_level = []
+        # relax=True is the RECOMMENDED default: relax once, at the end.
+        # relax="per-generation" relaxes inside the refinement loop instead.
+        # Both measure better than no relaxation and neither dominates the
+        # other across the properties we care about (element quality, size
+        # uniformity along the feature, and refinement leakage away from
+        # it), so this is a genuine choice rather than a ranking.
+        if relax in (False, None):
+            _relax_mode = None
+        elif relax is True:
+            _relax_mode = "end"
+        elif str(relax).lower().replace("_", "-") in ("end", "at-end"):
+            _relax_mode = "end"
+        elif str(relax).lower().replace("_", "-") in ("per-generation",
+                                                      "generation"):
+            _relax_mode = "per-generation"
+        else:
+            raise ValueError(
+                f"adapt(relax={relax!r}); use True (relax once at the end, "
+                f"the recommended default), 'per-generation' (relax inside "
+                f"the refinement loop) or False.")
+
+        # The metric handed to the relaxation, resolved ONCE. A callable
+        # (numpy) metric cannot go to the mover, so those relax in the pure
+        # shape frame at fixed size; a sympy / MeshVariable metric gives the
+        # ideal-metric frame. NB `relax` is a MODE, never a metric.
+        _relax_metric = None if callable(metric_field) else metric_field
+
+        def _relax_generation(engine_obj, carry, rcarry):
+            """Relax THIS generation in place INSIDE the refinement engine.
+
+            The engine's own coordinates feed the next generation's marking
+            and its next midpoints, so a relaxation that only touched the
+            exported DM would be discarded by the following generation (the
+            same reason the boundary snap is applied inside the engine).
+
+            Coordinates are matched by POSITION, not by index: ``to_dm``
+            goes through ``createFromCellList`` and PETSc renumbers the
+            vertices. The match is exact because it is taken before
+            anything moves.
+            """
+            _dmg = engine_obj.to_dm(boundaries=carry, regions=rcarry,
+                                    comm=self.dm.comm)
+            _mg = Mesh(_dmg, simplex=self.dm.isSimplex(),
+                       coordinate_system_type=(
+                           self.CoordinateSystem.coordinate_type),
+                       qdegree=self.qdegree, boundaries=self.boundaries,
+                       verbose=False)
+            _cd = _mg.cdim
+            _pre = numpy.ascontiguousarray(
+                _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd))
+            _src = numpy.ascontiguousarray(
+                numpy.asarray([numpy.asarray(c, dtype=float)
+                               for c in engine_obj.coords]))
+            # EXACT identification: the DM was built from these very
+            # coordinates, so byte equality is the correct test. No spatial
+            # index, no tolerance, no nearest-neighbour guess.
+            _key = {row.tobytes(): i for i, row in enumerate(_src)}
+            _idx = numpy.asarray([_key[row.tobytes()] for row in _pre],
+                                 dtype=numpy.int64)
+            _mg.relax(_relax_metric, **(relax_kwargs or {}))
+            _post = _mg.dm.getCoordinatesLocal().array.reshape(-1, _cd)
+            for _k, _i in enumerate(_idx):
+                engine_obj.coords[_i] = _post[_k]
+
         level_dms = []                       # one DM per refinement level
+        # Nested (topological) MG prolongations, one per refinement generation.
+        # `from_dm` numbers engine vertices as `DM point - vS`, so the base map
+        # is that offset; each generation's map comes back from `to_dm`.
+        _nested_Ps = []
+        _nested_parent_cells = []
+        _vS0, _vE0 = base_finest.getDepthStratum(0)
+        _coarse_vmap = {i: _vS0 + i for i in range(_vE0 - _vS0)}
 
         if engine == "nvb" and _nvbx is not None:
             # Native uwnvb DMPlexTransform. Each pass marks the cells whose current
@@ -6534,20 +7332,13 @@ class Mesh(Stateful, uw_object):
             # bounded newest-vertex conforming closure); the transform is in-place so
             # the output stays co-partitioned with the parent and carries the
             # boundary/region labels forward automatically. A single bisection halves
-            # the area (h → h/√2), so we allow up to 2·max_levels passes to reach the
-            # same isotropic target as the SBR path's max_levels quad-splits.
-            current_dm = self.dm_hierarchy[-1]   # static base finest (distributed)
-            n_gen = 2 * max_levels
+            # the cell volume (h shrinks by 2^(1/dim)), so one isotropic-equivalent
+            # max_levels is dim bisection passes.
+            current_dm = base_finest             # base finest, current geometry
+            n_gen = dim * max_levels
             for level in range(n_gen):
-                cs, ce = current_dm.getHeightStratum(0)
-                ncells = ce - cs
-                if ncells:
-                    centroids = numpy.empty((ncells, self.cdim))
-                    cur_h = numpy.empty(ncells)
-                    for i, c in enumerate(range(cs, ce)):
-                        vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
-                        centroids[i] = numpy.asarray(cen)[: self.cdim]
-                        cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
+                centroids, cur_h, cs = cell_geometry(current_dm)
+                if cur_h.size:
                     M = numpy.clip(eval_metric(centroids), 1e-30, None)
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
@@ -6573,26 +7364,67 @@ class Mesh(Stateful, uw_object):
                 lab.setDefaultValue(0)
                 for cidx in marked:
                     lab.setValue(cidx, DM_ADAPT_REFINE)
+                _coarse_for_P = current_dm
                 current_dm = _nvbx.refine(d, "adapt")
+                # Capture the exact parent/child prolongation NOW, in the one
+                # window where the coordinates are still pristine: the snap
+                # below moves boundary midpoints off their parent edges, and
+                # relaxation moves everything, after which the relation can no
+                # longer be recovered by matching. See #425.
+                from underworld3.utilities.nvb import (
+                    nested_prolongation_from_dms as _nested_from_dms,
+                    nested_cell_parents as _nested_parents)
+                _vP = _nested_from_dms(_coarse_for_P, current_dm)
+                _nested_Ps.append(_vP)
+                # Parent CELL map as well: with it a fine DOF's weights are the
+                # coarse basis evaluated inside its parent, which is exact at
+                # ANY degree — the vertex map alone only covers P1. (#425)
+                _nested_parent_cells.append(
+                    None if _vP is None
+                    else _nested_parents(_coarse_for_P, current_dm, _vP))
+                snap_level_boundaries(current_dm)
+                if _relax_mode == "per-generation":
+                    # Relax THIS generation before the next one marks from it:
+                    # the moved coordinates are what the next pass measures and
+                    # bisects, which is the whole point of relaxing in the loop
+                    # rather than once at the end. A clone keeps the plex
+                    # numbering, so the coordinate vectors align index-for-index
+                    # and no positional matching is needed.
+                    _mg = Mesh(current_dm.clone(),
+                               simplex=self.dm.isSimplex(),
+                               coordinate_system_type=(
+                                   self.CoordinateSystem.coordinate_type),
+                               qdegree=self.qdegree,
+                               boundaries=self.boundaries, verbose=False)
+                    _mg.relax(_relax_metric, **(relax_kwargs or {}))
+                    current_dm.setCoordinatesLocal(
+                        _mg.dm.getCoordinatesLocal())
                 level_dms.append(current_dm)
                 if verbose:
                     fs, fe = current_dm.getHeightStratum(0)
                     uw.pprint(0, f"[adapt] nvb pass {level}: marked {len(marked)} "
                                  f"-> {fe - fs} cells (rank-local)")
             if not level_dms:
-                current_dm = self.dm_hierarchy[-1].clone()
+                current_dm = base_finest.clone()
         elif engine == "nvb":
-            # Serial fallback (no native transform): persistent NVBMesh cell-list
-            # engine. The refinement-edge labelling propagates parent→child across
-            # generations, preserving the similarity-class (shape-regularity) bound.
-            from underworld3.utilities.nvb import NVBMesh
+            # Serial cell-list engines: the slot-based NVBMesh in 2D (until
+            # the native transform adopts the tagged rule — capstone stage
+            # 1e) and the dimension-general TaggedBisectionMesh in 3D. The
+            # refinement-edge state propagates parent→child across
+            # generations, preserving the similarity-class (shape-regularity)
+            # bound. A bisection halves the cell volume, so h shrinks by
+            # 2^(1/dim) per generation and one isotropic-equivalent
+            # ``max_levels`` is dim generations.
+            from underworld3.utilities.nvb import (NVBMesh, TaggedBisectionMesh,
+                                                   nested_prolongation)
+            _Engine = TaggedBisectionMesh if self.dim == 3 else NVBMesh
             carry = [(b.name, b.value) for b in self.boundaries
                      if b.name not in ("Null_Boundary", "All_Boundaries")]
             rcarry = ([(r.name, r.value) for r in self.regions]
                       if self.regions is not None else [])
-            nvb = NVBMesh.from_dm(self.dm_hierarchy[-1], boundaries=carry,
+            nvb = _Engine.from_dm(base_finest, boundaries=carry,
                                   regions=rcarry)
-            n_gen = 2 * max_levels
+            n_gen = dim * max_levels
             for level in range(n_gen):
                 centroids, cur_h, cids = nvb.centroids_h()
                 M = numpy.clip(eval_metric(centroids), 1e-30, None)
@@ -6607,26 +7439,52 @@ class Mesh(Stateful, uw_object):
                     sel = sel[order[:node_budget]]
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
+                _n_coarse_verts = len(nvb.coords)   # before this generation
                 nvb.refine(set(marked))
-                level_dms.append(nvb.to_dm(boundaries=carry, regions=rcarry,
-                                           comm=self.dm.comm))
+                # Snap INSIDE the engine: its own coordinates feed the next
+                # generation's marking AND the next midpoints, so snapping
+                # only the exported DM would leave the engine's geometry on
+                # the chords.
+                if _snap_surfs:
+                    _val2surf = {v: s for s in _snap_surfs
+                                 for (nm, v) in carry if nm == s.label}
+                    _sv = {}
+                    for _fkey, _val in nvb.facet_label.items():
+                        _s = _val2surf.get(_val)
+                        if _s is not None:
+                            _sv.setdefault(id(_s), (_s, set()))[1].update(_fkey)
+                    for _s, _vs in _sv.values():
+                        _idx = numpy.fromiter(_vs, dtype=numpy.int64)
+                        _snapped = _s.restore(
+                            numpy.array([nvb.coords[i] for i in _idx]))
+                        for _k, _i in enumerate(_idx):
+                            nvb.coords[_i] = _snapped[_k]
+                if _relax_mode == "per-generation":
+                    _relax_generation(nvb, carry, rcarry)
+                _gen_dm = nvb.to_dm(boundaries=carry, regions=rcarry,
+                                    comm=self.dm.comm)
+                level_dms.append(_gen_dm)
+                # Record the EXACT prolongation for this generation while the
+                # engine still knows the parent/child relation. Built from
+                # `edge2mid`, not by point location, so it is full rank by
+                # construction and survives any later node motion (relax /
+                # snap / deformation). See design/nested-vs-geometric-mg-transfers.
+                _vSg, _vEg = _gen_dm.getDepthStratum(0)
+                _fine_map = dict(nvb.dm_vertex_of_engine)
+                _nested_Ps.append(nested_prolongation(
+                    nvb, _coarse_vmap, _fine_map, _n_coarse_verts,
+                    _vSg, _vEg - _vSg))
+                _coarse_vmap = _fine_map
                 if verbose:
                     uw.pprint(0, f"[adapt] nvb gen {level}: marked {len(marked)} "
                                  f"-> {len(nvb.cells)} cells")
-            current_dm = level_dms[-1] if level_dms else self.dm_hierarchy[-1].clone()
+            current_dm = level_dms[-1] if level_dms else base_finest.clone()
         else:
-            current_dm = self.dm_hierarchy[-1]   # static base finest
+            current_dm = base_finest             # base finest, current geometry
             for level in range(max_levels):
-                cs, ce = current_dm.getHeightStratum(0)
-                ncells = ce - cs
-                if ncells == 0:
+                centroids, cur_h, cs = cell_geometry(current_dm)
+                if cur_h.size == 0:
                     break
-                centroids = numpy.empty((ncells, self.cdim))
-                cur_h = numpy.empty(ncells)
-                for i, c in enumerate(range(cs, ce)):
-                    vol, cen = current_dm.computeCellGeometryFVM(c)[0:2]
-                    centroids[i] = numpy.asarray(cen)[: self.cdim]
-                    cur_h[i] = (edge_factor * abs(float(vol))) ** (1.0 / dim)
 
                 # Metric M = 1/h_target² at the cell centroids (parent field).
                 # A callable is evaluated directly on the centroids; a field/expr
@@ -6651,10 +7509,11 @@ class Mesh(Stateful, uw_object):
                     uw.pprint(0, f"[adapt] level {level}: refining {len(cell_ids)} "
                                  f"of {ncells} cells")
                 current_dm = custom_mg.sbr_refine(current_dm, cell_ids)
+                snap_level_boundaries(current_dm)
                 level_dms.append(current_dm)
 
         if verbose:
-            base_n = self.dm_hierarchy[-1].getHeightStratum(0)
+            base_n = base_finest.getHeightStratum(0)
             fin_n = current_dm.getHeightStratum(0)
             uw.pprint(0, f"[adapt] base finest {base_n[1]-base_n[0]} -> "
                          f"child {fin_n[1]-fin_n[0]} cells "
@@ -6670,6 +7529,12 @@ class Mesh(Stateful, uw_object):
             verbose=False,
         )
 
+        if _relax_mode == "end":
+            # A sympy/MeshVariable metric gives the ideal-metric frame (the
+            # metric sets size); a plain callable cannot be handed to the
+            # mover, so those fall back to pure shape repair at fixed size.
+            child.relax(_relax_metric, **(relax_kwargs or {}))
+
         # Lineage (parent/child DAG) and mesh-owned custom-P hierarchy.
         child.parent = self
         child._relationship_kind = "refinement"
@@ -6679,6 +7544,11 @@ class Mesh(Stateful, uw_object):
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
         child._adapt_engine = engine
+        # Exact per-generation prolongations when the engine could supply them
+        # (cell-list path). Empty for the native transform path, which falls
+        # back to the geometric builder. See #425.
+        child._adapt_prolongation = _nested_Ps
+        child._adapt_parent_cells = _nested_parent_cells
         # Mesh-owned custom-P geometric-MG tail. EVERY refinement level is its own
         # MG level (one custom-P transfer per refinement step), not a single
         # base-finest -> child jump: the tail is
@@ -6691,7 +7561,13 @@ class Mesh(Stateful, uw_object):
         intermediate = [
             self._wrap_coarse_level(d) for d in level_dms[:-1]
         ]
-        child._custom_mg_coarse_meshes = self._coarse_level_meshes() + intermediate
+        coarse_tail = self._coarse_level_meshes()
+        if _moved:
+            # the finest base level of the MG tail must carry the SAME moved
+            # geometry the child was refined from; coarser levels keep their
+            # original coordinates (custom-P transfers accept non-nested pairs)
+            coarse_tail = coarse_tail[:-1] + [self._wrap_coarse_level(base_finest)]
+        child._custom_mg_coarse_meshes = coarse_tail + intermediate
         child._custom_mg_builder = builder
 
         self._registered_children.add(child)

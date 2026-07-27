@@ -1,3 +1,5 @@
+import collections
+
 import numpy as np
 import sympy
 
@@ -108,6 +110,23 @@ class SolverBaseClass(uw_object):
         # -> no hook is installed and the solve path is unchanged. See
         # add_update_callback().
         self._snes_update_callbacks = []
+
+        # Solver difficulty / convergence reporting (default-on; see the
+        # solve_report / solve_history properties and _capture_solve_report).
+        # A SolveReport is recorded after every solve; solve_history keeps a
+        # short bounded trail so continuation / time-stepping loops can read
+        # trends without logging each step themselves.
+        self._solve_report = None
+        self._solve_history = collections.deque(maxlen=32)
+        # Bounded/resumable difficulty probe state (see estimate_difficulty).
+        # _difficulty_probe gates probe-only behaviour (iteration-cap solves,
+        # suppressed divergence warnings, restart anchoring); _difficulty_max_it
+        # is the active cap; _resume_abs_target anchors a chunked start/stop/restart
+        # chain to the ORIGINAL ||F0|| so it terminates at the same point an
+        # uninterrupted solve would. None = not in a resumable chain.
+        self._difficulty_probe = False
+        self._difficulty_max_it = None
+        self._resume_abs_target = None
 
         # Preconditioner selection — see the `preconditioner` property.
         # `_pc_option_prefix` is set by subclasses that participate in the easy
@@ -900,6 +919,9 @@ class SolverBaseClass(uw_object):
 
         self.natural_bcs = []
         self.essential_bcs = []
+        # A teardown means the next solve is a different discrete problem: a resume
+        # anchor from the old problem's ||F0|| must not survive into it.
+        self._resume_abs_target = None
 
         if self.snes is not None:
             self.snes.destroy()
@@ -915,6 +937,224 @@ class SolverBaseClass(uw_object):
         self.is_setup = False
 
         return
+
+    @property
+    def solve_report(self):
+        """Difficulty / convergence record of the most recent solve (read-only).
+
+        A :class:`~underworld3.systems.solve_report.SolveReport` populated by default after
+        every ``solve()`` — no opt-in. ``None`` before the first solve. Exposes the converged
+        reason, nonlinear/linear iteration counts, final and initial ‖F‖, the residual
+        reduction and contraction ρ, and the residual ladder. See also ``solve_history`` and
+        ``estimate_difficulty``.
+        """
+        return self._solve_report
+
+    @solve_report.setter
+    def solve_report(self, value):
+        raise AttributeError("solve_report is read-only (set by solve()).")
+
+    @property
+    def solve_history(self):
+        """Bounded trail of recent :class:`SolveReport`s (read-only, most recent last).
+
+        A ``collections.deque`` (``maxlen=32``) so continuation / time-stepping loops can read
+        difficulty trends without logging each solve themselves.
+        """
+        return self._solve_history
+
+    @solve_history.setter
+    def solve_history(self, value):
+        raise AttributeError("solve_history is read-only (set by solve()).")
+
+    def _capture_solve_report(self, *, bounded=False):
+        """Record a SolveReport for the just-completed solve into ``self._solve_report`` and
+        append it to ``self._solve_history``. Reads SNES state only (side-effect free).
+
+        INVARIANT: every physical ``self.snes.solve(...)`` site must be followed by a call to
+        this method, so that reporting covers every solve path — including any that returns
+        early and bypasses ``_snes_solve_with_retries`` / ``_warn_on_divergence`` (e.g. the
+        rotated-free-slip handoff in ``utilities/rotated_bc.py``). Do NOT anchor capture on
+        ``_warn_on_divergence`` (some paths skip it).
+        """
+        from underworld3.systems.solve_report import (
+            SolveReport, reason_string, contraction,
+        )
+
+        if getattr(self, "snes", None) is None:
+            self._solve_report = None
+            return None
+
+        reason = int(self.snes.getConvergedReason())
+        nl_its = int(self.snes.getIterationNumber())
+        ksp_its = int(self.snes.getLinearSolveIterations())
+        # Sanctioned swallows (each optional-field read below): PETSc raises from these
+        # getters on SNES types/states that never computed the quantity (e.g. ksponly
+        # before a function evaluation, builds without the counter). The report field
+        # degrades to its honest "unavailable" value; nothing else is masked.
+        try:
+            fnorm = float(self.snes.getFunctionNorm())
+        except Exception:
+            fnorm = float("nan")
+        try:
+            fev = int(self.snes.getFunctionEvaluations())
+        except Exception:
+            fev = None
+        try:
+            hist = tuple(float(h) for h in self.snes.getConvergenceHistory()[0])
+        except Exception:
+            hist = ()
+        fnorm0 = hist[0] if hist else None
+        reduction = (fnorm / fnorm0) if (fnorm0 not in (None, 0.0)) else None
+        rho = contraction(hist)
+
+        report = SolveReport(
+            reason=reason,
+            reason_str=reason_string(reason),
+            converged=reason > 0,
+            nl_its=nl_its,
+            ksp_its=ksp_its,
+            fnorm=fnorm,
+            fnorm0=fnorm0,
+            reduction=reduction,
+            rho=rho,
+            fev=fev,
+            history=hist,
+            bounded=bool(bounded),
+        )
+        self._solve_report = report
+        self._solve_history.append(report)
+        return report
+
+    def _capture_rotated_report(self, info):
+        """Record a SolveReport for a rotated-free-slip solve, which runs its own
+        ``ksp.solve()`` on the rotated operator (``utilities/rotated_bc.py``) and never
+        touches ``self.snes`` — so the generic reader would see stale SNES state.
+
+        Handles BOTH rotated result dicts: the linear one-shot solve (``ksp_its`` an
+        int, one outer solve, no outer verdict) and the manual nonlinear Newton loop
+        (``nonlinear_iterations``, ``ksp_its`` a per-increment LIST, and an outer
+        ``converged`` flag from the residual/step-norm tests). ``ksp_reason`` is a KSP
+        code on both paths (the nonlinear dict carries the LAST increment's), so it is
+        rendered with the KSP reason table — the SNES table shares the integers but
+        names different outcomes. A malformed dict raises: this reader and the dicts in
+        ``rotated_bc.py`` are a contract, and a silent fallback here previously masked
+        a broken one."""
+        from underworld3.systems.solve_report import SolveReport, ksp_reason_string
+
+        info = info or {}
+        reason = int(info.get("ksp_reason", 0))
+        raw_its = info.get("ksp_its", 0)
+        if isinstance(raw_its, (list, tuple)):
+            ksp_its = int(sum(raw_its))                 # nonlinear: one count per Newton step
+        else:
+            ksp_its = int(raw_its)
+        nl_its = int(info.get("nonlinear_iterations", 1))   # linear path = one outer solve
+        if "converged" in info:
+            # The nonlinear loop's own verdict. The last KSP reason alone would mislabel
+            # a stalled Newton chain whose final linear solve happened to converge.
+            converged = bool(info["converged"])
+        else:
+            converged = reason > 0
+        rnorm = info.get("rnorm")
+        fnorm = float(rnorm) if rnorm is not None else float("nan")
+        rnorm0 = info.get("rnorm0")
+        fnorm0 = float(rnorm0) if rnorm0 else None
+        reduction = (fnorm / fnorm0) if (fnorm0 and fnorm == fnorm) else None
+        report = SolveReport(
+            reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
+            nl_its=nl_its, ksp_its=ksp_its, fnorm=fnorm,
+            fnorm0=fnorm0, reduction=reduction, rho=None, fev=None, history=(),
+            bounded=False,
+        )
+        self._solve_report = report
+        self._solve_history.append(report)
+        return report
+
+    def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):
+        """Run a bounded, resumable solve to *estimate solver difficulty* and return its report.
+
+        Caps the solve at ``max_nl_its`` nonlinear iterations (for THIS call only), runs the
+        normal ``solve()`` — which leaves the partial iterate in the fields — and returns the
+        :class:`SolveReport` (``bounded=True``). The reported effort (iterations, residual
+        reduction, contraction ρ) IS the difficulty estimate. Continue losslessly with another
+        ``estimate_difficulty(warm=True)`` (a large cap runs it to completion); a chunked
+        start/stop/restart chain terminates at the same point an uninterrupted solve would,
+        because the chain anchors convergence to the original ‖F0‖.
+
+        This bounds *solver work predictably* (an iteration count) — it is NOT a wall-time limit.
+
+        Parameters
+        ----------
+        max_nl_its : int
+            Cap on nonlinear (SNES) iterations for this call.
+        warm : bool, default True
+            ``True`` continues from the current fields (a restart within a chain);
+            ``False`` starts a fresh chain from a zero initial guess.
+        **solve_kwargs
+            Forwarded to ``solve()`` (e.g. ``timestep``, ``picard`` for Stokes/VE).
+            ``zero_init_guess`` is owned by ``warm`` and ``divergence_retries`` by the
+            probe (always 0) — passing either raises.
+
+        Returns
+        -------
+        SolveReport
+            The (``bounded=True``) report for this capped solve; also available as
+            ``self.solve_report``.
+
+        Notes
+        -----
+        Not available with rotated free-slip BCs: that path solves outside
+        ``self.snes``, so the cap and anchor cannot reach it. Under
+        ``consistent_jacobian="continuation"`` the cap applies to EACH stage (Picard
+        then Newton), so one probe may run up to twice ``max_nl_its``.
+        """
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            raise NotImplementedError(
+                "estimate_difficulty() is not available with rotated free-slip BCs: "
+                "that path solves outside self.snes (utilities/rotated_bc.py), so the "
+                "iteration cap and resume anchor cannot be applied to it."
+            )
+        if "zero_init_guess" in solve_kwargs:
+            raise TypeError(
+                "estimate_difficulty() sets the initial guess from warm= "
+                "(warm=False starts a fresh chain from zero); do not pass zero_init_guess."
+            )
+        if solve_kwargs.get("divergence_retries"):
+            raise TypeError(
+                "estimate_difficulty() does not accept divergence_retries: a capped probe "
+                "ends DIVERGED_MAX_IT by design, and retrying on it would run multiples of "
+                "the advertised cap."
+            )
+        if not warm:
+            self._resume_abs_target = None      # fresh chain: forget any prior anchor
+        self._difficulty_probe = True
+        self._difficulty_max_it = int(max_nl_its)
+        try:
+            self.solve(zero_init_guess=(not warm), **solve_kwargs)
+        finally:
+            self._difficulty_probe = False
+            self._difficulty_max_it = None
+
+        # Anchor lifecycle. A CONVERGED probe ends the chain: clear the anchor so it
+        # cannot leak into a later chain on different physics. This also covers the
+        # warm first call on an already-converged state — its ||F0|| is the *converged*
+        # residual, and anchoring to tolerance*||F_converged|| would set an unreachable
+        # target that silently degrades the chain to restart-relative semantics.
+        # An UNCONVERGED (capped) probe with no anchor yet establishes the chain,
+        # anchored to the original ||F0||: subsequent warm restarts — including a
+        # large-cap call to run to completion — terminate at tolerance*||F0||, the same
+        # point an uninterrupted solve would, regardless of where the caps fell. The
+        # anchor is consulted ONLY under _difficulty_probe (see
+        # _snes_solve_with_retries), so plain solves are unaffected.
+        report = self._solve_report
+        if report is not None and report.converged:
+            self._resume_abs_target = None
+        elif self._resume_abs_target is None and report is not None:
+            f0 = report.fnorm0
+            if f0:
+                self._resume_abs_target = self.tolerance * float(f0)
+        return report
 
     def get_snes_diagnostics(self):
         """
@@ -1129,6 +1369,11 @@ class SolverBaseClass(uw_object):
         if phase == "picard" and reason == -5:
             return
 
+        # Bounded difficulty probe: hitting the iteration cap (DIVERGED_MAX_IT) is
+        # the intended stop, not a failure — the effort is reported, not warned.
+        if self._difficulty_probe and reason == -5:
+            return
+
         its = self.snes.getIterationNumber()
         _entry = self._convergence_reasons.get(reason)
         reason_str = _entry[0] if _entry is not None else f"UNKNOWN({reason})"
@@ -1169,23 +1414,63 @@ class SolverBaseClass(uw_object):
         # Attach the per-iteration callback dispatcher here (after all
         # setFromOptions in the solve path). No-op when no callbacks registered.
         self._attach_snes_update_hook()
-        if self.consistent_jacobian == "continuation":
-            self._continuation_solve(gvec, verbose=verbose)
-        else:
-            self.snes.solve(None, gvec)
-        if divergence_retries <= 0:
-            return
-        for _r in range(divergence_retries):
-            reason = self.snes.getConvergedReason()
-            if reason >= 0:
-                return
-            if verbose and uw.mpi.rank == 0:
-                print(
-                    f"SNES DIVERGED (reason={reason}); "
-                    f"warm-start retry {_r + 1}/{divergence_retries}",
-                    flush=True,
-                )
-            self.snes.solve(None, gvec)
+        # Arm the residual-history buffer for THIS solve (reset clears stale data so the
+        # reported contraction is computed on the current ladder only). Done here — every
+        # solve funnels through this method and reads self.snes freshly — so a recreated
+        # SNES (new object after a setup-dirtying _build) is armed automatically. Guarded:
+        # not all PETSc builds expose it identically.
+        try:
+            self.snes.setConvergenceHistory(reset=True)
+        except Exception:
+            pass
+
+        # Single control point for the bounded/resumable difficulty solve. Runs AFTER
+        # every per-solve setFromOptions (base and Stokes), so overrides here win. Gated
+        # on _difficulty_probe so it is active ONLY inside estimate_difficulty — a plain
+        # solve() is byte-for-byte unchanged and can never pick up a stale chain anchor.
+        #   - iteration cap: cap nonlinear iterations for this probe;
+        #   - resume anchor: once a chain is established (_resume_abs_target set from the
+        #     first solve's ||F0||), terminate at the ORIGINAL ||F0|| via an absolute tol
+        #     = tolerance*||F0||. This abs tol is LOOSER than the restart-relative
+        #     rtol*||F_restart||, so it fires first — no need to zero rtol. So a chunked
+        #     start/stop/restart terminates at the same point an uninterrupted solve would.
+        # Tolerances are saved and restored so nothing leaks into later solves.
+        _probe = bool(self._difficulty_probe)
+        _saved_tol = None
+        if _probe:
+            _saved_tol = self.snes.getTolerances()
+            if self._difficulty_max_it is not None:
+                self.snes.setTolerances(max_it=int(self._difficulty_max_it))
+            if self._resume_abs_target is not None:
+                self.snes.setTolerances(atol=float(self._resume_abs_target))
+
+        try:
+            if self.consistent_jacobian == "continuation":
+                self._continuation_solve(gvec, verbose=verbose)
+            else:
+                self.snes.solve(None, gvec)
+            if divergence_retries > 0:
+                for _r in range(divergence_retries):
+                    reason = self.snes.getConvergedReason()
+                    if reason >= 0:
+                        break
+                    if verbose and uw.mpi.rank == 0:
+                        print(
+                            f"SNES DIVERGED (reason={reason}); "
+                            f"warm-start retry {_r + 1}/{divergence_retries}",
+                            flush=True,
+                        )
+                    self.snes.solve(None, gvec)
+        finally:
+            if _saved_tol is not None:
+                self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
+                                        stol=_saved_tol[2], max_it=_saved_tol[3])
+            # Default-on difficulty report — single tail so every path is covered,
+            # INCLUDING a solve that raises: the report then reflects the failed
+            # attempt's SNES state rather than leaving the previous solve's converged
+            # report behind for recovery logic to misread. bounded=True marks a report
+            # produced under an estimate_difficulty cap.
+            self._capture_solve_report(bounded=_probe)
 
     def _continuation_solve(self, gvec, verbose=False):
         """Picard -> Newton continuation via the constants[]-routed alpha.
@@ -1594,6 +1879,13 @@ class SolverBaseClass(uw_object):
 
         from collections import namedtuple
         if c_type == 'neumann':
+            # mesh.Gamma in a natural-BC expression resolves per boundary:
+            # external boundaries keep the exact per-quadrature petsc_n[];
+            # internal boundaries substitute the declared analytic normal
+            # (petsc_n is orientation-ambiguous there — issue #327).
+            sympy_fn = sympy.Matrix(
+                self.mesh._resolve_boundary_normals(sympy_fn, label)
+            ).as_immutable()
             BC = namedtuple('NaturalBC', ['f_id', 'components', 'fn_f', 'fn_F', 'fn_p', 'boundary', 'boundary_label_val', 'type', 'PETScID', 'fns'])
             self.natural_bcs.append(BC(f_id, components, sympy_fn, None, None, label, -1, "natural", -1, {}))
         elif c_type == 'dirichlet':
@@ -2243,6 +2535,7 @@ class SolverBaseClass(uw_object):
             t_nd = self._nondimensional_time(time)
             _time_dm_reaction = self.dm
             UW_DMSetTime(_time_dm_reaction.dm, <PetscReal>t_nd)
+            residual_time = <PetscReal>t_nd
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -2273,6 +2566,15 @@ class SolverBaseClass(uw_object):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Constrained (Dirichlet) DOFs are ABSENT from the global vector,
+            # so the localToGlobal/globalToLocal round trip above leaves them
+            # ZERO in xlocal. Insert the essential boundary values before
+            # integrating: without this the residual is evaluated against a
+            # state whose boundary values are wrong wherever g != 0, and the
+            # 'reaction' on inhomogeneous Dirichlet boundaries is garbage
+            # (issue #407 — g=0 boundaries were accidentally correct).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
 
             # Return the RAW local residual: each rank has computed its OWNED cells'
@@ -2287,7 +2589,7 @@ class SolverBaseClass(uw_object):
             self.dm.restoreLocalVec(xlocal)
             self.dm.restoreGlobalVec(gvec)
 
-    def boundary_flux(self, boundary, mass="lumped", remove_mean=False, normal=None):
+    def boundary_flux(self, boundary, mass="auto", remove_mean=False, normal=None):
         r"""Consistent boundary flux on ``boundary``, recovered from the essential-BC
         reaction of the last solve (the Consistent Boundary Flux method).
 
@@ -2297,15 +2599,21 @@ class SolverBaseClass(uw_object):
         number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
         ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
 
-        ``mass`` de-smears the nodal reaction with the ``"lumped"`` (diagonal, monotone —
-        no overshoot at a flux jump) or ``"consistent"`` boundary mass. ``remove_mean``
-        subtracts the boundary mean — leave ``False`` for a physical flux (the mean is
-        the Nusselt number); ``True`` gives a gauge-free field (e.g. dynamic topography).
-        Parallel-safe and partition-independent."""
+        ``mass`` de-smears the nodal reaction with ``"lumped"`` or ``"consistent"``
+        boundary mass. ``"auto"`` (default) selects lumped recovery for 2D traces and
+        3D P1 triangles, and the required consistent solve for 3D P2 triangles.
+        ``remove_mean`` subtracts the boundary mean — leave ``False`` for a physical
+        flux (the mean is the Nusselt number); ``True`` gives a gauge-free field.
+
+        Three-dimensional recovery supports triangular P1/P2 traces; quadrilateral
+        traces raise explicitly. Reaction and mass assembly are partition-independent.
+        For vector fluxes, supply an analytic ``normal`` when strict partition
+        independence of the normal projection is required; geometric facet-normal
+        averaging at partition seams has a small pre-existing partition sensitivity."""
         from underworld3.utilities.boundary_flux import boundary_flux as _bf
         return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
 
-    def boundary_flux_field(self, boundary, field, mass="lumped",
+    def boundary_flux_field(self, boundary, field, mass="auto",
                             remove_mean=False, scale=1.0, normal=None):
         r"""Write the consistent boundary flux (see :meth:`boundary_flux`) onto a scalar
         MeshVariable ``field`` at the boundary nodes (interior untouched), multiplied by
@@ -2406,9 +2714,11 @@ class SNES_Scalar(SolverBaseClass):
 
         ## Todo: some validity checking on the size / type of u_Field supplied
         if u_Field is None:
-            # TODO(BUG): num_components=mesh.dim for a SCALAR unknown looks wrong
-            # (a scalar has one component); kept as-is pending review (READ-22).
-            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=mesh.dim,
+            # A scalar unknown has one component. (MeshVariable already forced
+            # this: vtype=SCALAR overrides num_components, so the old
+            # num_components=mesh.dim here was ignored, never over-allocated —
+            # issue #367.)
+            self.Unknowns.u = uw.discretisation.MeshVariable( mesh=mesh, num_components=1,
                                                       varname="Us{}".format(SNES_Scalar._obj_count),
                                                       vtype=uw.VarType.SCALAR, degree=degree, )
         else:
@@ -5355,7 +5665,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             J1.destroy(); J2.destroy()
         return rel > tol
 
-    def boundary_normal_traction(self, boundary, mass="lumped"):
+    def boundary_normal_traction(self, boundary, mass="auto"):
         r"""Return the boundary normal traction :math:`\sigma_{nn}` on a
         rotated-free-slip ``boundary`` as the constraint reaction from the last
         solve — the smooth, bounded quantity used for dynamic topography
@@ -5363,18 +5673,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         prior :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed
         :meth:`solve`.
 
-        ``mass`` chooses the boundary-mass de-smear of the nodal reaction:
-        ``"lumped"`` (default) is monotone — it cannot overshoot where the traction
-        jumps (e.g. across a viscosity contrast), so it is the safe choice for driving
-        a free surface; ``"consistent"`` uses the full P2 line mass (marginally sharper
-        on smooth tractions, but overshoots at discontinuities)."""
+        ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
+        triangles, and the required consistent surface-mass solve for 3D P2 triangles.
+        Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
+        mathematically valid. Three-dimensional recovery currently supports triangular
+        P1/P2 traces only."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
                 "boundary_normal_traction requires a completed rotated-free-slip solve.")
         from underworld3.utilities.rotated_bc import boundary_normal_traction as _bnt
         return _bnt(self, boundary, self._rotated_freeslip_info, mass=mass)
 
-    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="lumped"):
+    def dynamic_topography(self, boundary, field, buoyancy_scale=1.0, mass="auto"):
         r"""Write the dynamic topography
         :math:`h = -(\sigma_{nn}-\overline{\sigma_{nn}})/(\Delta\rho\,g)` on a
         rotated-free-slip ``boundary`` onto a scalar MeshVariable ``field``, from the
@@ -5384,9 +5694,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         pass it here after each :meth:`solve`; its boundary nodes are filled and the
         interior left untouched.
 
-        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length). ``mass`` selects
-        the recovery de-smear (``"lumped"`` default is monotone — no overshoot at a
-        stress jump — and is the safe choice for a free surface). Requires a prior
+        ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
+        ``mass="auto"`` selects lumped recovery where valid and the consistent
+        surface-mass solve for 3D P2 triangles. Requires a prior
         :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
@@ -8048,6 +8358,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 self._rotated_freeslip_info = solve_rotated_freeslip_nonlinear(
                     self, self._rotated_freeslip_bcs, verbose=verbose,
                     zero_init_guess=zero_init_guess, picard=picard)
+            # This path solves via ksp.solve on the rotated operator (not self.snes),
+            # so give it a report from the rotated result rather than leaving a stale one.
+            self._capture_rotated_report(self._rotated_freeslip_info)
             return
 
         if time is not None:

@@ -87,11 +87,10 @@ def test_deformed_spherical_shell_boundary_area_parallel():
     a = math.log(2.0)
     mapped = (np.exp(a * t) - 1.0) / (math.exp(a) - 1.0)
     new_radii = 0.5 + thickness * mapped
-    # TODO(BUG): fails since the _deform_mesh live-mesh guard landed (PR #326):
-    # a direct _deform_mesh call on a mesh that already carries a variable is
-    # rejected. Needs migration to mesh.deform() or a sanctioned mutation
-    # scope. Pre-existing on development; observed while gating the #324 fix.
-    mesh._deform_mesh(coords * (new_radii / radii)[:, None])
+    # Public deform() (pure geometric move, no dt): the raw _deform_mesh
+    # primitive is rejected by the live-mesh coordinate-mutation guard when
+    # a variable exists (issue #331).
+    mesh.deform(coords * (new_radii / radii)[:, None])
 
     lower = float(uw.maths.BdIntegral(mesh=mesh, fn=1.0, boundary="Lower").evaluate())
     upper = float(uw.maths.BdIntegral(mesh=mesh, fn=1.0, boundary="Upper").evaluate())

@@ -135,9 +135,9 @@ def smooth_mesh_interior(
         Metric-grading solver (ignored when ``metric is None``).
         ``"mmpde"`` (alias ``"variational"``) — variational
         moving-mesh (Huang–Kamenski MMPDE) with a full tensor (or
-        scalar) metric; non-folding by construction. **Currently
-        2D-only** (triangle meshes) — a 3D mesh raises
-        ``NotImplementedError``.
+        scalar) metric; non-folding by construction. Triangle (2D)
+        and tetrahedral (3D) simplex meshes; quad/hex meshes and
+        constrained manifolds raise ``NotImplementedError``.
 
         The historical spellings ``"spring"``, ``"ma"``, ``"ot"``
         and ``"anisotropic"`` name interior movers retired in
@@ -796,17 +796,33 @@ def follow_metric(
         # stays intact while sliver cells get rounded out.
         # `polish_max_iters=0` disables entirely.
         if moved and polish_max_iters > 0:
-            tris_polish = _tri_cells(mesh.dm)
+            if mesh.cdim == 2:
+                cells_polish = _tri_cells(mesh.dm)
+            else:
+                from .graph import _tet_cells, _signed_volumes
+                cells_polish = _tet_cells(mesh.dm)
             for _polish_iter in range(int(polish_max_iters)):
-                # Check current shape quality
-                p = np.asarray(mesh.X.coords)[tris_polish]
-                e0 = np.linalg.norm(p[:, 1] - p[:, 0], axis=1)
-                e1 = np.linalg.norm(p[:, 2] - p[:, 1], axis=1)
-                e2 = np.linalg.norm(p[:, 0] - p[:, 2], axis=1)
-                A = np.abs(_signed_areas(np.asarray(mesh.X.coords),
-                                           tris_polish))
-                q = (4.0 * np.sqrt(3.0) * A
-                     / (e0 * e0 + e1 * e1 + e2 * e2 + 1.0e-30))
+                # Current worst cell-shape quality, normalised so the
+                # regular simplex scores q=1 and a degenerate sliver
+                # q→0. 2D: q = 4√3·A/Σe²  (Σ over the 3 edges).
+                # 3D: q = 6√2·V/ē³ with ē = rms of the 6 edge lengths
+                # (the volume of a regular tet of edge e is e³/(6√2)).
+                X = np.asarray(mesh.X.coords)
+                p = X[cells_polish]
+                nv = p.shape[1]
+                e2sum = np.zeros(p.shape[0])
+                n_edges = 0
+                for _a in range(nv):
+                    for _b in range(_a + 1, nv):
+                        e2sum += np.sum((p[:, _b] - p[:, _a]) ** 2, axis=1)
+                        n_edges += 1
+                if mesh.cdim == 2:
+                    A = np.abs(_signed_areas(X, cells_polish))
+                    q = 4.0 * np.sqrt(3.0) * A / (e2sum + 1.0e-30)
+                else:
+                    V = np.abs(_signed_volumes(X, cells_polish))
+                    ebar = np.sqrt(e2sum / n_edges)
+                    q = 6.0 * np.sqrt(2.0) * V / (ebar ** 3 + 1.0e-30)
                 q_min = _global_min(q.min())
                 if verbose:
                     uw.pprint(
@@ -831,9 +847,10 @@ def node_redistribution(mesh, metric, *, verbose=False, **kwargs):
     partition preserved. This is a thin dispatch to
     ``mesh.redistribute_nodes(metric, ...)`` — the mesh type controls
     whether (and how) it can be modified. The base implementation
-    supports 2D simplex (triangle) meshes via the Huang–Kamenski
-    variational MMPDE mover; unsupported mesh types (quad/hex, 3D,
-    manifolds) raise ``NotImplementedError`` stating what exists.
+    supports 2D (triangle) and 3D (tetrahedral) simplex meshes via the
+    Huang–Kamenski variational MMPDE mover; unsupported mesh types
+    (quad/hex, manifolds) raise ``NotImplementedError`` stating what
+    exists.
 
     Parameters
     ----------

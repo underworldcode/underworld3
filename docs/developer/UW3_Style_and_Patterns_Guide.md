@@ -159,8 +159,14 @@ arr = NDArray_With_Callback(data, owner=self, callback=func)  # With callback
 
 # Callback signature
 def callback(array: NDArray_With_Callback, change_info: dict) -> None:
-    # change_info contains: operation, indices, old_value, new_value, array_shape, array_dtype
+    # change_info contains: operation, indices, old_value (always None,
+    # retained for compatibility), new_value, array_shape, array_dtype
     pass
+
+# For callbacks that synchronise a variable's CANONICAL storage, register
+# with add_canonical_callback(func): it guards against firing on derived
+# views/copies (rank-asymmetric collectives, #376) and hands the callback
+# the canonical array every time.
 ```
 
 ## Array vs Data Property Shapes

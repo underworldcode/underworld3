@@ -44,5 +44,16 @@ jobs:
         # editable installs are project policy violation, see CLAUDE.md).
         run: pixi run -e dev build
 
+      # Import smoke test: a hard crash during `import underworld3` (segfault
+      # / abort in a compiled module, e.g. from a poisoned env cache) kills
+      # pytest BEFORE its first stdout flush, so every batch below fails with
+      # zero output and the run is undiagnosable from the log (this happened
+      # on PR #394 — a runner-side flake that cost a full debug round-trip).
+      # This 5-second step makes any import-time crash loud and localised:
+      # faulthandler prints the native traceback here rather than nothing
+      # there.
+      - name: Import smoke test (faulthandler)
+        run: pixi run -e dev python -u -X faulthandler -c "import faulthandler; faulthandler.enable(); import underworld3; print('import OK', underworld3.__version__)"
+
       - name: Run tests
         run: pixi run -e dev ./scripts/test.sh --p 2

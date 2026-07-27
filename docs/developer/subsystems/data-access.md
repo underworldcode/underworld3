@@ -103,6 +103,10 @@ symbolic_expr = swarm_var.sym  # Triggers RBF interpolation if stale
 
 This pattern prevents circular dependencies when callbacks would trigger nested PETSc field access.
 
+The interpolation itself — which fields the proxy transfer reproduces exactly,
+how to choose `nnn`, and when boundedness matters more than accuracy — is
+covered in [Local Scattered-Point Interpolation](interpolation.md).
+
 ### Vector Availability
 
 Variables set `_available=True` by default, ensuring solvers can access vectors without modification. Lazy initialization creates vectors on first access:
@@ -181,7 +185,8 @@ Key implementation locations:
 - **MeshVariable**: `discretisation_mesh_variables.py`
   - `array` property (lines 700-720)
   - `data` property for compatibility (lines 680-700)
-  - Callback registration in `_create_variable_array()`
+  - Callback registration in `_create_canonical_data_array()` via
+    `NDArray_With_Callback.add_canonical_callback()` (central view/copy guard)
 
 - **SwarmVariable**: `swarm.py`
   - `array` property with caching (lines 857-871)

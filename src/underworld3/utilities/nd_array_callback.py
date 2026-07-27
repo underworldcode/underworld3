@@ -15,6 +15,7 @@ Key Features:
 This is the base class for UnitAwareArray which adds unit preservation.
 """
 
+import itertools
 import numpy as np
 import weakref
 import logging
@@ -35,10 +36,17 @@ except ImportError:
 
 class DelayedCallbackManager:
     """
-    Thread-local manager for delayed callbacks across multiple NDArray_With_Callback instances.
+    Thread-local manager for deferred synchronisation across multiple
+    NDArray_With_Callback instances.
 
-    This allows batch operations across multiple arrays to accumulate callbacks
-    and trigger them all at once when the context exits.
+    Writes made inside a delay context land in the arrays immediately; what
+    is deferred is the *synchronisation* work the callbacks perform. Each
+    delay level records which CANONICAL arrays were touched (dirty marking)
+    rather than queueing per-write events — the flush at context exit then
+    synchronises each touched variable exactly once, in the same order on
+    every rank. Per-event queueing survives only for legacy untagged
+    callbacks (plain ``add_callback``), whose replay is rank-local and must
+    not contain collective operations.
     """
 
     def __init__(self):
@@ -48,7 +56,6 @@ class DelayedCallbackManager:
         """Get or create thread-local state."""
         if not hasattr(self._local, "delay_stack"):
             self._local.delay_stack = []
-            self._local.delayed_callbacks = []
         return self._local
 
     def is_delaying(self):
@@ -57,40 +64,29 @@ class DelayedCallbackManager:
         return len(state.delay_stack) > 0
 
     def push_delay_context(self, context_info=None):
-        """Enter a new delay context."""
+        """Enter a new delay context (one dirty-set per nesting level)."""
         state = self._get_state()
         state.delay_stack.append(
             {
                 "context_info": context_info,
-                "callback_count": len(state.delayed_callbacks),
+                "legacy_queue": [],
+                "dirty_owners": {},
+                "dirty_local": {},
+                "dirty_collective": set(),
             }
         )
 
     def pop_delay_context(self):
-        """Exit delay context and return callbacks accumulated in this context."""
+        """Exit the current delay level and return its recorded state."""
         state = self._get_state()
         if not state.delay_stack:
-            return []
-
-        context = state.delay_stack.pop()
-        start_idx = context["callback_count"]
-
-        # Get callbacks from this context level
-        context_callbacks = state.delayed_callbacks[start_idx:]
-
-        # If we're exiting the outermost context, clear all callbacks
-        if not state.delay_stack:
-            state.delayed_callbacks.clear()
-        else:
-            # Remove only this context's callbacks (keep outer context callbacks)
-            state.delayed_callbacks = state.delayed_callbacks[:start_idx]
-
-        return context_callbacks
+            return None
+        return state.delay_stack.pop()
 
     def add_delayed_callback(self, array, callback_func, change_info):
-        """Add a callback to the delayed execution queue."""
+        """Queue a legacy per-event callback for rank-local replay at exit."""
         state = self._get_state()
-        state.delayed_callbacks.append(
+        state.delay_stack[-1]["legacy_queue"].append(
             {
                 "array": array,
                 "callback": callback_func,
@@ -98,9 +94,209 @@ class DelayedCallbackManager:
             }
         )
 
+    def mark_dirty(self, canonical):
+        """Record that a canonical array was written in the current level.
+
+        Owners carrying a ``_collective_flush_id`` (mesh variables — their
+        PETSc pack is collective) go into the id set that is agreed across
+        ranks at flush time. Everything else (swarm variables — their packs
+        are rank-local; migration is separately rank-agreed) flushes
+        rank-locally.
+        """
+        level = self._get_state().delay_stack[-1]
+        owner = canonical.owner
+        flush_id = getattr(owner, "_collective_flush_id", None)
+        if flush_id is not None:
+            level["dirty_collective"].add(flush_id)
+        elif owner is not None and hasattr(owner, "_deferred_canonical_flush"):
+            # Weak ref, re-resolved at flush: the owner's canonical may be
+            # invalidated and rebuilt mid-context (swarm migration), and a
+            # pinned array would flush stale pre-migration values.
+            level["dirty_owners"].setdefault(id(owner), weakref.ref(owner))
+        else:
+            level["dirty_local"].setdefault(id(canonical), canonical)
+
 
 # Global instance for managing delayed callbacks
 _delayed_callback_manager = DelayedCallbackManager()
+
+
+# --- Collective-flush registry -------------------------------------------
+#
+# Cross-rank agreement on WHICH variables to flush at a synchronised-update
+# exit needs a key that is identical on every rank. Creation-order integer
+# ids qualify because registered objects are created SPMD-collectively
+# (mesh-variable construction performs collective DM operations, so the
+# counter advances in lockstep). Variable NAMES do not qualify: temporary
+# variables embed rank-local id() values in their names.
+
+_collective_flush_ids = itertools.count()
+_collective_flush_registry: Dict[int, "weakref.ref"] = {}
+
+
+def register_collective_flush(obj):
+    """Assign a creation-order id for the synchronised-update flush.
+
+    ``obj`` must provide ``_deferred_canonical_flush()``, which every rank
+    calls for every id in the agreed flush set.
+    """
+    flush_id = next(_collective_flush_ids)
+    _collective_flush_registry[flush_id] = weakref.ref(obj)
+    return flush_id
+
+
+def _base_chain_resolves(array, canonical):
+    """True if ``array`` IS ``canonical`` or a view whose base chain reaches it.
+
+    Identity in the base chain, never ``np.may_share_memory``: that is False
+    for any zero-size array, which would classify an empty rank's view as a
+    copy and desynchronise the collective branch (#376).
+    """
+    if array is canonical:
+        return True
+    base = array.base
+    while base is not None and base is not canonical:
+        base = getattr(base, "base", None)
+    return base is not None
+
+
+def _deferred_flush_info(canonical):
+    return {
+        "operation": "deferred_flush",
+        "indices": None,
+        "old_value": None,
+        "new_value": None,
+        "array_shape": canonical.shape,
+        "array_dtype": canonical.dtype,
+        "data_has_changed": True,
+    }
+
+
+def fire_canonical_callbacks(canonical):
+    """Fire each canonical-guarded callback once, with the canonical array.
+
+    Reads the canonical array's LIVE callback list (derived views hold stale
+    copies), so callbacks registered after a view was created still fire.
+    """
+    info = _deferred_flush_info(canonical)
+    for callback in list(canonical._callbacks):
+        if getattr(callback, "_is_canonical", False):
+            callback(canonical, info)
+
+
+def _flush_delay_level(level, aborted=False):
+    """Flush one delay level: rank agreement first, then legacy replay,
+    rank-local canonical flushes, and the collectively-agreed canonical
+    flushes in creation order.
+
+    The agreement allgather runs FIRST and unconditionally — empty sets
+    and aborted ranks included — so every rank stays matched even when
+    writes were rank-uneven or the context body raised on some ranks
+    only. Any rank aborting makes every rank skip all flushing.
+    """
+    local_ids = [] if aborted else sorted(level["dirty_collective"])
+    if _has_uw_mpi and uw.mpi.size > 1:
+        gathered = uw.mpi.comm.allgather((bool(aborted), local_ids))
+        if any(flag for flag, _ in gathered):
+            return
+        union = sorted(set().union(*(ids for _, ids in gathered)))
+    else:
+        if aborted:
+            return
+        union = local_ids
+
+    # Rank-local phases can raise rank-locally (legacy callbacks, swarm
+    # packs). Entering the per-variable collectives below with some ranks
+    # unwinding is a hang shape (round-2 review) — when a collective flush
+    # follows, agree on local-phase success first.
+    local_error = None
+    try:
+        for item in level["legacy_queue"]:
+            item["callback"](item["array"], item["change_info"])
+
+        # Rank-local canonical flushes re-resolve the LIVE canonical
+        # through the owner where one exists: migration inside the context
+        # invalidates and rebuilds swarm canonicals, and flushing a pinned
+        # pre-migration array would resurrect stale values.
+        for owner_ref in level["dirty_owners"].values():
+            owner = owner_ref()
+            if owner is not None:
+                owner._deferred_canonical_flush()
+
+        for canonical in level["dirty_local"].values():
+            fire_canonical_callbacks(canonical)
+    except Exception as err:
+        local_error = err
+
+    if union:
+        if _has_uw_mpi and uw.mpi.size > 1:
+            failed_anywhere = max(uw.mpi.comm.allgather(int(local_error is not None)))
+        else:
+            failed_anywhere = int(local_error is not None)
+        if local_error is not None:
+            raise local_error
+        if failed_anywhere:
+            # Every rank raises rather than entering the collective loop
+            # while another rank unwinds.
+            raise RuntimeError(
+                "synchronised_array_update: a rank-local flush failed on "
+                "another rank; the collective flush is skipped everywhere "
+                "to keep ranks matched."
+            )
+    elif local_error is not None:
+        raise local_error
+
+    targets = {}
+    for flush_id in union:
+        ref = _collective_flush_registry.get(flush_id)
+        targets[flush_id] = ref() if ref is not None else None
+    missing = [flush_id for flush_id, obj in targets.items() if obj is None]
+    if _has_uw_mpi and uw.mpi.size > 1:
+        missing_anywhere = max(uw.mpi.comm.allgather(len(missing)))
+    else:
+        missing_anywhere = len(missing)
+    if missing_anywhere:
+        # Raise on EVERY rank: a one-rank raise inside the flush loop below
+        # would leave the other ranks blocked in a collective.
+        raise RuntimeError(
+            "synchronised_array_update flush found dirty variables that no "
+            f"longer exist (registration ids {missing or union}). A variable "
+            "written inside the context was destroyed before context exit."
+        )
+
+    for flush_id in union:
+        targets[flush_id]._deferred_canonical_flush()
+
+
+class _DelayCallbacksContext:
+    """Context manager behind ``delay_callback`` / ``synchronised_array_update``.
+
+    Entering and exiting are collective when MPI is active: the entry
+    barrier catches non-lockstep entry early, and the exit flush contains
+    an allgather plus per-variable collective synchronisation.
+    """
+
+    def __init__(self, context_info):
+        self.context_info = context_info
+
+    def __enter__(self):
+        if _has_uw_mpi and uw.mpi.size > 1:
+            uw.mpi.barrier()
+        _delayed_callback_manager.push_delay_context(self.context_info)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        level = _delayed_callback_manager.pop_delay_context()
+        if level is not None:
+            # BOTH paths run the flush's rank-agreement collective: if the
+            # raising rank skipped it, the survivors' allgather would pair
+            # with an unrelated collective elsewhere (round-1 review: a
+            # CAUGHT rank-local exception deadlocked). Any rank aborting
+            # makes every rank skip the flushes; values already landed in
+            # the canonical arrays — only the deferred synchronisation is
+            # dropped, symmetrically.
+            _flush_delay_level(level, aborted=exc_type is not None)
+        return False
 
 
 class NDArray_With_Callback(np.ndarray):
@@ -118,7 +314,10 @@ class NDArray_With_Callback(np.ndarray):
 
     - ``operation`` (str): Operation name ('setitem', 'iadd', 'fill', etc.)
     - ``indices`` (tuple/slice/None): Location of change (for setitem operations)
-    - ``old_value`` (array-like/None): Previous values (when available)
+    - ``old_value`` (None): Always None. Internal operations no longer snapshot
+      prior values (no registered callback ever read them, and the copy was a
+      full-array allocation per write); the key is retained for dict-shape
+      compatibility.
     - ``new_value`` (array-like): New values being assigned
     - ``array_shape`` (tuple): Current shape of the array
     - ``array_dtype`` (np.dtype): Data type of the array
@@ -311,9 +510,67 @@ class NDArray_With_Callback(np.ndarray):
         if callback is not None and callback not in self._callbacks:
             self._callbacks.append(callback)
 
+    def add_canonical_callback(self, callback: Callable):
+        """
+        Register a callback that only ever fires for the canonical storage.
+
+        ``self`` must be the canonical array at registration time. Derived
+        arrays inherit the callback list via ``__array_finalize__``, so an
+        unguarded callback also fires on views and temporary fancy-index
+        copies. A copy's contents are partition-dependent, so a PETSc sync
+        run from inside the callback executes its collectives on some ranks
+        only — the #376 parallel hang. This wrapper applies the guard once,
+        centrally:
+
+        - write through a **view** of the canonical array: the data already
+          landed in canonical storage, so the callback fires with the FULL
+          canonical array;
+        - write to a **copy**: skipped — numpy's fancy-index write-back
+          re-fires the callback through the parent's ``__setitem__``, so
+          nothing is lost;
+        - view-vs-copy is decided by IDENTITY in numpy's base chain, never
+          ``np.may_share_memory``, which is False for any zero-size array
+          and would re-create the rank asymmetry on ranks whose local
+          slice is empty.
+
+        Known corner (from the #378 analysis): ``reshape``/``ravel`` of a
+        NON-contiguous derived view produces a copy on non-empty ranks but
+        a view on a zero-size rank, so that one pattern remains
+        rank-asymmetric at the per-write level — locally
+        indistinguishable. The ``uw.synchronised_array_update`` dirty-flag
+        flush (#383) is the real fix: agreement happens per variable at
+        context exit, not per write.
+
+        Parameters
+        ----------
+        callback : callable
+            Function with signature ``callback(array, change_info)``;
+            ``array`` is always the canonical storage.
+        """
+        # weakref: the callback list lives ON the array, so a strong capture
+        # of self inside the closure would be an uncollectable cycle
+        canonical_ref = weakref.ref(self)
+
+        def _canonical_dispatch(array, change_info):
+            canonical = canonical_ref()
+            if canonical is None:
+                return
+            if not _base_chain_resolves(array, canonical):
+                return
+            callback(canonical, change_info)
+
+        _canonical_dispatch._is_canonical = True
+        _canonical_dispatch._canonical_ref = canonical_ref
+        _canonical_dispatch._wrapped = callback
+        self.add_callback(_canonical_dispatch)
+
     def remove_callback(self, callback: Callable):
         """
         Remove a specific callback function.
+
+        Accepts either the registered callable itself or the original
+        function handed to :meth:`add_canonical_callback` (the list stores
+        the guarding dispatch wrapper, not the original).
 
         Parameters
         ----------
@@ -322,6 +579,10 @@ class NDArray_With_Callback(np.ndarray):
         """
         if callback in self._callbacks:
             self._callbacks.remove(callback)
+            return
+        for registered in list(self._callbacks):
+            if getattr(registered, "_wrapped", None) is callback:
+                self._callbacks.remove(registered)
 
     def clear_callbacks(self):
         """Remove all registered callbacks."""
@@ -342,11 +603,13 @@ class NDArray_With_Callback(np.ndarray):
 
     def delay_callback(self, context_info=None):
         """
-        Context manager to delay callback execution until context exit.
+        Context manager to defer callback synchronisation until context exit.
 
-        During the context, all callbacks from this array (and any other arrays
-        using delay_callback) will be accumulated and executed when the outermost
-        context exits.
+        The delay context is global (thread-local), so it covers this array
+        and any other arrays written inside it. Writes land immediately;
+        each touched variable's canonical synchronisation runs once at exit,
+        in the same order on every rank. Legacy untagged callbacks (plain
+        ``add_callback``) keep per-event replay, which is rank-local.
 
         Parameters
         ----------
@@ -359,125 +622,28 @@ class NDArray_With_Callback(np.ndarray):
         ...     arr[0] = 1
         ...     arr[1] = 2
         ...     arr[2] = 3
-        # All callbacks fire here at context exit
+        # Deferred synchronisation runs here, once
         """
 
-        class DelayCallbackContext:
-            def __init__(self, context_info):
-                self.context_info = context_info
-
-            def __enter__(self):
-                # MPI barrier to ensure all processes enter delay context together
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed on delay context enter: {e}")
-
-                _delayed_callback_manager.push_delay_context(self.context_info)
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # Get callbacks accumulated during this context
-                delayed_callbacks = _delayed_callback_manager.pop_delay_context()
-
-                # MPI barrier to ensure all processes finish their delayed operations
-                # before any process starts executing callbacks
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed before delayed callback execution: {e}")
-
-                # Execute all delayed callbacks
-                for callback_item in delayed_callbacks:
-                    try:
-                        callback_item["callback"](
-                            callback_item["array"], callback_item["change_info"]
-                        )
-                    except Exception as e:
-                        logger.warning(f"Delayed callback error: {e}")
-
-                # MPI barrier to ensure all processes complete their callbacks
-                # before any process exits the context
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed after delayed callback execution: {e}")
-
-                # Don't suppress exceptions from the context
-                return False
-
-        return DelayCallbackContext(context_info)
+        return _DelayCallbacksContext(context_info)
 
     @staticmethod
     def delay_callbacks_global(context_info=None):
         """
-        Static method to create a global delay context for all NDArray_With_Callback instances.
+        Create a delay context without a specific array instance.
 
-        This is useful when you don't have a specific array instance but want to delay
-        callbacks from multiple arrays.
+        Same semantics as :meth:`delay_callback` — the context is global
+        either way. ``uw.synchronised_array_update`` is the public wrapper.
 
         Example
         -------
         >>> with NDArray_With_Callback.delay_callbacks_global("field update"):
         ...     temperature.array[...] = new_T
         ...     material.array[...] = new_material
-        # All callbacks from all arrays fire here
+        # Each touched variable is synchronised exactly once, here
         """
 
-        class GlobalDelayCallbackContext:
-            def __init__(self, context_info):
-                self.context_info = context_info
-
-            def __enter__(self):
-                # MPI barrier to ensure all processes enter delay context together
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(f"MPI barrier failed on global delay context enter: {e}")
-
-                _delayed_callback_manager.push_delay_context(self.context_info)
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                # Get callbacks accumulated during this context
-                delayed_callbacks = _delayed_callback_manager.pop_delay_context()
-
-                # MPI barrier to ensure all processes finish their delayed operations
-                # before any process starts executing callbacks
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed before global delayed callback execution: {e}"
-                        )
-
-                # Execute all delayed callbacks
-                for callback_item in delayed_callbacks:
-                    try:
-                        callback_item["callback"](
-                            callback_item["array"], callback_item["change_info"]
-                        )
-                    except Exception as e:
-                        logger.warning(f"Delayed callback error: {e}")
-
-                # MPI barrier to ensure all processes complete their callbacks
-                # before any process exits the context
-                if _has_uw_mpi:
-                    try:
-                        uw.mpi.barrier()
-                    except Exception as e:
-                        logger.warning(
-                            f"MPI barrier failed after global delayed callback execution: {e}"
-                        )
-
-                return False
-
-        return GlobalDelayCallbackContext(context_info)
+        return _DelayCallbacksContext(context_info)
 
     def _trigger_callback(
         self, operation: str, indices=None, old_value=None, new_value=None, data_has_changed=True
@@ -491,8 +657,9 @@ class NDArray_With_Callback(np.ndarray):
             Name of the operation that triggered the callback
         indices : tuple or slice, optional
             Indices that were modified
-        old_value : array-like, optional
-            Previous value(s) at the modified location
+        old_value : None
+            Always None from internal operations (see class docstring);
+            the parameter and dict key remain for compatibility
         new_value : array-like, optional
             New value(s) at the modified location
         data_has_changed : bool, optional
@@ -513,27 +680,91 @@ class NDArray_With_Callback(np.ndarray):
 
         # Check if we're in a delay callback context
         if _delayed_callback_manager.is_delaying():
-            # Add callbacks to the delayed execution queue
             for callback in self._callbacks:
-                _delayed_callback_manager.add_delayed_callback(self, callback, change_info)
+                canonical_ref = getattr(callback, "_canonical_ref", None)
+                if canonical_ref is None:
+                    # Legacy untagged callback: per-event queue, replayed
+                    # rank-locally at exit (must not contain collectives).
+                    _delayed_callback_manager.add_delayed_callback(self, callback, change_info)
+                    continue
+                # Canonical-guarded callback: mark the variable dirty; it is
+                # flushed ONCE at context exit, in the same order on every
+                # rank. Copies are skipped — the parent write-back marks.
+                if not data_has_changed:
+                    continue
+                canonical = canonical_ref()
+                if canonical is None:
+                    continue
+                if not _base_chain_resolves(self, canonical):
+                    continue
+                _delayed_callback_manager.mark_dirty(canonical)
         else:
-            # Execute callbacks immediately
+            # Execute callbacks immediately. Exceptions PROPAGATE: a swallowed
+            # callback failure leaves PETSc out of sync with the canonical
+            # array on this rank only — the silent desynchronisation that hid
+            # the #376 parallel hang.
             for callback in self._callbacks.copy():  # Copy in case callbacks modify the list
-                try:
-                    callback(self, change_info)
-                except Exception as e:
-                    logger.warning(f"Callback error in {callback}: {e}")
+                callback(self, change_info)
+
+    def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
+        """Compute on plain-ndarray views, then notify ``out=`` targets.
+
+        ``np.add(x, 1, out=x)`` (and every in-place operator, which numpy
+        routes through the same machinery) writes straight into the buffer
+        with no ``__setitem__`` — previously a silent bypass: values landed
+        but ghost sync and the state increment did not happen.
+
+        The standard override recipe applies: operands are unwrapped to
+        base-class views (``ndarray.__array_ufunc__`` refuses mixed
+        overriding operands), and each requested ``out`` is returned AS THE
+        ORIGINAL OBJECT so ``x += 1`` keeps its subclass and callbacks. The
+        notification goes to each ``out=`` target rather than ``self``,
+        because numpy invokes this method on the first operand, which need
+        not be the array being written. Results without ``out`` come back
+        as plain ndarrays (matching the prior ``__array_wrap__`` policy of
+        not propagating callbacks to derived results).
+
+        Remaining bypasses this cannot intercept: ``np.copyto`` and
+        ``ufunc.at`` (neither passes ``out=``).
+        """
+        if out is not None:
+            for target in out:
+                if getattr(target, "_disable_inplace_operators", False):
+                    # The out= spelling must honour the same contract as the
+                    # in-place operators — bypassing it would re-arm the
+                    # per-write hazard the flag exists to prevent.
+                    raise RuntimeError(
+                        "In-place ufunc output (out=) is disabled for parallel "
+                        "safety on this array. Use explicit assignment instead."
+                    )
+
+        plain_inputs = tuple(
+            np.asarray(x) if isinstance(x, NDArray_With_Callback) else x for x in inputs
+        )
+        if out is not None:
+            kwargs["out"] = tuple(
+                np.asarray(x) if isinstance(x, NDArray_With_Callback) else x for x in out
+            )
+
+        results = getattr(ufunc, method)(*plain_inputs, **kwargs)
+
+        if out is not None:
+            for target in out:
+                if isinstance(target, NDArray_With_Callback):
+                    target._trigger_callback("ufunc_out")
+
+        if method == "at":
+            return None
+        if ufunc.nout == 1:
+            results = (results,)
+        wrapped = tuple(
+            out[i] if out is not None and i < len(out) and out[i] is not None else r
+            for i, r in enumerate(results)
+        )
+        return wrapped[0] if len(wrapped) == 1 else wrapped
 
     def __setitem__(self, key, value):
         """Override setitem to trigger callbacks on assignment."""
-        if self._callback_enabled and self._callbacks:
-            try:
-                old_value = self[key].copy() if hasattr(self[key], "copy") else self[key]
-            except (IndexError, ValueError):
-                old_value = None
-        else:
-            old_value = None
-
         # Handle UnitAwareArray values by extracting magnitude
         # This allows: T.array[...] = uw.function.evaluate(...) where evaluate returns UnitAwareArray
         # Without this, numpy raises "only length-1 arrays can be converted to Python scalars"
@@ -546,7 +777,7 @@ class NDArray_With_Callback(np.ndarray):
         super().__setitem__(key, actual_value)
 
         # Trigger callbacks
-        self._trigger_callback("setitem", indices=key, old_value=old_value, new_value=value)
+        self._trigger_callback("setitem", indices=key, new_value=value)
 
     def __iadd__(self, other):
         """In-place addition with callback."""
@@ -556,14 +787,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr + other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__iadd__(other)
-        self._trigger_callback("iadd", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__iadd__(other)
 
     def __isub__(self, other):
         """In-place subtraction with callback."""
@@ -573,14 +799,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr - other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__isub__(other)
-        self._trigger_callback("isub", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__isub__(other)
 
     def __imul__(self, other):
         """In-place multiplication with callback."""
@@ -590,14 +811,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr * other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__imul__(other)
-        self._trigger_callback("imul", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__imul__(other)
 
     def __itruediv__(self, other):
         """In-place true division with callback."""
@@ -607,14 +823,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr / other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__itruediv__(other)
-        self._trigger_callback("itruediv", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__itruediv__(other)
 
     def __ifloordiv__(self, other):
         """In-place floor division with callback."""
@@ -624,14 +835,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr // other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__ifloordiv__(other)
-        self._trigger_callback("ifloordiv", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ifloordiv__(other)
 
     def __imod__(self, other):
         """In-place modulo with callback."""
@@ -641,14 +847,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr % other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__imod__(other)
-        self._trigger_callback("imod", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__imod__(other)
 
     def __ipow__(self, other):
         """In-place power with callback."""
@@ -658,14 +859,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr ** other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__ipow__(other)
-        self._trigger_callback("ipow", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ipow__(other)
 
     def __iand__(self, other):
         """In-place bitwise and with callback."""
@@ -675,14 +871,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr & other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__iand__(other)
-        self._trigger_callback("iand", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__iand__(other)
 
     def __ior__(self, other):
         """In-place bitwise or with callback."""
@@ -692,14 +883,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr | other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__ior__(other)
-        self._trigger_callback("ior", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ior__(other)
 
     def __ixor__(self, other):
         """In-place bitwise xor with callback."""
@@ -709,14 +895,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr ^ other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__ixor__(other)
-        self._trigger_callback("ixor", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ixor__(other)
 
     def __ilshift__(self, other):
         """In-place left shift with callback."""
@@ -726,14 +907,9 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr << other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__ilshift__(other)
-        self._trigger_callback("ilshift", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__ilshift__(other)
 
     def __irshift__(self, other):
         """In-place right shift with callback."""
@@ -743,46 +919,24 @@ class NDArray_With_Callback(np.ndarray):
                 "Use explicit assignment instead: arr = arr >> other"
             )
 
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
-        result = super().__irshift__(other)
-        self._trigger_callback("irshift", old_value=old_value, new_value=other)
-        return result
+        # Callback fires via __array_ufunc__ (out= detection) — an
+        # explicit trigger here would notify twice per operation.
+        return super().__irshift__(other)
 
     def fill(self, value):
         """Fill array with scalar value, triggering callback."""
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         super().fill(value)
-        self._trigger_callback("fill", old_value=old_value, new_value=value)
+        self._trigger_callback("fill", new_value=value)
 
     def sort(self, axis=-1, kind=None, order=None):
         """Sort array in-place, triggering callback."""
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-        else:
-            old_value = None
-
         super().sort(axis=axis, kind=kind, order=order)
-        self._trigger_callback("sort", old_value=old_value)
+        self._trigger_callback("sort")
 
     def resize(self, new_shape, refcheck=True):
         """Resize array in-place, triggering callback."""
-        if self._callback_enabled and self._callbacks:
-            old_value = self.copy()
-            old_shape = self.shape
-        else:
-            old_value = None
-            old_shape = None
-
         super().resize(new_shape, refcheck=refcheck)
-        self._trigger_callback("resize", old_value=old_value, new_value=new_shape)
+        self._trigger_callback("resize", new_value=new_shape)
 
     def copy(self, order="C"):
         """
@@ -861,12 +1015,6 @@ class NDArray_With_Callback(np.ndarray):
         """
         new_array = np.asarray(new_data)
 
-        # Store old info for callback
-        if self._callback_enabled and self._callbacks:
-            old_data = self.copy()
-        else:
-            old_data = None
-
         if new_array.shape == self.shape and new_array.dtype == self.dtype:
             # Same size and dtype: ultra-efficient in-place copy
             np.copyto(self, new_array)
@@ -874,7 +1022,6 @@ class NDArray_With_Callback(np.ndarray):
             # Trigger callback for the sync operation
             self._trigger_callback(
                 "sync_data",
-                old_value=old_data,
                 new_value=new_array,
                 indices=None,  # Full array update
                 data_has_changed=False,  # Sync operation doesn't represent user data change
@@ -891,14 +1038,23 @@ class NDArray_With_Callback(np.ndarray):
                 disable_inplace_operators=self._disable_inplace_operators,
             )
 
-            # Copy all callbacks and settings
-            new_obj._callbacks = self._callbacks.copy()
+            # Re-home callbacks onto the new object. Canonical-guarded
+            # callbacks are bound (by weakref) to THIS array's identity —
+            # copying their wrappers verbatim would leave callbacks that
+            # never fire on the new object (every write would classify as
+            # a foreign copy). Re-register their original functions against
+            # the new canonical; plain callbacks copy across unchanged.
+            for registered in self._callbacks:
+                original = getattr(registered, "_wrapped", None)
+                if original is not None:
+                    new_obj.add_canonical_callback(original)
+                else:
+                    new_obj.add_callback(registered)
             new_obj._callback_enabled = self._callback_enabled
 
             # Trigger callback on the new object
             new_obj._trigger_callback(
                 "sync_data",
-                old_value=old_data,
                 new_value=new_array,
                 indices=None,
                 data_has_changed=False,  # Sync operation doesn't represent user data change

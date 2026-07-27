@@ -277,8 +277,122 @@ def test_write_timestep_missing_directory_raises(tmp_path):
     """
     import underworld3 as uw
 
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    # 4x4 keeps every rank populated up to np4 — a 2x2 mesh starves ranks
+    # of cells and crashes in mesh construction (issue #399), which then
+    # desynchronises every test after this one in an MPI run.
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
     missing_dir = tmp_path / "does_not_exist"
 
     with pytest.raises(RuntimeError, match="does not exist"):
         mesh.write_timestep("chk", index=0, outputPath=str(missing_dir / "run"))
+
+
+def test_dg0_read_timestep_across_units_sessions(tmp_path):
+    """#269 regression: a DG0 field written under an active units model must
+    read back correctly in a session WITHOUT that model.
+
+    The remap contract stores model-frame coordinates (see
+    ``MeshVariable.write``). The old writer stored ``.coords`` — dimensional
+    under an active units model — so a units-free reading session queried in
+    the model frame against a dimensionally-scaled file cloud and got a
+    silently wrong, near-constant field (the Spiegelman ``edot`` symptom).
+    """
+    import underworld3 as uw
+
+    tmp_path = _shared_tmp_path(tmp_path, uw)
+
+    uw.reset_default_model()
+    orchestration_model = uw.get_default_model()
+    orchestration_model.set_reference_quantities(
+        length=uw.quantity(30, "km"),
+        velocity=uw.quantity(2.5, "cm/year"),
+        viscosity=uw.quantity(1e21, "Pa*s"),
+    )
+    try:
+        mesh = uw.meshing.StructuredQuadBox(
+            elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+            units="metre")
+        v = uw.discretisation.MeshVariable("edot", mesh, 1, degree=0, continuous=False)
+        c_nd = np.asarray(v.coords_nd)
+        v.data[:, 0] = np.sin(3.0 * c_nd[:, 0]) + c_nd[:, 1]
+        wrote = np.asarray(v.data)[:, 0].copy()
+
+        mesh.write_timestep("chk269", index=0, outputPath=tmp_path, meshVars=[v])
+    finally:
+        # The reading "session" has no units model — the failing benchmark
+        # context (post-processing without set_reference_quantities).
+        uw.reset_default_model()
+
+    mesh2 = uw.discretisation.Mesh(f"{tmp_path}/chk269.mesh.00000.h5")
+    w = uw.discretisation.MeshVariable("edot", mesh2, 1, degree=0, continuous=False)
+    w.read_timestep("chk269", "edot", 0, outputPath=tmp_path)
+    got = np.asarray(w.data)[:, 0]
+
+    # The two meshes partition differently, so compare GLOBAL statistics of
+    # the per-cell value multiset (identical cells, exact nearest match).
+    def _global_stats(a):
+        from mpi4py import MPI
+
+        n = uw.mpi.comm.allreduce(int(a.size), op=MPI.SUM)
+        s = uw.mpi.comm.allreduce(float(a.sum()), op=MPI.SUM)
+        ss = uw.mpi.comm.allreduce(float((a * a).sum()), op=MPI.SUM)
+        mn = uw.mpi.comm.allreduce(float(a.min()) if a.size else np.inf, op=MPI.MIN)
+        mx = uw.mpi.comm.allreduce(float(a.max()) if a.size else -np.inf, op=MPI.MAX)
+        return n, s, ss, mn, mx
+
+    n_w, s_w, ss_w, mn_w, mx_w = _global_stats(wrote)
+    n_g, s_g, ss_g, mn_g, mx_g = _global_stats(got)
+
+    assert n_g == n_w
+    assert np.isclose(s_g, s_w, rtol=1e-10) and np.isclose(ss_g, ss_w, rtol=1e-10), (
+        f"DG0 field corrupted on cross-session read: global (sum, sum-sq) "
+        f"wrote ({s_w}, {ss_w}) vs read ({s_g}, {ss_g})"
+    )
+    assert np.isclose(mn_g, mn_w) and np.isclose(mx_g, mx_w)
+
+
+def test_read_timestep_refuses_frame_mismatched_file(tmp_path):
+    """#269 guard: a file whose saved coordinate cloud is on a wildly
+    different scale from the live DOFs (a legacy dimensional-frame
+    checkpoint) must raise, not silently return nearest-garbage."""
+    import underworld3 as uw
+
+    tmp_path = _shared_tmp_path(tmp_path, uw)
+
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
+    v = uw.discretisation.MeshVariable("phi269", mesh, 1, degree=0, continuous=False)
+    v.data[:, 0] = np.asarray(v.coords_nd)[:, 0]
+    mesh.write_timestep("chk269g", index=0, outputPath=tmp_path, meshVars=[v])
+
+    # Emulate the legacy writer: scale the stored remap coordinates the way
+    # an active units model did (metres for a km-scaled domain).
+    if uw.mpi.rank == 0:
+        with h5py.File(f"{tmp_path}/chk269g.mesh.phi269.00000.h5", "r+") as f:
+            f["fields/coordinates"][...] = f["fields/coordinates"][...] * 30000.0
+    uw.mpi.barrier()
+
+    w = uw.discretisation.MeshVariable("phi269b", mesh, 1, degree=0, continuous=False)
+    with pytest.raises(RuntimeError, match="coordinate frames do not match"):
+        w.read_timestep("chk269g", "phi269", 0, outputPath=tmp_path)
+
+
+def test_mesh_from_msh_file_writes(tmp_path):
+    """#397: a mesh loaded directly from a .msh file must be writable.
+
+    The coordinate system defaults to CARTESIAN (matching every uw.meshing
+    constructor) instead of leaving ``CoordinateSystemType=None`` and
+    crashing ``mesh.write()``'s metadata block.
+    """
+    import underworld3 as uw
+
+    tmp_path = _shared_tmp_path(tmp_path, uw)
+
+    msh = f"{tmp_path}/box397.msh"
+    scratch = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, filename=msh)
+    del scratch
+
+    mesh = uw.discretisation.Mesh(msh)
+    assert mesh.CoordinateSystemType is uw.coordinates.CoordinateSystemType.CARTESIAN
+    mesh.write(f"{tmp_path}/box397.h5")

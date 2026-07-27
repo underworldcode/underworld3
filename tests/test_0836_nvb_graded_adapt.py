@@ -289,12 +289,96 @@ def test_solcx_stokes_velocity_fmg_on_nvb_child():
     assert sol.velocity_error(s.u) < 2.0 * solg.velocity_error(sg.u) + 1e-6
 
 
-def test_nvb_3d_guard_raises():
-    """NVB is 2D only this pass — a 3D base must raise NotImplementedError."""
+def test_nvb_3d_serial_returns_child():
+    """3D NVB adapt is served by the serial tagged-simplex engine at np=1
+    (the full 3D gates live in test_0840_nvb_3d_serial_adapt.py)."""
     base3 = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.4, regular=False,
         refinement=1, qdegree=2)
     H = uw.discretisation.MeshVariable("H3", base3, 1, degree=1)
-    H.data[:, 0] = 1.0 / 0.1**2
-    with pytest.raises(NotImplementedError):
-        base3.adapt(H, max_levels=1, engine="nvb")
+    H.data[:, 0] = 1.0 / 0.2**2
+    child = base3.adapt(H, max_levels=1, engine="nvb")
+    assert child.parent is base3
+    assert _ncell(child) > _ncell(base3)
+
+
+def test_curved_boundary_snaps_every_generation():
+    """Round-3b ruling (2026-07-24): new boundary vertices on curved
+    domains snap onto the registered analytic surfaces at EVERY
+    generation, so each intermediate level is a valid mesh in its own
+    right and boundary geometry converges with refinement (chords froze
+    it at base resolution: radius error ~h_base^2/8R)."""
+    import underworld3 as uw
+
+    mesh = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0,
+                              cellSize=0.25, refinement=1, qdegree=2)
+
+    def metric(centroids):
+        r = np.linalg.norm(np.asarray(centroids)[:, :2], axis=1)
+        return 1.0 / np.minimum(0.03 + 0.5 * np.abs(1.0 - r), 0.3) ** 2
+
+    child = mesh.adapt(metric, max_levels=2)
+    from underworld3.meshing.smoothing import _pinned_mask
+
+    X = np.asarray(child.X.coords)
+    r = np.linalg.norm(X, axis=1)
+    for label, R in (("Lower", 0.5), ("Upper", 1.0)):
+        mask = _pinned_mask(child.dm, (label,))
+        assert mask.any()
+        assert np.abs(r[mask] - R).max() < 1.0e-12, (
+            f"{label} boundary not snapped: "
+            f"max radius error {np.abs(r[mask]-R).max():.2e}")
+    # ... and the intermediate MG levels are snapped too (the ruling's
+    # point: every level is a valid mesh)
+    checked = 0
+    for i, lvl in enumerate(child._custom_mg_coarse_meshes[-2:]):
+        dm = lvl.dm if hasattr(lvl, "dm") else lvl
+        Xl = dm.getCoordinatesLocal().array.reshape(-1, 2)
+        rl = np.linalg.norm(Xl, axis=1)
+        on_out = _pinned_mask(dm, ("Upper",))
+        if on_out.any():
+            assert np.abs(rl[on_out] - 1.0).max() < 1.0e-12
+            checked += 1
+    # a label-carry regression must not make this gate silently vacuous
+    assert checked >= 1, "no intermediate level exposed the Upper label"
+
+
+def test_internal_interface_snaps_under_adapt_stays_pinned_under_mover():
+    """Embedded interfaces (the Internal circle of AnnulusInternalBoundary):
+    adapt() snaps refinement onto the true interface radius (interior
+    surfaces are snap-eligible), while the mover keeps interface nodes
+    fully pinned even with slip_surfaces=True — interface motion is
+    physics-owned (2026-07 round-3b ruling)."""
+    import sympy
+    import underworld3 as uw
+    from underworld3.meshing.smoothing import _pinned_mask
+
+    R_INT = 0.75
+    mesh = uw.meshing.AnnulusInternalBoundary(
+        radiusOuter=1.0, radiusInternal=R_INT, radiusInner=0.5,
+        cellSize=0.2, refinement=1, qdegree=2)
+    assert mesh.bounding_surfaces["Internal"].interior
+
+    # adapt: refine toward the interface; new interface vertices snap
+    def metric(centroids):
+        r = np.linalg.norm(np.asarray(centroids)[:, :2], axis=1)
+        return 1.0 / np.minimum(0.04 + 0.6 * np.abs(r - R_INT), 0.25) ** 2
+
+    child = mesh.adapt(metric, max_levels=1)
+    Xc = np.asarray(child.X.coords)
+    mi = _pinned_mask(child.dm, ("Internal",))
+    assert mi.any()
+    ri = np.linalg.norm(Xc[mi], axis=1)
+    assert np.abs(ri - R_INT).max() < 1.0e-12, (
+        f"internal interface not snapped: {np.abs(ri-R_INT).max():.2e}")
+
+    # mover: interface nodes must not move AT ALL (pinned, not sliding)
+    before = np.asarray(mesh.X.coords).copy()
+    m0 = _pinned_mask(mesh.dm, ("Internal",))
+    x, y = mesh.X
+    rho = 1 + 6 * sympy.exp(-(((x - 0.2) ** 2 + y**2) / 0.05))
+    mesh.redistribute_nodes(rho, slip_surfaces=True,
+                            method_kwargs=dict(n_outer=5))
+    after = np.asarray(mesh.X.coords)
+    assert np.array_equal(after[m0], before[m0]), "interface nodes moved"
+    assert not np.allclose(after, before)      # the rest of the mesh did

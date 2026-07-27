@@ -746,7 +746,14 @@ def SphericalShellInternalBoundary(
         verbose=verbose,
     )
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    class boundary_normals(Enum):
+        Lower = new_mesh.CoordinateSystem.unit_e_0
+        Internal = new_mesh.CoordinateSystem.unit_e_0
+        Upper = new_mesh.CoordinateSystem.unit_e_0
+
+    # Consumed by Mesh.canonical_normal — mesh.Gamma on the Internal
+    # boundary resolves to this analytic radial normal (issue #327).
+    new_mesh.boundary_normals = boundary_normals
 
     new_mesh.regions = regions
 
@@ -779,6 +786,17 @@ def SphericalShellInternalBoundary(
         sympy.Matrix([z, 0, -x]),
         sympy.Matrix([-y, x, 0]),
     ]
+
+    # Radial bounding surfaces: Upper/Lower slip+snap as usual; the embedded
+    # Internal sphere is INTERIOR — adapt() snaps refinement onto its true
+    # radius, but the movers keep its nodes pinned (interface motion is
+    # physics-owned, 2026-07 round-3b ruling).
+    from underworld3.meshing.bounding_surface import register_radial_surfaces
+    register_radial_surfaces(
+        new_mesh, centre=(0.0, 0.0, 0.0),
+        label_radius={"Upper": radiusOuter, "Lower": radiusInner,
+                      "Internal": radiusInternal},
+        interior=("Internal",))
 
     return new_mesh
 

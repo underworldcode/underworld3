@@ -228,8 +228,14 @@ from .utilities import retention_curves
 # Unit utilities (top-level convenience for user code)
 from .function.unit_conversion import _extract_value
 
-# KDTree backend is ckdtree (nanoflann); see src/underworld3/kdtree.py
+# KDTree backend is ckdtree (nanoflann). Register the submodule alias in
+# sys.modules so `import underworld3.kdtree` and the `underworld3.kdtree`
+# attribute are the SAME module object. A separate shim file used to shadow
+# this attribute on the first `import underworld3.kdtree` (submodule import
+# rebinds the package attribute), silently dropping the memprobe counters
+# for every later test in the run — issue #316.
 import underworld3.ckdtree as kdtree
+sys.modules["underworld3.kdtree"] = kdtree
 import underworld3.cython
 import underworld3.scaling
 import underworld3.visualisation
@@ -615,10 +621,18 @@ from .discretisation import MeshVariable
 
 def synchronised_array_update(context_info="user operations"):
     """
-    Context manager for synchronised array updates across multiple variables.
+    Context manager for batched variable updates that stay parallel-safe.
 
-    Batches multiple array assignments together and defers PETSc synchronization
-    until the end of the context, ensuring atomic updates and better performance.
+    Writes made inside the context land in the local arrays immediately;
+    the parallel synchronisation of each touched variable happens once, at
+    context exit, in the same order on every rank. Ranks do not need to
+    make the same writes — one rank updating a masked subset while others
+    write nothing is safe — but every rank must enter and leave the
+    context together (it is a collective operation, like a solve).
+
+    If the context body raises, the deferred synchronisation is skipped
+    (ranks unwind exceptions asymmetrically); the written values remain in
+    the local arrays.
 
     Example
     -------
@@ -626,7 +640,7 @@ def synchronised_array_update(context_info="user operations"):
         velocity.array[...] = new_velocity_values
         pressure.array[...] = new_pressure_values
         temperature.array[...] = new_temperature_values
-    # All arrays are synchronized here
+    # Each variable is synchronised exactly once, here
 
     Parameters
     ----------
@@ -635,7 +649,7 @@ def synchronised_array_update(context_info="user operations"):
 
     Returns
     -------
-    Context manager for delayed callback execution
+    Context manager for deferred, rank-agreed synchronisation
     """
     return utilities.NDArray_With_Callback.delay_callbacks_global(context_info)
 

@@ -492,12 +492,18 @@ def BoxInternalBoundary(
         Inner = 101   # Below internal boundary
         Outer = 102   # Above internal boundary
 
+    # TODO(BUG): the external entries below are INWARD-pointing while
+    # Mesh.canonical_normal documents the declared normal as outward —
+    # audit consumers before flipping them. The Internal entry follows the
+    # internal-boundary convention: it points from region Inner to region
+    # Outer (+y here; +z in 3D; radially outward, unit_e_0, on annulus and
+    # spherical shells).
     class boundary_normals_2D(Enum):
         Bottom = sympy.Matrix([0, 1])
         Top = sympy.Matrix([0, -1])
         Right = sympy.Matrix([-1, 0])
         Left = sympy.Matrix([1, 0])
-        Internal = sympy.Matrix([0, -1])
+        Internal = sympy.Matrix([0, 1])
 
     class boundaries_3D(Enum):
         Bottom = 11

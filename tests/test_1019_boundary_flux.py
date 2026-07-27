@@ -44,6 +44,7 @@ def _heatflux_diagnostics(res=48):
     return np.asarray(flux), q_an, bd_q
 
 
+@pytest.mark.skipif(uw.mpi.size > 1, reason="serial diagnostic: rank-local flux norms are 0/0 on non-owning ranks")
 def test_boundary_flux_scalar_heatflux_serial():
     """Surface heat flux reproduces the analytic flux to high accuracy, and its mean is
     the (analytic) Nusselt number — NOT removed."""
@@ -59,7 +60,111 @@ def test_boundary_flux_scalar_heatflux_serial():
     assert abs(bd_q) > 0.0                                    # field populated + usable
 
 
+def _uniform_flux_3d(degree, mass):
+    """Unit-cube conduction with exact pointwise outward flux -1 on Bottom."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0),
+        maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.45,
+        regular=True,
+        qdegree=3,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        f"Tbf3d_p{degree}", mesh, 1, degree=degree
+    )
+    poisson = uw.systems.Poisson(mesh, u_Field=temperature)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(0.0, "Bottom")
+    poisson.add_dirichlet_bc(1.0, "Top")
+    poisson.tolerance = 1.0e-11
+    poisson.petsc_options["snes_type"] = "ksponly"
+    poisson.solve()
+    xs, flux = poisson.boundary_flux("Bottom", mass=mass)
+    return poisson, np.asarray(xs), np.asarray(flux)
+
+
+@pytest.mark.level_2
+@pytest.mark.parametrize(("degree", "mass"), ((1, "lumped"), (2, "auto")))
+def test_boundary_flux_3d_pointwise_uniform_serial(degree, mass):
+    """P1 and P2 recovery reproduce constant flux at every triangular-trace node."""
+    _poisson, _xs, flux = _uniform_flux_3d(degree, mass)
+    assert np.allclose(flux, -1.0, rtol=0.0, atol=1.0e-8)
+
+
+@pytest.mark.level_2
+def test_boundary_flux_3d_p2_lumped_rejected():
+    """P2 triangle vertex row sums are zero, so nodal lumping is not pointwise valid."""
+    poisson, _xs, _flux = _uniform_flux_3d(2, "consistent")
+    with pytest.raises(ValueError, match="zero row-sum mass"):
+        poisson.boundary_flux("Bottom", mass="lumped")
+
+
 if __name__ == "__main__":
     _f, _a, _b = _heatflux_diagnostics()
     c = np.dot(_f, _a) / (np.linalg.norm(_f) * np.linalg.norm(_a))
     print(f"corr={abs(c):.4f} relL2={np.linalg.norm((_f if c>=0 else -_f)-_a)/np.linalg.norm(_a):.4f}")
+
+
+def test_boundary_flux_inhomogeneous_dirichlet_wall():
+    """#407: flux through a g != 0 Dirichlet wall must be exact.
+
+    The reaction was previously evaluated against a state whose constrained
+    DOFs were zero-filled (the global vector carries no constrained DOFs and
+    the round-trip stripped them), so the g=1 wall read ~-17.7 for a true
+    unit flux while the g=0 wall was accidentally exact.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
+    T = uw.discretisation.MeshVariable("T407", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(1.0, "Bottom")
+    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.solve()
+
+    # Side walls are natural (zero flux), so every node — end nodes
+    # included — must read the exact unit flux, outward-normal signed.
+    for wall, sign in (("Top", -1.0), ("Bottom", +1.0)):
+        _xs, flux = poisson.boundary_flux(wall)
+        flux = np.asarray(flux)
+        assert np.allclose(flux, sign, atol=1e-3), (
+            f"{wall}: flux range [{flux.min()}, {flux.max()}], expected {sign}"
+        )
+
+
+def test_boundary_flux_corner_semantics_all_walls_driven():
+    """Corner reactions integrate flux through BOTH adjacent driven walls.
+
+    T = x + y (exact in P2) with all four walls Dirichlet: interior wall
+    nodes read the exact unit flux; a corner node reads the SUM of the two
+    walls' contributions (0 on one diagonal, 2 on the other) divided by the
+    queried wall's mass. This pins the method's documented corner
+    semantics — consumers reading pointwise flux at a two-Dirichlet-wall
+    corner must expect the mixture (see issue #407 discussion)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
+    T = uw.discretisation.MeshVariable("T407c", mesh, 1, degree=2)
+    x, y = mesh.X
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        poisson.add_dirichlet_bc(sympy.Matrix([x + y]), wall)
+    poisson.solve()
+
+    xs, flux = poisson.boundary_flux("Top")
+    xs = np.asarray(xs)
+    flux = np.asarray(flux)
+    interior = (xs[:, 0] > 1e-6) & (xs[:, 0] < 1.0 - 1e-6)
+    assert np.allclose(flux[interior], 1.0, atol=1e-3)
+    left_corner = np.isclose(xs[:, 0], 0.0)
+    right_corner = np.isclose(xs[:, 0], 1.0)
+    # The Top corner reaction mixes the adjacent wall's flux: cancellation
+    # at Top-Left (opposite outward fluxes), doubling at Top-Right.
+    assert np.allclose(flux[left_corner], 0.0, atol=1e-3)
+    assert np.allclose(flux[right_corner], 2.0, atol=1e-3)

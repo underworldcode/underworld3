@@ -508,6 +508,31 @@ conservation stays `dVol < 0.002 %`.
 > and the smooth rise→pond→relax history are robust. This is a boundary-stress *recovery*
 > issue; the Consistent Boundary Flux (Zhong 1993) is the standard, more robust alternative.
 
+> **Recovery method × pressure element type × mesh (the decisive interaction).** UW3 now
+> provides the principled recovery: a **rotated strong free-slip lid** (`add_rotated_freeslip_bc`,
+> exact `v·n=0` — no Nitsche leak) whose **constraint reaction is the Consistent Boundary Flux
+> `σ_nn`** (`boundary_normal_traction` / `dynamic_topography`, PRs #293/#294). It is validated on
+> the analytic SolCx to corr 0.999 / relL2 0.04, monotone at a stress jump. **But the correct
+> pressure element type flips with the recovery method and the mesh:**
+>
+> - **Pointwise recovery** (`ŷ·σ·ŷ` + projection): a *continuous* P1 pressure checkerboards at a
+>   viscosity jump → use **discontinuous** pressure (the finding above).
+> - **CBF / reaction recovery on a *simplex* mesh** (which a deforming free surface requires —
+>   quads shear/invert): a *discontinuous* P1 pressure makes `σ_nn` a violent **node-to-node
+>   Nyquist zigzag** on the triangular boundary edges (the reaction de-smear reads the per-element
+>   pressure), ~30–40 % asymmetric even for a symmetric load. **Continuous** pressure removes it
+>   almost entirely (single-solve roughness ~100× smaller; free-surface plume asymmetry 36 % → 6 %,
+>   no filtering). *Regular* simplices are **worse** than irregular (aligned diagonals add the bias
+>   coherently), confirming it is the boundary-triangle/pressure interaction, not mesh noise.
+>
+> **Recommendation for a simplex free surface: rotated free-slip lid + CBF + *continuous* pressure.**
+> Caveat: if a **sharp viscosity jump reaches the surface**, continuous pressure may checkerboard
+> *there*; in the Crameri setup the jump is at the lid *base* (interior) while the surface sits in
+> the uniform-viscosity lid, so continuous pressure is clean. (Do **not** reach for smoothing the
+> recovered `h_∞`: that filters the forcing and is resolution-naïve — the honest fix is the pressure
+> element type, or, for a persistent node-scale artifact, a *local* surface-Laplacian on the surface
+> geometry, never a global spectral filter, which does not parallelise.)
+
 ![Plume composition + deformed free surface: rise → pond under lid → relax](figures/case2_faithful_fields.png)
 
 ![Left: the surface uplift integral ∫max(h,0)dx evolves smoothly (rise → peak → relax) at every resolution. Right: peak surface height vs resolution against Crameri's ~800 m.](figures/case2_convergence.png)
