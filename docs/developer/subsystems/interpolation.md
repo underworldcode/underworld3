@@ -166,6 +166,49 @@ Note what this does and does not promise: it bounds *new oscillation relative
 to the local trend*, not absolute range. A quantity that must stay inside hard
 physical bounds (a fraction in $[0,1]$) needs its own clip on top.
 
+### Material level sets stay on `order=0` — measured, not assumed
+
+`IndexSwarmVariable` builds one level-set MeshVariable per material index and
+keeps its own inverse-distance weighting. It was tested against `order=1` and
+**deliberately not changed**.
+
+The reason is structural. A material indicator is **piecewise constant**, not
+smooth. Away from an interface both schemes reproduce it exactly, because both
+reproduce constants — linear exactness has nothing to add. At the interface the
+field is *discontinuous*, so no polynomial-reproducing scheme is exact either;
+signed weights simply add overshoot where the data has a jump.
+
+Measured on a straight interface at `x = 0.5` (exactly representable, so any
+displacement of the recovered 0.5 contour is scheme error):
+
+| scheme | interface error, median | level-set range |
+|---|---|---|
+| inverse distance, `nnn=5` | 5.2e-3 – 1.1e-2 | `[0, 1]` exactly |
+| `order=1`, `nnn=6` | 6.9e-3 – 7.8e-3 | `[0, 1]` exactly |
+| `order=1`, `nnn=8` | 5.2e-3 – 7.9e-3 | **`[-0.038, 1.038]`** |
+
+The accuracy result is a wash — `order=1` is better at the coarse resolution
+and equal or worse at the fine one, with the ordering flipping between cases —
+while `nnn=8` violates the `[0, 1]` bound by ~3.8%.
+
+Partition of unity survives either way (all indices share one weight set, and
+the indicator flags sum to one per particle, so the level sets sum to
+`Σ w_j = 1` regardless of sign). But a *negative* material fraction is still
+physically wrong, and `constitutive_models.py` consumes these directly.
+
+```{note}
+The interface metric groups nodes into rows by `y` and interpolates the 0.5
+crossing, which is crude on an unstructured simplex mesh — the *maximum* error
+is identical across all schemes because it is set by node spacing, not by the
+weights. Only the median is informative, and it is the median that shows no
+consistent gain.
+```
+
+So the swarm story is deliberately split: the plain `SwarmVariable` proxy takes
+`order=1` because its fields are smooth and the gain is two orders of magnitude;
+`IndexSwarmVariable` keeps inverse distance because its field is a jump, where
+there is nothing to gain and a bound to lose.
+
 Consumers that depend on absolute boundedness, and are therefore deliberately
 left on `order=0`:
 

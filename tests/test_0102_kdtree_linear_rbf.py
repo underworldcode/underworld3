@@ -130,6 +130,79 @@ def test_stencil_collapsed_onto_target_is_flagged():
     assert np.isfinite(weights).all()
 
 
+def test_degenerate_stencil_is_retried_on_a_wider_neighbourhood():
+    """A locally-coplanar neighbourhood must be escaped, not surrendered to.
+
+    Most source points lie on the plane z = 0, with a sparse off-plane set
+    further away. A target near the plane has all its nearest neighbours in
+    it, so the affine block is rank-deficient and the z-gradient of a linear
+    field is simply not representable from that stencil. Widening reaches the
+    off-plane points and recovers exactness.
+
+    This matters because a single non-exact node sitting among exact ones is
+    an isolated spike, which damages derivatives far more than a smooth error
+    of the same magnitude. Measured on a 3D low-density swarm before the
+    retry existed: 2.2e-3 max error from 2 nodes in 28824.
+    """
+    # A SMALL coplanar patch -- a local accident, which is what widening is
+    # for. (A globally coplanar cloud is a different situation, covered by
+    # test_locally_unrecoverable_cloud_falls_back_loudly.)
+    axis = np.linspace(0.45, 0.55, 5)
+    gx, gy = np.meshgrid(axis, axis, indexing="ij")
+    in_plane = np.stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)], axis=1)
+
+    rng = np.random.default_rng(19)
+    off_plane = rng.random((80, 3))
+
+    source = np.vstack([in_plane, off_plane])
+    target = np.array([[0.5, 0.5, 0.002], [0.49, 0.51, -0.001]])
+
+    nnn = 8
+    _, stencil = _stencils(source, target, nnn)
+    _, degenerate = linear_exact_weights(target, stencil)
+    assert degenerate.all(), (
+        "test setup no longer produces coplanar stencils, so it is not "
+        "exercising the retry path"
+    )
+
+    # A z-dependent linear field cannot be recovered from a coplanar stencil,
+    # so exactness here proves the wider neighbourhood was actually used.
+    data = _linear(source)[:, None]
+    kdt = uw.kdtree.KDTree(source)
+    got = kdt.rbf_interpolator_local(target, data, nnn, 2, False, order=1)
+
+    error = np.abs(got[:, 0] - _linear(target)).max()
+    assert error < 1.0e-12, (
+        f"degenerate stencils were not recovered by widening: error {error:.3e}"
+    )
+
+
+def test_locally_unrecoverable_cloud_falls_back_loudly():
+    """When widening cannot help, say so rather than pretending.
+
+    A source cloud that is coplanar over a wide region is genuinely unable to
+    determine an affine fit in the third direction. Widening the stencil is
+    futile, and the honest outcome is a bounded inverse-distance answer plus a
+    warning -- not a silent loss of the guarantee (the failure mode of #424).
+    """
+    axis = np.linspace(0.0, 1.0, 22)
+    gx, gy = np.meshgrid(axis, axis, indexing="ij")
+    source = np.stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)], axis=1)
+    target = np.array([[0.5, 0.5, 0.02]])
+
+    data = _linear(source)[:, None]
+    kdt = uw.kdtree.KDTree(source)
+
+    with pytest.warns(UserWarning, match="could not support an affine fit"):
+        got = kdt.rbf_interpolator_local(target, data, 8, 2, False, order=1)
+
+    assert np.isfinite(got).all(), "an unrecoverable stencil must not give NaN"
+    lo, hi = data.min(), data.max()
+    assert lo - 1e-12 <= got[0, 0] <= hi + 1e-12, (
+        "the inverse-distance fallback should still be bounded"
+    )
+
+
 @pytest.mark.parametrize("dim", [2, 3])
 def test_nnn_below_dim_plus_two_is_rejected(dim):
     """At dim+1 the affine tail is exactly determined and the scheme reduces to
