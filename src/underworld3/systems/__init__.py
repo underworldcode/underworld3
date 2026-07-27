@@ -86,4 +86,5 @@ from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
 
 # δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
-from .yield_continuation import yield_continuation
+from .yield_continuation import yield_continuation, YieldHomotopyControl
+from .solve_report import SolveReport
