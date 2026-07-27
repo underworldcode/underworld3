@@ -178,6 +178,13 @@ class FreeSurface:
 
         # Topography direction: vertical (last axis) on a Cartesian box, radial on a
         # cylindrical annulus. The surface height and the mesh deformation follow it.
+        if self.mesh.dim != 2:
+            raise NotImplementedError(
+                "FreeSurface is 2D-only for now: the surface ring machinery (filter, "
+                "tangential transport, arc-length datum) and the sigma_nn de-smear have "
+                "no 3D counterparts yet (the 3D boundary mass is PR #404's scope). "
+                "Without this guard a 3D run would proceed and be silently wrong."
+            )
         self._cylindrical = (
             self.mesh.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL2D
         )
@@ -333,7 +340,7 @@ class FreeSurface:
         (x_{i+1}-x_{i-1})` on an open Cartesian surface (with half-cells at the ends).
         Radii are read live, so the weights follow the deforming surface.
         """
-        s = self._s_sorted
+        s = self._s_sorted                             # UNIQUE ring: one entry per node
         if s.size == 0:
             return s
         if self._ring_period is not None:
@@ -533,6 +540,8 @@ class FreeSurface:
         self._v_p1_proj = uw.systems.Vector_Projection(self.mesh, self._v_p1)
         self._v_p1_proj.uw_function = self.free.u.sym
         self._v_p1_proj.smoothing_length = self._smooth_length
+        # surface rows of the P1 velocity (ring order) for the direct nodal reads
+        self._v_p1_rows, _ = self._field_rows(self._v_p1, self._surf_coords)
 
     def _build_interior_diffuser(self):
         """Laplacian carrier: a scalar Poisson solve whose surface Dirichlet value is
@@ -627,17 +636,45 @@ class FreeSurface:
         self._ring_order = np.argsort(s_global, kind="stable")     # concat -> s-sorted
         self._ring_inv = np.empty_like(self._ring_order)
         self._ring_inv[self._ring_order] = np.arange(self._ring_order.size)
-        self._s_sorted = s_global[self._ring_order]
+        # DEDUPLICATE partition-seam copies (#421). A vertex on a partition cut appears
+        # once per adjacent rank in the gathered ring. Every ring operation must see each
+        # PHYSICAL node exactly once: the Taubin filter's roll-stencil otherwise treats
+        # the two copies as distinct neighbouring nodes (a phantom zero-length segment),
+        # smooths them against DIFFERENT stencils, and hands each rank back a different
+        # value — measured as a ~50% seam disagreement in h_inf after 20 iterations and
+        # a few-percent net flux in the prescribed datum. Gather averages the copies
+        # (identical up to round-off); scatter expands back to every copy.
+        s_srt = s_global[self._ring_order]
+        uniq_of_sorted = np.empty(s_srt.size, dtype=int)
+        uniq_id = -1
+        prev = None
+        for i, val in enumerate(np.round(s_srt, 12)):
+            if prev is None or val != prev:
+                uniq_id += 1
+                prev = val
+            uniq_of_sorted[i] = uniq_id
+        self._ring_uniq_of_sorted = uniq_of_sorted
+        self._ring_n_uniq = uniq_id + 1
+        self._ring_dup_count = np.bincount(uniq_of_sorted, minlength=self._ring_n_uniq)
+        first_pos = np.searchsorted(uniq_of_sorted, np.arange(self._ring_n_uniq))
+        self._s_sorted = s_srt[first_pos]
 
     def _ring_gather(self, local_vals):
-        """Local (x-sorted-order) surface values -> the globally s-sorted ring."""
+        """Local (x-sorted-order) surface values -> the globally s-sorted UNIQUE ring
+        (partition-seam copies averaged — they agree to round-off by construction)."""
         comm = uw.mpi.comm
         v = (np.concatenate(comm.allgather(np.ascontiguousarray(local_vals)))
              if comm.size > 1 else np.asarray(local_vals, dtype=float))
-        return v[self._ring_order]
+        v_sorted = v[self._ring_order]
+        sums = np.bincount(self._ring_uniq_of_sorted, weights=v_sorted,
+                           minlength=self._ring_n_uniq)
+        return sums / self._ring_dup_count
 
-    def _ring_scatter(self, v_sorted):
-        """Globally s-sorted ring values -> this rank's local (x-sorted-order) nodes."""
+    def _ring_scatter(self, v_uniq):
+        """Unique-ring values -> this rank's local (x-sorted-order) nodes. Every seam
+        copy receives the SAME unique value, so ring fields are single-valued across
+        ranks by construction."""
+        v_sorted = v_uniq[self._ring_uniq_of_sorted]   # expand to seam copies
         v = v_sorted[self._ring_inv]                   # back to rank-concatenated order
         return v[self._ring_offset: self._ring_offset + self._s_local_n]
 
@@ -817,10 +854,14 @@ class FreeSurface:
         self._v_p1_proj.solve()
         coords = self._ring_coords                  # live, already in ring order
         n = self._normal_direction(coords)          # unit vectors, same as the deform
-        u_n = np.zeros(coords.shape[0])
-        for i in range(self.mesh.dim):
-            v_i = np.asarray(function.evaluate(self._v_p1.sym[i], coords)).flatten()
-            u_n += v_i * n[:, i]
+        # DIRECT nodal read of the P1 velocity at the surface rows — never a point
+        # evaluation at the field's own nodes: on-vertex point location mis-locates at
+        # partition seams (the documented ddt band-aid class), and a seam node whose
+        # velocity differs across ranks breaks the global ring's single-valuedness —
+        # measured as a few-percent net flux in the prescribed datum at np2 (#421).
+        # The projection solve has already ghost-synced .data, so ranks agree exactly.
+        v_nodes = np.asarray(self._v_p1.data)[self._v_p1_rows]
+        u_n = (v_nodes * n).sum(axis=1)
         u_n = self._demean(u_n)
         if self._surface_mask is not None:
             u_n = u_n * self._surface_mask  # pin the surface rate near driven walls
@@ -832,10 +873,12 @@ class FreeSurface:
         ``s_dep = x - v_x*dt``); cylindrical the angular rate ``omega = v_theta/r`` (so
         ``s_dep = theta - omega*dt``)."""
         coords = self._ring_coords                  # live, already in ring order
-        v_x = np.asarray(function.evaluate(self._v_p1.sym[0], coords)).flatten()
+        # direct nodal read, same seam rationale as _surface_normal_velocity (#421)
+        v_nodes = np.asarray(self._v_p1.data)[self._v_p1_rows]
+        v_x = v_nodes[:, 0]
         if not self._cylindrical:
             return v_x
-        v_y = np.asarray(function.evaluate(self._v_p1.sym[1], coords)).flatten()
+        v_y = v_nodes[:, 1]
         cx, cy = coords[:, 0], coords[:, 1]
         r = np.hypot(cx, cy)
         v_theta = (-cy * v_x + cx * v_y) / r        # v . theta-hat

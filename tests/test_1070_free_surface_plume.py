@@ -231,22 +231,7 @@ def _annulus_freesurface(constraint):
     return mesh, fs, rhat
 
 
-_PARALLEL_DATUM_DEFECT = pytest.mark.skipif(
-    uw.mpi.size > 1,
-    reason=(
-        "PRE-EXISTING parallel defect: the _un_target datum field carries ~6-7% net flux "
-        "on np2 versus ~0.06% in serial, independent of how the mean is removed (measured: "
-        "nodal demean 8.96e-3 serial / 7.06e-2 on np2; arc-length demean 5.63e-4 serial / "
-        "5.75e-2 on np2). The ring arrays and the arc-length weights are themselves "
-        "parallel-exact (sum(w) = 2*pi to machine precision, weighted mean of cos(k*theta) "
-        "~1e-16 on np2), so the loss is in the surface-array <-> field round trip across "
-        "the partition seam. Tracked as underworldcode/underworld3#421."
-    ),
-)
-
-
 @pytest.mark.level_2
-@_PARALLEL_DATUM_DEFECT
 def test_freesurface_prescribed_rate_is_flux_free():
     r"""The rate handed to the consistent solve must carry no NET flux.
 
@@ -269,7 +254,6 @@ def test_freesurface_prescribed_rate_is_flux_free():
 
 
 @pytest.mark.level_2
-@_PARALLEL_DATUM_DEFECT
 def test_freesurface_strong_constraint_beats_penalty():
     r"""With a flux-free datum the STRONG rotated constraint holds the surface as a
     material boundary far better than the weak penalty, and does not leak volume.
