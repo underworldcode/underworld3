@@ -1019,7 +1019,12 @@ def auto_inject_custom_mg(solver, field_id=None):
                     f"custom_mg: {_b} transfer build failed ({exc}); "
                     f"retrying with the '{_attempts[_i + 1]}' builder, which "
                     f"has global support and cannot leave a coarse DOF "
-                    f"without a fine image.")
+                    f"without a fine image. NOTE the RBF transfer is DENSE "
+                    f"(nnz/row == n_coarse), so the Galerkin coarse operators "
+                    f"are dense too — this rescues correctness but does not "
+                    f"scale. If it fires on a production-sized problem, treat "
+                    f"it as a performance cliff and fix the cause, not the "
+                    f"symptom (#424).")
                 continue
             warnings.warn(
                 f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
