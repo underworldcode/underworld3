@@ -68,8 +68,73 @@ def test_partition_of_unity_and_no_zero_columns(dim, cell_size):
 
 
 @pytest.mark.parametrize("dim,cell_size", [(2, 0.2), (3, 0.4)])
+def test_reproduces_an_arbitrary_coarse_field(dim, cell_size):
+    """The transfer must be the coarse P1 EMBEDDING, not merely a linear
+    interpolant.
+
+    Reproducing a globally linear field (the test below) is far too weak — any
+    local averaging of nearby values passes it, so a prolongation that
+    attributed weights to the wrong coarse cell would go undetected. This uses
+    a RANDOM coarse nodal field, where only the true embedding agrees.
+
+    The reference is computed independently: every bisection vertex lies on a
+    coarse edge, so the P1 value there is (1-t) u_a + t u_b along that edge.
+    Deliberately NOT `uw.function.evaluate`, which returns wrong values at
+    points lying exactly on cell boundaries (#432) — using it as the reference
+    produced a convincing false accusation against this code.
+    """
+    child = _adapted(dim, cell_size)
+    Ps = child._adapt_prolongation
+    lvl = _levels(child)[-(len(Ps) + 1):]
+    rng = np.random.default_rng(0)
+    for k, entry in enumerate(Ps):
+        if entry is None:
+            continue
+        cdm, fdm = lvl[k], lvl[k + 1]
+        P = _as_matrix(entry, cdm, fdm)
+        cvS, cvE = cdm.getDepthStratum(0)
+        ceS, ceE = cdm.getDepthStratum(1)
+        fvS, fvE = fdm.getDepthStratum(0)
+        cx = cdm.getCoordinatesLocal().array.reshape(-1, dim)
+        fx = fdm.getCoordinatesLocal().array.reshape(-1, dim)
+        data = rng.standard_normal(cvE - cvS)
+        got = P @ data
+
+        edges = np.asarray([[c[0] - cvS, c[1] - cvS]
+                            for e in range(ceS, ceE)
+                            for c in (cdm.getCone(e),)
+                            if len(c) == 2 and all(cvS <= q < cvE for q in c)])
+        A, B = cx[edges[:, 0]], cx[edges[:, 1]]
+        AB = B - A
+        L2 = np.einsum("ij,ij->i", AB, AB)
+        checked = 0
+        for r in range(fvE - fvS):
+            t = np.einsum("ij,ij->i", AB, fx[r][None, :] - A) / L2
+            on = (t > -1e-12) & (t < 1.0 + 1e-12)
+            if not on.any():
+                continue
+            resid = np.linalg.norm(A[on] + t[on, None] * AB[on] - fx[r], axis=1)
+            hit = np.nonzero(resid < 1e-12)[0]
+            if not len(hit):
+                continue
+            e0 = np.nonzero(on)[0][hit[0]]
+            t0 = t[on][hit[0]]
+            truth = (1 - t0) * data[edges[e0, 0]] + t0 * data[edges[e0, 1]]
+            assert abs(got[r] - truth) < 1e-10, (
+                f"pass {k}, fine vertex {r}: transfer {got[r]} != coarse P1 "
+                f"value {truth} on the edge it lies on — the prolongation is "
+                f"not the coarse embedding")
+            checked += 1
+        assert checked > 0.9 * (fvE - fvS), (
+            f"pass {k}: only {checked} of {fvE - fvS} vertices lay on a coarse "
+            f"edge; the test is not covering what it claims")
+
+
+@pytest.mark.parametrize("dim,cell_size", [(2, 0.2), (3, 0.4)])
 def test_reproduces_a_linear_field_exactly(dim, cell_size):
-    """P1 interpolation of a linear function is that function."""
+    """Necessary but WEAK — see the embedding test above. Kept because a
+    failure here localises the problem to the arithmetic rather than the
+    parentage."""
     child = _adapted(dim, cell_size)
     Ps = child._adapt_prolongation
     lvl = _levels(child)[-(len(Ps) + 1):]

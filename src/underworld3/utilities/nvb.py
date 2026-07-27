@@ -193,6 +193,59 @@ def _exact_vertex_map(engine_coords, dm_vcoords, vS, vE):
     return out
 
 
+def nested_cell_parents(coarse_dm, fine_dm, vertex_transfer):
+    """``parent[k]`` = the coarse cell containing fine cell ``k``.
+
+    Found TOPOLOGICALLY, with no search and no geometry. Each fine vertex
+    references one or two coarse vertices through the recorded vertex
+    prolongation; a bisection child lies inside its parent, so every coarse
+    vertex its corners reference belongs to the parent cell. Intersecting the
+    incident-cell sets over those coarse vertices therefore leaves exactly the
+    parent.
+
+    This is what unlocks an EXACT transfer at any polynomial degree: knowing
+    the parent cell, a fine DOF's weights are the coarse basis evaluated at its
+    position within that cell — no point location, so no Delaunay, no spatial
+    index and no orphaned coarse DOF.
+
+    Returns an ``(n_fine_cells,)`` array of coarse cell points, or ``None`` if
+    any fine cell's parent is not uniquely determined (the caller should then
+    fall back rather than guess).
+    """
+    rows, cols, _ = vertex_transfer
+    cvS, cvE = coarse_dm.getDepthStratum(0)
+    ccS, ccE = coarse_dm.getHeightStratum(0)
+    fvS, fvE = fine_dm.getDepthStratum(0)
+    fcS, fcE = fine_dm.getHeightStratum(0)
+
+    # coarse vertex -> incident coarse cells
+    incident = [set() for _ in range(cvE - cvS)]
+    for c in range(ccS, ccE):
+        for q in coarse_dm.getTransitiveClosure(c)[0]:
+            if cvS <= q < cvE:
+                incident[q - cvS].add(c)
+
+    # fine vertex -> coarse vertices it is built from
+    refs = [[] for _ in range(fvE - fvS)]
+    for r, cpt in zip(rows.tolist(), cols.tolist()):
+        refs[r].append(cpt)
+
+    parents = np.empty(fcE - fcS, dtype=np.int64)
+    for k, c in enumerate(range(fcS, fcE)):
+        cand = None
+        for q in fine_dm.getTransitiveClosure(c)[0]:
+            if not (fvS <= q < fvE):
+                continue
+            for cv in refs[q - fvS]:
+                cand = incident[cv] if cand is None else (cand & incident[cv])
+            if cand is not None and len(cand) == 1:
+                break
+        if not cand or len(cand) != 1:
+            return None
+        parents[k] = next(iter(cand))
+    return parents
+
+
 def nested_prolongation_from_dms(coarse_dm, fine_dm):
     """Recover a refinement pass's exact P1 prolongation from the two DMs.
 
@@ -263,6 +316,17 @@ def nested_prolongation_from_dms(coarse_dm, fine_dm):
             weights[r] = {int(a): 0.5, int(b): 0.5}
 
     # --- rounds 2+: averages of already-resolved fine neighbours ------------
+    # A closure cascade can create a vertex at the midpoint of an
+    # already-split half-edge, which is therefore NOT at a coarse edge
+    # midpoint and is not matched above. Such a vertex is the exact average of
+    # two already-resolved fine neighbours, so its weights compose from theirs.
+    #
+    # This is inference, not topology: being fine-mesh neighbours does not by
+    # itself make the segment an edge of the refinement tree. It is validated
+    # against an INDEPENDENT reference (the P1 value along the coarse edge the
+    # point lies on) rather than against uw.function.evaluate, which is itself
+    # wrong at points on cell boundaries (#432) — measuring against it briefly
+    # convinced me this code was broken when it was not.
     unresolved = [r for r in range(n_f) if weights[r] is None]
     if unresolved:
         nbr = [[] for _ in range(n_f)]
@@ -280,10 +344,10 @@ def nested_prolongation_from_dms(coarse_dm, fine_dm):
                 found = None
                 for i in range(len(cand)):
                     for j in range(i + 1, len(cand)):
-                        p, q = cand[i], cand[j]
-                        avg = np.ascontiguousarray(0.5 * (fxyz[p] + fxyz[q]))
+                        p_, q_ = cand[i], cand[j]
+                        avg = np.ascontiguousarray(0.5 * (fxyz[p_] + fxyz[q_]))
                         if avg.tobytes() == target:
-                            found = (p, q)
+                            found = (p_, q_)
                             break
                     if found:
                         break

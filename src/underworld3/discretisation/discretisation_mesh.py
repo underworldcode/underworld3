@@ -6833,6 +6833,7 @@ class Mesh(Stateful, uw_object):
         # `from_dm` numbers engine vertices as `DM point - vS`, so the base map
         # is that offset; each generation's map comes back from `to_dm`.
         _nested_Ps = []
+        _nested_parent_cells = []
         _vS0, _vE0 = base_finest.getDepthStratum(0)
         _coarse_vmap = {i: _vS0 + i for i in range(_vE0 - _vS0)}
 
@@ -6882,8 +6883,16 @@ class Mesh(Stateful, uw_object):
                 # relaxation moves everything, after which the relation can no
                 # longer be recovered by matching. See #425.
                 from underworld3.utilities.nvb import (
-                    nested_prolongation_from_dms as _nested_from_dms)
-                _nested_Ps.append(_nested_from_dms(_coarse_for_P, current_dm))
+                    nested_prolongation_from_dms as _nested_from_dms,
+                    nested_cell_parents as _nested_parents)
+                _vP = _nested_from_dms(_coarse_for_P, current_dm)
+                _nested_Ps.append(_vP)
+                # Parent CELL map as well: with it a fine DOF's weights are the
+                # coarse basis evaluated inside its parent, which is exact at
+                # ANY degree — the vertex map alone only covers P1. (#425)
+                _nested_parent_cells.append(
+                    None if _vP is None
+                    else _nested_parents(_coarse_for_P, current_dm, _vP))
                 snap_level_boundaries(current_dm)
                 if _relax_mode == "per-generation":
                     # Relax THIS generation before the next one marks from it:
@@ -7050,6 +7059,7 @@ class Mesh(Stateful, uw_object):
         # (cell-list path). Empty for the native transform path, which falls
         # back to the geometric builder. See #425.
         child._adapt_prolongation = _nested_Ps
+        child._adapt_parent_cells = _nested_parent_cells
         # Mesh-owned custom-P geometric-MG tail. EVERY refinement level is its own
         # MG level (one custom-P transfer per refinement step), not a single
         # base-finest -> child jump: the tail is
