@@ -919,6 +919,9 @@ class SolverBaseClass(uw_object):
 
         self.natural_bcs = []
         self.essential_bcs = []
+        # A teardown means the next solve is a different discrete problem: a resume
+        # anchor from the old problem's ||F0|| must not survive into it.
+        self._resume_abs_target = None
 
         if self.snes is not None:
             self.snes.destroy()
@@ -985,6 +988,10 @@ class SolverBaseClass(uw_object):
         reason = int(self.snes.getConvergedReason())
         nl_its = int(self.snes.getIterationNumber())
         ksp_its = int(self.snes.getLinearSolveIterations())
+        # Sanctioned swallows (each optional-field read below): PETSc raises from these
+        # getters on SNES types/states that never computed the quantity (e.g. ksponly
+        # before a function evaluation, builds without the counter). The report field
+        # degrades to its honest "unavailable" value; nothing else is masked.
         try:
             fnorm = float(self.snes.getFunctionNorm())
         except Exception:
@@ -1022,27 +1029,47 @@ class SolverBaseClass(uw_object):
     def _capture_rotated_report(self, info):
         """Record a SolveReport for a rotated-free-slip solve, which runs its own
         ``ksp.solve()`` on the rotated operator (``utilities/rotated_bc.py``) and never
-        touches ``self.snes`` — so the generic reader would see stale SNES state. Build the
-        report from the rotated result dict (``ksp_reason`` / ``ksp_its``) so a rotated solve
-        also leaves a (read-only) report rather than a stale one. Best-effort, never raises."""
-        from underworld3.systems.solve_report import SolveReport, reason_string
-        try:
-            info = info or {}
-            reason = int(info.get("ksp_reason", 0))
-            ksp_its = int(info.get("ksp_its", 0))
-            nl_its = int(info.get("newton_its", 1))     # linear path = one outer solve
-            fnorm = float(info.get("rnorm", float("nan")))
-            report = SolveReport(
-                reason=reason, reason_str=reason_string(reason), converged=reason > 0,
-                nl_its=nl_its, ksp_its=ksp_its, fnorm=fnorm,
-                fnorm0=None, reduction=None, rho=None, fev=None, history=(), bounded=False,
-            )
-            self._solve_report = report
-            self._solve_history.append(report)
-            return report
-        except Exception:
-            self._solve_report = None
-            return None
+        touches ``self.snes`` — so the generic reader would see stale SNES state.
+
+        Handles BOTH rotated result dicts: the linear one-shot solve (``ksp_its`` an
+        int, one outer solve, no outer verdict) and the manual nonlinear Newton loop
+        (``nonlinear_iterations``, ``ksp_its`` a per-increment LIST, and an outer
+        ``converged`` flag from the residual/step-norm tests). ``ksp_reason`` is a KSP
+        code on both paths (the nonlinear dict carries the LAST increment's), so it is
+        rendered with the KSP reason table — the SNES table shares the integers but
+        names different outcomes. A malformed dict raises: this reader and the dicts in
+        ``rotated_bc.py`` are a contract, and a silent fallback here previously masked
+        a broken one."""
+        from underworld3.systems.solve_report import SolveReport, ksp_reason_string
+
+        info = info or {}
+        reason = int(info.get("ksp_reason", 0))
+        raw_its = info.get("ksp_its", 0)
+        if isinstance(raw_its, (list, tuple)):
+            ksp_its = int(sum(raw_its))                 # nonlinear: one count per Newton step
+        else:
+            ksp_its = int(raw_its)
+        nl_its = int(info.get("nonlinear_iterations", 1))   # linear path = one outer solve
+        if "converged" in info:
+            # The nonlinear loop's own verdict. The last KSP reason alone would mislabel
+            # a stalled Newton chain whose final linear solve happened to converge.
+            converged = bool(info["converged"])
+        else:
+            converged = reason > 0
+        rnorm = info.get("rnorm")
+        fnorm = float(rnorm) if rnorm is not None else float("nan")
+        rnorm0 = info.get("rnorm0")
+        fnorm0 = float(rnorm0) if rnorm0 else None
+        reduction = (fnorm / fnorm0) if (fnorm0 and fnorm == fnorm) else None
+        report = SolveReport(
+            reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
+            nl_its=nl_its, ksp_its=ksp_its, fnorm=fnorm,
+            fnorm0=fnorm0, reduction=reduction, rho=None, fev=None, history=(),
+            bounded=False,
+        )
+        self._solve_report = report
+        self._solve_history.append(report)
+        return report
 
     def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):
         """Run a bounded, resumable solve to *estimate solver difficulty* and return its report.
@@ -1066,13 +1093,39 @@ class SolverBaseClass(uw_object):
             ``False`` starts a fresh chain from a zero initial guess.
         **solve_kwargs
             Forwarded to ``solve()`` (e.g. ``timestep``, ``picard`` for Stokes/VE).
+            ``zero_init_guess`` is owned by ``warm`` and ``divergence_retries`` by the
+            probe (always 0) — passing either raises.
 
         Returns
         -------
         SolveReport
             The (``bounded=True``) report for this capped solve; also available as
             ``self.solve_report``.
+
+        Notes
+        -----
+        Not available with rotated free-slip BCs: that path solves outside
+        ``self.snes``, so the cap and anchor cannot reach it. Under
+        ``consistent_jacobian="continuation"`` the cap applies to EACH stage (Picard
+        then Newton), so one probe may run up to twice ``max_nl_its``.
         """
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            raise NotImplementedError(
+                "estimate_difficulty() is not available with rotated free-slip BCs: "
+                "that path solves outside self.snes (utilities/rotated_bc.py), so the "
+                "iteration cap and resume anchor cannot be applied to it."
+            )
+        if "zero_init_guess" in solve_kwargs:
+            raise TypeError(
+                "estimate_difficulty() sets the initial guess from warm= "
+                "(warm=False starts a fresh chain from zero); do not pass zero_init_guess."
+            )
+        if solve_kwargs.get("divergence_retries"):
+            raise TypeError(
+                "estimate_difficulty() does not accept divergence_retries: a capped probe "
+                "ends DIVERGED_MAX_IT by design, and retrying on it would run multiples of "
+                "the advertised cap."
+            )
         if not warm:
             self._resume_abs_target = None      # fresh chain: forget any prior anchor
         self._difficulty_probe = True
@@ -1083,17 +1136,25 @@ class SolverBaseClass(uw_object):
             self._difficulty_probe = False
             self._difficulty_max_it = None
 
-        # Anchor a NEW chain to the original ||F0||. Subsequent warm restarts via
-        # estimate_difficulty(warm=True) — including a large-cap call to run to
-        # completion — terminate at tolerance*||F0||, the same point an uninterrupted
-        # solve would, regardless of where the caps fell. The anchor is consulted ONLY
-        # under _difficulty_probe (see _snes_solve_with_retries), so plain solves are
-        # unaffected and cannot inherit a stale anchor.
-        if self._resume_abs_target is None and self._solve_report is not None:
-            f0 = self._solve_report.fnorm0
+        # Anchor lifecycle. A CONVERGED probe ends the chain: clear the anchor so it
+        # cannot leak into a later chain on different physics. This also covers the
+        # warm first call on an already-converged state — its ||F0|| is the *converged*
+        # residual, and anchoring to tolerance*||F_converged|| would set an unreachable
+        # target that silently degrades the chain to restart-relative semantics.
+        # An UNCONVERGED (capped) probe with no anchor yet establishes the chain,
+        # anchored to the original ||F0||: subsequent warm restarts — including a
+        # large-cap call to run to completion — terminate at tolerance*||F0||, the same
+        # point an uninterrupted solve would, regardless of where the caps fell. The
+        # anchor is consulted ONLY under _difficulty_probe (see
+        # _snes_solve_with_retries), so plain solves are unaffected.
+        report = self._solve_report
+        if report is not None and report.converged:
+            self._resume_abs_target = None
+        elif self._resume_abs_target is None and report is not None:
+            f0 = report.fnorm0
             if f0:
                 self._resume_abs_target = self.tolerance * float(f0)
-        return self._solve_report
+        return report
 
     def get_snes_diagnostics(self):
         """
@@ -1404,10 +1465,12 @@ class SolverBaseClass(uw_object):
             if _saved_tol is not None:
                 self.snes.setTolerances(rtol=_saved_tol[0], atol=_saved_tol[1],
                                         stol=_saved_tol[2], max_it=_saved_tol[3])
-
-        # Default-on difficulty report — single tail so every path is covered.
-        # bounded=True marks a report produced under an estimate_difficulty cap.
-        self._capture_solve_report(bounded=_probe)
+            # Default-on difficulty report — single tail so every path is covered,
+            # INCLUDING a solve that raises: the report then reflects the failed
+            # attempt's SNES state rather than leaving the previous solve's converged
+            # report behind for recovery logic to misread. bounded=True marks a report
+            # produced under an estimate_difficulty cap.
+            self._capture_solve_report(bounded=_probe)
 
     def _continuation_solve(self, gvec, verbose=False):
         """Picard -> Newton continuation via the constants[]-routed alpha.
