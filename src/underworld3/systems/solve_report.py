@@ -14,19 +14,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-# PETSc SNESConvergedReason codes -> short names. Mirrors the compact map in
-# SolverBaseClass._convergence_reasons; duplicated here so this module imports without the
-# Cython solver extension present.
+# PETSc SNESConvergedReason codes -> short names. Duplicated here (rather than read from
+# petsc4py) so this module imports without the Cython solver extension present -- which
+# means it can drift, and it HAD: every positive code was shifted by one, so a solve that
+# stopped on the STEP norm (the weakest criterion, and what a stalled plastic solve
+# reports) was labelled CONVERGED_ITS, and a genuine residual convergence was labelled
+# CONVERGED_SNORM_RELATIVE. There is no code 1. test_1055 now checks this table against
+# petsc4py's enum, which is the only thing that can keep a hand-copy honest.
 REASON_STRINGS = {
-    1: "CONVERGED_FNORM_ABS",
-    2: "CONVERGED_FNORM_RELATIVE",
-    3: "CONVERGED_SNORM_RELATIVE",
-    4: "CONVERGED_ITS",
-    0: "ITERATING",
+    0: "CONVERGED_ITERATING",
+    2: "CONVERGED_FNORM_ABS",
+    3: "CONVERGED_FNORM_RELATIVE",
+    4: "CONVERGED_SNORM_RELATIVE",
+    5: "CONVERGED_ITS",
     -1: "DIVERGED_FUNCTION_DOMAIN",
     -2: "DIVERGED_FUNCTION_COUNT",
     -3: "DIVERGED_LINEAR_SOLVE",
-    -4: "DIVERGED_FNORM_NAN",
+    -4: "DIVERGED_FUNCTION_NANORINF",
     -5: "DIVERGED_MAX_IT",
     -6: "DIVERGED_LINE_SEARCH",
     -7: "DIVERGED_INNER",
@@ -34,6 +38,8 @@ REASON_STRINGS = {
     -9: "DIVERGED_DTOL",
     -10: "DIVERGED_JACOBIAN_DOMAIN",
     -11: "DIVERGED_TR_DELTA",
+    -13: "DIVERGED_OBJECTIVE_DOMAIN",
+    -14: "DIVERGED_OBJECTIVE_NANORINF",
 }
 
 
