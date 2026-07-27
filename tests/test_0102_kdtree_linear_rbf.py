@@ -424,16 +424,23 @@ def test_kdtree_neighbours_match_brute_force_on_random_data(dim):
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("dim", [2, 3])
 @pytest.mark.parametrize("order", [0, 1])
-def test_interpolation_matrix_agrees_with_the_value_path(dim, order):
-    """`T @ data` must be what the value API returns, or they will drift."""
+@pytest.mark.parametrize("nnn", [None, 8])
+@pytest.mark.parametrize("p", [1, 2])
+def test_interpolation_matrix_agrees_with_the_value_path(dim, order, nnn, p):
+    """`T @ data` must be what the value API returns, or they will drift.
+
+    Sweeps `nnn` and `p` as well as `order`: the earlier version pinned only
+    `order`, and hard-coded `p=2` on the value side, so it silently compared
+    two different weightings as soon as the default `p` changed.
+    """
     rng = np.random.default_rng(808 + dim)
     source = rng.random((500, dim))
     target = 0.1 + 0.8 * rng.random((60, dim))
     values = rng.standard_normal((source.shape[0], 2))
 
     kdt = uw.kdtree.KDTree(source)
-    T = kdt.interpolation_matrix(target, order=order)
-    direct = kdt.rbf_interpolator_local(target, values, None, 2, False, order=order)
+    T = kdt.interpolation_matrix(target, nnn=nnn, p=p, order=order)
+    direct = kdt.rbf_interpolator_local(target, values, nnn, p, False, order=order)
 
     assert T.shape == (target.shape[0], source.shape[0])
     assert np.abs(T @ values - direct).max() < 1.0e-12
@@ -463,6 +470,44 @@ def test_both_entry_points_reject_nnn_1_with_order_1(dim):
     # nnn=1 at order=0 stays legal on both.
     assert kdt.rbf_interpolator_local(target, data, 1, 2, False).shape == (15, 1)
     assert kdt.interpolation_matrix(target, nnn=1).shape == (15, 200)
+
+
+@pytest.mark.parametrize("p", [1, 2, 3])
+def test_inverse_distance_decays_as_the_named_power(p):
+    """`p` must apply to the distance, not its square (issue #427).
+
+    The kd-tree returns squared distances, and the weighting used them
+    directly, so the decay was r^(-2p) while the argument was documented as
+    r^(-p). Nothing pinned the exponent, so it went unnoticed through a
+    rewrite.
+
+    Two sources at distance 1 and 2 from the target; interpolating a field
+    that is 1 at the near point and 0 at the far one returns the near
+    point's normalised weight, so w1/w2 is recoverable and must be 2**p.
+    """
+    source = np.array([[1.0, 0.0], [2.0, 0.0]])
+    target = np.array([[0.0, 0.0]])
+    data = np.array([[1.0], [0.0]])
+
+    kdt = uw.kdtree.KDTree(source)
+    near = kdt.rbf_interpolator_local(target, data, 2, p, False)[0, 0]
+    ratio = near / (1.0 - near)
+
+    assert np.isclose(ratio, 2.0 ** p, rtol=1e-10), (
+        f"weight ratio {ratio:.4f} implies decay r^-{np.log2(ratio):.2f}, "
+        f"expected r^-{p}"
+    )
+
+
+def test_inverse_distance_default_is_inverse_distance():
+    """The default is p=1 — genuinely inverse distance, not inverse square."""
+    source = np.array([[1.0, 0.0], [2.0, 0.0]])
+    target = np.array([[0.0, 0.0]])
+    data = np.array([[1.0], [0.0]])
+
+    kdt = uw.kdtree.KDTree(source)
+    near = kdt.rbf_interpolator_local(target, data, 2)[0, 0]
+    assert np.isclose(near / (1.0 - near), 2.0, rtol=1e-10)
 
 
 def test_stencil_larger_than_the_cloud_reports_what_went_wrong():

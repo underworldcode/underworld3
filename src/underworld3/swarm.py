@@ -1518,7 +1518,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         D = raw_data.copy()
         kdt = self.swarm._get_kdtree()
         values = kdt.rbf_interpolator_local(
-            new_coords, D, nnn, 2, verbose, order=order, monotone=monotone
+            new_coords, D, nnn, verbose=verbose, order=order, monotone=monotone
         )
 
         return values
