@@ -11,8 +11,8 @@ See ``underworld3.cython.petsc_generic_snes_solvers.SolverBaseClass``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Mapping, Optional, Tuple
 
 # PETSc SNESConvergedReason codes -> short names. Mirrors the compact map in
 # SolverBaseClass._convergence_reasons; duplicated here so this module imports without the
@@ -115,6 +115,17 @@ class SolveReport:
     bounded
         ``True`` when this report came from an iteration-capped (``estimate_difficulty``)
         solve — i.e. work was truncated, not a genuine failure.
+    sub
+        Work done by each fieldsplit sub-solve, keyed by block name (``"velocity"``,
+        ``"pressure"`` for Stokes). ``ksp_its`` above counts only the OUTER Krylov
+        iterations, which Eisenstat–Walker collapses to about one per Newton step — the
+        real cost of a Stokes solve is ``sub["velocity"].its`` multigrid cycles. Empty
+        for solvers with no fieldsplit preconditioner. See
+        ``underworld3.systems.solver_health``.
+    deadline_expired
+        ``True`` when a wall-clock guard armed with ``solver.guard(...)`` cut this solve
+        short. Distinguishes "the budget ran out" from a genuine divergence: both report
+        ``DIVERGED_LINEAR_SOLVE``.
     """
 
     reason: int
@@ -129,12 +140,17 @@ class SolveReport:
     fev: Optional[int] = None
     history: Tuple[float, ...] = ()
     bounded: bool = False
+    sub: Mapping[str, "SubSolveReport"] = field(default_factory=dict)
+    deadline_expired: bool = False
 
     def __str__(self) -> str:
         rho = f"{self.rho:.3f}" if self.rho is not None else "n/a"
+        sub = "".join(f", {r.name}={r.its}" for r in self.sub.values())
         return (
             f"SolveReport({self.reason_str}, nl={self.nl_its}, ksp={self.ksp_its}, "
             f"|F|={self.fnorm:.3e}, rho={rho}"
+            + sub
             + (", bounded" if self.bounded else "")
+            + (", deadline" if self.deadline_expired else "")
             + ")"
         )

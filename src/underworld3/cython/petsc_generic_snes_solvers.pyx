@@ -135,6 +135,10 @@ class SolverBaseClass(uw_object):
         self._difficulty_probe = False
         self._difficulty_max_it = None
         self._resume_abs_target = None
+        # PETSc-level instrumentation: the sub-solve work gauge, and the
+        # wall-clock deadline once guard() arms it. Created on the first solve
+        # (systems/solver_health.py) because it needs a live SNES to attach to.
+        self._instrumentation = None
 
         # Preconditioner selection — see the `preconditioner` property.
         # `_pc_option_prefix` is set by subclasses that participate in the easy
@@ -1136,6 +1140,13 @@ class SolverBaseClass(uw_object):
         reduction = (fnorm / fnorm0) if (fnorm0 not in (None, 0.0)) else None
         rho = contraction(hist)
 
+        # Sub-solve work, and whether a wall-clock guard cut this solve short. Absent
+        # for a solver whose instrumentation has never attached (no solve yet).
+        instrumentation = self._instrumentation
+        sub = instrumentation.sub_reports() if instrumentation is not None else {}
+        deadline_expired = (instrumentation is not None
+                            and instrumentation.deadline_expired)
+
         report = SolveReport(
             reason=reason,
             reason_str=reason_string(reason),
@@ -1149,6 +1160,8 @@ class SolverBaseClass(uw_object):
             fev=fev,
             history=hist,
             bounded=bool(bounded),
+            sub=sub,
+            deadline_expired=deadline_expired,
         )
         self._solve_report = report
         self._solve_history.append(report)
@@ -1198,6 +1211,76 @@ class SolverBaseClass(uw_object):
         self._solve_report = report
         self._solve_history.append(report)
         return report
+
+    def guard(self, *, wall_per_step):
+        r"""Bound the wall-clock time of each Newton step. Opt-in; changes termination.
+
+        A hard nonlinear solve can grind for hours *inside a single Newton step*, and no
+        iteration cap can stop it: the grind happens within one outer Krylov iteration,
+        so the counter the cap watches never advances. Nor can a Python timer stop it —
+        Python runs signal handlers only between bytecodes, and control is inside PETSc
+        the whole time. The deadline therefore lives in PETSc's own convergence tests,
+        where it is checked between the *inner* iterations of the fieldsplit blocks.
+
+        When the budget runs out the solve stops with ``DIVERGED_LINEAR_SOLVE`` and
+        ``solve_report.deadline_expired`` set, leaving the current iterate in the fields.
+        It is a report, not an error: a continuation driver reads it and steps back.
+
+        Parameters
+        ----------
+        wall_per_step : float
+            Seconds of wall clock allowed per Newton step. The clock restarts at the
+            beginning of every step, so a solve taking ``n`` steps may run for up to
+            roughly ``n * wall_per_step`` seconds.
+
+        Notes
+        -----
+        The budget is enforced at inner-iteration granularity, so the overrun beyond it
+        is at most the cost of one multigrid cycle. In parallel the expiry decision is
+        reduced over the solver's communicator, because PETSc deadlocks if convergence
+        tests return different verdicts on different ranks.
+
+        Not available with rotated free-slip BCs: that path runs its own Krylov loop
+        outside ``self.snes`` (``utilities/rotated_bc.py``), which the deadline cannot
+        reach — so arming a guard there would look like protection and provide none.
+
+        On a solver's FIRST solve the fieldsplit blocks do not exist until PETSc has set
+        up the preconditioner, part-way through that solve, so the first preconditioner
+        application runs unguarded. Every solve after that is fully covered. A driver
+        that needs the first one covered should do one cheap solve before arming.
+
+        Examples
+        --------
+        >>> stokes.guard(wall_per_step=150.0)
+        >>> stokes.solve()
+        >>> if stokes.solve_report.deadline_expired:
+        ...     ...                      # too hard at these parameters; back off
+        >>> stokes.unguard()
+
+        See Also
+        --------
+        unguard : remove the deadline.
+        estimate_difficulty : bound the *work* (an iteration count) instead.
+        """
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            raise NotImplementedError(
+                "guard() is not available with rotated free-slip BCs: that path runs "
+                "its own Krylov loop outside self.snes (utilities/rotated_bc.py), so "
+                "the deadline cannot reach it and the guard would be silently inert."
+            )
+        self._solver_instrumentation().arm(wall_per_step)
+
+    def unguard(self):
+        """Remove the wall-clock deadline set by :meth:`guard`, restoring PETSc defaults."""
+        if self._instrumentation is not None:
+            self._instrumentation.disarm()
+
+    def _solver_instrumentation(self):
+        """The solver's PETSc instrumentation, created on first use."""
+        if self._instrumentation is None:
+            from underworld3.systems.solver_health import SolverInstrumentation
+            self._instrumentation = SolverInstrumentation()
+        return self._instrumentation
 
     def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):
         """Run a bounded, resumable solve to *estimate solver difficulty* and return its report.
@@ -1551,6 +1634,12 @@ class SolverBaseClass(uw_object):
             self.snes.setConvergenceHistory(reset=True)
         except Exception:
             pass
+
+        # Attach the sub-solve gauge (and the wall-clock deadline, if guard() armed
+        # one) to the CURRENT SNES and clear its per-solve counters. Here rather than
+        # in _build because a rebuilt solver gets a new SNES and everything attached to
+        # the old one is dropped; every solve funnels through this method.
+        self._solver_instrumentation().begin_solve(self.snes)
 
         # Single control point for the bounded/resumable difficulty solve. Runs AFTER
         # every per-solve setFromOptions (base and Stokes), so overrides here win. Gated
