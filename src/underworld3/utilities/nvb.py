@@ -168,6 +168,31 @@ def _fs(a, b):
     return (a, b) if a < b else (b, a)
 
 
+def _exact_vertex_map(engine_coords, dm_vcoords, vS, vE):
+    """``{DM vertex point: engine vertex id}`` by EXACT coordinate equality.
+
+    The DM was just built by ``createFromCellList`` from these very
+    coordinates, so the two arrays hold bit-identical values and equality is
+    the correct test — not a nearest-neighbour search. A kd-tree here would be
+    a spatial query standing in for an identity lookup, and would silently
+    bind the WRONG vertex if the assumption it guards ever broke, rather than
+    failing. This raises instead.
+    """
+    key = {row.tobytes(): i
+           for i, row in enumerate(np.ascontiguousarray(
+               np.asarray(engine_coords, dtype=float)))}
+    out = {}
+    for i in range(vE - vS):
+        j = key.get(dm_vcoords[i].tobytes())
+        if j is None:
+            raise RuntimeError(
+                f"to_dm: DM vertex {vS + i} has no exact coordinate match in "
+                f"the engine's vertex list. The DM is built from those "
+                f"coordinates, so this means they were modified in between.")
+        out[vS + i] = j
+    return out
+
+
 def nested_prolongation_from_dms(coarse_dm, fine_dm):
     """Recover a refinement pass's exact P1 prolongation from the two DMs.
 
@@ -593,7 +618,6 @@ class NVBMesh:
         ``UW_Boundaries`` / ``Null_Boundary`` from them. ``All_Boundaries`` is the
         geometric outer boundary (``markBoundaryFaces``), independent of our labels.
         """
-        from scipy.spatial import cKDTree
 
         coords, tris, region_of, _ = self.arrays()
         # createFromCellList needs consistent (CCW) winding; the internal
@@ -618,9 +642,9 @@ class NVBMesh:
         # TODO(#360): row i == vertex point vS+i is assumed, as in from_dm above.
         # Safe here: the DM was created two lines up by createFromCellList on this
         # rank (serial-only path), so its coordinate section is vertex-ordered.
-        dm_vcoords = dm.getCoordinatesLocal().array.reshape(-1, 2)
-        _, nearest = cKDTree(np.array(self.coords)).query(dm_vcoords)
-        nvb_of_dmvert = {vS + i: int(nearest[i]) for i in range(vE - vS)}
+        dm_vcoords = np.ascontiguousarray(
+            dm.getCoordinatesLocal().array.reshape(-1, 2))
+        nvb_of_dmvert = _exact_vertex_map(self.coords, dm_vcoords, vS, vE)
         # Engine-id <-> DM-point map for THIS export, kept so the nested MG
         # prolongation can be built from the exact parent/child relation
         # (``edge2mid``) instead of re-deriving it by point location. Recorded
@@ -989,7 +1013,6 @@ class TaggedBisectionMesh:
         convention so ``Mesh()`` derives ``UW_Boundaries`` from them;
         ``All_Boundaries`` is the geometric outer boundary.
         """
-        from scipy.spatial import cKDTree
 
         coords, cells, region_of, _ = self.arrays()
         # createFromCellList needs cells in the DMPlex orientation class; the
@@ -1015,10 +1038,9 @@ class TaggedBisectionMesh:
         # DM vertex point -> engine vertex id by coordinate (exact match).
         # TODO(#360): row i == vertex point vS+i — safe: the DM was created
         # two lines up by createFromCellList on this rank (serial path).
-        dm_vcoords = dm.getCoordinatesLocal().array.reshape(
-            -1, dm.getCoordinateDim())
-        _, nearest = cKDTree(np.array(self.coords)).query(dm_vcoords)
-        eng_of_dmvert = {vS + i: int(nearest[i]) for i in range(vE - vS)}
+        dm_vcoords = np.ascontiguousarray(
+            dm.getCoordinatesLocal().array.reshape(-1, dm.getCoordinateDim()))
+        eng_of_dmvert = _exact_vertex_map(self.coords, dm_vcoords, vS, vE)
         # See the note in NVBMesh.to_dm: engine-id -> DM-point, recorded at the
         # one point the two numberings meet, for the nested MG prolongation.
         self.dm_vertex_of_engine = {v: k for k, v in eng_of_dmvert.items()}
