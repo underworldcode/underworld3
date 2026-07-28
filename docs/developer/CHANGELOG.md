@@ -89,10 +89,11 @@ first order with refinement and **not at all** with stencil size.
 Two deliberate exclusions, both measured rather than assumed:
 `MeshVariable.rbf_interpolate` keeps inverse distance because it is the
 fallback rung of the point-location ladder, whose documented contract is that
-it is bounded; and `IndexSwarmVariable` material level sets keep it because a
-material indicator is piecewise constant — there is nothing for linear
-exactness to gain at a discontinuity, and signed weights push level sets
-outside `[0, 1]`.
+it is bounded; and `IndexSwarmVariable` material level sets keep it because
+they estimate a fraction from a handful of *integer* samples, where the error
+is dominated by variance rather than bias. Signed weights amplify that variance
+by roughly an order of magnitude and push level sets outside `[0, 1]`, while
+the bias they would remove is already negligible.
 
 Related: swarm proxy refresh no longer fails under an active units model
 (#426, #434); the units the proxy advertises are tracked separately (#439).

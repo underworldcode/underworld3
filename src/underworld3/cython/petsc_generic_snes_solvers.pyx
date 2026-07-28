@@ -85,6 +85,14 @@ class SolverBaseClass(uw_object):
         self._needs_bc_reregister = True
         self._needs_function_rewire = True
 
+        # Warm-start status, public (read-only) via `has_solution`. Set True only
+        # after a converged solve; reset on a structural rebuild (is_setup=False)
+        # so a remesh / adapt / mesh-mover never warm-starts off stale field
+        # data. Kept through coefficient changes (viscosity, yield softness δ, BC
+        # values, time step). See has_solution / _record_convergence_status and
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        self._has_solution = False
+
         self.Unknowns = self._Unknowns(self)
 
         self._order = 0
@@ -127,6 +135,10 @@ class SolverBaseClass(uw_object):
         self._difficulty_probe = False
         self._difficulty_max_it = None
         self._resume_abs_target = None
+        # PETSc-level instrumentation: the sub-solve work gauge, and the
+        # wall-clock deadline once guard() arms it. Created on the first solve
+        # (systems/solver_health.py) because it needs a live SNES to attach to.
+        self._instrumentation = None
 
         # Preconditioner selection — see the `preconditioner` property.
         # `_pc_option_prefix` is set by subclasses that participate in the easy
@@ -613,13 +625,28 @@ class SolverBaseClass(uw_object):
             opts[f"{prefix}pc_type"] = "mg"
             opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
             opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
-            # richardson+sor (not chebyshev): chebyshev needs eigenvalue
-            # estimates of the smoothed operator, which are fragile on the
-            # indefinite / variable-viscosity Stokes velocity block and diverge;
-            # richardson+sor is the benchmark-validated, mesh-independent choice.
-            opts[f"{prefix}mg_levels_ksp_type"] = "richardson"
+            # gmres+sor, sized for a DEEP hierarchy (the only kind worth having:
+            # a two-level cycle is a coarse-grid correction, not a V-cycle, and is
+            # not worth special-casing). Chebyshev needs eigenvalue estimates of the
+            # smoothed operator, which are fragile on the indefinite /
+            # variable-viscosity velocity block and diverge. Richardson is
+            # stationary and degrades on the NON-SYMMETRIC operator produced by the
+            # consistent-Newton tangent. Measured on the Spiegelman notch (Drucker-
+            # Prager, eta contrast 1e26) over a nested 4-level hierarchy: contraction
+            # per V-cycle rho = 0.75 (richardson) vs 0.56 (gmres) at the SAME four
+            # smoother iterations -- and the gmres margin GROWS with depth (5% at 3
+            # levels, 25% at 4), because deeper cycles apply the smoother on more
+            # coarse operators. Four iterations, not more: per unit work gmres/4
+            # (rho^(1/4) = 0.87) beats gmres/8 (0.91).
+            opts[f"{prefix}mg_levels_ksp_type"] = "gmres"
             opts[f"{prefix}mg_levels_pc_type"] = "sor"
             opts[f"{prefix}mg_levels_ksp_max_it"] = 4
+            # Run EXACTLY max_it smoother iterations: no residual-norm computation
+            # and no convergence test, so every V-cycle costs the same. A Krylov
+            # smoother makes the cycle non-stationary, which is why the velocity
+            # block is fgmres (flexible) rather than gmres -- see the fieldsplit
+            # defaults in the Stokes __init__.
+            opts[f"{prefix}mg_levels_ksp_norm_type"] = "none"
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
             # redundant+lu, not bare lu: a bare serial LU cannot factor a
             # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
@@ -650,7 +677,8 @@ class SolverBaseClass(uw_object):
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
             # Clear stale geometric-MG-only keys.
             for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
-                        "mg_levels_pc_type", "mg_coarse_pc_type",
+                        "mg_levels_pc_type", "mg_levels_ksp_norm_type",
+                        "mg_coarse_pc_type",
                         "mg_coarse_redundant_pc_type"):
                 opts.delValue(f"{prefix}{key}")
             self._pc_managed_value = "gamg"
@@ -790,6 +818,110 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
             self._needs_function_rewire = True
+            # A structural invalidation (mesh change / adaptivity / mesh-mover /
+            # explicit _force_setup) means any stored solution no longer matches
+            # the operators — drop the warm-start claim so the next solve()
+            # cold-starts rather than warming off a stale iterate. Coefficient-only
+            # updates (new viscosity, δ, BC values, time step) route through
+            # _update_constants / a direct _needs_function_rewire and keep
+            # has_solution, so continuation and time-stepping warm-start correctly.
+            self._has_solution = False
+
+    @property
+    def has_solution(self):
+        """``True`` when the solver holds a converged solution usable as a warm start.
+
+        Set ``True`` only after a solve whose SNES reported a converged reason
+        (``> 0``); ``False`` initially, after a diverged solve, and after any
+        structural rebuild (mesh change / adaptivity / mesh-mover / explicit
+        ``_force_setup`` — the ``is_setup = False`` invalidation hook). It
+        survives coefficient changes (viscosity, yield softness :math:`\\delta`,
+        boundary-condition *values*, time step) so parameter continuation and
+        time-stepping warm-start correctly.
+
+        Read-only status flag. Because a diverged solve leaves
+        ``has_solution == False``, the next :meth:`solve` automatically
+        cold-starts (Picard warm-up) rather than warming off a corrupted iterate.
+
+        See :doc:`nonlinear-solver-homotopy-warmstart` (Layer 1).
+        """
+        return self._has_solution
+
+    def _solution_is_trivially_zero(self):
+        """True when the solution field is still identically zero.
+
+        The design's *secondary* cold signal: a solver may be told to warm-start
+        (``zero_init_guess=False``) while its solution variable has never been
+        written, which is a cold start in everything but name. It matters because a
+        viscoplastic tangent is undefined there — the plastic viscosity is
+        :math:`\\tau_y / (2\\dot\\varepsilon_{II})`, so at :math:`v = 0` the
+        *residual* is finite (the soft-min carries the infinite plastic branch to
+        the viscous one) but its derivative is not, and assembling the consistent
+        tangent produces NaN.
+
+        Uses the PETSc vector norm, which is collective and therefore rank-uniform,
+        so every rank reaches the same decision.
+        """
+        u = getattr(self, "u", None)
+        if u is None:
+            return False
+        return float(u.vec.norm()) == 0.0
+
+    def _resolve_zero_init_guess(self, zero_init_guess):
+        """Resolve the tri-state ``zero_init_guess`` argument of ``solve()``.
+
+        ``None`` (the default) auto-detects: cold when the solver holds no converged
+        solution, warm when it does. Detection is safe by construction — guessing
+        *cold* when a solution was in fact available costs one extra iteration from a
+        good starting point, while the harmful direction (warming off stale field data
+        after a remesh or a diverged solve) cannot happen, because
+        :attr:`has_solution` is cleared by both.
+
+        ``True`` forces a fresh start (discard any solution); ``False`` insists on
+        warming from the current field values.
+        """
+        if zero_init_guess is None:
+            return not self.has_solution
+        return bool(zero_init_guess)
+
+    def _solve_yield_homotopy(self, homotopy_options=None, verbose=False,
+                              solve_kwargs=None):
+        """Run ``solve(homotopy=True)``: a multi-solve δ-continuation on the yield law.
+
+        The constitutive model advertises the homotopy (``supports_yield_homotopy``)
+        and describes it (``_yield_homotopy_control()``: how to set δ, and which
+        tangent to pair with it); the continuation driver marches δ from a large,
+        benign value down to the sharp yield surface, warm-starting each step from the
+        previous converged solution. See
+        :func:`~underworld3.systems.yield_continuation.yield_continuation` and
+        :doc:`nonlinear-solver-homotopy-warmstart` (Layer 2).
+        """
+        cm = self.constitutive_model
+        if cm is None or not getattr(cm, "supports_yield_homotopy", False):
+            raise TypeError(
+                f"solve(homotopy=True) needs a constitutive model with a yield law to "
+                f"sharpen, but {type(cm).__name__ if cm is not None else None} does not "
+                f"advertise supports_yield_homotopy. Use a viscoplastic (or VEP) model, "
+                f"or solve without homotopy."
+            )
+        from underworld3.systems.yield_continuation import yield_continuation
+        # The march's own options win: an explicit homotopy_options["verbose"] is a
+        # deliberate choice about the march, distinct from the solve's verbosity.
+        options = dict(homotopy_options or {})
+        options.setdefault("verbose", verbose)
+        return yield_continuation(self, solve_kwargs=solve_kwargs, **options)
+
+    def _record_convergence_status(self, converged=None):
+        """Refresh :attr:`has_solution` from the just-completed solve.
+
+        Called at the end of every ``solve()``. With ``converged`` unset the
+        status is read from the SNES converged reason (``> 0`` ⇒ converged);
+        the rotated free-slip path, which runs its own KSP loop rather than
+        driving ``self.snes``, passes the flag from its result dict.
+        """
+        if converged is None:
+            converged = self.snes is not None and self.snes.getConvergedReason() > 0
+        self._has_solution = bool(converged)
 
     class _Unknowns:
         """
@@ -924,6 +1056,10 @@ class SolverBaseClass(uw_object):
         self._resume_abs_target = None
 
         if self.snes is not None:
+            # Drop the instrumentation's references to this SNES's KSP hierarchy first,
+            # or destroy() only decrements and the old hierarchy stays resident.
+            if getattr(self, "_instrumentation", None) is not None:
+                self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
 
@@ -1008,6 +1144,13 @@ class SolverBaseClass(uw_object):
         reduction = (fnorm / fnorm0) if (fnorm0 not in (None, 0.0)) else None
         rho = contraction(hist)
 
+        # Sub-solve work, and whether a wall-clock guard cut this solve short. Absent
+        # for a solver whose instrumentation has never attached (no solve yet).
+        instrumentation = self._instrumentation
+        sub = instrumentation.sub_reports() if instrumentation is not None else {}
+        deadline_expired = (instrumentation is not None
+                            and instrumentation.deadline_expired)
+
         report = SolveReport(
             reason=reason,
             reason_str=reason_string(reason),
@@ -1021,6 +1164,8 @@ class SolverBaseClass(uw_object):
             fev=fev,
             history=hist,
             bounded=bool(bounded),
+            sub=sub,
+            deadline_expired=deadline_expired,
         )
         self._solve_report = report
         self._solve_history.append(report)
@@ -1068,6 +1213,79 @@ class SolverBaseClass(uw_object):
         self._solve_report = report
         self._solve_history.append(report)
         return report
+
+    def guard(self, *, wall_per_step):
+        r"""Bound the wall-clock time of each Newton step. Opt-in; changes termination.
+
+        A hard nonlinear solve can grind for hours *inside a single Newton step*, and no
+        iteration cap can stop it: the grind happens within one outer Krylov iteration,
+        so the counter the cap watches never advances. Nor can a Python timer stop it —
+        Python runs signal handlers only between bytecodes, and control is inside PETSc
+        the whole time. The deadline therefore lives in PETSc's own convergence tests,
+        where it is checked between the *inner* iterations of the fieldsplit blocks.
+
+        When the budget runs out the solve stops with ``DIVERGED_LINEAR_SOLVE`` and
+        ``solve_report.deadline_expired`` set, leaving the current iterate in the fields.
+        It is a report, not an error: a continuation driver reads it and steps back.
+
+        Parameters
+        ----------
+        wall_per_step : float
+            Seconds of wall clock allowed per Newton step. The clock restarts at the
+            beginning of every step, so a solve taking ``n`` steps may run for up to
+            roughly ``n * wall_per_step`` seconds. Once the deadline fires it stays
+            fired for the rest of that ``solve()`` call, so a Picard-to-Newton
+            continuation or a warm-start retry cannot quietly buy itself a fresh
+            budget.
+
+        Notes
+        -----
+        The budget is enforced at inner-iteration granularity, so the overrun beyond it
+        is at most the cost of one multigrid cycle. In parallel the expiry decision is
+        reduced over the solver's communicator, because PETSc deadlocks if convergence
+        tests return different verdicts on different ranks.
+
+        Not available with rotated free-slip BCs: that path runs its own Krylov loop
+        outside ``self.snes`` (``utilities/rotated_bc.py``), which the deadline cannot
+        reach — so arming a guard there would look like protection and provide none.
+
+        On a solver's FIRST solve the fieldsplit blocks do not exist until PETSc has set
+        up the preconditioner, part-way through that solve, so the first preconditioner
+        application runs unguarded. Every solve after that is fully covered. A driver
+        that needs the first one covered should do one cheap solve before arming.
+
+        Examples
+        --------
+        >>> stokes.guard(wall_per_step=150.0)
+        >>> stokes.solve()
+        >>> if stokes.solve_report.deadline_expired:
+        ...     ...                      # too hard at these parameters; back off
+        >>> stokes.unguard()
+
+        See Also
+        --------
+        unguard : remove the deadline.
+        estimate_difficulty : bound the *work* (an iteration count) instead.
+        """
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            raise NotImplementedError(
+                "guard() is not available with rotated free-slip BCs: that path runs "
+                "its own Krylov loop outside self.snes (utilities/rotated_bc.py), so "
+                "the deadline cannot reach it and the guard would be silently inert."
+            )
+        self._solver_instrumentation().arm(wall_per_step)
+
+    def unguard(self):
+        """Remove the wall-clock deadline set by :meth:`guard`, restoring PETSc defaults."""
+        if self._instrumentation is not None:
+            self._instrumentation.disarm()
+
+    def _solver_instrumentation(self):
+        """The solver's PETSc instrumentation, created on first use."""
+        if self._instrumentation is None:
+            from underworld3.systems.solver_health import SolverInstrumentation
+            self._instrumentation = SolverInstrumentation()
+        return self._instrumentation
 
     def estimate_difficulty(self, max_nl_its, *, warm=True, **solve_kwargs):
         """Run a bounded, resumable solve to *estimate solver difficulty* and return its report.
@@ -1322,22 +1540,25 @@ class SolverBaseClass(uw_object):
 
         return None
 
-    # SNES convergence reasons (PETSc documentation): code -> (NAME, explanation).
-    # Single source for both get_convergence_diagnostics (formats
-    # "NAME - explanation") and _warn_on_divergence (uses NAME only).
+    # SNES convergence reasons: code -> (NAME, explanation). The NAMES are the same
+    # table as solve_report.REASON_STRINGS, kept here with an explanation string for
+    # get_convergence_diagnostics (formats "NAME - explanation") and _warn_on_divergence
+    # (uses NAME only). Both copies are pinned to petsc4py's enum by test_1055 — the
+    # positive codes here were shifted by one until 2026-07 (there is no code 1, and a
+    # step-norm stop was reported as CONVERGED_ITS).
     _convergence_reasons = {
         # Positive reasons = converged
-        1: ("CONVERGED_FNORM_ABS", "||F|| < atol"),
-        2: ("CONVERGED_FNORM_RELATIVE", "||F|| < rtol*||F_initial||"),
-        3: ("CONVERGED_SNORM_RELATIVE", "||x|| < stol"),
-        4: ("CONVERGED_ITS", "Maximum iterations reached"),
+        2: ("CONVERGED_FNORM_ABS", "||F|| < atol"),
+        3: ("CONVERGED_FNORM_RELATIVE", "||F|| < rtol*||F_initial||"),
+        4: ("CONVERGED_SNORM_RELATIVE", "||x|| < stol"),
+        5: ("CONVERGED_ITS", "Maximum iterations reached"),
         # Zero = still iterating (shouldn't see after solve)
-        0: ("ITERATING", "Still iterating (unexpected after solve)"),
+        0: ("CONVERGED_ITERATING", "Still iterating (unexpected after solve)"),
         # Negative reasons = diverged
         -1: ("DIVERGED_FUNCTION_DOMAIN", "Function domain error"),
         -2: ("DIVERGED_FUNCTION_COUNT", "Too many function evaluations"),
         -3: ("DIVERGED_LINEAR_SOLVE", "Linear solver failed"),
-        -4: ("DIVERGED_FNORM_NAN", "||F|| is Not-a-Number"),
+        -4: ("DIVERGED_FUNCTION_NANORINF", "||F|| is Not-a-Number or infinite"),
         -5: ("DIVERGED_MAX_IT", "Maximum iterations exceeded"),
         -6: ("DIVERGED_LINE_SEARCH", "Line search failed"),
         -7: ("DIVERGED_INNER", "Inner solve failed"),
@@ -1345,6 +1566,8 @@ class SolverBaseClass(uw_object):
         -9: ("DIVERGED_DTOL", "||F|| increased by divtol"),
         -10: ("DIVERGED_JACOBIAN_DOMAIN", "Jacobian calculation failed"),
         -11: ("DIVERGED_TR_DELTA", "Trust region delta too small"),
+        -13: ("DIVERGED_OBJECTIVE_DOMAIN", "Objective function domain error"),
+        -14: ("DIVERGED_OBJECTIVE_NANORINF", "Objective is Not-a-Number or infinite"),
     }
 
     def _warn_on_divergence(self, phase="solve"):
@@ -1421,6 +1644,12 @@ class SolverBaseClass(uw_object):
             self.snes.setConvergenceHistory(reset=True)
         except Exception:
             pass
+
+        # Attach the sub-solve gauge (and the wall-clock deadline, if guard() armed
+        # one) to the CURRENT SNES and clear its per-solve counters. Here rather than
+        # in _build because a rebuilt solver gets a new SNES and everything attached to
+        # the old one is dropped; every solve funnels through this method.
+        self._solver_instrumentation().begin_solve(self.snes)
 
         # Single control point for the bounded/resumable difficulty solve. Runs AFTER
         # every per-solve setFromOptions (base and Stokes), so overrides here win. Gated
@@ -1591,6 +1820,12 @@ class SolverBaseClass(uw_object):
         if getattr(self, "snes", None) is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver SNES", flush=True)
+            # Instrumentation holds petsc4py references to this SNES's KSP and its
+            # fieldsplit blocks, which reference-count the PC and the whole multigrid
+            # hierarchy. Drop them BEFORE the destroy or the old hierarchy survives
+            # alongside the new one -- the leak BUGFIX(#157) above exists to prevent.
+            if getattr(self, "_instrumentation", None) is not None:
+                self._instrumentation.release()
             self.snes.destroy()
             self.snes = None
 
@@ -2607,7 +2842,16 @@ class SolverBaseClass(uw_object):
         traces raise explicitly. Reaction and mass assembly are partition-independent.
         For vector fluxes, supply an analytic ``normal`` when strict partition
         independence of the normal projection is required; geometric facet-normal
-        averaging at partition seams has a small pre-existing partition sensitivity."""
+        averaging at partition seams has a small pre-existing partition sensitivity.
+
+        .. warning::
+           On CURVED boundaries, P2 **vertex** values converge only slowly: the P2
+           vertex basis has zero surface mean, so vertex reactions carry only the
+           O(h) facet-geometry error, which the recovery faithfully reconstructs
+           (measured: 93%→55% error under one refinement, while midpoints go
+           2.8%→0.7%). Pointwise consumers on curved boundaries should use
+           **edge-midpoint values** or integral/fitted quantities, never vertex
+           values (issue #414). Flat boundaries are exact up to solver tolerance."""
         from underworld3.utilities.boundary_flux import boundary_flux as _bf
         return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
 
@@ -3337,7 +3581,7 @@ class SNES_Scalar(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose:         bool=False,
               debug:           bool=False,
@@ -3353,10 +3597,15 @@ class SNES_Scalar(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in the solution variable(s) as the initial guess, which can
-            improve convergence for time-stepping or continuation methods.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up. Useful after
             changing boundary conditions or constitutive parameters.
@@ -3404,6 +3653,7 @@ class SNES_Scalar(SolverBaseClass):
         snes : Access to underlying PETSc SNES object for advanced control.
         """
 
+
         import petsc4py
 
 
@@ -3413,6 +3663,11 @@ class SNES_Scalar(SolverBaseClass):
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -3481,6 +3736,8 @@ class SNES_Scalar(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -4399,7 +4656,7 @@ class SNES_Vector(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose=False,
               debug=False,
@@ -4414,9 +4671,15 @@ class SNES_Vector(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in ``self.u`` as the initial guess.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up.
         verbose : bool, default=False
@@ -4443,12 +4706,18 @@ class SNES_Vector(SolverBaseClass):
         u : The solution vector field variable.
         """
 
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -4514,6 +4783,8 @@ class SNES_Vector(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -5142,7 +5413,7 @@ class SNES_MultiComponent(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               _force_setup:    bool = False,
               verbose=False,
               debug=False,
@@ -5161,12 +5432,18 @@ class SNES_MultiComponent(SolverBaseClass):
             start up to this many times. 0 preserves legacy behaviour.
         """
 
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -5206,6 +5483,8 @@ class SNES_MultiComponent(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -5687,7 +5966,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         triangles, and the required consistent surface-mass solve for 3D P2 triangles.
         Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
         mathematically valid. Three-dimensional recovery currently supports triangular
-        P1/P2 traces only."""
+        P1/P2 traces only.
+
+        .. warning::
+           On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
+           only slowly (the vertex basis has zero surface mean, so vertex reactions
+           carry only the O(h) facet-geometry error); edge-midpoint values are
+           superconvergent. Pointwise consumers on curved boundaries should use
+           midpoint or integral/fitted quantities (issue #414)."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
                 "boundary_normal_traction requires a completed rotated-free-slip solve.")
@@ -5707,7 +5993,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
         ``mass="auto"`` selects lumped recovery where valid and the consistent
         surface-mass solve for 3D P2 triangles. Requires a prior
-        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
+
+        .. warning::
+           On CURVED boundaries (annulus/spherical free surfaces), the P2 VERTEX
+           values written into ``field`` converge only slowly; edge-midpoint values
+           are superconvergent. Downstream pointwise use of curved-boundary
+           topography should rely on midpoint/fitted quantities (issue #414)."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
                 "dynamic_topography requires a completed rotated-free-slip solve.")
@@ -7917,6 +8209,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Constrained (Dirichlet) DOFs are ABSENT from the global vector, so the
+            # round trip above leaves them ZERO in xlocal: insert the essential
+            # values before integrating, exactly as _assemble_volume_reaction does,
+            # or the residual is garbage wherever g != 0 (issues #407/#411 — this
+            # duplicated variant missed the #407 fix).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             if cell_indices is None:
                 CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
             else:
@@ -8010,6 +8309,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         cdef PetscDS ds
         cdef PetscWeakForm wf
         cdef DMLabel c_label
+        cdef PetscReal residual_time = 0.0
 
         self._build(verbose, False, None)
 
@@ -8028,6 +8328,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             t_nd = self._nondimensional_time(time)
             _time_dm_boundary_residual = self.dm
             UW_DMSetTime(_time_dm_boundary_residual.dm, t_nd)
+            residual_time = <PetscReal>t_nd
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -8052,6 +8353,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Same insert as _assemble_volume_reaction: constrained DOFs are absent
+            # from the global vector, so without this the boundary residual is
+            # evaluated against zeroed essential values wherever g != 0
+            # (issues #407/#411 — this duplicated variant missed the #407 fix).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             CHKERRQ(DMGetDS(dm.dm, &ds))
             CHKERRQ(UW_PetscDSGetBoundaryWeakForm(
                 ds, <PetscInt>boundary_bc.PETScID, &wf,
@@ -8239,14 +8546,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               picard: int = 0,
               verbose=False,
               debug=False,
               debug_name=None,
               _force_setup: bool =False,
               time=None,
-              divergence_retries: int = 0, ):
+              divergence_retries: int = 0,
+              homotopy: bool = False,
+              homotopy_options: dict = None, ):
         """
         Solve the Stokes system for velocity and pressure.
 
@@ -8256,11 +8565,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use current
-            values in ``self.u`` (velocity) and ``self.p`` (pressure) as
-            initial guess. Using False can improve convergence for
-            time-stepping or parameter continuation.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         picard : int, default=0
             Number of Picard iterations before switching to Newton.
             Picard iterations use a simplified Jacobian and can help
@@ -8282,11 +8595,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
             yield-surface kink divergences. 0 preserves legacy behaviour.
+        homotopy : bool, default=False
+            Solve a yielding (viscoplastic) model by a **yield homotopy** instead of
+            a single solve: the constitutive model is put in its smooth,
+            δ-parameterised yield mode and δ is marched down to the sharp yield
+            surface as a sequence of warm-started solves. This is the robust route
+            for a hard Drucker-Prager problem, which does not converge from a cold
+            start on the sharp surface. Requires a model with
+            ``supports_yield_homotopy`` (raises otherwise). Returns the march
+            summary rather than ``None``.
+        homotopy_options : dict, optional
+            March settings passed to
+            :func:`~underworld3.systems.yield_continuation.yield_continuation` —
+            ``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
+            ``retries``. All are defaulted; tuning them is optional.
 
         Returns
         -------
-        None
-            Solution stored in ``self.u`` (velocity) and ``self.p`` (pressure).
+        None or dict
+            ``None`` normally — the solution is stored in ``self.u`` (velocity) and
+            ``self.p`` (pressure). With ``homotopy=True``, the march summary
+            (``settled_delta``, ``reason``, ``steps``, ``reached_dmin``,
+            ``converged``).
 
         Examples
         --------
@@ -8303,6 +8633,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ...     # Update boundary conditions, material properties...
         ...     stokes.solve(zero_init_guess=False)
 
+        >>> # Hard viscoplastic (Drucker-Prager) yield: march the yield homotopy
+        >>> report = stokes.solve(homotopy=True)
+        >>> report["settled_delta"]        # smallest yield softness reached
+
         Notes
         -----
         This is a **collective operation** - all MPI ranks must call it.
@@ -8318,12 +8652,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         constitutive_model : Viscosity and stress definitions.
         """
 
+
+        if homotopy:
+            # The march runs a SEQUENCE of ordinary solves at successively sharper
+            # yield surfaces; each one re-enters this method with homotopy=False.
+            return self._solve_yield_homotopy(homotopy_options, verbose=verbose)
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -8348,6 +8693,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
             self._update_constants()
 
+            # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
+            # Re-check here: this path never reaches the instrumentation, so an armed
+            # guard would be silently inert -- the exact state guard() exists to refuse.
+            if (getattr(self, "_instrumentation", None) is not None
+                    and self._instrumentation.armed):
+                raise NotImplementedError(
+                    "a wall-clock guard is armed but this solve takes the rotated "
+                    "free-slip path, which runs its own Krylov loop outside self.snes "
+                    "and cannot be bounded by it. Call unguard() first."
+                )
             # ONE path for linear and nonlinear models: the manual outer
             # Newton/Picard loop that rotates F(u), J(u) and the strong
             # v_n = u_n constraint every iteration. It honours zero_init_guess
@@ -8362,7 +8717,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 zero_init_guess=zero_init_guess, picard=picard)
             # This path solves via ksp.solve on the rotated operator (not self.snes),
             # so give it a report from the rotated result rather than leaving a stale one.
-            self._capture_rotated_report(self._rotated_freeslip_info)
+            _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
+            # The warm-start flag must follow the rotated solve's own verdict — the SNES
+            # was never run, so the generic reader would latch a stale reason.
+            self._record_convergence_status(converged=_rotated_report.converged)
             return
 
         if time is not None:
@@ -8414,6 +8772,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         else:
             self.atol = 0.0
+
+        # Automatic cold-start warm-up (Layer 1): a single Picard (frozen-
+        # coefficient) step moves a cold guess into the Newton basin — it is
+        # defect-correction iteration 1, contractive and cheap. The default
+        # (frozen) tangent path is left bit-identical, and an explicit Picard count
+        # is honoured as given.
+        #
+        # This is a DESIGN REQUIREMENT, not an optimisation: under the consistent
+        # tangent a viscoplastic Jacobian is NaN at zero strain rate (the residual
+        # survives, its derivative does not), so the machinery has to make that
+        # state unreachable. Both routes to it are covered — an explicit cold start,
+        # and a nominally warm one whose solution has never been written. The
+        # "continuation" tangent needs no help: it opens on a Picard stage
+        # (alpha = 0) by construction. See
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        if (picard == 0 and self.consistent_jacobian is True
+                and (zero_init_guess or self._solution_is_trivially_zero())):
+            picard = 1
 
         if verbose and uw.mpi.rank == 0:
             print(f"SNES solve - picard = {picard}", flush=True)
@@ -8507,6 +8883,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 

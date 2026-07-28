@@ -11,22 +11,29 @@ See ``underworld3.cython.petsc_generic_snes_solvers.SolverBaseClass``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Mapping, Optional, Tuple
 
-# PETSc SNESConvergedReason codes -> short names. Mirrors the compact map in
-# SolverBaseClass._convergence_reasons; duplicated here so this module imports without the
-# Cython solver extension present.
+if TYPE_CHECKING:                       # keeps this module importable on its own
+    from underworld3.systems.solver_health import SubSolveReport
+
+# PETSc SNESConvergedReason codes -> short names. Duplicated here (rather than read from
+# petsc4py) so this module imports without the Cython solver extension present -- which
+# means it can drift, and it HAD: every positive code was shifted by one, so a solve that
+# stopped on the STEP norm (the weakest criterion, and what a stalled plastic solve
+# reports) was labelled CONVERGED_ITS, and a genuine residual convergence was labelled
+# CONVERGED_SNORM_RELATIVE. There is no code 1. test_1055 now checks this table against
+# petsc4py's enum, which is the only thing that can keep a hand-copy honest.
 REASON_STRINGS = {
-    1: "CONVERGED_FNORM_ABS",
-    2: "CONVERGED_FNORM_RELATIVE",
-    3: "CONVERGED_SNORM_RELATIVE",
-    4: "CONVERGED_ITS",
-    0: "ITERATING",
+    0: "CONVERGED_ITERATING",
+    2: "CONVERGED_FNORM_ABS",
+    3: "CONVERGED_FNORM_RELATIVE",
+    4: "CONVERGED_SNORM_RELATIVE",
+    5: "CONVERGED_ITS",
     -1: "DIVERGED_FUNCTION_DOMAIN",
     -2: "DIVERGED_FUNCTION_COUNT",
     -3: "DIVERGED_LINEAR_SOLVE",
-    -4: "DIVERGED_FNORM_NAN",
+    -4: "DIVERGED_FUNCTION_NANORINF",
     -5: "DIVERGED_MAX_IT",
     -6: "DIVERGED_LINE_SEARCH",
     -7: "DIVERGED_INNER",
@@ -34,6 +41,8 @@ REASON_STRINGS = {
     -9: "DIVERGED_DTOL",
     -10: "DIVERGED_JACOBIAN_DOMAIN",
     -11: "DIVERGED_TR_DELTA",
+    -13: "DIVERGED_OBJECTIVE_DOMAIN",
+    -14: "DIVERGED_OBJECTIVE_NANORINF",
 }
 
 
@@ -115,6 +124,17 @@ class SolveReport:
     bounded
         ``True`` when this report came from an iteration-capped (``estimate_difficulty``)
         solve — i.e. work was truncated, not a genuine failure.
+    sub
+        Work done by each fieldsplit sub-solve, keyed by block name (``"velocity"``,
+        ``"pressure"`` for Stokes). ``ksp_its`` above counts only the OUTER Krylov
+        iterations, which Eisenstat–Walker collapses to about one per Newton step — the
+        real cost of a Stokes solve is ``sub["velocity"].its`` multigrid cycles. Empty
+        for solvers with no fieldsplit preconditioner. See
+        ``underworld3.systems.solver_health``.
+    deadline_expired
+        ``True`` when a wall-clock guard armed with ``solver.guard(...)`` cut this solve
+        short. Distinguishes "the budget ran out" from a genuine divergence: both report
+        ``DIVERGED_LINEAR_SOLVE``.
     """
 
     reason: int
@@ -129,12 +149,17 @@ class SolveReport:
     fev: Optional[int] = None
     history: Tuple[float, ...] = ()
     bounded: bool = False
+    sub: Mapping[str, "SubSolveReport"] = field(default_factory=dict)
+    deadline_expired: bool = False
 
     def __str__(self) -> str:
         rho = f"{self.rho:.3f}" if self.rho is not None else "n/a"
+        sub = "".join(f", {r.name}={r.its}" for r in self.sub.values())
         return (
             f"SolveReport({self.reason_str}, nl={self.nl_its}, ksp={self.ksp_its}, "
             f"|F|={self.fnorm:.3e}, rho={rho}"
+            + sub
             + (", bounded" if self.bounded else "")
+            + (", deadline" if self.deadline_expired else "")
             + ")"
         )

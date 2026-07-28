@@ -79,8 +79,15 @@ from .solvers import SNES_NavierStokes as NavierStokes
 
 from .free_surface import FreeSurface
 
+# What solve_report.sub holds — one entry per fieldsplit block (see solver_health).
+from .solver_health import SubSolveReport
+
 # are the Lagrangian implementations actually distinct in reality ?
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
+
+# δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
+from .yield_continuation import yield_continuation, YieldHomotopyControl
+from .solve_report import SolveReport

@@ -695,7 +695,7 @@ class SNES_Darcy(SNES_Scalar):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         verbose: bool = False,
         _force_setup: bool = False,
@@ -708,7 +708,9 @@ class SNES_Darcy(SNES_Scalar):
         Parameters
         ----------
         zero_init_guess : bool, optional
-            If True (default), start from zero initial guess.
+            Cold or warm start. The default (``None``) auto-detects from
+            :attr:`has_solution`; ``True`` forces a fresh start, ``False`` insists
+            on warming from the current field values.
             If False, use current field values as initial guess.
         timestep : float, optional
             Timestep value for inertial terms (if applicable).
@@ -940,7 +942,7 @@ class SNES_TransientDarcy(SNES_Darcy):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep=None,
         _force_setup: bool = False,
         verbose=False,
@@ -952,7 +954,9 @@ class SNES_TransientDarcy(SNES_Darcy):
         Parameters
         ----------
         zero_init_guess : bool, optional
-            Start from zero initial guess (default True).
+            Cold or warm start. The default (``None``) auto-detects from
+            :attr:`has_solution`; ``True`` forces a fresh start, ``False`` insists
+            on warming from the current field values.
         timestep : float, optional
             Timestep size. Updates ``self.delta_t`` if provided.
         _force_setup : bool, optional
@@ -1409,7 +1413,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @memprobe.instrument("Stokes.solve")
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         _force_setup: bool = False,
         verbose: bool = False,
@@ -1419,6 +1423,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         order=None,
         picard: int = 0,
         divergence_retries: int = 0,
+        homotopy: bool = False,
+        homotopy_options: dict = None,
     ):
         """Solve the Stokes system, with optional viscoelastic stress history.
 
@@ -1428,8 +1434,15 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         Parameters
         ----------
-        zero_init_guess : bool
-            If True, use zero initial guess. Otherwise use current field values.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         timestep : float, optional
             Advection timestep. Required when stress history is active.
         _force_setup : bool
@@ -1453,7 +1466,46 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             kinks) to step off a bad Newton iterate. ``0`` preserves legacy
             behaviour (divergence is terminal). Typical useful value is 1.
             Only applies in the VE/VEP branch (``DFDt is not None``).
+        homotopy : bool, default=False
+            Solve a yielding model by marching the **yield homotopy** — the model's
+            δ-parameterised yield law is sharpened toward the exact ``Min`` over a
+            sequence of warm-started solves — instead of attempting the sharp surface
+            in one go. Requires ``constitutive_model.supports_yield_homotopy``.
+            Returns the march summary instead of ``None``.
+        homotopy_options : dict, optional
+            March settings for
+            :func:`~underworld3.systems.yield_continuation.yield_continuation`
+            (``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
+            ``retries``). All defaulted.
         """
+
+        if homotopy:
+            # Each δ-step re-enters this method with homotopy=False, so per-solve
+            # arguments are forwarded to EVERY step of the march rather than dropped.
+            inner = {}
+            for name, value in (("timestep", timestep), ("evalf", evalf),
+                                ("order", order), ("debug", debug),
+                                ("debug_name", debug_name),
+                                ("divergence_retries", divergence_retries)):
+                if value:
+                    inner[name] = value
+            # The march owns these: it sets the cold/warm decision per step (Layer 1)
+            # and its own per-step iteration budget, so accepting a contradicting
+            # value silently would be worse than saying so.
+            if zero_init_guess is not None:
+                raise ValueError(
+                    "solve(homotopy=True) chooses cold-vs-warm for each step of the "
+                    "march itself; do not also pass zero_init_guess."
+                )
+            if picard:
+                raise ValueError(
+                    "solve(homotopy=True) manages its own warm-up; do not also pass "
+                    "picard. Use homotopy_options={'entry_maxit': ...} to size the "
+                    "first solve."
+                )
+            return self._solve_yield_homotopy(
+                homotopy_options, verbose=verbose, solve_kwargs=inner
+            )
 
         has_stress_history = self.Unknowns.DFDt is not None
 
@@ -4122,7 +4174,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         _force_setup: bool = False,
         _evalf=False,
@@ -4434,7 +4486,7 @@ class SNES_Diffusion(SNES_Scalar):
     @timing.routine_timer_decorator
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         evalf: bool = False,
         _force_setup: bool = False,
@@ -4853,7 +4905,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     @memprobe.instrument("NavierStokes.solve")
     def solve(
         self,
-        zero_init_guess: bool = True,
+        zero_init_guess: bool = None,
         timestep: float = None,
         _force_setup: bool = False,
         verbose=False,

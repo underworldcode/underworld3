@@ -152,6 +152,7 @@ design/mesh-adaptation-formulation
 design/LAYER2_SBR_ADAPT_ON_TOP
 design/NVB_GRADED_ADAPT
 design/MULTIGRID_MINIMAL_CONTROL_2026-07
+design/solver-wall-clock-guard
 design/ARCHITECTURE_ANALYSIS
 design/MATHEMATICAL_MIXIN_DESIGN
 design/COORDINATE_MIGRATION_GUIDE
@@ -161,6 +162,7 @@ design/SWARM_MODERNIZATION_DESIGN_2026-07
 design/PROJECTED_NORMALS_API_DESIGN
 design/TURBULENCE_MODEL_DESIGN
 design/declined-coord-units-proposal
+design/nonlinear-solver-homotopy-warmstart
 ```
 
 ```{toctree}
