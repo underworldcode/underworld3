@@ -14,14 +14,14 @@ evaluates its own coordinate set and receives its own output arrays.
 
 Unlocated points
 ----------------
-Output arrays are initialized to ``NaN``.  PETSc's ``DMFieldEvaluate_DS``
-skips writing to slots whose cell index is negative, so unlocated points
-retain their ``NaN`` initial value.  Callers detect unlocated points with
-``np.isnan()``.
+Unlocatable points may raise ``PETSc error 62`` or return ``NaN``,
+depending on batching, partition ownership, and the internal
+``DMLocatePoints`` path.  Points that fail the cell-interior test
+(error path: ``dmfieldds.c:261``) propagate as a loud error; points
+absent from the point-location SF graph return ``NaN``.
 
-  **Note**: The NaN-survival behavior depends on PETSc's implementation
-  of ``DMFieldEvaluate_DS`` (``continue`` on negative cell index).  The
-  test ``test_unlocated_points_nan`` guards against regressions.
+Outputs are initialised to ``NaN``, so slots that DMFieldEvaluate
+leaves unwritten (the NaN path above) are detectable with ``np.isnan()``.
 """
 
 import numpy as np

@@ -69,13 +69,18 @@ def dmfield_evaluate(var, coords, gradient=True, hessian=False):
     **Parallel** — ``DMLocatePoints`` (called internally by
     ``DMFieldEvaluate``) is COLLECTIVE on the mesh DM's communicator.
     **All ranks must call this function**, even with zero local points.
-    Results are local to each rank and must be gathered explicitly if
-    a global result is needed.
+    Each point in the query set must lie in the **calling rank's local
+    subdomain** — a point owned by another rank may give ``NaN`` or
+    PETSc error 62.  Results are local to each rank and must be gathered
+    explicitly if a global result is needed.
 
-    **Unlocated points** — Points outside the domain, or that the mesh
-    cannot locate, are returned as ``NaN`` in all output arrays.  Use
-    ``uw.function.evaluate`` if you need RBF-interpolated fallback values
-    at domain boundaries.
+    **Unlocated points** — Points that ``DMLocatePoints`` cannot place
+    in any cell may return ``NaN`` or raise PETSc error 62 (the outcome
+    depends on batching and whether the point enters the location-hash
+    candidate set but fails the interior test).  Pre-filter points with
+    ``mesh.points_in_domain()`` or catch the error.  Use
+    ``uw.function.evaluate`` for RBF-interpolated fallback values at
+    domain boundaries.
 
     **DMField lifecycle** — A fresh DMField is created and destroyed on
     each call.  The overhead (~0.5 us) is negligible vs. evaluation cost
