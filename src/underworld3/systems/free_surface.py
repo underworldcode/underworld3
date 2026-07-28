@@ -960,7 +960,15 @@ class FreeSurface:
         u_tilde = self._demean(increment / dt)
         self._un_target.array[...] = 0.0
         self._un_target.array[self._un_target_rows, 0, 0] = u_tilde
-        self.consistent.solve(zero_init_guess=True)
+        # Warm-start from the free solve: the consistent solution IS the free
+        # solution with the (small) material-boundary datum imposed, and the free
+        # solve has already converged this step. Starting there keeps a power-law
+        # tangent at physical strain rates — a cold start puts it at the
+        # regularisation floor, where the Newton line search stalls at O(0.1)
+        # relative residual (measured, power-law annulus acceptance run).
+        self.consistent.u.array[...] = self.free.u.array
+        self.consistent.p.array[...] = self.free.p.array
+        self.consistent.solve(zero_init_guess=False)
 
     def _conserve_composition(self):
         r"""Hold :math:`\int` (conserve integrand) fixed by a uniform shift of the

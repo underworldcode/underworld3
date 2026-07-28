@@ -654,7 +654,24 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         _zero_rows_local(Fh, normal_rows)
         return Fh
 
+    # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).
+    # A warm start's own initial residual is small, and rtol relative to it
+    # demands ever-more absolute accuracy the better the guess (the warm-start
+    # rtol trap: the FS time loop stalled at rel~2e-3 of its warm start while
+    # being far below tolerance on the physical scale). The rest-state residual
+    # is the problem's intrinsic forcing scale; a cold start's r0 IS that scale,
+    # so nothing changes there.
+    fnorm_rest = None
+    if not zero_init_guess:
+        z = dm.getGlobalVec()
+        z.set(0.0)
+        Fz = rotated_residual(z)
+        fnorm_rest = Fz.norm()
+        Fz.destroy()
+        dm.restoreGlobalVec(z)
+
     r0 = None
+    ref = None
     last_reason = 0
     iters = 0
     converged = False
@@ -664,12 +681,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         rnorm = Fhat.norm()
         if r0 is None:
             r0 = rnorm
+            ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
         if verbose:
             mpi.pprint(f"[rotated_bc] nonlinear iter {iters:2d}  |F̂|={rnorm:.6e}  "
-                       f"rel={rnorm/(r0+1e-300):.3e}  [{phase}]")
-        # residual convergence (relative to the initial residual, plus an absolute
+                       f"rel={rnorm/(ref+1e-300):.3e}  [{phase}]")
+        # residual convergence (relative to the reference scale, plus an absolute
         # floor so an already-converged warm start does not chase machine noise).
-        if rnorm <= rtol * r0 + atol:
+        if rnorm <= rtol * ref + atol:
             converged = True
             Fhat.destroy()
             break
@@ -742,25 +760,18 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # level). ‖u‖=0 on a cold start ⇒ this never fires prematurely (d is large).
         # A tiny step alone does NOT prove convergence — a stiff tangent (power-law
         # at the regularisation floor) also produces tiny increments at a large
-        # residual — so the exit is VERIFIED against the problem's intrinsic scale
-        # ‖F̂(0)‖: a warm start at the solution passes (its residual sits at the
-        # cold chain's converged level); a stagnating crawl does not. One extra
-        # residual evaluation, paid only on this rare path. On verification
+        # residual — so the exit is VERIFIED against the reference scale (which
+        # includes the rest-state residual ‖F̂(0)‖ for warm starts): a warm start
+        # at the solution passes; a stagnating crawl does not. On verification
         # failure the tiny step goes through the NORMAL line search instead: if it
         # still improves, the crawl proceeds (bounded by max_it); if not, the
         # stall exit ends the loop honestly.
         step_converged = d.norm() <= stol * (u.norm() + 1e-30)
         if step_converged:
-            z = dm.getGlobalVec()
-            z.set(0.0)
-            F0hat = rotated_residual(z)
-            fnorm0 = F0hat.norm()
-            F0hat.destroy()
-            dm.restoreGlobalVec(z)
-            step_converged = rnorm <= rtol * fnorm0 + atol
+            step_converged = rnorm <= rtol * ref + atol
             if not step_converged:
                 mpi.pprint(f"[rotated_bc] step-norm at rel |F̂| = "
-                           f"{rnorm / (fnorm0 + 1e-300):.2e} of the rest-state "
+                           f"{rnorm / (ref + 1e-300):.2e} of the reference "
                            f"residual — stagnation-or-crawl, continuing to iterate.")
         improved = False
         if lift_datum and iters == 0:
@@ -801,10 +812,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
     # on divergence — so an unconverged iterate left in the fields is not silent.
     if not converged:
-        rel = (rnorm / (r0 + 1e-300)) if r0 is not None else float("nan")
+        rel = (rnorm / (ref + 1e-300)) if ref is not None else float("nan")
         mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
-                   f"in {newton_its} iterations (rel |F̂| = {rel:.2e}); the fields hold "
-                   f"the last (unconverged) iterate.")
+                   f"in {newton_its} iterations (rel |F̂| = {rel:.2e} of the reference "
+                   f"residual); the fields hold the last (unconverged) iterate.")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
     _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
