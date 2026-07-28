@@ -2593,17 +2593,10 @@ class GenericFluxModel(Constitutive_Model):
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
 
-            default_flux = sympy.zeros(_owning_model.dim, 1)
-            elements = [default_flux[i] for i in range(_owning_model.dim)]
-            validated = []
-            for i, v in enumerate(elements):
-                flux_component = validate_parameters(
-                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
-                )
-                if flux_component is not None:
-                    validated.append(flux_component)
-
-            inner_self._flux = sympy.Matrix(validated)
+            # Raw sympy zero vector — NOT wrapped in UWexpressions, so the
+            # JIT sees the symbolic content directly (field variable dependencies).
+            # See the flux setter for the rationale.
+            inner_self._flux = sympy.zeros(_owning_model.dim, 1)
 
         @property
         def flux(inner_self):
@@ -2612,26 +2605,25 @@ class GenericFluxModel(Constitutive_Model):
 
         @flux.setter
         def flux(inner_self, value: sympy.Matrix):
-            """Set the flux expression (must be a vector of length dim)."""
+            """Set the flux expression (must be a vector of length dim).
+
+            Stores the raw sympy expression directly to preserve symbolic
+            dependencies (field variables, mesh coordinates) for the JIT.
+            Previously wrapped each component in a UWexpression via
+            ``validate_parameters``, which created independent Symbols that
+            the JIT treated as constants — losing the dependency on the
+            unknown field (e.g. ``u.sym``) and producing a singular matrix.
+            """
             dim = inner_self._owning_model.dim
 
             # Accept shape (dim, 1) or (1, dim)
             if value.shape not in [(dim, 1), (1, dim)]:
                 raise ValueError(
-                    f"Flux must be a symbolic vector of length {dim}. " f"Got shape {value.shape}."
+                    f"Flux must be a symbolic vector of length {dim}. "
+                    f"Got shape {value.shape}."
                 )
 
-            # Flatten and validate
-            elements = [value[i] for i in range(dim)]
-            validated = []
-            for i, v in enumerate(elements):
-                flux_component = validate_parameters(
-                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
-                )
-                if flux_component is not None:
-                    validated.append(flux_component)
-
-            inner_self._flux = sympy.Matrix(validated).reshape(dim, 1)
+            inner_self._flux = sympy.Matrix(value).reshape(dim, 1)
             inner_self._reset()
 
     @property
