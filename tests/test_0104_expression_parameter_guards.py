@@ -70,3 +70,21 @@ def test_parameter_composite_self_reference_snapshots():
     params.yield_stress = params.yield_stress * 2
     assert np.isclose(float(params.yield_stress.value), 2 * base)
     float(params.yield_stress.value)         # no recursion
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_parameter_wrapper_cycle_raises():
+    """Issue #447 (review round): a self-reference hidden inside a wrapper
+    expression must be rejected loudly — pre-guard it was accepted and later
+    either recursed (flux) or was silently unrolled ~2^50 by the depth-capped
+    unwrap."""
+    st = _viscoplastic_stokes()
+    params = st.constitutive_model.Parameters
+    wrapper = uw.expression(
+        r"w_{447}", params.yield_stress * 2, "wrapper holding the parameter")
+    before = params.yield_stress.sym
+    with pytest.raises(ValueError, match="cycle"):
+        params.yield_stress = wrapper
+    assert params.yield_stress.sym == before      # rejected, not half-applied
+    st.constitutive_model.flux                    # still builds

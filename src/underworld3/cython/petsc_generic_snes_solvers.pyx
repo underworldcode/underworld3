@@ -2853,7 +2853,7 @@ class SolverBaseClass(uw_object):
            (measured: 93%→55% error under one refinement, while midpoints go
            2.8%→0.7%). Pointwise consumers on curved boundaries should use
            **edge-midpoint values** or integral/fitted quantities, never vertex
-           values (issue #414). Flat boundaries are pointwise exact."""
+           values (issue #414). Flat boundaries are exact up to solver tolerance."""
         from underworld3.utilities.boundary_flux import boundary_flux as _bf
         return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
 

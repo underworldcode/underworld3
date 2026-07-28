@@ -120,7 +120,7 @@ d_eta = np.log10(params.uw_eta_background.magnitude) - np.log10(params.uw_eta_ba
 # calls needed.
 #
 # The Model must be set up **before** mesh creation so that the mesh
-# inherits the correct coordinate units (km).
+# coordinates carry the model's reference length (H = 30 km per ND unit).
 
 # %%
 # Reference quantities that define the scaling (Table 1, Spiegelman et al. 2016)
