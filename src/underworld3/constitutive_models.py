@@ -2474,17 +2474,15 @@ class DarcyFlowModel(Constitutive_Model):
 
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):
-    # TODO(DESIGN): verify this model's CONSISTENT (Newton) tangent with the PETSc
-    # Jacobian checker (-snes_test_jacobian, NATIVE essential-BC path — no rotated
-    # machinery involved, so the test isolates the constitutive tangent). Evidence
-    # of a possible defect (#438 B-session, 2026-07-28): with a strain-rate-
-    # dependent eta_0/eta_1, consistent_jacobian=True produces an early iteration
-    # trajectory identical to the frozen (Picard) tangent and Picard-paced
-    # convergence (24 its vs ~11 for the isotropic power-law) — consistent with
-    # the dC/d(eps_II) orientation terms (the director e⊗e structure) being
-    # dropped or mis-oriented in the JIT-lowered g3, while the isotropic terms
-    # survive. Checker harness: ti_tangent_check.py in
-    # the #438 acceptance run directory (see the issue thread).
+    # TODO(BUG): the CONSISTENT (Newton) tangent of this model is inconsistent
+    # with its residual when the anisotropy is active (eta_1 != eta_0): PETSc
+    # -snes_test_jacobian at bounded curvature reads ||J-Jfd||/||J|| ~ 2e-3-5e-3
+    # in developed flow where the isotropic control is FD-limited (~4e-6) — the
+    # dC/d(eps_II) director-coupled terms are missing or wrong, so TI "Newton"
+    # runs at Picard pace. Native-path evidence (no rotated machinery); the
+    # isotropic limit through this class is clean at rest but shares the defect
+    # once eta_1 differs. See issue #457 (incl. the checker-regularisation
+    # methodology: at 1e-12 the FD reference itself is invalid for power-law).
     r"""
     Transversely isotropic (anisotropic) viscous flow model.
 
