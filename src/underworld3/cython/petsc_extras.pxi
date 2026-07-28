@@ -121,7 +121,7 @@ cdef extern from "petsc.h" nogil:
 # Hessian evaluation at arbitrary points. Used by _dmfield_wrapper.pyx.
 
 cdef extern from "petscdmfield.h" nogil:
-    ctypedef struct _p_DMField "DMField":
+    ctypedef struct _p_DMField "struct _p_DMField":
         pass
     PetscErrorCode DMFieldCreateDS(PetscDM dm, PetscInt field, PetscVec lvec, _p_DMField **dmf)
     PetscErrorCode DMFieldEvaluate(_p_DMField *dmf, PetscVec pts, PetscInt dt,
