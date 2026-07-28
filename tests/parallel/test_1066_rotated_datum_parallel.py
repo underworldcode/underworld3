@@ -56,3 +56,44 @@ def test_rotated_datum_prescribed_normal_partition_independent():
     vv = float(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate())
     assert abs(vv - _INT_VV_REF) / _INT_VV_REF < 1.0e-6, \
         f"solve energy is partition-dependent: ∫v·v={vv:.8e} vs ref {_INT_VV_REF}"
+
+
+def test_rotated_datum_nonlinear_parallel():
+    """The NONLINEAR rotated datum path in parallel: a power-law annulus with
+    u.n = cos(theta) through the manual Newton loop (feasible iterates, cold-start
+    lift, collective datum-activity flag). Guards the np>1 collective-sequence
+    class: the lift branch, the line-search residual evaluations and the
+    nullspace-mode verification are all collective, and a rank-divergent branch
+    deadlocks rather than failing cleanly (hence the module timeout)."""
+    RI, RO = 0.5, 1.0
+    mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.2, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x ** 2 + y ** 2)
+    nhat = sympy.Matrix([[x / r, y / r]])
+    v = uw.discretisation.MeshVariable("Vnl64", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable("Pnl64", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    gm = sympy.Matrix([[v.sym[0].diff(x), v.sym[0].diff(y)],
+                       [v.sym[1].diff(x), v.sym[1].diff(y)]])
+    e = 0.5 * (gm + gm.T)
+    eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
+    s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / 3.0 - 1.0)
+    blob = sympy.exp(-(((x - 0.75) ** 2 + y ** 2) / 0.05))
+    s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
+    s.add_essential_bc((0.0, 0.0), "Lower")
+    s.add_rotated_freeslip_bc(x / r, "Upper", normal=nhat)
+    s.consistent_jacobian = True
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1.0e-7
+    s.solve()
+
+    info = s._rotated_freeslip_info
+    assert info["converged"], "nonlinear parallel datum solve did not converge"
+    assert info["nonlinear_iterations"] > 1, "did not genuinely iterate"
+    # datum imposed, measured with parallel-safe boundary quadrature only
+    vn = (v.sym[0] * x + v.sym[1] * y) / r
+    num = float(uw.maths.BdIntegral(mesh=mesh, fn=(vn - x / r) ** 2, boundary="Upper").evaluate())
+    den = float(uw.maths.BdIntegral(mesh=mesh, fn=(x / r) ** 2, boundary="Upper").evaluate())
+    relL2 = np.sqrt(max(num, 0.0) / den)
+    assert relL2 < 1.0e-3, f"nonlinear u.n=cos(theta) not imposed (relL2={relL2:.3e})"
