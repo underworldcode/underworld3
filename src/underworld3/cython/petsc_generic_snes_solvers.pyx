@@ -85,6 +85,14 @@ class SolverBaseClass(uw_object):
         self._needs_bc_reregister = True
         self._needs_function_rewire = True
 
+        # Warm-start status, public (read-only) via `has_solution`. Set True only
+        # after a converged solve; reset on a structural rebuild (is_setup=False)
+        # so a remesh / adapt / mesh-mover never warm-starts off stale field
+        # data. Kept through coefficient changes (viscosity, yield softness δ, BC
+        # values, time step). See has_solution / _record_convergence_status and
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        self._has_solution = False
+
         self.Unknowns = self._Unknowns(self)
 
         self._order = 0
@@ -617,13 +625,28 @@ class SolverBaseClass(uw_object):
             opts[f"{prefix}pc_type"] = "mg"
             opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
             opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
-            # richardson+sor (not chebyshev): chebyshev needs eigenvalue
-            # estimates of the smoothed operator, which are fragile on the
-            # indefinite / variable-viscosity Stokes velocity block and diverge;
-            # richardson+sor is the benchmark-validated, mesh-independent choice.
-            opts[f"{prefix}mg_levels_ksp_type"] = "richardson"
+            # gmres+sor, sized for a DEEP hierarchy (the only kind worth having:
+            # a two-level cycle is a coarse-grid correction, not a V-cycle, and is
+            # not worth special-casing). Chebyshev needs eigenvalue estimates of the
+            # smoothed operator, which are fragile on the indefinite /
+            # variable-viscosity velocity block and diverge. Richardson is
+            # stationary and degrades on the NON-SYMMETRIC operator produced by the
+            # consistent-Newton tangent. Measured on the Spiegelman notch (Drucker-
+            # Prager, eta contrast 1e26) over a nested 4-level hierarchy: contraction
+            # per V-cycle rho = 0.75 (richardson) vs 0.56 (gmres) at the SAME four
+            # smoother iterations -- and the gmres margin GROWS with depth (5% at 3
+            # levels, 25% at 4), because deeper cycles apply the smoother on more
+            # coarse operators. Four iterations, not more: per unit work gmres/4
+            # (rho^(1/4) = 0.87) beats gmres/8 (0.91).
+            opts[f"{prefix}mg_levels_ksp_type"] = "gmres"
             opts[f"{prefix}mg_levels_pc_type"] = "sor"
             opts[f"{prefix}mg_levels_ksp_max_it"] = 4
+            # Run EXACTLY max_it smoother iterations: no residual-norm computation
+            # and no convergence test, so every V-cycle costs the same. A Krylov
+            # smoother makes the cycle non-stationary, which is why the velocity
+            # block is fgmres (flexible) rather than gmres -- see the fieldsplit
+            # defaults in the Stokes __init__.
+            opts[f"{prefix}mg_levels_ksp_norm_type"] = "none"
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
             # redundant+lu, not bare lu: a bare serial LU cannot factor a
             # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
@@ -654,7 +677,8 @@ class SolverBaseClass(uw_object):
             opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
             # Clear stale geometric-MG-only keys.
             for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
-                        "mg_levels_pc_type", "mg_coarse_pc_type",
+                        "mg_levels_pc_type", "mg_levels_ksp_norm_type",
+                        "mg_coarse_pc_type",
                         "mg_coarse_redundant_pc_type"):
                 opts.delValue(f"{prefix}{key}")
             self._pc_managed_value = "gamg"
@@ -794,6 +818,110 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
             self._needs_function_rewire = True
+            # A structural invalidation (mesh change / adaptivity / mesh-mover /
+            # explicit _force_setup) means any stored solution no longer matches
+            # the operators — drop the warm-start claim so the next solve()
+            # cold-starts rather than warming off a stale iterate. Coefficient-only
+            # updates (new viscosity, δ, BC values, time step) route through
+            # _update_constants / a direct _needs_function_rewire and keep
+            # has_solution, so continuation and time-stepping warm-start correctly.
+            self._has_solution = False
+
+    @property
+    def has_solution(self):
+        """``True`` when the solver holds a converged solution usable as a warm start.
+
+        Set ``True`` only after a solve whose SNES reported a converged reason
+        (``> 0``); ``False`` initially, after a diverged solve, and after any
+        structural rebuild (mesh change / adaptivity / mesh-mover / explicit
+        ``_force_setup`` — the ``is_setup = False`` invalidation hook). It
+        survives coefficient changes (viscosity, yield softness :math:`\\delta`,
+        boundary-condition *values*, time step) so parameter continuation and
+        time-stepping warm-start correctly.
+
+        Read-only status flag. Because a diverged solve leaves
+        ``has_solution == False``, the next :meth:`solve` automatically
+        cold-starts (Picard warm-up) rather than warming off a corrupted iterate.
+
+        See :doc:`nonlinear-solver-homotopy-warmstart` (Layer 1).
+        """
+        return self._has_solution
+
+    def _solution_is_trivially_zero(self):
+        """True when the solution field is still identically zero.
+
+        The design's *secondary* cold signal: a solver may be told to warm-start
+        (``zero_init_guess=False``) while its solution variable has never been
+        written, which is a cold start in everything but name. It matters because a
+        viscoplastic tangent is undefined there — the plastic viscosity is
+        :math:`\\tau_y / (2\\dot\\varepsilon_{II})`, so at :math:`v = 0` the
+        *residual* is finite (the soft-min carries the infinite plastic branch to
+        the viscous one) but its derivative is not, and assembling the consistent
+        tangent produces NaN.
+
+        Uses the PETSc vector norm, which is collective and therefore rank-uniform,
+        so every rank reaches the same decision.
+        """
+        u = getattr(self, "u", None)
+        if u is None:
+            return False
+        return float(u.vec.norm()) == 0.0
+
+    def _resolve_zero_init_guess(self, zero_init_guess):
+        """Resolve the tri-state ``zero_init_guess`` argument of ``solve()``.
+
+        ``None`` (the default) auto-detects: cold when the solver holds no converged
+        solution, warm when it does. Detection is safe by construction — guessing
+        *cold* when a solution was in fact available costs one extra iteration from a
+        good starting point, while the harmful direction (warming off stale field data
+        after a remesh or a diverged solve) cannot happen, because
+        :attr:`has_solution` is cleared by both.
+
+        ``True`` forces a fresh start (discard any solution); ``False`` insists on
+        warming from the current field values.
+        """
+        if zero_init_guess is None:
+            return not self.has_solution
+        return bool(zero_init_guess)
+
+    def _solve_yield_homotopy(self, homotopy_options=None, verbose=False,
+                              solve_kwargs=None):
+        """Run ``solve(homotopy=True)``: a multi-solve δ-continuation on the yield law.
+
+        The constitutive model advertises the homotopy (``supports_yield_homotopy``)
+        and describes it (``_yield_homotopy_control()``: how to set δ, and which
+        tangent to pair with it); the continuation driver marches δ from a large,
+        benign value down to the sharp yield surface, warm-starting each step from the
+        previous converged solution. See
+        :func:`~underworld3.systems.yield_continuation.yield_continuation` and
+        :doc:`nonlinear-solver-homotopy-warmstart` (Layer 2).
+        """
+        cm = self.constitutive_model
+        if cm is None or not getattr(cm, "supports_yield_homotopy", False):
+            raise TypeError(
+                f"solve(homotopy=True) needs a constitutive model with a yield law to "
+                f"sharpen, but {type(cm).__name__ if cm is not None else None} does not "
+                f"advertise supports_yield_homotopy. Use a viscoplastic (or VEP) model, "
+                f"or solve without homotopy."
+            )
+        from underworld3.systems.yield_continuation import yield_continuation
+        # The march's own options win: an explicit homotopy_options["verbose"] is a
+        # deliberate choice about the march, distinct from the solve's verbosity.
+        options = dict(homotopy_options or {})
+        options.setdefault("verbose", verbose)
+        return yield_continuation(self, solve_kwargs=solve_kwargs, **options)
+
+    def _record_convergence_status(self, converged=None):
+        """Refresh :attr:`has_solution` from the just-completed solve.
+
+        Called at the end of every ``solve()``. With ``converged`` unset the
+        status is read from the SNES converged reason (``> 0`` ⇒ converged);
+        the rotated free-slip path, which runs its own KSP loop rather than
+        driving ``self.snes``, passes the flag from its result dict.
+        """
+        if converged is None:
+            converged = self.snes is not None and self.snes.getConvergedReason() > 0
+        self._has_solution = bool(converged)
 
     class _Unknowns:
         """
@@ -3446,7 +3574,7 @@ class SNES_Scalar(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose:         bool=False,
               debug:           bool=False,
@@ -3462,10 +3590,15 @@ class SNES_Scalar(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in the solution variable(s) as the initial guess, which can
-            improve convergence for time-stepping or continuation methods.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up. Useful after
             changing boundary conditions or constitutive parameters.
@@ -3513,6 +3646,7 @@ class SNES_Scalar(SolverBaseClass):
         snes : Access to underlying PETSc SNES object for advanced control.
         """
 
+
         import petsc4py
 
 
@@ -3522,6 +3656,11 @@ class SNES_Scalar(SolverBaseClass):
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -3590,6 +3729,8 @@ class SNES_Scalar(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -4508,7 +4649,7 @@ class SNES_Vector(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool =True,
+              zero_init_guess: bool =None,
               _force_setup:    bool =False,
               verbose=False,
               debug=False,
@@ -4523,9 +4664,15 @@ class SNES_Vector(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use the current
-            values in ``self.u`` as the initial guess.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up.
         verbose : bool, default=False
@@ -4552,12 +4699,18 @@ class SNES_Vector(SolverBaseClass):
         u : The solution vector field variable.
         """
 
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -4623,6 +4776,8 @@ class SNES_Vector(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -5251,7 +5406,7 @@ class SNES_MultiComponent(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               _force_setup:    bool = False,
               verbose=False,
               debug=False,
@@ -5270,12 +5425,18 @@ class SNES_MultiComponent(SolverBaseClass):
             start up to this many times. 0 preserves legacy behaviour.
         """
 
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -5315,6 +5476,8 @@ class SNES_MultiComponent(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
@@ -8336,14 +8499,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
     @timing.routine_timer_decorator
     def solve(self,
-              zero_init_guess: bool = True,
+              zero_init_guess: bool = None,
               picard: int = 0,
               verbose=False,
               debug=False,
               debug_name=None,
               _force_setup: bool =False,
               time=None,
-              divergence_retries: int = 0, ):
+              divergence_retries: int = 0,
+              homotopy: bool = False,
+              homotopy_options: dict = None, ):
         """
         Solve the Stokes system for velocity and pressure.
 
@@ -8353,11 +8518,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        zero_init_guess : bool, default=True
-            If True, use zero as the initial guess. If False, use current
-            values in ``self.u`` (velocity) and ``self.p`` (pressure) as
-            initial guess. Using False can improve convergence for
-            time-stepping or parameter continuation.
+        zero_init_guess : bool, optional
+            Cold or warm start. The default (``None``) **auto-detects**: cold when the
+            solver holds no converged solution, warm when it does (see
+            :attr:`has_solution`). ``True`` forces a fresh start, discarding any
+            existing solution; ``False`` insists on warming from the current field
+            values. Warm-starting improves convergence for time-stepping and
+            continuation; the auto default gets that without a flag, and cannot warm
+            off stale data because a remesh or a diverged solve clears
+            ``has_solution``.
         picard : int, default=0
             Number of Picard iterations before switching to Newton.
             Picard iterations use a simplified Jacobian and can help
@@ -8379,11 +8548,28 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
             yield-surface kink divergences. 0 preserves legacy behaviour.
+        homotopy : bool, default=False
+            Solve a yielding (viscoplastic) model by a **yield homotopy** instead of
+            a single solve: the constitutive model is put in its smooth,
+            δ-parameterised yield mode and δ is marched down to the sharp yield
+            surface as a sequence of warm-started solves. This is the robust route
+            for a hard Drucker-Prager problem, which does not converge from a cold
+            start on the sharp surface. Requires a model with
+            ``supports_yield_homotopy`` (raises otherwise). Returns the march
+            summary rather than ``None``.
+        homotopy_options : dict, optional
+            March settings passed to
+            :func:`~underworld3.systems.yield_continuation.yield_continuation` —
+            ``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
+            ``retries``. All are defaulted; tuning them is optional.
 
         Returns
         -------
-        None
-            Solution stored in ``self.u`` (velocity) and ``self.p`` (pressure).
+        None or dict
+            ``None`` normally — the solution is stored in ``self.u`` (velocity) and
+            ``self.p`` (pressure). With ``homotopy=True``, the march summary
+            (``settled_delta``, ``reason``, ``steps``, ``reached_dmin``,
+            ``converged``).
 
         Examples
         --------
@@ -8400,6 +8586,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ...     # Update boundary conditions, material properties...
         ...     stokes.solve(zero_init_guess=False)
 
+        >>> # Hard viscoplastic (Drucker-Prager) yield: march the yield homotopy
+        >>> report = stokes.solve(homotopy=True)
+        >>> report["settled_delta"]        # smallest yield softness reached
+
         Notes
         -----
         This is a **collective operation** - all MPI ranks must call it.
@@ -8415,12 +8605,23 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         constitutive_model : Viscosity and stress definitions.
         """
 
+
+        if homotopy:
+            # The march runs a SEQUENCE of ordinary solves at successively sharper
+            # yield surfaces; each one re-enters this method with homotopy=False.
+            return self._solve_yield_homotopy(homotopy_options, verbose=verbose)
+
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
             # Constitutive model swapped: pointwise functions change but the
             # DM/fields/BCs are unchanged. In-place rewire is sufficient.
             self._needs_function_rewire = True
+
+        # Tri-state: None auto-detects cold-vs-warm from has_solution. Resolved HERE,
+        # after _force_setup has had its say: that invalidation clears has_solution,
+        # and resolving earlier would warm-start off the flag it just cleared.
+        zero_init_guess = self._resolve_zero_init_guess(zero_init_guess)
 
         self._build(verbose, debug, debug_name)
 
@@ -8477,7 +8678,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     zero_init_guess=zero_init_guess, picard=picard)
             # This path solves via ksp.solve on the rotated operator (not self.snes),
             # so give it a report from the rotated result rather than leaving a stale one.
-            self._capture_rotated_report(self._rotated_freeslip_info)
+            _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
+            # The warm-start flag must follow the rotated solve's own verdict — the SNES
+            # was never run, so the generic reader would latch a stale reason.
+            self._record_convergence_status(converged=_rotated_report.converged)
             return
 
         if time is not None:
@@ -8529,6 +8733,24 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         else:
             self.atol = 0.0
+
+        # Automatic cold-start warm-up (Layer 1): a single Picard (frozen-
+        # coefficient) step moves a cold guess into the Newton basin — it is
+        # defect-correction iteration 1, contractive and cheap. The default
+        # (frozen) tangent path is left bit-identical, and an explicit Picard count
+        # is honoured as given.
+        #
+        # This is a DESIGN REQUIREMENT, not an optimisation: under the consistent
+        # tangent a viscoplastic Jacobian is NaN at zero strain rate (the residual
+        # survives, its derivative does not), so the machinery has to make that
+        # state unreachable. Both routes to it are covered — an explicit cold start,
+        # and a nominally warm one whose solution has never been written. The
+        # "continuation" tangent needs no help: it opens on a Picard stage
+        # (alpha = 0) by construction. See
+        # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        if (picard == 0 and self.consistent_jacobian is True
+                and (zero_init_guess or self._solution_is_trivially_zero())):
+            picard = 1
 
         if verbose and uw.mpi.rank == 0:
             print(f"SNES solve - picard = {picard}", flush=True)
@@ -8622,6 +8844,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm.restoreGlobalVec(gvec)
 
         self._warn_on_divergence()
+
+        self._record_convergence_status()
 
         return
 
