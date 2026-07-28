@@ -330,12 +330,37 @@ particles and there is no halo exchange (SWARM-15, see
 `docs/developer/design/SWARM_MODERNIZATION_DESIGN_2026-07.md` §4). A proxy node
 near a partition seam therefore gathers from a one-sided neighbourhood.
 
-Linear exactness improves this but does not fix it. A linear-exact stencil
-reproduces a linear field exactly from *any* neighbourhood, one-sided or not,
-so for linear fields the seam error is zero and the proxy is np-independent
-(pinned by `tests/parallel/test_0776_linear_rbf_proxy_parallel.py`). For a
-field with curvature a one-sided stencil still differs from a centred one, so
-np-dependence remains. The halo exchange in SWARM-15 is still the real fix.
+Linear exactness improves this but does not fix it, and the size of what is
+left has now been measured — SWARM-15's migration plan asks for exactly this
+as its first step.
+
+Max relative proxy error against the analytic field, same mesh and same
+particles at each np (2D, `cellSize` 1/24, `fill_param` 4):
+
+| field | scheme | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| linear | `order=0` | 2.0e-3 | 2.4e-3 | 4.5e-3 |
+| linear | `order=1` | **5.1e-16** | **5.1e-16** | **5.5e-16** |
+| curved | `order=0` | 9.5e-3 | 1.1e-2 | 1.7e-2 |
+| curved | `order=1` | 1.5e-4 | 1.9e-4 | 2.3e-4 |
+
+Two things to read off. A linear field is **exactly** np-independent under
+`order=1` — round-off at every np, so the seam contributes nothing (pinned by
+`tests/parallel/test_0776_linear_rbf_proxy_parallel.py`). For a field with
+curvature the np-dependence persists in both schemes, roughly doubling from
+np=1 to np=4 — but the *absolute* error at np=4 is 73x smaller under `order=1`
+(2.3e-4 against 1.7e-2).
+
+So `order=1` reduces the seam's magnitude by about two orders of magnitude
+without removing the np-dependence. The halo exchange in SWARM-15 is still the
+real fix.
+
+```{note}
+Node counts grow slightly with np (728 / 758 / 790 here) because shared
+partition-boundary nodes are counted on more than one rank, so the np>1
+maxima are taken over marginally more node instances. The effect is small
+next to the trends above but it is not zero.
+```
 
 ## Related
 

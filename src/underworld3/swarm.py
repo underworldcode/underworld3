@@ -1200,10 +1200,21 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     stacklevel=2,
                 )
             Values = current_values
-        else:
+        elif monotone:
+            # The limiter is data-dependent, so it cannot ride on a cached
+            # geometry-only operator; take the direct path.
             Values = self.rbf_interpolate(
                 new_coords, verbose=verbose, nnn=nnn, order=order, monotone=monotone
             )
+        else:
+            raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
+            resolved_nnn, resolved_order = self._resolve_stencil(
+                nnn, order, raw_data.shape[0]
+            )
+            operator = self.swarm._proxy_interpolation_operator(
+                meshVar, resolved_nnn, 2, resolved_order
+            )
+            Values = operator @ raw_data
 
         meshVar.data[...] = Values[...]
 
@@ -1445,6 +1456,21 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         display(self.data),
         return
 
+    def _resolve_stencil(self, nnn, order, n_particles):
+        """Stencil size and reproduction order this rank can actually support.
+
+        A rank holding fewer particles than the affine tail needs cannot
+        support a linear fit, so it degrades to inverse distance rather than
+        failing the whole refresh. Shared by the direct and the cached-operator
+        paths so they cannot disagree about what they asked for.
+        """
+        if nnn is None:
+            nnn = 2 * (self.swarm.mesh.dim + 1)
+        nnn = min(nnn, n_particles)
+        if order == 1 and nnn < self.swarm.mesh.dim + 2:
+            order = 0
+        return nnn, order
+
     def rbf_interpolate(self, new_coords, verbose=False, nnn=None, order=1,
                         monotone=False):
         """
@@ -1508,17 +1534,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 )
             return np.zeros((new_coords.shape[0], data_size[1]))
 
-        if nnn is None:
-            nnn = 2 * (self.swarm.mesh.dim + 1)
-
-        if nnn > data_size[0]:
-            nnn = data_size[0]
-
-        # A rank holding fewer particles than the affine tail needs cannot
-        # support a linear fit at all. Inverse distance still gives a sensible
-        # answer there, so degrade rather than fail the whole refresh.
-        if order == 1 and nnn < self.swarm.mesh.dim + 2:
-            order = 0
+        nnn, order = self._resolve_stencil(nnn, order, data_size[0])
 
         # Use direct PETSc access to avoid callback circular dependency
         D = raw_data.copy()
@@ -2839,6 +2855,11 @@ class Swarm(Stateful, uw_object):
 
         self._X0_uninitialised = True
         self._index = None
+        # Particle -> proxy-node transfer operators, keyed by geometry and
+        # stencil and shared by every proxied variable of this swarm. Entries
+        # carry the kd-tree they were built from, so they self-invalidate.
+        self._proxy_interpolation_cache = {}
+        self._proxy_cache_mesh_version = None
         self._migration_disabled = False
 
         # Deterministic (SPMD-consistent) creation index — used to order
@@ -3040,6 +3061,54 @@ class Swarm(Stateful, uw_object):
             if stale:
                 var._proxy_stale = True  # align ranks before the collective refresh
                 var._update_proxy_if_stale()
+
+    def _proxy_interpolation_operator(self, meshVar, nnn, p, order):
+        """Sparse particle -> proxy-node transfer, shared across variables.
+
+        The weights depend only on geometry, so every proxied variable whose
+        proxy has the same degree and continuity on the same mesh needs the
+        SAME operator. Measured: a refresh is ~75% weight solve, and the cost
+        of refreshing K proxied variables on one swarm scales linearly with K
+        (4 variables cost 3.95x one in 2D, 4.08x in 3D) because each solves
+        for identical weights independently. Building the operator once per
+        (geometry, stencil) collapses that to one solve plus K sparse
+        products.
+
+        Validity is tied to the kd-tree *instance* rather than to a flag, so
+        the cache cannot outlive the particle positions it was built from:
+        ``migrate()`` drops ``_kdtree``, the next lookup sees a different
+        object and rebuilds. A stale entry therefore keeps its old tree alive
+        until it is replaced -- one tree per distinct key, which is bounded by
+        the number of proxy discretisations in use.
+        """
+        # Two independent things can invalidate an operator, and each is
+        # handled where it can be detected structurally rather than by a flag
+        # someone has to remember to set:
+        #
+        #   mesh geometry  -- a deform or adapt bumps _mesh_version. The whole
+        #                     cache is dropped, because every entry was built
+        #                     against the old node positions. Keying on the
+        #                     version instead would keep the dead entries
+        #                     forever, one set per mesh generation.
+        #   particle motion -- migrate() replaces the kd-tree, so an entry that
+        #                     does not carry the current tree is stale.
+        version = self.mesh._mesh_version
+        if self._proxy_cache_mesh_version != version:
+            self._proxy_interpolation_cache.clear()
+            self._proxy_cache_mesh_version = version
+
+        kdtree = self._get_kdtree()
+        key = (meshVar.degree, meshVar.continuous, nnn, p, order)
+
+        cached = self._proxy_interpolation_cache.get(key)
+        if cached is not None and cached[0] is kdtree:
+            return cached[1]
+
+        operator = kdtree.interpolation_matrix(
+            meshVar.coords_nd, nnn=nnn, p=p, order=order
+        )
+        self._proxy_interpolation_cache[key] = (kdtree, operator)
+        return operator
 
     def _get_kdtree(self):
         """
