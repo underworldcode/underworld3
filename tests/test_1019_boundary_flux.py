@@ -168,3 +168,69 @@ def test_boundary_flux_corner_semantics_all_walls_driven():
     # at Top-Left (opposite outward fluxes), doubling at Top-Right.
     assert np.allclose(flux[left_corner], 0.0, atol=1e-3)
     assert np.allclose(flux[right_corner], 2.0, atol=1e-3)
+
+
+@pytest.mark.parametrize("mass", ("auto", "consistent"))
+def test_boundary_flux_p1_trace_2d(mass):
+    """#413: a 2D P1 trace has no edge-midpoint DOFs — recovery previously died
+    with a bare KeyError assembling P2 line masses. T = 1 - y is exact in P1, so
+    every wall node must read the exact unit flux with the P1 line mass."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
+    T = uw.discretisation.MeshVariable("T413", mesh, 1, degree=1)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(1.0, "Bottom")
+    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.solve()
+
+    for wall, sign in (("Top", -1.0), ("Bottom", +1.0)):
+        _xs, flux = poisson.boundary_flux(wall, mass=mass)
+        flux = np.asarray(flux)
+        assert np.allclose(flux, sign, atol=1e-3), (
+            f"{wall} (mass={mass}): flux range [{flux.min()}, {flux.max()}]"
+        )
+
+
+def test_volume_residual_fields_insert_essential_values():
+    """#411: compute_volume_residual_fields (Stokes-only diagnostic) missed the
+    #407 insert — its residual must now match _assemble_volume_reaction (the
+    fixed, validated core) exactly, including on g != 0 Dirichlet walls where the
+    un-inserted version returned garbage at constrained rows."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0))
+    v = uw.discretisation.MeshVariable("v411", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("p411", mesh, 1, degree=1, continuous=True)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y = mesh.X
+    # v = (x, -y): divergence-free, exact in P2, g != 0 on every wall.
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        stokes.add_dirichlet_bc(sympy.Matrix([x, -y]).T, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+
+    reference = np.asarray(stokes._assemble_volume_reaction())
+    out = stokes.compute_volume_residual_fields()
+
+    # Extract each field's slice of the reference using the same local-section
+    # walk the method uses, and require exact agreement.
+    local_section = stokes.dm.getLocalSection()
+    pStart, pEnd = local_section.getChart()
+    for name, var in stokes.fields.items():
+        field_id = getattr(var, "_solver_field_id", None)
+        if field_id is None:
+            field_id = var.field_id
+        indices = []
+        for point in range(pStart, pEnd):
+            dof = local_section.getFieldDof(point, field_id)
+            if dof > 0:
+                offset = local_section.getFieldOffset(point, field_id)
+                indices.extend(range(offset, offset + dof))
+        assert np.allclose(out[name], reference[indices], rtol=1e-12, atol=1e-14), (
+            f"{name}: compute_volume_residual_fields diverges from "
+            f"_assemble_volume_reaction on g != 0 walls — essential values not inserted"
+        )

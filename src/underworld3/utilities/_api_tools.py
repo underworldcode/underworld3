@@ -299,6 +299,12 @@ class ExpressionDescriptor:
         #   - Unit chain: container.units → value.units → value._sym.units (UWQuantity)
         # At unwrap/JIT time the chain is followed automatically.
         if isinstance(value, UWexpression):
+            # Read-back write (p = Params.x; Params.x = p): __get__ returned THIS
+            # container, so storing it would nest the expression inside itself and
+            # every later .value walk recurses to stack death (issue #447). A
+            # write-back of the same expression is a no-op.
+            if value is expr:
+                return
             expr.sym = value  # Store symbolic reference, not inner value
 
         # Special case: Plain UWQuantity (not UWexpression) - has ._value and ._pint_qty
@@ -319,6 +325,13 @@ class ExpressionDescriptor:
             # Auto-unwrap if value has _sympify_
             if hasattr(value, "_sympify_"):
                 value = value._sympify_()
+
+            # Composite self-reference (Params.x = Params.x * 2): the container
+            # appearing in its own new contents is the same cycle as above, one
+            # level down. Snapshot semantics is the only meaning that terminates:
+            # substitute the container's CURRENT contents in its place (#447).
+            if hasattr(value, "atoms") and expr in value.atoms(UWexpression):
+                value = value.xreplace({expr: expr._sym})
 
             # Update the expression's .sym
             expr.sym = value

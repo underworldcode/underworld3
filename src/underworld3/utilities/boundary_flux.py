@@ -349,22 +349,41 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     n = len(keys); Rg = np.zeros(n)
     for k, i in gi.items():
         Rg[i] = R_by[k]
+    # Trace order from the DATA, not an assumption: a P2 trace has a reaction DOF at
+    # every edge point (the midpoint key is in R_by), a P1 trace has vertices only.
+    # Assembling P2 line masses against a P1 trace died with a bare KeyError on the
+    # missing midpoint (issue #413). A mix means the field layout is inconsistent
+    # with the trace — raise rather than guess.
+    mids_present = [km in R_by for (ka, km, kb) in uniq]
+    if mids_present and any(mids_present) != all(mids_present):
+        raise NotImplementedError(
+            "2D boundary-flux recovery found edge-midpoint reactions on only part "
+            "of the boundary; mixed P1/P2 traces are not supported."
+        )
+    trace_order = 2 if (mids_present and mids_present[0]) else 1
     if mass == "lumped":
         mL = np.zeros(n)
         for (ka, km, kb), h in uniq.items():
-            mL[gi[ka]] += h / 6.0; mL[gi[km]] += 2.0 * h / 3.0; mL[gi[kb]] += h / 6.0
+            if trace_order == 2:
+                mL[gi[ka]] += h / 6.0; mL[gi[km]] += 2.0 * h / 3.0; mL[gi[kb]] += h / 6.0
+            else:
+                mL[gi[ka]] += h / 2.0; mL[gi[kb]] += h / 2.0
         sig = Rg / mL
     else:
-        # consistent P2 line mass — a dense (n×n) solve in the number of boundary nodes
+        # consistent line mass — a dense (n×n) solve in the number of boundary nodes
         # (O(n^3)); fine for a 1D boundary (n ~ resolution) but prefer the default lumped
         # (O(n), monotone) for very large boundaries.
         M = np.zeros((n, n))
-        Me = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
+        Me2 = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
+        Me1 = np.array([[2., 1], [1, 2]])
         for (ka, km, kb), h in uniq.items():
-            tri = [gi[ka], gi[km], gi[kb]]; Mh = (h / 30.0) * Me
-            for ii in range(3):
-                for jj in range(3):
-                    M[tri[ii], tri[jj]] += Mh[ii, jj]
+            if trace_order == 2:
+                nodes = [gi[ka], gi[km], gi[kb]]; Mh = (h / 30.0) * Me2
+            else:
+                nodes = [gi[ka], gi[kb]]; Mh = (h / 6.0) * Me1
+            for ii in range(len(nodes)):
+                for jj in range(len(nodes)):
+                    M[nodes[ii], nodes[jj]] += Mh[ii, jj]
         sig = np.linalg.solve(M, Rg)
     if remove_mean:
         sig = sig - sig.mean()
