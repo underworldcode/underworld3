@@ -2844,7 +2844,16 @@ class SolverBaseClass(uw_object):
         traces raise explicitly. Reaction and mass assembly are partition-independent.
         For vector fluxes, supply an analytic ``normal`` when strict partition
         independence of the normal projection is required; geometric facet-normal
-        averaging at partition seams has a small pre-existing partition sensitivity."""
+        averaging at partition seams has a small pre-existing partition sensitivity.
+
+        .. warning::
+           On CURVED boundaries, P2 **vertex** values converge only slowly: the P2
+           vertex basis has zero surface mean, so vertex reactions carry only the
+           O(h) facet-geometry error, which the recovery faithfully reconstructs
+           (measured: 93%→55% error under one refinement, while midpoints go
+           2.8%→0.7%). Pointwise consumers on curved boundaries should use
+           **edge-midpoint values** or integral/fitted quantities, never vertex
+           values (issue #414). Flat boundaries are exact up to solver tolerance."""
         from underworld3.utilities.boundary_flux import boundary_flux as _bf
         return _bf(self, boundary, mass=mass, remove_mean=remove_mean, normal=normal)
 
@@ -5947,7 +5956,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         triangles, and the required consistent surface-mass solve for 3D P2 triangles.
         Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
         mathematically valid. Three-dimensional recovery currently supports triangular
-        P1/P2 traces only."""
+        P1/P2 traces only.
+
+        .. warning::
+           On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
+           only slowly (the vertex basis has zero surface mean, so vertex reactions
+           carry only the O(h) facet-geometry error); edge-midpoint values are
+           superconvergent. Pointwise consumers on curved boundaries should use
+           midpoint or integral/fitted quantities (issue #414)."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
                 "boundary_normal_traction requires a completed rotated-free-slip solve.")
@@ -5967,7 +5983,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
         ``mass="auto"`` selects lumped recovery where valid and the consistent
         surface-mass solve for 3D P2 triangles. Requires a prior
-        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`."""
+        :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
+
+        .. warning::
+           On CURVED boundaries (annulus/spherical free surfaces), the P2 VERTEX
+           values written into ``field`` converge only slowly; edge-midpoint values
+           are superconvergent. Downstream pointwise use of curved-boundary
+           topography should rely on midpoint/fitted quantities (issue #414)."""
         if self._rotated_freeslip_info is None:
             raise RuntimeError(
                 "dynamic_topography requires a completed rotated-free-slip solve.")
@@ -8177,6 +8199,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Constrained (Dirichlet) DOFs are ABSENT from the global vector, so the
+            # round trip above leaves them ZERO in xlocal: insert the essential
+            # values before integrating, exactly as _assemble_volume_reaction does,
+            # or the residual is garbage wherever g != 0 (issues #407/#411 — this
+            # duplicated variant missed the #407 fix).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             if cell_indices is None:
                 CHKERRQ(DMPlexSNESComputeResidualFEM(dm.dm, xvec.vec, fvec.vec, NULL))
             else:
@@ -8270,6 +8299,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         cdef PetscDS ds
         cdef PetscWeakForm wf
         cdef DMLabel c_label
+        cdef PetscReal residual_time = 0.0
 
         self._build(verbose, False, None)
 
@@ -8288,6 +8318,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             t_nd = self._nondimensional_time(time)
             _time_dm_boundary_residual = self.dm
             UW_DMSetTime(_time_dm_boundary_residual.dm, t_nd)
+            residual_time = <PetscReal>t_nd
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -8312,6 +8343,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             dm = self.dm
             xvec = xlocal
             fvec = flocal
+            # Same insert as _assemble_volume_reaction: constrained DOFs are absent
+            # from the global vector, so without this the boundary residual is
+            # evaluated against zeroed essential values wherever g != 0
+            # (issues #407/#411 — this duplicated variant missed the #407 fix).
+            CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, xvec.vec,
+                                               residual_time, NULL, NULL, NULL))
             CHKERRQ(DMGetDS(dm.dm, &ds))
             CHKERRQ(UW_PetscDSGetBoundaryWeakForm(
                 ds, <PetscInt>boundary_bc.PETScID, &wf,
