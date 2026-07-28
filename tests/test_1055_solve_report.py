@@ -300,3 +300,18 @@ def test_snes_reason_table_matches_petsc():
     assert reason_string(4) == "CONVERGED_SNORM_RELATIVE"
     assert reason_string(5) == "CONVERGED_ITS"
     assert reason_string(999).startswith("UNKNOWN")
+
+    # The solver carries a SECOND copy of this table (code -> (NAME, explanation)) so
+    # its diagnostics can add a one-line gloss. It had the identical off-by-one, and
+    # fixing only one copy would leave the two disagreeing — so pin both to the enum
+    # and to each other.
+    from underworld3.systems import Stokes
+
+    solver_table = Stokes._convergence_reasons
+    for code, (label, _explanation) in solver_table.items():
+        assert code in enum_names, f"{code} ({label}) is not a PETSc SNES reason at all"
+        assert label in enum_names[code], (code, label, sorted(enum_names[code]))
+    for code in enum_names:
+        assert code in solver_table, (
+            f"PETSc reason {code} ({sorted(enum_names[code])}) unmapped in the solver")
+    assert {c: n for c, (n, _) in solver_table.items()} == REASON_STRINGS
