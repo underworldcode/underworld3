@@ -26,9 +26,9 @@ def _setup_solver(u, mesh, flux_expr):
     solver = Poisson(mesh, u_Field=u)
     solver.petsc_options["ksp_type"] = "preonly"
     solver.petsc_options["pc_type"] = "lu"
-    solver.petsc_options["pc_factor_mat_solver_type"] = "mumps"
     solver.constitutive_model = uw.constitutive_models.GenericFluxModel(solver.Unknowns)
-    solver.constitutive_model.Parameters._solver = solver
+    # NOTE: the constitutive_model setter wires Parameters._solver automatically;
+    # hand-wiring it here would mask a regression in that path.
     solver.constitutive_model.Parameters.flux = flux_expr
     solver.f = 1.0
     solver.add_essential_bc(0.0, "Bottom")
