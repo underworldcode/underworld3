@@ -1324,22 +1324,25 @@ class SolverBaseClass(uw_object):
 
         return None
 
-    # SNES convergence reasons (PETSc documentation): code -> (NAME, explanation).
-    # Single source for both get_convergence_diagnostics (formats
-    # "NAME - explanation") and _warn_on_divergence (uses NAME only).
+    # SNES convergence reasons: code -> (NAME, explanation). The NAMES are the same
+    # table as solve_report.REASON_STRINGS, kept here with an explanation string for
+    # get_convergence_diagnostics (formats "NAME - explanation") and _warn_on_divergence
+    # (uses NAME only). Both copies are pinned to petsc4py's enum by test_1055 — the
+    # positive codes here were shifted by one until 2026-07 (there is no code 1, and a
+    # step-norm stop was reported as CONVERGED_ITS).
     _convergence_reasons = {
         # Positive reasons = converged
-        1: ("CONVERGED_FNORM_ABS", "||F|| < atol"),
-        2: ("CONVERGED_FNORM_RELATIVE", "||F|| < rtol*||F_initial||"),
-        3: ("CONVERGED_SNORM_RELATIVE", "||x|| < stol"),
-        4: ("CONVERGED_ITS", "Maximum iterations reached"),
+        2: ("CONVERGED_FNORM_ABS", "||F|| < atol"),
+        3: ("CONVERGED_FNORM_RELATIVE", "||F|| < rtol*||F_initial||"),
+        4: ("CONVERGED_SNORM_RELATIVE", "||x|| < stol"),
+        5: ("CONVERGED_ITS", "Maximum iterations reached"),
         # Zero = still iterating (shouldn't see after solve)
-        0: ("ITERATING", "Still iterating (unexpected after solve)"),
+        0: ("CONVERGED_ITERATING", "Still iterating (unexpected after solve)"),
         # Negative reasons = diverged
         -1: ("DIVERGED_FUNCTION_DOMAIN", "Function domain error"),
         -2: ("DIVERGED_FUNCTION_COUNT", "Too many function evaluations"),
         -3: ("DIVERGED_LINEAR_SOLVE", "Linear solver failed"),
-        -4: ("DIVERGED_FNORM_NAN", "||F|| is Not-a-Number"),
+        -4: ("DIVERGED_FUNCTION_NANORINF", "||F|| is Not-a-Number or infinite"),
         -5: ("DIVERGED_MAX_IT", "Maximum iterations exceeded"),
         -6: ("DIVERGED_LINE_SEARCH", "Line search failed"),
         -7: ("DIVERGED_INNER", "Inner solve failed"),
@@ -1347,6 +1350,8 @@ class SolverBaseClass(uw_object):
         -9: ("DIVERGED_DTOL", "||F|| increased by divtol"),
         -10: ("DIVERGED_JACOBIAN_DOMAIN", "Jacobian calculation failed"),
         -11: ("DIVERGED_TR_DELTA", "Trust region delta too small"),
+        -13: ("DIVERGED_OBJECTIVE_DOMAIN", "Objective function domain error"),
+        -14: ("DIVERGED_OBJECTIVE_NANORINF", "Objective is Not-a-Number or infinite"),
     }
 
     def _warn_on_divergence(self, phase="solve"):
