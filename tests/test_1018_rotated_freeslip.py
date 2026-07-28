@@ -98,8 +98,8 @@ def test_rotated_freeslip_spherical_shell_3d():
 
     info = s._rotated_freeslip_info
     assert info["ksp_reason"] > 0, f"rotated KSP diverged: {info['ksp_reason']}"
-    assert info["ksp_its"] <= 25, (
-        f"Schur iteration blow-out: {info['ksp_its']} outer its "
+    assert max(info["ksp_its"]) <= 25, (
+        f"Schur iteration blow-out: {info['ksp_its']} outer its per increment "
         "(1/mu-mass Schur preconditioning regressed?)")
     assert info["rotation_gauge_removed"], "3D rotation gauge not detected/removed"
 
@@ -611,11 +611,11 @@ def test_rotated_freeslip_dynamic_topography_field():
 
 
 # --- Prescribed non-zero wall-normal datum (u.n = ũ_n) ---------------------------
-# The rotated constraint imposes u.n = datum strongly: datum=0 is pure free-slip (the
-# held lid); a non-zero datum is the "consistent" material-surface velocity. Both share
-# the same rotated matrix and differ only in the constraint RHS, so datum=0 must be
-# BIT-IDENTICAL to plain free-slip. (Set via solver._rotated_freeslip_datum until the
-# add_rotated_freeslip_bc datum argument lands — underworldcode/underworld3 tracking.)
+# The rotated constraint imposes u.n = datum strongly, via the value-first conds
+# argument: conds=0 is pure free-slip (the held lid); a non-zero conds is the
+# "consistent" material-surface velocity. Both share the same rotated matrix and
+# differ only in the constraint RHS, so an explicit zero datum must reproduce plain
+# free-slip exactly.
 
 def _annulus_datum_solve(mode, tag):
     RI, RO = 0.5, 1.0
@@ -631,11 +631,8 @@ def _annulus_datum_solve(mode, tag):
     blob = sympy.exp(-(((x - 0.75) ** 2 + y ** 2) / 0.05))
     s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
     s.add_essential_bc((0.0, 0.0), "Lower")          # no-slip inner (pins rotation gauge)
-    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
-    if mode == "zero":
-        s._rotated_freeslip_datum = {"Upper": 0.0}
-    elif mode == "cos":
-        s._rotated_freeslip_datum = {"Upper": x / r}   # u.n = cos(theta), mean-zero => ∮u.n=0
+    datum = {"plain": 0, "zero": 0.0, "cos": x / r}[mode]   # cos: mean-zero => ∮u.n=0
+    s.add_rotated_freeslip_bc(datum, "Upper", normal=nhat)
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.tolerance = 1e-9
@@ -693,8 +690,7 @@ def test_rotated_freeslip_nonlinear_prescribed_normal_datum():
     blob = sympy.exp(-(((x - 0.75) ** 2 + y ** 2) / 0.05))
     s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
     s.add_essential_bc((0.0, 0.0), "Lower")          # no-slip inner (pins rotation gauge)
-    s.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
-    s._rotated_freeslip_datum = {"Upper": x / r}     # u.n = cos(theta), mean-zero flux
+    s.add_rotated_freeslip_bc(x / r, "Upper", normal=nhat)   # u.n = cos(theta), mean-zero flux
     s.consistent_jacobian = True                     # Newton tangent (few iterations)
     s.petsc_use_pressure_nullspace = True
     s.tolerance = 1e-7

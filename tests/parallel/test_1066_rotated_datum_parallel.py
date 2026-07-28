@@ -41,8 +41,7 @@ def test_rotated_datum_prescribed_normal_partition_independent():
     blob = sympy.exp(-(((x - 0.75) ** 2 + y ** 2) / 0.05))
     s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
     s.add_essential_bc((0.0, 0.0), "Lower")               # no-slip inner (pins rotation)
-    s.add_rotated_freeslip_bc(0.0, "Upper", normal=nhat)
-    s._rotated_freeslip_datum = {"Upper": x / r}          # u.n = cos(theta), mean-zero
+    s.add_rotated_freeslip_bc(x / r, "Upper", normal=nhat)    # u.n = cos(theta), mean-zero
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
     s.tolerance = 1.0e-9
