@@ -95,10 +95,7 @@ from .field_projection import (
 )
 
 # DMField evaluation — FE-exact field and gradient evaluation at arbitrary points
-from .dmfield_evaluate import (
-    dmfield_evaluate,
-    dmfield_evaluate_clear_cache,
-)
+from .dmfield_evaluate import dmfield_evaluate
 
 
 def with_units(sympy_expr, name=None, units=None):

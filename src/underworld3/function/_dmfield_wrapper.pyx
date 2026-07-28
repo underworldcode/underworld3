@@ -1,200 +1,165 @@
 # cython: language_level=3
 """
-Safe Cython wrapper for PETSc DMField C objects.
+Cython wrapper for PETSc DMField — FE-exact field/gradient/Hessian evaluation.
 
-DMField is a PETSc object that evaluates a field and its spatial derivatives
-at arbitrary points using the FE basis functions directly — no L2 projection,
-no mass-matrix solve.
+Uses Cython extern declarations (via ``petsc_extras.pxi``) — no ctypes,
+no hardcoded ``.dylib`` paths. Portable across macOS, Linux, and CI.
+
+Parallel contract
+-----------------
+``DMFieldEvaluate`` internally calls ``DMLocatePoints``, which is
+**COLLECTIVE on the mesh DM's communicator**.  All ranks must call,
+even with zero local points.  Results are rank-local; each rank
+evaluates its own coordinate set and receives its own output arrays.
+
+Unlocated points
+----------------
+Output arrays are initialized to ``NaN``.  PETSc's ``DMFieldEvaluate_DS``
+skips writing to slots whose cell index is negative, so unlocated points
+retain their ``NaN`` initial value.  Callers detect unlocated points with
+``np.isnan()``.
+
+  **Note**: The NaN-survival behavior depends on PETSc's implementation
+  of ``DMFieldEvaluate_DS`` (``continue`` on negative cell index).  The
+  test ``test_unlocated_points_nan`` guards against regressions.
 """
 
 import numpy as np
 cimport numpy as np
 
-# Import PETSc Cython types
+from petsc4py import PETSc as PyPETSc
 from petsc4py.PETSc cimport DM, PetscDM
 from petsc4py.PETSc cimport Vec, PetscVec
 
-# Declare PETSc integer/error types locally
-cdef extern from "petsc.h" nogil:
-    ctypedef int PetscErrorCode
-    ctypedef int PetscInt
+include "../cython/petsc_extras.pxi"
 
 
-cdef class CachedDMField:
-    """Python-managed wrapper for a PETSc DMField C object.
+cdef class DMFieldEvaluator:
+    """Thin wrapper for a PETSc DMField — create, evaluate, destroy.
 
-    The DMField is created once from a MeshVariable and then reused for
-    multiple evaluate() calls, as long as the variable's data is current.
+    No persistent state beyond a single ``evaluate()`` call.  Create a
+    fresh instance per evaluation; the overhead (~0.5 us) is negligible
+    compared to the evaluate cost (~50-200 us).
     """
 
-    cdef public object _field_handle  # Python int — DMField pointer as integer
-    cdef public object mesh
-    cdef public object source_var
-    cdef public bint is_valid
-    cdef public int nc               # num_components
-    cdef public int dim              # spatial dimension
-    cdef public object _comm         # MPI communicator (matches mesh DM)
+    cdef void* _dmf
 
     def __cinit__(self):
-        self._field_handle = 0
-        self.is_valid = False
-        self.nc = 0
-        self.dim = 0
-        self._comm = None
+        self._dmf = NULL
 
     def create(self, mesh, source_var):
-        """Create the DMField from a MeshVariable via PETSc C API.
+        """Create DMField from a MeshVariable via ``DMFieldCreateDS``.
 
-        Uses ``ctypes`` to call ``DMFieldCreateDS`` so we never have to
-        wrestle with the opaque ``DMField`` pointer type in Cython's type
-        system.
+        ``mesh.update_lvec()`` must be called (collectively) before this.
         """
-        import os
-        import ctypes
-        from ctypes import c_int, c_void_p, POINTER, byref
+        cdef void* dmf = NULL
+        cdef PetscDM c_dm = (<DM>mesh.dm).dm
+        cdef PetscVec c_lvec = (<Vec>mesh.lvec).vec
+        cdef PetscErrorCode ierr
 
-        # Locate libpetsc
-        petsc_dir = os.environ.get("PETSC_DIR", "")
-        petsc_arch = os.environ.get("PETSC_ARCH", "")
-        lib_dir = os.path.join(petsc_dir, petsc_arch, "lib")
-        if not os.path.isdir(lib_dir):
-            lib_dir = os.path.join(petsc_dir, "lib")
-        lib_path = os.path.join(lib_dir, "libpetsc.dylib")
-        if not os.path.exists(lib_path):
-            raise RuntimeError(f"Cannot find libpetsc at {lib_path}")
+        ierr = DMFieldCreateDS(c_dm, source_var.field_id, c_lvec, &dmf)
+        CHKERRQ(ierr)
+        self._dmf = dmf
 
-        lib = ctypes.CDLL(lib_path)
-        lib.DMFieldCreateDS.argtypes = [c_void_p, c_int, c_void_p, POINTER(c_void_p)]
-        lib.DMFieldCreateDS.restype = c_int
-
-        field_ptr = c_void_p(None)
-        ierr = lib.DMFieldCreateDS(
-            mesh.dm.handle,
-            source_var.field_id,
-            mesh.lvec.handle,
-            byref(field_ptr),
-        )
-        if ierr != 0:
-            raise RuntimeError(
-                f"DMFieldCreateDS failed for field "
-                f"'{source_var.clean_name}' (field_id={source_var.field_id}) "
-                f"with error {ierr}"
-            )
-
-        self._field_handle = field_ptr.value
-        self.nc = source_var.num_components
-        self.dim = mesh.dim
-        self._comm = mesh.dm.comm
-        self.mesh = mesh
-        self.source_var = source_var
-        self.is_valid = True
-
-    def evaluate(self, coords_array, gradient=True, hessian=False):
-        """Evaluate the field (and its derivatives) at *coords*.
+    def evaluate(self, coords_array, mesh, source_var,
+                 gradient=True, hessian=False):
+        """Evaluate at *coords_array*, return ``(B, D, H)``.
 
         Parameters
         ----------
         coords_array : ndarray (n_points, dim)
-            Non-dimensional [0-1] coordinates to evaluate at.
+            Non-dimensional [0-1] coordinates.
+        mesh : Mesh
+            The mesh (needed for DM/lvec access).
+        source_var : MeshVariable
+            The source variable (metadata only — used for nc/dim).
         gradient : bool
-            If True, return first derivatives D.
+            Return first derivatives D (default True).
         hessian : bool
-            If False, return second derivatives H.
+            Return second derivatives H (default False).
 
         Returns
         -------
         B : ndarray (n_points, nc) or None
-            Field values.
-        D : ndarray (n_points, dim, nc) or None
-            First derivatives: D[k, i, j] = ∂(component j)/∂xᵢ at point k.
-        H : ndarray (n_points, dim, dim, nc) or None
-            Second derivatives.
+            Field values.  Unlocated points are ``NaN``.
+        D : ndarray (n_points, nc, dim) or None
+            First derivatives.  ``D[k, j, i]`` = partial(component *j*) /
+            partial x_i.  ``None`` when ``gradient=False``.
+        H : ndarray (n_points, nc, dim, dim) or None
+            Second derivatives.  ``H[k, j, i, l]`` = partial^2(component *j*) /
+            partial x_i partial x_l.  ``None`` when ``hessian=False``.
         """
-        if not self.is_valid:
-            raise RuntimeError("Cannot evaluate destroyed CachedDMField")
+        cdef int n_points = coords_array.shape[0]
+        cdef int dim = mesh.dim
+        cdef int nc = source_var.num_components
 
-        # DMFieldEvaluate internally calls DMLocatePoints which needs
-        # localized coordinates.  Idempotent — safe on every call.
-        self.mesh.dm.localizeCoordinates()
+        # DMLocatePoints is collective on the mesh DM — all ranks must
+        # participate, even those with zero local points.
+        mesh.dm.localizeCoordinates()
 
-        import ctypes
-        from ctypes import c_int, c_void_p
-        import os
-        from petsc4py import PETSc as PyPETSc
-
-        n_points = coords_array.shape[0]
-        dim = self.dim
-        nc = self.nc
-
-        # Build points Vec
-        pts_flat = np.ascontiguousarray(coords_array.ravel(), dtype=np.float64)
-        pts_py = PyPETSc.Vec().createWithArray(pts_flat, comm=self._comm)
+        # Build points Vec on COMM_SELF — each rank owns its own local
+        # coordinates.  DMFieldEvaluate (which calls DMLocatePoints
+        # internally) is collective on the DM; the Vec data is rank-local.
+        pts_np = np.ascontiguousarray(coords_array.ravel(), dtype=np.float64)
+        pts_py = PyPETSc.Vec().createWithArray(pts_np, comm=PyPETSc.COMM_SELF)
         pts_py.setBlockSize(dim)
+        cdef PetscVec c_pts = (<Vec>pts_py).vec
 
-        # Allocate output arrays
-        B = np.empty(n_points * nc, dtype=np.float64) if nc > 0 else None
-        D = np.empty(n_points * nc * dim, dtype=np.float64) if gradient and nc > 0 else None
-        H = np.empty(n_points * nc * dim * dim, dtype=np.float64) if hessian and nc > 0 else None
+        # Allocate outputs — initialised to NaN.
+        # If PETSc's evaluator skips unlocated slots (the standard
+        # behaviour of DMFieldEvaluate_DS), the NaN survives and
+        # callers can detect unlocated points with np.isnan().
+        B_arr = (np.full(n_points * nc, np.nan, dtype=np.float64)
+                 if nc > 0 else None)
+        D_arr = (np.full(n_points * nc * dim, np.nan, dtype=np.float64)
+                 if gradient and nc > 0 else None)
+        H_arr = (np.full(n_points * nc * dim * dim, np.nan, dtype=np.float64)
+                 if hessian and nc > 0 else None)
 
-        # Call via ctypes
-        lib_path = os.path.join(
-            os.environ["PETSC_DIR"],
-            os.environ.get("PETSC_ARCH", ""),
-            "lib", "libpetsc.dylib"
-        )
-        lib = ctypes.CDLL(lib_path)
-        lib.DMFieldEvaluate.argtypes = [c_void_p, c_void_p, c_int, c_void_p, c_void_p, c_void_p]
-        lib.DMFieldEvaluate.restype = c_int
+        cdef PetscScalar* B_cptr = \
+            <PetscScalar*>np.PyArray_DATA(B_arr) if B_arr is not None and B_arr.size > 0 else NULL
+        cdef PetscScalar* D_cptr = \
+            <PetscScalar*>np.PyArray_DATA(D_arr) if D_arr is not None and D_arr.size > 0 else NULL
+        cdef PetscScalar* H_cptr = \
+            <PetscScalar*>np.PyArray_DATA(H_arr) if H_arr is not None and H_arr.size > 0 else NULL
 
-        ierr = lib.DMFieldEvaluate(
-            c_void_p(self._field_handle),
-            pts_py.handle,
-            0,  # PETSC_REAL
-            B.ctypes.data_as(c_void_p) if B is not None and B.size else ctypes.c_void_p(),
-            D.ctypes.data_as(c_void_p) if D is not None and D.size else ctypes.c_void_p(),
-            H.ctypes.data_as(c_void_p) if H is not None and H.size else ctypes.c_void_p(),
+        cdef PetscErrorCode ierr
+        ierr = DMFieldEvaluate(
+            self._dmf, c_pts, PETSC_REAL, B_cptr, D_cptr, H_cptr,
         )
         pts_py.destroy()
-        if ierr != 0:
-            raise RuntimeError(f"DMFieldEvaluate failed with error {ierr}")
+        CHKERRQ(ierr)
 
-        # Reshape
-        B_out = B.reshape(n_points, nc) if B is not None else None
-        D_out = D.reshape(n_points, dim, nc) if D is not None else None
-        H_out = H.reshape(n_points, dim, dim, nc) if H is not None else None
+        # ── Reshape to corrected layout ────────────────────────────────
+        # PETSc stores point-major, then component, then direction:
+        #   rD[(i * nc + j) * dimC + l]
+        # So C-order reshape: (n_points, nc, dim) gives D[k, j, i].
+        B_out = B_arr.reshape(n_points, nc) if B_arr is not None else None
+        D_out = (D_arr.reshape(n_points, nc, dim)
+                 if D_arr is not None else None)
+        H_out = (H_arr.reshape(n_points, nc, dim, dim)
+                 if H_arr is not None else None)
+
         return B_out, D_out, H_out
 
     def destroy(self):
-        if not self.is_valid:
+        """Release the DMField.  Idempotent — safe to call multiple times."""
+        cdef PetscErrorCode ierr
+        if self._dmf == NULL:
             return
         try:
-            import ctypes
-            from ctypes import c_int, c_void_p, POINTER
-            import os
-
-            lib_path = os.path.join(
-                os.environ["PETSC_DIR"],
-                os.environ.get("PETSC_ARCH", ""),
-                "lib", "libpetsc.dylib"
-            )
-            lib = ctypes.CDLL(lib_path)
-            lib.DMFieldDestroy.argtypes = [POINTER(c_void_p)]
-            lib.DMFieldDestroy.restype = c_int
-
-            ptr = c_void_p(self._field_handle)
-            lib.DMFieldDestroy(ctypes.byref(ptr))
+            ierr = DMFieldDestroy(&self._dmf)
+            CHKERRQ(ierr)
         except Exception:
-            pass  # during interpreter shutdown modules may be gone
+            # Sanctioned failure: during interpreter shutdown PETSc may
+            # have already been finalised; the OS reclaims memory.
+            pass
         finally:
-            self._field_handle = 0
-            self.is_valid = False
+            self._dmf = NULL
 
     def __dealloc__(self):
         self.destroy()
 
     def __repr__(self):
-        status = "valid" if self.is_valid else "destroyed"
-        var = self.source_var
-        return (f"CachedDMField({status}, "
-                f"var='{var.clean_name if var else '?'}', "
-                f"nc={self.nc}, dim={self.dim})")
+        status = "valid" if self._dmf != NULL else "destroyed"
+        return f"DMFieldEvaluator({status})"

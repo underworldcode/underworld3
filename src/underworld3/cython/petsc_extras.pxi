@@ -115,3 +115,17 @@ cdef extern from "petsc.h" nogil:
 
     # Not wrapped at this point
     PetscErrorCode VecConcatenate(PetscInt nx, const PetscVec X[], PetscVec *, PetscIS *)
+
+# ── DMField evaluation (PR #436) ──────────────────────────────────────
+# Cython externs for PETSc DMField C API — FE-exact field, gradient, and
+# Hessian evaluation at arbitrary points. Used by _dmfield_wrapper.pyx.
+
+cdef extern from "petscdmfield.h" nogil:
+    PetscErrorCode DMFieldCreateDS(PetscDM dm, PetscInt field, PetscVec lvec, void **dmf)
+    PetscErrorCode DMFieldEvaluate(void *dmf, PetscVec pts, PetscInt dt,
+                                    void *B, void *D, void *H)
+    PetscErrorCode DMFieldDestroy(void **dmf)
+
+cdef extern from "petscsys.h" nogil:
+    cdef enum:
+        PETSC_REAL       # PetscDataType value for double-precision real
