@@ -266,7 +266,8 @@ extensions = [
         sources=[
             "src/underworld3/function/_dmfield_wrapper.pyx",
         ],
-        extra_compile_args=extra_compile_args,
+        extra_compile_args=extra_compile_args
+        + ["-Werror=incompatible-pointer-types", "-Werror=implicit-function-declaration"],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         **conf,
     ),
