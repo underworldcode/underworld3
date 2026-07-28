@@ -43,3 +43,12 @@ echo "ptest 0004 checkpoint FMG hierarchy -np 2"
 mpirun -np 2 $PYTHON ./ptest_0004_checkpoint_fmg_hierarchy.py
 echo "ptest 0004 checkpoint FMG hierarchy -np 3 (uneven partition)"
 mpirun -np 3 $PYTHON ./ptest_0004_checkpoint_fmg_hierarchy.py
+
+# The wall-clock guard's expiry decision must be identical on every rank: a PETSc
+# convergence test that disagrees across ranks deadlocks the next collective. This
+# script skews the per-rank clocks deliberately, so it HANGS rather than fails if the
+# reduction is ever dropped -- run it under a timeout.
+echo "ptest 0203 wall-clock guard -np 2"
+mpirun --timeout 300 -np 2 $PYTHON ./ptest_0203_wallclock_guard_parallel.py
+echo "ptest 0203 wall-clock guard -np 4"
+mpirun --timeout 300 -np 4 $PYTHON ./ptest_0203_wallclock_guard_parallel.py

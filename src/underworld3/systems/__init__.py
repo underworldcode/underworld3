@@ -79,6 +79,9 @@ from .solvers import SNES_NavierStokes as NavierStokes
 
 from .free_surface import FreeSurface
 
+# What solve_report.sub holds — one entry per fieldsplit block (see solver_health).
+from .solver_health import SubSolveReport
+
 # are the Lagrangian implementations actually distinct in reality ?
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
