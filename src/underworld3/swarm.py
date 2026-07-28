@@ -2859,6 +2859,7 @@ class Swarm(Stateful, uw_object):
         # stencil and shared by every proxied variable of this swarm. Entries
         # carry the kd-tree they were built from, so they self-invalidate.
         self._proxy_interpolation_cache = {}
+        self._proxy_cache_mesh_version = None
         self._migration_disabled = False
 
         # Deterministic (SPMD-consistent) creation index — used to order
@@ -3080,9 +3081,24 @@ class Swarm(Stateful, uw_object):
         until it is replaced -- one tree per distinct key, which is bounded by
         the number of proxy discretisations in use.
         """
+        # Two independent things can invalidate an operator, and each is
+        # handled where it can be detected structurally rather than by a flag
+        # someone has to remember to set:
+        #
+        #   mesh geometry  -- a deform or adapt bumps _mesh_version. The whole
+        #                     cache is dropped, because every entry was built
+        #                     against the old node positions. Keying on the
+        #                     version instead would keep the dead entries
+        #                     forever, one set per mesh generation.
+        #   particle motion -- migrate() replaces the kd-tree, so an entry that
+        #                     does not carry the current tree is stale.
+        version = self.mesh._mesh_version
+        if self._proxy_cache_mesh_version != version:
+            self._proxy_interpolation_cache.clear()
+            self._proxy_cache_mesh_version = version
+
         kdtree = self._get_kdtree()
-        key = (self.mesh._mesh_version, meshVar.degree, meshVar.continuous,
-               nnn, p, order)
+        key = (meshVar.degree, meshVar.continuous, nnn, p, order)
 
         cached = self._proxy_interpolation_cache.get(key)
         if cached is not None and cached[0] is kdtree:

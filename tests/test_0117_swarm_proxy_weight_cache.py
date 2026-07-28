@@ -172,3 +172,53 @@ def test_monotone_refresh_bypasses_the_cache():
 
     del swarm
     del mesh
+
+
+def test_cache_does_not_grow_across_mesh_generations():
+    """A deform invalidates every entry, so the cache must not accumulate.
+
+    Keying on the mesh version instead of clearing would keep one dead entry
+    set per mesh generation — each holding a kd-tree, which is a no-copy view
+    of a particle coordinate buffer — for the life of the swarm. Measured
+    before the fix: two entries after a single deform.
+    """
+    mesh, swarm, variables = _swarm_with(1)
+    var = variables[0]
+
+    var.data[:, 0] = 1.0
+    var._rbf_to_meshVar(var._meshVar)
+    assert len(swarm._proxy_interpolation_cache) == 1
+
+    for scale in (1.05, 1.05, 1.05):
+        coords = np.asarray(mesh.X.coords).copy()
+        coords[:, 1] *= scale
+        mesh.deform(coords)
+        var._rbf_to_meshVar(var._meshVar)
+        assert len(swarm._proxy_interpolation_cache) == 1, (
+            "cache accumulated an entry per mesh generation: "
+            f"{len(swarm._proxy_interpolation_cache)} entries"
+        )
+
+    del swarm
+    del mesh
+
+
+def test_operator_is_rebuilt_after_a_mesh_deform():
+    """Correctness half of the above: the new operator is not the old one."""
+    mesh, swarm, variables = _swarm_with(1)
+    var = variables[0]
+
+    var.data[:, 0] = 1.0
+    var._rbf_to_meshVar(var._meshVar)
+    before = next(iter(swarm._proxy_interpolation_cache.values()))[1]
+
+    coords = np.asarray(mesh.X.coords).copy()
+    coords[:, 1] *= 1.1
+    mesh.deform(coords)
+    var._rbf_to_meshVar(var._meshVar)
+    after = next(iter(swarm._proxy_interpolation_cache.values()))[1]
+
+    assert after is not before, "operator survived a mesh deform"
+
+    del swarm
+    del mesh
