@@ -1065,6 +1065,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 continuous=self._proxy_continuous,
                 varsymbol=r"\left<" + self.symbol + r"\right>",
                 remesh_policy="reinit",
+                # The proxy is what `var.sym` resolves to, so it advertises
+                # the same units as the variable it stands for. Without this,
+                # evaluating a proxied symbol returned the NON-DIMENSIONAL
+                # number with no units attached, as though it were the answer
+                # (issue #439). Stored data stays non-dimensional either way.
+                units=self._units,
             )
             # The remesh helper calls this on REINIT vars after an
             # adapt. Bound here so the closure captures ``self`` (the
