@@ -42,7 +42,7 @@ cdef class DMFieldEvaluator:
     compared to the evaluate cost (~50-200 us).
     """
 
-    cdef void* _dmf
+    cdef _p_DMField* _dmf
 
     def __cinit__(self):
         self._dmf = NULL
@@ -52,7 +52,7 @@ cdef class DMFieldEvaluator:
 
         ``mesh.update_lvec()`` must be called (collectively) before this.
         """
-        cdef void* dmf = NULL
+        cdef _p_DMField* dmf = NULL
         cdef PetscDM c_dm = (<DM>mesh.dm).dm
         cdef PetscVec c_lvec = (<Vec>mesh.lvec).vec
         cdef PetscErrorCode ierr
