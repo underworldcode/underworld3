@@ -2593,9 +2593,10 @@ class GenericFluxModel(Constitutive_Model):
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
 
-            # Raw sympy zero vector — NOT wrapped in UWexpressions, so the
-            # JIT sees the symbolic content directly (field variable dependencies).
-            # See the flux setter for the rationale.
+            # Raw sympy zero vector — NOT wrapped in UWexpressions. The default
+            # (Picard) tangent differentiates the flux WITHOUT unwrapping, so a
+            # wrapped whole-flux component has zero derivative w.r.t. the unknown
+            # and its gradient. See the flux setter for the full rationale.
             inner_self._flux = sympy.zeros(_owning_model.dim, 1)
 
         @property
@@ -2607,12 +2608,22 @@ class GenericFluxModel(Constitutive_Model):
         def flux(inner_self, value: sympy.Matrix):
             """Set the flux expression (must be a vector of length dim).
 
-            Stores the raw sympy expression directly to preserve symbolic
-            dependencies (field variables, mesh coordinates) for the JIT.
-            Previously wrapped each component in a UWexpression via
-            ``validate_parameters``, which created independent Symbols that
-            the JIT treated as constants — losing the dependency on the
-            unknown field (e.g. ``u.sym``) and producing a singular matrix.
+            Stores the raw sympy expression directly. Previously each component
+            was wrapped in a UWexpression via ``validate_parameters`` — and the
+            default (Picard) tangent differentiates the flux WITHOUT unwrapping
+            (frozen-coefficient semantics; unwrap-before-differentiate runs only
+            on the consistent-Newton path). An opaque wrapper holding the ENTIRE
+            flux therefore has zero derivative w.r.t. the unknown and its
+            gradient: G0–G3 vanish and the operator is structurally singular.
+            The residual was never affected (the JIT's constants machinery
+            reveals non-constant wrappers correctly); the same pre-fix model
+            solved under ``consistent_jacobian=True``. Coefficient-level
+            wrapping in other models is safe — d(k*grad u)/d(grad u) = k — the
+            hazard is specific to wrapping a whole flux term.
+
+            Side effect of raw storage: with nothing left to freeze, this
+            model's default tangent is effectively full Newton (the
+            Picard/Newton switch is a no-op for GenericFluxModel).
             """
             dim = inner_self._owning_model.dim
 
