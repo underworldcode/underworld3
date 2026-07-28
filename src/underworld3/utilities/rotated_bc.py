@@ -588,11 +588,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # pure free-slip.
     datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
     Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
-    # Direct LU per increment: no FMG prolongation / null space to prebuild — the
+    # Direct LU per increment: no FMG prolongation / null space to build — the
     # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
     custom_Pl = None if use_lu else _build_rotated_custom_Pl(solver, Q, normal_rows)
-    nsp = None if use_lu else _rotated_nullspace(solver, Q, normal_rows)
+    # The null space is built INSIDE the loop, after the first Jacobian assembly:
+    # _mode_satisfies_constraints verifies each candidate mode against the
+    # ASSEMBLED operator (‖J·m‖ ≈ 0), which an unassembled J cannot support.
+    nsp = None
 
     # initial guess (cartesian, composite): warm-start from the fields or zero.
     # A prescribed datum on a COLD start is imposed through the FIRST increment's
@@ -687,6 +690,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         if not use_lu:
             if ctx is None:
                 Mp = _pressure_mass_schur_pmat(solver)
+                nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
             elif Mp is not None:
                 Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
@@ -736,7 +740,28 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # are at the solution — the exit for a warm start that is already converged
         # (otherwise the relative test above, with a tiny r0, chatters near machine
         # level). ‖u‖=0 on a cold start ⇒ this never fires prematurely (d is large).
+        # A tiny step alone does NOT prove convergence — a stiff tangent (power-law
+        # at the regularisation floor) also produces tiny increments at a large
+        # residual — so the exit is VERIFIED against the problem's intrinsic scale
+        # ‖F̂(0)‖: a warm start at the solution passes (its residual sits at the
+        # cold chain's converged level); a stagnating crawl does not. One extra
+        # residual evaluation, paid only on this rare path. On verification
+        # failure the tiny step goes through the NORMAL line search instead: if it
+        # still improves, the crawl proceeds (bounded by max_it); if not, the
+        # stall exit ends the loop honestly.
         step_converged = d.norm() <= stol * (u.norm() + 1e-30)
+        if step_converged:
+            z = dm.getGlobalVec()
+            z.set(0.0)
+            F0hat = rotated_residual(z)
+            fnorm0 = F0hat.norm()
+            F0hat.destroy()
+            dm.restoreGlobalVec(z)
+            step_converged = rnorm <= rtol * fnorm0 + atol
+            if not step_converged:
+                mpi.pprint(f"[rotated_bc] step-norm at rel |F̂| = "
+                           f"{rnorm / (fnorm0 + 1e-300):.2e} of the rest-state "
+                           f"residual — stagnation-or-crawl, continuing to iterate.")
         improved = False
         if lift_datum and iters == 0:
             # accept the lift step unconditionally (it is the smooth rest-state
@@ -882,8 +907,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         complement for enclosed domains (the hand-built IS fieldsplit does not
         inherit it from the operator).
 
-    ``custom_Pl`` / ``nsp`` may be PREBUILT (nonlinear driver: build once, reuse each
-    Newton step); when None they are built here.
+    ``custom_Pl`` / ``nsp`` are built by the CALLER (once, reused each Newton step;
+    the null-space mode verification needs the assembled Jacobian, which only the
+    caller can guarantee); None simply means "no hierarchy" / "no null modes".
 
     Returns ``(Uhat, reason, ctx)``. Passing ``ctx`` back in reuses the KSP/PC
     across Newton iterations — the fieldsplit ISs, Schur USER pmat and FMG
@@ -896,12 +922,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     pres_is = solver._subdict["pressure"][0]
 
     if ctx is None:
-        if custom_Pl is None:
-            custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
-
-        # rotated coupled null space (pressure-const ⊕ Q·rotation) on the operator
-        if nsp is None:
-            nsp = _rotated_nullspace(solver, Q, normal_rows)
+        # rotated coupled null space (pressure-const ⊕ Q·rotation) on the operator —
+        # built by the CALLER (the Newton loop, after the first Jacobian assembly:
+        # the mode verification needs the assembled operator).
         if nsp is not None:
             Ahat.setNullSpace(nsp)
             Ahat.setTransposeNullSpace(nsp)
@@ -1083,10 +1106,23 @@ def _rotated_nullspace(solver, Q, normal_rows):
 
 
 def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
-    """True iff the rigid-body mode ``tg`` satisfies all rotated v_n=0
-    constraints — i.e. Q·tg is ~0 on every constrained normal row. (A closed
-    circular boundary admits its one rotation; a full spherical shell admits all
-    three; straight/partial walls pin them.)
+    """True iff the rigid-body mode ``tg`` is a genuine null mode of the
+    constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on
+    every constrained normal row) AND it is a null vector of the assembled
+    operator (‖J·tg‖ ~0 against the velocity diagonal scale). The operator test
+    is what catches pinning the rotated rows cannot see — an ESSENTIAL no-slip
+    on another boundary leaves the mode tangential to the rotated wall (first
+    test passes) while the eliminated operator is NOT null on it; admitting it
+    then projects an irreducible component out of every increment RHS, and the
+    Newton residual floors at that component's magnitude instead of converging
+    (measured: rel ~2e-5 plateau on the essential-inner + rotated-outer annulus).
+    (A closed circular free-slip boundary admits its one rotation; a full
+    spherical shell admits all three; straight/partial walls and any essential
+    BC pin them.)
+
+    The caller must have ASSEMBLED the solver's Jacobian at some iterate; an
+    unassembled J (norm 0) skips the operator test rather than passing every
+    mode through a vacuous 0 ≈ 0.
 
     COLLECTIVE: every rank runs the same global-vector ops. Do NOT early-return on
     a per-rank ``not normal_rows`` — in parallel a rank may own no boundary node
@@ -1108,7 +1144,21 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
     # transient duplicates
     tr.destroy()
     trc.destroy()
-    return viol < tol
+    if viol >= tol:
+        return False
+    # operator-nullity: rigid rotation has exactly zero strain in the discrete
+    # space (P2 contains linear fields, affine cells integrate the form exactly),
+    # so a genuine null mode gives assembly round-off; a pinned mode leaves O(1)
+    # boundary-strip rows.
+    J = solver.snes.getJacobian()[0]
+    Jm = tg.duplicate()
+    J.mult(tg, Jm)
+    jn = Jm.norm()
+    Jm.destroy()
+    if jn == 0.0 and J.norm() == 0.0:             # J never assembled → cannot verify
+        return True
+    op_viol = jn / (_velocity_diag_scale(J, solver) * (tg.norm() + 1e-30))
+    return op_viol < tol
 
 
 def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
