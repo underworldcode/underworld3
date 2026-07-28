@@ -2474,6 +2474,17 @@ class DarcyFlowModel(Constitutive_Model):
 
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):
+    # TODO(DESIGN): verify this model's CONSISTENT (Newton) tangent with the PETSc
+    # Jacobian checker (-snes_test_jacobian, NATIVE essential-BC path — no rotated
+    # machinery involved, so the test isolates the constitutive tangent). Evidence
+    # of a possible defect (#438 B-session, 2026-07-28): with a strain-rate-
+    # dependent eta_0/eta_1, consistent_jacobian=True produces an early iteration
+    # trajectory identical to the frozen (Picard) tangent and Picard-paced
+    # convergence (24 its vs ~11 for the isotropic power-law) — consistent with
+    # the dC/d(eps_II) orientation terms (the director e⊗e structure) being
+    # dropped or mis-oriented in the JIT-lowered g3, while the isotropic terms
+    # survive. Checker harness: ti_tangent_check.py in
+    # the #438 acceptance run directory (see the issue thread).
     r"""
     Transversely isotropic (anisotropic) viscous flow model.
 
