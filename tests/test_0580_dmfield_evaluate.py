@@ -1,7 +1,7 @@
 """
 Test DMFieldEvaluate — FE-exact field and gradient evaluation at arbitrary points.
 
-Verifies that ``uw.function.dmfield_evaluate`` returns machine-precision-exact
+Verifies that ``underworld3.function._dmfield_evaluate.dmfield_evaluate`` returns machine-precision-exact
 values and gradients for FE-representable fields.  Tests the corrected
 ``(n, nc, dim)`` layout for vector-gradient tensors, NaN semantics for
 unlocated points, and parallel-safe collective operation.
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import underworld3 as uw
 
-from underworld3.function import dmfield_evaluate
+from underworld3.function._dmfield_evaluate import dmfield_evaluate
 
 
 # ---------------------------------------------------------------------------

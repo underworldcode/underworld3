@@ -1,48 +1,27 @@
 """
-Evaluate a MeshVariable (with spatial derivatives) at arbitrary points
-using PETSc's ``DMFieldEvaluate`` — FE-exact values and gradients, no projection.
+.. currentmodule:: underworld3.function._dmfield_evaluate
 
-.. currentmodule:: underworld3.function
+**Internal primitive — user code should call ``uw.function.evaluate``
+for general evaluation.**
 
-When to use ``dmfield_evaluate`` vs. ``uw.function.evaluate``
--------------------------------------------------------------
-- **DMField** wins for: fields that ARE in the FE space (machine-precision
-  values/gradients), one-sided evaluation at element boundaries, and
-  Hessians (not available via other UW3 paths).
-- **Clement path** (``uw.function.evaluate``) wins for: smooth fields
-  NOT in the FE space — Clement recovery is superconvergent on regular
-  meshes and can give better accuracy than direct FE interpolation.
+``dmfield_evaluate`` uses PETSc's ``DMFieldEvaluate`` directly, bypassing
+several contracts that ``uw.function.evaluate`` provides:
 
-Unlocated points
-----------------
-Points outside the domain, or that ``DMLocatePoints`` cannot place in
-any element, are returned as ``NaN`` in all output arrays.  No automatic
-fallback interpolation is performed — use ``uw.function.evaluate`` if
-you need RBF-filled values at boundary points.
+- Units and non-dimensionalisation frame
+- Point-location fallback ladder (RBF rescue for unlocatable points)
+- Sympy expression composition (this takes a single MeshVariable)
+- Collective ``global_evaluate`` semantics
 
-Public Function
----------------
-dmfield_evaluate  -- Evaluate a MeshVariable at coordinates, returning
-                    field values and spatial derivatives.
+**Sanctioned uses** (internal / expert only):
 
-Examples
---------
->>> import underworld3 as uw
->>> import numpy as np
->>> from underworld3.function import dmfield_evaluate
->>>
->>> # Velocity and its gradient at mesh nodes
->>> B, D, H = dmfield_evaluate(velocity, mesh.X.coords)
->>> D.shape   # (n_nodes, nc, dim) — e.g. (1024, 2, 2) for 2D velocity
->>>
->>> # Strain rate components.  D[k, j, i] = partial(component j)/partial x_i:
->>> exx = D[:, 0, 0]  # partial u_x / partial x
->>> eyy = D[:, 1, 1]  # partial u_y / partial y
->>> exy = 0.5 * (D[:, 0, 1] + D[:, 1, 0])  # symmetric shear rate
->>>
->>> # Fill a mesh variable directly (no projection, no boundary artifact)
->>> eII = np.sqrt((exx**2 + eyy**2 + 2*exy**2) / 2)
->>> visc_var.data[:, 0] = yield_stress / (2 * (eII + eps_min))
+- Computing exact derivatives of solved FE fields (velocity strain rates,
+  temperature gradients) without L2 projection
+- Hessians for adaptivity metrics (no other UW3 source exists)
+- One-sided element-boundary evaluation for diagnostic probes
+- Internal machinery that needs to bypass the expression stack
+
+For smooth fields NOT in the FE space, the Clement recovery path
+(``uw.function.evaluate``) is superconvergent and more accurate.
 """
 import numpy as np
 
@@ -50,13 +29,15 @@ from ._dmfield_wrapper import DMFieldEvaluator
 
 
 def dmfield_evaluate(var, coords, gradient=True, hessian=False):
-    """Evaluate a MeshVariable (and its spatial derivatives) at *coords*.
+    """Internal primitive — FE-exact field and derivative evaluation.
 
-    Uses PETSc's ``DMFieldEvaluate`` to compute the FE basis functions at
-    each query point, giving FE-exact values and gradients **without** an
-    L2 projection or mass-matrix solve.  This avoids the projection
-    artifacts that appear when evaluating derivative-dependent quantities
-    (strain rate, viscosity, ...) via ``uw.systems.Projection``.
+    Evaluates a single ``MeshVariable`` at arbitrary coordinates using
+    PETSc's ``DMFieldEvaluate`` (FE basis interpolation, no L2 projection).
+
+    **User code should call ``uw.function.evaluate``**, which provides
+    units handling, location fallback, expression composition, and
+    collective parallel evaluation. This function bypasses those
+    contracts and is intended for internal machinery and expert use.
 
     Parameters
     ----------
