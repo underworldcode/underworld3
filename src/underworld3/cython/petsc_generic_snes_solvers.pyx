@@ -6330,9 +6330,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         are deliberately excluded: they belong to whoever set them last, which may be the
         user (#477). Overwriting them here is what made them unsettable."""
         self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["snes_ksp_ew"] = None
-        self.petsc_options["snes_ksp_ew_version"] = 3
         self.petsc_options["ksp_atol"] = self._tolerance * 1.0e-6
+        # The Eisenstat-Walker flags are NOT re-asserted here. solve() never changes
+        # them, so they stay in the options DB from the `tolerance` setter and
+        # setFromOptions picks them up regardless — while re-asserting would make
+        # `snes_ksp_ew` impossible to switch OFF, which is the same defect as #477 on a
+        # knob that matters: EW re-picks the outer KSP rtol every Newton step and
+        # OVERRIDES ksp_rtol, so "how hard is the linear solve actually being asked to
+        # work" is not answerable without being able to disable it.
 
 
     @property
