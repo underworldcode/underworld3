@@ -97,15 +97,32 @@ def _geometric_mg_settings(coarse):
         # two-level cycle is a coarse-grid correction, not a V-cycle, and is not
         # worth special-casing). Chebyshev needs eigenvalue estimates of the
         # smoothed operator, which are fragile on the indefinite /
-        # variable-viscosity velocity block and diverge. Richardson is stationary
-        # and degrades on the NON-SYMMETRIC operator produced by the
-        # consistent-Newton tangent. Measured on the Spiegelman notch
-        # (Drucker-Prager, eta contrast 1e26) over a nested 4-level hierarchy:
+        # variable-viscosity velocity block and diverge.
+        #
+        # The measurement, which is what this setting rests on: Spiegelman notch
+        # (Drucker-Prager, eta contrast 1e26) over a nested 4-level hierarchy,
         # contraction per V-cycle rho = 0.75 (richardson) vs 0.56 (gmres) at the
-        # SAME four smoother iterations -- and the gmres margin GROWS with depth
-        # (5% at 3 levels, 25% at 4), because deeper cycles apply the smoother on
-        # more coarse operators. Four iterations, not more: per unit work gmres/4
+        # SAME four smoother iterations, the margin growing with depth (5% at 3
+        # levels, 25% at 4). Four iterations, not more: per unit work gmres/4
         # (rho^(1/4) = 0.87) beats gmres/8 (0.91).
+        #
+        # TODO(DESIGN): the MECHANISM on record for that result is wrong. Both
+        # this comment and design/nonlinear-solver-homotopy-warmstart.md (Layer 3)
+        # said richardson degrades because the consistent-Newton tangent makes the
+        # velocity block NON-SYMMETRIC. Measured (velocity_block_symmetry.py in the
+        # rotated_pmat_audit study), that block stays symmetric to machine precision
+        # -- 5e-17, against a linear calibration of 5e-17 -- under shear-thinning,
+        # power-law AND Drucker-Prager with pressure-dependent yield, with a control
+        # confirming the Newton term contributed 5-40% of ||A||. For an isotropic
+        # eta(eps_II) the Newton term is a rank-one outer product a (x) a with
+        # a = eps_dot(u), which is symmetric. Non-symmetry does appear under
+        # transverse isotropy, but it appears under the PICARD tangent there too
+        # (7e-2), where a frozen-coefficient form is symmetric by construction --
+        # i.e. a defect signature, see #457. The likely real mechanism is operator
+        # CONDITIONING: at eta contrast 1e26 the SOR-preconditioned spectrum is
+        # spread far enough that a stationary iteration stalls where a Krylov
+        # smoother adapts its polynomial. That also predicts the cost measured on
+        # well-conditioned problems (see the note on geometric_mg_bundle).
         "mg_levels_ksp_type": "gmres",
         "mg_levels_pc_type": "sor",
         # SET the count, never inherit it. PCMG's own default is 2 and the GAMG
@@ -183,6 +200,24 @@ def geometric_mg_bundle(coarse="redundant"):
     -------
     MGBundle
         Settings and stale keys; see :meth:`MGBundle.apply`.
+
+    Notes
+    -----
+    The ``gmres``/4 smoother is not free on a well-conditioned problem. Measured on
+    a nested annulus with a linear (symmetric) velocity block at :math:`\eta`
+    contrast 1e6, outer KSP timed in isolation, ``gmres``/4 against
+    ``richardson``/3: it wins on iterations at every depth (×1.45, ×1.60, ×1.20 at
+    2, 3, 4 levels) and **loses on wall clock at every depth** (×0.86, ×0.77,
+    ×0.55) — the extra sweep costs ~3% and ``gmres`` itself ~40% per cycle. Custom-P
+    builds its Galerkin coarse operators from barycentric transfers, denser than
+    the native nested ones, so the smoother is a larger share of the cycle here.
+
+    It is the default anyway, on both routes, because the failure it avoids is
+    worse than the cost it carries: a stationary smoother stalls where a Krylov one
+    adapts, and it does so exactly on the badly-conditioned high-contrast problems
+    this code exists for (the Spiegelman-notch measurement above). Removing a
+    guardrail is the caller's decision to take; the number is quoted so that
+    decision can be made.
     """
     return _bundle(_geometric_mg_settings(coarse))
 

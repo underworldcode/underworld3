@@ -371,12 +371,73 @@ Two consequences worth stating outright:
   last writer left.
 - **The measured smoother is `gmres`+`sor` at 4 iterations.** Chebyshev needs
   eigenvalue estimates of the smoothed operator, which are fragile on the
-  indefinite / variable-viscosity velocity block. Richardson is stationary and
-  degrades on the non-symmetric operator the consistent-Newton tangent produces:
-  measured on the Spiegelman notch (Drucker–Prager, η contrast 1e26, nested
-  4-level hierarchy) the per-cycle contraction is ρ = 0.75 richardson against
-  0.56 gmres at the *same* four iterations, and the gmres margin **grows with
-  depth** (5% at 3 levels, 25% at 4).
+  indefinite / variable-viscosity velocity block. Against richardson, measured on
+  the Spiegelman notch (Drucker–Prager, η contrast 1e26, nested 4-level
+  hierarchy): per-cycle contraction ρ = 0.75 richardson against 0.56 gmres at the
+  *same* four iterations, the margin growing with depth (5% at 3 levels, 25% at 4).
+
+### Why richardson loses — the recorded reason is wrong
+
+Both this bundle's comment and the Layer 3 section of
+`design/nonlinear-solver-homotopy-warmstart.md` said richardson degrades because
+the consistent-Newton tangent makes the velocity block **non-symmetric**. That
+mechanism does not survive measurement.
+
+For an isotropic η(ε̇_II) the Newton term is
+
+$$2\,\frac{\eta'}{\dot\varepsilon_{II}}\big(\dot\varepsilon(u):\dot\varepsilon(\delta u)\big)\big(\dot\varepsilon(u):\dot\varepsilon(v)\big)$$
+
+— a rank-one outer product $a\otimes a$ with $a = \dot\varepsilon(u)$, which is
+symmetric. η depends on ∇v only *through* its symmetric part, so both factors
+project onto the same tensor and there is nothing left to break the symmetry.
+Measured as ‖A−Aᵀ‖_F/‖A‖_F on the assembled velocity block, against a linear
+calibration of 5e-17:
+
+| rheology | ‖A−Aᵀ‖/‖A‖ | Newton term ‖A_N−A_P‖/‖A‖ |
+|---|---|---|
+| linear (calibration) | 5.1e-17 | — |
+| shear-thinning, isotropic | 5.3e-17 | 2.1e-01 |
+| power-law, isotropic | 5.3e-17 | 4.0e-01 |
+| Drucker–Prager, pressure-dependent yield | 5.1e-17 | 5.1e-02 |
+| transverse isotropic, Picard tangent | **7.2e-02** | — |
+| transverse isotropic, Newton tangent | **8.9e-02** | 2.0e-01 |
+
+The third column is the control: if the consistent tangent had contributed
+nothing, the symmetry reading would be vacuous. It contributed 5–40% of ‖A‖ in
+every case, and the block stayed symmetric anyway.
+
+Non-symmetry *does* appear under transverse isotropy — but it appears under the
+**Picard** tangent too, where a frozen-coefficient form ∫ ε̇(δu):C:ε̇(v) is
+symmetric by construction. That is a defect signature rather than a property of
+the tangent (see #457, and the linear TI rows, which are symmetric at 6.3e-17
+even with anisotropy fully active).
+
+The mechanism that does fit everything measured is **operator conditioning**: at
+η contrast 1e26 the SOR-preconditioned spectrum is spread far enough that a
+stationary iteration stalls where a Krylov smoother adapts its polynomial. It
+predicts the notch result, and it predicts the cost below on well-conditioned
+problems.
+
+### The smoother is not free
+
+On a *well-conditioned* problem gmres/4 is slower than richardson/3 despite
+converging in fewer iterations. Nested annulus, linear (symmetric) velocity
+block, η contrast 1e6, outer KSP timed in isolation:
+
+| depth | iterations | wall clock |
+|---|---|---|
+| 2 levels | ×1.45 | **×0.86** |
+| 3 levels | ×1.60 | **×0.77** |
+| 4 levels | ×1.20 | **×0.55** |
+
+The extra sweep costs ~3%; gmres itself costs ~40% per cycle. Custom-P builds its
+Galerkin coarse operators from barycentric transfers, denser than the native
+nested ones, so the smoother is a larger share of the cycle on that route.
+
+It stays the default on both routes because the failure it avoids (a stationary
+smoother stalling on a high-contrast operator) is worse than the cost it carries,
+and it carries that cost exactly where the problems are easy. Removing a guardrail
+is the caller's decision; the number is recorded so the decision can be made.
 
 ### The one legitimate per-route difference
 
