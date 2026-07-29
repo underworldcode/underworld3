@@ -333,25 +333,66 @@ class FreeSurface:
         return rows[order], coords[order, 0]
 
     def _ring_weights(self):
-        r"""Arc-length quadrature weights on the globally s-sorted surface ring.
+        r"""P1 lumped trace-mass quadrature weights on the globally s-sorted surface
+        ring: :math:`w_i = \oint \phi_i \,\mathrm{d}s`, accumulated per boundary FACET
+        from the DMPlex (each facet contributes measure/nverts to each of its
+        vertices — edge length/2 in 2D, triangle area/3 in 3D), from LIVE
+        coordinates so the weights follow the deforming surface.
 
-        The trapezoidal weight of node :math:`i` is half the distance to each neighbour
-        — :math:`\tfrac12 (s_{i+1}-s_{i-1}) r_i` on a cylindrical ring, :math:`\tfrac12
-        (x_{i+1}-x_{i-1})` on an open Cartesian surface (with half-cells at the ends).
-        Radii are read live, so the weights follow the deforming surface.
+        The facet (chord) measure — not an arc approximation — is deliberate: the
+        prescribed :math:`\tilde u_n` must be flux-free in the FINITE-ELEMENT sense
+        (:math:`\oint` over the deformed polygon the discretisation actually
+        integrates), or the strong datum asks the incompressible interior for a flow
+        that does not exist. With trapezoid arc weights the consistent solve floored
+        at rel ~2e-3 with the entire residual in the pressure (divergence) rows —
+        measured, block-split; the trace-mass weights are exact for the P1 datum
+        field by construction. Dimension-general: the same accumulation is the
+        area-weighted gauge on a 3D boundary triangulation.
         """
-        s = self._s_sorted                             # UNIQUE ring: one entry per node
-        if s.size == 0:
-            return s
-        if self._ring_period is not None:
-            ds = 0.5 * np.mod(np.roll(s, -1) - np.roll(s, 1), self._ring_period)
-            radius = self._ring_gather(np.linalg.norm(self._ring_coords, axis=1))
-            return ds * radius
-        ds = np.empty_like(s)
-        ds[1:-1] = 0.5 * (s[2:] - s[:-2])
-        ds[0] = 0.5 * (s[1] - s[0])
-        ds[-1] = 0.5 * (s[-1] - s[-2])
-        return ds
+        from underworld3.utilities.boundary_flux import _boundary_stratum_is
+
+        rc = self._ring_coords                         # local nodes, x-sorted order
+        if rc.shape[0] == 0 and uw.mpi.size == 1:
+            return np.empty(0)
+        dm = self.mesh.dm
+        cdim = self.mesh.cdim
+        csec = dm.getCoordinateSection()
+        cvec = dm.getCoordinatesLocal().array.reshape(-1, cdim)
+        v0, v1 = dm.getDepthStratum(0)
+        fS, fE = dm.getHeightStratum(1)
+        # OWNED facets only: a ghost facet's contribution belongs to the owning
+        # rank, and each facet must be counted exactly once globally — the seam
+        # weight is then assembled by SUMMING the per-rank partial contributions
+        # in the gather (op="sum"), not by averaging copies (a seam copy only
+        # carries the facets its rank owns).
+        ghosts = set()
+        if uw.mpi.size > 1:
+            nroots, ilocal, _ = dm.getPointSF().getGraph()
+            if nroots > 0 and ilocal is not None:
+                ghosts = set(int(i) for i in ilocal)
+        acc = {}                                       # vertex coord-row -> weight
+        sis = _boundary_stratum_is(dm, self.mesh, self.surface)
+        if sis and sis.getSize() > 0:
+            for f in sis.getIndices():
+                if not (fS <= int(f) < fE) or int(f) in ghosts:
+                    continue
+                verts = [int(p) for p in dm.getTransitiveClosure(int(f))[0]
+                         if v0 <= p < v1]
+                crows = [csec.getOffset(v) // cdim for v in verts]
+                xs = cvec[crows]
+                if len(verts) == 2:                    # 2D: boundary edge
+                    measure = float(np.linalg.norm(xs[1] - xs[0]))
+                else:                                  # 3D: boundary triangle
+                    measure = 0.5 * float(np.linalg.norm(
+                        np.cross(xs[1] - xs[0], xs[2] - xs[0])))
+                wv = measure / len(verts)
+                for cr in crows:
+                    acc[cr] = acc.get(cr, 0.0) + wv
+        # align to the local ring order by position (both sides read the SAME live
+        # plex coordinates, so the rounded keys match exactly)
+        wmap = {tuple(np.round(cvec[cr], 9)): w for cr, w in acc.items()}
+        local = np.array([wmap.get(tuple(np.round(c, 9)), 0.0) for c in rc])
+        return self._ring_gather(local, op="sum")
 
     def _surface_mean(self, values):
         r"""Area-weighted global mean of a surface-node array, identical on every rank
@@ -661,16 +702,19 @@ class FreeSurface:
         first_pos = np.searchsorted(uniq_of_sorted, np.arange(self._ring_n_uniq))
         self._s_sorted = s_srt[first_pos]
 
-    def _ring_gather(self, local_vals):
-        """Local (x-sorted-order) surface values -> the globally s-sorted UNIQUE ring
-        (partition-seam copies averaged — they agree to round-off by construction)."""
+    def _ring_gather(self, local_vals, op="mean"):
+        """Local (x-sorted-order) surface values -> the globally s-sorted UNIQUE ring.
+        ``op="mean"`` averages partition-seam copies (field values: the copies agree
+        to round-off by construction); ``op="sum"`` accumulates them (per-rank
+        PARTIAL contributions such as owned-facet quadrature weights, where the
+        copies deliberately each carry only their rank's share)."""
         comm = uw.mpi.comm
         v = (np.concatenate(comm.allgather(np.ascontiguousarray(local_vals)))
              if comm.size > 1 else np.asarray(local_vals, dtype=float))
         v_sorted = v[self._ring_order]
         sums = np.bincount(self._ring_uniq_of_sorted, weights=v_sorted,
                            minlength=self._ring_n_uniq)
-        return sums / self._ring_dup_count
+        return sums if op == "sum" else sums / self._ring_dup_count
 
     def _ring_scatter(self, v_uniq):
         """Unique-ring values -> this rank's local (x-sorted-order) nodes. Every seam

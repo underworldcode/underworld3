@@ -311,8 +311,19 @@ def test_freesurface_ring_quadrature_is_exact_in_parallel():
     fs = uw.systems.FreeSurface(stokes, "Upper", buoyancy_scale=1.0, normal=rhat)
 
     weights = fs._ring_weights()
-    assert abs(float(weights.sum()) - 2.0 * np.pi * r_out) < 1.0e-9, \
-        f"ring weights sum to {weights.sum():.10f}, not the circumference (seam double-count?)"
+    # The gauge must match the FE boundary quadrature EXACTLY: the datum's
+    # flux-free condition lives in the discrete space, so the weight total is the
+    # FE measure of the (polygonal) boundary — NOT the ideal-circle arc length,
+    # which differs at O(h^2) and was the strong-datum compatibility floor
+    # (block-split evidence: the whole stalled residual sat in the pressure rows).
+    # A seam double-count breaks this equality at the first shared node.
+    fe_len = float(uw.maths.BdIntegral(mesh=mesh, fn=sympy.S.One,
+                                       boundary="Upper").evaluate())
+    assert abs(float(weights.sum()) - fe_len) < 1.0e-9, \
+        f"ring weights sum to {weights.sum():.10f}, FE boundary measure is {fe_len:.10f} " \
+        "(seam double-count?)"
+    # sanity: the polygonal measure approximates the circle at O(h^2)
+    assert abs(fe_len - 2.0 * np.pi * r_out) < 1.0e-2
 
     coords = fs._ring_coords
     theta = np.arctan2(coords[:, 1], coords[:, 0])
