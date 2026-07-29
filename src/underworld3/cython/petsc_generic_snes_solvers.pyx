@@ -6262,6 +6262,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         return self._tolerance
 
+    #: Inner-solve tolerance margins, as a fraction of the outer tolerance. The inner
+    #: solves are deliberately inexact (Citcom; Moresi & Solomatov 1995) — which is why
+    #: the sub-blocks are flexible Krylov methods — but the inexactness must stay well
+    #: BELOW the tolerance demanded of the outer solve. These factors are that margin.
+    #: Their existence is principled; their size is inherited convention, so they are
+    #: DEFAULTS a user may override rather than values this property owns outright.
+    _INNER_RTOL_MARGIN = {"fieldsplit_pressure_ksp_rtol": 0.1,
+                          "fieldsplit_velocity_ksp_rtol": 0.033}
+
     @tolerance.setter
     def tolerance(self, value):
         self._tolerance = value
@@ -6270,8 +6279,60 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew_version"] = 3
 
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1  # rule of thumb
-        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.033
+
+        # Setting the tolerance re-derives the inner margins from it — that is this
+        # property's job, and a user who changes the tolerance expects it. What must NOT
+        # happen is `solve()` re-deriving them on every call: it did (pyx `solve()`
+        # round-trips `self.tolerance` immediately before `setFromOptions()`), which
+        # overwrote any user value between it being set and PETSc reading it and made
+        # both documented options silently unreachable (#477). `solve()` now re-asserts
+        # only the outer keys, via `_reassert_outer_tolerances`.
+        for key, margin in self._INNER_RTOL_MARGIN.items():
+            self.petsc_options[key] = self._tolerance * margin
+
+    def _resolve_snes_max_it(self, default):
+        """The nonlinear iteration cap for this solve, honouring a user-set
+        ``snes_max_it``.
+
+        ``solve()`` pushes this option before every solve, so it has to be able to tell
+        its OWN previous push from a value the user set — otherwise the first solve makes
+        the option permanently unreachable. Call once, before this solve pushes anything.
+        """
+        pushed = getattr(self, "_snes_max_it_pushed", None)
+        user = getattr(self, "_snes_max_it_user", None)
+        if self.petsc_options.hasName("snes_max_it"):
+            try:
+                current = int(self.petsc_options.getInt("snes_max_it"))
+            except Exception:
+                return default
+            if pushed is None or current != pushed:
+                # Never pushed by us, or the user has moved it since. Latch: from here on
+                # the option is theirs, because the next solve will read back OUR push of
+                # THEIR value and would otherwise mistake it for our own default.
+                self._snes_max_it_user = current
+                return current
+            if user is not None:
+                return user
+        return default
+
+    def _push_snes_max_it(self, value):
+        """Push ``snes_max_it`` and remember what was pushed, so a later solve can tell
+        this solver's own value apart from a user override."""
+        value = int(value)
+        self.petsc_options.setValue("snes_max_it", value)
+        self._snes_max_it_pushed = value
+
+    def _reassert_outer_tolerances(self):
+        """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.
+
+        `solve()` may have changed `snes_max_it` and the SNES type for a Picard warm-up,
+        so the outer settings are re-asserted before the real solve. The sub-block rtols
+        are deliberately excluded: they belong to whoever set them last, which may be the
+        user (#477). Overwriting them here is what made them unsettable."""
+        self.petsc_options["snes_rtol"] = self._tolerance
+        self.petsc_options["snes_ksp_ew"] = None
+        self.petsc_options["snes_ksp_ew_version"] = 3
+        self.petsc_options["ksp_atol"] = self._tolerance * 1.0e-6
 
 
     @property
@@ -8691,15 +8752,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             UW_DMSetTime(_time_dm_stokes.dm, t_nd)
 
         # Keep a record of these set-up parameters
-        tolerance = self.tolerance
         snes_type = self.snes.getType()
-        # NOTE: hardcoded iteration cap. Unlike tolerance/snes_type above (read
-        # from current state), this value is pushed to petsc_options before the
-        # final solve below, silently clobbering any user-set snes_max_it on
-        # every solve. Respecting the user's setting is a behaviour change
-        # deferred to the benchmarked D2 sub-wave — see
-        # docs/reviews/2026-07/REMEDIATION-WORKLIST.md rows D-22/D2 (ruling D18).
-        snes_max_it = 50
+        # Resolved ONCE, before any of this solve's own pushes, so the resolver compares
+        # against the previous solve's push rather than this one's. (Was a hardcoded 50
+        # pushed unconditionally, which made `snes_max_it` unreachable — worklist rows
+        # D-22/D2, ruling D18; same failure shape as the sub-block rtols in #477.)
+        snes_max_it = self._resolve_snes_max_it(50)
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -8716,7 +8774,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 print(f"SNES pre-solve - non-zero initial guess", flush=True)
 
 
-            self.petsc_options.setValue("snes_max_it", 0)
+            self._push_snes_max_it(0)
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
             # PETSc may rebuild operator state after setFromOptions(), so reattach
@@ -8759,8 +8817,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Picard solves if requested
 
         if picard != 0:
-            self.petsc_options.setValue("snes_max_it", abs(picard))
-            self.tolerance = tolerance
+            self._push_snes_max_it(abs(picard))
+            self._reassert_outer_tolerances()
             self.snes.atol = self.atol
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
@@ -8772,9 +8830,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # warmup above was taken: restore the configured SNES type and
         # tolerances, then solve.
         self.snes.setType(snes_type)
-        self.tolerance = tolerance
+        self._reassert_outer_tolerances()
         self.snes.atol = self.atol
-        self.petsc_options.setValue("snes_max_it", snes_max_it)
+        self._push_snes_max_it(snes_max_it)
         self.snes.setFromOptions()
         self._attach_stokes_nullspace()
         # Custom geometric-MG prolongation on the velocity block (if registered
