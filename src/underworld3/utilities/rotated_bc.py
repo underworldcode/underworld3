@@ -965,11 +965,19 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             "pc_fieldsplit_schur_fact_type": "full",
             # Pressure sub-solve at native-path parity (pyx Stokes defaults):
             # FGMRES at 0.1 x tol, GASM on the 1/mu mass (jacobi if only selfp
-            # exists). This path used to ask for tol, i.e. 10x looser than native.
-            # Defaults here err toward the more conservative of the two: matching
-            # native costs ~17% wall clock with identical outer iteration counts
-            # (measured, both velocity-block routes, isotropic and TI), and a
-            # too-loose inner solve fails by silent stagnation rather than loudly.
+            # exists).
+            #
+            # The 0.1 is the MARGIN, and it is the point. The Citcom design this
+            # configuration descends from (Moresi & Solomatov 1995) makes the inner
+            # solves deliberately inexact, which is why the outer/Schur Krylov must
+            # be flexible (fgmres, above) — inexact inner solves perturb the search
+            # directions. But inexact is bounded: an inner solve must still converge
+            # WELL BELOW the tolerance demanded of the outer solve. This path used to
+            # ask for `tol` while the outer KSP also asks for `tol` — no margin at
+            # all, the inner solve permitted to be no better than the answer it
+            # feeds. Restoring the margin costs ~17% wall clock with identical outer
+            # iteration counts (measured, both velocity-block routes, isotropic and
+            # TI); a too-loose inner solve fails by silent stagnation, not loudly.
             "fieldsplit_pres_ksp_type": "fgmres",
             "fieldsplit_pres_ksp_rtol": str(tol * 0.1),
             "fieldsplit_pres_ksp_max_it": "200",

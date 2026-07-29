@@ -180,21 +180,41 @@ def validate_unknowns_sharing(multi_material_model):
 
 ## Choosing the Krylov method for a fieldsplit sub-solve
 
-This choice gets re-argued periodically because **three independent questions are
-easily merged into one**. Two of them are settled, by different evidence and for
-different reasons; only the third is a genuine judgment call.
+This choice gets re-argued periodically. The confusion is that it looks like three
+separate questions — flexible or not, `preonly` or not, how tight — when in fact the
+first and third are **two halves of one design decision**, and only the middle one is
+independent.
+
+### The design, and where it comes from
+
+The Stokes configuration descends from the Citcom solver of Moresi & Solomatov
+(1995). Its central choice is that the **inner solves are deliberately inexact** —
+you do not solve the velocity block exactly to apply the Schur complement, because
+that would be ruinous and is unnecessary. Two consequences follow, and they must
+hold together:
+
+1. **Because the inner solves are inexact, the search directions are perturbed, so
+   the outer/Schur Krylov must be flexible** (`fgmres` or similar). A non-flexible
+   method assumes a fixed preconditioner; its residual recurrence is invalidated by
+   a search direction that drifts.
+2. **Inexact is not unbounded.** The inner solves must still converge to *well
+   below* the final tolerance required of the outer solve. That margin is what the
+   `0.033` and `0.1` factors encode — they are a safety margin, not a tuned constant.
+
+Flexibility buys tolerance of inexactness; the margin bounds how inexact. Neither
+works without the other, which is why arguing them separately never settles.
 
 ```{note} Guardrail policy
 Defaults err on the side of robust generality. A default that is slower but
-survives configurations nobody has tested yet is the right default; loosening it
-is the caller's decision and the caller's risk. The three axes below are stated
-in those terms.
+survives configurations nobody has tested yet is the right default; loosening it is
+the caller's decision and the caller's risk.
 ```
 
 ### Axis 1 — flexible or not (`fgmres` vs `gmres` / `cg` / `fcg`)
 
-The question is **is the preconditioner stationary?**, not whether the operator is
-symmetric.
+Settled, and settled by the design above: the inner solves are inexact by
+construction, so the outer and Schur Krylov methods must be flexible. The question
+is **is the preconditioner stationary?**, not whether the operator is symmetric.
 
 The velocity block of Stokes *is* SPD, so `cg` is admissible on symmetry grounds.
 It still fails, because GAMG with `mg_levels_ksp_converged_maxits` performs a
@@ -245,10 +265,23 @@ null space attached to `S` is the obvious suspect.)
 inverse underneath a Schur complement.** Multigrid is an excellent preconditioner;
 it cannot be the whole solve when a Schur complement is applied through it.
 
-### Axis 3 — how tight the inner tolerance should be
+In the terms of the design above, `preonly` is the degenerate case of axis 3: it has
+no tolerance at all, so there is no margin below the outer solve for the flexible
+outer Krylov to work with. Flexibility tolerates inexactness; it cannot manufacture
+a margin that was never there. That is exactly the stagnation floor measured above.
 
-This is the axis where judgment legitimately lives, and where the guardrail policy
-decides it. Loosening the velocity sub-solve does not degrade gracefully — it walks
+### Axis 3 — how far below the outer tolerance the inner solves must go
+
+Not a free parameter. The invariant from the design above is that **every inner
+solve reaches well below the tolerance demanded of the outer solve**; the only
+judgment is how much margin, and the guardrail policy decides that.
+
+The failure this catches is concrete. The rotated free-slip path ran its outer KSP
+at `rtol = tolerance` and its pressure sub-solve *also* at `rtol = tolerance` — no
+margin whatsoever, the inner solve asked to be no better than the answer it feeds.
+That is the invariant broken outright rather than a tuning disagreement.
+
+Loosening the velocity sub-solve likewise does not degrade gracefully — it walks
 back toward the `preonly` failure above:
 
 | velocity sub-KSP rtol | outer its |
@@ -265,11 +298,16 @@ Current defaults, matched across the native and rotated paths:
 | pressure | `0.1 × tolerance` | 200 |
 
 The rotated path previously used `0.1 × tolerance` (velocity) and `1.0 × tolerance`
-(pressure) — 3× and 10× looser than native, with no recorded reason. Adopting the
-native values costs ~17% wall clock with identical outer iteration counts (measured
-on both velocity-block routes, isotropic and TI) and reduced a transversely
-isotropic fault smoke test from 24 to 15 nonlinear iterations. Cheaper is available
-to anyone who measures their own configuration; it is not the default.
+(pressure). Adopting the native values costs ~17% wall clock with identical outer
+iteration counts (measured on both velocity-block routes, isotropic and TI) and
+reduced a transversely isotropic fault smoke test from 24 to 15 nonlinear
+iterations. Cheaper is available to anyone who measures their own configuration; it
+is not the default.
+
+The `0.033` and `0.1` factors themselves are inherited from the Citcom
+configuration and have no derivation recorded here beyond "well below the outer
+tolerance". They are a margin whose *existence* is principled and whose *size* is
+convention.
 
 ### Detecting a degraded sub-solve
 
