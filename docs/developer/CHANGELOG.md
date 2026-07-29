@@ -6,6 +6,55 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### One Rotated Free-Slip Path, Now With a Prescribed Wall-Normal Velocity (July 2026)
+
+**Rotated strong free-slip now takes a prescribed wall-normal velocity datum
+(`add_rotated_freeslip_bc(conds, boundary, ...)` with non-zero `conds`) through
+the full nonlinear Newton machinery, and the separate linear and nonlinear
+solve paths have been unified into one** (#438; #403 items 2 and 4).
+
+The rotated constraint `u·n̂ = ũ_n` is the primitive behind both the held free-slip
+lid and the free-surface material-boundary condition — they differ only in the
+constraint right-hand side. Previously the non-zero datum existed only on a
+linear one-shot path, so a power-law or anisotropic rheology silently fell back
+to a weak penalty (which leaks worst exactly where anisotropy makes it matter).
+Now every rotated solve runs a single Newton/Picard loop in which accepted
+iterates carry the datum exactly; a cold start imposes it through the first
+increment's affine lift at the rest-state tangent (snapping a zero state onto a
+datum creates a boundary strain state a shear-thinning tangent cannot recover
+from — measured, not assumed); a linear model simply converges after that first
+increment, so the up-front nonlinearity probe is gone from the dispatch and
+every linear rotated solve saves two Jacobian assemblies.
+
+Three latent solver defects were found and fixed by making the loop report
+honestly along the way:
+
+- Branching on rank-local datum bookkeeping desynchronised the ranks'
+  collective sequences (an np>1 deadlock class); the datum-activity decision is
+  now a collective PETSc reduction.
+- A rigid-rotation mode pinned by an essential condition on *another* boundary
+  could still enter the solver null space (only the rotated rows were checked),
+  silently projecting an irreducible component out of every increment — Newton
+  converged superlinearly and then floored, far above tolerance. Candidate
+  modes are now verified as null vectors of the assembled operator, which
+  catches any form of pinning.
+- A tiny Newton step was reported as convergence even when the residual was
+  still large (a stiff tangent also produces tiny steps); the step-norm exit is
+  now verified against the problem's rest-state residual scale, which is also
+  the convergence reference for warm starts (rtol relative to a good warm
+  start's own small initial residual demands ever-more absolute accuracy).
+
+The free-surface manager's `consistent_constraint="strong"` therefore works for
+nonlinear rheologies: the penalty fallback is removed, and the consistent solve
+warm-starts from the free solve's converged fields. Acceptance: power-law
+annulus free-surface convection holds the material boundary at the strong-datum
+level (5e-3, versus 4e-2 for the penalty) with net surface flux 1e-4; a
+transversely isotropic fault-bearing smoke test converges through the same
+path. Direct LU per Newton increment remains available as a serial,
+preconditioner-free diagnostic (`solver._rotated_use_lu`).
+
+New subsystem documentation: `subsystems/rotated-freeslip.md`.
+
 ### Local Interpolation That Reproduces Linear Fields (July 2026)
 
 **The local scattered-point interpolator now has a linear-reproduction

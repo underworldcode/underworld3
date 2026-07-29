@@ -1176,15 +1176,13 @@ class SolverBaseClass(uw_object):
         ``ksp.solve()`` on the rotated operator (``utilities/rotated_bc.py``) and never
         touches ``self.snes`` — so the generic reader would see stale SNES state.
 
-        Handles BOTH rotated result dicts: the linear one-shot solve (``ksp_its`` an
-        int, one outer solve, no outer verdict) and the manual nonlinear Newton loop
-        (``nonlinear_iterations``, ``ksp_its`` a per-increment LIST, and an outer
-        ``converged`` flag from the residual/step-norm tests). ``ksp_reason`` is a KSP
-        code on both paths (the nonlinear dict carries the LAST increment's), so it is
-        rendered with the KSP reason table — the SNES table shares the integers but
-        names different outcomes. A malformed dict raises: this reader and the dicts in
-        ``rotated_bc.py`` are a contract, and a silent fallback here previously masked
-        a broken one."""
+        The rotated result dict is the manual Newton loop's (``nonlinear_iterations``,
+        ``ksp_its`` a per-increment LIST, an outer ``converged`` flag from the
+        residual/step-norm tests, and ``ksp_reason`` the LAST increment's KSP code) —
+        rendered with the KSP reason table, since the SNES table shares the integers
+        but names different outcomes. A malformed dict raises: this reader and the
+        dict in ``rotated_bc.py`` are a contract, and a silent fallback here
+        previously masked a broken one."""
         from underworld3.systems.solve_report import SolveReport, ksp_reason_string
 
         info = info or {}
@@ -5658,9 +5656,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._block_constraint_bcs = []
         # Rotated strong free-slip BCs: [(boundary, normal), ...]. Registered via
         # add_rotated_freeslip_bc; when non-empty, solve() delegates to
-        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n=0 +
-        # reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        # underworld3.utilities.rotated_bc (per-node DOF rotation + strong v_n = u_n
+        # + reaction = sigma_nn). Empty by default → the solve path is unchanged.
+        # _rotated_freeslip_datum maps boundary → prescribed wall-normal datum
+        # (the non-zero `conds` of add_rotated_freeslip_bc; absent ⇒ u.n = 0).
         self._rotated_freeslip_bcs = []
+        self._rotated_freeslip_datum = {}
         self._rotated_freeslip_info = None
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
@@ -5833,14 +5834,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        conds : float or None, optional
-            Prescribed wall-normal velocity datum, in the canonical value-first
-            BC order (Style Charter, API conventions). Only the homogeneous
-            free-slip constraint :math:`\mathbf{u}\cdot\hat{\mathbf n}=0` is
-            implemented, so this must be zero (or ``None``, meaning zero); a
-            non-zero datum raises ``NotImplementedError`` (use
-            :meth:`add_nitsche_bc` or ``add_constraint_bc`` for prescribed
-            normal in/outflow).
+        conds : float, scalar sympy expression, or None, optional
+            Prescribed wall-normal velocity datum :math:`\tilde u_n` (the SCALAR
+            component along the outward normal), in the canonical value-first BC
+            order (Style Charter, API conventions). Zero (or ``None``) is pure
+            free-slip :math:`\mathbf{u}\cdot\hat{\mathbf n}=0`. A non-zero value
+            — a number, a sympy expression of ``mesh.X``, or a scalar field read
+            such as ``h_dot.sym[0]`` — is imposed strongly (machine precision) as
+            :math:`\mathbf{u}\cdot\hat{\mathbf n}=\tilde u_n`, evaluated at the
+            boundary nodes at each ``solve()``. On an enclosed boundary the
+            datum must be discretely flux-free (:math:`\oint \tilde u_n = 0`)
+            for incompressibility. A corner/edge node shared between rotated
+            boundaries has no single normal and stays at the free-slip pinning
+            (datum ignored there). Vector/matrix values are rejected.
         boundary : str
             Boundary label to constrain.
         normal : None or sympy 1×dim Matrix or array, optional
@@ -5884,14 +5890,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             raise TypeError(
                 f"add_rotated_freeslip_bc() requires a boundary label string; "
                 f"got {type(boundary).__name__}")
-        # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
-        # structurally, but both are zero data. is_zero is True only when sympy
-        # can PROVE zero, so unprovable symbolic data is rejected too (#336).
-        if conds is not None and sympy.sympify(conds).is_zero is not True:
-            raise NotImplementedError(
-                "add_rotated_freeslip_bc imposes u.n = 0 only; a non-zero "
-                "wall-normal datum is not implemented (use add_nitsche_bc or "
-                "add_constraint_bc for prescribed normal in/outflow)")
+        if conds is not None:
+            if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
+                raise TypeError(
+                    "add_rotated_freeslip_bc(conds=...) takes the SCALAR "
+                    "wall-normal datum u.n; got a vector/matrix value")
+            # Value comparison, not sympy's structural ==: Float(0.0) != Integer(0)
+            # structurally, but both are zero data (the free-slip member of the
+            # family). is_zero is True only when sympy can PROVE zero, so a
+            # symbolic datum (field read, expression) is correctly kept.
+            if sympy.sympify(conds).is_zero is not True:
+                self._rotated_freeslip_datum[boundary] = conds
         self._rotated_freeslip_bcs.append((boundary, normal))
         self.is_setup = False
         return
@@ -5911,11 +5920,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         viscosity ⇒ ``J`` independent of ``v`` ⇒ the two assemblies are
         bit-identical ⇒ linear.
 
-        Used to fail-fast on the rotated-free-slip path, which is a single linear
-        solve (assemble ``J(0)``, ``F(0)`` once) and would otherwise SILENTLY
-        return one Newton linearisation from ``u=0`` for a nonlinear model. The
-        caller must have run the pre-solve preamble (auxiliary vector + constants)
-        so the assembly sees the correct coefficients.
+        Used as a LAZY guard in the rotated-free-slip loop's picard + pure-Newton
+        corner (a Picard warmup is meaningless for a linear residual and impossible
+        for pure Newton) — the loop itself needs no up-front probe, it
+        self-terminates. The caller must have run the pre-solve preamble
+        (auxiliary vector + constants) so the assembly sees the correct
+        coefficients.
         """
         snes = self.snes
         dm = self.dm
@@ -8683,17 +8693,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
             self._update_constants()
 
-            # Two paths, keyed on whether the model is nonlinear (detected by probing
-            # the assembled Jacobian for solution-dependence — a symbolic test cannot
-            # see the JIT-substituted strain-rate term):
-            #  * LINEAR model → the validated one-shot solve (assemble J(0),F(0);
-            #    rotate; single self-contained fieldsplit KSP). Fast, and the linear
-            #    solution is exact, so warm-start / Picard warmup add nothing and are
-            #    correctly ignored here.
-            #  * NONLINEAR model → the manual outer Newton/Picard loop that rotates
-            #    F(u), J(u) and the v_n=0 constraint every iteration. It honours
-            #    zero_init_guess (warm start), the Picard warmup count, and the
-            #    consistent_jacobian tangent (Picard / Newton / continuation).
             # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
             # Re-check here: this path never reaches the instrumentation, so an armed
             # guard would be silently inert -- the exact state guard() exists to refuse.
@@ -8704,15 +8703,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     "free-slip path, which runs its own Krylov loop outside self.snes "
                     "and cannot be bounded by it. Call unguard() first."
                 )
-            from underworld3.utilities.rotated_bc import (
-                solve_rotated_freeslip, solve_rotated_freeslip_nonlinear)
-            if not self._residual_is_nonlinear():
-                self._rotated_freeslip_info = solve_rotated_freeslip(
-                    self, self._rotated_freeslip_bcs, verbose=verbose)
-            else:
-                self._rotated_freeslip_info = solve_rotated_freeslip_nonlinear(
-                    self, self._rotated_freeslip_bcs, verbose=verbose,
-                    zero_init_guess=zero_init_guess, picard=picard)
+            # ONE path for linear and nonlinear models: the manual outer
+            # Newton/Picard loop that rotates F(u), J(u) and the strong
+            # v_n = u_n constraint every iteration. It honours zero_init_guess
+            # (warm start), the Picard warmup count, and the consistent_jacobian
+            # tangent (Picard / Newton / continuation); a linear model converges
+            # after its first increment, so no up-front nonlinearity probe is
+            # paid (the loop self-terminates; _residual_is_nonlinear survives as
+            # a lazy guard inside the picard+pure-Newton corner).
+            from underworld3.utilities.rotated_bc import solve_rotated_freeslip
+            self._rotated_freeslip_info = solve_rotated_freeslip(
+                self, self._rotated_freeslip_bcs, verbose=verbose,
+                zero_init_guess=zero_init_guess, picard=picard)
             # This path solves via ksp.solve on the rotated operator (not self.snes),
             # so give it a report from the rotated result rather than leaving a stale one.
             _rotated_report = self._capture_rotated_report(self._rotated_freeslip_info)
