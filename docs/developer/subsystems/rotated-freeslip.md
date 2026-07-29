@@ -41,10 +41,41 @@ There is a single driver, `solve_rotated_freeslip`: a manual outer
 Newton/Picard loop that rotates the residual and tangent every iteration
 (`F̂ = Q F`, `Ĵ = Q J Qᵀ`), imposes the constraint on the rotated normal rows,
 and solves each increment with a self-contained fieldsplit-Schur KSP (geometric
-FMG on the custom prolongation when a hierarchy is registered, else GAMG; the
+FMG on the custom prolongation when the solver has a hierarchy, else GAMG; the
 native 1/μ pressure mass as the Schur preconditioner). There is no separate
 linear path and no up-front nonlinearity probe: a linear model converges after
 its first increment and the loop self-terminates.
+
+### Where the multigrid hierarchy comes from
+
+Native geometric FMG cannot serve a rotated solve at all — the DM-coupled
+hierarchy has no way to express the per-node rotation — so custom-P multigrid is
+not an optimisation here, it is the only geometric option. The hierarchy is
+resolved by `custom_mg.build_transfers`, which is the **same rule the standard
+path uses**:
+
+1. an explicit `set_custom_fmg` registration on the solver wins; otherwise
+2. a **mesh-owned** coarse tail (`mesh._custom_mg_coarse_meshes`, what
+   `mesh.adapt()` leaves on a refinement child) is picked up opportunistically,
+   with the barycentric→RBF builder fallback, so a failed build degrades to GAMG
+   rather than crashing the solve.
+
+Step 2 used to be unreachable from here. The standard path's injection hook runs
+*after* the rotated dispatch has already returned, and the rotated builder
+consulted only `solver._custom_mg` — so an `adapt()` child under rotated
+free-slip reported `velocity_pc == "GAMG"`, indistinguishable from having no
+hierarchy at all, and lost its multigrid silently (#467). That is the
+`adapt-on-top-faults` workflow's own configuration: a fault resolved by local
+refinement on an adapt child, with rotated free-slip chosen over Nitsche because
+it composes with transverse isotropy.
+
+The option bundle for both the FMG and the GAMG velocity block comes from
+`utilities/multigrid_options.py`, shared with the native and standard custom-P
+routes, so the rotated block cannot be configured differently by accident. The
+single deliberate difference is the coarse solve: `coarse="svd"`, because the
+Galerkin-coarsened rotated block inherits the rigid-rotation null space where
+`redundant`/LU hits a zero pivot. See
+[the solvers subsystem doc](solvers.md) for the bundle itself.
 
 ### The velocity sub-KSP must converge, not just apply
 

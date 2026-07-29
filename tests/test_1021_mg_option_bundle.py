@@ -1,0 +1,240 @@
+"""The geometric-multigrid option bundle has ONE owner, and every route reads it.
+
+Three routes reach a multigrid velocity block — native (DMPlex refinement),
+custom-P on the standard solve path, and custom-P through the rotated free-slip
+path — and they are the same preconditioner, not alternatives: custom-P is
+mandatory wherever native cannot go (rotated BCs, ``adapt()`` children). They
+drifted apart because the bundle was written in two places (#468): the custom-P
+route ran richardson smoothing at an iteration count nobody set, inherited from
+whatever had last written that options prefix (3 left over from the GAMG bundle
+on the standard path, PETSc's own default of 2 on the rotated path).
+
+These tests read the configuration back off the LIVE PETSc objects after setup,
+not out of the options database, so they check what actually runs.
+
+The one legitimate per-route difference is the coarse solve: the
+Galerkin-coarsened *rotated* velocity block inherits the rigid-rotation null
+space, so redundant/LU hits a zero pivot there and it uses SVD (the #306 fix).
+That difference is asserted, not tolerated — if it disappears, the rotated coarse
+solve has silently reverted.
+
+Also here: the rotated path must pick up a MESH-OWNED hierarchy (the coarse tail
+an ``adapt()`` child carries), which it previously ignored, silently solving on
+GAMG (#467).
+"""
+import pytest
+import sympy
+
+import underworld3 as uw
+from underworld3.utilities import custom_mg, multigrid_options, rotated_bc
+
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+
+RES = 0.15
+R_IN, R_OUT = 0.5, 1.0
+
+
+# --------------------------------------------------------------------------- #
+#  The owner itself — no solve needed
+# --------------------------------------------------------------------------- #
+def test_every_bundle_sets_the_smoother_iteration_count():
+    """The drift mechanism: a bundle that omits ``mg_levels_ksp_max_it`` inherits
+    it from whatever last wrote that prefix. Every bundle must SET it."""
+    bundles = [multigrid_options.gamg_bundle()]
+    bundles += [multigrid_options.geometric_mg_bundle(coarse=c)
+                for c in multigrid_options.GEOMETRIC_MG_COARSE_SOLVERS]
+    for bundle in bundles:
+        assert "mg_levels_ksp_max_it" in bundle.settings
+        assert "pc_type" in bundle.settings
+
+
+def test_bundles_clear_each_others_keys():
+    """Bundles share an options prefix, so switching between them must leave no
+    key behind — every key a bundle does not set, a sibling does, and it must
+    appear in that bundle's stale list."""
+    bundles = [multigrid_options.gamg_bundle()]
+    bundles += [multigrid_options.geometric_mg_bundle(coarse=c)
+                for c in multigrid_options.GEOMETRIC_MG_COARSE_SOLVERS]
+    owned = set().union(*(set(b.settings) for b in bundles))
+    for bundle in bundles:
+        assert set(bundle.stale) == owned - set(bundle.settings)
+
+
+# --------------------------------------------------------------------------- #
+#  The three live routes
+# --------------------------------------------------------------------------- #
+def _stokes(mesh, tag, rotated):
+    """A buoyancy-driven annulus Stokes solve: fixed inner boundary, and an outer
+    boundary that is either an ordinary essential BC or rotated free-slip."""
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    rhat = sympy.Matrix([[x / r, y / r]])
+    v = uw.discretisation.MeshVariable(f"V{tag}", mesh, mesh.dim, degree=2,
+                                       continuous=True)
+    p = uw.discretisation.MeshVariable(f"P{tag}", mesh, 1, degree=1, continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    blob = sympy.exp(-(((x - 0.75) ** 2 + y**2) / 0.05))
+    s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
+    s.add_essential_bc((0.0, 0.0), "Lower")
+    if rotated:
+        s.add_rotated_freeslip_bc(0.0, "Upper", normal=rhat)
+    else:
+        s.add_essential_bc((sympy.oo, 0.0), "Upper")
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1.0e-8
+    return s
+
+
+def _mg_config(vel_pc):
+    """Read the multigrid configuration off a live velocity sub-PC. The finest
+    smoother is representative; level 0 is the coarse solve."""
+    assert vel_pc.getType() == "mg"
+    nlev = vel_pc.getMGLevels()
+    smoother = vel_pc.getMGSmoother(nlev - 1)
+    coarse = vel_pc.getMGCoarseSolve()
+    return {
+        "levels": nlev,
+        "mg_type": str(vel_pc.getMGType()),
+        "smoother_ksp": smoother.getType(),
+        "smoother_pc": smoother.getPC().getType(),
+        "smoother_max_it": smoother.getTolerances()[3],
+        "smoother_norm": str(smoother.getNormType()),
+        "coarse_ksp": coarse.getType(),
+        "coarse_pc": coarse.getPC().getType(),
+    }
+
+
+def _annulus(cell_size):
+    return uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=cell_size, qdegree=3)
+
+
+def _native_config():
+    """Route A: native geometric FMG on a refined DMPlex hierarchy."""
+    s = _stokes(uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                                   cellSize=2 * RES, qdegree=3, refinement=1),
+                "nat", rotated=False)
+    s.solve()
+    return _mg_config(s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC())
+
+
+def _custom_standard_config():
+    """Route B: custom-P FMG reached through the standard solve path."""
+    s = _stokes(_annulus(RES), "std", rotated=False)
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+    s.solve()
+    return _mg_config(s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC())
+
+
+def _custom_rotated_config(monkeypatch):
+    """Route C: custom-P FMG reached through the rotated free-slip path.
+
+    The rotated KSP is self-contained and is destroyed at the end of the solve,
+    so the configuration is captured from inside the solve — there is no live PC
+    left to interrogate afterwards.
+    """
+    s = _stokes(_annulus(RES), "rot", rotated=True)
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+
+    real_solve = rotated_bc._solve_rotated_iterative
+    captured = {}
+
+    def capture(solver, Ahat, bhat, Q, Qt, normal_rows, **kw):
+        result = real_solve(solver, Ahat, bhat, Q, Qt, normal_rows, **kw)
+        captured.setdefault("config", _mg_config(
+            result[2]["pc"].getFieldSplitSubKSP()[0].getPC()))
+        return result
+
+    monkeypatch.setattr(rotated_bc, "_solve_rotated_iterative", capture)
+    s.solve()
+    assert s._rotated_freeslip_info["velocity_pc"] == "custom-FMG"
+    return captured["config"]
+
+
+def test_all_three_routes_share_one_bundle(monkeypatch):
+    """Native, standard custom-P and rotated custom-P must smooth identically —
+    same Krylov smoother, same preconditioner, same iteration count, same cycle.
+    Only the coarse solve legitimately differs."""
+    native = _native_config()
+    standard = _custom_standard_config()
+    rotated = _custom_rotated_config(monkeypatch)
+
+    shared = ("mg_type", "smoother_ksp", "smoother_pc", "smoother_max_it",
+              "smoother_norm", "coarse_ksp")
+    for key in shared:
+        assert native[key] == standard[key] == rotated[key], (
+            f"route drift on {key!r}: native={native[key]!r} "
+            f"standard={standard[key]!r} rotated={rotated[key]!r}")
+
+    # The measured bundle, not just self-consistency: gmres/sor at four
+    # iterations with no norm computation (see multigrid_options for why).
+    assert native["smoother_ksp"] == "gmres"
+    assert native["smoother_pc"] == "sor"
+    assert native["smoother_max_it"] == 4
+
+    # The ONE deliberate per-route difference (#306): the rotated coarse operator
+    # inherits the rigid-rotation null space, where redundant/LU hits a zero pivot.
+    assert native["coarse_pc"] == "redundant"
+    assert standard["coarse_pc"] == "redundant"
+    assert rotated["coarse_pc"] == "svd"
+
+
+def test_rotated_picks_up_a_mesh_owned_hierarchy():
+    """#467: a coarse tail owned by the MESH — what ``adapt()`` leaves on a
+    refinement child — must drive geometric MG under rotated free-slip. It used
+    to be ignored, and the solve fell back to GAMG silently.
+
+    The tail is attached by hand rather than by running ``adapt()``: it is the
+    same attribute the child carries, and what is under test is whether the
+    rotated dispatch consults it.
+    """
+    mesh = _annulus(RES)
+    mesh._custom_mg_coarse_meshes = [_annulus(2 * RES)]
+    mesh._custom_mg_builder = "barycentric"
+
+    s = _stokes(mesh, "own", rotated=True)
+    s.solve()
+
+    assert s._rotated_freeslip_info["velocity_pc"] == "custom-FMG"
+    assert s._rotated_freeslip_info["velocity_pc_type"] == "mg"
+
+
+def test_rotated_fmg_survives_repeated_newton_increments():
+    """The rotated path applies its bundle under a per-solve options prefix and
+    then drops the keys again, so the global database stays bounded under
+    time-stepping. That is only safe if nothing re-reads them: a later
+    ``setFromOptions`` on the velocity sub-PC would find ``pc_type`` gone and
+    silently abandon the multigrid. Several Newton increments, each re-solving
+    on a refreshed operator, must all keep ``pc=mg``."""
+    mesh = _annulus(RES)
+    s = _stokes(mesh, "nl", rotated=True)
+
+    # power-law viscosity: a genuinely nonlinear solve, several increments
+    x, y = mesh.X
+    v = s.Unknowns.u
+    grad = sympy.Matrix([[v.sym[0].diff(x), v.sym[0].diff(y)],
+                         [v.sym[1].diff(x), v.sym[1].diff(y)]])
+    edot = 0.5 * (grad + grad.T)
+    eII = sympy.sqrt(0.5 * (edot[0, 0] ** 2 + edot[1, 1] ** 2)
+                     + edot[0, 1] ** 2 + 1.0e-12)
+    s.constitutive_model.Parameters.shear_viscosity_0 = eII ** (1.0 / 3.0 - 1.0)
+    s.consistent_jacobian = True
+    s.tolerance = 1.0e-7
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+    s.solve()
+
+    info = s._rotated_freeslip_info
+    assert len(info["ksp_its"]) > 1, "not a multi-increment solve — test is vacuous"
+    assert info["velocity_pc"] == "custom-FMG"
+    assert info["velocity_pc_type"] == "mg"
+
+
+def test_rotated_without_a_hierarchy_falls_back_to_gamg():
+    """The negative control for the test above: no hierarchy anywhere still
+    reports GAMG, so ``custom-FMG`` above is a real pickup and not a label that
+    is always set."""
+    s = _stokes(_annulus(RES), "none", rotated=True)
+    s.solve()
+    assert s._rotated_freeslip_info["velocity_pc"] == "GAMG"

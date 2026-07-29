@@ -12,6 +12,7 @@ from   underworld3.utilities._jitextension import getext, JITCallbackSet
 import underworld3.timing as timing
 
 from underworld3.utilities._api_tools import uw_object
+from underworld3.utilities import multigrid_options
 
 from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
@@ -618,46 +619,14 @@ class SolverBaseClass(uw_object):
                 )
             want_fmg = False
 
+        # The option VALUES live in utilities.multigrid_options, which is the
+        # single owner shared with the custom-P routes (custom_mg, rotated_bc) —
+        # the routes are the same preconditioner reached three ways and must not
+        # be configured from three places (#468). Coarse solve: the native
+        # hierarchy is not rotated, so its coarse operator carries no inherited
+        # null space and redundant+LU is right here.
         if want_fmg:
-            # Geometric Full Multigrid on the refinement hierarchy. Galerkin
-            # (RAP) coarse operators are required because UW3 does not install
-            # residual/Jacobian callbacks on the coarse DMs.
-            opts[f"{prefix}pc_type"] = "mg"
-            opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
-            opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
-            # gmres+sor, sized for a DEEP hierarchy (the only kind worth having:
-            # a two-level cycle is a coarse-grid correction, not a V-cycle, and is
-            # not worth special-casing). Chebyshev needs eigenvalue estimates of the
-            # smoothed operator, which are fragile on the indefinite /
-            # variable-viscosity velocity block and diverge. Richardson is
-            # stationary and degrades on the NON-SYMMETRIC operator produced by the
-            # consistent-Newton tangent. Measured on the Spiegelman notch (Drucker-
-            # Prager, eta contrast 1e26) over a nested 4-level hierarchy: contraction
-            # per V-cycle rho = 0.75 (richardson) vs 0.56 (gmres) at the SAME four
-            # smoother iterations -- and the gmres margin GROWS with depth (5% at 3
-            # levels, 25% at 4), because deeper cycles apply the smoother on more
-            # coarse operators. Four iterations, not more: per unit work gmres/4
-            # (rho^(1/4) = 0.87) beats gmres/8 (0.91).
-            opts[f"{prefix}mg_levels_ksp_type"] = "gmres"
-            opts[f"{prefix}mg_levels_pc_type"] = "sor"
-            opts[f"{prefix}mg_levels_ksp_max_it"] = 4
-            # Run EXACTLY max_it smoother iterations: no residual-norm computation
-            # and no convergence test, so every V-cycle costs the same. A Krylov
-            # smoother makes the cycle non-stationary, which is why the velocity
-            # block is fgmres (flexible) rather than gmres -- see the fieldsplit
-            # defaults in the Stokes __init__.
-            opts[f"{prefix}mg_levels_ksp_norm_type"] = "none"
-            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
-            # redundant+lu, not bare lu: a bare serial LU cannot factor a
-            # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
-            # after 0 iterations). redundant gathers the (small) coarse system to
-            # one rank and is identical to lu in serial — so it is np-safe by
-            # default without surprising small-np users.
-            opts[f"{prefix}mg_coarse_pc_type"] = "redundant"
-            opts[f"{prefix}mg_coarse_redundant_pc_type"] = "lu"
-            # Clear stale GAMG-only keys so toggling back and forth is clean.
-            for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
-                opts.delValue(f"{prefix}{key}")
+            multigrid_options.geometric_mg_bundle().apply(opts, prefix)
             self._pc_managed_value = "mg"
         else:
             if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
@@ -668,19 +637,7 @@ class SolverBaseClass(uw_object):
                     f"mesh with refinement >= 1 to enable geometric multigrid.",
                     stacklevel=2,
                 )
-            opts[f"{prefix}pc_type"] = "gamg"
-            opts[f"{prefix}pc_gamg_type"] = "agg"
-            opts[f"{prefix}pc_gamg_repartition"] = True
-            opts[f"{prefix}pc_mg_type"] = "additive"
-            opts[f"{prefix}pc_gamg_agg_nsmooths"] = 2
-            opts[f"{prefix}mg_levels_ksp_max_it"] = 3
-            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
-            # Clear stale geometric-MG-only keys.
-            for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
-                        "mg_levels_pc_type", "mg_levels_ksp_norm_type",
-                        "mg_coarse_pc_type",
-                        "mg_coarse_redundant_pc_type"):
-                opts.delValue(f"{prefix}{key}")
+            multigrid_options.gamg_bundle().apply(opts, prefix)
             self._pc_managed_value = "gamg"
 
     def _enforce_galerkin_for_geometric_mg(self):
