@@ -139,6 +139,13 @@ class FreeSurface:
         self.composition = composition
         self._conserve_integrand = conserve
         self._smooth_length = smooth_length
+        # sigma_nn de-smear: "lumped" is the monotone 2D default; on a 3D P2
+        # trace the lumped vertex mass is identically zero, and the consistent
+        # P2 mass carries the vertex-integral checkerboard (#404 hold) exactly
+        # at the vertices the P1 h_inf field reads — so 3D translates the
+        # default to the sound P1-PROJECTED recovery (boundary_flux mass="p1").
+        if stokes.mesh.dim == 3 and mass == "lumped":
+            mass = "p1"
         self._mass = mass
         self.max_surface_cfl = max_surface_cfl
         # First-pass along-surface (tangential) transport of the surface fields:
@@ -176,18 +183,29 @@ class FreeSurface:
                 "free surface the sigma_nn recovery zigzags. Prefer continuous pressure."
             )
 
-        # Topography direction: vertical (last axis) on a Cartesian box, radial on a
-        # cylindrical annulus. The surface height and the mesh deformation follow it.
-        if self.mesh.dim != 2:
-            raise NotImplementedError(
-                "FreeSurface is 2D-only for now: the surface ring machinery (filter, "
-                "tangential transport, arc-length datum) and the sigma_nn de-smear have "
-                "no 3D counterparts yet (the 3D boundary mass is PR #404's scope). "
-                "Without this guard a 3D run would proceed and be silently wrong."
-            )
-        self._cylindrical = (
-            self.mesh.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL2D
-        )
+        # Topography direction: vertical (last axis) on a Cartesian box/slab, radial
+        # on a cylindrical annulus or spherical shell. The surface height and the
+        # mesh deformation follow it. `_radial` steers the geometry (any dimension);
+        # `_cylindrical` additionally selects the 2D ring's angular ordering.
+        ctype = self.mesh.CoordinateSystem.coordinate_type
+        self._cylindrical = ctype == CoordinateSystemType.CYLINDRICAL2D
+        self._radial = self._cylindrical or ctype == CoordinateSystemType.SPHERICAL
+        # 3D runs on the dimension-general primitives (facet trace-mass gauge,
+        # directed flux strip, unordered surface gather, nodal carrier). The two
+        # 2D-ONLY features are refused per piece rather than by a blanket guard:
+        if self.mesh.dim == 3:
+            if tangent_advect is not None:
+                raise NotImplementedError(
+                    "FreeSurface: tangential surface transport is 2D-only (it runs "
+                    "on the ordered surface ring; a 3D counterpart needs surface FE "
+                    "advection). Construct with tangent_advect=None in 3D."
+                )
+            if int(surface_filter) > 0:
+                raise NotImplementedError(
+                    "FreeSurface: the Taubin surface filter is 2D-only (1-D ring "
+                    "stencil); pass surface_filter=0 in 3D (the trace-mass gauge "
+                    "and the interior carrier do not require it)."
+                )
         self._walls = self._classify_walls()
         # Reference-configuration surface nodes: used ONCE to match each surface node to
         # its row in the mesh coordinate field and in the derived surface fields. Row
@@ -252,15 +270,16 @@ class FreeSurface:
 
     def _surface_height(self, coords):
         """The coordinate along the topography direction: the last axis on a Cartesian
-        box, the radius on a cylindrical annulus."""
-        if self._cylindrical:
+        box/slab, the radius on a cylindrical annulus or spherical shell."""
+        if self._radial:
             return np.linalg.norm(coords, axis=1)
         return np.asarray(coords[:, -1], dtype=float)
 
     def _normal_direction(self, coords):
         """Per-node unit vectors along the topography direction that the surface
-        increment is deformed along — vertical (Cartesian) or radial (annulus)."""
-        if self._cylindrical:
+        increment is deformed along — vertical (Cartesian) or radial (annulus /
+        spherical shell); dimension-general."""
+        if self._radial:
             r = np.linalg.norm(coords, axis=1)
             r[r == 0.0] = 1.0
             return coords / r[:, None]
@@ -349,6 +368,14 @@ class FreeSurface:
         field by construction. Dimension-general: the same accumulation is the
         area-weighted gauge on a 3D boundary triangulation.
         """
+        return self._ring_gather(self._surface_weights_local(), op="sum")
+
+    def _surface_weights_local(self):
+        """This rank's OWNED-facet partial trace-mass weights, aligned with the
+        local ring order. Because every facet is counted exactly once globally,
+        plain sums of (weight x value) over all ranks' local arrays are exact —
+        no gather, no ordering, no seam bookkeeping — which is what
+        :meth:`_surface_mean` reduces over, in any dimension."""
         from underworld3.utilities.boundary_flux import _boundary_stratum_is
 
         rc = self._ring_coords                         # local nodes, x-sorted order
@@ -391,8 +418,7 @@ class FreeSurface:
         # align to the local ring order by position (both sides read the SAME live
         # plex coordinates, so the rounded keys match exactly)
         wmap = {tuple(np.round(cvec[cr], 9)): w for cr, w in acc.items()}
-        local = np.array([wmap.get(tuple(np.round(c, 9)), 0.0) for c in rc])
-        return self._ring_gather(local, op="sum")
+        return np.array([wmap.get(tuple(np.round(c, 9)), 0.0) for c in rc])
 
     def _surface_mean(self, values):
         r"""Area-weighted global mean of a surface-node array, identical on every rank
@@ -409,10 +435,18 @@ class FreeSurface:
         The same weighting makes the ``h`` / ``h_inf`` datum volume-preserving rather
         than node-count-preserving.
         """
-        weights = self._ring_weights()
-        gathered = self._ring_gather(values)
-        total = float(weights.sum())
-        return float((gathered * weights).sum() / total) if total else 0.0
+        # Reduction over OWNED partial weights: each facet's contribution is
+        # counted exactly once globally, so two scalar allreduces give the exact
+        # weighted mean with no gather and no ordering — dimension-general (the
+        # ordered ring remains only for the 2D-only filter and transport).
+        w = self._surface_weights_local()
+        v = np.asarray(values, dtype=float)
+        local_wv = float(np.dot(w, v)) if w.size else 0.0
+        local_w = float(w.sum()) if w.size else 0.0
+        comm = uw.mpi.comm
+        total_wv = comm.allreduce(local_wv, op=MPI.SUM)
+        total_w = comm.allreduce(local_w, op=MPI.SUM)
+        return total_wv / total_w if total_w else 0.0
 
     def _demean(self, values):
         """Remove the global surface mean (topography datum floats)."""
@@ -621,6 +655,16 @@ class FreeSurface:
         self._diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
         self._diffuser.constitutive_model.Parameters.diffusivity = 1.0
         self._diffuser.tolerance = 1.0e-3
+        # Row map for the deform read: the carrier is P1 and (on our P1-geometry
+        # meshes) its nodes coincide with the mesh coordinate nodes, so the
+        # displacement is a DIRECT nodal read — never a point evaluation at the
+        # field's own nodes (the on-node location class, O(1)-wrong on 3D cell
+        # edges, #432). Row identities survive deformation; matched once here.
+        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords))
+        dist, rows = tree.query(np.ascontiguousarray(self.mesh.X.coords), k=1)
+        self._carry_rows_at_mesh_nodes = (
+            np.asarray(rows).flatten()
+            if float(np.max(dist)) < 1.0e-12 else None)   # exotic geometry: fall back
         self._base = self._opposite_boundary()
         self._diffuser.add_essential_bc(self._carry_bc.sym, self.surface)
         if self._base is not None:
@@ -685,19 +729,32 @@ class FreeSurface:
         comm = uw.mpi.comm
         rc = self._ring_coords                         # local nodes, x-sorted order
         if self._cylindrical:
-            s_local = np.arctan2(rc[:, 1], rc[:, 0])
+            keys_local = np.arctan2(rc[:, 1], rc[:, 0])[:, None]
             self._ring_period = 2.0 * np.pi
-        else:
-            s_local = rc[:, 0].astype(float)
+        elif self.mesh.dim == 3:
+            # No natural 1-D surface ordering in 3D. The ordered-ring FEATURES
+            # (Taubin filter, tangential transport) are 2D-only and refused at
+            # construction; the gather itself only needs a deterministic global
+            # order with exact same-node grouping, which lexicographic rounded
+            # coordinates provide (the surface deforms along the normal, so the
+            # reference ordering is built once, like the 2D ring).
+            keys_local = np.round(np.asarray(rc, dtype=float), 12)
             self._ring_period = None
-        self._s_local_n = int(s_local.size)
+        else:
+            keys_local = rc[:, 0].astype(float)[:, None]
+            self._ring_period = None
+        self._s_local_n = int(keys_local.shape[0])
         counts = comm.allgather(self._s_local_n)
         self._ring_offset = int(np.sum(counts[: comm.rank]))
-        s_global = (np.concatenate(comm.allgather(s_local))
-                    if comm.size > 1 else s_local.copy())
-        self._ring_order = np.argsort(s_global, kind="stable")     # concat -> s-sorted
+        keys_global = (np.concatenate(comm.allgather(np.ascontiguousarray(keys_local)))
+                       if comm.size > 1 else keys_local.copy())
+        keys_global = keys_global.reshape(self._s_local_n if comm.size == 1
+                                          else -1, keys_local.shape[1])
+        # lexicographic stable order over the key columns (a single column in 2D)
+        self._ring_order = np.lexsort(keys_global.T[::-1])
         self._ring_inv = np.empty_like(self._ring_order)
         self._ring_inv[self._ring_order] = np.arange(self._ring_order.size)
+        s_global = keys_global[:, 0] if keys_global.shape[1] == 1 else None
         # DEDUPLICATE partition-seam copies (#421). A vertex on a partition cut appears
         # once per adjacent rank in the gathered ring. Every ring operation must see each
         # PHYSICAL node exactly once: the Taubin filter's roll-stencil otherwise treats
@@ -706,20 +763,22 @@ class FreeSurface:
         # value — measured as a ~50% seam disagreement in h_inf after 20 iterations and
         # a few-percent net flux in the prescribed datum. Gather averages the copies
         # (identical up to round-off); scatter expands back to every copy.
-        s_srt = s_global[self._ring_order]
-        uniq_of_sorted = np.empty(s_srt.size, dtype=int)
-        uniq_id = -1
-        prev = None
-        for i, val in enumerate(np.round(s_srt, 12)):
-            if prev is None or val != prev:
-                uniq_id += 1
-                prev = val
-            uniq_of_sorted[i] = uniq_id
+        keys_srt = np.round(keys_global[self._ring_order], 12)
+        if keys_srt.shape[0] == 0:
+            new_group = np.empty(0, dtype=bool)
+        else:
+            new_group = np.r_[True, np.any(np.diff(keys_srt, axis=0) != 0.0, axis=1)]
+        uniq_of_sorted = np.cumsum(new_group) - 1 if keys_srt.shape[0] else \
+            np.empty(0, dtype=int)
         self._ring_uniq_of_sorted = uniq_of_sorted
-        self._ring_n_uniq = uniq_id + 1
+        self._ring_n_uniq = int(uniq_of_sorted[-1] + 1) if keys_srt.shape[0] else 0
         self._ring_dup_count = np.bincount(uniq_of_sorted, minlength=self._ring_n_uniq)
         first_pos = np.searchsorted(uniq_of_sorted, np.arange(self._ring_n_uniq))
-        self._s_sorted = s_srt[first_pos]
+        # the 1-D along-surface coordinate exists only where the ordering is real
+        # (2D); the 3D gather is order-agnostic and the ring features that read
+        # _s_sorted are refused at construction there.
+        self._s_sorted = (s_global[self._ring_order][first_pos]
+                          if s_global is not None else None)
 
     def _ring_gather(self, local_vals, op="mean"):
         """Local (x-sorted-order) surface values -> the globally s-sorted UNIQUE ring.
@@ -1063,8 +1122,15 @@ class FreeSurface:
         self._carry_bc.array[self._carry_bc_rows, 0, 0] = increment
         self._diffuser.solve(zero_init_guess=False)
         coords = self.mesh.X.coords
-        displacement = np.asarray(
-            function.evaluate(self._carry.sym[0], coords)
-        ).flatten()
+        if self._carry_rows_at_mesh_nodes is not None:
+            # direct nodal read (see _build_interior_diffuser: the on-node
+            # evaluation class is what this avoids)
+            displacement = np.asarray(
+                self._carry.array[self._carry_rows_at_mesh_nodes, 0, 0]
+            ).flatten()
+        else:
+            displacement = np.asarray(
+                function.evaluate(self._carry.sym[0], coords)
+            ).flatten()
         new_coords = coords + displacement[:, None] * self._normal_direction(coords)
         self.mesh.deform(new_coords, dt=dt)
