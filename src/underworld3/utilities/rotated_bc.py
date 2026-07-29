@@ -963,10 +963,15 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             "ksp_type": "fgmres", "ksp_rtol": str(tol), "ksp_max_it": "300",
             "pc_type": "fieldsplit", "pc_fieldsplit_type": "schur",
             "pc_fieldsplit_schur_fact_type": "full",
-            # native-parity pressure sub-solve (pyx Stokes defaults): FGMRES at the
-            # solver tolerance; GASM on the 1/mu mass, jacobi if only selfp exists.
+            # Pressure sub-solve at native-path parity (pyx Stokes defaults):
+            # FGMRES at 0.1 x tol, GASM on the 1/mu mass (jacobi if only selfp
+            # exists). This path used to ask for tol, i.e. 10x looser than native.
+            # Defaults here err toward the more conservative of the two: matching
+            # native costs ~17% wall clock with identical outer iteration counts
+            # (measured, both velocity-block routes, isotropic and TI), and a
+            # too-loose inner solve fails by silent stagnation rather than loudly.
             "fieldsplit_pres_ksp_type": "fgmres",
-            "fieldsplit_pres_ksp_rtol": str(tol),
+            "fieldsplit_pres_ksp_rtol": str(tol * 0.1),
             "fieldsplit_pres_ksp_max_it": "200",
         }
         if Mp is not None:
@@ -980,7 +985,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # block — this applies only when no hierarchy is registered.
             cfg.update({
                 "fieldsplit_vel_ksp_type": "fgmres",
-                "fieldsplit_vel_ksp_rtol": str(tol * 0.1),
+                "fieldsplit_vel_ksp_rtol": str(tol * 0.033),
                 "fieldsplit_vel_ksp_max_it": "200",
                 "fieldsplit_vel_pc_type": "gamg",
                 "fieldsplit_vel_pc_gamg_type": "agg",
@@ -1012,14 +1017,14 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # the floor (most likely a range/nullspace inconsistency between S~ and
             # the constant-pressure null space attached to S below) is not isolated.
             #
-            # max_it matches the GAMG fallback and the native path (200); rtol
-            # matches the GAMG fallback (0.1 x tol). The native path asks for
-            # 0.033 x tol — deliberately not copied, since the FMG cycle is a far
-            # stronger preconditioner than GAMG here and reaches 0.1 x tol in ~11
-            # iterations.
+            # rtol and max_it are the native path's (0.033 x tol, 200), as is the
+            # GAMG fallback above. The FMG cycle reaches 0.1 x tol in ~11 iterations
+            # and would be cheaper there, but a sub-solve tolerance is a guardrail:
+            # the conservative value is the default and loosening it is the caller's
+            # risk to take.
             cfg.update({
                 "fieldsplit_vel_ksp_type": "fgmres",
-                "fieldsplit_vel_ksp_rtol": str(tol * 0.1),
+                "fieldsplit_vel_ksp_rtol": str(tol * 0.033),
                 "fieldsplit_vel_ksp_max_it": "200",
             })
         for k, v in cfg.items():
