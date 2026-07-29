@@ -166,7 +166,8 @@ def _spherical3d_diagnostics():
 
     L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
     info = s._rotated_freeslip_info
-    return L2, int(info["ksp_its"]), int(info["ksp_reason"])
+    # the unified rotated loop reports one KSP count per Newton increment
+    return L2, max(info["ksp_its"]), int(info["ksp_reason"])
 
 
 def _spherical3d_topography_diagnostics(cell_size=0.25):
