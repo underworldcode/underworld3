@@ -1,64 +1,139 @@
 # syntax=docker/dockerfile:1.7-labs
-
-### how to build Underworld3 image
-### MUST run from the underworld3 top directory
-#   podman build . --rm \
-#       --format docker \
-#       -f ./container/Containerfile \
-#       -t underworldcode/underworld3:<version-id>
 #
-### requires the '--format docker' to run on podman, but no under docker.
+# Lean two-stage command-line container for Underworld3.
+# Uses pixi (same package manager as the Binder image) to resolve packages
+# from pixi.lock, eliminating PETSc version drift between container types.
+# Drops vtk-osmesa (amd64-only wheel); uses conda-forge vtk + Mesa apt packages
+# for headless rendering on both amd64 and arm64.
 #
+# Build (from underworld3 root):
+#   podman build . --format docker \
+#       --build-arg SETUPTOOLS_SCM_PRETEND_VERSION=3.1.0 \
+#       -f container/Containerfile \
+#       -t underworldcode/underworld3:latest
 #
-### Example usage (taken from - https://jupyter-docker-stacks.readthedocs.io/en/latest/using/running.html#using-the-podman-cli )
-# uid=57439
-# gid=57439
+# Run:
+#   podman run --rm -p 8888:8888 \
+#       -v "${HOME}/uw_space":/home/jovyan/host \
+#       underworldcode/underworld3:latest
+#
+# MPI parallel (terminal tab inside the running container):
+#   mpirun -n 4 python my_script.py
 
-# subuidSize=$(( $(podman info --format "{{ range .Host.IDMappings.UIDMap }}+{{.Size }}{{end }}" ) - 1 ))
-# subgidSize=$(( $(podman info --format "{{ range .Host.IDMappings.GIDMap }}+{{.Size }}{{end }}" ) - 1 ))
-# podman run   -it --rm   -p 10000:8888   -v "${HOME}/uw_space":/home/mambauser/host   --uidmap $uid:0:1 --uidmap 0:1:$uid --uidmap $(($uid+1)):$(($uid+1)):$(($subuidSize-$uid))   --gidmap $gid:0:1 --gidmap 0:1:$gid --gidmap $(($gid+1)):$(($gid+1)):$(($subgidSize-$gid)) underworldcode/underworld3:<version-id>
+# ============================================================
+# Stage 1: builder — install pixi runtime env, compile UW3
+# ============================================================
+FROM ubuntu:24.04 AS builder
 
-FROM docker.io/mambaorg/micromamba:2.3.0
+ENV DEBIAN_FRONTEND=noninteractive
 
-# install os requirements for headless pyvista
-USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb \
-    libgl1-mesa-dev \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-USER $MAMBA_USER
 
-# create the conda environment with all dependencies
-# see https://micromamba-docker.readthedocs.io/en/latest/quick_start.html#quick-start
-COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yaml /tmp/env.yaml
-RUN micromamba install -y -v -n base -f /tmp/env.yaml && \
-    micromamba clean --all --yes
+# Ubuntu 24.04 ships 'ubuntu' at UID 1000 — remove it before creating jovyan
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
 
-# activate mamba env during podman build
-ARG MAMBA_DOCKERFILE_ACTIVATE=1
+USER jovyan
+WORKDIR /home/jovyan/underworld3
 
-# pyvista - vtk-osmesa only available for amd64; arm64 falls back to conda-forge vtk
-# see https://github.com/pyvista/pyvista/tree/main/docker
-ARG TARGETARCH
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-    pip install --no-cache-dir --extra-index-url https://wheels.vtk.org vtk-osmesa; \
-    fi
+# Install pixi
+RUN curl -fsSL https://pixi.sh/install.sh | sh
+ENV PATH="/home/jovyan/.pixi/bin:$PATH"
 
-# install UW3
-COPY --chown=$MAMBA_USER:$MAMBA_USER \
-     --exclude=**/.git \
-     . /home/$MAMBA_USER/underworld3
-WORKDIR /home/$MAMBA_USER/underworld3
+# Install the pixi runtime environment (resolved from pixi.lock — no solver run)
+COPY --chown=jovyan:jovyan pixi.toml pixi.lock ./
+RUN pixi install -e runtime
+
+# Copy source, then compile and install UW3 into the runtime env.
+# SETUPTOOLS_SCM_PRETEND_VERSION sets the version string (fixes 0.0.0+unknown
+# on builds without a .git checkout).
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+unknown
+COPY --chown=jovyan:jovyan \
+    --exclude=**/.git \
+    --exclude=**/docs_legacy \
+    --exclude=**/__pycache__ \
+    . .
 RUN SETUPTOOLS_SCM_PRETEND_VERSION=${SETUPTOOLS_SCM_PRETEND_VERSION} \
-    pip install --no-build-isolation --no-cache-dir .
+    pixi run -e runtime python -m pip install --no-build-isolation --no-cache-dir .
 
-# allow jupyterlab for ipyvtk
+# Register a named Jupyter kernel so users see "Underworld3" in the kernel picker
+RUN pixi run -e runtime python -m ipykernel install \
+    --user --name=uw3 --display-name="Underworld3"
+
+# Clean up to reduce layer size
+RUN pixi clean cache --yes 2>/dev/null || true && \
+    find /home/jovyan -name "*.pyc" -delete 2>/dev/null || true && \
+    find /home/jovyan -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+    rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/conda-meta && \
+    rm -rf /home/jovyan/underworld3/.pixi/envs/runtime/man && \
+    rm -rf /home/jovyan/.cache/pip
+
+# ============================================================
+# Stage 2: runtime — lean image with Mesa apt deps + pixi env
+# ============================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime deps for headless pyvista/vtk (same as Dockerfile.base.optimized)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglu1-mesa \
+    libosmesa6 \
+    libglx-mesa0 \
+    libxft2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxrender1 \
+    libxext6 \
+    libglib2.0-0 \
+    libfreetype6 \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 jovyan
+
+# Copy the compiled pixi runtime environment (includes UW3 in site-packages)
+COPY --from=builder --chown=jovyan:jovyan \
+    /home/jovyan/underworld3/.pixi/envs/runtime \
+    /home/jovyan/underworld3/.pixi/envs/runtime
+
+# Copy Jupyter kernel config — gives users a named "Underworld3" kernel
+COPY --from=builder --chown=jovyan:jovyan \
+    /home/jovyan/.local \
+    /home/jovyan/.local
+
+# Copy full documentation, source, and beginner tutorials shortcut
+COPY --from=builder --chown=jovyan:jovyan \
+    /home/jovyan/underworld3/docs \
+    /home/jovyan/underworld3/docs
+
+COPY --from=builder --chown=jovyan:jovyan \
+    /home/jovyan/underworld3/src \
+    /home/jovyan/underworld3/src
+
+# Tutorials shortcut at ~/Tutorials — same layout as the Binder image
+COPY --from=builder --chown=jovyan:jovyan \
+    /home/jovyan/underworld3/docs/beginner/tutorials \
+    /home/jovyan/Tutorials
+
+USER jovyan
+WORKDIR /home/jovyan/underworld3
+
+# Use the runtime env's bin directly — no pixi overhead at runtime
+ENV PATH="/home/jovyan/underworld3/.pixi/envs/runtime/bin:$PATH"
+
+# Headless rendering (same settings as Binder)
 ENV PYVISTA_OFF_SCREEN=true
-ENV JUPYTER_ENABLE_LAB=yes
-ENV PYVISTA_TRAME_SERVER_PROXY_PREFIX='/proxy/'
-
-WORKDIR /home/$MAMBA_USER/
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MESA_GL_VERSION_OVERRIDE=3.3
+ENV GALLIUM_DRIVER=llvmpipe
+ENV VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow
+ENV DISPLAY=:99
 
 EXPOSE 8888
-CMD ["jupyter-lab", "--no-browser", "--ip=0.0.0.0"]
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--no-browser"]
