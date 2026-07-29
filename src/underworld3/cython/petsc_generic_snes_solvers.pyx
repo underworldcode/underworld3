@@ -8555,8 +8555,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         homotopy_options : dict, optional
             March settings passed to
             :func:`~underworld3.systems.yield_continuation.yield_continuation` —
-            ``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
-            ``retries``. All are defaulted; tuning them is optional.
+            ``smoother``, ``delta0``, ``down``, ``dmin``, ``entry_maxit``,
+            ``step_maxit``, ``retries``. All are defaulted; tuning them is optional.
+            ``smoother`` picks the soft-min family — ``"powermean"`` (default,
+            approaches the yield surface from below) or ``"sqrt"`` (from above). Which
+            gives the better cold entry is problem-dependent, so it is worth trying both
+            when a march will not start. Leave ``delta0`` unset unless you have a
+            reason: each family supplies its own entry, and the two δ are not the same
+            parameter.
 
         Returns
         -------
