@@ -657,6 +657,19 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     vel_its_last = []
     pres_its_last = []
 
+    # With the constant-pressure nullspace active, the outer residual is measured
+    # in the pressure-gauge QUOTIENT space: the inner KSP projects the constant
+    # mode out of every increment (it is the gauge of an enclosed incompressible
+    # domain), so the loop cannot reduce that component and must not measure it.
+    # On a DEFORMED faceted boundary the component is not exactly zero — free
+    # tangential DOFs carry a small net flux through the node-vs-facet normal
+    # mismatch, an irreducible discrete incompatibility (measured: an unprojected
+    # outer norm floors at rel ~2e-3, 100% pressure rows, and the line search
+    # stalls against the constant offset). This mirrors PETSc's own projected
+    # residual for singular systems. The Cartesian reaction stash is UNPROJECTED
+    # (σ_nn reads velocity rows only).
+    use_pnull = bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
+
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
         if keep_cartesian:
@@ -664,6 +677,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         Fh = Fc.duplicate()
         Q.mult(Fc, Fh)
         _zero_rows_local(Fh, normal_rows)
+        if use_pnull:
+            sp = Fh.getSubVector(pres_is)
+            mean = sp.sum() / max(sp.getSize(), 1)
+            sp.shift(-mean)                  # project out the pressure-gauge mode
+            Fh.restoreSubVector(pres_is, sp)
         return Fh
 
     # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).

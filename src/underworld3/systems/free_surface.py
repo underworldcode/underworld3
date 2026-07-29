@@ -561,6 +561,25 @@ class FreeSurface:
             # conds datum, re-evaluated at the boundary nodes at each solve.
             self.consistent.add_rotated_freeslip_bc(
                 self._un_target.sym[0], self.surface, normal=self.normal)
+            # Flux-consistent datum gauge: the divergence rows enforce
+            # ∮ u·n̂_facet over the DEFORMED faceted surface, while the constraint
+            # fixes u·n̂_node — the directions differ on a deformed surface, so a
+            # nodal demean of the datum leaves a small net volume flux that an
+            # incompressible interior cannot absorb (measured: rel ~2e-3 residual
+            # floor sitting 100% in the pressure rows). Strip the datum's DIRECTED
+            # mean using the same FE surface integral the residual uses:
+            # Φ = ∮ ũ_n (n̂·Γ̂) ds and S = ∮ (n̂·Γ̂) ds with Γ̂ = mesh.Gamma (the
+            # facet normal at quadrature points), then shift ũ_n by Φ/S so the
+            # discrete net flux of the constrained field is exactly zero.
+            nrm = (self.normal if self.normal is not None
+                   else self.mesh.boundary_normal(self.surface))
+            ncomps = sympy.flatten(sympy.Matrix(nrm))
+            ndotg = sum(ncomps[k] * self.mesh.Gamma[k] for k in range(self.mesh.dim))
+            self._datum_flux = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=self._un_target.sym[0] * ndotg,
+                boundary=self.surface)
+            self._datum_flux_scale = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=ndotg, boundary=self.surface)
         else:
             n_hat = (self.normal if self.normal is not None
                      else self.mesh.boundary_normal(self.surface))
@@ -1004,6 +1023,16 @@ class FreeSurface:
         u_tilde = self._demean(increment / dt)
         self._un_target.array[...] = 0.0
         self._un_target.array[self._un_target_rows, 0, 0] = u_tilde
+        # Exact FE-consistent flux strip (STRONG constraint only — the penalty
+        # absorbs a datum flux weakly and builds no integrals): remove the
+        # DIRECTED mean so the datum carries zero discrete net flux through the
+        # deformed facets — the quantity the pressure rows actually enforce.
+        # Collective (BdIntegral), so the shift is identical on every rank.
+        if self.consistent_constraint == "strong":
+            flux = float(self._datum_flux.evaluate())
+            scale = float(self._datum_flux_scale.evaluate())
+            if abs(scale) > 1.0e-30:
+                self._un_target.array[self._un_target_rows, 0, 0] -= flux / scale
         # Warm-start from the free solve: the consistent solution IS the free
         # solution with the (small) material-boundary datum imposed, and the free
         # solve has already converged this step. Starting there keeps a power-law
