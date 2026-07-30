@@ -302,6 +302,48 @@ def test_a_user_key_still_beats_the_strategy():
     assert max_it == 3, "the strategy should still own the keys the user left alone"
 
 
+def test_strategy_reports_what_it_resolved_to():
+    """``solver.strategy`` reports the preconditioner it configured, so "what am I
+    running?" does not require knowing which nine PETSc keys to look up (#484).
+
+    It must still BE the string: comparisons, formatting and serialisation of a
+    strategy name are unchanged.
+    """
+    mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=2 * RES, qdegree=3, refinement=1)
+    s = _stokes(mesh, "rep", rotated=False)
+
+    # before any solve: must NOT present the __init__ defaults as resolved
+    assert s.strategy == "default"
+    assert f"{s.strategy}" == "default"
+    assert "not resolved yet" in repr(s.strategy)
+
+    s.solve()
+    assert s.strategy == "default"                    # still the plain string
+    summary = repr(s.strategy)
+    assert "geometric multigrid (2 levels)" in summary
+    assert "gmres" in summary and "sor" in summary
+    assert "not resolved yet" not in summary
+
+    # and the machine-readable form agrees with it
+    assert s.preconditioner_settings["mg_levels_ksp_type"] == "gmres"
+    assert s.preconditioner_settings["mg_levels_ksp_max_it"] == "4"
+
+
+def test_strategy_report_names_a_user_override():
+    """A key the user took over must be called out, not silently folded into the
+    summary — otherwise the report reintroduces the ambiguity it exists to remove."""
+    mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=2 * RES, qdegree=3, refinement=1)
+    s = _stokes(mesh, "rov", rotated=False)
+    s.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 6
+    s.solve()
+    summary = repr(s.strategy)
+    assert "overridden by the user" in summary
+    assert "mg_levels_ksp_max_it=6" in summary
+    assert s.preconditioner_settings["mg_levels_ksp_max_it"] == "6"
+
+
 def test_rotated_fmg_survives_repeated_newton_increments():
     """The rotated path applies its bundle under a per-solve options prefix and
     then drops the keys again, so the global database stays bounded under

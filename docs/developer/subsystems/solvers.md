@@ -451,6 +451,36 @@ nested ones, so the smoother is a larger share of the cycle on that route.
 and it carries that cost exactly where the problem is easy. `"fast"` is the
 documented opt-out.
 
+### Asking what you actually got
+
+`solver.strategy` reports it. The value is still the strategy *name* — it compares
+and formats as the plain string, so nothing that used it before changes — but
+displaying it shows the preconditioner that name resolved to:
+
+```python
+>>> stokes.strategy
+'default' — geometric multigrid (2 levels), full cycle, smoother gmresx4 + sor,
+            coarse redundant/lu
+>>> stokes.strategy == "default"
+True
+```
+
+Three properties of that report matter more than its formatting:
+
+- **It names a user override rather than absorbing it.** A key you set yourself is
+  listed as such (`; overridden by the user: mg_levels_ksp_max_it=6`), so the
+  summary cannot hide the difference between what the strategy asked for and what
+  is running.
+- **It refuses to report before it knows.** The preconditioner is resolved at the
+  first solve; until then the report says so instead of presenting the constructor
+  defaults as though they were the answer. A summary that looks authoritative and
+  is stale is worse than no summary.
+- **`solver.preconditioner_settings`** is the same information as a dict, so a test
+  can assert on it rather than parsing prose or inferring from timings.
+
+This is the general shape #484 asks for across all the managed fallbacks: report the
+resolved choice as readable state, and distinguish "could not" from "chose not to".
+
 ```{warning}
 Do not fill a strategy by writing velocity-block options from the strategy setter.
 `_apply_preconditioner_options` runs later, at `_build`, and is the single writer

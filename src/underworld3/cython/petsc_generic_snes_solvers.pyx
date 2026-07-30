@@ -14,6 +14,31 @@ import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities import multigrid_options
 
+
+class _StrategyName(str):
+    """A strategy name that also reports what it resolved to.
+
+    Subclasses ``str`` deliberately: ``solver.strategy == "fast"``, string
+    formatting and serialisation all behave exactly as before, but displaying it —
+    in a REPL, a notebook, or a log line — shows the preconditioner it actually
+    configured. Asking "what am I running?" should not require knowing which nine
+    PETSc option keys to look up.
+
+    Use :attr:`SolverBaseClass.preconditioner_settings` for the machine-readable
+    form.
+    """
+
+    def __new__(cls, name, summary):
+        obj = super().__new__(cls, name)
+        obj._summary = summary
+        return obj
+
+    def __repr__(self):
+        return f"{str.__repr__(self)} — {self._summary}"
+
+    def _repr_markdown_(self):
+        return f"**`{str(self)}`** — {self._summary}"
+
 from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
 
@@ -170,10 +195,58 @@ class SolverBaseClass(uw_object):
         # the `tolerance` and `strategy` setters defeated an earlier attempt (#477).
         # Internal writers therefore go through _push_managed_option().
         self._managed_pc_options = {}
+        # Has _apply_preconditioner_options actually made the resolution decision
+        # yet? Until it has, the options database holds only this solver's __init__
+        # defaults, which is NOT what the next solve will run — reporting them as
+        # resolved would be exactly the stale-but-authoritative-looking summary this
+        # reporting exists to prevent.
+        self._pc_resolved = False
 
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
         self._custom_mg = None
+
+    @property
+    def preconditioner_settings(self):
+        """The option values the managed preconditioner block is configured with.
+
+        A read-only dict of the multigrid keys UW3 currently has in the options
+        database for this solver's managed block, so what actually got applied can
+        be asserted on instead of inferred from timings. Empty for a solver with no
+        managed block (``_pc_option_prefix is None``), or before the first build
+        resolves one.
+
+        The values are what the strategy resolved to, *including* any key you set
+        yourself — those are respected (see :attr:`petsc_options`). Use
+        :attr:`strategy` for a readable summary of the same thing.
+        """
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return {}
+        keys = set(multigrid_options.gamg_bundle().settings)
+        for coarse in multigrid_options.GEOMETRIC_MG_COARSE_SOLVERS:
+            keys |= set(multigrid_options.geometric_mg_bundle(coarse=coarse).settings)
+        out = {}
+        for key in sorted(keys):
+            name = prefix + key
+            if self.petsc_options.hasName(name):
+                out[key] = self.petsc_options.getString(name)
+        return out
+
+    @property
+    def _user_overridden_pc_options(self):
+        """The managed-block keys the USER set, as (key, value) pairs.
+
+        A key present in the options database whose value is not the one UW3
+        recorded writing is theirs — the same test the bundle writer uses to decide
+        what to leave alone."""
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return ()
+        qualified = self.petsc_options_prefix
+        return tuple(
+            (key, value) for key, value in self.preconditioner_settings.items()
+            if self._managed_pc_options.get(qualified + prefix + key) != value)
 
     @property
     def _mg_smoother_variant(self):
@@ -591,6 +664,9 @@ class SolverBaseClass(uw_object):
         prefix = self._pc_option_prefix
         if prefix is None:
             return
+        # Every path from here is a resolution decision, including "the user owns
+        # these options, leave them alone".
+        self._pc_resolved = True
 
         opts = self.petsc_options
 
@@ -6350,11 +6426,31 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         str
             Current strategy name.
 
+        The value returned is the strategy name (it compares and formats as the
+        plain string) and additionally reports the preconditioner it resolved to
+        when displayed::
+
+            >>> stokes.strategy
+            'default' — geometric multigrid (3 levels), full cycle,
+                        smoother gmresx4 + sor, coarse redundant/lu
+
         See Also
         --------
         preconditioner : which multigrid FAMILY to use (geometric, algebraic, auto).
+        preconditioner_settings : the same information as a dict, for assertions.
         """
-        return self._strategy
+        settings = self.preconditioner_settings
+        if not settings or not self._pc_resolved:
+            summary = "not resolved yet — configured at the first solve"
+            if settings:
+                summary += (f" (framework defaults in place: "
+                            f"{multigrid_options.describe(settings)})")
+        else:
+            levels = len(getattr(self.mesh, "dm_hierarchy", []) or []) or None
+            summary = multigrid_options.describe(
+                settings, levels=levels,
+                overridden=self._user_overridden_pc_options)
+        return _StrategyName(self._strategy, summary)
 
     @strategy.setter
     def strategy(self, value):

@@ -52,6 +52,7 @@ dict so it can drop them again after ``setUp``)::
 from typing import NamedTuple
 
 __all__ = ["MGSettings", "geometric_mg_bundle", "gamg_bundle", "option_string",
+           "describe",
            "GEOMETRIC_MG_COARSE_SOLVERS", "GEOMETRIC_MG_SMOOTHERS"]
 
 
@@ -140,6 +141,43 @@ class MGSettings(NamedTuple):
             opts.delValue(name)
             if owned is not None:
                 owned.pop(name, None)
+
+
+def describe(settings, levels=None, overridden=()):
+    """One line of plain English for a resolved bundle.
+
+    Parameters
+    ----------
+    settings : dict
+        The bundle's settings, as applied.
+    levels : int or None
+        Hierarchy depth, when known.
+    overridden : sequence of (key, value)
+        Keys the user has taken over, which the bundle left alone.
+    """
+    pc = settings.get("pc_type", "?")
+    if pc == "mg":
+        what = "geometric multigrid"
+        if levels:
+            what += f" ({levels} levels)"
+        cycle = settings.get("pc_mg_type", "?")
+        smoother = (f"{settings.get('mg_levels_ksp_type', '?')}"
+                    f"x{settings.get('mg_levels_ksp_max_it', '?')}"
+                    f" + {settings.get('mg_levels_pc_type', '?')}")
+        coarse = settings.get("mg_coarse_pc_type", "?")
+        if coarse == "redundant":
+            coarse += f"/{settings.get('mg_coarse_redundant_pc_type', '?')}"
+        text = f"{what}, {cycle} cycle, smoother {smoother}, coarse {coarse}"
+    elif pc == "gamg":
+        text = (f"algebraic multigrid (gamg/{settings.get('pc_gamg_type', '?')}), "
+                f"{settings.get('pc_mg_type', '?')} cycle, "
+                f"smoother max_it {settings.get('mg_levels_ksp_max_it', '?')}")
+    else:
+        text = f"pc_type={pc}"
+    if overridden:
+        text += ("; overridden by the user: "
+                 + ", ".join(f"{k}={v}" for k, v in overridden))
+    return text
 
 
 def _geometric_mg_settings(coarse, smoother="robust"):
