@@ -1157,7 +1157,44 @@ class ViscousFlowModel(Constitutive_Model):
     # round the floor with the same δ that regularises the yield transition, so the
     # whole effective viscosity stays differentiable and δ→0 recovers the sharp bound.
 
-    def _apply_floor(self, value, floor):
+    @property
+    def viscosity_min_rounding(self):
+        r"""Rounding scale :math:`\epsilon` for the VISCOSITY floor, in viscosity units.
+
+        A floor is a corner, and at :math:`\epsilon = 0` the smooth-max expression is
+        algebraically exactly ``Max`` — non-differentiable, which the consistent-Newton
+        tangent cannot cope with (it dies at ``nl=0, DIVERGED_LINEAR_SOLVE``). Without
+        this property the only rounding available came from ``yield_mode``: zero under
+        ``"min"``, and :math:`\delta\,|floor|` under the smooth modes, so the smoothing
+        **vanished as δ → 0** — exactly where a yield homotopy lands.
+
+        The floor is a different corner from the yield surface and needs a scale of its
+        own. Set this to a small fraction of the floor (a few per cent is usually ample)
+        and the cutoff becomes usable with ``consistent_jacobian=True`` at any δ,
+        including δ = 0.
+
+        ``None`` (the default) keeps the historical ``yield_mode``-derived behaviour, so
+        nothing changes for existing models.
+
+        Notes
+        -----
+        This matters for more than differentiability. A viscosity floor bounds how weak
+        yielded material can become, and therefore bounds the viscosity CONTRAST the
+        solution can develop — which is to say it bounds how localised the solution can
+        be. A floor that is relaxed toward zero is a continuation from a diffuse,
+        uniquely-solvable viscous problem toward the localised (near rigid-plastic)
+        limit, tracking one branch as it sharpens. That is a solution-SELECTION
+        homotopy, not a smoothness fix, and it is why the floor needs to be usable
+        independently of δ.
+        """
+        return getattr(self, "_viscosity_min_rounding", None)
+
+    @viscosity_min_rounding.setter
+    def viscosity_min_rounding(self, value):
+        self._viscosity_min_rounding = value
+        self._reset()
+
+    def _apply_floor(self, value, floor, rounding=None):
         r"""Impose the lower bound :math:`value \ge floor`.
 
         In ``yield_mode="min"`` this is the exact hard ``sympy.Max(value, floor)`` —
@@ -1184,8 +1221,9 @@ class ViscousFlowModel(Constitutive_Model):
         # tangent through the soft-min is undefined there. A properly rounded cap
         # (Griffith / parabolic) needs an ABSOLUTE stress scale, which this signature
         # cannot supply. Maintainer decision pending (2026-07-26).
-        rounding = 0 if getattr(self, "_yield_mode", "min") == "min" \
-            else self._get_yield_softness() * floor
+        if rounding is None:
+            rounding = 0 if getattr(self, "_yield_mode", "min") == "min" \
+                else self._get_yield_softness() * floor
         return uw.maths.smooth_max(value, floor, rounding)
 
     # Tangent this model wants while the yield homotopy marches. Newton is right for
@@ -1469,7 +1507,8 @@ class ViscoPlasticFlowModel(ViscousFlowModel):
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
             self._plastic_eff_viscosity._sym = self._apply_floor(
-                effective_viscosity, inner_self.shear_viscosity_min
+                effective_viscosity, inner_self.shear_viscosity_min,
+                rounding=self.viscosity_min_rounding,
             )
 
         else:
@@ -2146,6 +2185,15 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         # BDF-2 Jacobian. Those modes are already smooth and bounded.
 
         if inner_self.shear_viscosity_min.sym != -sympy.oo:
+            rounding = self.viscosity_min_rounding
+            if rounding is not None:
+                # An explicit rounding scale makes the cutoff differentiable, which is
+                # what the skip below existed to avoid needing: there is no outer Max to
+                # nest, so the floor can be honoured in the smooth yield modes too.
+                return self._apply_floor(
+                    effective_viscosity, inner_self.shear_viscosity_min,
+                    rounding=rounding,
+                )
             if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
                 return effective_viscosity
             else:
