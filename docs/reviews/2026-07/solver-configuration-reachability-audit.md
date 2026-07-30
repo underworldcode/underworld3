@@ -222,14 +222,35 @@ Three changes would have caught nearly all of it, and none requires giving up th
 
 | finding | home | status |
 |---|---|---|
-| F-1 MG bundle overwrites user settings | **#471** | new; fix belongs in the bundle owner |
+| F-1 MG bundle overwrites user settings | **#471** | **FIXED** in `5a390efe` |
 | F-2 single-field MG gate is silent | **#478** | filed |
-| F-3 Stokes vs Stokes_Constrained disagree | **#475** | new |
-| F-4 `snes_rtol` owned but looks settable | **#475** | new; decide-and-document |
-| F-5 three unpushed commits; #471/#475 conflict | **coordination** | push #475's branch; #471's derivation wins |
-| F-6 fallbacks are not observable | new issue | design change, own PR |
-| F-7 RBF retry is a silent performance cliff | with F-6 | new |
-| F-8 two guards can be skipped silently | with F-6 | new |
+| F-3 Stokes vs Stokes_Constrained disagree | **#475** | filed as **#483** |
+| F-4 `snes_rtol` owned but looks settable | **#475** | filed as **#483** |
+| F-5 three unpushed commits; #471/#475 conflict | **coordination** | raised on #475 |
+| F-6 fallbacks are not observable | own PR | filed as **#484** |
+| F-7 RBF retry is a silent performance cliff | with F-6 | filed as **#484** |
+| F-8 two guards can be skipped silently | with F-6 | filed as **#484** |
+
+### F-1 as fixed (#471, `5a390efe`)
+
+`MGBundle.apply` takes an ownership record and leaves alone any key whose current
+value is not the one UW3 last wrote — including in the stale-key clear, since a
+user-set key is not ours to remove. Ownership is **recorded, never inferred from the
+value**: inference fails as soon as a second internal writer touches the key, which
+is how the `tolerance` and `strategy` setters defeated the earlier attempt in #477.
+All forty internal writes of a bundle key now go through
+`SolverBaseClass._push_managed_option`.
+
+Two things worth carrying forward from doing it:
+
+- The record must be keyed by the **globally-qualified** option name. The solver
+  writes through a prefixed view (`Solver_N_`) while `custom_mg._configure_pcmg`
+  reads the global database using the live PC's full prefix; an unqualified record
+  made every key look user-owned over there and the bundle **silently stopped
+  applying**.
+- That regression was caught by the **defaults arm**, not by any test. It is the
+  second time in two sessions that the defaults arm caught an ownership regression
+  (the first was #477's). Do not run an ownership change without one.
 
 ## Not covered
 
