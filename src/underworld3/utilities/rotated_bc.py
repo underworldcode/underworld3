@@ -9,9 +9,12 @@ A linear model is simply the loop converging after its first increment — there
 no separate linear path and no up-front nonlinearity probe.
 
 Each increment is solved by a self-contained fieldsplit-Schur KSP by default: the
-velocity block is geometric FMG on the custom prolongation (``set_custom_fmg``) when a
-hierarchy is registered (the PREFERRED route), else GAMG tuned to the native path's
-settings; the Schur complement is preconditioned by the native 1/mu pressure mass
+velocity block is geometric FMG on the custom prolongation whenever this solver has a
+hierarchy — registered by ``set_custom_fmg`` or owned by an ``adapt()`` child mesh —
+which is the PREFERRED route, else GAMG; the option bundle for both is the shared one
+in ``underworld3.utilities.multigrid_options``, so the rotated velocity block is
+configured identically to the native and standard custom-P routes.
+The Schur complement is preconditioned by the native 1/mu pressure mass
 (the Pmat p-p block, exactly the standard path's ``schur_precondition=a11``), with a
 constant-pressure nullspace on the inner Schur solve for enclosed domains; direct
 MUMPS LU is opt-in via ``solver._rotated_use_lu``.
@@ -31,6 +34,11 @@ from underworld3 import mpi
 # boundary-mass de-smear, and the scalar-field hand-off all live in `boundary_flux`.
 from underworld3.utilities.boundary_flux import (
     _boundary_stratum_is, _desmear, write_boundary_scalar_field)
+
+# The multigrid option bundles are owned in ONE place and shared with the native
+# and standard custom-P routes, so the rotated velocity block cannot be
+# configured differently from the others (#468).
+from underworld3.utilities import multigrid_options
 
 # Monotonic counter so each rotated solve gets a UNIQUE PETSc options prefix. With a
 # fixed prefix, sequential rotated solves (e.g. two solvers in one script, or one
@@ -847,19 +855,33 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
 def _build_rotated_custom_Pl(solver, Q, normal_rows):
     """The rotated custom-FMG prolongation list [*coarse, Q_v·P_fine] for the
-    velocity block, or None if no hierarchy is registered. Depends only on Q and
+    velocity block, or None if this solver has no hierarchy. Depends only on Q and
     the mesh (NOT the solution), so the rotated Newton loop builds it ONCE and reuses
-    it across Newton iterations (the prolongation build is the expensive part)."""
-    if getattr(solver, "_custom_mg", None) is None:
+    it across Newton iterations (the prolongation build is the expensive part).
+
+    The hierarchy is resolved by ``custom_mg.build_transfers``, which is the same
+    rule the standard path uses: an explicit ``set_custom_fmg`` registration wins,
+    otherwise a MESH-OWNED coarse tail (what ``mesh.adapt()`` leaves on a
+    refinement child) is picked up opportunistically. That mesh-owned pickup used
+    to be unreachable from here — the standard path's injection hook runs after
+    the rotated dispatch has already returned — so an adapt child under rotated
+    free-slip silently lost its multigrid and solved on GAMG (#467). This is the
+    ``adapt-on-top-faults`` workflow's own configuration."""
+    from underworld3.utilities import custom_mg
+    h, Ps = custom_mg.build_transfers(solver, field_id=0)
+    if h is None:
         return None
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
     g2blk = {int(g): k for k, g in enumerate(vis)}
     Qv = Q.createSubMatrix(vel_is, vel_is)
     nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
-    Ps = solver._custom_mg["hierarchy"].build(solver)
     Pfine = Qv.matMult(Ps[-1])
     Pfine.zeroRows(nrows_blk, diag=0.0)
+    # Remember an opportunistic mesh-owned pickup, so a later solve on this solver
+    # (rotated or not) reuses the hierarchy instead of re-resolving it.
+    if getattr(solver, "_custom_mg", None) is None:
+        solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
     return list(Ps[:-1]) + [Pfine]
 
 
@@ -909,8 +931,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                              custom_Pl=None, nsp=None, Mp=None, ctx=None):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
-    (PR#290, rotated) when a hierarchy is registered (``set_custom_fmg``), else GAMG
-    (tuned to the native path's settings).
+    (PR#290, rotated) whenever the solver has a hierarchy — ``set_custom_fmg`` or a
+    mesh-owned ``adapt()`` tail — else GAMG. Both bundles come from
+    ``utilities.multigrid_options``, shared with the native and standard routes.
 
     A plain rotated Mat has no DM field info, so UW3's DM-coupled fieldsplit cannot
     split it — we build the split from EXPLICIT velocity/pressure index sets. For the
@@ -988,21 +1011,18 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             cfg["pc_fieldsplit_schur_precondition"] = "selfp"
             cfg["fieldsplit_pres_pc_type"] = "jacobi"
         if custom_Pl is None:
-            # GAMG fallback velocity block, tuned to native parity (pyx Stokes
-            # defaults). NOTE: the custom-FMG route is the preferred velocity
-            # block — this applies only when no hierarchy is registered.
+            # GAMG fallback velocity block. The bundle is the SHARED one (see
+            # utilities.multigrid_options), so it cannot drift from what the
+            # standard path applies. NOTE: the custom-FMG route is the preferred
+            # velocity block — this applies only when no hierarchy is available.
+            # No stale keys to clear: `pfx` is unique per rotated solve.
             cfg.update({
                 "fieldsplit_vel_ksp_type": "fgmres",
                 "fieldsplit_vel_ksp_rtol": str(tol * 0.033),
                 "fieldsplit_vel_ksp_max_it": "200",
-                "fieldsplit_vel_pc_type": "gamg",
-                "fieldsplit_vel_pc_gamg_type": "agg",
-                "fieldsplit_vel_pc_gamg_repartition": "true",
-                "fieldsplit_vel_pc_mg_type": "additive",
-                "fieldsplit_vel_pc_gamg_agg_nsmooths": "2",
-                "fieldsplit_vel_mg_levels_ksp_max_it": "3",
-                "fieldsplit_vel_mg_levels_ksp_converged_maxits": "true",
             })
+            cfg.update({f"fieldsplit_vel_{key}": value for key, value
+                        in multigrid_options.gamg_bundle().settings.items()})
         else:
             # Custom-FMG velocity block, wrapped in a short FGMRES — NOT `preonly`.
             # PCFieldSplit applies the Schur complement S = A11 - A10 A00^-1 A01
@@ -1054,20 +1074,26 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 A_vv, P_vv = vel_pc.getOperators()
                 vel_pc.reset()
                 vel_pc.setOperators(A_vv, P_vv)
-                custom_mg._configure_pcmg(vel_pc, custom_Pl)
-                # The Galerkin-coarsened ROTATED velocity block inherits every
-                # rigid-rotation nullspace mode of the constrained problem (a
-                # closed circle: one; a spherical shell: three) — the default
-                # redundant/LU coarse solve hits a zero pivot (SUBPC_ERROR,
-                # outer reason -11). SVD is nullspace-robust and the coarse
-                # level is small; same choice as the native spherical FMG setups.
+                # coarse="svd": the Galerkin-coarsened ROTATED velocity block
+                # inherits every rigid-rotation nullspace mode of the constrained
+                # problem (a closed circle: one; a spherical shell: three), and
+                # the default redundant/LU coarse solve hits a zero pivot there
+                # (SUBPC_ERROR, outer reason -11). Everything else in the bundle
+                # is identical to the native and standard custom-P routes.
+                custom_mg._configure_pcmg(
+                    vel_pc, custom_Pl, coarse="svd",
+                    smoother=solver._mg_smoother_variant)
+                vel_pc.setUp()
+                # The bundle went into the GLOBAL options DB under the velocity
+                # sub-PC's prefix, which is derived from `pfx` and so is unique to
+                # this solve — drop it again now it is consumed, as the `finally`
+                # below does for the KSP's own keys.
                 vopts = PETSc.Options()
                 vpfx = vel_pc.getOptionsPrefix() or ""
-                vopts.setValue(vpfx + "mg_coarse_pc_type", "svd")
-                vopts.delValue(vpfx + "mg_coarse_redundant_pc_type")
-                vel_pc.setFromOptions()
-                vel_pc.setUp()
-                vopts.delValue(vpfx + "mg_coarse_pc_type")
+                for key in multigrid_options.geometric_mg_bundle(
+                        coarse="svd",
+                        smoother=solver._mg_smoother_variant).settings:
+                    vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular

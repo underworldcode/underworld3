@@ -6,6 +6,49 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### One Owner for the Geometric-Multigrid Option Bundle (July 2026)
+
+**The PETSc option bundle that configures a Stokes velocity block's multigrid
+now lives in exactly one module, and all three routes that reach that block read
+it from there** (#468), **and rotated free-slip now picks up a mesh-owned
+multigrid hierarchy instead of silently discarding it** (#467).
+
+Three routes reach a multigrid velocity block: native (PETSc interpolation
+between refined DMPlex levels), custom-P on the standard solve path, and custom-P
+through the rotated free-slip path. They are the same preconditioner reached
+three ways, not alternatives — custom-P is *mandatory* wherever native cannot go,
+namely rotated boundary conditions and `adapt()` children. The bundle was
+written in two places and had drifted: the native path had been moved to a
+`gmres`+`sor` smoother on a recorded measurement, and the custom-P routes had
+not. Worse, the custom-P writer never *set* the smoother iteration count at all,
+so it inherited whatever had last written that options prefix — 3 left behind by
+the GAMG bundle on the standard path, PETSc's own default of 2 on the rotated
+path. The same function smoothed differently depending on what had run before
+it.
+
+Unifying the bundle recovers, on the same operator, right-hand side and coarse
+solve: rotated custom-P velocity-block iterations 11 → 5 (0.68 s → 0.39 s of
+linear solve, timed in isolation), standard custom-P 5 → 4, on a *two-level*
+hierarchy — the depth at which the native measurement says the gmres margin is
+smallest. The bundle also now derives which stale keys it must clear rather than
+carrying a hand-maintained list, which is what let the iteration count go unset
+in the first place.
+
+Separately, `mesh.adapt()` leaves a coarse tail on its refinement child so that
+every solver on an adapted mesh gets geometric multigrid with no per-solver call.
+The rotated path never consulted it — the standard path's injection hook runs
+after the rotated dispatch has already returned — so an adapt child under rotated
+free-slip fell back to algebraic multigrid, indistinguishable from having no
+hierarchy at all. That is the `adapt-on-top-faults` workflow's own configuration
+(a fault resolved by local refinement, with rotated free-slip chosen because it
+composes with transverse isotropy). Both paths now resolve the hierarchy through
+one shared rule, with the same opportunistic degrade-to-GAMG behaviour.
+
+The regression test reads the smoother configuration back off the **live PETSc
+objects** for all three routes and asserts they agree. An options-database
+assertion would not have caught the original drift, because the drift was
+precisely a key nobody wrote.
+
 ### One Rotated Free-Slip Path, Now With a Prescribed Wall-Normal Velocity (July 2026)
 
 **Rotated strong free-slip now takes a prescribed wall-normal velocity datum

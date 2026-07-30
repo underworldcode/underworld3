@@ -43,6 +43,8 @@ from typing import NamedTuple
 import numpy as np
 from petsc4py import PETSc
 
+from underworld3.utilities import multigrid_options
+
 __all__ = ["barycentric_prolongation", "rbf_prolongation", "inject_custom_mg",
            "CustomMGHierarchy", "set_custom_fmg", "sbr_refine", "sbr_refine_where",
            "nvb_refine"]
@@ -593,30 +595,36 @@ def _assert_no_zero_columns_serial(P_csr, level):
             f"operator would be singular.")
 
 
-def _configure_pcmg(pc, Ps):
+def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
-    Writes the MG bundle into the options DB under the PC's OWN options prefix
+    The option VALUES come from :func:`multigrid_options.geometric_mg_bundle` —
+    the same bundle the native (DMPlex-refinement) route applies — so custom-P
+    and native multigrid cannot be configured differently (#468). ``coarse``
+    selects the coarse-solve variant: ``"svd"`` on the rotated path, whose
+    Galerkin-coarsened operator inherits the rigid-rotation null space. ``smoother``
+    is the variant ``solver.strategy`` asks for — pass
+    ``solver._mg_smoother_variant``, or the strategy is honoured on the native route
+    and silently ignored here, which is the drift this module exists to prevent.
+    ``owned``
+    is the solver's record of the option values UW3 has written, so a key the USER
+    set is left alone (see :meth:`multigrid_options.MGSettings.apply`); ``None`` writes
+    unconditionally, which is right for the rotated path's per-solve prefix.
+
+    The bundle is written into the options DB under the PC's OWN options prefix
     (``pc.getOptionsPrefix()`` — e.g. ``Solver_N_`` for the scalar top-level PC,
-    ``Solver_N_fieldsplit_velocity_`` for the Stokes velocity sub-PC) and removes
-    any gamg keys BEFORE ``setFromOptions`` — otherwise ``setFromOptions`` re-reads
-    a lingering ``pc_type=gamg`` and reverts ``setType("mg")``. ``setMGInterpolation``
-    persists through ``setFromOptions``; the first ``PCSetUp`` builds the coarse
-    operators from our P (no ``MatProductReplaceMats`` shape bug, since the PCMG is
-    fresh and P's size is fixed)."""
+    ``Solver_N_fieldsplit_velocity_`` for the Stokes velocity sub-PC) BEFORE
+    ``setFromOptions``, and it clears the gamg keys — otherwise ``setFromOptions``
+    re-reads a lingering ``pc_type=gamg`` and reverts ``setType("mg")``.
+    ``setMGInterpolation`` persists through ``setFromOptions``; the first
+    ``PCSetUp`` builds the coarse operators from our P (no
+    ``MatProductReplaceMats`` shape bug, since the PCMG is fresh and P's size is
+    fixed)."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
-    opts = PETSc.Options()
-    opts.setValue(prefix + "pc_type", "mg")
-    opts.setValue(prefix + "pc_mg_type", "full")
-    opts.setValue(prefix + "pc_mg_galerkin", "both")
-    opts.setValue(prefix + "mg_levels_ksp_type", "richardson")
-    opts.setValue(prefix + "mg_levels_pc_type", "sor")
-    opts.setValue(prefix + "mg_coarse_pc_type", "redundant")
-    opts.setValue(prefix + "mg_coarse_redundant_pc_type", "lu")
-    for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
-        opts.delValue(prefix + key)
+    multigrid_options.geometric_mg_bundle(coarse=coarse, smoother=smoother).apply(
+        PETSc.Options(), prefix, owned=owned)
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
@@ -649,7 +657,9 @@ def _install_transfers(solver, Ps, verbose=False):
         ksp = solver.snes.getKSP()
         solver.snes.setUp()
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
-        _configure_pcmg(ksp.getPC(), Ps)
+        _configure_pcmg(ksp.getPC(), Ps,
+                        smoother=solver._mg_smoother_variant,
+                        owned=solver._managed_pc_options)
         if verbose:
             from underworld3 import mpi
             mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
@@ -710,7 +720,8 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
     vel_ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
     vel_pc.reset()
     vel_pc.setOperators(A_vv, P_vv)
-    _configure_pcmg(vel_pc, Ps)
+    _configure_pcmg(vel_pc, Ps, smoother=solver._mg_smoother_variant,
+                    owned=solver._managed_pc_options)
     vel_pc.setUp()
 
     # 4. re-attach the coupled Stokes nullspace (operator state was touched)
@@ -963,25 +974,51 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     solver.is_setup = False
 
 
-def auto_inject_custom_mg(solver, field_id=None):
-    """Solve-hook entry: inject custom-P FMG from either a solver-set hierarchy
-    (``set_custom_fmg``) or a **mesh-owned** one (``mesh.adapt`` refinement child).
+def build_transfers(solver, field_id=None):
+    """The custom-P prolongations this solver should drive, built and ready to
+    install — from either a solver-set hierarchy (``set_custom_fmg``) or a
+    **mesh-owned** one (a ``mesh.adapt`` refinement child).
+
+    This is the shared resolution rule for every route that can drive custom-P
+    multigrid: the standard solve path via :func:`auto_inject_custom_mg`, and the
+    rotated free-slip path, which builds its own IS-based fieldsplit inside
+    ``utilities.rotated_bc`` and so never reaches the standard injection hook
+    (#467). Both must answer "which hierarchy does this solver get?" the same way.
 
     A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
-    coarse tail). The first time a solver on such a mesh solves, we lazily build a
-    :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]`` targeting ``field_id``
-    (0 for the Stokes velocity block, None for scalar/vector) and register it on
-    the solver — so every solver on an adapted mesh drives geometric MG with no
-    per-solver call. A solver-set hierarchy (if present) always wins.
+    coarse tail), so a :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]``
+    targeting ``field_id`` (0 for the Stokes velocity block, None for
+    scalar/vector) is built lazily on first solve — every solver on an adapted
+    mesh drives geometric MG with no per-solver call. A solver-set hierarchy (if
+    present) always wins.
+
+    Parameters
+    ----------
+    solver : SolverBaseClass
+        Built solver (``_build`` has run) whose hierarchy is wanted.
+    field_id : int or None
+        Field index for multi-field solvers (0 = Stokes velocity), None = single
+        field.
+
+    Returns
+    -------
+    (CustomMGHierarchy, list of Mat) or (None, None)
+        ``(None, None)`` means "no hierarchy here" — either none is registered or
+        an OPPORTUNISTIC mesh-owned build failed and the caller should keep its
+        default preconditioner. A build failure on a solver-set hierarchy raises
+        instead: the user asked for it explicitly.
     """
-    # Solver-set hierarchy (set_custom_fmg): the user asked for it explicitly —
-    # build + install directly and let any error surface.
-    if solver._custom_mg is not None:
-        inject_custom_mg(solver)
-        return
+    cfg = getattr(solver, "_custom_mg", None)
+    if cfg is not None:
+        if not (isinstance(cfg, dict) and cfg.get("mode") == "hierarchy"):
+            raise NotImplementedError(
+                "the legacy set_custom_mg registration has no hierarchy to "
+                "resolve; use set_custom_fmg().")
+        h = cfg["hierarchy"]
+        return h, h.build(solver)           # explicit request: errors surface
 
     # Mesh-owned hierarchy (adapt() child): OPPORTUNISTIC auto-pickup. It must never
-    # crash a solve, so build the transfers (which now validate the finest reduced
+    # crash a solve, so build the transfers (which validate the finest reduced
     # map against the assembled operator — see CustomMGHierarchy.build) inside a
     # try/except and fall back to the solver's default preconditioner on any failure.
     # The finest map is derived from the DM section AFTER snes.setUp() finalizes it,
@@ -989,7 +1026,7 @@ def auto_inject_custom_mg(solver, field_id=None):
     # semi-Lagrangian advection-diffusion (which earlier had to be skipped).
     coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
     if coarse is None:
-        return                              # nothing to inject
+        return None, None                   # nothing to inject
 
     builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
     # Retry with the RBF builder before abandoning geometric MG. The
@@ -1029,7 +1066,29 @@ def auto_inject_custom_mg(solver, field_id=None):
             warnings.warn(
                 f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
                 "solver's default preconditioner.")
-            return
+            return None, None
+
+    return h, Ps
+
+
+def auto_inject_custom_mg(solver, field_id=None):
+    """Solve-hook entry on the STANDARD path: resolve this solver's custom-P
+    hierarchy (:func:`build_transfers`) and install it on the managed PC.
+
+    The rotated free-slip path does not come through here — it builds its own
+    IS-based fieldsplit and calls :func:`build_transfers` directly.
+    """
+    # Solver-set hierarchy (set_custom_fmg, or the deprecated set_custom_mg):
+    # the user asked for it explicitly — build + install directly and let any
+    # error surface. inject_custom_mg is the one place that still understands the
+    # legacy registration.
+    if solver._custom_mg is not None:
+        inject_custom_mg(solver)
+        return
+
+    h, Ps = build_transfers(solver, field_id=field_id)
+    if h is None:
+        return
 
     # Dimensional guard (checkable for the monolithic operator, field_id is None):
     # the finest transfer must chain to the operator PCMG will Galerkin against.

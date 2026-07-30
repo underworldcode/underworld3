@@ -12,6 +12,40 @@ from   underworld3.utilities._jitextension import getext, JITCallbackSet
 import underworld3.timing as timing
 
 from underworld3.utilities._api_tools import uw_object
+from underworld3.utilities import multigrid_options
+
+
+class _StrategyName(str):
+    """A strategy name that also reports what it resolved to.
+
+    Subclasses ``str`` deliberately: ``solver.strategy == "fast"``, string
+    formatting and serialisation all behave exactly as before, but displaying it —
+    in a REPL, a notebook, or a log line — shows the preconditioner it actually
+    configured. Asking "what am I running?" should not require knowing which nine
+    PETSc option keys to look up.
+
+    Use :attr:`SolverBaseClass.preconditioner_settings` for the machine-readable
+    form.
+    """
+
+    def __new__(cls, name, summary=""):
+        obj = super().__new__(cls, name)
+        obj._summary = summary
+        return obj
+
+    def __reduce__(self):
+        # `str.__reduce_ex__` reconstructs via `cls(value)` with ONE argument, which
+        # a two-argument `__new__` cannot accept — so without this, pickling, copy
+        # and deepcopy of a strategy value all raise TypeError. The summary is
+        # derived state and is carried along rather than recomputed, because the
+        # solver it came from is not part of the pickle.
+        return (self.__class__, (str(self), self._summary))
+
+    def __repr__(self):
+        return f"{str.__repr__(self)} — {self._summary}"
+
+    def _repr_markdown_(self):
+        return f"**`{str(self)}`** — {self._summary}"
 
 from underworld3.function import expression as public_expression
 expression = lambda *x, **X: public_expression(*x, _unique_name_generation=True, **X)
@@ -160,10 +194,94 @@ class SolverBaseClass(uw_object):
         # tell "user set mg" from "we set mg" and would clobber their tuned
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
+        # Every multigrid option value UW3 itself has written on the managed block,
+        # keyed by full option name. This is what lets the bundle honour a
+        # user-set smoother while still managing the keys the user left alone: a
+        # present key whose value is not the one we recorded writing is theirs.
+        # Ownership is RECORDED, never inferred from the value — inference fails
+        # the moment a second internal writer touches the same key, which is how
+        # the `tolerance` and `strategy` setters defeated an earlier attempt (#477).
+        # Internal writers therefore go through _push_managed_option().
+        self._managed_pc_options = {}
+        # Has _apply_preconditioner_options actually made the resolution decision
+        # yet? Until it has, the options database holds only this solver's __init__
+        # defaults, which is NOT what the next solve will run — reporting them as
+        # resolved would be exactly the stale-but-authoritative-looking summary this
+        # reporting exists to prevent.
+        self._pc_resolved = False
 
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
         self._custom_mg = None
+
+    @property
+    def preconditioner_settings(self):
+        """The option values the managed preconditioner block is configured with.
+
+        A read-only dict of the multigrid keys UW3 currently has in the options
+        database for this solver's managed block, so what actually got applied can
+        be asserted on instead of inferred from timings. Empty for a solver with no
+        managed block (``_pc_option_prefix is None``), or before the first build
+        resolves one.
+
+        The values are what the strategy resolved to, *including* any key you set
+        yourself — those are respected (see :attr:`petsc_options`). Use
+        :attr:`strategy` for a readable summary of the same thing.
+        """
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return {}
+        keys = set(multigrid_options.gamg_bundle().settings)
+        for coarse in multigrid_options.GEOMETRIC_MG_COARSE_SOLVERS:
+            keys |= set(multigrid_options.geometric_mg_bundle(coarse=coarse).settings)
+        out = {}
+        for key in sorted(keys):
+            name = prefix + key
+            if self.petsc_options.hasName(name):
+                out[key] = self.petsc_options.getString(name)
+        return out
+
+    @property
+    def _user_overridden_pc_options(self):
+        """The managed-block keys the USER set, as (key, value) pairs.
+
+        A key present in the options database whose value is not the one UW3
+        recorded writing is theirs — the same test the bundle writer uses to decide
+        what to leave alone."""
+        prefix = self._pc_option_prefix
+        if prefix is None:
+            return ()
+        qualified = self.petsc_options_prefix
+        return tuple(
+            (key, value) for key, value in self.preconditioner_settings.items()
+            if self._managed_pc_options.get(qualified + prefix + key) != value)
+
+    @property
+    def _mg_smoother_variant(self):
+        """Which measured smoother regime this solver's strategy asks for.
+
+        ``solver.strategy`` is the named intent ("I want speed" / "I want this to
+        converge"); the values live in ``utilities.multigrid_options``. Solvers with
+        no strategy axis get the robust default. See
+        :func:`multigrid_options.geometric_mg_bundle` for the measurements."""
+        return "fast" if getattr(self, "_strategy", "default") == "fast" else "robust"
+
+    def _push_managed_option(self, key, value):
+        """Write a PETSc option UW3 owns, recording that we wrote it.
+
+        Use this for any option a solver sets on its own behalf that the multigrid
+        bundles also write (``utilities.multigrid_options``). A plain
+        ``self.petsc_options[key] = value`` is indistinguishable from a user's own
+        write, and the bundle would then back off from a key nobody asked for.
+        """
+        self.petsc_options[key] = value
+        # Key the record by the GLOBAL option name. `self.petsc_options` is a
+        # prefixed view (`Solver_N_`), but custom_mg._configure_pcmg reads the
+        # global database using the live PC's own full prefix — so an unqualified
+        # record makes every key look user-owned over there and the bundle
+        # silently stops applying.
+        self._managed_pc_options[self.petsc_options_prefix + key] = \
+            multigrid_options.option_string(value)
 
     @property
     def consistent_jacobian(self):
@@ -554,6 +672,9 @@ class SolverBaseClass(uw_object):
         prefix = self._pc_option_prefix
         if prefix is None:
             return
+        # Every path from here is a resolution decision, including "the user owns
+        # these options, leave them alone".
+        self._pc_resolved = True
 
         opts = self.petsc_options
 
@@ -618,46 +739,25 @@ class SolverBaseClass(uw_object):
                 )
             want_fmg = False
 
+        # The option VALUES live in utilities.multigrid_options, which is the
+        # single owner shared with the custom-P routes (custom_mg, rotated_bc) —
+        # the routes are the same preconditioner reached three ways and must not
+        # be configured from three places (#468). Coarse solve: the native
+        # hierarchy is not rotated, so its coarse operator carries no inherited
+        # null space and redundant+LU is right here.
+        # `_managed_pc_options` makes the bundle respect a key the USER set while
+        # still managing the ones they left alone. Before this, the bundle was
+        # applied wholesale on every rebuild and the only escape was the
+        # `_pc_user_override` latch above — which keys on `pc_type` ALONE, so a user
+        # who set (say) `mg_levels_ksp_max_it` had it silently discarded unless they
+        # also set `pc_type` to the value it already had. Explicit
+        # `preconditioner="fmg"` was worse: it skips the latch entirely, so the
+        # clearer the request the less control it carried.
         if want_fmg:
-            # Geometric Full Multigrid on the refinement hierarchy. Galerkin
-            # (RAP) coarse operators are required because UW3 does not install
-            # residual/Jacobian callbacks on the coarse DMs.
-            opts[f"{prefix}pc_type"] = "mg"
-            opts[f"{prefix}pc_mg_type"] = "full"            # FMG (F-cycle)
-            opts[f"{prefix}pc_mg_galerkin"] = "both"        # RAP coarse operators
-            # gmres+sor, sized for a DEEP hierarchy (the only kind worth having:
-            # a two-level cycle is a coarse-grid correction, not a V-cycle, and is
-            # not worth special-casing). Chebyshev needs eigenvalue estimates of the
-            # smoothed operator, which are fragile on the indefinite /
-            # variable-viscosity velocity block and diverge. Richardson is
-            # stationary and degrades on the NON-SYMMETRIC operator produced by the
-            # consistent-Newton tangent. Measured on the Spiegelman notch (Drucker-
-            # Prager, eta contrast 1e26) over a nested 4-level hierarchy: contraction
-            # per V-cycle rho = 0.75 (richardson) vs 0.56 (gmres) at the SAME four
-            # smoother iterations -- and the gmres margin GROWS with depth (5% at 3
-            # levels, 25% at 4), because deeper cycles apply the smoother on more
-            # coarse operators. Four iterations, not more: per unit work gmres/4
-            # (rho^(1/4) = 0.87) beats gmres/8 (0.91).
-            opts[f"{prefix}mg_levels_ksp_type"] = "gmres"
-            opts[f"{prefix}mg_levels_pc_type"] = "sor"
-            opts[f"{prefix}mg_levels_ksp_max_it"] = 4
-            # Run EXACTLY max_it smoother iterations: no residual-norm computation
-            # and no convergence test, so every V-cycle costs the same. A Krylov
-            # smoother makes the cycle non-stationary, which is why the velocity
-            # block is fgmres (flexible) rather than gmres -- see the fieldsplit
-            # defaults in the Stokes __init__.
-            opts[f"{prefix}mg_levels_ksp_norm_type"] = "none"
-            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
-            # redundant+lu, not bare lu: a bare serial LU cannot factor a
-            # distributed coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE
-            # after 0 iterations). redundant gathers the (small) coarse system to
-            # one rank and is identical to lu in serial — so it is np-safe by
-            # default without surprising small-np users.
-            opts[f"{prefix}mg_coarse_pc_type"] = "redundant"
-            opts[f"{prefix}mg_coarse_redundant_pc_type"] = "lu"
-            # Clear stale GAMG-only keys so toggling back and forth is clean.
-            for key in ("pc_gamg_type", "pc_gamg_repartition", "pc_gamg_agg_nsmooths"):
-                opts.delValue(f"{prefix}{key}")
+            multigrid_options.geometric_mg_bundle(
+                smoother=self._mg_smoother_variant).apply(
+                    PETSc.Options(), self.petsc_options_prefix + prefix,
+                    owned=self._managed_pc_options)
             self._pc_managed_value = "mg"
         else:
             if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
@@ -668,19 +768,9 @@ class SolverBaseClass(uw_object):
                     f"mesh with refinement >= 1 to enable geometric multigrid.",
                     stacklevel=2,
                 )
-            opts[f"{prefix}pc_type"] = "gamg"
-            opts[f"{prefix}pc_gamg_type"] = "agg"
-            opts[f"{prefix}pc_gamg_repartition"] = True
-            opts[f"{prefix}pc_mg_type"] = "additive"
-            opts[f"{prefix}pc_gamg_agg_nsmooths"] = 2
-            opts[f"{prefix}mg_levels_ksp_max_it"] = 3
-            opts[f"{prefix}mg_levels_ksp_converged_maxits"] = None
-            # Clear stale geometric-MG-only keys.
-            for key in ("pc_mg_galerkin", "mg_levels_ksp_type",
-                        "mg_levels_pc_type", "mg_levels_ksp_norm_type",
-                        "mg_coarse_pc_type",
-                        "mg_coarse_redundant_pc_type"):
-                opts.delValue(f"{prefix}{key}")
+            multigrid_options.gamg_bundle().apply(
+                PETSc.Options(), self.petsc_options_prefix + prefix,
+                owned=self._managed_pc_options)
             self._pc_managed_value = "gamg"
 
     def _enforce_galerkin_for_geometric_mg(self):
@@ -2987,16 +3077,16 @@ class SNES_Scalar(SolverBaseClass):
 
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option("pc_type", "gamg")
+        self._push_managed_option("pc_gamg_type", "agg")
+        self._push_managed_option("pc_gamg_repartition", True)
+        self._push_managed_option("pc_mg_type", "additive")
+        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
+        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         self.petsc_options["snes_rtol"] = 1.0e-4
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -3900,14 +3990,14 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self._push_managed_option("pc_type", "gamg")
+        self._push_managed_option("pc_gamg_type", "agg")
+        self._push_managed_option("pc_gamg_repartition", True)
+        self._push_managed_option("pc_mg_type", "additive")
+        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
+        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -4912,14 +5002,14 @@ class SNES_MultiComponent(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self._push_managed_option("pc_type", "gamg")
+        self._push_managed_option("pc_gamg_type", "agg")
+        self._push_managed_option("pc_gamg_repartition", True)
+        self._push_managed_option("pc_mg_type", "additive")
+        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
+        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -5779,13 +5869,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_{v_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{v_name}_ksp_rtol"]  = self._tolerance * 0.1
-        self.petsc_options[f"fieldsplit_{v_name}_pc_type"]  = "gamg"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_type"]  = "agg"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_repartition"]  = True
-        self.petsc_options[f"fieldsplit_{v_name}_pc_mg_type"]  = "additive"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_max_it"] = 3
-        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_type", "gamg")
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_type", "agg")
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_repartition", True)
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_mg_type", "additive")
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths", 2)
+        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_max_it", 3)
+        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits", None)
 
         # Create this dict
         self.fields = {}
@@ -6314,21 +6404,61 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     @property
     def strategy(self):
         """
-        Solver strategy controlling preconditioner configuration.
+        What this solve should optimise for — the named intent over the
+        multigrid smoother's two measured regimes.
 
-        Currently supports:
-        - ``"default"``: Standard Schur complement fieldsplit with GAMG
-        - ``"robust"``: (Reserved) More robust but slower configuration
-        - ``"fast"``: (Reserved) Faster but less robust configuration
+        - ``"default"``, ``"robust"``: ``gmres``/4 smoothing. Survives an operator a
+          stationary smoother stalls on: Spiegelman notch (:math:`\eta` contrast
+          1e26, 4 levels) per-V-cycle contraction 0.56 against richardson's 0.75, the
+          margin growing with depth; transversely isotropic rotated annulus 11
+          velocity iterations down to 5.
+        - ``"fast"``: ``richardson``/3 smoothing. Cheaper per cycle and quicker where
+          the operator is benign — on a linear, symmetric annulus at
+          :math:`\eta` contrast 1e6 it beats ``"robust"`` on wall clock at every
+          hierarchy depth tested (x1.16, x1.30, x1.82 at 2, 3, 4 levels) while taking
+          more iterations. It gives up the regime ``"robust"`` exists for, so it is
+          an opt-in.
 
-        Setting this property reconfigures the entire preconditioner stack.
+        ``"default"`` is ``"robust"``: the failure it avoids is worse than the cost it
+        carries, and it carries that cost exactly where the problem is easy.
+
+        Setting this property also resets the fieldsplit / Schur / pressure sub-solve
+        configuration to the framework defaults. It does **not** write the velocity
+        block's preconditioner directly — that is applied later, from
+        :mod:`underworld3.utilities.multigrid_options`, which is the single writer of
+        those options; this property selects which variant it applies. Values written
+        by hand into :attr:`petsc_options` are respected and not overwritten.
 
         Returns
         -------
         str
             Current strategy name.
+
+        The value returned is the strategy name (it compares and formats as the
+        plain string) and additionally reports the preconditioner it resolved to
+        when displayed::
+
+            >>> stokes.strategy
+            'default' — geometric multigrid (3 levels), full cycle,
+                        smoother gmresx4 + sor, coarse redundant/lu
+
+        See Also
+        --------
+        preconditioner : which multigrid FAMILY to use (geometric, algebraic, auto).
+        preconditioner_settings : the same information as a dict, for assertions.
         """
-        return self._strategy
+        settings = self.preconditioner_settings
+        if not settings or not self._pc_resolved:
+            summary = "not resolved yet — configured at the first solve"
+            if settings:
+                summary += (f" (framework defaults in place: "
+                            f"{multigrid_options.describe(settings)})")
+        else:
+            levels = len(getattr(self.mesh, "dm_hierarchy", []) or []) or None
+            summary = multigrid_options.describe(
+                settings, levels=levels,
+                overridden=self._user_overridden_pc_options)
+        return _StrategyName(self._strategy, summary)
 
     @strategy.setter
     def strategy(self, value):
@@ -6337,14 +6467,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 f"Unknown solver strategy {value!r}: "
                 "expected 'default', 'robust', or 'fast'."
             )
-        # 'robust' and 'fast' are accepted names but currently configure the
-        # same option bundle as 'default' (their dedicated branches were empty
-        # placeholders and have been removed — Charter S5, READ-23).
+        # 'fast' and 'robust' now select a real smoother variant, via
+        # `_mg_smoother_variant` -> `multigrid_options.geometric_mg_bundle`. They were
+        # accepted-and-inert placeholders for a long time: validated on input, then
+        # configured identically to 'default'. A property that checks your value and
+        # then ignores it is the same defect class as #477 and #478 — the failure is
+        # invisible, because the solve still converges.
 
         # self.is_setup = False
         self._strategy = value
 
-        # All strategies: reset to preferred
+        # Common to every strategy: reset the fieldsplit / Schur / pressure
+        # sub-solve to the framework defaults. The strategy's effect on the VELOCITY
+        # BLOCK is carried by `_mg_smoother_variant`, not by writes from here.
 
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
@@ -6381,16 +6516,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # preconditioning and weakly-indefinite coarse operators; issue #147).
         self.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_velocity_ksp_max_it"] = 200
-        self.petsc_options[f"fieldsplit_velocity_pc_type"]  = "gamg"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_type"]  = "agg"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_repartition"]  = True
-        # NOTE: "kaskade" here diverges from the "additive" set by __init__'s
-        # velocity block — a long-standing (possibly unintentional) difference.
-        # Do not change without benchmarking (READ-23 kept the value as-is).
-        self.petsc_options[f"fieldsplit_velocity_pc_mg_type"]  = "kaskade"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-        self.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+        # The velocity BLOCK's preconditioner is not set here. `strategy` used to
+        # write the whole GAMG bundle plus `pc_mg_type=kaskade`, and every one of
+        # those writes was DEAD: `_apply_preconditioner_options` runs later (at
+        # `_build`) and overwrites them with the geometric bundle on a refined mesh,
+        # or the GAMG bundle (`additive`) without one. Measured both orders — the
+        # live PC was `mg`/FULL every time, so `kaskade` never once took effect
+        # despite the comment warning against changing it. The strategy's effect on
+        # the velocity block now runs through `_mg_smoother_variant`, which selects
+        # a bundle variant instead of racing the bundle writer.
 
 
 

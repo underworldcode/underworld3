@@ -175,7 +175,7 @@ def validate_unknowns_sharing(multi_material_model):
             assert model.Unknowns.DFDt is reference_unknowns.DFDt, \
                 f"Model {i} $D\mathbf{{F}}/Dt$ not shared - stress history will be wrong"
 ```
-- ⚠️ Preconditioner *selection* is partly covered — see "Choosing the Krylov method for a fieldsplit sub-solve" below; multigrid and Schur preconditioner choice is still undocumented
+- ⚠️ Preconditioner *selection* is partly covered — see "Choosing the Krylov method for a fieldsplit sub-solve" and "The multigrid option bundle, and its one owner" below; Schur preconditioner choice is still undocumented
 - Could benefit from optimization examples
 
 ## Choosing the Krylov method for a fieldsplit sub-solve
@@ -327,6 +327,193 @@ application, and the velocity KSP is applied once per Schur `MatMult` — i.e. o
 pressure Krylov iteration. That number is a sample, not work. `SolverInstrumentation`
 (`systems/solver_health.py`) is the mechanism that sums properly.
 
+## The multigrid option bundle, and its one owner
+
+Three routes reach a multigrid velocity block, and they are **the same
+preconditioner reached three ways**, not three alternatives:
+
+| route | when | prolongation |
+|---|---|---|
+| native | mesh built with `refinement >= 1`, ordinary BCs | PETSc `DMCreateInterpolation` between refined DMPlex levels |
+| custom-P, standard path | `set_custom_fmg`, or an `adapt()` child's mesh-owned coarse tail | barycentric / RBF, Galerkin coarse operators |
+| custom-P, rotated path | rotated free-slip, via `rotated_bc` | as above, with the fine prolongation rotated, `P̂ = Q_v·P` |
+
+custom-P is **mandatory** wherever native cannot go: rotated boundary conditions
+(the DM-coupled hierarchy cannot express a per-node rotation) and non-nested
+grids (`adapt()` children have no DMPlex refinement relation). So the routes are
+not ranked — the one that matters most for adapted and curved-boundary work is
+custom-P.
+
+The option *values* live in one module, `utilities/multigrid_options.py`. Every
+writer reads a bundle from there and applies it to its own options object under
+its own prefix; nobody writes a multigrid option value anywhere else. That is
+structural rather than stylistic: when the bundle was written in two places, the
+native path was deliberately moved to a measured `gmres`+`sor` smoother and the
+custom-P path was not, and the custom-P routes ran `richardson` at an iteration
+count **nobody had set** — inherited from whatever last wrote that options
+prefix (3 left behind by the GAMG bundle on the standard path, PETSc's own PCMG
+default of 2 on the rotated path). The same function smoothed differently
+depending on what had run before it.
+
+### What a bundle carries
+
+A bundle is the settings it sets *and* the keys it must clear. The clear-list is
+derived, not hand-written: it is every key any sibling bundle sets that this one
+does not. These bundles share an options prefix, so switching a block from GAMG
+to geometric MG leaves the GAMG-only keys behind and `setFromOptions` will
+happily re-read them. Deriving the list means a key added to one bundle
+automatically becomes stale for the others.
+
+Two consequences worth stating outright:
+
+- **Set the smoother iteration count, never inherit it.** A bundle that omits
+  `mg_levels_ksp_max_it` is not "using the default" — it is using whatever the
+  last writer left.
+- **The measured smoother is `gmres`+`sor` at 4 iterations.** Chebyshev needs
+  eigenvalue estimates of the smoothed operator, which are fragile on the
+  indefinite / variable-viscosity velocity block. Against richardson, measured on
+  the Spiegelman notch (Drucker–Prager, η contrast 1e26, nested 4-level
+  hierarchy): per-cycle contraction ρ = 0.75 richardson against 0.56 gmres at the
+  *same* four iterations, the margin growing with depth (5% at 3 levels, 25% at 4).
+
+### Why richardson loses — the recorded reason is wrong
+
+Both this bundle's comment and the Layer 3 section of
+`design/nonlinear-solver-homotopy-warmstart.md` said richardson degrades because
+the consistent-Newton tangent makes the velocity block **non-symmetric**. That
+mechanism does not survive measurement.
+
+For an isotropic η(ε̇_II) the Newton term is
+
+$$2\,\frac{\eta'}{\dot\varepsilon_{II}}\big(\dot\varepsilon(u):\dot\varepsilon(\delta u)\big)\big(\dot\varepsilon(u):\dot\varepsilon(v)\big)$$
+
+— a rank-one outer product $a\otimes a$ with $a = \dot\varepsilon(u)$, which is
+symmetric. η depends on ∇v only *through* its symmetric part, so both factors
+project onto the same tensor and there is nothing left to break the symmetry.
+Measured as ‖A−Aᵀ‖_F/‖A‖_F on the assembled velocity block, against a linear
+calibration of 5e-17:
+
+| rheology | ‖A−Aᵀ‖/‖A‖ | Newton term ‖A_N−A_P‖/‖A‖ |
+|---|---|---|
+| linear (calibration) | 5.1e-17 | — |
+| shear-thinning, isotropic | 5.3e-17 | 2.1e-01 |
+| power-law, isotropic | 5.3e-17 | 4.0e-01 |
+| Drucker–Prager, pressure-dependent yield | 5.1e-17 | 5.1e-02 |
+| transverse isotropic, Picard tangent | **7.2e-02** | — |
+| transverse isotropic, Newton tangent | **8.9e-02** | 2.0e-01 |
+
+The third column is the control: if the consistent tangent had contributed
+nothing, the symmetry reading would be vacuous. It contributed 5–40% of ‖A‖ in
+every case, and the block stayed symmetric anyway.
+
+Non-symmetry *does* appear under transverse isotropy — but it appears under the
+**Picard** tangent too, where a frozen-coefficient form ∫ ε̇(δu):C:ε̇(v) is
+symmetric by construction. That is a defect signature rather than a property of
+the tangent (see #457, and the linear TI rows, which are symmetric at 6.3e-17
+even with anisotropy fully active).
+
+The mechanism that does fit everything measured is **operator conditioning**: at
+η contrast 1e26 the SOR-preconditioned spectrum is spread far enough that a
+stationary iteration stalls where a Krylov smoother adapts its polynomial. It
+predicts the notch result, and it predicts the cost below on well-conditioned
+problems.
+
+### Two regimes, and the named intent that selects them
+
+Neither smoother dominates, so there are two variants and `solver.strategy`
+chooses between them. This is the layering:
+
+| layer | what it is | where |
+|---|---|---|
+| `solver.strategy` | the **named intent** — `"default"` / `"robust"` / `"fast"` | public property on the solver |
+| `MGSettings` | the **option values** an intent resolves to | `utilities/multigrid_options.py` |
+| `solver.petsc_options` | the **escape hatch** — any key you set here outranks both | public, unchanged |
+
+`"robust"` (gmres/4) survives an operator a stationary smoother stalls on: the
+Spiegelman notch contraction above, and 11 → 5 velocity iterations on the
+transversely isotropic rotated annulus.
+
+`"fast"` (richardson/3) is cheaper per cycle and quicker where the operator is
+benign. Nested annulus, **linear (symmetric)** velocity block, η contrast 1e6,
+outer KSP timed in isolation — `"fast"` against `"robust"`:
+
+| depth | iterations | wall clock |
+|---|---|---|
+| 2 levels | ×0.69 | **×1.16** |
+| 3 levels | ×0.63 | **×1.30** |
+| 4 levels | ×0.83 | **×1.82** |
+
+The extra sweep costs ~3%; gmres itself costs ~40% per cycle. Custom-P builds its
+Galerkin coarse operators from barycentric transfers, denser than the native
+nested ones, so the smoother is a larger share of the cycle on that route.
+
+`"default"` is `"robust"`: the failure it avoids is worse than the cost it carries,
+and it carries that cost exactly where the problem is easy. `"fast"` is the
+documented opt-out.
+
+### Asking what you actually got
+
+`solver.strategy` reports it. The value is still the strategy *name* — it compares
+and formats as the plain string, so nothing that used it before changes — but
+displaying it shows the preconditioner that name resolved to:
+
+```python
+>>> stokes.strategy
+'default' — geometric multigrid (2 levels), full cycle, smoother gmresx4 + sor,
+            coarse redundant/lu
+>>> stokes.strategy == "default"
+True
+```
+
+Three properties of that report matter more than its formatting:
+
+- **It names a user override rather than absorbing it.** A key you set yourself is
+  listed as such (`; overridden by the user: mg_levels_ksp_max_it=6`), so the
+  summary cannot hide the difference between what the strategy asked for and what
+  is running.
+- **It refuses to report before it knows.** The preconditioner is resolved at the
+  first solve; until then the report says so instead of presenting the constructor
+  defaults as though they were the answer. A summary that looks authoritative and
+  is stale is worse than no summary.
+- **`solver.preconditioner_settings`** is the same information as a dict, so a test
+  can assert on it rather than parsing prose or inferring from timings.
+
+This is the general shape #484 asks for across all the managed fallbacks: report the
+resolved choice as readable state, and distinguish "could not" from "chose not to".
+
+```{warning}
+Do not fill a strategy by writing velocity-block options from the strategy setter.
+`_apply_preconditioner_options` runs later, at `_build`, and is the single writer
+of that block — anything written earlier is overwritten. That is how
+`pc_mg_type=kaskade` sat in the `strategy` setter for a long time carrying a
+comment warning against changing it, while never once taking effect (measured: the
+live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
+```
+
+### The one legitimate per-route difference
+
+The coarse solve. The Galerkin-coarsened **rotated** velocity block inherits the
+rigid-rotation null space of the constrained problem (a closed circle: one mode;
+a spherical shell: three), and `redundant`/LU hits a zero pivot there —
+`SUBPC_ERROR`, outer reason −11. So the rotated route asks for
+`geometric_mg_bundle(coarse="svd")`, which is null-space robust and cheap on a
+small coarse level. This is a named variant of the shared bundle, not a
+call-site override, so it is visible in the same place as everything else.
+
+The other native/custom-P asymmetry — that native FMG is unusable for
+single-field solvers because `DMCreateInjection` cannot reliably be built on a
+refined DMPlex (#276) — is deliberately *not* in the bundle. It is a routing
+decision (which route a solver may take), not an option value, and lives with
+the route choice in `_apply_preconditioner_options`.
+
+### Testing it
+
+`tests/test_1021_mg_option_bundle.py` reads the smoother configuration back off
+the **live PETSc objects** after setup — not out of the options database — for
+all three routes and asserts they agree, with the coarse-solve difference
+asserted rather than tolerated. Options-database assertions would not have caught
+the original drift, because the drift was precisely a key that was never written.
+
 ## Critical Stability Note
 
 ```{warning} Solver Stability is Paramount
@@ -337,7 +524,7 @@ pressure Krylov iteration. That number is a sample, not work. `SolverInstrumenta
 
 ```{note} For Contributors
 This well-documented subsystem could benefit from:
-- Preconditioner selection guidance (Krylov sub-solve choice is now covered; multigrid and Schur preconditioner selection is not)
+- Preconditioner selection guidance (Krylov sub-solve choice and the multigrid option bundle are now covered; Schur preconditioner selection is not)
 - Performance tuning documentation  
 - Convergence analysis examples
 - Scaling studies and optimization
