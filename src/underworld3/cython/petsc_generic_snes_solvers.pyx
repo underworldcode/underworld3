@@ -28,10 +28,18 @@ class _StrategyName(str):
     form.
     """
 
-    def __new__(cls, name, summary):
+    def __new__(cls, name, summary=""):
         obj = super().__new__(cls, name)
         obj._summary = summary
         return obj
+
+    def __reduce__(self):
+        # `str.__reduce_ex__` reconstructs via `cls(value)` with ONE argument, which
+        # a two-argument `__new__` cannot accept — so without this, pickling, copy
+        # and deepcopy of a strategy value all raise TypeError. The summary is
+        # derived state and is carried along rather than recomputed, because the
+        # solver it came from is not part of the pickle.
+        return (self.__class__, (str(self), self._summary))
 
     def __repr__(self):
         return f"{str.__repr__(self)} — {self._summary}"

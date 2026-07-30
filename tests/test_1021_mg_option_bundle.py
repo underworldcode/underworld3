@@ -128,14 +128,16 @@ def _custom_standard_config():
     return _mg_config(s.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC())
 
 
-def _custom_rotated_config(monkeypatch):
+def _custom_rotated_config(monkeypatch, strategy=None):
     """Route C: custom-P FMG reached through the rotated free-slip path.
 
     The rotated KSP is self-contained and is destroyed at the end of the solve,
     so the configuration is captured from inside the solve — there is no live PC
     left to interrogate afterwards.
     """
-    s = _stokes(_annulus(RES), "rot", rotated=True)
+    s = _stokes(_annulus(RES), f"rot{strategy or ''}"[:6], rotated=True)
+    if strategy is not None:
+        s.strategy = strategy
     custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
 
     real_solve = rotated_bc._solve_rotated_iterative
@@ -279,6 +281,56 @@ def test_strategy_selects_a_real_smoother_variant():
     """
     assert _strategy_mg_config("fast")[:2] == ("richardson", 3)
     assert _strategy_mg_config("robust")[:2] == ("gmres", 4)
+
+
+def test_strategy_reaches_every_route(monkeypatch):
+    """``strategy="fast"`` must be honoured on ALL THREE routes.
+
+    It was honoured on the native route and silently ignored on both custom-P
+    routes, because ``_configure_pcmg`` had no smoother argument — the exact drift
+    this module exists to prevent, and on the routes that matter most (custom-P is
+    mandatory for rotated BCs and ``adapt()`` children). Only the native route was
+    covered by a test, which is why it survived.
+    """
+    # _velocity_mg_config returns a tuple, _mg_config a dict — normalise to
+    # (smoother ksp, smoother max_it, coarse pc) so the three routes are comparable.
+    native = _strategy_mg_config("fast")
+
+    s = _stokes(_annulus(RES), "fstd", rotated=False)
+    s.strategy = "fast"
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+    s.solve()
+    standard = _velocity_mg_config(s)
+
+    rot = _custom_rotated_config(monkeypatch, strategy="fast")
+    rotated = (rot["smoother_ksp"], rot["smoother_max_it"], rot["coarse_pc"])
+
+    for route, config in (("native", native), ("custom-P standard", standard),
+                          ("custom-P rotated", rotated)):
+        assert config[:2] == ("richardson", 3), (
+            f"strategy='fast' not honoured on the {route} route: {config}")
+    assert rotated[2] == "svd", "the rotated coarse solve must still be svd"
+
+
+def test_strategy_value_pickles_and_copies():
+    """The strategy getter returns a ``str`` subclass so the report is additive. It
+    must therefore behave as a string everywhere, including through ``pickle`` and
+    ``copy`` — a two-argument ``__new__`` without ``__reduce__`` breaks both, and
+    UW3 has a serialisation system that would hit it."""
+    import copy
+    import pickle
+
+    mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=2 * RES, qdegree=3, refinement=1)
+    s = _stokes(mesh, "pk", rotated=False)
+    s.solve()
+    value = s.strategy
+
+    for rebuilt in (pickle.loads(pickle.dumps(value)), copy.copy(value),
+                    copy.deepcopy(value)):
+        assert rebuilt == "default"
+        assert str(rebuilt) == "default"
+    assert f"{value}" == "default" and value + "!" == "default!"
 
 
 def test_default_strategy_does_not_change_behaviour():

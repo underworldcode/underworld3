@@ -1080,7 +1080,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 # the default redundant/LU coarse solve hits a zero pivot there
                 # (SUBPC_ERROR, outer reason -11). Everything else in the bundle
                 # is identical to the native and standard custom-P routes.
-                custom_mg._configure_pcmg(vel_pc, custom_Pl, coarse="svd")
+                custom_mg._configure_pcmg(
+                    vel_pc, custom_Pl, coarse="svd",
+                    smoother=solver._mg_smoother_variant)
                 vel_pc.setUp()
                 # The bundle went into the GLOBAL options DB under the velocity
                 # sub-PC's prefix, which is derived from `pfx` and so is unique to
@@ -1089,7 +1091,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 vopts = PETSc.Options()
                 vpfx = vel_pc.getOptionsPrefix() or ""
                 for key in multigrid_options.geometric_mg_bundle(
-                        coarse="svd").settings:
+                        coarse="svd",
+                        smoother=solver._mg_smoother_variant).settings:
                     vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled

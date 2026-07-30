@@ -595,7 +595,7 @@ def _assert_no_zero_columns_serial(P_csr, level):
             f"operator would be singular.")
 
 
-def _configure_pcmg(pc, Ps, coarse="redundant", owned=None):
+def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
@@ -603,7 +603,11 @@ def _configure_pcmg(pc, Ps, coarse="redundant", owned=None):
     the same bundle the native (DMPlex-refinement) route applies — so custom-P
     and native multigrid cannot be configured differently (#468). ``coarse``
     selects the coarse-solve variant: ``"svd"`` on the rotated path, whose
-    Galerkin-coarsened operator inherits the rigid-rotation null space. ``owned``
+    Galerkin-coarsened operator inherits the rigid-rotation null space. ``smoother``
+    is the variant ``solver.strategy`` asks for — pass
+    ``solver._mg_smoother_variant``, or the strategy is honoured on the native route
+    and silently ignored here, which is the drift this module exists to prevent.
+    ``owned``
     is the solver's record of the option values UW3 has written, so a key the USER
     set is left alone (see :meth:`multigrid_options.MGSettings.apply`); ``None`` writes
     unconditionally, which is right for the rotated path's per-solve prefix.
@@ -619,7 +623,7 @@ def _configure_pcmg(pc, Ps, coarse="redundant", owned=None):
     fixed)."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
-    multigrid_options.geometric_mg_bundle(coarse=coarse).apply(
+    multigrid_options.geometric_mg_bundle(coarse=coarse, smoother=smoother).apply(
         PETSc.Options(), prefix, owned=owned)
     pc.setType("mg")
     pc.setMGLevels(nlev)
@@ -654,6 +658,7 @@ def _install_transfers(solver, Ps, verbose=False):
         solver.snes.setUp()
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
         _configure_pcmg(ksp.getPC(), Ps,
+                        smoother=solver._mg_smoother_variant,
                         owned=solver._managed_pc_options)
         if verbose:
             from underworld3 import mpi
@@ -715,7 +720,8 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
     vel_ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
     vel_pc.reset()
     vel_pc.setOperators(A_vv, P_vv)
-    _configure_pcmg(vel_pc, Ps, owned=solver._managed_pc_options)
+    _configure_pcmg(vel_pc, Ps, smoother=solver._mg_smoother_variant,
+                    owned=solver._managed_pc_options)
     vel_pc.setUp()
 
     # 4. re-attach the coupled Stokes nullspace (operator state was touched)
