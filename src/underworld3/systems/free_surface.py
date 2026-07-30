@@ -493,10 +493,11 @@ class FreeSurface:
             A rotated per-node constraint — the same primitive as the held lid, differing
             only in the constraint right-hand side, so free-slip is the ``\tilde u_n = 0``
             member of the same family. It enforces the datum to machine precision (no
-            penalty leak) and routes the solve through the rotated LINEAR path (a direct
-            KSP solve) rather than a Newton line search, so an isoviscous flow does not
-            thrash ``newtonls``. It requires the datum to be discretely flux-free, which
-            :meth:`_surface_mean` now guarantees by weighting the demean by arc length.
+            penalty leak) through the unified rotated Newton loop: an isoviscous flow
+            converges in one increment (the cold-start affine lift IS the linear solve),
+            and a nonlinear rheology iterates with the datum held exactly at every
+            accepted iterate. It requires the datum to be discretely flux-free, which
+            :meth:`_surface_mean` guarantees by weighting the demean by arc length.
 
         ``"penalty"``
             A weak natural BC. It tolerates a datum that carries a small net flux, at the
@@ -515,9 +516,10 @@ class FreeSurface:
         if self.consistent_constraint == "strong":
             # The datum is read along the rotated per-node normal — the same deform
             # direction the rate was measured along, so no spurious tangential-slope term
-            # on a bumpy or rotating surface.
-            self.consistent.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
-            self.consistent._rotated_freeslip_datum = {self.surface: self._un_target.sym[0]}
+            # on a bumpy or rotating surface. Value-first: the ũ_n field read IS the
+            # conds datum, re-evaluated at the boundary nodes at each solve.
+            self.consistent.add_rotated_freeslip_bc(
+                self._un_target.sym[0], self.surface, normal=self.normal)
         else:
             n_hat = (self.normal if self.normal is not None
                      else self.mesh.boundary_normal(self.surface))
@@ -958,19 +960,15 @@ class FreeSurface:
         u_tilde = self._demean(increment / dt)
         self._un_target.array[...] = 0.0
         self._un_target.array[self._un_target_rows, 0, 0] = u_tilde
-        try:
-            self.consistent.solve(zero_init_guess=True)
-        except NotImplementedError as exc:
-            # The rotated datum is implemented on the LINEAR rotated path only; the solve
-            # dispatches by a measured residual probe, so this fires exactly when the
-            # rheology is genuinely nonlinear. Name the knob rather than leaving the
-            # caller with the primitive's message.
-            raise NotImplementedError(
-                "FreeSurface: the strong rotated constraint cannot prescribe u.n = ũ_n "
-                "for a nonlinear rheology (the rotated datum is implemented on the linear "
-                "path only). Construct the manager with consistent_constraint='penalty' "
-                "to impose the material-surface rate weakly instead."
-            ) from exc
+        # Warm-start from the free solve: the consistent solution IS the free
+        # solution with the (small) material-boundary datum imposed, and the free
+        # solve has already converged this step. Starting there keeps a power-law
+        # tangent at physical strain rates — a cold start puts it at the
+        # regularisation floor, where the Newton line search stalls at O(0.1)
+        # relative residual (measured, power-law annulus acceptance run).
+        self.consistent.u.array[...] = self.free.u.array
+        self.consistent.p.array[...] = self.free.p.array
+        self.consistent.solve(zero_init_guess=False)
 
     def _conserve_composition(self):
         r"""Hold :math:`\int` (conserve integrand) fixed by a uniform shift of the

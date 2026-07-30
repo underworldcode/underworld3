@@ -25,6 +25,11 @@ That is what `order` selects on
 
 $$ w_j = \frac{d_j^{-p}}{\sum_k d_k^{-p}} $$
 
+$d_j$ is the **actual** distance to the neighbour, and `p` defaults to 1 — so
+the default really is inverse distance. (Until #427 the kd-tree's squared
+distances were used directly, making the decay $r^{-2p}$: the documented
+default of `p=2` was in fact $1/r^4$.)
+
 Weights are positive and sum to one. Consequences, both of them important:
 
 - A **constant** field is reproduced exactly.
@@ -229,48 +234,71 @@ Note what this does and does not promise: it bounds *new oscillation relative
 to the local trend*, not absolute range. A quantity that must stay inside hard
 physical bounds (a fraction in $[0,1]$) needs its own clip on top.
 
-### Material level sets stay on `order=0` — measured, not assumed
+### Material level sets stay on `order=0` — variance, not bias
 
 `IndexSwarmVariable` builds one level-set MeshVariable per material index and
 keeps its own inverse-distance weighting. It was tested against `order=1` and
-**deliberately not changed**.
+**deliberately not changed** — but not for the reason one might expect.
 
-The reason is structural. A material indicator is **piecewise constant**, not
-smooth. Away from an interface both schemes reproduce it exactly, because both
-reproduce constants — linear exactness has nothing to add. At the interface the
-field is *discontinuous*, so no polynomial-reproducing scheme is exact either;
-signed weights simply add overshoot where the data has a jump.
+The tempting argument, *a material indicator is piecewise constant so linear
+exactness has nothing to gain*, is **wrong**. The indicator is the *particle*
+data; the quantity estimated at a node is the local material **fraction**,
+which near an interface is a smooth ramp. Reproducing a ramp is exactly what a
+constants-only scheme cannot do.
 
-Measured on a straight interface at `x = 0.5` (exactly representable, so any
-displacement of the recovered 0.5 contour is scheme error):
+The real reason is that a level-set node estimates that fraction from a handful
+of **integer** samples, so its error has a variance term as well as a bias term:
 
-| scheme | interface error, median | level-set range |
-|---|---|---|
-| inverse distance, `nnn=5` | 5.2e-3 – 1.1e-2 | `[0, 1]` exactly |
-| `order=1`, `nnn=6` | 6.9e-3 – 7.8e-3 | `[0, 1]` exactly |
-| `order=1`, `nnn=8` | 5.2e-3 – 7.9e-3 | **`[-0.038, 1.038]`** |
+$$ \mathrm{Var}(\text{estimate}) = \sum_j w_j^2 \,\mathrm{Var}(f_j) $$
 
-The accuracy result is a wash — `order=1` is better at the coarse resolution
-and equal or worse at the fine one, with the ordering flipping between cases —
-while `nnn=8` violates the `[0, 1]` bound by ~3.8%.
+For weights summing to one, uniform weighting minimises $\sum_j w_j^2$ at
+$1/nnn$. Inverse-distance weights are positive and stay near that floor;
+linear-exact weights are signed and sit far above it:
 
-Partition of unity survives either way (all indices share one weight set, and
-the indicator flags sum to one per particle, so the level sets sum to
-`Σ w_j = 1` regardless of sign). But a *negative* material fraction is still
-physically wrong, and `constitutive_models.py` consumes these directly.
+| dim | `nnn` | $\sum w^2$ inverse distance | $\sum w^2$ `order=1` | $1/nnn$ | amplification |
+|---|---|---|---|---|---|
+| 2 | 6 | 0.223 | 2.314 | 0.167 | **10.4x** |
+| 2 | 20 | 0.079 | 0.922 | 0.050 | **11.7x** |
+| 3 | 6 | 0.188 | 1.290 | 0.167 | **6.9x** |
+| 3 | 20 | 0.061 | 0.657 | 0.050 | **10.9x** |
+
+Note the second row of each pair: inverse distance averages the noise *down* as
+the stencil grows, while `order=1` barely moves. So the noise cannot be bought
+off with more neighbours.
+
+Measured end to end, with particles assigned material 1 with probability
+$p(x)=x$ so that the exact nodal fraction is a known linear function
+(three seeds, `cellSize` 1/16 and 1/32):
+
+| scheme | bias | rms | level-set range |
+|---|---|---|---|
+| shipped `update_type=0` (scatter) | ~1e-3 | **0.09 – 0.11** | `[0, 1]` |
+| shipped `update_type=1` (gather) | ~1e-3 | 0.18 | `[0, 1]` |
+| gather, `order=1` | ~1e-3 | 0.18 – 0.20 | **`[-0.35, 1.32]`** |
+
+The bias that linear exactness would remove is already ~1e-3 for every scheme,
+because a roughly symmetric stencil reproduces a linear ramp in expectation
+anyway. What is left is variance — and `order=1` amplifies it and breaks the
+`[0, 1]` bound that `constitutive_models.py` relies on.
+
+Partition of unity survives regardless of weight sign (all indices share one
+denominator, and the per-particle indicator flags sum to one, so the level sets
+sum to $\sum_j w_j = 1$). It was never the objection.
 
 ```{note}
-The interface metric groups nodes into rows by `y` and interpolates the 0.5
-crossing, which is crude on an unstructured simplex mesh — the *maximum* error
-is identical across all schemes because it is set by node spacing, not by the
-weights. Only the median is informative, and it is the median that shows no
-consistent gain.
+The two branches are different algorithms, and only one has a stencil to
+re-weight. `update_type=0`, the **default**, is a *scatter*: it queries `nnn`
+nodes but masks with `is_nearest`, so each particle accumulates $1/d$ into its
+nearest node only. `update_type=1` is the gather form. That the scatter has the
+lowest rms is consistent with the variance argument — a node aggregates every
+particle that is nearest to it, typically many more than `nnn`.
 ```
 
-So the swarm story is deliberately split: the plain `SwarmVariable` proxy takes
-`order=1` because its fields are smooth and the gain is two orders of magnitude;
-`IndexSwarmVariable` keeps inverse distance because its field is a jump, where
-there is nothing to gain and a bound to lose.
+So the lever for material-fraction accuracy is **more samples per node**, not
+better polynomial reproduction. The swarm story splits accordingly: the plain
+`SwarmVariable` proxy takes `order=1` because it carries exact real values and
+only bias matters; `IndexSwarmVariable` keeps inverse distance because it
+carries quantised values and variance dominates.
 
 Consumers that depend on absolute boundedness, and are therefore deliberately
 left on `order=0`:
@@ -302,12 +330,37 @@ particles and there is no halo exchange (SWARM-15, see
 `docs/developer/design/SWARM_MODERNIZATION_DESIGN_2026-07.md` §4). A proxy node
 near a partition seam therefore gathers from a one-sided neighbourhood.
 
-Linear exactness improves this but does not fix it. A linear-exact stencil
-reproduces a linear field exactly from *any* neighbourhood, one-sided or not,
-so for linear fields the seam error is zero and the proxy is np-independent
-(pinned by `tests/parallel/test_0776_linear_rbf_proxy_parallel.py`). For a
-field with curvature a one-sided stencil still differs from a centred one, so
-np-dependence remains. The halo exchange in SWARM-15 is still the real fix.
+Linear exactness improves this but does not fix it, and the size of what is
+left has now been measured — SWARM-15's migration plan asks for exactly this
+as its first step.
+
+Max relative proxy error against the analytic field, same mesh and same
+particles at each np (2D, `cellSize` 1/24, `fill_param` 4):
+
+| field | scheme | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| linear | `order=0` | 2.0e-3 | 2.4e-3 | 4.5e-3 |
+| linear | `order=1` | **5.1e-16** | **5.1e-16** | **5.5e-16** |
+| curved | `order=0` | 9.5e-3 | 1.1e-2 | 1.7e-2 |
+| curved | `order=1` | 1.5e-4 | 1.9e-4 | 2.3e-4 |
+
+Two things to read off. A linear field is **exactly** np-independent under
+`order=1` — round-off at every np, so the seam contributes nothing (pinned by
+`tests/parallel/test_0776_linear_rbf_proxy_parallel.py`). For a field with
+curvature the np-dependence persists in both schemes, roughly doubling from
+np=1 to np=4 — but the *absolute* error at np=4 is 73x smaller under `order=1`
+(2.3e-4 against 1.7e-2).
+
+So `order=1` reduces the seam's magnitude by about two orders of magnitude
+without removing the np-dependence. The halo exchange in SWARM-15 is still the
+real fix.
+
+```{note}
+Node counts grow slightly with np (728 / 758 / 790 here) because shared
+partition-boundary nodes are counted on more than one rank, so the np>1
+maxima are taken over marginally more node instances. The effect is small
+next to the trends above but it is not zero.
+```
 
 ## Related
 

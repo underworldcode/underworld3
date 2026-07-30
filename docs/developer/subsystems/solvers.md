@@ -175,7 +175,7 @@ def validate_unknowns_sharing(multi_material_model):
             assert model.Unknowns.DFDt is reference_unknowns.DFDt, \
                 f"Model {i} $D\mathbf{{F}}/Dt$ not shared - stress history will be wrong"
 ```
-- ⚠️ Preconditioner selection missing
+- ⚠️ Preconditioner *selection* is partly covered — see "Choosing the Krylov method for a fieldsplit sub-solve" and "The multigrid option bundle, and its one owner" below; Schur preconditioner choice is still undocumented
 - Could benefit from optimization examples
 
 ## The Stokes fieldsplit: two nested Krylov loops
@@ -284,6 +284,342 @@ velocity solve hands the pressure Krylov a different operator than the one its
 preconditioner was built for.
 ```
 
+## Choosing the Krylov method for a fieldsplit sub-solve
+
+This choice gets re-argued periodically. The confusion is that it looks like three
+separate questions — flexible or not, `preonly` or not, how tight — when in fact the
+first and third are **two halves of one design decision**, and only the middle one is
+independent.
+
+### The design, and where it comes from
+
+The Stokes configuration descends from the Citcom solver of Moresi & Solomatov
+(1995). Its central choice is that the **inner solves are deliberately inexact** —
+you do not solve the velocity block exactly to apply the Schur complement, because
+that would be ruinous and is unnecessary. Two consequences follow, and they must
+hold together:
+
+1. **Because the inner solves are inexact, the search directions are perturbed, so
+   the outer/Schur Krylov must be flexible** (`fgmres` or similar). A non-flexible
+   method assumes a fixed preconditioner; its residual recurrence is invalidated by
+   a search direction that drifts.
+2. **Inexact is not unbounded.** The inner solves must still converge to *well
+   below* the final tolerance required of the outer solve. That margin is what the
+   `0.033` and `0.1` factors encode — they are a safety margin, not a tuned constant.
+
+Flexibility buys tolerance of inexactness; the margin bounds how inexact. Neither
+works without the other, which is why arguing them separately never settles.
+
+```{note} Guardrail policy
+Defaults err on the side of robust generality. A default that is slower but
+survives configurations nobody has tested yet is the right default; loosening it is
+the caller's decision and the caller's risk.
+```
+
+### Axis 1 — flexible or not (`fgmres` vs `gmres` / `cg` / `fcg`)
+
+Settled, and settled by the design above: the inner solves are inexact by
+construction, so the outer and Schur Krylov methods must be flexible. The question
+is **is the preconditioner stationary?**, not whether the operator is symmetric.
+
+The velocity block of Stokes *is* SPD, so `cg` is admissible on symmetry grounds.
+It still fails, because GAMG with `mg_levels_ksp_converged_maxits` performs a
+variable number of smoothing iterations, making the preconditioner application
+non-linear. `cg`/`fcg` residual recurrences and standard `gmres` cannot accommodate
+that. FGMRES is right-preconditioned by construction and can.
+
+Settled empirically in [#147](https://github.com/underworldcode/underworld3/issues/147)
+(spherical Kramer `case1`, free-slip Nitsche, Gadi at np=144, cellsize 1/32):
+`fcg` reported an indefinite matrix / `DIVERGED_PC_FAILED`; `gmres` failed with a
+residual-recursion mismatch; the same configuration converged on macOS, so this is
+a robustness cliff exposed by scale, not a formulation error. The rationale is
+recorded inline at `petsc_generic_snes_solvers.pyx` (velocity sub-solve block).
+
+**Default: `fgmres` on both sub-solves.** Anything non-flexible is only safe if you
+can show your preconditioner is stationary, and ours generally is not.
+
+### Axis 2 — `preonly` or an iterative wrapper
+
+This is not a Krylov-taste question at all. It is **positional**: is this KSP a
+*preconditioner application*, or an *operator inverse*?
+
+- **Top-level PC** (scalar and single-field vector solvers, empty
+  `_pc_option_prefix`): the multigrid *is* the preconditioner and an outer Krylov
+  cleans up after it. One cycle per application is a legitimate design.
+- **Velocity block under `pc_fieldsplit_schur_fact_type=full`**: `PCFieldSplit`
+  forms `S = A₁₁ − A₁₀ A₀₀⁻¹ A₀₁` and applies `A₀₀⁻¹` *through this KSP*. It is no
+  longer preconditioning anything — it **defines the operator the pressure Krylov
+  iterates against**. `preonly` there does not degrade conditioning; it changes
+  which system is being solved, to `S̃ ≠ S`, while the 1/μ pressure mass still
+  preconditions `S`.
+
+The failure is quiet. Measured on the rotated free-slip path (annulus, transversely
+isotropic, weak plane reaching the constrained boundary, η₁/η₀ = 1e-3), the pressure
+residual under `preonly` falls 4.4e4 in ~16 iterations and then **stagnates at a
+floor ≈ 3.1e-7**, burning the remaining 184 iterations of its cap on every outer
+iteration: 9 outer iterations and 2.77 s, against 1 outer, 17 pressure iterations
+and 0.67 s once the same multigrid is wrapped in FGMRES. The isotropic control moves
+identically (5 → 1 outer), so this is the Schur application and not the anisotropy.
+
+Note the operator is *not* moving between applications — applying the Schur operator
+twice to the same vector is bitwise identical under both settings. `S̃` is a fixed
+linear operator, just the wrong one. (Why the floor sits where it does is not
+isolated; a range/null-space inconsistency between `S̃` and the constant-pressure
+null space attached to `S` is the obvious suspect.)
+
+**Rule: `preonly` is fine as a preconditioner application and never fine as an
+inverse underneath a Schur complement.** Multigrid is an excellent preconditioner;
+it cannot be the whole solve when a Schur complement is applied through it.
+
+In the terms of the design above, `preonly` is the degenerate case of axis 3: it has
+no tolerance at all, so there is no margin below the outer solve for the flexible
+outer Krylov to work with. Flexibility tolerates inexactness; it cannot manufacture
+a margin that was never there. That is exactly the stagnation floor measured above.
+
+### Axis 3 — how far below the outer tolerance the inner solves must go
+
+Not a free parameter. The invariant from the design above is that **every inner
+solve reaches well below the tolerance demanded of the outer solve**; the only
+judgment is how much margin, and the guardrail policy decides that.
+
+The failure this catches is concrete. The rotated free-slip path ran its outer KSP
+at `rtol = tolerance` and its pressure sub-solve *also* at `rtol = tolerance` — no
+margin whatsoever, the inner solve asked to be no better than the answer it feeds.
+That is the invariant broken outright rather than a tuning disagreement.
+
+Loosening the velocity sub-solve likewise does not degrade gracefully — it walks
+back toward the `preonly` failure above:
+
+| velocity sub-KSP rtol | outer its |
+|---|---|
+| 1e-1 | 6 |
+| 1e-2 | 4 |
+| 0.033 × tolerance | 1 |
+
+Current defaults, matched across the native and rotated paths:
+
+| sub-solve | rtol | max_it |
+|---|---|---|
+| velocity | `0.033 × tolerance` | 200 |
+| pressure | `0.1 × tolerance` | 200 |
+
+The rotated path previously used `0.1 × tolerance` (velocity) and `1.0 × tolerance`
+(pressure). Adopting the native values costs ~17% wall clock with identical outer
+iteration counts (measured on both velocity-block routes, isotropic and TI) and
+reduced a transversely isotropic fault smoke test from 24 to 15 nonlinear
+iterations. Cheaper is available to anyone who measures their own configuration; it
+is not the default.
+
+The `0.033` and `0.1` factors themselves are inherited from the Citcom
+configuration and have no derivation recorded here beyond "well below the outer
+tolerance". They are a margin whose *existence* is principled and whose *size* is
+convention.
+
+### Detecting a degraded sub-solve
+
+Two properties make this family of problems hard to see, and both need instrumenting
+rather than eyeballing:
+
+- **The outer iteration count does not reveal it.** A full Schur factorisation with a
+  good pressure mass still reports ~1 outer iteration while the inner solve grinds
+  against its cap underneath. Read the sub-KSP counts.
+- **An exhausted cap does not raise.** A sub-KSP that hits `max_it` returns
+  `KSP_DIVERGED_ITS`, which `KSPCheckSolve` deliberately does not escalate, so it
+  degrades silently. `preonly` could never fail this way, so switching to an
+  iterative wrapper introduces a failure mode that must be checked for explicitly.
+
+Beware also that `KSPGetIterationNumber` on a sub-KSP reports only its **most recent**
+application, and the velocity KSP is applied once per Schur `MatMult` — i.e. once per
+pressure Krylov iteration. That number is a sample, not work. `SolverInstrumentation`
+(`systems/solver_health.py`) is the mechanism that sums properly.
+
+## The multigrid option bundle, and its one owner
+
+Three routes reach a multigrid velocity block, and they are **the same
+preconditioner reached three ways**, not three alternatives:
+
+| route | when | prolongation |
+|---|---|---|
+| native | mesh built with `refinement >= 1`, ordinary BCs | PETSc `DMCreateInterpolation` between refined DMPlex levels |
+| custom-P, standard path | `set_custom_fmg`, or an `adapt()` child's mesh-owned coarse tail | barycentric / RBF, Galerkin coarse operators |
+| custom-P, rotated path | rotated free-slip, via `rotated_bc` | as above, with the fine prolongation rotated, `P̂ = Q_v·P` |
+
+custom-P is **mandatory** wherever native cannot go: rotated boundary conditions
+(the DM-coupled hierarchy cannot express a per-node rotation) and non-nested
+grids (`adapt()` children have no DMPlex refinement relation). So the routes are
+not ranked — the one that matters most for adapted and curved-boundary work is
+custom-P.
+
+The option *values* live in one module, `utilities/multigrid_options.py`. Every
+writer reads a bundle from there and applies it to its own options object under
+its own prefix; nobody writes a multigrid option value anywhere else. That is
+structural rather than stylistic: when the bundle was written in two places, the
+native path was deliberately moved to a measured `gmres`+`sor` smoother and the
+custom-P path was not, and the custom-P routes ran `richardson` at an iteration
+count **nobody had set** — inherited from whatever last wrote that options
+prefix (3 left behind by the GAMG bundle on the standard path, PETSc's own PCMG
+default of 2 on the rotated path). The same function smoothed differently
+depending on what had run before it.
+
+### What a bundle carries
+
+A bundle is the settings it sets *and* the keys it must clear. The clear-list is
+derived, not hand-written: it is every key any sibling bundle sets that this one
+does not. These bundles share an options prefix, so switching a block from GAMG
+to geometric MG leaves the GAMG-only keys behind and `setFromOptions` will
+happily re-read them. Deriving the list means a key added to one bundle
+automatically becomes stale for the others.
+
+Two consequences worth stating outright:
+
+- **Set the smoother iteration count, never inherit it.** A bundle that omits
+  `mg_levels_ksp_max_it` is not "using the default" — it is using whatever the
+  last writer left.
+- **The measured smoother is `gmres`+`sor` at 4 iterations.** Chebyshev needs
+  eigenvalue estimates of the smoothed operator, which are fragile on the
+  indefinite / variable-viscosity velocity block. Against richardson, measured on
+  the Spiegelman notch (Drucker–Prager, η contrast 1e26, nested 4-level
+  hierarchy): per-cycle contraction ρ = 0.75 richardson against 0.56 gmres at the
+  *same* four iterations, the margin growing with depth (5% at 3 levels, 25% at 4).
+
+### Why richardson loses — the recorded reason is wrong
+
+Both this bundle's comment and the Layer 3 section of
+`design/nonlinear-solver-homotopy-warmstart.md` said richardson degrades because
+the consistent-Newton tangent makes the velocity block **non-symmetric**. That
+mechanism does not survive measurement.
+
+For an isotropic η(ε̇_II) the Newton term is
+
+$$2\,\frac{\eta'}{\dot\varepsilon_{II}}\big(\dot\varepsilon(u):\dot\varepsilon(\delta u)\big)\big(\dot\varepsilon(u):\dot\varepsilon(v)\big)$$
+
+— a rank-one outer product $a\otimes a$ with $a = \dot\varepsilon(u)$, which is
+symmetric. η depends on ∇v only *through* its symmetric part, so both factors
+project onto the same tensor and there is nothing left to break the symmetry.
+Measured as ‖A−Aᵀ‖_F/‖A‖_F on the assembled velocity block, against a linear
+calibration of 5e-17:
+
+| rheology | ‖A−Aᵀ‖/‖A‖ | Newton term ‖A_N−A_P‖/‖A‖ |
+|---|---|---|
+| linear (calibration) | 5.1e-17 | — |
+| shear-thinning, isotropic | 5.3e-17 | 2.1e-01 |
+| power-law, isotropic | 5.3e-17 | 4.0e-01 |
+| Drucker–Prager, pressure-dependent yield | 5.1e-17 | 5.1e-02 |
+| transverse isotropic, Picard tangent | **7.2e-02** | — |
+| transverse isotropic, Newton tangent | **8.9e-02** | 2.0e-01 |
+
+The third column is the control: if the consistent tangent had contributed
+nothing, the symmetry reading would be vacuous. It contributed 5–40% of ‖A‖ in
+every case, and the block stayed symmetric anyway.
+
+Non-symmetry *does* appear under transverse isotropy — but it appears under the
+**Picard** tangent too, where a frozen-coefficient form ∫ ε̇(δu):C:ε̇(v) is
+symmetric by construction. That is a defect signature rather than a property of
+the tangent (see #457, and the linear TI rows, which are symmetric at 6.3e-17
+even with anisotropy fully active).
+
+The mechanism that does fit everything measured is **operator conditioning**: at
+η contrast 1e26 the SOR-preconditioned spectrum is spread far enough that a
+stationary iteration stalls where a Krylov smoother adapts its polynomial. It
+predicts the notch result, and it predicts the cost below on well-conditioned
+problems.
+
+### Two regimes, and the named intent that selects them
+
+Neither smoother dominates, so there are two variants and `solver.strategy`
+chooses between them. This is the layering:
+
+| layer | what it is | where |
+|---|---|---|
+| `solver.strategy` | the **named intent** — `"default"` / `"robust"` / `"fast"` | public property on the solver |
+| `MGSettings` | the **option values** an intent resolves to | `utilities/multigrid_options.py` |
+| `solver.petsc_options` | the **escape hatch** — any key you set here outranks both | public, unchanged |
+
+`"robust"` (gmres/4) survives an operator a stationary smoother stalls on: the
+Spiegelman notch contraction above, and 11 → 5 velocity iterations on the
+transversely isotropic rotated annulus.
+
+`"fast"` (richardson/3) is cheaper per cycle and quicker where the operator is
+benign. Nested annulus, **linear (symmetric)** velocity block, η contrast 1e6,
+outer KSP timed in isolation — `"fast"` against `"robust"`:
+
+| depth | iterations | wall clock |
+|---|---|---|
+| 2 levels | ×0.69 | **×1.16** |
+| 3 levels | ×0.63 | **×1.30** |
+| 4 levels | ×0.83 | **×1.82** |
+
+The extra sweep costs ~3%; gmres itself costs ~40% per cycle. Custom-P builds its
+Galerkin coarse operators from barycentric transfers, denser than the native
+nested ones, so the smoother is a larger share of the cycle on that route.
+
+`"default"` is `"robust"`: the failure it avoids is worse than the cost it carries,
+and it carries that cost exactly where the problem is easy. `"fast"` is the
+documented opt-out.
+
+### Asking what you actually got
+
+`solver.strategy` reports it. The value is still the strategy *name* — it compares
+and formats as the plain string, so nothing that used it before changes — but
+displaying it shows the preconditioner that name resolved to:
+
+```python
+>>> stokes.strategy
+'default' — geometric multigrid (2 levels), full cycle, smoother gmresx4 + sor,
+            coarse redundant/lu
+>>> stokes.strategy == "default"
+True
+```
+
+Three properties of that report matter more than its formatting:
+
+- **It names a user override rather than absorbing it.** A key you set yourself is
+  listed as such (`; overridden by the user: mg_levels_ksp_max_it=6`), so the
+  summary cannot hide the difference between what the strategy asked for and what
+  is running.
+- **It refuses to report before it knows.** The preconditioner is resolved at the
+  first solve; until then the report says so instead of presenting the constructor
+  defaults as though they were the answer. A summary that looks authoritative and
+  is stale is worse than no summary.
+- **`solver.preconditioner_settings`** is the same information as a dict, so a test
+  can assert on it rather than parsing prose or inferring from timings.
+
+This is the general shape #484 asks for across all the managed fallbacks: report the
+resolved choice as readable state, and distinguish "could not" from "chose not to".
+
+```{warning}
+Do not fill a strategy by writing velocity-block options from the strategy setter.
+`_apply_preconditioner_options` runs later, at `_build`, and is the single writer
+of that block — anything written earlier is overwritten. That is how
+`pc_mg_type=kaskade` sat in the `strategy` setter for a long time carrying a
+comment warning against changing it, while never once taking effect (measured: the
+live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
+```
+
+### The one legitimate per-route difference
+
+The coarse solve. The Galerkin-coarsened **rotated** velocity block inherits the
+rigid-rotation null space of the constrained problem (a closed circle: one mode;
+a spherical shell: three), and `redundant`/LU hits a zero pivot there —
+`SUBPC_ERROR`, outer reason −11. So the rotated route asks for
+`geometric_mg_bundle(coarse="svd")`, which is null-space robust and cheap on a
+small coarse level. This is a named variant of the shared bundle, not a
+call-site override, so it is visible in the same place as everything else.
+
+The other native/custom-P asymmetry — that native FMG is unusable for
+single-field solvers because `DMCreateInjection` cannot reliably be built on a
+refined DMPlex (#276) — is deliberately *not* in the bundle. It is a routing
+decision (which route a solver may take), not an option value, and lives with
+the route choice in `_apply_preconditioner_options`.
+
+### Testing it
+
+`tests/test_1021_mg_option_bundle.py` reads the smoother configuration back off
+the **live PETSc objects** after setup — not out of the options database — for
+all three routes and asserts they agree, with the coarse-solve difference
+asserted rather than tolerated. Options-database assertions would not have caught
+the original drift, because the drift was precisely a key that was never written.
+
 ## Critical Stability Note
 
 ```{warning} Solver Stability is Paramount
@@ -294,7 +630,7 @@ preconditioner was built for.
 
 ```{note} For Contributors
 This well-documented subsystem could benefit from:
-- Preconditioner selection guidance
+- Preconditioner selection guidance (Krylov sub-solve choice and the multigrid option bundle are now covered; Schur preconditioner selection is not)
 - Performance tuning documentation  
 - Convergence analysis examples
 - Scaling studies and optimization

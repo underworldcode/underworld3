@@ -6,6 +6,98 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### One Owner for the Geometric-Multigrid Option Bundle (July 2026)
+
+**The PETSc option bundle that configures a Stokes velocity block's multigrid
+now lives in exactly one module, and all three routes that reach that block read
+it from there** (#468), **and rotated free-slip now picks up a mesh-owned
+multigrid hierarchy instead of silently discarding it** (#467).
+
+Three routes reach a multigrid velocity block: native (PETSc interpolation
+between refined DMPlex levels), custom-P on the standard solve path, and custom-P
+through the rotated free-slip path. They are the same preconditioner reached
+three ways, not alternatives — custom-P is *mandatory* wherever native cannot go,
+namely rotated boundary conditions and `adapt()` children. The bundle was
+written in two places and had drifted: the native path had been moved to a
+`gmres`+`sor` smoother on a recorded measurement, and the custom-P routes had
+not. Worse, the custom-P writer never *set* the smoother iteration count at all,
+so it inherited whatever had last written that options prefix — 3 left behind by
+the GAMG bundle on the standard path, PETSc's own default of 2 on the rotated
+path. The same function smoothed differently depending on what had run before
+it.
+
+Unifying the bundle recovers, on the same operator, right-hand side and coarse
+solve: rotated custom-P velocity-block iterations 11 → 5 (0.68 s → 0.39 s of
+linear solve, timed in isolation), standard custom-P 5 → 4, on a *two-level*
+hierarchy — the depth at which the native measurement says the gmres margin is
+smallest. The bundle also now derives which stale keys it must clear rather than
+carrying a hand-maintained list, which is what let the iteration count go unset
+in the first place.
+
+Separately, `mesh.adapt()` leaves a coarse tail on its refinement child so that
+every solver on an adapted mesh gets geometric multigrid with no per-solver call.
+The rotated path never consulted it — the standard path's injection hook runs
+after the rotated dispatch has already returned — so an adapt child under rotated
+free-slip fell back to algebraic multigrid, indistinguishable from having no
+hierarchy at all. That is the `adapt-on-top-faults` workflow's own configuration
+(a fault resolved by local refinement, with rotated free-slip chosen because it
+composes with transverse isotropy). Both paths now resolve the hierarchy through
+one shared rule, with the same opportunistic degrade-to-GAMG behaviour.
+
+The regression test reads the smoother configuration back off the **live PETSc
+objects** for all three routes and asserts they agree. An options-database
+assertion would not have caught the original drift, because the drift was
+precisely a key nobody wrote.
+
+### One Rotated Free-Slip Path, Now With a Prescribed Wall-Normal Velocity (July 2026)
+
+**Rotated strong free-slip now takes a prescribed wall-normal velocity datum
+(`add_rotated_freeslip_bc(conds, boundary, ...)` with non-zero `conds`) through
+the full nonlinear Newton machinery, and the separate linear and nonlinear
+solve paths have been unified into one** (#438; #403 items 2 and 4).
+
+The rotated constraint `u·n̂ = ũ_n` is the primitive behind both the held free-slip
+lid and the free-surface material-boundary condition — they differ only in the
+constraint right-hand side. Previously the non-zero datum existed only on a
+linear one-shot path, so a power-law or anisotropic rheology silently fell back
+to a weak penalty (which leaks worst exactly where anisotropy makes it matter).
+Now every rotated solve runs a single Newton/Picard loop in which accepted
+iterates carry the datum exactly; a cold start imposes it through the first
+increment's affine lift at the rest-state tangent (snapping a zero state onto a
+datum creates a boundary strain state a shear-thinning tangent cannot recover
+from — measured, not assumed); a linear model simply converges after that first
+increment, so the up-front nonlinearity probe is gone from the dispatch and
+every linear rotated solve saves two Jacobian assemblies.
+
+Three latent solver defects were found and fixed by making the loop report
+honestly along the way:
+
+- Branching on rank-local datum bookkeeping desynchronised the ranks'
+  collective sequences (an np>1 deadlock class); the datum-activity decision is
+  now a collective PETSc reduction.
+- A rigid-rotation mode pinned by an essential condition on *another* boundary
+  could still enter the solver null space (only the rotated rows were checked),
+  silently projecting an irreducible component out of every increment — Newton
+  converged superlinearly and then floored, far above tolerance. Candidate
+  modes are now verified as null vectors of the assembled operator, which
+  catches any form of pinning.
+- A tiny Newton step was reported as convergence even when the residual was
+  still large (a stiff tangent also produces tiny steps); the step-norm exit is
+  now verified against the problem's rest-state residual scale, which is also
+  the convergence reference for warm starts (rtol relative to a good warm
+  start's own small initial residual demands ever-more absolute accuracy).
+
+The free-surface manager's `consistent_constraint="strong"` therefore works for
+nonlinear rheologies: the penalty fallback is removed, and the consistent solve
+warm-starts from the free solve's converged fields. Acceptance: power-law
+annulus free-surface convection holds the material boundary at the strong-datum
+level (5e-3, versus 4e-2 for the penalty) with net surface flux 1e-4; a
+transversely isotropic fault-bearing smoke test converges through the same
+path. Direct LU per Newton increment remains available as a serial,
+preconditioner-free diagnostic (`solver._rotated_use_lu`).
+
+New subsystem documentation: `subsystems/rotated-freeslip.md`.
+
 ### Local Interpolation That Reproduces Linear Fields (July 2026)
 
 **The local scattered-point interpolator now has a linear-reproduction
@@ -40,10 +132,11 @@ first order with refinement and **not at all** with stencil size.
 Two deliberate exclusions, both measured rather than assumed:
 `MeshVariable.rbf_interpolate` keeps inverse distance because it is the
 fallback rung of the point-location ladder, whose documented contract is that
-it is bounded; and `IndexSwarmVariable` material level sets keep it because a
-material indicator is piecewise constant — there is nothing for linear
-exactness to gain at a discontinuity, and signed weights push level sets
-outside `[0, 1]`.
+it is bounded; and `IndexSwarmVariable` material level sets keep it because
+they estimate a fraction from a handful of *integer* samples, where the error
+is dominated by variance rather than bias. Signed weights amplify that variance
+by roughly an order of magnitude and push level sets outside `[0, 1]`, while
+the bias they would remove is already negligible.
 
 Related: swarm proxy refresh no longer fails under an active units model
 (#426, #434); the units the proxy advertises are tracked separately (#439).

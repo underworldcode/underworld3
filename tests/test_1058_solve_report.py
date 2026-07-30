@@ -279,20 +279,39 @@ def test_snes_reason_table_matches_petsc():
     from petsc4py import PETSc
     from underworld3.systems.solve_report import REASON_STRINGS, reason_string
 
+    # A code can carry more than one petsc4py spelling (0 is both CONVERGED_ITERATING
+    # and ITERATING), so collect every alias: picking one via setdefault would pin the
+    # test to the order vars() happens to yield, which is not a petsc4py guarantee.
     enum_names = {}
     for name, value in vars(PETSc.SNES.ConvergedReason).items():
         if isinstance(value, int) and not name.startswith("_"):
-            enum_names.setdefault(value, name)
+            enum_names.setdefault(value, set()).add(name)
 
     for code, label in REASON_STRINGS.items():
         assert code in enum_names, f"{code} ({label}) is not a PETSc SNES reason at all"
-        assert label == enum_names[code], (code, label, enum_names[code])
+        assert label in enum_names[code], (code, label, sorted(enum_names[code]))
 
     # Every reason PETSc can return must be nameable — an UNKNOWN_n in a report is a
     # gap in the table, and the ones that went missing were real diverged states.
     for code in enum_names:
-        assert code in REASON_STRINGS, f"PETSc reason {code} ({enum_names[code]}) unmapped"
+        assert code in REASON_STRINGS, (
+            f"PETSc reason {code} ({sorted(enum_names[code])}) unmapped")
 
     assert reason_string(4) == "CONVERGED_SNORM_RELATIVE"
     assert reason_string(5) == "CONVERGED_ITS"
     assert reason_string(999).startswith("UNKNOWN")
+
+    # The solver carries a SECOND copy of this table (code -> (NAME, explanation)) so
+    # its diagnostics can add a one-line gloss. It had the identical off-by-one, and
+    # fixing only one copy would leave the two disagreeing — so pin both to the enum
+    # and to each other.
+    from underworld3.systems import Stokes
+
+    solver_table = Stokes._convergence_reasons
+    for code, (label, _explanation) in solver_table.items():
+        assert code in enum_names, f"{code} ({label}) is not a PETSc SNES reason at all"
+        assert label in enum_names[code], (code, label, sorted(enum_names[code]))
+    for code in enum_names:
+        assert code in solver_table, (
+            f"PETSc reason {code} ({sorted(enum_names[code])}) unmapped in the solver")
+    assert {c: n for c, (n, _) in solver_table.items()} == REASON_STRINGS

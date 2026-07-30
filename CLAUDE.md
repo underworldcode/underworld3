@@ -326,7 +326,7 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 
 ## Boundary Conditions: Free-slip
 
-**Prefer rotated strong free-slip** (`solver.add_rotated_freeslip_bc(conds, boundary, normal=None)`, value-first: `conds=0` is the only implemented datum)
+**Prefer rotated strong free-slip** (`solver.add_rotated_freeslip_bc(conds, boundary, normal=None)`, value-first: `conds=0` is free-slip; a non-zero scalar/expression `conds` prescribes the wall-normal datum `u·n̂ = ũ_n` strongly)
 to impose `v·n̂ = 0`:
 
 - Enforces zero wall-normal flow to **machine precision** (Nitsche / penalty leak ~1e-3).

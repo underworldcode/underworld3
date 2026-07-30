@@ -2763,17 +2763,11 @@ class GenericFluxModel(Constitutive_Model):
         def __init__(inner_self, _owning_model):
             inner_self._owning_model = _owning_model
 
-            default_flux = sympy.zeros(_owning_model.dim, 1)
-            elements = [default_flux[i] for i in range(_owning_model.dim)]
-            validated = []
-            for i, v in enumerate(elements):
-                flux_component = validate_parameters(
-                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
-                )
-                if flux_component is not None:
-                    validated.append(flux_component)
-
-            inner_self._flux = sympy.Matrix(validated)
+            # Raw sympy zero vector — NOT wrapped in UWexpressions. The default
+            # (Picard) tangent differentiates the flux WITHOUT unwrapping, so a
+            # wrapped whole-flux component has zero derivative w.r.t. the unknown
+            # and its gradient. See the flux setter for the full rationale.
+            inner_self._flux = sympy.zeros(_owning_model.dim, 1)
 
         @property
         def flux(inner_self):
@@ -2782,26 +2776,35 @@ class GenericFluxModel(Constitutive_Model):
 
         @flux.setter
         def flux(inner_self, value: sympy.Matrix):
-            """Set the flux expression (must be a vector of length dim)."""
+            """Set the flux expression (must be a vector of length dim).
+
+            Stores the raw sympy expression directly. Previously each component
+            was wrapped in a UWexpression via ``validate_parameters`` — and the
+            default (Picard) tangent differentiates the flux WITHOUT unwrapping
+            (frozen-coefficient semantics; unwrap-before-differentiate runs only
+            on the consistent-Newton path). An opaque wrapper holding the ENTIRE
+            flux therefore has zero derivative w.r.t. the unknown and its
+            gradient: G0–G3 vanish and the operator is structurally singular.
+            The residual was never affected (the JIT's constants machinery
+            reveals non-constant wrappers correctly); the same pre-fix model
+            solved under ``consistent_jacobian=True``. Coefficient-level
+            wrapping in other models is safe — d(k*grad u)/d(grad u) = k — the
+            hazard is specific to wrapping a whole flux term.
+
+            Side effect of raw storage: with nothing left to freeze, this
+            model's default tangent is effectively full Newton (the
+            Picard/Newton switch is a no-op for GenericFluxModel).
+            """
             dim = inner_self._owning_model.dim
 
             # Accept shape (dim, 1) or (1, dim)
             if value.shape not in [(dim, 1), (1, dim)]:
                 raise ValueError(
-                    f"Flux must be a symbolic vector of length {dim}. " f"Got shape {value.shape}."
+                    f"Flux must be a symbolic vector of length {dim}. "
+                    f"Got shape {value.shape}."
                 )
 
-            # Flatten and validate
-            elements = [value[i] for i in range(dim)]
-            validated = []
-            for i, v in enumerate(elements):
-                flux_component = validate_parameters(
-                    rf"q_{{{i}}}", v, f"Flux component in x_{i}", allow_number=True
-                )
-                if flux_component is not None:
-                    validated.append(flux_component)
-
-            inner_self._flux = sympy.Matrix(validated).reshape(dim, 1)
+            inner_self._flux = sympy.Matrix(value).reshape(dim, 1)
             inner_self._reset()
 
     @property
@@ -2969,6 +2972,15 @@ class DarcyFlowModel(Constitutive_Model):
 
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):
+    # TODO(BUG): the CONSISTENT (Newton) tangent of this model is inconsistent
+    # with its residual when the anisotropy is active (eta_1 != eta_0): PETSc
+    # -snes_test_jacobian at bounded curvature reads ||J-Jfd||/||J|| ~ 2e-3-5e-3
+    # in developed flow where the isotropic control is FD-limited (~4e-6) — the
+    # dC/d(eps_II) director-coupled terms are missing or wrong, so TI "Newton"
+    # runs at Picard pace. Native-path evidence (no rotated machinery); the
+    # isotropic limit through this class is clean at rest but shares the defect
+    # once eta_1 differs. See issue #457 (incl. the checker-regularisation
+    # methodology: at 1e-12 the FD reference itself is invalid for power-law).
     r"""
     Transversely isotropic (anisotropic) viscous flow model.
 

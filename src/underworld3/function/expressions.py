@@ -1148,10 +1148,13 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
     @property
     def is_comparable(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_comparable'):
-            return self._sym.is_comparable
-        return True
+        """Never comparable: a UWexpression is a symbolic placeholder until it is
+        unwrapped, even when its current contents are numeric. Advertising the
+        contents' comparability made sympy's Max/Min try an immediate numeric
+        comparison and reach for Float internals (``_prec``) that a Symbol subclass
+        does not have (issue #415). ``False`` matches plain ``sympy.Symbol``
+        semantics: Max/Min stay unevaluated and resolve after unwrap/JIT."""
+        return False
 
     @property
     def is_extended_real(self):

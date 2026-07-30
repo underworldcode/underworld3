@@ -886,8 +886,8 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         return self._kdtree
 
-    def rbf_interpolate(self, new_coords, meth=0, p=2, verbose=False, nnn=None,
-                        rubbish=None, order=0, monotone=False):
+    def rbf_interpolate(self, new_coords, nnn=None, p=1, verbose=False,
+                        order=0, monotone=False):
         """Interpolate variable data to new coordinates using RBF.
 
         Uses inverse distance weighting with k-nearest neighbors to
@@ -904,18 +904,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         ----------
         new_coords : numpy.ndarray
             Target coordinates of shape ``(n_points, dim)``.
-        meth : int, optional
-            Interpolation method (reserved, currently unused).
-            TODO(BUG): issue #428 — ``meth`` and ``rubbish`` are dead
-            parameters, and ``tests/test_0505_rbf_swarm_mesh.py`` passes its
-            ``nnn`` into ``meth`` positionally, so that test silently
-            discards it.
+        nnn : int, optional
+            Number of nearest neighbours (default: 4 for 3D, 3 for 2D).
         p : float, optional
-            Power parameter for inverse distance weighting (default: 2).
+            Power parameter for inverse distance weighting on the actual
+            distance (default: 1, i.e. inverse distance).
         verbose : bool, optional
             Print progress information.
-        nnn : int, optional
-            Number of nearest neighbors (default: 4 for 3D, 3 for 2D).
         order : int, optional
             Polynomial reproduction order, 0 (default, bounded) or 1
             (constants and linears exact; requires ``nnn >= dim + 2``).
@@ -1358,7 +1353,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             # ``nnn=1`` — exact match for round-trip reads, sensible
             # nearest-neighbour fallback for cross-mesh reads.
             result.array[:, 0, :] = kdt.rbf_interpolator_local(
-                local_query, landed_D, 1, 2, verbose
+                local_query, landed_D, nnn=1, verbose=verbose
             )
         elif local_query.shape[0] > 0:
             # No saved data landed on this rank — leave query payload zero
