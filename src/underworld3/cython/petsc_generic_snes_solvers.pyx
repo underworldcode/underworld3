@@ -161,10 +161,36 @@ class SolverBaseClass(uw_object):
         # tell "user set mg" from "we set mg" and would clobber their tuned
         # smoother / coarse-solver options with the framework FMG bundle.
         self._pc_user_override = False
+        # Every multigrid option value UW3 itself has written on the managed block,
+        # keyed by full option name. This is what lets the bundle honour a
+        # user-set smoother while still managing the keys the user left alone: a
+        # present key whose value is not the one we recorded writing is theirs.
+        # Ownership is RECORDED, never inferred from the value — inference fails
+        # the moment a second internal writer touches the same key, which is how
+        # the `tolerance` and `strategy` setters defeated an earlier attempt (#477).
+        # Internal writers therefore go through _push_managed_option().
+        self._managed_pc_options = {}
 
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
         self._custom_mg = None
+
+    def _push_managed_option(self, key, value):
+        """Write a PETSc option UW3 owns, recording that we wrote it.
+
+        Use this for any option a solver sets on its own behalf that the multigrid
+        bundles also write (``utilities.multigrid_options``). A plain
+        ``self.petsc_options[key] = value`` is indistinguishable from a user's own
+        write, and the bundle would then back off from a key nobody asked for.
+        """
+        self.petsc_options[key] = value
+        # Key the record by the GLOBAL option name. `self.petsc_options` is a
+        # prefixed view (`Solver_N_`), but custom_mg._configure_pcmg reads the
+        # global database using the live PC's own full prefix — so an unqualified
+        # record makes every key look user-owned over there and the bundle
+        # silently stops applying.
+        self._managed_pc_options[self.petsc_options_prefix + key] = \
+            multigrid_options.option_string(value)
 
     @property
     def consistent_jacobian(self):
@@ -625,8 +651,18 @@ class SolverBaseClass(uw_object):
         # be configured from three places (#468). Coarse solve: the native
         # hierarchy is not rotated, so its coarse operator carries no inherited
         # null space and redundant+LU is right here.
+        # `_managed_pc_options` makes the bundle respect a key the USER set while
+        # still managing the ones they left alone. Before this, the bundle was
+        # applied wholesale on every rebuild and the only escape was the
+        # `_pc_user_override` latch above — which keys on `pc_type` ALONE, so a user
+        # who set (say) `mg_levels_ksp_max_it` had it silently discarded unless they
+        # also set `pc_type` to the value it already had. Explicit
+        # `preconditioner="fmg"` was worse: it skips the latch entirely, so the
+        # clearer the request the less control it carried.
         if want_fmg:
-            multigrid_options.geometric_mg_bundle().apply(opts, prefix)
+            multigrid_options.geometric_mg_bundle().apply(
+                PETSc.Options(), self.petsc_options_prefix + prefix,
+                owned=self._managed_pc_options)
             self._pc_managed_value = "mg"
         else:
             if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
@@ -637,7 +673,9 @@ class SolverBaseClass(uw_object):
                     f"mesh with refinement >= 1 to enable geometric multigrid.",
                     stacklevel=2,
                 )
-            multigrid_options.gamg_bundle().apply(opts, prefix)
+            multigrid_options.gamg_bundle().apply(
+                PETSc.Options(), self.petsc_options_prefix + prefix,
+                owned=self._managed_pc_options)
             self._pc_managed_value = "gamg"
 
     def _enforce_galerkin_for_geometric_mg(self):
@@ -2944,16 +2982,16 @@ class SNES_Scalar(SolverBaseClass):
 
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option("pc_type", "gamg")
+        self._push_managed_option("pc_gamg_type", "agg")
+        self._push_managed_option("pc_gamg_repartition", True)
+        self._push_managed_option("pc_mg_type", "additive")
+        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
+        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         self.petsc_options["snes_rtol"] = 1.0e-4
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -3857,14 +3895,14 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self._push_managed_option("pc_type", "gamg")
+        self._push_managed_option("pc_gamg_type", "agg")
+        self._push_managed_option("pc_gamg_repartition", True)
+        self._push_managed_option("pc_mg_type", "additive")
+        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
+        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -4869,14 +4907,14 @@ class SNES_MultiComponent(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["pc_type"] = "gamg"
-        self.petsc_options["pc_gamg_type"] = "agg"
-        self.petsc_options["pc_gamg_repartition"]  = True
-        self.petsc_options["pc_mg_type"]  = "additive"
-        self.petsc_options["pc_gamg_agg_nsmooths"] = 2
+        self._push_managed_option("pc_type", "gamg")
+        self._push_managed_option("pc_gamg_type", "agg")
+        self._push_managed_option("pc_gamg_repartition", True)
+        self._push_managed_option("pc_mg_type", "additive")
+        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self.petsc_options["mg_levels_ksp_max_it"] = 3
-        self.petsc_options["mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option("mg_levels_ksp_max_it", 3)
+        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -5736,13 +5774,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_{v_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{v_name}_ksp_rtol"]  = self._tolerance * 0.1
-        self.petsc_options[f"fieldsplit_{v_name}_pc_type"]  = "gamg"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_type"]  = "agg"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_repartition"]  = True
-        self.petsc_options[f"fieldsplit_{v_name}_pc_mg_type"]  = "additive"
-        self.petsc_options[f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_max_it"] = 3
-        self.petsc_options[f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_type", "gamg")
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_type", "agg")
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_repartition", True)
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_mg_type", "additive")
+        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths", 2)
+        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_max_it", 3)
+        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits", None)
 
         # Create this dict
         self.fields = {}
@@ -6338,16 +6376,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # preconditioning and weakly-indefinite coarse operators; issue #147).
         self.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_velocity_ksp_max_it"] = 200
-        self.petsc_options[f"fieldsplit_velocity_pc_type"]  = "gamg"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_type"]  = "agg"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_repartition"]  = True
+        self._push_managed_option(f"fieldsplit_velocity_pc_type", "gamg")
+        self._push_managed_option(f"fieldsplit_velocity_pc_gamg_type", "agg")
+        self._push_managed_option(f"fieldsplit_velocity_pc_gamg_repartition", True)
         # NOTE: "kaskade" here diverges from the "additive" set by __init__'s
         # velocity block — a long-standing (possibly unintentional) difference.
         # Do not change without benchmarking (READ-23 kept the value as-is).
-        self.petsc_options[f"fieldsplit_velocity_pc_mg_type"]  = "kaskade"
-        self.petsc_options[f"fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
-        self.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-        self.petsc_options[f"fieldsplit_velocity_mg_levels_ksp_converged_maxits"] = None
+        self._push_managed_option(f"fieldsplit_velocity_pc_mg_type", "kaskade")
+        self._push_managed_option(f"fieldsplit_velocity_pc_gamg_agg_nsmooths", 2)
+        self._push_managed_option(f"fieldsplit_velocity_mg_levels_ksp_max_it", 3)
+        self._push_managed_option(f"fieldsplit_velocity_mg_levels_ksp_converged_maxits", None)
 
 
 

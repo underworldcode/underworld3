@@ -49,8 +49,30 @@ dict so it can drop them again after ``setUp``)::
 
 from typing import NamedTuple
 
-__all__ = ["MGBundle", "geometric_mg_bundle", "gamg_bundle",
+__all__ = ["MGBundle", "geometric_mg_bundle", "gamg_bundle", "option_string",
            "GEOMETRIC_MG_COARSE_SOLVERS"]
+
+
+def option_string(value):
+    """How PETSc stores ``value`` in its options database, so a value UW3 wrote can
+    be compared against what is in there now. ``None`` is a bare flag (reads back as
+    an empty string); booleans lower-case."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def _user_owns(opts, name, owned):
+    """Was ``name`` set by someone other than UW3's own option writers?
+
+    True when the key is present and its current value is not the one UW3 last
+    recorded writing. ``owned is None`` disables the check (the caller owns the
+    prefix outright)."""
+    if owned is None or not opts.hasName(name):
+        return False
+    return opts.getString(name) != owned.get(name)
 
 
 #: Coarse-solve variants of the geometric bundle. ``"redundant"`` (redundant+LU)
@@ -71,17 +93,45 @@ class MGBundle(NamedTuple):
     settings: dict
     stale: tuple
 
-    def apply(self, opts, prefix=""):
+    def apply(self, opts, prefix="", owned=None):
         """Write this bundle into ``opts`` (a ``PETSc.Options``) under ``prefix``.
 
         ``prefix`` is the managed block's own prefix — ``""`` for a top-level PC,
         ``"fieldsplit_velocity_"`` for the Stokes velocity sub-block — and is
         applied on top of whatever prefix ``opts`` itself carries.
+
+        Parameters
+        ----------
+        owned : dict or None
+            Bookkeeping of the option values UW3 itself has written, keyed by full
+            option name. A key that is already present but whose current value is
+            **not** what UW3 last wrote was set by the user, and is left alone —
+            both here and in the stale-key clear, because it is not ours to remove.
+            Pass ``None`` to write unconditionally, which is right when the caller
+            owns the whole prefix (the rotated path builds a fresh, per-solve
+            prefix no user can address).
+
+            Ownership is *recorded*, never inferred from the value. Guessing by
+            value fails as soon as a second internal writer touches the same key —
+            which is exactly how the ``tolerance`` and ``strategy`` setters defeated
+            an earlier attempt (#477). Every internal writer of a bundle key goes
+            through this bookkeeping (``SolverBaseClass._push_managed_option``), so
+            anything unrecorded is the user's by construction.
         """
         for key, value in self.settings.items():
-            opts.setValue(prefix + key, value)
+            name = prefix + key
+            if _user_owns(opts, name, owned):
+                continue
+            opts.setValue(name, value)
+            if owned is not None:
+                owned[name] = option_string(value)
         for key in self.stale:
-            opts.delValue(prefix + key)
+            name = prefix + key
+            if _user_owns(opts, name, owned):
+                continue
+            opts.delValue(name)
+            if owned is not None:
+                owned.pop(name, None)
 
 
 def _geometric_mg_settings(coarse):

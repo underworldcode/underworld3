@@ -201,6 +201,62 @@ def test_rotated_picks_up_a_mesh_owned_hierarchy():
     assert s._rotated_freeslip_info["velocity_pc_type"] == "mg"
 
 
+def _velocity_mg_config(s):
+    """(smoother ksp, smoother max_it, coarse pc) off the live velocity sub-PC."""
+    pc = s.snes.getKSP().getPC()
+    pc.setUp()                                    # MUST precede getFieldSplitSubKSP
+    vpc = pc.getFieldSplitSubKSP()[0].getPC()
+    assert vpc.getType() == "mg" and vpc.getMGLevels() > 1, (
+        f"expected geometric MG on the velocity block, got {vpc.getType()}")
+    smoother = vpc.getMGSmoother(vpc.getMGLevels() - 1)
+    return (smoother.getType(), smoother.getTolerances()[3],
+            vpc.getMGCoarseSolve().getPC().getType())
+
+
+@pytest.mark.parametrize("preconditioner", [None, "fmg"])
+def test_user_set_bundle_keys_are_honoured(preconditioner):
+    """A user who sets a bundle key must get it, and must keep the managed values
+    for the keys they left alone — per key, not all-or-nothing.
+
+    The bundle used to be applied wholesale on every rebuild. The only escape was
+    the ``_pc_user_override`` latch, which keys on ``pc_type`` ALONE, so setting
+    ``mg_levels_ksp_max_it`` was silently discarded unless the user also set
+    ``pc_type`` to the value it already had. Explicit ``preconditioner="fmg"`` was
+    worse — it skips that latch entirely, so the clearer the request the less
+    control it carried, which is why both modes are parametrised here.
+    """
+    mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=2 * RES, qdegree=3, refinement=1)
+    s = _stokes(mesh, f"u{'f' if preconditioner else 'a'}", rotated=False)
+    if preconditioner is not None:
+        s.preconditioner = preconditioner
+    # set TWO of the bundle's keys and leave the rest to the framework
+    s.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 6
+    s.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
+    s.solve()
+    s.solve()                                     # a rebuild must not clobber it
+
+    smoother, max_it, coarse = _velocity_mg_config(s)
+    assert max_it == 6, "user-set smoother iteration count was overwritten"
+    assert coarse == "svd", "user-set coarse solver was overwritten"
+    # ...and the key the user did NOT set still carries the measured default
+    assert smoother == "gmres", (
+        "respecting one bundle key must not abandon the rest of the bundle")
+
+
+def test_unset_bundle_keys_keep_the_managed_defaults():
+    """The control for the test above: with nothing set, the whole managed bundle
+    applies. Without this, 'user-set keys are honoured' could pass trivially by
+    never applying the bundle at all — which is exactly how the first attempt at
+    this failed (the routes silently reverted to GAMG)."""
+    mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=2 * RES, qdegree=3, refinement=1)
+    s = _stokes(mesh, "dflt", rotated=False)
+    s.solve()
+    s.solve()
+    assert _velocity_mg_config(s) == ("gmres", 4, "redundant")
+
+
 def test_rotated_fmg_survives_repeated_newton_increments():
     """The rotated path applies its bundle under a per-solve options prefix and
     then drops the keys again, so the global database stays bounded under
