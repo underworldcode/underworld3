@@ -166,6 +166,31 @@ def test_labels_survive_and_remain_usable():
     assert u.array[:, 0, 0].max() > 0.0
 
 
+def test_bulk_cell_labels_do_not_lock_interior_edges():
+    """A bulk region label must not be mistaken for an interface.
+
+    Regression. ``Elements`` labels every cell of a gmsh mesh, and the
+    ``uwnvb_bisect`` transform propagates a parent's labels to its children — so
+    after refinement the new *interior edges* carry ``Elements`` too. Locking
+    every labelled point therefore locked 50.6 % of interior edges on a plain box
+    mesh, and repair silently did almost nothing on every real UW3 mesh while the
+    hand-built fixtures in this file still looked fine.
+
+    The discriminator: a label value carried by a **cell** describes a volume, not
+    an interface. Every genuine boundary or interface label marks zero cells.
+    """
+    dm = _refined_dm()
+    eS, eE = dm.getDepthStratum(1)
+    interior = [e for e in range(eS, eE) if len(dm.getSupport(e)) == 2]
+    locked = reconnect._labelled_points(dm)
+    pStart, _pEnd = dm.getChart()
+    n_locked = sum(1 for e in interior if locked[e - pStart])
+
+    assert n_locked == 0, (
+        f"{n_locked}/{len(interior)} interior edges are locked on a mesh with no "
+        f"interfaces; a bulk cell label is being read as one")
+
+
 def test_labelled_interior_edges_are_never_flipped():
     """A labelled interior edge is an interface and must survive untouched.
 

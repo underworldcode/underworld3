@@ -54,6 +54,17 @@ precisely from repairing connectivity the refinement did not create — but it d
 mean a deliberately hand-built triangulation may be re-connected away from the
 refined region, which is one reason the pass is opt-in.
 
+Edges carrying an interface label are never flipped, which is what would protect a
+fault or a material boundary that is *represented in the mesh*. Note that the
+standard adapt-on-top fault workflow does not do that: there a ``Surface`` is a
+distance field driving a refinement metric and a constitutive weak zone, and it
+labels no mesh edge at all. Repair therefore reconnects freely across such a weak
+zone — measured to be harmless, since the weak zone is a smooth function of
+distance rather than a discontinuity across a facet, and a sheared weak-zone Stokes
+solve gives the same vrms to four significant figures with and without repair. A
+fault that must not be crossed has to be a labelled interface, not a distance
+field.
+
 Parallel: the frozen seam
 -------------------------
 A flip cannot be a :c:type:`DMPlexTransform` — a child's cone may only reference
@@ -199,14 +210,28 @@ def _shared_points(dm):
 
 
 def _labelled_points(dm):
-    """Chart-indexed flags for points carrying any non-topological label value.
+    """Chart-indexed flags for points belonging to an **interface** label.
 
-    A labelled interior edge is an interface — a boundary, a region join, or a
-    registered ``Surface`` — and must never be flipped, since that is what
-    protects faults and material boundaries. Over-locking is safe: it declines
-    repair, it cannot corrupt anything.
+    A labelled interior edge is an interface — a named boundary, or a registered
+    surface — and must never be flipped, since that is what protects a fault or a
+    material boundary from being reconnected across.
+
+    A label value carried by a **cell** is excluded, because it describes a
+    *volume* and not an interface. That distinction is load-bearing rather than
+    fastidious. ``Elements`` labels every cell of a gmsh mesh, and the
+    ``uwnvb_bisect`` transform propagates a parent's labels to its children, so
+    after refinement every new *interior edge* carries ``Elements`` as well.
+    Treating any labelled point as an interface therefore locked 81 % of the
+    interior edges of a plain refined box, and repair quietly did almost nothing
+    on every real UW3 mesh — while hand-built fixtures, which have no such label,
+    kept working. Over-locking is safe in the sense that it cannot corrupt a mesh,
+    but it is not safe in the sense that matters: it disables the feature silently.
+
+    A region *join* is handled separately, by :func:`_cell_regions`, which
+    compares the two cells rather than reading the edge.
     """
     pStart, pEnd = dm.getChart()
+    cS, cE = dm.getHeightStratum(0)
     flag = np.zeros(pEnd - pStart, dtype=bool)
     for i in range(dm.getNumLabels()):
         if dm.getLabelName(i) in _TOPOLOGY_LABELS:
@@ -219,9 +244,12 @@ def _labelled_points(dm):
             points = label.getStratumIS(int(val))
             if points is None:
                 continue
-            idx = points.getIndices()
-            if len(idx):
-                flag[np.asarray(idx, dtype=np.int64) - pStart] = True
+            idx = np.asarray(points.getIndices(), dtype=np.int64)
+            if not len(idx):
+                continue
+            if ((idx >= cS) & (idx < cE)).any():
+                continue                 # a volume label, not an interface
+            flag[idx - pStart] = True
     return flag
 
 
