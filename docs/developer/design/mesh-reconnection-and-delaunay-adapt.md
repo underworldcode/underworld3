@@ -373,24 +373,81 @@ premise.
    prolongation applies unchanged, and the geometric route already handles
    everything else.
 
-The **repair pass** is a separate job with its own handoff plan:
-`~/.claude/plans/parallel-mesh-reconnection-flips.md`. Scoped as
-*bisection-artefact repair* rather than general mesh improvement: the only badly
-shaped cells are those split at an edge they did not nominate, so they all lie in
-the star of a newly inserted vertex and are known without search. The plan tiers
-the response — strengthen the edge **selection** first (no new operator, and the
-existing parallel machinery already covers it), then 2-D Lawson restricted to
-new-vertex stars, then 3-D edge removal on the same stars only if a deficit
-remains.
-
-Two corrections it carries, which matter for anyone reading Findings 5 and 4
-above: the 3-D flip verdict is **provisional**, because only 2↔3/3↔2 were tested
-— the weakest operators in the family; and the seam-cost measurement froze a
-fraction of *all* cells rather than of repair sites, so it is pessimistic for the
-wrong reason.
-
 Deferred, explicitly not blocking: anisotropic (metric) predicate; edge collapse
 for coarsening.
+
+## Finding 8 — the repair pass, and three corrections to the findings above
+
+Landed 2026-07-30 as `mesh.adapt(engine="edge_split", repair=True)`
+(`utilities/reconnect.py`). Full record in
+`~/.claude/plans/parallel-mesh-reconnection-flips.md`; raw numbers in
+`~/+Simulations/mesh_reconnection_study/results_production_repair.txt`.
+
+**Delaunay is the wrong acceptance criterion — in 2-D as well as 3-D.** Finding 3
+and the recommendation above treat "flip to Delaunay" as settled in 2-D because
+Lawson flips reach the unique Delaunay triangulation. The *operator* question is
+settled; the *criterion* question was not. Delaunay maximises the **minimum**
+angle and says nothing about the maximum, while the P1 interpolation bound depends
+on the **maximum** angle (Babuška–Aziz). Measured: flipping a gmsh-refined mesh
+towards Delaunay **raised** the 99th-percentile maximum angle from 126.8° to
+129.3°, because gmsh optimises element shape rather than the empty-circle property
+and its triangulation is locally non-Delaunay exactly where it chose a
+better-shaped configuration. Since every UW3 mesh starts from gmsh, the production
+pass gates on the angle directly, which makes it monotone — it can decline, but it
+cannot degrade a mesh.
+
+**The "−14 % interpolation error at equal cells" in step 2 above was a placement
+effect, not a connectivity effect.** In the prototype the flip pass ran *inside*
+the refinement loop, so the repaired arm had a different point set (a flip changes
+which edge is longest, hence where the next vertex lands), and the cell-count
+matching bisected the size field separately per arm. Isolated properly — repair
+after refinement is cell-count neutral, since two cells become two cells and no
+vertex is inserted — connectivity alone is worth **≤3 %** of core error. Run
+between passes, the ~20 % is real and belongs to **placement**. That is Finding 2's
+conclusion restated in the opposite direction, and it applies to reconnection's own
+benefit as much as to centroid refinement's failure.
+
+**A flip preserves the point chart, which collapses the parallel design.** Finding
+1 stands — a flip is not a `DMPlexTransform`, so the DM must be rebuilt — but the
+rebuild keeps the **identical point numbering**, because a 2-D flip adds and
+removes no points: the quad keeps its four vertices, five edges and two cells, and
+only the diagonal edge's cone and the two cell cones change. The point star-forest
+therefore transfers verbatim, labels transfer by point id and coordinates transfer
+unchanged. The "reconstruct the star-forest by matching untouched seam
+coordinates" stage in *Non-negotiables* is unnecessary. Two things not to
+re-derive: surgery on the source DM is impossible (`DMPlexSymmetrize` refuses to
+run on a plex that already has supports, and nothing outside `DMDestroy` frees
+them); and a triangle's cone convention is that closure vertex order is
+anticlockwise, cone entry `i` is the edge joining closure vertices `i` and `i+1`
+mod 3, and its orientation is `0` when the edge's own cone runs that way and `-1`
+when reversed — getting it wrong does not raise, it silently yields wrong geometry.
+
+What the pass is actually for is **shape on a poor base**: 99th-percentile maximum
+angle 156.0° → 115.1° on an aspect-ratio-4 grid and 175.5° → 118.0° on a
+non-Delaunay one, with slivers below q=0.1 going 3.84 % → 0.00 %; on a gmsh base,
+124.7° → 120.5° and little else. The aspect-ratio-4 case is the argument for
+building it at all: that base has a maximum angle of **90°**, ideal for P1, and
+edge-split refinement *degrades* it to 156°, because bisecting the longest edge of
+a stretched right triangle repeatedly manufactures obtuse cells. Refinement creates
+the problem; only reconnection removes it.
+
+Two further corrections. **Tier 0 — Rivara terminal-edge selection — was measured
+and rejected**: strict terminal-only selection stalls (a marked cell's
+longest-edge-propagation path walks towards *longer* edges, where the size field
+asks for less, so the terminal edge it reaches is nominated by nobody), and
+completing it with a LEPP walk gives core error identical to the existing veto rule
+while reintroducing propagation. Its apparent 33 % win was an artefact of the wedge
+size field, whose error window is far wider than the region it refines — use a
+flat-core field and a core-only window. And the **seam cost is small and shrinks**:
+frozen repair sites are 3.5 % at np=8 and 56k cells, halving with every halving of
+the target size, because repair sites scale with the refined band while seam
+crossings stay O(1). The 99th-percentile maximum angle recovers fully under a
+frozen seam; the absolute maximum does not.
+
+`repair=True` is opt-in because it gives up the one property `edge_split` has and
+it does not: the refined mesh is no longer **partition-independent**, since which
+cavities may be flipped depends on where the partitioner drew the seam. Conformity,
+orientation, volume, labels and the star-forest stay exact at every rank count.
 
 ## Open questions / caveats
 
