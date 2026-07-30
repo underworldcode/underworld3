@@ -252,6 +252,89 @@ Two things worth carrying forward from doing it:
   second time in two sessions that the defaults arm caught an ownership regression
   (the first was #477's). Do not run an ownership change without one.
 
+---
+
+## Phase 3 (expanded 2026-07-30): are the solver's own PROPERTIES live?
+
+Phases 1 and 2 checked option **keys** and fallback **branches**. They missed
+`solver.strategy`, which validated three values and configured one. That is a third
+axis, and the expansion covers it: for each solve-configuring property, set two
+distinct values and see whether anything observable moves — round-trip, options under
+the solver prefix, assembled `J` / `Pmat`, `|u|`, `|p|`, and iteration counts.
+
+Harness: `property_inertness.py` (sweep) and `property_inertness_fair.py` (retest).
+
+### The instrument was wrong three times before it was right
+
+This is the most transferable part of the expansion. Each flaw produced a confident,
+wrong answer:
+
+1. **Options compared across different solver prefixes.** Every probe builds a fresh
+   solver, so `Solver_7_` vs `Solver_8_` made every pair "differ" and *everything*
+   read live — including the negative control. Fix: key by the suffix after
+   `petsc_options_prefix`.
+2. **Options read before the solve.** Most configuration is written at `_build`,
+   during the first solve, so a pre-solve snapshot reported `strategy` and
+   `preconditioner` inert when they are not.
+3. **Blind observables.** A *pressure* nullspace need not move the velocity; a
+   *preconditioner* flag need not move the answer at all. Three of four "still inert"
+   verdicts were artefacts of measuring `|u|` alone. Adding `|p|` and iteration counts
+   cleared them.
+
+**The negative control caught (1).** A synthetic property that provably does nothing
+must come back inert; when it came back live, the instrument was measuring noise. No
+sweep of this kind is worth reading without one.
+
+### Validation: it rediscovered two known defects unprompted
+
+Run against `development`, the sound instrument independently reported inert:
+
+- **`solver.strategy`** — accepted three values, configured one (filled in #471);
+- **`preconditioner` on a single-field solver** — the #478 gate.
+
+Both are known-true, which is what makes the negative results below trustworthy.
+
+### Cleared — live once tested where they can matter
+
+`tolerance`, `penalty`, `saddle_preconditioner`, `preconditioner` (Stokes),
+`consistent_jacobian` (live on a *nonlinear* problem: nonlinear iterations 10 → 5),
+`petsc_use_nullspace` (needs an actual velocity null mode — free slip),
+`petsc_use_pressure_nullspace` (live on `|p|`, invisible in `|u|`),
+`constant_nullspace`, `petsc_use_constant_nullspace`, `smoothing`,
+`smoothing_length`.
+
+### One unresolved: `multiplier_schur_pc` — verify or remove
+
+It **is** read (it swaps the multiplier block's Pmat term to the 1/μ Schur mass), so
+it is not dead code. But no observable moved for either value: `|u|`, `|p|`, outer
+KSP iterations and the assembled `|Pmat|` were identical at constant viscosity and at
+η contrast 1e4 and 1e6 — including in a case where the solve *failed* identically
+both ways. And `|Pmat|` equalled `|J|` exactly, in both settings.
+
+Not filed as a dead flag, because it is read and the negative could still be a
+problem too easy to discriminate. Filed as **verify-or-remove**: either produce the
+case where it earns its keep, or delete it. Note `Stokes_Constrained` deliberately
+*rejects* `saddle_preconditioner` ("the Schur preconditioner is built
+automatically"), so that class owns its Pmat by design — which is the context this
+flag lives in.
+
+### A property that gets it right
+
+`constant_nullspace = True` on a Dirichlet problem raises:
+
+> `constant_nullspace=True is only valid for pure-Neumann scalar problems, but
+> essential (Dirichlet) boundary conditions are present on: Bottom, Left, Right, Top.
+> Remove them or set constant_nullspace=False.`
+
+Names the offending boundaries and the remedy. This is the shape the other flags
+should have, and the opposite of the defect class this audit is about.
+
+### Minor
+
+`solver.penalty` returns a sympy expression rather than the number assigned, so
+`float(solver.penalty)` raises. Consistent with UW3's mathematical-object pattern,
+but worth a docstring note.
+
 ## Not covered
 
 Parallel (np>1) — the sweep is serial. No finding here has a mechanism that looks
