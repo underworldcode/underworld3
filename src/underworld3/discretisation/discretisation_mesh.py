@@ -6915,12 +6915,22 @@ class Mesh(Stateful, uw_object):
             ``"sbr"`` (default) is the nested adapt-on-top path (the refinement
             engine is then chosen by ``engine``). ``"mmg"`` is a **deprecated shim**
             that forwards to :meth:`remesh` (in-place, returns ``self``).
-        engine : {"nvb", "sbr"}, optional
+        engine : {"nvb", "sbr", "edge_split"}, optional
             Advanced selector for the nested refinement engine (ignored when
             ``adapter="mmg"``). Default ``"nvb"`` — graded newest-vertex
             bisection; ``"sbr"`` is longest-edge bisection (uniform patch,
             still the right choice when a uniform-finest MG patch is wanted).
             See above.
+
+            ``"edge_split"`` splits the **longest edge** of every cell coarser
+            than the metric asks for, and needs no conforming closure at all
+            because splitting an edge divides every cell incident on it at the
+            same new vertex. Refinement therefore stays inside the marked region
+            instead of a bounded halo around it, at the cost of giving up the
+            similarity-class bound that makes bisection shape-safe at arbitrary
+            depth. It marks on the cell **diameter** rather than
+            ``(dim!·vol)^(1/dim)``; see
+            :mod:`underworld3.utilities.edge_split`.
         verbose : bool
 
         Returns
@@ -6990,8 +7000,9 @@ class Mesh(Stateful, uw_object):
             return self
         if adapter != "sbr":
             raise ValueError(f"adapter must be 'sbr' or 'mmg', got {adapter!r}")
-        if engine not in ("sbr", "nvb"):
-            raise ValueError(f"engine must be 'sbr' or 'nvb', got {engine!r}")
+        if engine not in ("sbr", "nvb", "edge_split"):
+            raise ValueError(
+                f"engine must be 'sbr', 'nvb' or 'edge_split', got {engine!r}")
 
         return self._adapt_nested(
             metric_field, max_levels=max_levels, node_budget=node_budget,
@@ -7404,6 +7415,83 @@ class Mesh(Stateful, uw_object):
                     fs, fe = current_dm.getHeightStratum(0)
                     uw.pprint(0, f"[adapt] nvb pass {level}: marked {len(marked)} "
                                  f"-> {fe - fs} cells (rank-local)")
+            if not level_dms:
+                current_dm = base_finest.clone()
+        elif engine == "edge_split":
+            # Longest-edge refinement with NO conforming closure: splitting an
+            # edge divides every cell incident on it at the same new vertex, so
+            # there is no hanging node to repair and refinement cannot escape the
+            # marked region. Marking is on the cell DIAMETER, not (dim!·vol)^(1/dim)
+            # — for bisection the two shrink together, but this engine shortens
+            # the longest edge directly and the volume proxy would report the
+            # target met while the mesh is still coarse across the feature.
+            from underworld3.utilities import edge_split
+            # Independence caps a pass (no cell may carry two split edges), so a
+            # generation satisfies only some marked cells and the loop re-marks.
+            # 3D needs more passes than 2D: an edge is shared by more cells there,
+            # so fewer edges are independent per pass.
+            n_pass = 8 * dim * max_levels
+            current_dm = base_finest
+            for level in range(n_pass):
+                centroids, _proxy_h, cs = cell_geometry(current_dm)
+                if centroids.shape[0]:
+                    M = numpy.clip(eval_metric(centroids), 1e-30, None)
+                    h_target = 1.0 / numpy.sqrt(M)
+                    diameter = edge_split.cell_diameters(current_dm)
+                    sel = numpy.where(diameter > h_target)[0]
+                    if node_budget is not None and sel.size > node_budget:
+                        order = numpy.argsort(M[sel])[::-1]
+                        sel = sel[order[:node_budget]]
+                else:
+                    sel = numpy.empty(0, dtype=int)   # rank owns no cells
+
+                marked = [int(cs + j) for j in sel]
+                _coarse_for_P = current_dm
+                current_dm, n_split = edge_split.bisect_longest_edges(
+                    current_dm, marked)
+                # n_split is global, so this stop is collective without a further
+                # reduction — a rank with nothing marked still enters the split.
+                if n_split == 0:
+                    if verbose:
+                        uw.pprint(0, f"[adapt] edge_split pass {level}: "
+                                     f"nothing to refine")
+                    break
+                markers_per_level.append(marked)
+                # Every inserted vertex is the exact float midpoint of a parent
+                # edge, so the exact parent/child prolongation applies unchanged.
+                # Capture it BEFORE the snap and any relaxation move it out of
+                # reach of coordinate matching (#425).
+                from underworld3.utilities.nvb import (
+                    nested_prolongation_from_dms as _nested_from_dms,
+                    nested_cell_parents as _nested_parents)
+                _vP = _nested_from_dms(_coarse_for_P, current_dm)
+                _nested_Ps.append(_vP)
+                _nested_parent_cells.append(
+                    None if _vP is None
+                    else _nested_parents(_coarse_for_P, current_dm, _vP))
+                snap_level_boundaries(current_dm)
+                if _relax_mode == "per-generation":
+                    _mg = Mesh(current_dm.clone(),
+                               simplex=self.dm.isSimplex(),
+                               coordinate_system_type=(
+                                   self.CoordinateSystem.coordinate_type),
+                               qdegree=self.qdegree,
+                               boundaries=self.boundaries, verbose=False)
+                    _mg.relax(_relax_metric, **(relax_kwargs or {}))
+                    current_dm.setCoordinatesLocal(
+                        _mg.dm.getCoordinatesLocal())
+                level_dms.append(current_dm)
+                if verbose:
+                    fs, fe = current_dm.getHeightStratum(0)
+                    uw.pprint(0, f"[adapt] edge_split pass {level}: split "
+                                 f"{n_split} edge(s) -> {fe - fs} cells "
+                                 f"(rank-local)")
+            else:
+                # Ran out of passes with cells still coarser than the metric.
+                # Silence here would look like a satisfied size field.
+                uw.pprint(0, f"[adapt] edge_split: stopped at the {n_pass}-pass "
+                             f"cap with the metric not yet satisfied; raise "
+                             f"max_levels if the feature needs to be finer.")
             if not level_dms:
                 current_dm = base_finest.clone()
         elif engine == "nvb":
