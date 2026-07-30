@@ -175,8 +175,157 @@ def validate_unknowns_sharing(multi_material_model):
             assert model.Unknowns.DFDt is reference_unknowns.DFDt, \
                 f"Model {i} $D\mathbf{{F}}/Dt$ not shared - stress history will be wrong"
 ```
-- ⚠️ Preconditioner selection missing
+- ⚠️ Preconditioner *selection* is partly covered — see "Choosing the Krylov method for a fieldsplit sub-solve" below; multigrid and Schur preconditioner choice is still undocumented
 - Could benefit from optimization examples
+
+## Choosing the Krylov method for a fieldsplit sub-solve
+
+This choice gets re-argued periodically. The confusion is that it looks like three
+separate questions — flexible or not, `preonly` or not, how tight — when in fact the
+first and third are **two halves of one design decision**, and only the middle one is
+independent.
+
+### The design, and where it comes from
+
+The Stokes configuration descends from the Citcom solver of Moresi & Solomatov
+(1995). Its central choice is that the **inner solves are deliberately inexact** —
+you do not solve the velocity block exactly to apply the Schur complement, because
+that would be ruinous and is unnecessary. Two consequences follow, and they must
+hold together:
+
+1. **Because the inner solves are inexact, the search directions are perturbed, so
+   the outer/Schur Krylov must be flexible** (`fgmres` or similar). A non-flexible
+   method assumes a fixed preconditioner; its residual recurrence is invalidated by
+   a search direction that drifts.
+2. **Inexact is not unbounded.** The inner solves must still converge to *well
+   below* the final tolerance required of the outer solve. That margin is what the
+   `0.033` and `0.1` factors encode — they are a safety margin, not a tuned constant.
+
+Flexibility buys tolerance of inexactness; the margin bounds how inexact. Neither
+works without the other, which is why arguing them separately never settles.
+
+```{note} Guardrail policy
+Defaults err on the side of robust generality. A default that is slower but
+survives configurations nobody has tested yet is the right default; loosening it is
+the caller's decision and the caller's risk.
+```
+
+### Axis 1 — flexible or not (`fgmres` vs `gmres` / `cg` / `fcg`)
+
+Settled, and settled by the design above: the inner solves are inexact by
+construction, so the outer and Schur Krylov methods must be flexible. The question
+is **is the preconditioner stationary?**, not whether the operator is symmetric.
+
+The velocity block of Stokes *is* SPD, so `cg` is admissible on symmetry grounds.
+It still fails, because GAMG with `mg_levels_ksp_converged_maxits` performs a
+variable number of smoothing iterations, making the preconditioner application
+non-linear. `cg`/`fcg` residual recurrences and standard `gmres` cannot accommodate
+that. FGMRES is right-preconditioned by construction and can.
+
+Settled empirically in [#147](https://github.com/underworldcode/underworld3/issues/147)
+(spherical Kramer `case1`, free-slip Nitsche, Gadi at np=144, cellsize 1/32):
+`fcg` reported an indefinite matrix / `DIVERGED_PC_FAILED`; `gmres` failed with a
+residual-recursion mismatch; the same configuration converged on macOS, so this is
+a robustness cliff exposed by scale, not a formulation error. The rationale is
+recorded inline at `petsc_generic_snes_solvers.pyx` (velocity sub-solve block).
+
+**Default: `fgmres` on both sub-solves.** Anything non-flexible is only safe if you
+can show your preconditioner is stationary, and ours generally is not.
+
+### Axis 2 — `preonly` or an iterative wrapper
+
+This is not a Krylov-taste question at all. It is **positional**: is this KSP a
+*preconditioner application*, or an *operator inverse*?
+
+- **Top-level PC** (scalar and single-field vector solvers, empty
+  `_pc_option_prefix`): the multigrid *is* the preconditioner and an outer Krylov
+  cleans up after it. One cycle per application is a legitimate design.
+- **Velocity block under `pc_fieldsplit_schur_fact_type=full`**: `PCFieldSplit`
+  forms `S = A₁₁ − A₁₀ A₀₀⁻¹ A₀₁` and applies `A₀₀⁻¹` *through this KSP*. It is no
+  longer preconditioning anything — it **defines the operator the pressure Krylov
+  iterates against**. `preonly` there does not degrade conditioning; it changes
+  which system is being solved, to `S̃ ≠ S`, while the 1/μ pressure mass still
+  preconditions `S`.
+
+The failure is quiet. Measured on the rotated free-slip path (annulus, transversely
+isotropic, weak plane reaching the constrained boundary, η₁/η₀ = 1e-3), the pressure
+residual under `preonly` falls 4.4e4 in ~16 iterations and then **stagnates at a
+floor ≈ 3.1e-7**, burning the remaining 184 iterations of its cap on every outer
+iteration: 9 outer iterations and 2.77 s, against 1 outer, 17 pressure iterations
+and 0.67 s once the same multigrid is wrapped in FGMRES. The isotropic control moves
+identically (5 → 1 outer), so this is the Schur application and not the anisotropy.
+
+Note the operator is *not* moving between applications — applying the Schur operator
+twice to the same vector is bitwise identical under both settings. `S̃` is a fixed
+linear operator, just the wrong one. (Why the floor sits where it does is not
+isolated; a range/null-space inconsistency between `S̃` and the constant-pressure
+null space attached to `S` is the obvious suspect.)
+
+**Rule: `preonly` is fine as a preconditioner application and never fine as an
+inverse underneath a Schur complement.** Multigrid is an excellent preconditioner;
+it cannot be the whole solve when a Schur complement is applied through it.
+
+In the terms of the design above, `preonly` is the degenerate case of axis 3: it has
+no tolerance at all, so there is no margin below the outer solve for the flexible
+outer Krylov to work with. Flexibility tolerates inexactness; it cannot manufacture
+a margin that was never there. That is exactly the stagnation floor measured above.
+
+### Axis 3 — how far below the outer tolerance the inner solves must go
+
+Not a free parameter. The invariant from the design above is that **every inner
+solve reaches well below the tolerance demanded of the outer solve**; the only
+judgment is how much margin, and the guardrail policy decides that.
+
+The failure this catches is concrete. The rotated free-slip path ran its outer KSP
+at `rtol = tolerance` and its pressure sub-solve *also* at `rtol = tolerance` — no
+margin whatsoever, the inner solve asked to be no better than the answer it feeds.
+That is the invariant broken outright rather than a tuning disagreement.
+
+Loosening the velocity sub-solve likewise does not degrade gracefully — it walks
+back toward the `preonly` failure above:
+
+| velocity sub-KSP rtol | outer its |
+|---|---|
+| 1e-1 | 6 |
+| 1e-2 | 4 |
+| 0.033 × tolerance | 1 |
+
+Current defaults, matched across the native and rotated paths:
+
+| sub-solve | rtol | max_it |
+|---|---|---|
+| velocity | `0.033 × tolerance` | 200 |
+| pressure | `0.1 × tolerance` | 200 |
+
+The rotated path previously used `0.1 × tolerance` (velocity) and `1.0 × tolerance`
+(pressure). Adopting the native values costs ~17% wall clock with identical outer
+iteration counts (measured on both velocity-block routes, isotropic and TI) and
+reduced a transversely isotropic fault smoke test from 24 to 15 nonlinear
+iterations. Cheaper is available to anyone who measures their own configuration; it
+is not the default.
+
+The `0.033` and `0.1` factors themselves are inherited from the Citcom
+configuration and have no derivation recorded here beyond "well below the outer
+tolerance". They are a margin whose *existence* is principled and whose *size* is
+convention.
+
+### Detecting a degraded sub-solve
+
+Two properties make this family of problems hard to see, and both need instrumenting
+rather than eyeballing:
+
+- **The outer iteration count does not reveal it.** A full Schur factorisation with a
+  good pressure mass still reports ~1 outer iteration while the inner solve grinds
+  against its cap underneath. Read the sub-KSP counts.
+- **An exhausted cap does not raise.** A sub-KSP that hits `max_it` returns
+  `KSP_DIVERGED_ITS`, which `KSPCheckSolve` deliberately does not escalate, so it
+  degrades silently. `preonly` could never fail this way, so switching to an
+  iterative wrapper introduces a failure mode that must be checked for explicitly.
+
+Beware also that `KSPGetIterationNumber` on a sub-KSP reports only its **most recent**
+application, and the velocity KSP is applied once per Schur `MatMult` — i.e. once per
+pressure Krylov iteration. That number is a sample, not work. `SolverInstrumentation`
+(`systems/solver_health.py`) is the mechanism that sums properly.
 
 ## Critical Stability Note
 
@@ -188,7 +337,7 @@ def validate_unknowns_sharing(multi_material_model):
 
 ```{note} For Contributors
 This well-documented subsystem could benefit from:
-- Preconditioner selection guidance
+- Preconditioner selection guidance (Krylov sub-solve choice is now covered; multigrid and Schur preconditioner selection is not)
 - Performance tuning documentation  
 - Convergence analysis examples
 - Scaling studies and optimization

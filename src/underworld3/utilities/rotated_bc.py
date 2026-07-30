@@ -644,6 +644,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ctx = None
     diag_scale = None
     lin_its = []
+    # velocity / pressure sub-KSP LAST-APPLICATION counts, one per Newton increment
+    # (iterative path only — the direct-LU path has no sub-KSPs and records None)
+    vel_its_last = []
+    pres_its_last = []
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
@@ -752,6 +756,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 solver, Ahat, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
         lin_its.append(ctx["ksp"].getIterationNumber())
+        vel_its_last.append(ctx.get("vel_its_last"))
+        pres_its_last.append(ctx.get("pres_its_last"))
         d = dm.createGlobalVec()
         Qt.mult(dhat, d)
         # step-norm convergence (SNES_CONVERGED_SNORM): a tiny Newton step means we
@@ -830,6 +836,12 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
+            "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
+            # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
+            # with ctx unset when a warm start is already converged at increment 0.
+            "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
+            "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
+            "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
             "continuation_switched": continuation and phase == "newton"}
 
 
@@ -951,10 +963,23 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             "ksp_type": "fgmres", "ksp_rtol": str(tol), "ksp_max_it": "300",
             "pc_type": "fieldsplit", "pc_fieldsplit_type": "schur",
             "pc_fieldsplit_schur_fact_type": "full",
-            # native-parity pressure sub-solve (pyx Stokes defaults): FGMRES at the
-            # solver tolerance; GASM on the 1/mu mass, jacobi if only selfp exists.
+            # Pressure sub-solve at native-path parity (pyx Stokes defaults):
+            # FGMRES at 0.1 x tol, GASM on the 1/mu mass (jacobi if only selfp
+            # exists).
+            #
+            # The 0.1 is the MARGIN, and it is the point. The Citcom design this
+            # configuration descends from (Moresi & Solomatov 1995) makes the inner
+            # solves deliberately inexact, which is why the outer/Schur Krylov must
+            # be flexible (fgmres, above) — inexact inner solves perturb the search
+            # directions. But inexact is bounded: an inner solve must still converge
+            # WELL BELOW the tolerance demanded of the outer solve. This path used to
+            # ask for `tol` while the outer KSP also asks for `tol` — no margin at
+            # all, the inner solve permitted to be no better than the answer it
+            # feeds. Restoring the margin costs ~17% wall clock with identical outer
+            # iteration counts (measured, both velocity-block routes, isotropic and
+            # TI); a too-loose inner solve fails by silent stagnation, not loudly.
             "fieldsplit_pres_ksp_type": "fgmres",
-            "fieldsplit_pres_ksp_rtol": str(tol),
+            "fieldsplit_pres_ksp_rtol": str(tol * 0.1),
             "fieldsplit_pres_ksp_max_it": "200",
         }
         if Mp is not None:
@@ -968,7 +993,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # block — this applies only when no hierarchy is registered.
             cfg.update({
                 "fieldsplit_vel_ksp_type": "fgmres",
-                "fieldsplit_vel_ksp_rtol": str(tol * 0.1),
+                "fieldsplit_vel_ksp_rtol": str(tol * 0.033),
                 "fieldsplit_vel_ksp_max_it": "200",
                 "fieldsplit_vel_pc_type": "gamg",
                 "fieldsplit_vel_pc_gamg_type": "agg",
@@ -979,8 +1004,37 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 "fieldsplit_vel_mg_levels_ksp_converged_maxits": "true",
             })
         else:
-            # full-MG cycle per Schur application, by design
-            cfg["fieldsplit_vel_ksp_type"] = "preonly"
+            # Custom-FMG velocity block, wrapped in a short FGMRES — NOT `preonly`.
+            # PCFieldSplit applies the Schur complement S = A11 - A10 A00^-1 A01
+            # through THIS velocity KSP, so `preonly` replaces A00^-1 with a single
+            # multigrid cycle and the pressure Krylov is handed a different system
+            # S~ != S, preconditioned by a 1/mu mass built for S.
+            #
+            # Measured (annulus, weak plane reaching the constrained boundary,
+            # eta_1/eta_0 = 1e-3, transversely isotropic): under `preonly` the
+            # pressure residual falls 4.4e4 in ~16 iterations and then STAGNATES at
+            # a floor ~3.1e-7, burning the remaining 184 iterations of its cap for
+            # nothing, every outer iteration — 9 outer iterations total. Under
+            # FGMRES it converges 1.1e8 monotonically in 17 pressure iterations — 1
+            # outer. The isotropic control moves the same way (5 -> 1), so this is
+            # the Schur application and not the anisotropy.
+            #
+            # NB the Schur application is bitwise reproducible under both settings
+            # (measured), so the floor is NOT "the operator changes between
+            # applications" — it is S~ being the wrong system. The precise origin of
+            # the floor (most likely a range/nullspace inconsistency between S~ and
+            # the constant-pressure null space attached to S below) is not isolated.
+            #
+            # rtol and max_it are the native path's (0.033 x tol, 200), as is the
+            # GAMG fallback above. The FMG cycle reaches 0.1 x tol in ~11 iterations
+            # and would be cheaper there, but a sub-solve tolerance is a guardrail:
+            # the conservative value is the default and loosening it is the caller's
+            # risk to take.
+            cfg.update({
+                "fieldsplit_vel_ksp_type": "fgmres",
+                "fieldsplit_vel_ksp_rtol": str(tol * 0.033),
+                "fieldsplit_vel_ksp_max_it": "200",
+            })
         for k, v in cfg.items():
             opts[pfx + k] = v
         try:
@@ -1032,7 +1086,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 except Exception:
                     pass
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
-               "custom_Pl": custom_Pl, "pfx": pfx}
+               "custom_Pl": custom_Pl, "pfx": pfx,
+               # which preconditioner this solve actually got — reported so a model
+               # (or a test) can assert on it instead of inferring it from timings
+               "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
+               "schur_pre": "1/mu-mass" if Mp is not None else "selfp"}
     else:
         ksp = ctx["ksp"]
         nsp = ctx["nsp"]
@@ -1053,12 +1111,30 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # equation → setting them to exactly 0 here makes the strong v_n=0 BC exact
     # independent of the iterative tolerance, without perturbing the rest.
     _zero_rows_local(Uhat, normal_rows)
+    # Sub-KSP diagnostics: the OUTER count alone hides a degraded inner solve — a
+    # full Schur factorisation with a good pressure mass converges in ~1 outer
+    # iteration while the pressure sub-solve grinds against its cap underneath.
+    #
+    # These are LAST-APPLICATION samples, not work: KSPGetIterationNumber reports
+    # the most recent solve, and the velocity KSP is applied once per Schur MatMult
+    # (i.e. once per pressure Krylov iteration). They are named `_last` so they are
+    # not mistaken for the summed counts the solver_health report uses as its work
+    # axis — wiring the rotated path into SolverInstrumentation.sub_reports() is the
+    # proper fix and is not done here.
+    vel_ksp, pres_ksp = ctx["pc"].getFieldSplitSubKSP()
+    ctx["vel_its_last"] = vel_ksp.getIterationNumber()
+    ctx["pres_its_last"] = pres_ksp.getIterationNumber()
+    ctx["velocity_pc_type"] = vel_ksp.getPC().getType()
+    # A velocity FGMRES that exhausts its cap returns KSP_DIVERGED_ITS, which
+    # KSPCheckSolve deliberately does NOT escalate — so without this it degrades
+    # silently. (`preonly` could never fail, which is why the check is new.)
+    _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
     if verbose:
-        kind = "custom-FMG" if ctx["custom_Pl"] is not None else "GAMG"
-        schur = "1/mu-mass" if ctx["Mp"] is not None else "selfp"
-        mpi.pprint(f"[rotated_bc] velocity block = {kind}; Schur pre = {schur}; "
+        mpi.pprint(f"[rotated_bc] velocity block = {ctx['velocity_pc']} "
+                   f"(PC {ctx['velocity_pc_type']}); Schur pre = {ctx['schur_pre']}; "
                    f"outer KSP {ksp.getConvergedReason()} in "
-                   f"{ksp.getIterationNumber()} its")
+                   f"{ksp.getIterationNumber()} its (last apply: vel "
+                   f"{ctx['vel_its_last']}, pres {ctx['pres_its_last']})")
     return Uhat, ksp.getConvergedReason(), ctx
 
 
