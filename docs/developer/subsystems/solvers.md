@@ -418,26 +418,47 @@ stationary iteration stalls where a Krylov smoother adapts its polynomial. It
 predicts the notch result, and it predicts the cost below on well-conditioned
 problems.
 
-### The smoother is not free
+### Two regimes, and the named intent that selects them
 
-On a *well-conditioned* problem gmres/4 is slower than richardson/3 despite
-converging in fewer iterations. Nested annulus, linear (symmetric) velocity
-block, η contrast 1e6, outer KSP timed in isolation:
+Neither smoother dominates, so there are two variants and `solver.strategy`
+chooses between them. This is the layering:
+
+| layer | what it is | where |
+|---|---|---|
+| `solver.strategy` | the **named intent** — `"default"` / `"robust"` / `"fast"` | public property on the solver |
+| `MGSettings` | the **option values** an intent resolves to | `utilities/multigrid_options.py` |
+| `solver.petsc_options` | the **escape hatch** — any key you set here outranks both | public, unchanged |
+
+`"robust"` (gmres/4) survives an operator a stationary smoother stalls on: the
+Spiegelman notch contraction above, and 11 → 5 velocity iterations on the
+transversely isotropic rotated annulus.
+
+`"fast"` (richardson/3) is cheaper per cycle and quicker where the operator is
+benign. Nested annulus, **linear (symmetric)** velocity block, η contrast 1e6,
+outer KSP timed in isolation — `"fast"` against `"robust"`:
 
 | depth | iterations | wall clock |
 |---|---|---|
-| 2 levels | ×1.45 | **×0.86** |
-| 3 levels | ×1.60 | **×0.77** |
-| 4 levels | ×1.20 | **×0.55** |
+| 2 levels | ×0.69 | **×1.16** |
+| 3 levels | ×0.63 | **×1.30** |
+| 4 levels | ×0.83 | **×1.82** |
 
 The extra sweep costs ~3%; gmres itself costs ~40% per cycle. Custom-P builds its
 Galerkin coarse operators from barycentric transfers, denser than the native
 nested ones, so the smoother is a larger share of the cycle on that route.
 
-It stays the default on both routes because the failure it avoids (a stationary
-smoother stalling on a high-contrast operator) is worse than the cost it carries,
-and it carries that cost exactly where the problems are easy. Removing a guardrail
-is the caller's decision; the number is recorded so the decision can be made.
+`"default"` is `"robust"`: the failure it avoids is worse than the cost it carries,
+and it carries that cost exactly where the problem is easy. `"fast"` is the
+documented opt-out.
+
+```{warning}
+Do not fill a strategy by writing velocity-block options from the strategy setter.
+`_apply_preconditioner_options` runs later, at `_build`, and is the single writer
+of that block — anything written earlier is overwritten. That is how
+`pc_mg_type=kaskade` sat in the `strategy` setter for a long time carrying a
+comment warning against changing it, while never once taking effect (measured: the
+live PC was `mg`/FULL in every ordering). A strategy selects a bundle *variant*.
+```
 
 ### The one legitimate per-route difference
 

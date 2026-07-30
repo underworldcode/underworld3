@@ -257,6 +257,51 @@ def test_unset_bundle_keys_keep_the_managed_defaults():
     assert _velocity_mg_config(s) == ("gmres", 4, "redundant")
 
 
+def _strategy_mg_config(strategy):
+    mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=2 * RES, qdegree=3, refinement=1)
+    s = _stokes(mesh, f"s{strategy or 'none'}"[:6], rotated=False)
+    if strategy is not None:
+        s.strategy = strategy
+    s.solve()
+    s.solve()
+    return _velocity_mg_config(s)
+
+
+def test_strategy_selects_a_real_smoother_variant():
+    """``solver.strategy`` must actually change the smoother.
+
+    ``"fast"`` and ``"robust"`` were accepted-and-inert for a long time: validated
+    on input, then configured identically to ``"default"``. A property that checks
+    your value and then ignores it is the same defect class as #477/#478 — invisible,
+    because the solve still converges. They now select a measured variant:
+    ``"robust"`` is gmres/4, ``"fast"`` is richardson/3.
+    """
+    assert _strategy_mg_config("fast")[:2] == ("richardson", 3)
+    assert _strategy_mg_config("robust")[:2] == ("gmres", 4)
+
+
+def test_default_strategy_does_not_change_behaviour():
+    """The control: ``"default"`` must reproduce the framework default exactly, so
+    filling the strategy axis moves nobody's results."""
+    assert _strategy_mg_config("default") == _strategy_mg_config(None)
+
+
+def test_a_user_key_still_beats_the_strategy():
+    """The two layers compose in the right order: an explicit option the user wrote
+    outranks the strategy's choice of variant."""
+    mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT,
+                              cellSize=2 * RES, qdegree=3, refinement=1)
+    s = _stokes(mesh, "sxu", rotated=False)
+    s.strategy = "fast"                                   # would ask for richardson/3
+    s.petsc_options["fieldsplit_velocity_mg_levels_ksp_type"] = "chebyshev"
+    s.solve()
+    s.solve()
+    smoother, max_it, _ = _velocity_mg_config(s)
+    assert smoother == "chebyshev", "the user's smoother lost to the strategy"
+    assert max_it == 3, "the strategy should still own the keys the user left alone"
+
+
 def test_rotated_fmg_survives_repeated_newton_increments():
     """The rotated path applies its bundle under a per-solve options prefix and
     then drops the keys again, so the global database stays bounded under

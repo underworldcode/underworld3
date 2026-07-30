@@ -605,7 +605,7 @@ def _configure_pcmg(pc, Ps, coarse="redundant", owned=None):
     selects the coarse-solve variant: ``"svd"`` on the rotated path, whose
     Galerkin-coarsened operator inherits the rigid-rotation null space. ``owned``
     is the solver's record of the option values UW3 has written, so a key the USER
-    set is left alone (see :meth:`multigrid_options.MGBundle.apply`); ``None`` writes
+    set is left alone (see :meth:`multigrid_options.MGSettings.apply`); ``None`` writes
     unconditionally, which is right for the rotated path's per-solve prefix.
 
     The bundle is written into the options DB under the PC's OWN options prefix

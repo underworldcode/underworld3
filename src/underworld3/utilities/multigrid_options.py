@@ -38,7 +38,9 @@ Examples
 Apply the geometric bundle to a solver's managed block::
 
     from underworld3.utilities import multigrid_options
-    multigrid_options.geometric_mg_bundle().apply(self.petsc_options, prefix)
+    multigrid_options.geometric_mg_bundle().apply(
+        PETSc.Options(), self.petsc_options_prefix + prefix,
+        owned=self._managed_pc_options)
 
 Read the settings without writing them (the rotated path stages its options in a
 dict so it can drop them again after ``setUp``)::
@@ -49,8 +51,8 @@ dict so it can drop them again after ``setUp``)::
 
 from typing import NamedTuple
 
-__all__ = ["MGBundle", "geometric_mg_bundle", "gamg_bundle", "option_string",
-           "GEOMETRIC_MG_COARSE_SOLVERS"]
+__all__ = ["MGSettings", "geometric_mg_bundle", "gamg_bundle", "option_string",
+           "GEOMETRIC_MG_COARSE_SOLVERS", "GEOMETRIC_MG_SMOOTHERS"]
 
 
 def option_string(value):
@@ -80,8 +82,14 @@ def _user_owns(opts, name, owned):
 #: operator inherits a null space — see :func:`geometric_mg_bundle`.
 GEOMETRIC_MG_COARSE_SOLVERS = ("redundant", "svd")
 
+#: Smoother variants. These are the two measured regimes, not a taste setting:
+#: ``"robust"`` survives a badly-conditioned operator where a stationary smoother
+#: stalls, ``"fast"`` is cheaper per cycle where the operator is benign. Selected by
+#: ``solver.strategy``; see :func:`geometric_mg_bundle` for the numbers.
+GEOMETRIC_MG_SMOOTHERS = ("robust", "fast")
 
-class MGBundle(NamedTuple):
+
+class MGSettings(NamedTuple):
     """A preconditioner option bundle: the keys to set, and the keys to clear.
 
     ``settings`` maps an option suffix (no prefix, no leading ``-``) to its
@@ -134,8 +142,11 @@ class MGBundle(NamedTuple):
                 owned.pop(name, None)
 
 
-def _geometric_mg_settings(coarse):
-    """The geometric-MG settings for one coarse-solve variant."""
+def _geometric_mg_settings(coarse, smoother="robust"):
+    """The geometric-MG settings for one coarse-solve and smoother variant.
+
+    Both variants set the SAME keys — only values differ — so the derived stale-key
+    sets are variant-independent."""
     settings = {
         "pc_type": "mg",
         "pc_mg_type": "full",              # FMG (F-cycle)
@@ -173,12 +184,7 @@ def _geometric_mg_settings(coarse):
         # spread far enough that a stationary iteration stalls where a Krylov
         # smoother adapts its polynomial. That also predicts the cost measured on
         # well-conditioned problems (see the note on geometric_mg_bundle).
-        "mg_levels_ksp_type": "gmres",
         "mg_levels_pc_type": "sor",
-        # SET the count, never inherit it. PCMG's own default is 2 and the GAMG
-        # bundle below leaves 3 under the same prefix, so a bundle that omits
-        # this key smooths differently depending on what ran before it (#468).
-        "mg_levels_ksp_max_it": 4,
         # Run EXACTLY max_it smoother iterations: no residual-norm computation and
         # no convergence test, so every V-cycle costs the same. A Krylov smoother
         # makes the cycle non-stationary, which is why the velocity block is
@@ -186,6 +192,20 @@ def _geometric_mg_settings(coarse):
         "mg_levels_ksp_norm_type": "none",
         "mg_levels_ksp_converged_maxits": None,
     }
+    if smoother == "robust":
+        settings["mg_levels_ksp_type"] = "gmres"
+        settings["mg_levels_ksp_max_it"] = 4
+    elif smoother == "fast":
+        # Cheaper per cycle and measurably faster where the operator is benign,
+        # at the cost of the regime "robust" exists for. See the docstring.
+        settings["mg_levels_ksp_type"] = "richardson"
+        settings["mg_levels_ksp_max_it"] = 3
+    else:
+        raise ValueError(
+            f"smoother must be one of {GEOMETRIC_MG_SMOOTHERS} (got {smoother!r})")
+    # SET the iteration count, never inherit it. PCMG's own default is 2 and the
+    # GAMG bundle leaves 3 under the same prefix, so a bundle that omits this key
+    # smooths differently depending on what ran before it (#468).
     if coarse == "redundant":
         # redundant+lu, not bare lu: a bare serial LU cannot factor a distributed
         # coarse matrix and fails at np>1 (DIVERGED_LINEAR_SOLVE after 0
@@ -231,15 +251,19 @@ def _all_keys():
 
 
 def _bundle(settings):
-    return MGBundle(settings=settings,
+    return MGSettings(settings=settings,
                     stale=tuple(sorted(_all_keys() - set(settings))))
 
 
-def geometric_mg_bundle(coarse="redundant"):
+def geometric_mg_bundle(coarse="redundant", smoother="robust"):
     """Geometric multigrid (FMG F-cycle) on an explicit hierarchy.
 
     Parameters
     ----------
+    smoother : {"robust", "fast"}
+        Which of the two MEASURED regimes to configure. ``"robust"`` is
+        ``gmres``/4 and is the default; ``"fast"`` is ``richardson``/3. Chosen by
+        ``solver.strategy``, not usually here.
     coarse : {"redundant", "svd"}
         The coarse-level solve. ``"redundant"`` (redundant+LU) is the default.
         Use ``"svd"`` when the coarse operator inherits a null space — which the
@@ -248,28 +272,34 @@ def geometric_mg_bundle(coarse="redundant"):
 
     Returns
     -------
-    MGBundle
-        Settings and stale keys; see :meth:`MGBundle.apply`.
+    MGSettings
+        Settings and stale keys; see :meth:`MGSettings.apply`.
 
     Notes
     -----
-    The ``gmres``/4 smoother is not free on a well-conditioned problem. Measured on
-    a nested annulus with a linear (symmetric) velocity block at :math:`\eta`
-    contrast 1e6, outer KSP timed in isolation, ``gmres``/4 against
-    ``richardson``/3: it wins on iterations at every depth (×1.45, ×1.60, ×1.20 at
-    2, 3, 4 levels) and **loses on wall clock at every depth** (×0.86, ×0.77,
-    ×0.55) — the extra sweep costs ~3% and ``gmres`` itself ~40% per cycle. Custom-P
-    builds its Galerkin coarse operators from barycentric transfers, denser than
-    the native nested ones, so the smoother is a larger share of the cycle here.
+    The two smoother variants are two measured regimes, and neither dominates.
 
-    It is the default anyway, on both routes, because the failure it avoids is
-    worse than the cost it carries: a stationary smoother stalls where a Krylov one
-    adapts, and it does so exactly on the badly-conditioned high-contrast problems
-    this code exists for (the Spiegelman-notch measurement above). Removing a
-    guardrail is the caller's decision to take; the number is quoted so that
-    decision can be made.
+    ``"robust"`` (``gmres``/4) survives an operator a stationary smoother stalls on.
+    Spiegelman notch, :math:`\eta` contrast 1e26, nested 4-level hierarchy:
+    per-V-cycle contraction :math:`\rho` = 0.56 against richardson's 0.75 at the same
+    four iterations, the margin growing with depth. Transversely isotropic rotated
+    annulus: 11 velocity iterations down to 5, and 1.74x on the linear solve.
+
+    ``"fast"`` (``richardson``/3) is cheaper per cycle and measurably quicker where
+    the operator is benign. Nested annulus, LINEAR (symmetric) velocity block at
+    :math:`\eta` contrast 1e6, outer KSP timed in isolation: robust wins on
+    iterations at every depth (x1.45, x1.60, x1.20 at 2, 3, 4 levels) and **loses on
+    wall clock at every depth** (x0.86, x0.77, x0.55). The extra sweep costs ~3% and
+    ``gmres`` itself ~40% per cycle; custom-P builds its Galerkin coarse operators
+    from barycentric transfers, denser than the native nested ones, so the smoother
+    is a larger share of the cycle on that route.
+
+    ``"robust"`` is the default because the failure it avoids is worse than the cost
+    it carries, and it carries that cost exactly where the problem is easy. Choose
+    between them with ``solver.strategy``, which is the named-intent layer over
+    these values.
     """
-    return _bundle(_geometric_mg_settings(coarse))
+    return _bundle(_geometric_mg_settings(coarse, smoother))
 
 
 def gamg_bundle():
@@ -277,7 +307,7 @@ def gamg_bundle():
 
     Returns
     -------
-    MGBundle
-        Settings and stale keys; see :meth:`MGBundle.apply`.
+    MGSettings
+        Settings and stale keys; see :meth:`MGSettings.apply`.
     """
     return _bundle(_gamg_settings())

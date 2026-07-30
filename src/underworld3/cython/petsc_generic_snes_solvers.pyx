@@ -175,6 +175,16 @@ class SolverBaseClass(uw_object):
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
         self._custom_mg = None
 
+    @property
+    def _mg_smoother_variant(self):
+        """Which measured smoother regime this solver's strategy asks for.
+
+        ``solver.strategy`` is the named intent ("I want speed" / "I want this to
+        converge"); the values live in ``utilities.multigrid_options``. Solvers with
+        no strategy axis get the robust default. See
+        :func:`multigrid_options.geometric_mg_bundle` for the measurements."""
+        return "fast" if getattr(self, "_strategy", "default") == "fast" else "robust"
+
     def _push_managed_option(self, key, value):
         """Write a PETSc option UW3 owns, recording that we wrote it.
 
@@ -660,9 +670,10 @@ class SolverBaseClass(uw_object):
         # `preconditioner="fmg"` was worse: it skips the latch entirely, so the
         # clearer the request the less control it carried.
         if want_fmg:
-            multigrid_options.geometric_mg_bundle().apply(
-                PETSc.Options(), self.petsc_options_prefix + prefix,
-                owned=self._managed_pc_options)
+            multigrid_options.geometric_mg_bundle(
+                smoother=self._mg_smoother_variant).apply(
+                    PETSc.Options(), self.petsc_options_prefix + prefix,
+                    owned=self._managed_pc_options)
             self._pc_managed_value = "mg"
         else:
             if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
@@ -6309,19 +6320,39 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     @property
     def strategy(self):
         """
-        Solver strategy controlling preconditioner configuration.
+        What this solve should optimise for — the named intent over the
+        multigrid smoother's two measured regimes.
 
-        Currently supports:
-        - ``"default"``: Standard Schur complement fieldsplit with GAMG
-        - ``"robust"``: (Reserved) More robust but slower configuration
-        - ``"fast"``: (Reserved) Faster but less robust configuration
+        - ``"default"``, ``"robust"``: ``gmres``/4 smoothing. Survives an operator a
+          stationary smoother stalls on: Spiegelman notch (:math:`\eta` contrast
+          1e26, 4 levels) per-V-cycle contraction 0.56 against richardson's 0.75, the
+          margin growing with depth; transversely isotropic rotated annulus 11
+          velocity iterations down to 5.
+        - ``"fast"``: ``richardson``/3 smoothing. Cheaper per cycle and quicker where
+          the operator is benign — on a linear, symmetric annulus at
+          :math:`\eta` contrast 1e6 it beats ``"robust"`` on wall clock at every
+          hierarchy depth tested (x1.16, x1.30, x1.82 at 2, 3, 4 levels) while taking
+          more iterations. It gives up the regime ``"robust"`` exists for, so it is
+          an opt-in.
 
-        Setting this property reconfigures the entire preconditioner stack.
+        ``"default"`` is ``"robust"``: the failure it avoids is worse than the cost it
+        carries, and it carries that cost exactly where the problem is easy.
+
+        Setting this property also resets the fieldsplit / Schur / pressure sub-solve
+        configuration to the framework defaults. It does **not** write the velocity
+        block's preconditioner directly — that is applied later, from
+        :mod:`underworld3.utilities.multigrid_options`, which is the single writer of
+        those options; this property selects which variant it applies. Values written
+        by hand into :attr:`petsc_options` are respected and not overwritten.
 
         Returns
         -------
         str
             Current strategy name.
+
+        See Also
+        --------
+        preconditioner : which multigrid FAMILY to use (geometric, algebraic, auto).
         """
         return self._strategy
 
@@ -6332,14 +6363,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 f"Unknown solver strategy {value!r}: "
                 "expected 'default', 'robust', or 'fast'."
             )
-        # 'robust' and 'fast' are accepted names but currently configure the
-        # same option bundle as 'default' (their dedicated branches were empty
-        # placeholders and have been removed — Charter S5, READ-23).
+        # 'fast' and 'robust' now select a real smoother variant, via
+        # `_mg_smoother_variant` -> `multigrid_options.geometric_mg_bundle`. They were
+        # accepted-and-inert placeholders for a long time: validated on input, then
+        # configured identically to 'default'. A property that checks your value and
+        # then ignores it is the same defect class as #477 and #478 — the failure is
+        # invisible, because the solve still converges.
 
         # self.is_setup = False
         self._strategy = value
 
-        # All strategies: reset to preferred
+        # Common to every strategy: reset the fieldsplit / Schur / pressure
+        # sub-solve to the framework defaults. The strategy's effect on the VELOCITY
+        # BLOCK is carried by `_mg_smoother_variant`, not by writes from here.
 
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
@@ -6376,16 +6412,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # preconditioning and weakly-indefinite coarse operators; issue #147).
         self.petsc_options[f"fieldsplit_velocity_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_velocity_ksp_max_it"] = 200
-        self._push_managed_option(f"fieldsplit_velocity_pc_type", "gamg")
-        self._push_managed_option(f"fieldsplit_velocity_pc_gamg_type", "agg")
-        self._push_managed_option(f"fieldsplit_velocity_pc_gamg_repartition", True)
-        # NOTE: "kaskade" here diverges from the "additive" set by __init__'s
-        # velocity block — a long-standing (possibly unintentional) difference.
-        # Do not change without benchmarking (READ-23 kept the value as-is).
-        self._push_managed_option(f"fieldsplit_velocity_pc_mg_type", "kaskade")
-        self._push_managed_option(f"fieldsplit_velocity_pc_gamg_agg_nsmooths", 2)
-        self._push_managed_option(f"fieldsplit_velocity_mg_levels_ksp_max_it", 3)
-        self._push_managed_option(f"fieldsplit_velocity_mg_levels_ksp_converged_maxits", None)
+        # The velocity BLOCK's preconditioner is not set here. `strategy` used to
+        # write the whole GAMG bundle plus `pc_mg_type=kaskade`, and every one of
+        # those writes was DEAD: `_apply_preconditioner_options` runs later (at
+        # `_build`) and overwrites them with the geometric bundle on a refined mesh,
+        # or the GAMG bundle (`additive`) without one. Measured both orders — the
+        # live PC was `mg`/FULL every time, so `kaskade` never once took effect
+        # despite the comment warning against changing it. The strategy's effect on
+        # the velocity block now runs through `_mg_smoother_variant`, which selects
+        # a bundle variant instead of racing the bundle writer.
 
 
 
