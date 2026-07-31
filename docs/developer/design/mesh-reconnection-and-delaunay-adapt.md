@@ -449,6 +449,82 @@ it does not: the refined mesh is no longer **partition-independent**, since whic
 cavities may be flipped depends on where the partitioner drew the seam. Conformity,
 orientation, volume, labels and the star-forest stay exact at every rank count.
 
+## Finding 9 — what the mesh is actually for: stress leaked across an interface
+
+The reconnection work above optimises element *shape*. For a fault problem the
+quantity that matters is narrower, and it turns out to rank the options
+differently, so it is recorded here rather than left in a results file.
+
+**The metric.** Stress is `τ = 2ηε̇`, and a P1 element forms it from the
+interpolated viscosity times the interpolated strain rate, independently. So the
+cell carries `mean(η)·mean(ε̇)` while the honest cell average is `mean(η ε̇)`. The
+difference is
+
+```
+leak = 2[mean(η)mean(ε̇) − mean(η ε̇)] = −2 Cov(η, ε̇)
+```
+
+per cell: **zero** for any element lying wholly inside or wholly outside the weak
+zone, positive only where an element straddles the transition with high strain
+rate at one end and high viscosity at the other. It converges (falls monotonically
+with resolution), which is the check that it measures the transition and not
+something else. Note it lives strictly *inside* elements — plotting nodal `2ηε̇`
+cannot show it, because at a node the two fields are sampled at the same point.
+
+**A material-based marking rule loses to the plain distance size field.** Marking
+cells by their internal η variation is the intuitive response and is measurably
+worse per degree of freedom: N^-0.37 for the absolute jump, a complete stall for
+the log ratio, against **N^-1.04** for the size field. The leak is spread across
+the whole transition rather than concentrated in a few identifiable cells, so
+there is nothing for a targeting rule to target, and uniform refinement of a
+correctly sized band is the efficient answer. The log ratio additionally refines
+the wrong end — it is largest where η is *smallest*, i.e. in the fault core, while
+the leak lives on the outer flank where η runs 0.5 → 1.
+
+**The optimal band width depends on which quantity you minimise**, and the
+objectives disagree. Total leak: narrower is better. Leak *into the matrix*: an
+optimum at a core half-width equal to the **influence width**, 2.6× better than a
+narrow band. Straddling-cell count: wider is monotonically better. State the
+objective before choosing the band.
+
+**A step-edged margin confines the artefact.** `influence_function(profile="step")`
+plus marking on the distance level set puts ~0 % of the leak beyond d = 0.03
+against 11.4 % for a smooth blend, and converges slightly faster (N^-1.32 — the
+1-D refinement buys more h per cell than the naive h-scaling argument suggests).
+The price is concentration: total leak 2.5× higher and the worst single cell 20×
+worse, welded into a one-cell collar on the interface. Good for a viscous solve,
+awkward for a yielding model.
+
+**Two exact fixes.** An element-wise constant (P0) viscosity makes `Cov(η, ε̇) ≡ 0`
+on any mesh at any resolution — not reduced, zero. Aligning the interface with
+element boundaries does the same. Both relocate the error from *inside* elements
+to *where the element boundaries fall*, which makes node placement, not shape
+repair, the lever — and hence `relax(pin_bands=...)` (Finding 10).
+
+## Finding 10 — relaxation and interface tracking fight; pin the band
+
+`relax()` on a mesh refined onto an interface makes it worse: manufactured stress
++77 %, and it stops being confined to the fault. The MMPDE mover optimises element
+shape against an equilateral reference and knows nothing about where the material
+changes, so it slides the small cells refinement placed on the interface off it.
+It even *reduces* the straddling-cell count (1343 → 965) while making things
+worse, because the survivors are larger — leak per straddling cell up 2.5×.
+
+`mesh.relax(pin_bands=[surface])` (or `[(surface, offset)]` for a weak zone of
+half-width `offset`) labels the cells the interface cuts and holds them fixed:
+leak unchanged to five decimal places, confinement preserved, straddling count
+identical, and the mover still reshapes the rest of the domain. `pin_halo`
+defaults to 1 because pinning only the cut cells lets the mover pull on them from
+outside.
+
+Two implementation notes that are easy to get wrong and fail silently:
+`pin_bands` must **merge** with `pinned_labels` rather than replace it, since the
+default is "pin every named boundary"; and the band test uses the **signed**
+distance at offset zero and the **unsigned** distance at a non-zero offset — the
+unsigned distance is never negative, so a straddle test against it at offset zero
+labels nothing, and the resulting empty `DMLabel` hard-crashes `getStratumIS`
+rather than raising.
+
 ## Open questions / caveats
 
 - **Depth.** The 2-D figures sit at ~3–3.7 levels (log2 of base/finest diameter)
