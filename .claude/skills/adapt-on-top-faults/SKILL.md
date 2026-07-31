@@ -75,6 +75,77 @@ director), `fault.refinement_metric_function(...)`.
 
 ---
 
+## Engines: `nvb` vs `edge_split` — and what runs in parallel
+
+`engine="nvb"` (default) is graded newest-vertex bisection: bounded conforming
+closure, a similarity-class bound that keeps child quality tied to the base, and
+**partition-independent** output. `engine="edge_split"` splits the **longest edge**
+of every cell coarser than the metric asks for and needs **no conforming closure
+at all**, because splitting an edge divides every incident cell at the same new
+vertex. Consequences:
+
+- refinement **cannot escape the marked region** — the band hugs the feature
+  instead of a halo around it;
+- it marks on the cell **DIAMETER**, not `(dim!·vol)^(1/dim)`. The volume proxy
+  reported the target met while the mesh was **3.2× coarser** across the feature;
+- it gives up the similarity-class bound, so quality at depth is not guaranteed
+  the way bisection's is — that is what `repair=` and `relax()` are for.
+
+**Both run in parallel, 2-D and 3-D, and both are bit-confluent** (identical mesh
+at any communicator size). `edge_split` drives the same compiled `uwnvb_bisect`
+transform as NVB, so it inherits star-forest propagation, co-partitioning, labels
+and coordinates. Verified at np=1/2/3/4 up to 56k cells.
+
+```python
+child = base.adapt(metric, max_levels=3, engine="edge_split")
+child = base.adapt(metric, max_levels=3, engine="edge_split", repair=True)
+```
+
+`repair=True` runs a **reconnection (Lawson flip) pass** after each generation —
+2-D and `edge_split` only; it raises rather than silently doing nothing otherwise.
+It gates on **reducing the largest angle**, NOT on Delaunay: Delaunay maximises the
+*minimum* angle while P1 interpolation depends on the *maximum* (Babuška–Aziz), and
+flipping a gmsh mesh toward Delaunay was measured to RAISE the 99th-percentile max
+angle 126.8° → 129.3°. gmsh optimises shape, not the empty-circle property.
+
+- **worth it on a POOR base** — anisotropic, graded, relaxed, or read from a file:
+  99th-pct max angle 156° → 115°, slivers below q=0.1 3.84 % → 0.00 %. On a clean
+  gmsh base it moves 124.7° → 120.5° and the error not at all.
+- ⚠️ **it gives up bit-confluence.** Which cavities may be flipped depends on where
+  the partitioner cut (no cavity may contain a cell incident on a shared point).
+  Conformity, orientation, volume, labels and the SF stay exact at every rank
+  count; only the choice of flips near a seam differs. Hence opt-in.
+- Seam cost is small and **shrinks with resolution**: frozen repair sites 0.9–3.5 %
+  at 56k cells, np=2..8, halving with every halving of the target size. In a fault
+  band specifically, 5.5 % at np=2 and 13 % at np=4 on a 4k-cell mesh.
+- ⚠️ the 99th-pct angle recovers under a frozen seam but the **absolute max does
+  not** — a few worst cells sit on the seam (148° vs 123° serial).
+- it invalidates the cell-parent map for the any-degree MG transfer (a flipped
+  cell can straddle two coarse cells), so degree ≥ 2 falls back to the geometric
+  prolongation builder. The exact vertex prolongation survives — flips move no
+  vertex.
+
+## Relaxing an adapted fault mesh — PIN THE BAND
+
+`child.relax()` on a mesh refined onto an interface **makes things worse**. The
+MMPDE mover optimises element shape against an equilateral reference and knows
+nothing about where the material changes, so it slides the small cells that
+refinement placed on the interface *off* it. Measured on a step-edged fault:
+manufactured stress across the interface **+77 %**, and it stopped being confined
+to the fault. Counter-intuitively it *reduces* the number of straddling cells
+(1343 → 965) and is still worse, because the survivors are bigger.
+
+```python
+child.relax(pin_bands=[fault])                    # interface = the surface itself
+child.relax(pin_bands=[(fault, 0.02)], pin_halo=2)  # weak zone of half-width 0.02
+```
+
+Leak unchanged to five decimal places (0.03075 → 0.03076), confinement preserved,
+straddling count identical — while the mover still reshapes the rest of the
+domain. `pin_halo` (default 1) pins extra rings; pinning only the cut cells lets
+the mover pull on them from outside. `pin_bands` **merges** with the auto-pinned
+boundaries, so it cannot silently release the domain edge.
+
 ## Fault as a constitutive weak zone (iso and TI)
 
 The metric only needs the fault GEOMETRY (pure distance). The constitutive weak zone
@@ -219,6 +290,51 @@ for step in range(nsteps):
 
 ---
 
+## Sizing the band, and how the fault margin is represented
+
+The artefact that matters for a fault is **stress manufactured by elements that
+straddle the weak-zone margin** — high strain rate at one end, high viscosity at
+the other. It is exactly
+
+```python
+leak = 2 * (eta.mean(axis=1) * edot.mean(axis=1) - (eta * edot).mean(axis=1))
+```
+
+per cell (vertex values), i.e. `−2 Cov(η, ε̇)`: **zero** for any cell wholly inside
+or wholly outside the weak zone, positive only across the transition. It lives
+strictly *inside* elements — plotting nodal `2ηε̇` cannot show it, because at a node
+the two fields are sampled at the same point and are consistent by construction.
+
+Measured guidance, all at matched cell count:
+
+- **Band width.** The answer depends on what you are minimising, and the two
+  objectives disagree. *Total* leak: narrower is better (concentrate cells where
+  ∇η is steepest). Leak **into the matrix** (what usually matters): an optimum at
+  core half-width ≈ the **influence width**, 2.6× better than a narrow band.
+  Straddling-cell count: wider is monotonically better.
+- **Don't invent a marking rule.** Marking on within-cell η variation is
+  intuitive and measurably *worse* per DOF than the plain distance size field:
+  N^-0.37 (absolute jump) or a complete stall (log ratio) against **N^-1.04**. The
+  leak is spread across the whole transition, not concentrated in a few cells, so
+  there is nothing for a targeting rule to target. ⚠️ The log ratio is largest
+  where η is *smallest* — it refines the fault core, the opposite end from the
+  problem.
+- **A step-edged margin confines it.** `influence_function(profile="step")` (the
+  DEFAULT profile) plus marking on the distance level set puts essentially **0 %**
+  of the leak beyond d=0.03, against 11.4 % for a smooth blend, and converges
+  slightly faster (N^-1.32). The price: total leak 2.5× higher and the **worst
+  single cell 20× worse** (21.4 vs 1.04) — concentrated into a one-cell collar
+  welded to the interface rather than spread. For a viscous solve that is a clear
+  win; for a yielding model the worst cell is what reaches yield first, so weigh
+  it. Mark geometrically on the level set: once the edge is sharp, sampled η
+  depends on which side a vertex happens to fall.
+- **Exact fixes.** An element-wise constant (P0) viscosity makes `Cov(η, ε̇) ≡ 0`
+  on any mesh — not reduced, zero. So does aligning the interface with element
+  boundaries. Both move the error from *inside* elements to *where the element
+  boundaries fall*, which makes `relax(pin_bands=...)` the lever rather than shape
+  repair. ⚠️ P0 also breaks any within-cell marking rule (contrast is identically
+  zero) — it would have to be reposed on the facet jump.
+
 ## Gotchas / rough edges (candidates to fix as we go)
 
 | symptom / edge | cause & handling |
@@ -231,7 +347,12 @@ for step in range(nsteps):
 | rotated free-slip Stokes "not converged" | `s.snes` isn't the solving object (manual loop). Read `stokes._rotated_freeslip_info['ksp_reason']` / `['nonlinear_iterations']` (PR #298); sanity-check v·n leakage. |
 | nonlinear TI/VEP + rotated free-slip + timestepping gives a wrong (frozen) answer | pre-#298 the rotated path is ONE linear solve (one Newton step from u=0). PR #298 runs it inside a Newton/Picard loop — ensure it's merged for nonlinear/warm-start runs. |
 | FMG not used under rotated free-slip | rotated_bc uses a self-contained KSP and reads `solver._custom_mg`, not the native `dm_hierarchy` — `set_custom_fmg(..., field_id=0)`. FUNDAMENTAL (DM-less rotated operator can't use the DM-coupled fieldsplit; #298 keeps it), not a quick fix. |
-| NVB at np>1 raises NotImplementedError | native `_nvb_transform` extension not built (needs the custom-PETSc/amr env). |
+| NVB at np>1 raises NotImplementedError | native `_nvb_transform` extension not built (needs the custom-PETSc/amr env). Both `nvb` and `edge_split` are otherwise fully parallel, 2-D and 3-D. |
+| high stress appears in the matrix beside the fault | elements STRADDLING the weak-zone margin: one end sees high strain rate, the other high viscosity. The FE forms `mean(η)·mean(ε̇)`; the honest cell average is `mean(η ε̇)`, and the difference is `−2 Cov(η, ε̇)` across the cell. Zero for any cell wholly in or wholly out. See the band-width section below. |
+| refinement band narrower than the fault's INFLUENCE | measured: η still 0.07 at d=0.06 while the mesh has already coarsened 4×, so the artefact peaks on the transition flank, not on the fault. **85 % of it sits at d>0.01.** Size the flat core from the *influence* width, not the fault. |
+| `uw.function.evaluate` fails "Total components 8 != 6" | cached-interpolation mismatch on a mesh already carrying several solver variables. Sample the field numerically from `surface.unsigned_distance` instead. |
+| bare SIGSEGV, no traceback, after building a Mesh from a raw DM | `uw.discretisation.Mesh(dm, ...)` TAKES THE DM OVER. Read geometry from `child.dm`, never the handle you passed in. |
+| `KeyError: 'Left'` from a Mesh built on a refined DM | `Mesh(dm)` without `boundaries=` loses the boundary ENUM even though the labels are on the DM. Pass `boundaries=base.boundaries`. |
 
 **Build/run**: this lives on the `feature/adapt-on-top` worktree; env
 `.pixi/envs/amr-dev/bin/{python,mpirun}`; `./uw build` after source changes.

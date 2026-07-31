@@ -167,6 +167,48 @@ conditioning — the coarsest grid cannot represent the viscosity contrast — a
 levels *every* smoother fails there (richardson outright, gmres with ρ>1). Use the δ/ξ
 continuation to stay in the solvable region.
 
+## FMG on an ADAPT-ON-TOP child (locally refined meshes)
+
+An `adapt()` child carries its **own custom-P geometric MG tail** — one level per
+refinement generation — on `child._custom_mg_coarse_meshes`, and solvers built on
+it pick it up automatically. So the usual advice above ("never use a non-nested
+hierarchy") is satisfied without you assembling anything:
+
+```python
+child = base.adapt(metric, max_levels=3, engine="edge_split")
+stokes = uw.systems.Stokes(child, velocityField=v, pressureField=p)
+stokes.solve()          # pc=mg auto-attached off the child's tail
+```
+
+Requirements and traps, all measured:
+
+- **The base must be built with `refinement>=1`.** That uniform tail is what the
+  adapt levels extend; without it the hierarchy starts at the adapted mesh and
+  there is no coarse grid.
+- **Keep the GRADED tail** (one MG level per generation), which is what
+  `_adapt_nested` stores. Handing the solver a base-only tail instead — coarse
+  base straight to the fully adapted mesh — **triples the V-cycle count**.
+- **V-cycle counts are insensitive to element quality here, and that is a PASS not
+  a failed measurement.** On a fault child the velocity block takes 2 iterations
+  (iso) or 2–3 (TI) across meshes ranging from 156° to 105° max angle. The
+  geometric hierarchy's coarse spaces come from the mesh hierarchy, not from the
+  fine operator, so shape does not move it — which is exactly what makes
+  adapt-on-top viable. **If you want a solver-side probe of mesh quality, use
+  GAMG**, which does respond (iso 79 → 64 velocity iterations with `repair=True`).
+- **`relax()` can trip #424.** On a relaxed, unrepaired child the barycentric
+  transfer hit 22 zero columns and fell back to the DENSE global RBF builder — a
+  performance cliff, not just a warning. Watch for the `custom_mg: barycentric
+  transfer build failed ... retrying with 'rbf'` message.
+- **`repair=True` invalidates the any-degree nested transfer** (a flipped cell can
+  straddle two coarse cells), so degree ≥ 2 falls back to the geometric builder.
+  The exact ½,½ vertex prolongation survives, because flips move no vertex.
+- Under **rotated free-slip** none of this is automatic — that path builds its own
+  KSP and reads `solver._custom_mg`. See the `adapt-on-top-faults` skill.
+
+Companion skills: **`adapt-on-top-faults`** (building the child, engines, repair,
+band sizing), **`adaptive-meshing`** (the mover, and `relax(pin_bands=...)` for
+relaxing a mesh that was refined onto an interface).
+
 ## Gotchas
 
 - **`./uw build` → `amr-dev` env**; verify `uw.__file__` is the worktree site-packages.
@@ -183,4 +225,7 @@ continuation to stay in the solvable region.
 - Continuation driver: `underworld3.systems.yield_continuation`.
 - Diagnostics: `SNES_*.get_snes_diagnostics()` / `solve_with_diagnostics()`.
 - Related skills: `plasticity-solvers` (yield law + tangent per model),
-  `free-surface-convection`, `adaptive-meshing`.
+  `free-surface-convection`, `adaptive-meshing` (mover + `relax(pin_bands=...)`),
+  `adapt-on-top-faults` (locally refined children and their MG tail).
+- Reconnection / refinement engines:
+  `docs/developer/design/mesh-reconnection-and-delaunay-adapt.md`.

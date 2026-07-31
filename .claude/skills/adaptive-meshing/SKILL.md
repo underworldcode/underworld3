@@ -21,10 +21,42 @@ Companion: the `uw-visualisation` skill for rendering results.
 
 **Choosing the paradigm:** THIS skill is the **mover** (node movement /
 equidistribution, `smooth_mesh_interior`) — the mesh deforms to follow a field. For
-**local refinement** instead (`mesh.adapt(engine="nvb")` returns a refined CHILD; a
+**local refinement** instead (`mesh.adapt(...)` returns a refined CHILD; a
 fault resolved by a fine band + custom-P FMG + rotated free-slip + dynamic topography
 + advection-diffusion), use the **`adapt-on-top-faults`** skill. Different tools —
-don't mix them.
+don't mix them. For the FMG setup that consumes an adapt child's hierarchy, see the
+**`nonlinear-solver`** skill.
+
+---
+
+## PIN THE INTERFACE when you relax a mesh that was refined onto one
+
+The two operations fight. The mover optimises element **shape** against an
+equilateral reference and knows nothing about where the material changes, so it
+slides the small cells that refinement placed on an interface *off* it. Measured
+on a step-edged fault: manufactured stress across the interface **+77 %**, and it
+stopped being confined to the fault. It even *reduces* the number of straddling
+cells (1343 → 965) while making things worse, because the survivors are bigger —
+leak per straddling cell up 2.5×.
+
+```python
+child.relax(pin_bands=[fault])                       # interface = the surface
+child.relax(pin_bands=[(fault, 0.02)], pin_halo=2)   # weak zone, half-width 0.02
+```
+
+Leak unchanged to five decimals, confinement preserved, straddling count identical
+— and the mover still reshapes everywhere else. Notes:
+
+- `pin_halo` (default 1) pins extra rings. Pinning only the cut cells lets the
+  mover pull on them from outside and drag the pinned ring out of shape anyway.
+- `pin_bands` **merges** with `pinned_labels`. Passing `pinned_labels` yourself
+  REPLACES the default of "pin every named boundary", so a hand-rolled version
+  that substitutes the band label silently lets the mover deform the domain.
+- `mesh.label_interface_band(surface, offset, halo)` is the underlying helper if
+  you want the label for something else. It uses the SIGNED distance at offset 0
+  and the UNSIGNED distance at a non-zero offset — the unsigned distance is never
+  negative, so a straddle test against it at offset 0 can never fire, and a weak
+  zone has two margins that the unsigned form catches at once.
 
 ---
 
