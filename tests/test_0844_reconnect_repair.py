@@ -215,6 +215,28 @@ def test_labelled_interior_edges_are_never_flipped():
             f"locked interface edge {e} was flipped")
 
 
+def test_orientation_predicate_never_invents_a_sign():
+    """Degenerate input must report UNRESOLVED, not a confident orientation.
+
+    Regression. The static filter reduces to ``0 >= 0`` whenever both products
+    vanish — which happens for any axis-aligned collinear triple, an ordinary
+    configuration on a structured mesh — and the predicate then returned -1,
+    a confident "clockwise", for points that are collinear. The caller declined
+    the flip either way, so nothing was corrupted; a predicate that reports a
+    sign it cannot justify is still a defect, and this one is module-private
+    precisely so it can be trusted by whatever calls it next.
+    """
+    assert reconnect._orient2d((0.0, 0.0), (0.0, 0.0), (0.0, 0.0)) == \
+        reconnect._UNCERTAIN
+    assert reconnect._orient2d((0.0, 0.0), (1.0, 0.0), (2.0, 0.0)) == \
+        reconnect._UNCERTAIN          # collinear along x: both products vanish
+    assert reconnect._orient2d((0.0, 0.0), (0.0, 1.0), (0.0, 2.0)) == \
+        reconnect._UNCERTAIN          # collinear along y
+    # Unambiguous cases must still be answered.
+    assert reconnect._orient2d((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)) == 1
+    assert reconnect._orient2d((0.0, 0.0), (0.0, 1.0), (1.0, 0.0)) == -1
+
+
 def test_three_dimensions_is_refused():
     """3-D must fail loudly: Delaunay is the wrong criterion, not merely untested."""
     mesh = uw.meshing.UnstructuredSimplexBox(

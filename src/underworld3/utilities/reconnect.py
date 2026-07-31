@@ -148,6 +148,13 @@ def _orient2d(pa, pb, pc):
     bcx, bcy = pb[0] - pc[0], pb[1] - pc[1]
     left, right = acx * bcy, acy * bcx
     det = left - right
+    if det == 0.0:
+        # Collinear as far as this arithmetic can tell. Reported as unresolved,
+        # never as a sign: the filter below reduces to `0 >= 0` when both products
+        # vanish — which they do for any axis-aligned collinear triple, an
+        # ordinary configuration on a structured mesh — and would then return a
+        # confident "clockwise" for points that are not clockwise at all.
+        return _UNCERTAIN
     if abs(det) >= _ORIENT_BOUND * (abs(left) + abs(right)):
         return 1 if det > 0.0 else -1
     return _UNCERTAIN
