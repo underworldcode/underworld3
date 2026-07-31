@@ -6709,7 +6709,96 @@ class Mesh(Stateful, uw_object):
         smooth_mesh_interior(self, metric=metric, method="mmpde",
                              verbose=verbose, **kwargs)
 
-    def relax(self, metric=None, *, verbose=False, **kwargs):
+    def label_interface_band(self, surface, offset=0.0, halo=1, name=None):
+        """Label the vertices of every cell an interface passes through.
+
+        The interface is the level set ``distance(surface) == offset`` — the
+        surface itself when ``offset`` is zero, or the margin of a weak zone of
+        half-width ``offset``. Cells the level set cuts are the ones that cannot
+        represent the material change across them, and their vertices are what
+        :meth:`relax` must hold still if the refinement that placed small cells
+        there is not to be undone.
+
+        Parameters
+        ----------
+        surface : Surface
+            Provides the exact distance field.
+        offset : float, default 0.0
+            Distance at which the interface sits.
+        halo : int, default 1
+            Extra rings of vertices to include. Pinning only the cut cells leaves
+            the mover free to pull on their immediate neighbours, which drags the
+            pinned ring out of shape from outside, so at least one ring is
+            usually wanted.
+        name : str, optional
+            Label name. Defaults to ``"PinnedBand_<surface name>"``.
+
+        Returns
+        -------
+        str
+            The label name, ready to pass to :meth:`relax` or
+            :meth:`redistribute_nodes` as part of ``pinned_labels``.
+
+        Notes
+        -----
+        The test is purely geometric, so every rank labels its own copy of a
+        shared vertex identically and the result does not depend on the partition.
+        """
+        import numpy
+
+        dm = self.dm
+        vS, vE = dm.getDepthStratum(0)
+        cS, cE = dm.getHeightStratum(0)
+        coords = numpy.asarray(dm.getCoordinatesLocal().array).reshape(
+            -1, self.dim)
+        # SIGNED distance for the surface itself, UNSIGNED for a margin. The
+        # straddle test is "the level set passes between these vertices", and
+        # against the unsigned distance that can never be true at offset zero
+        # because the unsigned distance is never negative — the surface would
+        # label nothing at all. At a non-zero offset the unsigned distance is the
+        # right choice precisely because a weak zone has TWO margins, at +offset
+        # and -offset, and it catches both.
+        distance = (surface.signed_distance(coords) if offset == 0.0
+                    else surface.unsigned_distance(coords))
+
+        cell_vertices = [
+            numpy.array([int(p) for p in dm.getTransitiveClosure(c)[0]
+                         if vS <= p < vE])
+            for c in range(cS, cE)]
+
+        pinned = set()
+        for verts in cell_vertices:
+            d = distance[verts - vS]
+            if d.min() < offset < d.max():
+                pinned.update(int(v) for v in verts)
+        for _ring in range(halo):
+            grown = set()
+            for verts in cell_vertices:
+                vv = [int(v) for v in verts]
+                if any(v in pinned for v in vv):
+                    grown.update(vv)
+            pinned |= grown
+
+        if not pinned:
+            # An empty DMLabel is not merely useless: querying its strata is a
+            # hard crash, not an exception, so refuse rather than hand one back.
+            raise ValueError(
+                f"no cell is cut by distance == {offset} on surface "
+                f"{getattr(surface, 'name', surface)!r}, so there is no band to "
+                f"pin. Check the offset lies inside the mesh and matches the "
+                f"interface you meant (for a weak zone it is the HALF-WIDTH, not "
+                f"zero).")
+
+        name = name or f"PinnedBand_{getattr(surface, 'name', 'surface')}"
+        if not dm.hasLabel(name):
+            dm.createLabel(name)
+        label = dm.getLabel(name)
+        for v in pinned:
+            label.setValue(v, 1)
+        return name
+
+    def relax(self, metric=None, *, pin_bands=None, pin_halo=1, verbose=False,
+              **kwargs):
         r"""Improve this mesh's element **shapes** without changing its
         size distribution or its topology.
 
@@ -6797,12 +6886,35 @@ class Mesh(Stateful, uw_object):
             no metric but 117.9 -> **127.4** with one. Pass a metric when
             you want the sizes corrected too, and accept that shape is no
             longer the objective.
+        pin_bands : sequence, optional
+            Interfaces whose cells must not move: each entry is a ``Surface``, or
+            a ``(surface, offset)`` pair when the interface is a level set of the
+            distance rather than the surface itself (a weak zone of half-width
+            ``offset``). Their bands are labelled via
+            :meth:`label_interface_band` and held fixed.
+
+            This is the difference between relaxation helping and hurting when a
+            mesh has been refined onto an interface. The mover optimises element
+            shape against an equilateral reference and knows nothing about where
+            the material changes, so it slides the small cells that refinement
+            placed on the interface *off* it: measured on a step-edged fault, the
+            manufactured stress across the interface rose 77 % and stopped being
+            confined to the fault. Pinning the band leaves that quantity unchanged
+            to five decimal places while the mover still reshapes everywhere else.
+        pin_halo : int, default 1
+            Rings of neighbouring vertices pinned alongside each band. Pinning the
+            cut cells alone lets the mover pull on them from outside.
         verbose : bool, default False
             Print mover progress.
         **kwargs
             Forwarded to :meth:`redistribute_nodes` — e.g.
             ``pinned_labels``, ``slip_surfaces``, ``method_kwargs``
             (mover tunables such as ``n_outer``).
+
+            Note that passing ``pinned_labels`` explicitly REPLACES the default,
+            which is to pin every named boundary. ``pin_bands`` is merged with
+            that default rather than replacing it, so it cannot silently release
+            the domain boundary.
 
         See Also
         --------
@@ -6811,6 +6923,21 @@ class Mesh(Stateful, uw_object):
             size distribution; the reference is the mesh as supplied).
         """
         import sympy
+
+        if pin_bands:
+            from underworld3.meshing.smoothing.graph import _auto_pinned_labels
+
+            names = []
+            for entry in pin_bands:
+                surface, offset = entry if isinstance(entry, tuple) else (entry, 0.0)
+                names.append(self.label_interface_band(
+                    surface, offset=offset, halo=pin_halo))
+            # MERGE with the caller's list, or with the auto default when there is
+            # none. Replacing the default would quietly unpin the domain boundary.
+            existing = kwargs.pop("pinned_labels", None)
+            if existing is None:
+                existing = list(_auto_pinned_labels(self))
+            kwargs["pinned_labels"] = list(existing) + names
 
         method_kwargs = dict(kwargs.pop("method_kwargs", None) or {})
         # No metric  -> keep each cell's own size, repair shape only.
