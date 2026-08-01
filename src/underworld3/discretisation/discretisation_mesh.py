@@ -6955,6 +6955,205 @@ class Mesh(Stateful, uw_object):
             sympy.sympify(1) if metric is None else metric,
             verbose=verbose, method_kwargs=method_kwargs, **kwargs)
 
+    def _cut_coarse_levels(self, tail, lines, snap_frac, label, label_value):
+        """Cut every coarse multigrid level along the same lines.
+
+        A coarse level may be too coarse to admit a clean cut — one triangle
+        crossed three times, or an edge crossed twice, both of which
+        :func:`~underworld3.utilities.line_cut.cut_along_lines` refuses. That is a
+        real limit of a coarse mesh, not an error: the level is kept uncut and
+        counted, so a caller can see how far down the interface actually reached
+        rather than assuming it reached the bottom.
+        """
+        from underworld3.utilities.line_cut import cut_along_lines as _cut
+
+        out, uncut = [], 0
+        for level in tail:
+            try:
+                cut_dm, _info = _cut(level.dm, lines, snap_frac=snap_frac,
+                                     label=label, label_value=label_value)
+            except ValueError:
+                # Too coarse for this line. Keeping the level uncut is better than
+                # dropping it: a shallower hierarchy costs more than a blurred one.
+                out.append(level)
+                uncut += 1
+                continue
+            out.append(Mesh(
+                cut_dm,
+                simplex=level.dm.isSimplex(),
+                coordinate_system_type=level.CoordinateSystem.coordinate_type,
+                qdegree=level.qdegree,
+                boundaries=level.boundaries,
+                verbose=False,
+            ))
+        return out, uncut
+
+    def _boundaries_with(self, name):
+        """This mesh's boundary enum, extended with one more named boundary.
+
+        An ``Enum`` carrying members cannot be subclassed, so the extended enum is
+        built fresh from the existing members. The new value is one past the
+        largest ordinary boundary; ``Null_Boundary`` (666) and ``All_Boundaries``
+        (1001) are sentinels and are excluded from that maximum so a surface never
+        lands on top of one.
+        """
+        from enum import Enum
+
+        members = {b.name: b.value for b in self.boundaries}
+        if name in members:
+            raise ValueError(
+                f"this mesh already has a boundary called {name!r}; a conforming "
+                "surface needs its own name so a solver can tell them apart.")
+        ordinary = [v for v in members.values() if v < 666]
+        members[name] = (max(ordinary) + 1) if ordinary else 1
+        return Enum("boundaries", members)
+
+    def add_conforming_surface(self, points, name, snap_frac=0.10,
+                               cut_hierarchy=False, verbose=False):
+        r"""Add an internal surface that the mesh conforms to, and can apply
+        boundary conditions on.
+
+        The surface is added *on top of* an existing mesh rather than built into
+        the mesh generator, so its position does not have to be known when the
+        mesh is made. Every edge the surface crosses is split **at the crossing
+        point**, so the surface becomes a chain of element edges: no element
+        straddles it, each element lies cleanly on one side, and the edges along
+        it carry a boundary label of the given ``name``.
+
+        Two things follow from conforming, and both need the surface to be a real
+        mesh entity rather than a smooth field:
+
+        * a material property can be assigned per **cell** and be exactly right.
+          A property interpolated across a straddling element manufactures stress
+          :math:`-2\,\mathrm{Cov}(\eta, \dot\varepsilon)` per cell, which
+          refinement shrinks but never removes;
+        * a **boundary condition** can be applied on the surface, because it is a
+          labelled set of facets.
+
+        This mesh is not modified. The surface can therefore be moved and re-added
+        against the same fixed base, which is what an outer optimisation over its
+        position needs, and what keeps the base multigrid hierarchy intact.
+
+        Parameters
+        ----------
+        points : array_like
+            An ``(N, 2)`` polyline. It must cross the mesh from boundary to
+            boundary and must not cross itself.
+        name : str
+            Name of the surface. It becomes a boundary of the returned mesh, so
+            ``solver.add_dirichlet_bc(value, name)`` works on it, and
+            ``relax(pin_bands=[name])`` holds it.
+        snap_frac : float
+            A crossing landing within this fraction of an edge's length from
+            either end moves that end onto the surface instead of splitting the
+            edge. This is what keeps slivers out: without it an algebraic solver
+            pays about 60 % more iterations on the slivers a cut leaves behind.
+            The surface stays exactly where it was specified either way — a
+            snapped vertex moves *onto* it, not the other way about.
+        cut_hierarchy : bool
+            Also add the surface to every coarse multigrid level.
+
+            **Off by default, and the reason matters.** It is tempting to argue
+            that a surface-free coarse level "solves a different problem" and so
+            stalls multigrid at high contrast. That does not apply here: the
+            custom-P hierarchy sets ``pc_mg_galerkin=both``, so every coarse
+            operator is :math:`P^\mathsf{T} A P` formed from the **fine** operator
+            and inherits the material contrast whatever the coarse mesh looks
+            like. What a coarse cut would buy is a coarse *space* able to
+            represent the kink in the solution at the surface — and measured on
+            SolCx at contrasts of :math:`10^2` and :math:`10^6`, cutting the
+            coarse levels changed the error in the fifth significant figure and
+            the solve time not at all. Leave it off unless the coarse space is
+            demonstrably the bottleneck.
+        verbose : bool
+            Report how many edges were split and the worst cell of the result.
+
+        Returns
+        -------
+        Mesh
+            A child mesh conforming to the surface, with ``name`` among its
+            ``boundaries``. Call again on the result to add a second,
+            non-intersecting surface.
+
+        Examples
+        --------
+        >>> fault = np.array([[0.5, -0.1], [0.5, 1.1]])
+        >>> mesh2 = mesh.add_conforming_surface(fault, name="Fault")
+        >>> stokes = uw.systems.Stokes(mesh2, velocityField=v, pressureField=p)
+        >>> stokes.add_dirichlet_bc((0.0, 0.0), "Fault")
+
+        Notes
+        -----
+        Two dimensions only. A surface **ending inside** the mesh (a fault tip) is
+        refused rather than silently mis-meshed, as is a triangle the surface
+        crosses three times.
+
+        See Also
+        --------
+        adapt : local refinement, which reduces the straddling error without
+            removing it.
+        """
+        from underworld3.utilities.line_cut import cut_along_lines as _cut
+
+        boundaries = self._boundaries_with(name)
+        value = boundaries[name].value
+        lines = [points]
+
+        cut_dm, info = _cut(self.dm, lines, snap_frac=snap_frac,
+                            label=name, label_value=value)
+        if verbose:
+            uw.pprint(0, f"[surface {name!r}] split {info['n_split']} edges, "
+                         f"snapped {info['n_snapped']} vertices; "
+                         f"{info['n_cut_edges']} surface facets, "
+                         f"min angle {info['min_angle']:.2f} deg")
+
+        child = Mesh(
+            cut_dm,
+            simplex=self.dm.isSimplex(),
+            coordinate_system_type=self.CoordinateSystem.coordinate_type,
+            qdegree=self.qdegree,
+            boundaries=boundaries,
+            verbose=False,
+        )
+        child.parent = self
+        child._relationship_kind = "refinement"
+        child.regions = self.regions
+        child._parent_mesh_version = self._mesh_version
+        child._surface_info = info
+
+        # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
+        # mesh, so this mesh plus everything below it is a valid coarse tail and
+        # the solver appends the child as the finest level. The transfers are
+        # coordinate-based and do not need the levels to nest — just as well,
+        # since a cut vertex is not an edge midpoint and the exact 1/2,1/2
+        # prolongation does not apply to it.
+        #
+        # A mesh that is ITSELF a child (a second surface, or an adapt child) has
+        # to EXTEND its own tail rather than read `dm_hierarchy`, which for a child
+        # holds only its own DM: reading it there would silently discard every
+        # level below and leave a two-level hierarchy calling itself multigrid.
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        tail = (list(own_tail) + [self]) if own_tail else self._coarse_level_meshes()
+
+        if cut_hierarchy:
+            # The tail ends with the mesh being cut, and the child IS that mesh
+            # cut — so cutting the whole tail would leave the finest coarse level
+            # identical to the child. A duplicated level is not a free extra
+            # level: it makes the coarse-grid correction look flattering while
+            # costing a full extra solve. Drop it and let the child stand there.
+            tail, uncut_levels = self._cut_coarse_levels(tail[:-1], lines,
+                                                         snap_frac, name, value)
+            if verbose:
+                uw.pprint(0, f"[surface {name!r}] hierarchy: {len(tail)} coarse "
+                             f"level(s) cut, {uncut_levels} left uncut")
+            child._surface_uncut_levels = uncut_levels
+        child._custom_mg_coarse_meshes = tail
+        child._custom_mg_builder = self._custom_mg_builder
+
+        self._registered_children.add(child)
+        return child
+
+
     def adapt(self, metric_field, max_levels=None, node_budget=None,
               builder=None, adapter=None, engine=None, verbose=False,
               relax=False, relax_kwargs=None, repair=False):
