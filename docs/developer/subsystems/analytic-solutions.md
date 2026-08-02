@@ -1,0 +1,167 @@
+# Analytic solutions
+
+Exact solutions are the code's source of truth. They are the only diagnostic that
+can tell you a solver returned a *wrong* answer rather than an unconverged one —
+the SolCx port caught a direct `ksponly + lu` solve silently mangling the singular
+saddle on a free-slip problem, which no residual norm reported.
+
+This document governs how they are implemented, how a new one earns trust, and
+where each vendored reference kernel came from.
+
+## Where they live
+
+`underworld3.analytic` — one namespace, reached as `uw.analytic.<Name>(mesh, ...)`.
+
+```{note}
+`uw.function.analytic` is the historic location. It is a *compiled extension
+module*, which is why the suite could not grow there: the name is owned by a
+`.so`, so no submodules or pure-Python solutions can live under it.
+```
+
+## One implementation form: SymPy
+
+**Every analytic solution is a pure SymPy expression on `mesh.X`.** No exceptions,
+no tiers. A solution written this way:
+
+- compiles through the normal JIT path when handed to a solver, so it is C where
+  speed matters;
+- carries its own analytic Jacobian, which a hand-written C kernel cannot supply;
+- can be used as a Dirichlet boundary value, which a kernel-backed function cannot;
+- evaluates through `uw.function.evaluate` like any other field, vectorised.
+
+Point evaluation is not in a hot loop — it is tests and error norms — so the SymPy
+form costs nothing where it is used, and wins where it matters.
+
+## Transcribing a reference kernel
+
+Most of the classical solutions (Velic's, and PETSc's copies of them) exist as
+machine-generated C: straight-line single-assignment code, `t125 = 0.4e1*t81*t83 +
+...`, several hundred lines per branch. `scripts/maple_c_to_sympy.py` converts
+these mechanically.
+
+**Preserve the grouping term for term. Never `simplify()`.** The Maple grouping is
+what keeps `sinh(k)*exp(-k)`-style products numerically stable at large wavenumber
+and large viscosity contrast. A re-derivation is a *different* grouping and can
+lose eight digits in exactly the regime the benchmark exists to probe. Do not
+re-derive what you cannot revalidate.
+
+The reference kernel is **kept**, not deleted, and stays reachable:
+
+```python
+sol = uw.analytic.SolCx(mesh, ...)                    # SymPy (default)
+ref = uw.analytic.SolCx(mesh, ..., reference=True)    # the Velic C, verbatim
+```
+
+so "is this the transcription or the model?" stays a one-line question.
+
+## The validation protocol
+
+Velic's kernels are obsessively careful. The risk sits entirely on our side of the
+conversion, and pointwise agreement on a sample is a weak test — it can pass while
+the transcription is wrong off-sample, or wrong in its derivatives, which is what
+the solver actually consumes. **No transcription lands until all six gates pass.**
+
+### Gate 1 — two independent oracles, not one
+
+PETSc maintains its own copy of several Velic solutions, with different call
+signatures from Underworld2's: `SolCxSolution` and `SolKxSolution` in
+`src/snes/tutorials/ex69.c`. Agreement of UW2-C ↔ PETSc-C ↔ our SymPy is a far
+stronger statement than agreement with either alone, and both trees are already
+available. For SolKx there is a third: PETSc's `ex75.h` is a 41×41 table of
+tabulated reference values at `B=100, kn=km=100π` — an independent fixture in the
+hardest wavenumber regime.
+
+### Gate 2 — adversarial sampling, max error not mean
+
+Stratified so no region goes unsampled, and deliberately loaded with the hard
+places: on and either side of a viscosity interface, on the boundaries, at
+corners, and across parameter extremes (viscosity ratios spanning `1e-6` to `1e8`,
+wavenumbers 1–8). Report the **maximum** relative error. Threshold `1e-10`. A
+failing point gets investigated, not sampled around.
+
+### Gate 3 — derivatives, against independently derived output
+
+The solver consumes derivatives of these fields, and a transcription can be
+pointwise right yet derivative-wrong if a dropped term happens to vanish on the
+sample set.
+
+The reference kernels return `vel`, `pressure`, `total_stress` and `strain_rate`
+as *separately derived* quantities — they do not differentiate the velocity to get
+them. So compare SymPy's **symbolic** derivative of the velocity against the
+kernel's own strain rate, and the symbolic constitutive stress against its total
+stress. That is a genuine independent check rather than a tautology.
+
+### Gate 4 — the physics residual, which needs no oracle
+
+Substitute the transcribed fields back into the equations they claim to solve and
+confirm the residual vanishes:
+
+$$\nabla\cdot\mathbf u = 0, \qquad
+  \nabla\cdot\left(2\eta\,\varepsilon(\mathbf u)\right) - \nabla p + \mathbf f = 0$$
+
+using the solution's *own* `fn_viscosity` and `fn_bodyforce`; plus traction
+continuity across any interface, and the boundary conditions the solution claims.
+
+This tests the transcription **as a solution** rather than as a table of numbers,
+and it catches what a convergence test structurally cannot. If the transcription
+and the solver share the same mistaken convention — a sign, a factor of two — the
+solve converges beautifully to the wrong answer. That is not hypothetical: the
+original SolCx port hit exactly this, with Underworld2's documentation quoting
+$-\cos(\pi x)\sin(n\pi z)$ where UW3's momentum convention needs $+\cos$. Gate 4
+is the guard, because it never consults the solver.
+
+### Gate 5 — negative control
+
+Flip the sign of a single coefficient in the transcription and confirm that gates
+1–4 all **fail**. A gate that passes a deliberately broken input is measuring
+nothing. Do this once per solution, in the test suite, with the perturbation
+applied programmatically.
+
+### Gate 6 — separate transcription error from conditioning
+
+If SymPy and C disagree near threshold, we need to know whether that is our
+transcription or the C's own double-precision cancellation. Evaluate the SymPy
+form under `mpmath` at 50 digits and compare against both. This makes "the Maple
+grouping is numerically stable" a measured claim rather than an assumption — and
+if the high-precision form agrees with the kernel's intent while the
+double-precision form does not, that is a concrete instruction to preserve
+grouping harder.
+
+### After the gates: pin it
+
+Freeze a table of validated values as a test fixture — the pattern PETSc itself
+uses with `ex75.h` — so later refactors cannot drift silently. Record the measured
+maximum error, the sampling design, and which oracles were used in the solution's
+docstring. Not just "validated".
+
+## Provenance
+
+Each vendored reference kernel keeps its original copyright header.
+
+| Source | Licence | Compatible with UW3 (LGPL-3-or-later) |
+|---|---|---|
+| Underworld2 `Velic_sol*` kernels | LGPL-3 | Yes — same licence |
+| PETSc `ex69.c`, `ex13.c`, `ex24.c`, `ex45.c` | BSD-2-Clause | Yes — permissive; retain the notice |
+| Schmid & Podladchikov MATLAB (`dwschmid/muskhelishvili`) | BSD-3-Clause | Yes — permissive; retain the notice |
+| `assess` (Kramer et al. 2021) | External, optional dependency | Not vendored; wrapped lazily |
+
+## Optional dependencies
+
+A solution requiring a package Underworld3 does not depend on is wrapped lazily,
+in the style SciPy uses for its optional backends: the import happens at
+construction, and its absence raises with an install message rather than breaking
+`import underworld3`. `uw.analytic.available()` lists such solutions and marks
+them unavailable rather than omitting them.
+
+## Adding a new solution
+
+1. Subclass `AnalyticSolution` and one of the boundary-condition mixins
+   (`FreeSlipWalls`, `FixedWalls`).
+2. Build the exact fields on `mesh.X` in `__init__`; set `dim`, `reference`, and
+   the `eqn_*` LaTeX strings that document the *problem*.
+3. Export it from `underworld3/analytic/__init__.py` and register it in
+   `_SOLUTIONS` — a namespace entry and the registry entry land in the same PR.
+4. If it was transcribed from a reference kernel, clear all six gates and pin the
+   validated values.
+5. Add a convergence test: the error must decrease under refinement *and* clear an
+   absolute floor.
