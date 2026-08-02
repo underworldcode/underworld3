@@ -38,6 +38,52 @@ BOUNDS_3D = [("Bottom", 11), ("Top", 12), ("Right", 13), ("Left", 14),
              ("Front", 15), ("Back", 16)]
 
 
+def _level_resolutions(child):
+    """Cell size at each multigrid level, coarsest first.
+
+    The same low-percentile measure `adapt` selects levels with. Element COUNT
+    will not do: under adapt-on-top the mesh only grows where the feature is, so
+    a genuine halving of h can show as a global cell ratio near 1.
+    """
+    import numpy as _np
+    from underworld3.utilities import edge_split as _es
+    dms = [m.dm for m in child._custom_mg_coarse_meshes] + [child.dm]
+    return [float(_np.percentile(_es.cell_diameters(d), 5)) for d in dms]
+
+
+def _assert_coarsening_ladder(child, ratio=2.0, slack=0.9, floor=1.3):
+    """No multigrid level may be a near-duplicate of its neighbour.
+
+    This is what `mg_coarsening_ratio` buys, and it replaced a count tied to the
+    number of ENGINE PASSES. A pass is how an engine reaches a target size; a
+    level is a coarsening ratio, and the two are not the same number — tying
+    levels to passes produced hierarchies whose top levels differed by under 1 %
+    in h and which were measured 2.3-7.3x slower for the same iteration count.
+
+    Two things are deliberately NOT asserted:
+
+    * the step INTO the finest level. The finest level is the child and is
+      mandatory, so when the whole adapt amounts to less than one doubling its
+      single step is whatever the metric asked for (measured 1.74 in 3-D);
+    * the base tail, which is a uniform hierarchy with its own spacing.
+
+    What must hold everywhere is that no step is a near-duplicate, and that the
+    interior adapted steps reach the requested ratio.
+    """
+    h = _level_resolutions(child)
+    n_base = len(child.parent.dm_hierarchy)
+    steps = [(i, h[i] / h[i + 1]) for i in range(n_base - 1, len(h) - 1)]
+    assert steps, "no adapted level was recorded"
+    for i, r in steps:
+        assert r >= floor, (
+            f"levels {i}->{i+1} coarsen by only {r:.2f}: a near-duplicate level, "
+            f"which is the defect mg_coarsening_ratio exists to remove")
+    for i, r in steps[:-1]:
+        assert r >= ratio * slack, (
+            f"interior levels {i}->{i+1} coarsen by {r:.2f}, below the requested "
+            f"{ratio}")
+
+
 def _ncell(mesh):
     cs, ce = mesh.dm.getHeightStratum(0)
     return ce - cs
@@ -165,8 +211,10 @@ def test_adapt_engineless_3d_returns_graded_child():
     # coarse levels = base hierarchy + (generations - 1) intermediates
     n_gens = len(child._adapt_markers)
     assert 1 <= n_gens <= 3                              # dim * max_levels
-    assert (len(child._custom_mg_coarse_meshes)
-            == len(base.dm_hierarchy) + n_gens - 1)
+    # Multigrid levels are one per DOUBLING of h, not one per generation: a
+    # generation is a 2^(1/dim) step, so `dim` of them make one level.
+    assert len(child._custom_mg_coarse_meshes) >= len(base.dm_hierarchy)
+    _assert_coarsening_ladder(child)
     # full PETSc consistency battery on the child, including the cell
     # ORIENTATION class (DMPlexCheckGeometry flags inverted cells) —
     # visualisation winding, outward normals and boundary integrals are

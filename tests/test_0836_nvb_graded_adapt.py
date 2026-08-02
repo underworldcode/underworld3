@@ -37,6 +37,52 @@ def _ev(fn, coords):
     return np.asarray(uw.function.evaluate(fn, np.asarray(coords))).reshape(-1)
 
 
+def _level_resolutions(child):
+    """Cell size at each multigrid level, coarsest first.
+
+    The same low-percentile measure `adapt` selects levels with. Element COUNT
+    will not do: under adapt-on-top the mesh only grows where the feature is, so
+    a genuine halving of h can show as a global cell ratio near 1.
+    """
+    import numpy as _np
+    from underworld3.utilities import edge_split as _es
+    dms = [m.dm for m in child._custom_mg_coarse_meshes] + [child.dm]
+    return [float(_np.percentile(_es.cell_diameters(d), 5)) for d in dms]
+
+
+def _assert_coarsening_ladder(child, ratio=2.0, slack=0.9, floor=1.3):
+    """No multigrid level may be a near-duplicate of its neighbour.
+
+    This is what `mg_coarsening_ratio` buys, and it replaced a count tied to the
+    number of ENGINE PASSES. A pass is how an engine reaches a target size; a
+    level is a coarsening ratio, and the two are not the same number — tying
+    levels to passes produced hierarchies whose top levels differed by under 1 %
+    in h and which were measured 2.3-7.3x slower for the same iteration count.
+
+    Two things are deliberately NOT asserted:
+
+    * the step INTO the finest level. The finest level is the child and is
+      mandatory, so when the whole adapt amounts to less than one doubling its
+      single step is whatever the metric asked for (measured 1.74 in 3-D);
+    * the base tail, which is a uniform hierarchy with its own spacing.
+
+    What must hold everywhere is that no step is a near-duplicate, and that the
+    interior adapted steps reach the requested ratio.
+    """
+    h = _level_resolutions(child)
+    n_base = len(child.parent.dm_hierarchy)
+    steps = [(i, h[i] / h[i + 1]) for i in range(n_base - 1, len(h) - 1)]
+    assert steps, "no adapted level was recorded"
+    for i, r in steps:
+        assert r >= floor, (
+            f"levels {i}->{i+1} coarsen by only {r:.2f}: a near-duplicate level, "
+            f"which is the defect mg_coarsening_ratio exists to remove")
+    for i, r in steps[:-1]:
+        assert r >= ratio * slack, (
+            f"interior levels {i}->{i+1} coarsen by {r:.2f}, below the requested "
+            f"{ratio}")
+
+
 def _ncell(mesh):
     cs, ce = mesh.dm.getHeightStratum(0)
     return ce - cs
@@ -187,8 +233,10 @@ def test_adapt_nvb_returns_graded_child():
     assert child._adapt_engine == "nvb"
     assert _ncell(child) > n0
     assert _ncell(base) == n0                         # base untouched
-    # 2·max_levels NVB generations -> base levels + (generations-1) intermediate
-    assert len(child._custom_mg_coarse_meshes) + 1 == len(base.dm_hierarchy) + 2
+    # Multigrid levels are one per DOUBLING of h, not one per NVB generation, so
+    # the count follows from mg_coarsening_ratio rather than from max_levels.
+    assert len(child._custom_mg_coarse_meshes) >= len(base.dm_hierarchy)
+    _assert_coarsening_ladder(child)
 
 
 def test_nvb_child_fewer_dofs_than_sbr_patch():
@@ -230,7 +278,8 @@ def test_poisson_fmg_on_nvb_child_matches_gamg():
     s = _poisson(child)
     s.solve()                                         # NO set_custom_fmg
     assert s.snes.getKSP().getPC().getType() == "mg"
-    assert s.snes.getKSP().getPC().getMGLevels() == len(base.dm_hierarchy) + 2
+    assert (s.snes.getKSP().getPC().getMGLevels()
+            == len(child._custom_mg_coarse_meshes) + 1)
     assert s.snes.getConvergedReason() > 0
 
     g = _poisson(child)
@@ -382,3 +431,36 @@ def test_internal_interface_snaps_under_adapt_stays_pinned_under_mover():
     after = np.asarray(mesh.X.coords)
     assert np.array_equal(after[m0], before[m0]), "interface nodes moved"
     assert not np.allclose(after, before)      # the rest of the mesh did
+
+
+@pytest.mark.parametrize("ratio", [1.5, 2.0, 3.0])
+def test_mg_coarsening_ratio_sets_the_level_count(ratio):
+    """`mg_coarsening_ratio` is the user's handle on the grid sequence.
+
+    A larger ratio means fewer, more widely spaced levels. Measured on cut SolCx
+    at contrast 1e6, wall time fell monotonically from ratio 1.5 to 3.0 (12.2 ->
+    7.3 -> 4.8 s on NVB) for +1 velocity iteration and an unchanged solution, so
+    this is a knob worth having rather than a constant worth hiding.
+    """
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2,
+        refinement=1, qdegree=2)
+    child = base.adapt(_band_metric(base), max_levels=2, engine="nvb",
+                       mg_coarsening_ratio=ratio)
+
+    _assert_coarsening_ladder(child, ratio=ratio)
+    # One transfer per level, or custom_mg lines them up against the wrong levels.
+    assert len(child._adapt_prolongation) == len(
+        child._custom_mg_coarse_meshes) + 1 - len(base.dm_hierarchy)
+
+
+def test_a_larger_ratio_gives_no_more_levels():
+    """Monotonicity: asking for coarser steps cannot add levels."""
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2,
+        refinement=1, qdegree=2)
+    counts = [len(base.adapt(_band_metric(base), max_levels=2, engine="nvb",
+                             mg_coarsening_ratio=r)._custom_mg_coarse_meshes)
+              for r in (1.5, 2.0, 3.0)]
+    assert counts == sorted(counts, reverse=True), (
+        f"level counts {counts} are not non-increasing in the coarsening ratio")

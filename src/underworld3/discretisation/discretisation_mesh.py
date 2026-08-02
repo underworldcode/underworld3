@@ -275,6 +275,50 @@ def _mesh_coords_update_callback(array, change_context):
     return
 
 
+
+def _compose_prolongations(fine, coarse):
+    """The transfer ``fine @ coarse``, as COO triplets, in numpy alone.
+
+    Composing two prolongations is a sparse matrix product, but not one that
+    needs a sparse-matrix library: every row of a bisection prolongation holds
+    one or two entries (an inherited vertex, or the average of two), so expanding
+    each entry of ``fine`` through the matching rows of ``coarse`` and summing
+    duplicates stays small and is the whole operation.
+
+    ``fine`` maps the middle level to the fine one and ``coarse`` maps the coarse
+    level to the middle, so the result maps coarse to fine.
+    """
+    f_rows, f_cols, f_vals = fine
+    c_rows, c_cols, c_vals = coarse
+
+    order = numpy.argsort(c_rows, kind="stable")
+    cr, cc, cv = c_rows[order], c_cols[order], c_vals[order]
+
+    start = numpy.searchsorted(cr, f_cols, side="left")
+    stop = numpy.searchsorted(cr, f_cols, side="right")
+    counts = stop - start
+    if counts.sum() == 0:
+        return (numpy.empty(0, dtype=numpy.int64),
+                numpy.empty(0, dtype=numpy.int64), numpy.empty(0))
+
+    # Gather every (fine entry, matching coarse entry) pair without a Python loop.
+    total = int(counts.sum())
+    offsets = numpy.repeat(numpy.cumsum(counts) - counts, counts)
+    picks = numpy.repeat(start, counts) + (numpy.arange(total) - offsets)
+
+    rows = numpy.repeat(f_rows, counts)
+    cols = cc[picks]
+    vals = numpy.repeat(f_vals, counts) * cv[picks]
+
+    # A fine vertex can reach the same coarse vertex by more than one route, so
+    # duplicates are summed rather than dropped — dropping them silently loses
+    # part of the weight and the transfer stops being a partition of unity.
+    key = rows * (int(cols.max()) + 1) + cols
+    uniq, inverse = numpy.unique(key, return_inverse=True)
+    summed = numpy.bincount(inverse, weights=vals, minlength=uniq.size)
+    width = int(cols.max()) + 1
+    return (uniq // width, uniq % width, summed)
+
 class Mesh(Stateful, uw_object):
     r"""
     Unstructured mesh with PETSc DMPlex backend.
@@ -7156,7 +7200,8 @@ class Mesh(Stateful, uw_object):
 
     def adapt(self, metric_field, max_levels=None, node_budget=None,
               builder=None, adapter=None, engine=None, verbose=False,
-              relax=False, relax_kwargs=None, repair=False):
+              relax=False, relax_kwargs=None, repair=False,
+              mg_coarsening_ratio=2.0):
         r"""
         Nested **adapt-on-top**: return a refined **child** mesh.
 
@@ -7257,6 +7302,16 @@ class Mesh(Stateful, uw_object):
             depth. It marks on the cell **diameter** rather than
             ``(dim!·vol)^(1/dim)``; see
             :mod:`underworld3.utilities.edge_split`.
+        mg_coarsening_ratio : float
+            Target coarsening in cell size `h` between consecutive multigrid
+            levels. A refinement engine takes as many passes as it needs to reach
+            the size the metric asks for, so a pass is not a level: recording one
+            level per pass gives a hierarchy of half-steps with a tail that
+            coarsens nothing, which was measured 2.3-7.3x slower than one level
+            per doubling at the same iteration count. ``2.0`` (halve `h` each
+            level) is the standard choice and the measured default; raise it for
+            fewer, cheaper levels or lower it if a problem needs a gentler
+            sequence.
         repair : bool, default False
             Run a reconnection (Lawson flip) pass after each ``edge_split``
             generation, repairing the element shapes the split leaves behind. 2-D
@@ -7371,11 +7426,13 @@ class Mesh(Stateful, uw_object):
             metric_field, max_levels=max_levels, node_budget=node_budget,
             builder=builder, engine=engine, verbose=verbose,
             relax=relax, relax_kwargs=relax_kwargs, repair=repair,
+            mg_coarsening_ratio=mg_coarsening_ratio,
         )
 
     def _adapt_nested(self, metric_field, max_levels=2, node_budget=None,
                       builder="barycentric", engine="nvb", verbose=False,
-                      relax=False, relax_kwargs=None, repair=False):
+                      relax=False, relax_kwargs=None, repair=False,
+                      mg_coarsening_ratio=2.0):
         """Core nested adapt-on-top (SBR or NVB engine). See :meth:`adapt`."""
         import math
         from underworld3.utilities import custom_mg
@@ -8011,14 +8068,25 @@ class Mesh(Stateful, uw_object):
         # checkpoint-by-marker payload (design only; storage is a follow-up).
         child._adapt_markers = markers_per_level
         child._adapt_engine = engine
+        # One multigrid level per DOUBLING OF RESOLUTION, not one per engine
+        # pass. This has to happen BEFORE the prolongations are recorded on the
+        # child: custom_mg indexes that list BY LEVEL, so a per-pass list against
+        # a subsampled hierarchy lines the transfers up against the wrong levels.
+        if level_dms:
+            level_dms, _nested_Ps = self._subsample_mg_levels(
+                base_finest, level_dms, _nested_Ps,
+                ratio=mg_coarsening_ratio, verbose=verbose)
+            # A composed span crosses several generations, so a cell's single
+            # parent is no longer defined; the any-degree transfer falls back to
+            # the geometric builder for those, exactly as it does after a repair.
+            _nested_parent_cells = [None] * len(level_dms)
+
         # Exact per-generation prolongations when the engine could supply them
         # (cell-list path). Empty for the native transform path, which falls
         # back to the geometric builder. See #425.
         child._adapt_prolongation = _nested_Ps
         child._adapt_parent_cells = _nested_parent_cells
-        # Mesh-owned custom-P geometric-MG tail. EVERY refinement level is its own
-        # MG level (one custom-P transfer per refinement step), not a single
-        # base-finest -> child jump: the tail is
+        # Mesh-owned custom-P geometric-MG tail: the tail is
         #   [base L0 … base finest]  +  [refine level 1 … refine level n-1]
         # and the solver appends its own mesh (the finest level = child). Each
         # intermediate level is wrapped here (transient, lives on the child); the
@@ -8039,6 +8107,95 @@ class Mesh(Stateful, uw_object):
 
         self._registered_children.add(child)
         return child
+
+    _MG_RATIO_SLACK = 0.9      # a step of 1.92 counts as a doubling
+
+    def _subsample_mg_levels(self, base_finest, level_dms, nested_Ps,
+                             ratio=2.0, verbose=False):
+        """Keep one multigrid level per DOUBLING OF RESOLUTION, not one per pass.
+
+        A refinement engine takes as many passes as it needs to reach the size
+        the metric asks for — independence caps how many edges one pass may
+        split, and a conforming closure cascades — so a pass is an implementation
+        detail of *reaching* a size, while a multigrid level is a *coarsening
+        ratio*. Recording one level per pass conflates them, and the tail of the
+        iteration becomes levels that coarsen nothing: measured, ``edge_split``
+        produced ten levels whose last three grew the mesh by 4 %, 1 % and 0.7 %,
+        each costing a full Galerkin RAP and smoother sweep for no correction,
+        and that hierarchy stopped SolCx converging at all.
+
+        **The measure is resolution, not element count.** Under adapt-on-top the
+        mesh only grows where the feature is, so a genuine halving of `h` shows up
+        as a global cell-count ratio near 1: measured on a thin band, NVB grew the
+        mesh by 1.06-1.11x per generation while the in-band `h` went 0.125 ->
+        0.0626 -> 0.0313 -> 0.0157. A count-based rule keeps nothing and collapses
+        the hierarchy; the whole-mesh median `h` is likewise flat and useless. So
+        the resolution of the refined region is what decides a level.
+
+        The exact per-generation prolongations are COMPOSED across the generations
+        a level skips, so the recorded transfer stays exact rather than falling
+        back to the geometric builder.
+        """
+        from underworld3.utilities import edge_split
+
+        def resolution(dm):
+            """The size of the cells this level actually resolves with.
+
+            A low percentile rather than the strict minimum, so one thin cell
+            cannot declare a level; reduced with MIN so the finest region counts
+            wherever it happens to live.
+            """
+            d = edge_split.cell_diameters(dm)
+            local = float(numpy.percentile(d, 5)) if d.size else float("inf")
+            return uw.mpi.comm.allreduce(local, op=min)
+
+        # An engine lands near the target, not on it (1.92, 1.97, 2.19 measured),
+        # so the test is against a slightly slack ratio; without it a 1.99 step is
+        # rejected and two real levels fuse into one.
+        threshold = ratio * self._MG_RATIO_SLACK
+        h_ref = resolution(base_finest)
+        keep = []
+        for i, dm in enumerate(level_dms):
+            h = resolution(dm)
+            if h <= h_ref / threshold:
+                keep.append(i)
+                h_ref = h
+        # The finest generation IS the child, so it is always a level. If the
+        # level below it is within `ratio`, that level is a near-duplicate of the
+        # child rather than a coarsening of it, and REPLACING it is right —
+        # appending would reintroduce exactly the pair this routine exists to
+        # remove (measured: a last ratio of 1.04).
+        last = len(level_dms) - 1
+        if not keep:
+            keep = [last]
+        elif keep[-1] != last:
+            if resolution(level_dms[keep[-1]]) <= resolution(level_dms[last]) * threshold:
+                keep[-1] = last
+            else:
+                keep.append(last)
+
+        composed = []
+        start = 0
+        for i in keep:
+            span = [P for P in nested_Ps[start:i + 1]]
+            if any(P is None for P in span) or not span:
+                composed.append(None)
+            elif len(span) == 1:
+                composed.append(span[0])
+            else:
+                # x_fine = P_i ... P_start x_coarse, so the product runs
+                # fine-most first.
+                M = span[0]
+                for P in span[1:]:
+                    M = _compose_prolongations(P, M)
+                composed.append(M)
+            start = i + 1
+
+        if verbose:
+            uw.pprint(0, f"[adapt] {len(level_dms)} engine pass(es) -> "
+                         f"{len(keep)} multigrid level(s) "
+                         f"(kept {keep}, one per {ratio:.2g}x in h)")
+        return [level_dms[i] for i in keep], composed
 
     def remesh(self, metric_field, verbose=False):
         r"""
