@@ -352,17 +352,24 @@ _BOX = dict(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), regular=False, qdegree=2
 _ZIG = np.array([[-0.1, 0.5], [0.30, 0.62], [0.55, 0.38], [0.80, 0.62], [1.1, 0.5]])
 
 REFUSALS = [
-    ("nothing to cut", 1 / 12, np.array([[5.0, 5.0], [6.0, 6.0]]), 0.10, ValueError),
-    ("line ends inside", 1 / 12, np.array([[-0.1, 0.5], [0.5, 0.5]]), 0.0, ValueError),
-    ("edge crossed twice", 1 / 3, _ZIG, 0.0, ValueError),
+    ("nothing to cut", 1 / 12, np.array([[5.0, 5.0], [6.0, 6.0]]), 0.10, 0.15,
+     ValueError),
+    ("line ends inside", 1 / 12, np.array([[-0.1, 0.5], [0.5, 0.5]]), 0.0, 0.15,
+     ValueError),
+    ("edge crossed twice", 1 / 3, _ZIG, 0.0, 0.15, ValueError),
+    # The quality guard is turned OFF for this one on purpose. With it on, the
+    # snap that flattens the cell is vetoed and the cut succeeds — which is the
+    # guard working, and is asserted separately in the serial suite. The refusal
+    # path still exists for a cell that inverts during SPLITTING, and it is that
+    # path's collectiveness this case is here to protect.
     ("snapping inverts a cell", 1 / 8,
-     np.array([[-0.1, 0.503], [1.1, 0.541]]), 0.48, RuntimeError),
+     np.array([[-0.1, 0.503], [1.1, 0.541]]), 0.48, None, RuntimeError),
 ]
 
 
-@pytest.mark.parametrize("name,h,line,snap,expected",
+@pytest.mark.parametrize("name,h,line,snap,quality,expected",
                          REFUSALS, ids=[r[0] for r in REFUSALS])
-def test_every_refusal_is_collective(name, h, line, snap, expected):
+def test_every_refusal_is_collective(name, h, line, snap, quality, expected):
     """A refusal must reach EVERY rank, or it is a hang rather than an error.
 
     Each condition below is a property of one rank's cells — whether this rank
@@ -380,7 +387,7 @@ def test_every_refusal_is_collective(name, h, line, snap, expected):
 
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=h, **_BOX)
     try:
-        cut_along_lines(mesh.dm, [line], snap_frac=snap)
+        cut_along_lines(mesh.dm, [line], snap_frac=snap, snap_quality=quality)
         outcome = "no refusal"
     except (ValueError, RuntimeError) as exc:
         outcome = type(exc).__name__

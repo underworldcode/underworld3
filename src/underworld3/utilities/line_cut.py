@@ -213,7 +213,19 @@ def _crossing_parameters(X, ends, lines, on_line):
     return t, np.flatnonzero(multiply_crossed)
 
 
-def _resolve_snapping(dm, X, ends, lines, snap_frac, scale):
+def _vertex_h(X, ends):
+    """Mean length of the edges meeting each vertex: the local h AT a vertex."""
+    L = np.linalg.norm(X[ends[:, 0]] - X[ends[:, 1]], axis=1)
+    total = np.zeros(len(X))
+    count = np.zeros(len(X))
+    for k in (0, 1):
+        np.add.at(total, ends[:, k], L)
+        np.add.at(count, ends[:, k], 1.0)
+    return total / np.maximum(count, 1.0)
+
+
+def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
+                      snap_dist=0.0):
     """Which vertices to move onto the line, and where the crossings then land.
 
     A crossing at parameter ``t`` on an edge sits ``t`` of the way along it, so
@@ -226,6 +238,21 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale):
     settles. It settles quickly — each round only ever adds vertices, and the mesh
     is finite — but the loop is capped rather than trusted.
 
+    The VETO is what lets ``snap_frac`` be large. Without it the tolerance does
+    two jobs at once: it decides which crossings are near enough to snap, and — by
+    having no say in the matter afterwards — how much damage is acceptable. A cell
+    thinner than the tolerance band has every corner pulled onto the line from
+    both sides and is flattened; measured on a graded mesh, every collapsed cell
+    at ``snap_frac=0.4`` had all three corners snapped, and the cut was refused
+    outright. So a proposed move that would drive an incident cell's quality below
+    ``snap_quality`` is rejected, and that crossing falls back to being split —
+    the path that already works. The tolerance then chooses, and the guard vetoes.
+
+    An offending cell vetoes ALL of its moving corners at once rather than
+    searching for the cheapest one to give up. Over-vetoing costs splits, which is
+    the conservative direction, and it makes the outcome independent of the order
+    cells are visited — which a partition would otherwise change.
+
     The chosen set is reconciled over the point star-forest EVERY round. The
     decision "this crossing is too close to that end" is read off one edge, and a
     rank holding only one side of a shared vertex can decide differently from its
@@ -233,7 +260,37 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale):
     disagree about which edges are crossed, and the caller's split loop never
     empties its crossing set — measured, at np=3, as a cut that converged at
     snap_frac=0 and never converged at snap_frac=0.1.
+
+    The veto is reconciled the same way and for a sharper reason: a vertex's
+    incident cells are spread across the ranks that share it, so a rank can hold
+    the ruined cell that another rank cannot see. Vetoes are OR-reduced, so one
+    rank objecting stops the move everywhere.
     """
+    cell_verts = _cell_vertices(dm)
+    # The floor a cell must not drop below: the absolute one, or its own current
+    # quality if it already sits under that. "Never below the floor, and never
+    # worse if already below it" — which, unlike a floor expressed as a FRACTION
+    # of the current quality, does not compound when this routine is applied
+    # repeatedly. Measured: a relative 0.5 over six refine-and-snap rounds
+    # licenses 0.5**6 of the original, and the worst angle duly fell 15.4 -> 2.3
+    # degrees while every individual round looked well behaved.
+    floor = (None if snap_quality is None else
+             np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts))))
+    # Vertices ALREADY on the line — a tip or junction placed by
+    # `pull_vertex_onto` — do not move, so they cannot ruin anything and must
+    # never be vetoed. Vetoing one would unplace the very point that makes a
+    # terminating chain legal.
+    fixed = _distance_to_lines(X, lines) < 1e-12 * scale
+    vetoed = np.zeros(len(X), dtype=bool)
+    # Distance from each vertex to the line, in units of the local h. The
+    # along-edge criterion cannot see this: a vertex can sit a fraction of an
+    # element from the line while every edge meeting it is crossed near its
+    # MIDPOINT, so no crossing is ever "close to an end" and nothing proposes it.
+    # The cut then runs past it and leaves a cell with one edge on the surface
+    # and its apex a fraction of h away. Measured: every cell below 15 degrees
+    # had exactly that shape — two corners on the cut, elongated along it, apex
+    # 0.45 W off — and no value of snap_frac touched a single one of them.
+    reach = snap_dist * _vertex_h(X, ends) if snap_dist > 0.0 else None
     # Seed with the vertices that are ALREADY on the surface, not just the ones
     # snapping will move. A junction or a tip placed on a vertex lies exactly on
     # the line, so the edges radiating from it show `s == 0` and register no
@@ -241,8 +298,21 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale):
     # invisible here. The validation then reads such a cell as "entered but not
     # left" and refuses a perfectly legal branch: measured on a three-way (Y)
     # junction, which this makes work.
-    on_line = _distance_to_lines(X, lines) < 1e-12 * scale
-    for _ in range(10):
+    on_line = fixed.copy()
+    vS, _vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+
+    def reconcile(mask):
+        """OR the mask over every rank sharing each vertex."""
+        flag = np.zeros(pEnd - pStart, dtype=np.int32)
+        flag[np.flatnonzero(mask) + vS - pStart] = 1
+        _sf_logical_or(dm, flag)
+        return flag[np.arange(len(X)) + vS - pStart] == 1
+
+    # Rounds are spent on vetoes as well as on proposals now, and a veto can
+    # re-open a crossing that had settled, so the cap is larger than the ten a
+    # pure proposal loop needed.
+    for _ in range(30):
         X_snapped = X.copy()
         if on_line.any():
             X_snapped[on_line] = _project_onto_lines(X[on_line], lines)
@@ -254,18 +324,38 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale):
         rows = np.flatnonzero(near)
         pick = ends[rows, np.where(t[rows] < 0.5, 0, 1)]
         proposed = on_line.copy()
-        proposed[pick] = True
+        proposed[pick[~vetoed[pick]]] = True
+        if reach is not None:
+            close = (_distance_to_lines(X, lines) < reach) & ~vetoed
+            proposed |= close
 
         # COLLECTIVE, so every rank must reach it — including one that proposes
         # nothing. An early `if not near.any(): return` here deadlocked at np=3:
         # the rank owning no part of the line walked out while its peers waited
         # in the reduce.
-        vS, _vE = dm.getDepthStratum(0)
-        pStart, pEnd = dm.getChart()
-        flag = np.zeros(pEnd - pStart, dtype=np.int32)
-        flag[np.flatnonzero(proposed) + vS - pStart] = 1
-        _sf_logical_or(dm, flag)
-        proposed = flag[np.arange(len(X)) + vS - pStart] == 1
+        proposed = reconcile(proposed) & ~vetoed
+
+        # Would the proposal ruin a cell? Test it on the fully moved coordinates
+        # rather than one vertex at a time: it is the cell with several corners
+        # coming in from both sides that collapses, and no single move of that set
+        # looks bad on its own.
+        X_try = X.copy()
+        if proposed.any():
+            X_try[proposed] = _project_onto_lines(X[proposed], lines)
+        fresh = np.zeros(len(X), dtype=bool)
+        quality = _cell_quality(X_try, cell_verts)
+        ruined = (np.zeros(len(cell_verts), dtype=bool) if floor is None
+                  else (quality <= 0.0) | (quality < floor))
+        if ruined.any():
+            corners = np.unique(cell_verts[ruined].ravel())
+            fresh[corners[proposed[corners] & ~fixed[corners]]] = True
+        # Reduced whether or not this rank found anything: a rank seeing no
+        # ruined cell still has to reach the exchange, and a vertex whose bad
+        # cell lives on a neighbour must be vetoed here too.
+        fresh = reconcile(fresh)
+        if uw.mpi.comm.allreduce(int(fresh.any()), op=MPI.MAX):
+            vetoed |= fresh
+            continue
 
         # Settled is a GLOBAL property: one rank still moving means another round
         # for everyone, or the reconcile above goes unmatched.
@@ -276,8 +366,36 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale):
         on_line = proposed
 
     raise RuntimeError(
-        "snapping did not settle in 10 rounds; snap_frac is large enough that "
+        "snapping did not settle in 30 rounds; snap_frac is large enough that "
         "moving one vertex keeps dragging the next crossing into tolerance.")
+
+
+def _cell_vertices(dm):
+    """(n_cells, 3) local vertex indices of every triangle."""
+    vS, vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    return np.array([[int(p) - vS for p in dm.getTransitiveClosure(c)[0]
+                      if vS <= p < vE] for c in range(cS, cE)],
+                    dtype=np.int64).reshape(cE - cS, 3)
+
+
+def _cell_quality(X, cell_verts):
+    """Scale-free triangle quality: 1 equilateral, 0 degenerate, <0 inverted.
+
+    ``4 sqrt(3) A / sum(l^2)``, signed through the area. The sign matters: an
+    inverted cell reports a negative number instead of a small positive one, and
+    a *flattened* cell reports ~0 either way. Testing area > 0 does neither — a
+    cell snapping flat onto the line lands at area 1e-19 of random sign, which
+    passes an inversion test about half the time. Measured: guarding on inversion
+    alone still left a zero interior angle.
+    """
+    P = X[cell_verts]
+    e = np.stack([P[:, 2] - P[:, 1], P[:, 0] - P[:, 2], P[:, 1] - P[:, 0]],
+                 axis=1)
+    twice_area = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+                  - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+    return 2.0 * np.sqrt(3.0) * twice_area / np.maximum(
+        (e ** 2).sum(axis=(1, 2)), np.finfo(float).tiny)
 
 
 def _cell_edge_counts(dm, crossed_edges, on_line_vertices):
@@ -415,7 +533,8 @@ def min_angles(dm):
     return out
 
 
-def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
+def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
+                    snap_quality=0.15, snap_dist=0.0):
     """Split every edge the given lines cross, at the crossing point.
 
     Parameters
@@ -437,6 +556,39 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
         line either way — a snapped vertex is moved *onto* the line, not the line
         onto the vertex — so what a larger value costs is displacement of the
         surrounding mesh, not accuracy of the interface. See :func:`sliver_report`.
+    snap_quality : float
+        Floor on triangle quality (``4 sqrt(3) A / sum(l^2)``: 1 equilateral, 0
+        degenerate). A snap is refused if it would drive any cell touching it
+        below this — or below that cell's present quality, if it is already worse
+        — and the crossing is split instead. Roughly, 0.75 is a 30 degree worst
+        angle, 0.43 is 15 degrees and 0.15 is 5 degrees.
+
+        This is what makes a large ``snap_frac`` safe: without it, a cell thinner
+        than the tolerance band has every corner pulled onto the line and is
+        flattened. ``0.0`` leaves only the inversion veto, which is measurably
+        *not* enough: a flattened cell lands at quality ~1e-16 of either sign, so
+        half of them survive an inversion test, the worst interior angle still
+        reaches zero, and — worse than the refusal it replaces — the returned mesh
+        looks fine while the cut chain has silently broken. ``None`` removes the
+        guard altogether, restoring the behaviour from before it existed — where
+        a tolerance this large refuses the cut outright, which is the refusal
+        the guard was written to avoid.
+
+        Keep it LOW. The guard protects the SNAPPED mesh, which is not the mesh
+        that comes back: every snap it vetoes becomes a split, and the splits are
+        what make the cut's slivers. Measured on one graded cut, raising the floor
+        from 0.15 to 0.55 held the snapped mesh's worst angle up (15.6 -> 24.5
+        degrees) while driving the CUT's down (10.9 -> 0.16) and the split count
+        up (139 -> 359). This is a backstop against flattening, not a quality
+        target.
+    snap_dist : float
+        Also snap any vertex lying within this multiple of its own local h of the
+        line, whatever the crossings on its edges look like. ``snap_frac`` is
+        measured ALONG an edge and is blind to a vertex that sits close to the
+        line while every edge meeting it is crossed near its midpoint — which is
+        the configuration that produces the cut's worst cells, and which no value
+        of ``snap_frac`` reaches. The quality guard applies to these proposals
+        too, so a vertex whose move would flatten a cell is split around instead.
     label, label_value : str, int
         Name and stratum value of the label put on the cut edges. Naming it after
         the surface lets a solver apply a boundary condition there directly; the
@@ -495,7 +647,7 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
     scale = _global_extent(dm)
 
     on_line, X_snapped, t, multiply_crossed = _resolve_snapping(
-        dm, X, ends, lines, snap_frac, scale)
+        dm, X, ends, lines, snap_frac, scale, snap_quality, snap_dist)
     eS, _eE = dm.getDepthStratum(1)
     crossed = np.flatnonzero(np.isfinite(t)) + eS
 

@@ -7112,7 +7112,8 @@ class Mesh(Stateful, uw_object):
                 zone[c - cS] = True
         return zone
 
-    def add_conforming_surface(self, surface, snap_frac=0.10, verbose=False):
+    def add_conforming_surface(self, surface, snap_frac=0.10, verbose=False,
+                               snap_quality=0.15, snap_dist=0.0):
         r"""Add an internal surface that the mesh conforms to.
 
         The surface is added *on top of* an existing mesh rather than built into
@@ -7188,8 +7189,20 @@ class Mesh(Stateful, uw_object):
             pays about 60 % more iterations on the slivers a cut leaves behind.
             The surface stays exactly where it was specified either way — a
             snapped vertex moves *onto* it, not the other way about.
+
+            On a GRADED mesh the 0.10 default is not the best value: measured on
+            a four-level adapted mesh, 0.30 took the worst angle from 4.96 to
+            10.81 degrees and cells below 15 degrees from 231 to 31. The default
+            is left alone because it was chosen on a uniform mesh, where the
+            trade is different again — raise it deliberately, and measure.
         verbose : bool
             Report how many edges were split and the worst cell of the result.
+        snap_quality : float
+            Triangle-quality floor protecting the snap; see
+            :func:`~underworld3.utilities.line_cut.cut_along_lines`. It does not
+            bind at the recommended tolerances — it is what stops a large
+            ``snap_frac`` from flattening cells onto the surface and silently
+            breaking the chain.
 
         Returns
         -------
@@ -7251,7 +7264,8 @@ class Mesh(Stateful, uw_object):
                  for segs in _fault_collect_polylines(surface)]
 
         cut_dm, info = _cut(self.dm, lines, snap_frac=snap_frac,
-                            label=name, label_value=value)
+                            label=name, label_value=value,
+                            snap_quality=snap_quality, snap_dist=snap_dist)
         if verbose:
             uw.pprint(f"[surface {name!r}] split {info['n_split']} edges, "
                       f"{info['n_on_surface']} vertices on the surface; "

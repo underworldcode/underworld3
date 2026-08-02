@@ -763,3 +763,61 @@ def test_the_fault_zone_narrows_with_the_adapt_metric():
         f"halving the requested h_near barely narrowed the zone "
         f"({thickness[0.03]:.5f} -> {thickness[0.015]:.5f}); fault width is "
         f"supposed to follow the metric")
+
+
+# ---------------------------------------------------------------------------
+# The two snapping guards. Both exist because of what SPLITTING costs: a split
+# beside a vertex is what makes a sliver, so anything that replaces a split with
+# a vertex move helps, and anything that turns a move back into a split hurts.
+# ---------------------------------------------------------------------------
+
+def test_the_quality_guard_turns_a_refusal_into_a_cut():
+    """A tolerance large enough to flatten a cell must be survivable.
+
+    Snapping pulls every corner of a cell thinner than the tolerance band onto
+    the line, and the cell collapses: measured, all of them at snap_frac 0.4 had
+    all three corners snapped, from opposite sides. Without a guard the whole cut
+    is refused. With one, the offending moves are vetoed and those crossings are
+    split instead, which is the path that already works.
+
+    Note the guard must be on QUALITY, not on inversion. A flattened cell lands
+    at ~1e-16 of either sign, so an inversion test passes about half of them —
+    and then returns a mesh whose chain has silently broken.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 8,
+        regular=False, qdegree=2)
+    line = np.array([[-0.1, 0.503], [1.1, 0.541]])
+
+    with pytest.raises(RuntimeError, match="inverted"):
+        cut_along_lines(mesh.dm, [line], snap_frac=0.48, snap_quality=None)
+
+    cut, info = cut_along_lines(mesh.dm, [line], snap_frac=0.48)
+    assert info["n_cut_edges"] == info["n_split"] + info["n_on_surface"] - 1
+    assert (cell_areas(cut) > 0.0).all()
+    assert info["min_angle"] > 1.0, (
+        f"guarded cut still has a {info['min_angle']:.3f} degree cell")
+
+
+def test_snap_dist_reaches_vertices_snap_frac_cannot():
+    """A vertex near the line whose edges are all crossed mid-way.
+
+    ``snap_frac`` is measured ALONG an edge, so it cannot see a vertex that sits
+    a fraction of an element from the line while every edge meeting it is crossed
+    near its midpoint. That vertex becomes the apex of a cell with one edge on
+    the cut, which is the cut's characteristic sliver — and no value of
+    ``snap_frac`` removes it. ``snap_dist`` proposes such a vertex directly.
+
+    The test is that at a FIXED along-edge tolerance it still finds vertices to
+    move, and trades splits for them.
+    """
+    mesh = _box(1 / 24)
+    base = cut_along_lines(mesh.dm, [SLANTED], snap_frac=0.30)[1]
+    reached = cut_along_lines(mesh.dm, [SLANTED], snap_frac=0.30,
+                              snap_dist=0.30)[1]
+    assert reached["n_on_surface"] > base["n_on_surface"], (
+        "snap_dist proposed no vertex the along-edge test had not already found")
+    assert reached["n_split"] < base["n_split"], (
+        f"splits did not fall: {base['n_split']} -> {reached['n_split']}")
+    assert (reached["n_cut_edges"]
+            == reached["n_split"] + reached["n_on_surface"] - 1)
