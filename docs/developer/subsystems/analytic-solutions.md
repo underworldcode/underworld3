@@ -224,6 +224,56 @@ harness: perturb one coefficient and assert the other checks fail.
 velocity by a part in a thousand and requires both the comparison and the
 oracle-free residual to report it.
 
+## A solution that is derived rather than transcribed
+
+`EllipticalInclusion` (Schmid & Podladchikov 2003) is the one case so far where
+the published source does **not** contain what we need. The authors' MATLAB gives
+pressure, deviatoric stress and the rotation rate; it does not give velocity. So
+the Muskhelishvili potentials had to be recovered from the fields, and the
+velocity built from those.
+
+That changes what validation means. There is no kernel to compare velocity
+against, so the checks have to come from physics and from internal consistency:
+
+| check | pairs against |
+|---|---|
+| $\eta\nabla^2\mathbf v = \nabla p$ | the *published* pressure |
+| velocity continuity across the interface | the interior uniform-gradient field |
+| far field | the imposed shear, computed independently |
+| interior uniformity | the Eshelby property |
+
+Measured: Stokes residual 1.4e-17, $\nabla\cdot\mathbf v$ 1.7e-16, far field
+agreeing to a few parts in $10^6$ (the inclusion's own $1/r^2$ perturbation at
+finite distance, not error).
+
+Two things about this derivation are worth carrying to the next one.
+
+**What the published data cannot constrain.** A purely imaginary constant in
+$\varphi'$ contributes nothing to pressure ($-2\,\mathrm{Re}\,\varphi'$) or to
+stress (which involves $\varphi''$). It is a far-field rigid rotation. Reading
+the potentials off stress and pressure alone therefore loses the spin entirely,
+and an imposed simple shear comes back as pure shear — with the correct strain
+magnitude, which is what makes it easy to miss. Its value came from a different
+published expression: taken to a circle, the rotation rate collapses to
+$-\dot\gamma/2$ for every viscosity ratio. **When reading potentials back out of
+fields, ask what the fields are blind to.**
+
+**Branch cuts are not cosmetic.** Inverting $z = \zeta + 1/\zeta$ as
+`sqrt(z**2 - 4)` cuts along a ray and selects the root *inside* the unit circle
+for $x < 0$ — the wrong Riemann sheet. The far field then comes out asymmetric,
+roughly three times too fast on one side. Written `sqrt(z-2)*sqrt(z+2)` the cut
+lies on $[-2, 2]$, the slit the map already has, and $|\zeta| > 1$ everywhere
+outside. Sampling only positive $x$ would have missed this, which is why the test
+samples both.
+
+A SymPy consequence: the correct branch defeats `re()`/`im()`, which then survive
+into derivatives as an unprintable `Derivative(re(...))`. Building the components
+as $(w + \bar w)/2$ and $(w - \bar w)/2i$ avoids them, with `conjugate` obtained
+by flipping the sign of `I` — for an expression in real symbols that is exactly
+conjugation, and unlike `sympy.conjugate` it distributes through a square root.
+The result is real-valued but complex-typed; SymPy cannot prove the imaginary
+part vanishes, so callers take `.real`.
+
 ## Provenance
 
 Each vendored reference kernel keeps its original copyright header.

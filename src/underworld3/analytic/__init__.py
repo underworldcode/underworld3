@@ -28,12 +28,14 @@ underworld3.analytic._base : the contract each solution satisfies.
 
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
+from .inclusion import EllipticalInclusion
 from .velic import SolCx, SolNL
 
 __all__ = [
     "AnalyticSolution",
     "FreeSlipWalls",
     "FixedWalls",
+    "EllipticalInclusion",
     "SolCx",
     "SolNL",
     "available",
@@ -45,6 +47,7 @@ __all__ = [
 # contract, and so a solution needing an optional dependency can be listed
 # without being importable.
 _SOLUTIONS = {
+    "EllipticalInclusion": EllipticalInclusion,
     "SolCx": SolCx,
     "SolNL": SolNL,
 }

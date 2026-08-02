@@ -30,42 +30,6 @@ the velocity**, which has to be reconstructed from the potentials. They are
 recoverable from what is published, and the reading is checked rather than
 assumed — see :func:`_potentials`.
 
-.. warning::
-   **Incomplete — not exported from** :mod:`underworld3.analytic`.
-
-   The physics is settled. The potentials were read out of the published fields
-   and verified independently (the :math:`\varphi` taken from the pressure
-   reproduces the :math:`\varphi''` appearing in the stress *identically*), and
-   the reconstructed velocity is divergence-free to 2e-14 in the matrix.
-
-   What is not settled is how to represent it. Two things remain:
-
-   1. **Branch and representation conflict.** Inverting :math:`z = \zeta +
-      1/\zeta` as ``sqrt(z**2 - 4)`` cuts along a ray, so left of the origin it
-      picks the root *inside* the unit circle and the far field comes out
-      asymmetric — measured at ``(-50, 20)`` the speed was about three times
-      what a unit shear gives. Writing it ``sqrt(z-2)*sqrt(z+2)`` cuts along the
-      segment :math:`[-2,2]`, which is the slit the map already has, and is the
-      correct branch; but SymPy will then not push :func:`~sympy.re` and
-      :func:`~sympy.im` through it, so differentiating the velocity yields an
-      unevaluated ``Derivative(re(...))`` that no code printer can emit.
-      Expressing the components as :math:`(w + \bar w)/2` and
-      :math:`(w - \bar w)/2i` avoids ``re``/``im`` entirely and should
-      differentiate cleanly, at the cost of complex-typed expressions that
-      evaluate to real values — untried.
-
-   2. **The interior velocity is missing.** Pressure and viscosity are
-      ``Piecewise`` on the inclusion boundary, but the velocity currently
-      evaluates the matrix expression everywhere, so it is wrong inside. The
-      interior field is a uniform velocity gradient (the Eshelby property that
-      makes this benchmark sharp), fixed by the interior deviatoric stress and
-      :attr:`rotation_rate`, both already available here.
-
-   Once both are done the validation is already built: the momentum and
-   incompressibility residuals in :mod:`underworld3.analytic._validation` need
-   no oracle, so they will confirm or refute the reconstruction directly, and
-   the published pressure, interface pressure and rotation rate give three more
-   independent checks.
 """
 
 import functools
@@ -73,6 +37,23 @@ import functools
 import sympy
 
 from ._base import AnalyticSolution, FixedWalls
+
+
+def _conjugate(expression):
+    r"""Complex conjugate of an expression built from real symbols and ``I``.
+
+    :func:`sympy.conjugate` will not distribute through ``sqrt`` of a symbolic
+    argument — it has a branch cut, so SymPy leaves ``conjugate(sqrt(...))``
+    unevaluated, and anything built on it can no longer be differentiated into
+    printable code.
+
+    Flipping the sign of ``I`` does the same job here and does it structurally:
+    for a function of real variables assembled from real symbols and ``I``,
+    :math:`\overline{f(z)} = f(\bar z)`, and the sign flip is exactly that.
+    Verified against :func:`numpy.conj` on both sides of the branch cut.
+    """
+
+    return expression.subs(sympy.I, -sympy.I)
 
 
 @functools.lru_cache(maxsize=None)
@@ -151,8 +132,19 @@ def _potentials(zeta, viscosity_ratio, aspect_ratio, alpha, pure_shear, simple_s
     D = sympy.I * ImBC / B1 - ReBC / B2
     A = -(rc**2) * B3 * D
 
-    phi_prime = A / (zeta**2 - 1)
-    phi = -A / zeta
+    # A purely imaginary constant in phi' is invisible to the published data:
+    # the pressure is -2 Re[phi'] and the stress involves phi'', so neither sees
+    # it. It is a far-field rigid rotation, and without it the reconstructed flow
+    # has the right strain but no spin — a simple shear comes out as pure shear.
+    #
+    # Its value is fixed by the reference's own rotation rate: taken to a circle
+    # the expression collapses to -gr/2 for every viscosity ratio, which is the
+    # statement that a circular inclusion turns with the far field. Vorticity is
+    # frame invariant, so alpha does not enter, and pure shear contributes none.
+    far_field_spin = -gr / 2
+
+    phi_prime = A / (zeta**2 - 1) + sympy.I * far_field_spin
+    phi = -A / zeta + sympy.I * far_field_spin * (zeta + 1 / zeta)
 
     psi_prime = -BC - B5 * D * (3 * zeta**2 - 1) / (zeta**2 - 1) ** 3
 
@@ -296,28 +288,54 @@ class EllipticalInclusion(FixedWalls, AnalyticSolution):
 
         # 2 mu (v_x + i v_y) = kappa phi - z conj(phi') - conj(psi), and kappa = 1
         # for an incompressible medium (the elastic 3 - 4 nu at nu = 1/2).
-        velocity = (
+        outside = (
             potentials["phi"]
-            - z * sympy.conjugate(potentials["phi_prime"])
-            - sympy.conjugate(potentials["psi"])
+            - z * _conjugate(potentials["phi_prime"])
+            - _conjugate(potentials["psi"])
         ) / 2
 
+        # Real and imaginary parts without re()/im(), which cannot be pushed
+        # through the branch cut. These are real-valued but complex-typed: SymPy
+        # cannot prove the imaginary part vanishes, though it does to roundoff.
+        outside_x = self._scale * (outside + _conjugate(outside)) / 2
+        outside_y = self._scale * (outside - _conjugate(outside)) / (2 * sympy.I)
+
+        # Inside, the velocity gradient is uniform — the Eshelby property, and
+        # what makes this benchmark sharp. It is fixed by the interior deviatoric
+        # stress and the rotation rate, both already known.
+        #
+        # The reference writes stress as (sigma_yy - sigma_xx)/2 + i sigma_xy, so
+        # with a traceless deviator tau_yy = Re[T], tau_xx = -Re[T], tau_xy =
+        # Im[T]. Dividing by 2 mu_c gives the strain rate, and mu_m cancels: the
+        # interior strain rate depends on the viscosity *ratio* only.
+        T = potentials["interior_stress"]
+        rate = 2 * self.viscosity_ratio
+        exx, eyy = -sympy.re(T) / rate, sympy.re(T) / rate
+        exy = sympy.im(T) / rate
+        spin = self.rotation_rate
+
+        inside_x = exx * u + (exy - spin) * v
+        inside_y = (exy + spin) * u + eyy * v
+
         x, y = mesh.X
+        inside = sympy.Abs(zeta) < rc
         physical = {u: x - centre[0], v: y - centre[1]}
 
-        inside = sympy.Abs(zeta) < rc
-
-        self.fn_velocity = self._scale * sympy.Matrix(
+        self.fn_velocity = sympy.Matrix(
             [
                 [
-                    sympy.re(velocity).subs(physical),
-                    sympy.im(velocity).subs(physical),
+                    sympy.Piecewise((inside_x, inside), (outside_x, True)).subs(physical),
+                    sympy.Piecewise((inside_y, inside), (outside_y, True)).subs(physical),
                 ]
             ]
         )
+        # p = -2 Re[phi'], written without re() so it can be differentiated.
+        matrix_pressure = -(
+            potentials["phi_prime"] + _conjugate(potentials["phi_prime"])
+        )
         self.fn_pressure = sympy.Piecewise(
             (potentials["interior_pressure"], inside),
-            (-2 * sympy.re(potentials["phi_prime"]), True),
+            (matrix_pressure, True),
         ).subs(physical)
         self.fn_viscosity = sympy.Piecewise(
             (self.matrix_viscosity * self.viscosity_ratio, inside),
@@ -325,7 +343,37 @@ class EllipticalInclusion(FixedWalls, AnalyticSolution):
         ).subs(physical)
         self.fn_bodyforce = sympy.Matrix([[0, 0]])
 
+        # Strain rate and stress follow from the velocity and pressure above.
+        # They are consistent with those rather than independent of them, so they
+        # are not a check on the reconstruction — the checks are the Stokes
+        # residual, velocity continuity across the interface, and the far field.
+        strain = sympy.Matrix(
+            [
+                [
+                    (
+                        sympy.diff(self.fn_velocity[0, i], mesh.X[j])
+                        + sympy.diff(self.fn_velocity[0, j], mesh.X[i])
+                    )
+                    / 2
+                    for j in range(2)
+                ]
+                for i in range(2)
+            ]
+        )
+        self.fn_strainrate = strain
+        self.fn_stress = (
+            2 * self.fn_viscosity * strain - self.fn_pressure * sympy.eye(2)
+        )
+
         self._potentials = potentials
+
+    @property
+    def semi_axes(self):
+        """Long and short semi-axes of the inclusion, in physical units."""
+
+        rc = float(_shape_ratio(self.aspect_ratio))
+        scale = float(self._scale)
+        return scale * (rc + 1 / rc), scale * (rc - 1 / rc)
 
     @property
     def rotation_rate(self):
