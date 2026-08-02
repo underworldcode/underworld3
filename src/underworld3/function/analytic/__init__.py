@@ -65,6 +65,13 @@ def __getattr__(name):
         )
         _warned = True
 
+    if name == "SolCx":
+        # The one class, not a second copy: resolving it anywhere else would
+        # break isinstance for objects built through the other path.
+        from underworld3.analytic import SolCx
+
+        return SolCx
+
     from underworld3.analytic._reference import _velic
 
     return getattr(_velic, name)

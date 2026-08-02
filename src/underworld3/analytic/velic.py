@@ -10,22 +10,6 @@ vendored in :mod:`underworld3.analytic._reference` as the oracle the
 transcription is validated against and as a supported escape hatch
 (``reference=True``).
 
-.. warning::
-   **Under validation — not exported from** :mod:`underworld3.analytic` **yet.**
-   ``uw.analytic.SolCx`` is still the reference kernel. Two gates are open, both
-   recorded in ``docs/developer/subsystems/analytic-solutions.md``:
-
-   * the transcription of the ``_solCx_B`` arrangement disagrees with the
-     published kernel, while ``_solCx_A`` agrees to 1e-14 across every regime
-     tested (contrast 1e-6 to 1e8, both directions, several ``x_c`` and ``n``).
-     Since the dispatcher routes :math:`\eta_A < \eta_B` to ``_solCx_B``, and the
-     ``_solCx_A`` transcription reproduces *that* output, the two arrangements
-     should be equivalent and one of them is being read wrongly. Unexplained.
-   * the isoviscous case :math:`\eta_A = \eta_B` returns zero, where the kernel
-     does not — a degeneracy in the closed form at unit viscosity ratio that the
-     transcription is not handling.
-
-   Nothing here is used until both are closed.
 """
 
 import functools
@@ -55,17 +39,25 @@ _SOLCX_OUTPUTS = {
 
 
 @functools.lru_cache(maxsize=None)
-def _solcx_kernel(variant):
-    r"""Transcribe one conditioning variant of the Velic SolCx kernel.
+def _solcx_kernel(variant="_solCx_A"):
+    r"""Transcribe the Velic SolCx kernel into SymPy.
 
-    The published kernel carries two arrangements of the same solution —
-    ``_solCx_A`` for :math:`\eta_A > \eta_B` and ``_solCx_B`` for the reverse —
-    because the integration constants lose precision differently depending on
-    which side is stiff. Which one applies is decided by the viscosities, so it
-    is resolved when a solution is constructed, not symbolically.
+    The published source carries two arrangements, ``_solCx_A`` and
+    ``_solCx_B``, and dispatches on :math:`\eta_A > \eta_B`. They are not two
+    conditionings of one formula: evaluated exactly, ``_solCx_B`` is
+    ``_solCx_A`` reflected, :math:`B(x, z) = A(1-x, z)`. It solves the mirrored
+    problem so that the algebra derived for a stiff left column can be reused
+    when the stiff column is on the right, and undoes the reflection on the way
+    out.
 
-    Within a variant the only branch left is spatial (:math:`x < x_c`), and that
-    one becomes a :class:`sympy.Piecewise`.
+    So only ``_solCx_A`` is transcribed, and no dispatch is needed. That is
+    safe because the reason for the dispatch — conditioning — was measured
+    rather than assumed: this arrangement reproduces the published kernel to
+    1e-14 over viscosity ratios from 1e-6 to 1e8 in both directions. See
+    ``docs/developer/subsystems/analytic-solutions.md``.
+
+    The remaining branch is spatial (:math:`x < x_c`) and becomes a
+    :class:`sympy.Piecewise`.
 
     Returns
     -------
@@ -173,6 +165,16 @@ class SolCx(FreeSlipWalls, AnalyticSolution):
 
         if not (float(eta_A) > 0.0 and float(eta_B) > 0.0):
             raise ValueError("eta_A and eta_B must be positive.")
+        if float(eta_A) == float(eta_B):
+            # The closed form carries (ZR - 1) in several denominators, so equal
+            # viscosities are a removable singularity. SymPy cancels it when the
+            # expression is evaluated symbolically at a point, but not in the
+            # compiled form, so this case would silently return nonsense. A
+            # uniform-viscosity benchmark is a different solution anyway.
+            raise ValueError(
+                "SolCx is a viscosity-jump benchmark and is singular at "
+                "eta_A == eta_B. Use a uniform-viscosity solution instead."
+            )
         if not 0.0 <= float(x_c) <= 1.0:
             raise ValueError("x_c must lie in [0, 1].")
         if int(n) != n or int(n) < 1:
@@ -185,23 +187,30 @@ class SolCx(FreeSlipWalls, AnalyticSolution):
 
         x, z = mesh.X
 
+        # Exact parameters, not floats. The closed form carries (ZR - 1) in
+        # several denominators, so at equal viscosities it has a removable
+        # singularity: substituting exactly lets SymPy cancel it, while
+        # substituting floats leaves a 0/0 that evaluates to nothing useful.
+        # Rational() of a float is its exact binary value, so this costs nothing.
+        eta_A_exact = sympy.Rational(self.eta_A)
+        eta_B_exact = sympy.Rational(self.eta_B)
+
         # The kernel's own naming: kx is the horizontal wavenumber of the forcing
         # (fixed at pi), kn the vertical one, ZR the viscosity ratio.
         values = {
-            _XC: self.x_c,
+            _XC: sympy.Rational(self.x_c),
             _KN: self.n * sympy.pi,
             _KX: sympy.pi,
-            _ZA: self.eta_A,
-            _ZB: self.eta_B,
-            _ZR: self.eta_B / self.eta_A,
+            _ZA: eta_A_exact,
+            _ZB: eta_B_exact,
+            _ZR: eta_B_exact / eta_A_exact,
             _X: x,
             _Z: z,
         }
 
-        variant = "_solCx_A" if self.eta_A > self.eta_B else "_solCx_B"
         kernel = {
             field: expression.subs(values)
-            for field, expression in _solcx_kernel(variant).items()
+            for field, expression in _solcx_kernel().items()
         }
 
         self.fn_velocity = sympy.Matrix(
@@ -232,6 +241,30 @@ class SolCx(FreeSlipWalls, AnalyticSolution):
 
         if reference:
             self._use_reference_kernel()
+
+    def velocity_error(self, velocity_var):
+        """Global relative L2 velocity error. Equivalent to ``error("velocity", ...)``."""
+
+        return self.error("velocity", velocity_var)
+
+    def evaluate_stress(self, coords):
+        """Exact total (Cauchy) stress at ``coords``, as ``(N, 3)`` columns
+        :math:`(\\sigma_{xx}, \\sigma_{zz}, \\sigma_{xz})`."""
+
+        import numpy as np
+
+        components = [self.fn_stress[0, 0], self.fn_stress[1, 1], self.fn_stress[0, 1]]
+        return np.column_stack(
+            [np.asarray(self.evaluate(c, coords)).reshape(-1) for c in components]
+        )
+
+    def topography_top(self, coords):
+        """Exact dynamic topography :math:`-\\mathbf n\\cdot\\sigma\\cdot\\mathbf n`
+        on the top boundary, i.e. :math:`-\\sigma_{zz}`."""
+
+        import numpy as np
+
+        return -np.asarray(self.evaluate(self.fn_stress[1, 1], coords)).reshape(-1)
 
     def _use_reference_kernel(self):
         """Replace the transcribed fields with the vendored kernel's own.

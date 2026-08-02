@@ -134,7 +134,7 @@ uses with `ex75.h` — so later refactors cannot drift silently. Record the meas
 maximum error, the sampling design, and which oracles were used in the solution's
 docstring. Not just "validated".
 
-## Status: SolCx transcription, open questions
+## Status: SolCx transcribed and validated
 
 The transcriber is in place and measured. On `solCx.c` — the largest kernel in
 the family at 1500 lines — it reads both arrangements and both spatial branches
@@ -157,32 +157,48 @@ Gate 1 and Gate 2 on the `_solCx_A` arrangement, against the published kernel, a
 | 1e3 | 1 | 0.25 | 2 | 8.9e-16 |
 | 1 | 1e-6 | 0.5 | 1 | 1.5e-14 |
 
-**Two gates are open, and nothing is exported until they close.**
+### What the gates caught, and what turned out to be true
 
-1. **The `_solCx_B` arrangement transcribes to a different answer.** The
-   published kernel dispatches on the viscosity ordering — `_solCx_A` for
-   $\eta_A > \eta_B$, `_solCx_B` otherwise — because the integration constants
-   lose precision differently depending on which column is stiff. The two should
-   therefore compute the same solution. They do in the compiled kernel: the
-   `_solCx_A` transcription reproduces the dispatcher's output *in the regime
-   where the dispatcher runs `_solCx_B`*, to 1e-14. But transcribing `_solCx_B`
-   directly gives an answer wrong by a factor of tens, in every regime. Both
-   arrangements parse to the same structure (same assigned names, same branch
-   shape, self-contained blocks), so the reader is treating them identically and
-   one of them is nonetheless being read wrongly. Unexplained; do not use
-   `_solCx_B` until it is.
+Three things looked like transcription failures and were not. All three are worth
+knowing before transcribing the next kernel.
 
-2. **The isoviscous case returns zero.** At $\eta_A = \eta_B$ the transcription
-   evaluates to zero where the kernel does not, which points at a $0/0$ in the
-   closed form at unit viscosity ratio. The published solution is built around
-   $Z_R = \eta_B/\eta_A$ and several denominators carry $Z_R - 1$.
+**`_solCx_B` is not a second conditioning — it is the mirror.** The published
+source dispatches on $\eta_A > \eta_B$, which reads as two arrangements of one
+formula chosen for numerical conditioning. Transcribing `_solCx_B` directly gave
+an answer wrong by a factor of tens in every regime, while `_solCx_A` matched to
+1e-14 — including in the regime where the dispatcher runs `_solCx_B`. Evaluated
+exactly at 50 digits the relationship is clean: $B(x,z) = A(1-x, z)$. `_solCx_B`
+solves the mirrored problem so the algebra derived for a stiff *left* column can
+be reused when the stiff column is on the right, and reflects on the way out.
 
-A note on method, worth keeping: the first run of Gate 2 reported errors of
-1e12, which looked catastrophic. It was the *metric* — a pointwise relative error
-divides by the true value, and these fields pass through zero, so the ratio
-explodes wherever the solution is small. The values themselves were close.
-Normalising by the field's magnitude over the sample is the honest measure.
-Suspect the metric before the result when every case fails alike.
+So only `_solCx_A` is transcribed and there is no dispatch. That is safe because
+the stated reason for the dispatch was checked rather than assumed: the table
+above spans ratios from 1e-6 to 1e8 in both directions and the error never leaves
+1e-14. **Do not assume a kernel's internal dispatch means what its condition
+suggests — evaluate both arms exactly and compare.**
+
+**The isoviscous case is a genuine limitation, and it is now refused.** The closed
+form carries $Z_R - 1$ in several denominators, so $\eta_A = \eta_B$ is a
+removable singularity. SymPy cancels it when the expression is evaluated
+symbolically at a point — verified to 40 digits against the kernel — but not in
+the compiled form, where it survives as $0/0$. Rather than return nonsense,
+`SolCx` raises for equal viscosities: it is a viscosity-jump benchmark, and
+uniform viscosity is a different solution. Parameters are substituted as exact
+`Rational`s regardless, since that is what lets the cancellation happen at all.
+
+**The first gate run's 1e12 errors were the metric, not the transcription.** A
+pointwise relative error divides by the true value, and these fields pass through
+zero, so the ratio explodes wherever the solution is small — the values were
+close all along. Normalise by the field's magnitude over the sample. Suspect the
+metric before the result when every case fails alike.
+
+### Still to do for SolCx
+
+Gates 3 to 6 (derivatives against the kernel's independently derived strain rate,
+the physics residual, the negative control, and the high-precision separation)
+are demonstrated ad hoc above but are not yet a harness the test suite runs per
+solution. That harness is what makes the remaining eleven transcriptions cheap,
+and it should land before them.
 
 ## Provenance
 

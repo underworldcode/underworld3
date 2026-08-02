@@ -28,9 +28,7 @@ underworld3.analytic._base : the contract each solution satisfies.
 
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
-# SolCx is still served by the published reference kernel while the suite is
-# built out; it will become a SymPy transcription validated against that kernel.
-from ._reference._velic import SolCx
+from .velic import SolCx
 
 __all__ = [
     "AnalyticSolution",
