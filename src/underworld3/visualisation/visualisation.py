@@ -187,6 +187,78 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         return pv_mesh
 
 
+def labelled_facets_to_pv_mesh(mesh, name):
+    """The facets carrying a boundary label, as a PyVista object of their own.
+
+    An embedded surface — a conforming fault, a material interface — is a set of
+    facets *inside* the mesh, so drawing it with the mesh hides it: in 2-D it is
+    a few lines among thousands, and in 3-D the surrounding elements occlude it
+    entirely. Returned separately it can be drawn as a wireframe over a
+    transparent or clipped mesh, and saved to ``.vtp`` for interactive viewing.
+
+    The result is dimension-general because a labelled facet's closure gives its
+    vertices whatever the dimension: two in 2-D (a line segment), three in 3-D
+    (a triangle).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The mesh carrying the label.
+    name : str
+        A boundary name, normally one added by
+        :meth:`~underworld3.discretisation.Mesh.add_conforming_surface`.
+
+    Returns
+    -------
+    pyvista.PolyData
+        Lines in 2-D, triangles in 3-D. Empty if this rank owns no part of the
+        surface, which is normal in parallel.
+
+    Examples
+    --------
+    >>> fault = vis.labelled_facets_to_pv_mesh(cut, "Fault")
+    >>> pl.add_mesh(vis.mesh_to_pv_mesh(cut), style="wireframe",
+    ...             color="lightgrey", opacity=0.3)
+    >>> pl.add_mesh(fault, color="red", line_width=3)
+    >>> fault.save("fault.vtp")            # open in ParaView or pv.read()
+    """
+    import numpy as np
+    import pyvista as pv
+
+    if name not in [b.name for b in mesh.boundaries]:
+        raise ValueError(
+            f"{name!r} is not a boundary of this mesh; have "
+            f"{[b.name for b in mesh.boundaries]}")
+
+    dm = mesh.dm
+    vS, vE = dm.getDepthStratum(0)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(
+        -1, dm.getCoordinateDim())
+
+    value = mesh.boundaries[name].value
+    label = dm.getLabel(name)
+    # An empty stratum yields a null IS that segfaults in getIndices(), and a
+    # rank owning no part of the surface is the normal case in parallel.
+    if label is None or label.getStratumSize(value) == 0:
+        return pv.PolyData()
+
+    facets = [
+        [int(p) - vS for p in dm.getTransitiveClosure(int(f))[0] if vS <= p < vE]
+        for f in label.getStratumIS(value).getIndices()
+    ]
+    used = sorted({v for facet in facets for v in facet})
+    remap = {v: i for i, v in enumerate(used)}
+    points = _vector_to_pv_vector(X[used])
+
+    cells = np.hstack([[len(f)] + [remap[v] for v in f] for f in facets])
+    out = pv.PolyData(points)
+    if all(len(f) == 2 for f in facets):
+        out.lines = cells
+    else:
+        out.faces = cells
+    return out
+
+
 def coords_to_pv_coords(coords):
     """Convert coordinate array to PyVista-compatible 3D coordinates.
 

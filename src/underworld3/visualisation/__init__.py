@@ -9,6 +9,7 @@ This module provides visualization tools for Underworld3 including:
 # Import main visualization functions from visualisation.py
 from .visualisation import (
     mesh_to_pv_mesh,
+    labelled_facets_to_pv_mesh,
     scalar_fn_to_pv_points,
     vector_fn_to_pv_points,
     plot_mesh,

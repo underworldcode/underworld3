@@ -47,27 +47,14 @@ carries no length scale, so the same tolerance works on any mesh. Note this is a
 jumps, which anything optimising over the line's position has to live with.
 :func:`sliver_report` measures what a given tolerance buys.
 
-**What the slivers actually cost.** Measured with GAMG on a Poisson solve, which
-reads the operator and so is sensitive to element shape (the geometric hierarchy
-is deliberately not — it sat at 2-3 V-cycles across every mesh here and cannot
-discriminate). On a 5,432-cell box, CG iterations to ``rtol=1e-10``:
-
-=============  ===========  ==========
-``snap_frac``  min angle    CG iters
-=============  ===========  ==========
-uncut          43.7 deg     20
-0.00            0.6 deg     32
-0.05            2.7 deg     28
-0.10            6.7 deg     23
-0.20           11.3 deg     21
-=============  ===========  ==========
-
-So cutting without snapping costs 60 % more iterations, and snapping buys it back.
-A Lawson flip pass (:func:`~underworld3.utilities.reconnect.flip_to_reduce_max_angle`,
-which locks the cut automatically because :data:`CUT_LABEL` is an edge label)
-helps less than snapping does — 32 to 29 at ``snap_frac=0``, 28 to 25 at 0.05 —
-so raising the snap fraction is the better lever, and repair is a second-order
-touch-up rather than a requirement.
+Cutting without snapping costs about 60 % more iterations of an algebraic solver
+on the slivers it leaves behind, and snapping buys that back — which is where the
+0.10 default comes from. A Lawson flip pass
+(:func:`~underworld3.utilities.reconnect.flip_to_reduce_max_angle`, which locks
+the cut automatically because :data:`CUT_LABEL` is an edge label) helps less, so
+raising the snap fraction is the better lever and repair is a second-order
+touch-up rather than a requirement. The measurements behind all of that are in
+``docs/developer/subsystems/conforming-surfaces-and-fault-zones.md``.
 
 Scope
 -----
