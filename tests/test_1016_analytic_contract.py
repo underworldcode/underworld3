@@ -65,10 +65,51 @@ def test_contract_is_exported():
 
 
 def test_solcx_is_the_same_object_in_both_namespaces():
-    """uw.analytic re-exports SolCx; it does not redeclare it."""
+    """uw.analytic re-exports SolCx; it does not redeclare it.
+
+    If the old namespace redeclared its classes rather than resolving to the
+    new ones, `isinstance` would fail for any object built through the other
+    path.
+    """
     from underworld3.function import analytic as legacy
 
     assert uw.analytic.SolCx is legacy.SolCx
+
+
+def test_legacy_namespace_is_a_package_not_an_extension():
+    """The shim must stay a package directory, not a module file.
+
+    `underworld3.function.analytic` used to be a compiled extension. An
+    orphaned `.so` from an earlier install cannot be removed by `pip uninstall`
+    if it has fallen out of the wheel RECORD, and it would be imported in place
+    of the shim — silently restoring the old module and bypassing every
+    redirect. Python's path finder checks for a package directory *before* an
+    extension of the same name, which is the only thing that makes the stale
+    `.so` harmless. Keep this a directory.
+    """
+    from underworld3.function import analytic as legacy
+
+    assert legacy.__file__.endswith("__init__.py")
+
+
+def test_legacy_namespace_warns_on_use():
+    """Importing the shim is quiet; using a name from it is not."""
+    import importlib
+
+    from underworld3.function import analytic as legacy
+
+    # The warning fires once per process, so reset the latch to observe it.
+    legacy._warned = False
+
+    with pytest.warns(DeprecationWarning, match="moved to underworld3.analytic"):
+        legacy.SolCx
+
+
+def test_legacy_namespace_rejects_unknown_names():
+    from underworld3.function import analytic as legacy
+
+    with pytest.raises(AttributeError):
+        legacy.SolNotAThing
 
 
 def test_available_lists_solcx():

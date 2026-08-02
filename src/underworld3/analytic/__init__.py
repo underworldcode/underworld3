@@ -28,10 +28,9 @@ underworld3.analytic._base : the contract each solution satisfies.
 
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
-# SolCx is still served by the original compiled module while the suite is built
-# out. It reaches users through this namespace from the start so nothing has to
-# move twice, and so `uw.analytic` is useful on the day it lands.
-from underworld3.function.analytic import SolCx
+# SolCx is still served by the published reference kernel while the suite is
+# built out; it will become a SymPy transcription validated against that kernel.
+from ._reference._velic import SolCx
 
 __all__ = [
     "AnalyticSolution",

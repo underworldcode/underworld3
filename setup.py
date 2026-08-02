@@ -238,13 +238,17 @@ extensions = [
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
         **conf,
     ),
+    # The published reference kernels. Analytic solutions are delivered as SymPy;
+    # these are kept as the independent oracle each transcription is validated
+    # against. The headers must install beside the .so — the JIT adds only the
+    # module's own directory to its include path.
     Extension(
-        "underworld3.function.analytic",
+        "underworld3.analytic._reference._velic",
         sources=[
-            "src/underworld3/function/analytic.pyx",
-            "src/underworld3/function/AnalyticSolNL.c",
-            "src/underworld3/function/AnalyticSolCx.c",
-            "src/underworld3/function/solCx.c",
+            "src/underworld3/analytic/_reference/_velic.pyx",
+            "src/underworld3/analytic/_reference/AnalyticSolNL.c",
+            "src/underworld3/analytic/_reference/AnalyticSolCx.c",
+            "src/underworld3/analytic/_reference/solCx.c",
         ],
         extra_compile_args=extra_compile_args,
         **conf,
@@ -286,7 +290,13 @@ setup(
     name="underworld3",
     packages=find_packages(),
     # Version is derived from git tags via setuptools_scm (configured in pyproject.toml)
-    package_data={"underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"]},
+    package_data={
+        "underworld3": ["*.pxd", "*.h", "function/*.h", "cython/*.pxd"],
+        # Its own key: the "underworld3" globs above do not reach a directory
+        # that is itself a package. Missing these headers fails at solve time,
+        # when the JIT compiles, not at import.
+        "underworld3.analytic._reference": ["*.h"],
+    },
     ext_modules=cythonize(
         extensions,
         compiler_directives={"language_level": "3"},  # or "2" or "3str"
