@@ -219,3 +219,68 @@ def test_transcription_is_usable_by_the_solver(mesh):
     stokes.add_dirichlet_bc(sol.fn_velocity, "Top")
 
     assert len(stokes.essential_bcs) == 1
+
+
+# --- SolNL -----------------------------------------------------------------
+#
+# A second kernel through the same transcriber, which is the point: it caught a
+# reader bug SolCx could not. SolNL writes its results through a struct
+# (`out.x = ...`), and a target pattern that ignored the prefix read that as an
+# assignment to `x`, silently overwriting the coordinate. The velocity still
+# looked like a plausible expression. `test_solnl_velocity_is_the_published_form`
+# is the cheap guard: the published velocity is short enough to state outright.
+
+
+def test_solnl_velocity_is_the_published_form(mesh):
+    r"""The exact velocity is :math:`(-k e^{x}\cos kz,\; e^{x}\sin kz)`.
+
+    Short enough to assert directly, which makes it the fastest possible check
+    that the reader has not mangled the kernel.
+    """
+
+    sol = uw.analytic.SolNL(mesh, eta_0=1.0, n=1, r=1.5)
+    x, z = mesh.X
+    k = sympy.pi
+
+    assert sympy.simplify(sol.fn_velocity[0, 0] + k * sympy.exp(x) * sympy.cos(k * z)) == 0
+    assert sympy.simplify(sol.fn_velocity[0, 1] - sympy.exp(x) * sympy.sin(k * z)) == 0
+
+
+@pytest.mark.parametrize("eta_0,n,r", [(1.0, 1, 1.5), (2.0, 2, 1.5), (1.0, 1, 3.0)])
+def test_solnl_reproduces_the_reference_kernel(mesh, eta_0, n, r):
+    from underworld3.analytic import _validation
+    from underworld3.analytic._reference import _velic
+
+    sol = uw.analytic.SolNL(mesh, eta_0=eta_0, n=n, r=r)
+    points = _validation.adversarial_points(count=20)
+
+    def at(kernel):
+        return lambda x, z: kernel(eta_0, n, r, x, z).evalf()
+
+    fields = {
+        "velocity_x": (sol.fn_velocity[0, 0], at(_velic.AnalyticSolNL_velocity_x)),
+        "velocity_z": (sol.fn_velocity[0, 1], at(_velic.AnalyticSolNL_velocity_y)),
+        "bodyforce_z": (sol.fn_bodyforce[0, 1], at(_velic.AnalyticSolNL_bodyforce_y)),
+        "viscosity": (sol.fn_viscosity, at(_velic.AnalyticSolNL_viscosity)),
+    }
+
+    for name, error in _validation.reference_agreement(sol, fields, points).items():
+        assert error < 1.0e-10, f"{name}: max normalised error {error:.2e}"
+
+
+def test_solnl_velocity_is_divergence_free(mesh):
+    """No oracle: the published velocity is solenoidal by construction."""
+
+    from underworld3.analytic import _validation
+
+    sol = uw.analytic.SolNL(mesh, eta_0=1.0, n=2, r=1.5)
+    points = _validation.adversarial_points(count=20)
+
+    assert _validation.incompressibility_residual(sol, points) < 1.0e-10
+
+
+def test_solnl_is_marked_nonlinear(mesh):
+    """The viscosity depends on the solution's own strain rate."""
+
+    assert uw.analytic.SolNL(mesh).nonlinear is True
+    assert uw.analytic.SolCx(mesh, eta_A=1.0, eta_B=10.0).nonlinear is False

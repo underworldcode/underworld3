@@ -28,13 +28,14 @@ underworld3.analytic._base : the contract each solution satisfies.
 
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
-from .velic import SolCx
+from .velic import SolCx, SolNL
 
 __all__ = [
     "AnalyticSolution",
     "FreeSlipWalls",
     "FixedWalls",
     "SolCx",
+    "SolNL",
     "available",
     "describe",
 ]
@@ -45,6 +46,7 @@ __all__ = [
 # without being importable.
 _SOLUTIONS = {
     "SolCx": SolCx,
+    "SolNL": SolNL,
 }
 
 

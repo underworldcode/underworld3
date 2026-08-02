@@ -40,7 +40,11 @@ _C_FUNCTIONS = {
     "M_PI": sympy.pi,
 }
 
-_STATEMENT = re.compile(r"(\w+)\s*=\s*([^;]+);")
+# The assignment target keeps any `struct.` prefix. Without it, `out.x = ...`
+# reads as an assignment to `x` and silently overwrites the coordinate symbol —
+# every later statement referring to x then gets the wrong thing, and the result
+# looks plausible rather than broken.
+_STATEMENT = re.compile(r"((?:\w+\.)?\w+)\s*=\s*([^;]+);")
 _FLOAT_LITERAL = re.compile(r"\b\d+\.\d*(?:[eE][+-]?\d+)?")
 
 
@@ -63,13 +67,17 @@ def _matching_brace(source, opening):
         index += 1
 
 
-def _exact_literals(expression):
-    """Rewrite C float literals as exact Rationals.
+def _as_python(expression):
+    """Prepare one C expression for evaluation as Python.
 
-    ``0.4e1`` is the generator's way of writing 4. Reading it as a float would
-    make every downstream comparison approximate for no reason.
+    Two rewrites. Float literals become exact ``Rational``\\s — ``0.4e1`` is the
+    generator's way of writing 4, and reading it as a float would make every
+    downstream comparison approximate for no reason. And the statement is folded
+    onto one line: C statements wrap freely, but a wrapped Python expression with
+    indented continuations is a syntax error.
     """
 
+    expression = " ".join(expression.split())
     return _FLOAT_LITERAL.sub(lambda m: f"Rational('{m.group(0)}')", expression)
 
 
@@ -86,12 +94,19 @@ class CSource:
         self.path = str(path)
         self.text = _strip_comments(open(self.path).read())
 
-    def function(self, name):
-        """The body of ``void <name>(...)``, braces excluded."""
+    def function(self, name, returns="void"):
+        """The body of ``<returns> <name>(...)``, braces excluded."""
 
-        signature = self.text.index(f"void {name}(")
+        signature = self.text.index(f"{returns} {name}(")
         opening = self.text.index("{", self.text.index(")", signature))
         return self.text[opening + 1 : _matching_brace(self.text, opening) - 1]
+
+    @staticmethod
+    def returned(body):
+        """The expression a body returns, as text."""
+
+        marker = body.index("return")
+        return body[marker + len("return") : body.index(";", marker)]
 
     @staticmethod
     def branches(body, condition, tail_ends_at=None):
@@ -124,6 +139,19 @@ class CSource:
             tail = tail[: tail.index(tail_ends_at)]
 
         return then_block, else_block, tail
+
+
+def evaluate_expression(text, environment):
+    """Evaluate a single C expression against names already in scope.
+
+    For kernels that end in ``return <expression>;`` rather than assigning the
+    result to a variable.
+    """
+
+    namespace = {**_C_FUNCTIONS, "Rational": sympy.Rational}
+    return sympy.sympify(
+        eval(_as_python(text), {"__builtins__": {}}, {**namespace, **environment})
+    )
 
 
 def evaluate_block(block, environment):
@@ -162,7 +190,7 @@ def evaluate_block(block, environment):
 
     for target, expression in _STATEMENT.findall(block):
         value = eval(
-            _exact_literals(expression), {"__builtins__": {}}, {**namespace, **scope}
+            _as_python(expression), {"__builtins__": {}}, {**namespace, **scope}
         )
         scope[target] = sympy.sympify(value)
 

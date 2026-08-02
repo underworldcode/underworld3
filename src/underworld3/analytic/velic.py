@@ -17,8 +17,8 @@ import os
 
 import sympy
 
-from ._base import AnalyticSolution, FreeSlipWalls
-from ._transcribe import CSource, evaluate_block
+from ._base import AnalyticSolution, FixedWalls, FreeSlipWalls
+from ._transcribe import CSource, evaluate_block, evaluate_expression
 
 _REFERENCE_DIR = os.path.join(os.path.dirname(__file__), "_reference")
 
@@ -299,3 +299,174 @@ class SolCx(FreeSlipWalls, AnalyticSolution):
                 ],
             ]
         )
+
+
+_ETA0, _N, _R = sympy.symbols("eta0 n r")
+
+
+@functools.lru_cache(maxsize=None)
+def _solnl_kernel():
+    r"""Transcribe the Velic SolNL kernel into SymPy.
+
+    Six short functions rather than one branching kernel, so each is read on its
+    own. The tensor entries are written through a struct (``out.xx = ...``), and
+    the viscosity is returned rather than assigned — hence the two ways of
+    reading a body here.
+
+    Returns
+    -------
+    dict
+        Field name -> expression in the kernel's own symbols.
+    """
+
+    source = CSource(os.path.join(_REFERENCE_DIR, "AnalyticSolNL.c"))
+    inputs = {"eta0": _ETA0, "n": _N, "r": _R, "x": _X, "z": _Z}
+
+    def block(name, signature):
+        return evaluate_block(source.function(name, returns=signature), inputs)
+
+    velocity = block("SolNL_velocity", "vec2")
+    bodyforce = block("SolNL_bodyforce", "vec2")
+    stress = block("SolNL_stress", "tensor2")
+    strainrate = block("SolNL_strainrate", "tensor2")
+    pressure = block("SolNL_pressure", "double")
+
+    viscosity_body = source.function("SolNL_viscosity", returns="double")
+    viscosity = evaluate_expression(
+        CSource.returned(viscosity_body), evaluate_block(viscosity_body, inputs)
+    )
+
+    return {
+        "velocity_x": velocity["out.x"],
+        "velocity_z": velocity["out.z"],
+        "bodyforce_x": bodyforce["out.x"],
+        "bodyforce_z": bodyforce["out.z"],
+        "pressure": pressure["p"],
+        "stress_xx": stress["out.xx"],
+        "stress_zz": stress["out.zz"],
+        "stress_xz": stress["out.xz"],
+        "strainrate_xx": strainrate["out.xx"],
+        "strainrate_zz": strainrate["out.zz"],
+        "strainrate_xz": strainrate["out.xz"],
+        "viscosity": viscosity,
+    }
+
+
+class SolNL(FixedWalls, AnalyticSolution):
+    r"""Power-law viscous flow — the SolNL nonlinear benchmark.
+
+    A manufactured solution for a shear-thinning fluid: the viscosity depends on
+    the second invariant of the strain rate the solution itself produces,
+
+    .. math::
+        \eta = \eta_0 \left(\dot\varepsilon_{ij}\dot\varepsilon_{ij}\right)^{1/r - 1}
+
+    so it tests a nonlinear solver rather than a linear one. The velocity is
+    simple — :math:`\mathbf u = (-k\,e^{x}\cos kz,\; e^{x}\sin kz)`, divergence
+    free by inspection — and the body force is whatever makes it exact.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    eta_0 : float
+        Viscosity prefactor.
+    n : int
+        Vertical wavenumber.
+    r : float
+        Power-law exponent. ``r = 1`` is Newtonian; larger is more
+        shear-thinning.
+    reference : bool
+        Evaluate through the vendored kernel instead of the transcription.
+
+    Notes
+    -----
+    The velocity is not tangential to the walls, so this is posed with the exact
+    velocity prescribed on the boundary rather than free slip.
+    """
+
+    dim = 2
+    nonlinear = True
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/AnalyticSolNL.c."
+    )
+    eqn_velocity = r"(-k e^{x}\cos kz,\; e^{x}\sin kz), \quad k = n\pi"
+    eqn_viscosity = r"\eta_0 (\dot\varepsilon_{ij}\dot\varepsilon_{ij})^{1/r - 1}"
+
+    def __init__(self, mesh, eta_0=1.0, n=1, r=1.5, reference=False):
+        super().__init__(mesh)
+
+        if float(eta_0) <= 0.0:
+            raise ValueError("eta_0 must be positive.")
+        if int(n) != n or int(n) < 1:
+            raise ValueError("n (vertical wavenumber) must be a positive integer.")
+        if float(r) <= 0.0:
+            raise ValueError("r (power-law exponent) must be positive.")
+
+        self.eta_0 = float(eta_0)
+        self.n = int(n)
+        self.r = float(r)
+
+        x, z = mesh.X
+        values = {
+            _ETA0: sympy.Rational(self.eta_0),
+            _N: self.n,
+            _R: sympy.Rational(self.r),
+            _X: x,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solnl_kernel().items()
+        }
+
+        self.fn_velocity = sympy.Matrix(
+            [[kernel["velocity_x"], kernel["velocity_z"]]]
+        )
+        self.fn_pressure = kernel["pressure"]
+        self.fn_viscosity = kernel["viscosity"]
+        self.fn_bodyforce = sympy.Matrix(
+            [[kernel["bodyforce_x"], kernel["bodyforce_z"]]]
+        )
+        self.fn_stress = sympy.Matrix(
+            [
+                [kernel["stress_xx"], kernel["stress_xz"]],
+                [kernel["stress_xz"], kernel["stress_zz"]],
+            ]
+        )
+        self.fn_strainrate = sympy.Matrix(
+            [
+                [kernel["strainrate_xx"], kernel["strainrate_xz"]],
+                [kernel["strainrate_xz"], kernel["strainrate_zz"]],
+            ]
+        )
+
+        if reference:
+            self._use_reference_kernel()
+
+    def _use_reference_kernel(self):
+        """Point-evaluation only: opaque to the JIT, so no solver can use it."""
+
+        from ._reference import _velic
+
+        x, z = self.mesh.X
+        parameters = (self.eta_0, self.n, self.r)
+
+        self.fn_velocity = sympy.Matrix(
+            [
+                [
+                    _velic.AnalyticSolNL_velocity_x(*parameters, x, z),
+                    _velic.AnalyticSolNL_velocity_y(*parameters, x, z),
+                ]
+            ]
+        )
+        self.fn_bodyforce = sympy.Matrix(
+            [
+                [
+                    _velic.AnalyticSolNL_bodyforce_x(*parameters, x, z),
+                    _velic.AnalyticSolNL_bodyforce_y(*parameters, x, z),
+                ]
+            ]
+        )
+        self.fn_viscosity = _velic.AnalyticSolNL_viscosity(*parameters, x, z)
