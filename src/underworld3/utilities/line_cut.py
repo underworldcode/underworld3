@@ -665,6 +665,73 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
     }
 
 
+def pull_vertex_onto(dm, targets):
+    """Move the nearest mesh vertex onto each target point; return a new mesh.
+
+    COLLECTIVE. This is how a fault TIP or a network JUNCTION is placed, and both
+    are the same problem: a distinguished point of the geometry that has to
+    coincide with a mesh vertex. Once it does, every branch meeting there arrives
+    at the already-legal "one crossed edge, one on-surface corner" case, and
+    :func:`cut_along_lines` terminates the chain cleanly instead of refusing it.
+
+    Prefer this to snapping the tip to the nearest vertex. Moving the MESH keeps
+    the tip exactly where it was asked for — measured on a 1/12 box, tip error
+    0.0000 against 0.0306, and a better worst angle (8.79 deg against 5.29) — and
+    it costs mesh displacement rather than geometric accuracy, the same trade as
+    ``snap_frac``. The tip is where the stress concentrates, so accuracy there is
+    worth more than tidiness.
+
+    Parameters
+    ----------
+    dm : PETSc.DMPlex
+        **Not modified.** The pull is returned as a new mesh.
+    targets : array_like
+        An ``(N, 2)`` array of points, or one point.
+
+    Returns
+    -------
+    PETSc.DMPlex
+        A copy with one vertex moved onto each target.
+
+    Notes
+    -----
+    Which vertex gets chosen JUMPS as the target moves, so this is a discrete
+    switch in what may be a continuous design variable — the same class of
+    behaviour as ``snap_frac``, and anything optimising over fault geometry has
+    to live with it.
+
+    The choice is made from the coordinates alone and reduced globally, so every
+    rank moves the same vertex: a rank-local nearest-vertex search picks a
+    different one on each rank, which is how the mesh stops being
+    partition-independent. Exact ties in distance are broken by coordinate order;
+    two distinct vertices at bit-identical distance would be arbitrary, and that
+    is measure-zero rather than handled.
+    """
+    X = _coords(dm)
+    arr = X.copy()
+    scale = _global_extent(dm)
+
+    for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :2]:
+        d = np.linalg.norm(X[:, :2] - t, axis=1)
+        # Reduced as (distance, x, y) so the tie-break is part of the same
+        # reduction: tuples compare lexicographically, so MIN gives the closest
+        # vertex and, among equals, the one lowest in coordinate order.
+        local = ((float(d.min()), *X[int(d.argmin()), :2]) if d.size
+                 else (np.inf, np.inf, np.inf))
+        _dist, tx, ty = uw.mpi.comm.allreduce(local, op=MPI.MIN)
+
+        # Move it by POSITION, not by index: the chosen vertex may be a ghost
+        # here and an owned point there, and both copies have to end up in the
+        # same place without a star-forest exchange.
+        hit = np.flatnonzero(np.linalg.norm(X[:, :2] - np.array([tx, ty]),
+                                            axis=1) < 1e-12 * scale)
+        arr[hit, :2] = t
+
+    out = dm.clone()
+    _set_coordinates(out, np.arange(len(arr)), arr)
+    return out
+
+
 def sliver_report(dm, lines, snap_fracs):
     """How the cut's worst cell varies with the snap tolerance.
 

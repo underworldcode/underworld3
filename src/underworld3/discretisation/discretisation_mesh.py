@@ -7039,17 +7039,88 @@ class Mesh(Stateful, uw_object):
         members[name] = value
         return Enum("boundaries", members)
 
-    def add_conforming_surface(self, points, name, snap_frac=0.10,
-                               verbose=False):
-        r"""Add an internal surface that the mesh conforms to, and can apply
-        boundary conditions on.
+    def cells_supporting(self, name):
+        """The cells in the SUPPORT of the facets labelled ``name``.
+
+        This is the **fault zone** of a conforming surface: not a geometrically
+        bounded region but the set of cells the labelled facets belong to — one
+        element each side of the surface, by construction.
+
+        The definition is worth stating plainly because the obvious alternative
+        does not work. A fault one element wide has an end cap (2-D) or an edge
+        band (3-D) whose extent equals the THICKNESS, so resolving it would need
+        `h` much smaller than `h`. Deriving the zone from the facets instead
+        needs no cap, no band and no rim: it terminates automatically where the
+        chain of facets ends, it says nothing about dimension, and the zone of a
+        network is simply the union of its branches' zones, with no geometry to
+        reconcile where they meet.
+
+        The price is that thickness is no longer a physical parameter — it tracks
+        `h` (measured: 0.13 `h` half-thickness, constant across a 4x refinement).
+        Under adapt-on-top that is the point rather than a defect: the surface
+        lives at the finest level, so the zone width is whatever the adapt metric
+        asks for locally, which makes fault width a *refinement* parameter.
+
+        Parameters
+        ----------
+        name : str
+            A boundary of this mesh, normally one added by
+            :meth:`add_conforming_surface`.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean, one entry per cell, in **plex cell order** — which is also
+            the DOF order of a ``degree=0`` :class:`MeshVariable`, so it can be
+            assigned straight across.
+
+        Examples
+        --------
+        >>> zone = mesh.cells_supporting("Fault")
+        >>> eta = uw.discretisation.MeshVariable("eta", mesh, 1, degree=0)
+        >>> eta.array[:, 0, 0] = numpy.where(zone, 1.0e-3, 1.0)
+
+        See Also
+        --------
+        add_conforming_surface : add the surface whose facets these are.
+        """
+        from underworld3.utilities.edge_split import _cells_on_edge
+
+        if name not in [b.name for b in self.boundaries]:
+            raise ValueError(
+                f"{name!r} is not a boundary of this mesh; the surface must be "
+                f"added before its zone can be read. Have: "
+                f"{[b.name for b in self.boundaries]}")
+
+        dm = self.dm
+        cS, cE = dm.getHeightStratum(0)
+        zone = numpy.zeros(cE - cS, dtype=bool)
+
+        value = self.boundaries[name].value
+        label = dm.getLabel(name)
+        # An empty stratum hands back a null IS that segfaults in getIndices().
+        # A rank owning no part of the surface is the normal case at np>2.
+        if label is None or label.getStratumSize(value) == 0:
+            return zone
+
+        for f in label.getStratumIS(value).getIndices():
+            # `_cells_on_edge` rather than `getSupport` directly: in 2-D an edge
+            # IS a facet and its support is already the cells, but in 3-D the
+            # support holds faces and the cells are one level further up.
+            # Applying the 2-D walk in 3-D returns nothing at all, silently.
+            for c in _cells_on_edge(dm, int(f)):
+                zone[c - cS] = True
+        return zone
+
+    def add_conforming_surface(self, surface, snap_frac=0.10, verbose=False):
+        r"""Add an internal surface that the mesh conforms to.
 
         The surface is added *on top of* an existing mesh rather than built into
         the mesh generator, so its position does not have to be known when the
         mesh is made. Every edge the surface crosses is split **at the crossing
         point**, so the surface becomes a chain of element edges: no element
         straddles it, each element lies cleanly on one side, and the edges along
-        it carry a boundary label of the given ``name``.
+        it carry a boundary label of the surface's name.
 
         Two things follow from conforming, and both need the surface to be a real
         mesh entity rather than a smooth field:
@@ -7095,13 +7166,21 @@ class Mesh(Stateful, uw_object):
 
         Parameters
         ----------
-        points : array_like
-            An ``(N, 2)`` polyline. It must cross the mesh from boundary to
-            boundary and must not cross itself.
-        name : str
-            Name of the surface. It becomes a boundary of the returned mesh, so
-            ``solver.add_dirichlet_bc(value, name)`` works on it, and
-            ``relax(pin_bands=[name])`` holds it.
+        surface : uw.meshing.Surface
+            The surface to conform to. Its control points give the polyline and
+            its ``name`` becomes a boundary of the returned mesh, so
+            ``relax(pin_bands=[surface.name])`` holds it.
+
+            A :class:`~underworld3.meshing.Surface` rather than a
+            ``(points, name)`` pair because that is what the rest of the fault
+            machinery already takes — ``fault_metric``, ``fault_metric_tensor``
+            and ``refinement_metric_function`` all do — so the same object drives
+            the refinement metric and the cut, instead of being unpacked and its
+            name re-stated. It also carries ``signed_distance`` and ``director``,
+            which is what a weak-plane constitutive model needs afterwards.
+
+            The polyline must cross the mesh from boundary to boundary and must
+            not cross itself.
         snap_frac : float
             A crossing landing within this fraction of an edge's length from
             either end moves that end onto the surface instead of splitting the
@@ -7115,20 +7194,29 @@ class Mesh(Stateful, uw_object):
         Returns
         -------
         Mesh
-            A child mesh conforming to the surface, with ``name`` among its
-            ``boundaries``. Call again on the result to add a second,
-            non-intersecting surface.
+            A child mesh conforming to the surface, with ``surface.name`` among
+            its ``boundaries``. Call again on the result to add a second,
+            non-intersecting surface — that is also how a fault NETWORK is built,
+            one branch at a time, since each branch wants its own label.
 
         Examples
         --------
-        A weak zone one element wide, assigned per cell so the contrast falls
-        exactly on the surface:
+        A weak fault zone one element wide, assigned per cell so the contrast
+        falls exactly on the surface:
 
-        >>> fault = np.array([[0.5, -0.1], [0.5, 1.1]])
-        >>> mesh2 = mesh.add_conforming_surface(fault, name="Fault")
+        >>> fault = uw.meshing.Surface("Fault", mesh,
+        ...                            np.array([[0.5, -0.1], [0.5, 1.1]]))
+        >>> mesh2 = mesh.add_conforming_surface(fault)
         >>> zone = mesh2.cells_supporting("Fault")          # boolean, per cell
         >>> eta = uw.discretisation.MeshVariable("eta", mesh2, 1, degree=0)
         >>> eta.array[:, 0, 0] = np.where(zone, 1.0e-3, 1.0)
+
+        The same object drives the refinement, so the zone is one element wide at
+        whatever resolution the metric asks for locally:
+
+        >>> child = base.adapt(fault.refinement_metric_function(
+        ...     h_near=0.01, h_far=0.08, width=0.05), max_levels=3)
+        >>> cut = child.add_conforming_surface(fault)
 
         Notes
         -----
@@ -7138,14 +7226,29 @@ class Mesh(Stateful, uw_object):
 
         See Also
         --------
+        cells_supporting : the fault zone — the cells these facets belong to.
         adapt : local refinement, which reduces the straddling error without
             removing it.
         """
+        from underworld3.meshing.surfaces import Surface, _fault_collect_polylines
         from underworld3.utilities.line_cut import cut_along_lines as _cut
 
+        if not isinstance(surface, Surface):
+            raise TypeError(
+                "add_conforming_surface takes a uw.meshing.Surface, not "
+                f"{type(surface).__name__}. Build one with "
+                "uw.meshing.Surface(name, mesh, control_points) — it is what the "
+                "refinement metric takes too, so the same object can drive both.")
+
+        name = surface.name
         boundaries = self._boundaries_with(name)
         value = boundaries[name].value
-        lines = [points]
+        # Reuse the machinery's own "normalise a fault argument" routine, which
+        # reads control points in MODEL space — the space the DM's coordinates
+        # are in. `surface.control_points` is the dimensionalised gateway and
+        # would be the wrong space under an active units system.
+        lines = [numpy.array([segs[0][0]] + [b for _a, b in segs])
+                 for segs in _fault_collect_polylines(surface)]
 
         cut_dm, info = _cut(self.dm, lines, snap_frac=snap_frac,
                             label=name, label_value=value)

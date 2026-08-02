@@ -48,7 +48,8 @@ import pytest
 
 import underworld3 as uw
 from underworld3.utilities.line_cut import (CUT_LABEL, cell_areas,
-                                            cut_along_lines, min_angles)
+                                            cut_along_lines, min_angles,
+                                            pull_vertex_onto)
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
@@ -60,12 +61,22 @@ SERIAL_VERTICES = 224
 SERIAL_CELLS = 396
 SERIAL_COORD_SHA = "c68821fc041cf94c"
 SERIAL_BC_INTEGRAL = 0.3807400201042878
+SERIAL_SURFACE_FACETS = 26
+SERIAL_ZONE_SHA = "94b098f3d3153eb5"
 
 
 def _box(cell_size=1 / 16):
     return uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
         cellSize=cell_size, regular=False, qdegree=2)
+
+
+def _surf(name, mesh, points):
+    """A `Surface` for `add_conforming_surface`, which takes one rather than a
+    (points, name) pair: it is what `fault_metric` and
+    `refinement_metric_function` already take, so one object drives both the
+    refinement and the cut."""
+    return uw.meshing.Surface(name, mesh, np.asarray(points, dtype=float))
 
 
 def _coords(dm):
@@ -228,7 +239,7 @@ def test_the_surface_exists_on_the_finest_level_only():
     counts_before = [m.dm.getHeightStratum(0)[1] - m.dm.getHeightStratum(0)[0]
                      for m in tail_before]
 
-    child = base.add_conforming_surface(SLANTED, name="Fault")
+    child = base.add_conforming_surface(_surf("Fault", base, SLANTED))
 
     assert child.dm.hasLabel("Fault")
     for level in child._custom_mg_coarse_meshes:
@@ -252,7 +263,7 @@ def test_the_surface_exists_on_the_finest_level_only():
 def test_surface_becomes_a_named_boundary():
     """The delivered feature: the surface can carry a boundary condition."""
     base = _box()
-    cut = base.add_conforming_surface(SLANTED, name="Fault")
+    cut = base.add_conforming_surface(_surf("Fault", base, SLANTED))
 
     assert cut.parent is base
     assert "Fault" in [b.name for b in cut.boundaries]
@@ -267,7 +278,7 @@ def test_a_dirichlet_condition_applies_on_the_surface():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3, refinement=1)
-    mesh = base.add_conforming_surface(VERTICAL, name="Fault")
+    mesh = base.add_conforming_surface(_surf("Fault", base, VERTICAL))
 
     u = uw.discretisation.MeshVariable("u_bc", mesh, 1, degree=1)
     poisson = uw.systems.Poisson(mesh, u_Field=u)
@@ -290,9 +301,9 @@ def test_a_dirichlet_condition_applies_on_the_surface():
 
 def test_second_surface_can_be_added_by_chaining():
     base = _box()
-    one = base.add_conforming_surface(SLANTED, name="Fault")
-    two = one.add_conforming_surface(np.array([[-0.2, 0.12], [1.2, 0.12]]),
-                                     name="Moho")
+    one = base.add_conforming_surface(_surf("Fault", base, SLANTED))
+    two = one.add_conforming_surface(
+        _surf("Moho", one, np.array([[-0.2, 0.12], [1.2, 0.12]])))
     names = [b.name for b in two.boundaries]
     assert "Fault" in names and "Moho" in names
     assert two.dm.getLabel("Fault").getStratumSize(
@@ -301,9 +312,9 @@ def test_second_surface_can_be_added_by_chaining():
 
 def test_a_duplicate_surface_name_is_refused():
     base = _box()
-    one = base.add_conforming_surface(SLANTED, name="Fault")
+    one = base.add_conforming_surface(_surf("Fault", base, SLANTED))
     with pytest.raises(ValueError, match="already has a boundary"):
-        one.add_conforming_surface(VERTICAL, name="Fault")
+        one.add_conforming_surface(_surf("Fault", one, VERTICAL))
 
 
 def test_serial_reference_for_parallel_confluence():
@@ -317,7 +328,7 @@ def test_serial_reference_for_parallel_confluence():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3)
-    cut = base.add_conforming_surface(SLANTED, name="Fault")
+    cut = base.add_conforming_surface(_surf("Fault", base, SLANTED))
 
     dm = cut.dm
     vS, vE = dm.getDepthStratum(0)
@@ -333,7 +344,7 @@ def test_serial_reference_for_parallel_confluence():
     bc_base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3, refinement=1)
-    bc_mesh = bc_base.add_conforming_surface(VERTICAL, name="Fault")
+    bc_mesh = bc_base.add_conforming_surface(_surf("Fault", bc_base, VERTICAL))
     w = uw.discretisation.MeshVariable("u_ref", bc_mesh, 1, degree=1)
     poisson = uw.systems.Poisson(bc_mesh, u_Field=w)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -348,17 +359,21 @@ def test_serial_reference_for_parallel_confluence():
     assert abs(uw.maths.Integral(bc_mesh, w.sym[0]).evaluate()
                - SERIAL_BC_INTEGRAL) < 1e-12
 
-
-def _pull_vertex_to(dm, target):
-    """Move the nearest vertex onto `target` — how a tip or junction is placed."""
-    out = dm.clone()
-    vec = out.getCoordinatesLocal()
-    arr = np.asarray(vec.array).reshape(-1, 2).copy()
-    arr[int(np.argmin(np.linalg.norm(arr - target, axis=1)))] = target
-    new = vec.duplicate()
-    new.array[:] = arr.reshape(-1)
-    out.setCoordinatesLocal(new)
-    return out
+    # The fault-zone reference the parallel file compares against.
+    import hashlib
+    zone = cut.cells_supporting("Fault")
+    assert cut.dm.getLabel("Fault").getStratumSize(
+        cut.boundaries["Fault"].value) == SERIAL_SURFACE_FACETS
+    assert int(zone.sum()) == 2 * SERIAL_SURFACE_FACETS
+    vS_, vE_ = dm.getDepthStratum(0)
+    cS_, _cE_ = dm.getHeightStratum(0)
+    cen = np.array([
+        _coords(dm)[[int(p) - vS_ for p in dm.getTransitiveClosure(cS_ + int(c))[0]
+                     if vS_ <= p < vE_]].mean(axis=0)
+        for c in np.flatnonzero(zone)])
+    cen = cen[np.lexsort((cen[:, 1], cen[:, 0]))]
+    assert hashlib.sha256(
+        np.round(cen, 9).tobytes()).hexdigest()[:16] == SERIAL_ZONE_SHA
 
 
 @pytest.mark.parametrize("branches", [
@@ -389,7 +404,7 @@ def test_a_fault_network_cuts_at_a_shared_junction(branches):
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 20,
         regular=False, qdegree=3)
-    dm = _pull_vertex_to(base.dm, junction)
+    dm = pull_vertex_onto(base.dm, junction)
 
     for k, br in enumerate(branches):
         dm, _info = cut_along_lines(dm, [np.asarray(br, dtype=float)],
@@ -550,7 +565,7 @@ def test_a_cut_mesh_carries_a_step_viscosity_without_leaking_stress():
     first two assertions below, which is the check this suite has most needed.
     """
     base = _box(1 / 16)
-    cut = base.add_conforming_surface(SLANTED, name="Fault")
+    cut = base.add_conforming_surface(_surf("Fault", base, SLANTED))
 
     out = {}
     for name, mesh in (("uncut", base), ("cut", cut)):
@@ -595,3 +610,156 @@ def test_a_cut_mesh_carries_a_step_viscosity_without_leaking_stress():
         f"a continuous P1 viscosity on the cut mesh leaked only "
         f"{out['cut']['nodal']:.3e}, which contradicts the documented reason "
         f"cell-wise assignment is required.")
+
+
+# ---------------------------------------------------------------------------
+# The fault zone: the cells in the SUPPORT of the labelled facets.
+# ---------------------------------------------------------------------------
+
+def _zone_geometry(mesh, name, trace):
+    """Zone mask, per-cell distance to the trace, and the LOCAL cell size."""
+    from underworld3.utilities.edge_split import cell_diameters
+
+    zone = mesh.cells_supporting(name)
+    dm = mesh.dm
+    idx = _cell_vertex_indices(dm)
+    centroids = _coords(dm)[idx].mean(axis=1)
+    distance = np.abs(_signed_distance(centroids, trace).ravel())
+    return zone, distance, float(cell_diameters(dm)[zone].mean())
+
+
+def test_the_fault_zone_is_the_support_of_its_facets():
+    """One element each side, and nothing else.
+
+    ``zone == 2 x facets`` exactly, because a cell carrying two labelled edges
+    would have been cut in two — so no cell is counted twice and every facet
+    contributes both its neighbours. That identity is what makes the definition
+    usable: the zone terminates automatically where the chain of facets ends, it
+    needs no end cap, and it says nothing about dimension.
+    """
+    base = _box(1 / 16)
+    cut = base.add_conforming_surface(_surf("Fault", base, SLANTED))
+    zone, distance, _h = _zone_geometry(cut, "Fault", SLANTED)
+
+    facets = cut.dm.getLabel("Fault").getStratumSize(cut.boundaries["Fault"].value)
+    assert facets > 0
+    assert int(zone.sum()) == 2 * facets, (
+        f"{int(zone.sum())} zone cells for {facets} facets; the zone is the "
+        f"support of the facets, so it must be exactly twice as many")
+
+    # A zone cell is one that owns a labelled edge, and nothing in the zone
+    # straddles — a cell-wise viscosity on this set is therefore exactly right.
+    cS, cE = cut.dm.getHeightStratum(0)
+    labelled = set(cut.dm.getLabel("Fault").getStratumIS(
+        cut.boundaries["Fault"].value).getIndices())
+    for c in np.flatnonzero(zone):
+        assert set(cut.dm.getCone(cS + int(c))) & labelled, (
+            "a zone cell owns no labelled edge")
+
+    s = _signed_distance(_coords(cut.dm), SLANTED).ravel()[_cell_vertex_indices(cut.dm)]
+    assert int(((s > 1e-11).any(axis=1) & (s < -1e-11).any(axis=1)).sum()) == 0
+
+    assert 0 < zone.sum() < (cE - cS), "the zone is the whole mesh"
+    # Every zone cell is adjacent to the surface, so none sits far from it.
+    assert distance[zone].max() < 2.0 * _h
+
+
+def test_cells_supporting_is_in_p0_dof_order():
+    """The documented assignment pattern has to be valid.
+
+    ``cells_supporting`` returns plex cell order and the docstring assigns it
+    straight into a ``degree=0`` MeshVariable. If those orders differed the
+    viscosity would land on the wrong cells and every downstream result would be
+    quietly wrong while looking plausible, so it is checked rather than assumed.
+    """
+    base = _box(1 / 16)
+    cut = base.add_conforming_surface(_surf("Fault", base, SLANTED))
+
+    eta = uw.discretisation.MeshVariable("eta_zone", cut, 1, degree=0)
+    idx = _cell_vertex_indices(cut.dm)
+    centroids = _coords(cut.dm)[idx].mean(axis=1)
+    assert np.abs(np.asarray(eta.coords) - centroids).max() < 1e-12, (
+        "degree-0 DOF order is not plex cell order; cells_supporting cannot be "
+        "assigned straight across")
+
+    zone = cut.cells_supporting("Fault")
+    eta.array[:, 0, 0] = np.where(zone, 1.0e-3, 1.0)
+    assert np.isclose(eta.array[:, 0, 0].min(), 1.0e-3)
+    assert int((eta.array[:, 0, 0] < 1.0).sum()) == int(zone.sum())
+
+
+# Mean distance from a zone cell's centroid to the trace, over the LOCAL cell
+# size in the zone. The MAX will not do: it is one outlier cell and it was
+# identical (0.01474) at two different adapt resolutions, reporting no scaling
+# at all where the mean shows it cleanly.
+ZONE_THICKNESS_OVER_H = 0.19
+
+
+@pytest.mark.parametrize("cell_size", [1 / 8, 1 / 16, 1 / 32])
+def test_the_fault_zone_is_one_element_wide_at_every_resolution(cell_size):
+    """Zone thickness tracks `h`, which is what makes width a refinement knob.
+
+    Measured 0.189 / 0.183 / 0.184 across a 4x refinement — constant, and the
+    price of the facet-support definition: thickness is no longer a physical
+    parameter. Under adapt-on-top that is the point rather than a defect, since
+    the local `h` is whatever the metric asks for (see the test below).
+    """
+    base = _box(cell_size)
+    cut = base.add_conforming_surface(_surf("Fault", base, SLANTED))
+    zone, distance, h = _zone_geometry(cut, "Fault", SLANTED)
+
+    facets = cut.dm.getLabel("Fault").getStratumSize(cut.boundaries["Fault"].value)
+    assert int(zone.sum()) == 2 * facets
+
+    ratio = distance[zone].mean() / h
+    assert ratio == pytest.approx(ZONE_THICKNESS_OVER_H, abs=0.03), (
+        f"cellSize={cell_size}: zone half-thickness is {ratio:.3f} h, not the "
+        f"~{ZONE_THICKNESS_OVER_H} h it is at every other resolution")
+
+
+@pytest.mark.level_2
+def test_the_fault_zone_narrows_with_the_adapt_metric():
+    """Fault width is a REFINEMENT parameter: the design this is all for.
+
+    The surface lives at the finest adapted level, so the zone is one element
+    wide *there* and the metric sets how wide that is — controlled locally and at
+    bounded cost. Measured: the same fault at h_near 0.03 / 0.02 / 0.015 gives
+    zone thicknesses in the same ratio, at 0.195 / 0.202 / 0.198 of the local `h`
+    throughout, and reaches the resolution of a uniform 1/32 mesh with about half
+    the cells.
+
+    Also checks the composition itself works — ``adapt`` then
+    ``add_conforming_surface`` — and that the child keeps its multigrid tail.
+    """
+    thickness = {}
+    for h_near in (0.03, 0.015):
+        base = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1,
+            regular=False, refinement=1, qdegree=2)
+        fault = _surf("Fault", base, SLANTED)
+        fault.discretize()
+        child = base.adapt(
+            fault.refinement_metric_function(h_near=h_near, h_far=0.09,
+                                             width=0.06),
+            max_levels=3)
+        cut = child.add_conforming_surface(_surf("Fault", child, SLANTED))
+
+        zone, distance, h = _zone_geometry(cut, "Fault", SLANTED)
+        facets = cut.dm.getLabel("Fault").getStratumSize(
+            cut.boundaries["Fault"].value)
+        assert int(zone.sum()) == 2 * facets
+
+        # The cut child must keep the adapted hierarchy under it, or the solver
+        # loses multigrid exactly where the fault is.
+        assert len(cut._custom_mg_coarse_meshes) >= len(base.dm_hierarchy)
+
+        ratio = distance[zone].mean() / h
+        assert ratio == pytest.approx(ZONE_THICKNESS_OVER_H, abs=0.03), (
+            f"h_near={h_near}: zone is {ratio:.3f} h wide, not ~"
+            f"{ZONE_THICKNESS_OVER_H} h — one element each side is the claim")
+        thickness[h_near] = distance[zone].mean()
+
+    assert thickness[0.015] < 0.75 * thickness[0.03], (
+        f"halving the requested h_near barely narrowed the zone "
+        f"({thickness[0.03]:.5f} -> {thickness[0.015]:.5f}); fault width is "
+        f"supposed to follow the metric")

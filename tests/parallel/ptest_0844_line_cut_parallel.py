@@ -34,6 +34,7 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
+from underworld3.utilities.line_cut import cell_areas
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2,
               pytest.mark.tier_b, pytest.mark.timeout(300)]
@@ -49,6 +50,9 @@ SERIAL_VERTICES = 224
 SERIAL_CELLS = 396
 SERIAL_SURFACE_FACETS = 26
 SERIAL_COORD_SHA = "c68821fc041cf94c"
+# The fault ZONE: the cells in the support of those 26 facets, so 52 of them,
+# hashed by sorted centroid. A count alone can agree between two different sets.
+SERIAL_ZONE_SHA = "94b098f3d3153eb5"
 
 # Vertices lying exactly ON the surface, per snap fraction: (count, coord hash).
 # This is what the snap test compares against. On the UNCUT base the number is
@@ -60,6 +64,14 @@ SERIAL_ON_SURFACE = {
     0.05: (29, "38a5cf77322d57bc"),
     0.2:  (18, "b8dfa8eadd27b59a"),
 }
+
+
+def _surf(name, mesh, points):
+    """A `Surface` for `add_conforming_surface`, which takes one rather than a
+    (points, name) pair: it is what `fault_metric` and
+    `refinement_metric_function` already take, so one object drives both the
+    refinement and the cut."""
+    return uw.meshing.Surface(name, mesh, np.asarray(points, dtype=float))
 
 
 def _coords(dm):
@@ -124,7 +136,7 @@ def _surface_mesh():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3)
-    return base, base.add_conforming_surface(SLANTED, name="Fault")
+    return base, base.add_conforming_surface(_surf("Fault", base, SLANTED))
 
 
 def test_cut_is_independent_of_the_partition():
@@ -241,7 +253,7 @@ def _bc_mesh():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3, refinement=1)
-    return base.add_conforming_surface(VERTICAL, name="Fault")
+    return base.add_conforming_surface(_surf("Fault", base, VERTICAL))
 
 
 def test_a_boundary_condition_on_the_surface_solves_in_parallel():
@@ -279,9 +291,9 @@ def test_a_second_surface_chains_in_parallel():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3)
-    one = base.add_conforming_surface(SLANTED, name="Fault")
-    two = one.add_conforming_surface(np.array([[-0.2, 0.12], [1.2, 0.12]]),
-                                     name="Moho")
+    one = base.add_conforming_surface(_surf("Fault", base, SLANTED))
+    two = one.add_conforming_surface(
+        _surf("Moho", one, np.array([[-0.2, 0.12], [1.2, 0.12]])))
 
     names = [b.name for b in two.boundaries]
     assert "Fault" in names and "Moho" in names
@@ -307,7 +319,7 @@ def test_snap_fraction_is_partition_independent(snap_frac):
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3)
-    cut = base.add_conforming_surface(SLANTED, name="Fault", snap_frac=snap_frac)
+    cut = base.add_conforming_surface(_surf("Fault", base, SLANTED), snap_frac=snap_frac)
     assert _over_shared_facets(cut.dm) == 0
 
     A, B = SLANTED[0], SLANTED[-1]
@@ -377,3 +389,104 @@ def test_every_refusal_is_collective(name, h, line, snap, expected):
     assert set(seen) == {expected.__name__}, (
         f"np={uw.mpi.size} {name!r}: ranks disagreed — {seen}. Every rank must "
         f"raise {expected.__name__}, or the ones that do not will hang.")
+
+
+# ---------------------------------------------------------------------------
+# The fault zone, and fault NETWORKS, across a partition.
+# ---------------------------------------------------------------------------
+
+def test_the_fault_zone_is_the_same_set_at_any_partition_size():
+    """The zone is what a cell-wise viscosity is assigned on, so it has to be
+    the same cells however the mesh is split.
+
+    Compared by owned COUNT and by the sorted centroids of the zone cells — the
+    count alone can agree between two different sets.
+    """
+    _base, cut = _surface_mesh()
+    zone = cut.cells_supporting("Fault")
+
+    dm = cut.dm
+    cS, cE = dm.getHeightStratum(0)
+    owned = set(_owned(dm, range(cS, cE)))
+    n = uw.mpi.comm.allreduce(
+        sum(1 for c in np.flatnonzero(zone) if cS + int(c) in owned))
+
+    # One element each side of every facet — the defining property, and it must
+    # survive the partition rather than merely hold on rank 0.
+    assert n == 2 * SERIAL_SURFACE_FACETS, (
+        f"np={uw.mpi.size}: {n} owned zone cells for "
+        f"{SERIAL_SURFACE_FACETS} facets; the zone is the facet support, so it "
+        f"is exactly twice as many")
+
+    vS, vE = dm.getDepthStratum(0)
+    X = _coords(dm)
+    mine = np.array([
+        X[[int(p) - vS for p in dm.getTransitiveClosure(cS + int(c))[0]
+           if vS <= p < vE]].mean(axis=0)
+        for c in np.flatnonzero(zone) if cS + int(c) in owned])
+    gathered = [g for g in uw.mpi.comm.allgather(mine) if len(g)]
+    allc = np.vstack(gathered)
+    allc = allc[np.lexsort((allc[:, 1], allc[:, 0]))]
+    got = hashlib.sha256(np.round(allc, 9).tobytes()).hexdigest()[:16]
+    assert got == SERIAL_ZONE_SHA, (
+        f"np={uw.mpi.size}: zone centroid hash {got}, serial {SERIAL_ZONE_SHA} "
+        f"— the same NUMBER of different cells")
+
+
+JUNCTION = np.array([0.5, 0.5])
+NETWORKS = {
+    # Y: three arms from one junction. Two of them START there.
+    "Y": (np.array([[-0.2, 0.20], [0.5, 0.5]]),
+          np.array([[0.5, 0.5], [1.2, 0.30]]),
+          np.array([[0.5, 0.5], [0.55, 1.2]])),
+    # T: one fault abutting another.
+    "T": (np.array([[-0.2, 0.34], [1.2, 0.66]]),
+          np.array([[0.5, 0.5], [0.62, 1.2]])),
+    # X: two faults crossing.
+    "X": (np.array([[-0.2, 0.22], [1.2, 0.78]]),
+          np.array([[0.30, -0.2], [0.70, 1.2]])),
+}
+
+
+@pytest.mark.parametrize("kind", list(NETWORKS), ids=list(NETWORKS))
+def test_a_fault_network_cuts_at_a_shared_junction_in_parallel(kind):
+    """Branching, abutting and crossing faults, across a partition.
+
+    A junction is the same problem as a tip — a distinguished point that has to
+    coincide with a mesh vertex — and placing it is where a partition bites:
+    ``pull_vertex_onto`` reduces the choice globally, because a rank-local
+    nearest-vertex search moves a DIFFERENT vertex on each rank and the branches
+    then meet at different places on either side of a seam.
+    """
+    from underworld3.utilities.line_cut import cut_along_lines, pull_vertex_onto
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 20,
+        regular=False, qdegree=3)
+    dm = pull_vertex_onto(base.dm, JUNCTION)
+
+    branches = NETWORKS[kind]
+    for k, branch in enumerate(branches):
+        dm, _info = cut_along_lines(dm, [branch], label=f"F{k}",
+                                    label_value=20 + k)
+
+    # Conformity first: a mis-handled star-forest breaks this before anything
+    # geometric shows up.
+    fS, fE = dm.getHeightStratum(1)
+    assert uw.mpi.comm.allreduce(
+        sum(1 for f in range(fS, fE) if len(dm.getSupport(f)) > 2)) == 0
+    assert uw.mpi.comm.allreduce(
+        int((cell_areas(dm) <= 0.0).sum())) == 0, "a network cut inverted a cell"
+
+    # Every branch is a labelled chain, and the junction is on all of them.
+    X = _coords(dm)
+    vS = dm.getDepthStratum(0)[0]
+    for k, branch in enumerate(branches):
+        n_owned = uw.mpi.comm.allreduce(
+            len(_owned(dm, dm.getLabel(f"F{k}").getStratumIS(20 + k).getIndices()
+                       if dm.getLabel(f"F{k}").getStratumSize(20 + k) else [])))
+        assert n_owned > 0, f"branch {k} lost its label under distribution"
+
+    on_junction = uw.mpi.comm.allreduce(
+        int((np.linalg.norm(X[:, :2] - JUNCTION, axis=1) < 1e-12).sum()))
+    assert on_junction > 0, "the junction is not a mesh vertex on any rank"
