@@ -48,47 +48,110 @@ def mesh():
     )
 
 
-def _sample_points(x_c):
-    """Stratified, and loaded with the places the solution is hard."""
+def _reference_fields(sol, eta_A, eta_B, x_c, n):
+    """The transcribed fields paired with the kernel they came from."""
 
-    rng = np.random.default_rng(20260802)
-    points = list(map(tuple, rng.uniform(0.0, 1.0, size=(40, 2))))
-    points += [(x_c - 1.0e-9, 0.37), (x_c + 1.0e-9, 0.37), (x_c, 0.37)]  # interface
-    points += [(0.0, 0.5), (1.0, 0.5), (0.31, 0.0), (0.31, 1.0)]  # walls
-    points += [(0.0, 0.0), (1.0, 1.0), (0.0, 1.0), (1.0, 0.0)]  # corners
-    return np.array(points)
+    from underworld3.analytic._reference import _velic
+
+    def at(kernel):
+        return lambda x, z: kernel(eta_A, eta_B, x_c, n, x, z).evalf()
+
+    return {
+        "velocity_x": (sol.fn_velocity[0, 0], at(_velic.AnalyticSolCx_velocity_x)),
+        "velocity_z": (sol.fn_velocity[0, 1], at(_velic.AnalyticSolCx_velocity_y)),
+        "pressure": (sol.fn_pressure, at(_velic.AnalyticSolCx_pressure)),
+        "stress_xx": (sol.fn_stress[0, 0], at(_velic.AnalyticSolCx_stress_xx)),
+        "stress_zz": (sol.fn_stress[1, 1], at(_velic.AnalyticSolCx_stress_yy)),
+        "stress_zx": (sol.fn_stress[0, 1], at(_velic.AnalyticSolCx_stress_xy)),
+    }
 
 
 @pytest.mark.parametrize("eta_A,eta_B,x_c,n", REGIMES)
 def test_transcription_reproduces_the_reference_kernel(mesh, eta_A, eta_B, x_c, n):
-    """Gate 1 and 2: agreement with the published kernel, worst case not average."""
+    """Agreement with the published kernel, worst case rather than average."""
 
-    from underworld3.analytic._reference import _velic
+    from underworld3.analytic import _validation
 
     sol = uw.analytic.SolCx(mesh, eta_A=eta_A, eta_B=eta_B, x_c=x_c, n=n)
-    points = _sample_points(x_c)
+    points = _validation.adversarial_points(x_c=x_c)
 
-    fields = {
-        "velocity_x": (sol.fn_velocity[0, 0], _velic.AnalyticSolCx_velocity_x),
-        "velocity_z": (sol.fn_velocity[0, 1], _velic.AnalyticSolCx_velocity_y),
-        "pressure": (sol.fn_pressure, _velic.AnalyticSolCx_pressure),
-        "stress_xx": (sol.fn_stress[0, 0], _velic.AnalyticSolCx_stress_xx),
-        "stress_zz": (sol.fn_stress[1, 1], _velic.AnalyticSolCx_stress_yy),
-        "stress_zx": (sol.fn_stress[0, 1], _velic.AnalyticSolCx_stress_xy),
-    }
+    worst = _validation.reference_agreement(
+        sol, _reference_fields(sol, eta_A, eta_B, x_c, n), points
+    )
 
-    for name, (expression, kernel) in fields.items():
-        mine = np.asarray(sol.evaluate(expression, points)).reshape(-1)
-        theirs = np.array(
-            [float(kernel(eta_A, eta_B, x_c, n, x, z).evalf()) for x, z in points]
-        )
+    for name, error in worst.items():
+        assert error < 1.0e-10, f"{name}: max normalised error {error:.2e}"
 
-        # Normalised by the field's magnitude, not pointwise: these fields cross
-        # zero, and a pointwise ratio would report a huge error for a tiny one.
-        scale = max(np.max(np.abs(theirs)), 1.0e-300)
-        worst = np.max(np.abs(mine - theirs)) / scale
 
-        assert worst < 1.0e-10, f"{name}: max relative error {worst:.2e}"
+@pytest.mark.parametrize("eta_A,eta_B,x_c,n", REGIMES)
+def test_transcription_satisfies_the_equations(mesh, eta_A, eta_B, x_c, n):
+    """The fields solve the Stokes problem they claim to — no reference involved.
+
+    This is the check a convergence test cannot make. If a transcription and the
+    solver shared a mistaken convention, the solve would converge neatly to the
+    wrong answer; this residual never consults the solver. It is also what
+    settles the body-force sign, where UW2's documentation and UW3's convention
+    disagree.
+    """
+
+    from underworld3.analytic import _validation
+
+    sol = uw.analytic.SolCx(mesh, eta_A=eta_A, eta_B=eta_B, x_c=x_c, n=n)
+    points = _validation.adversarial_points(x_c=x_c, count=12)
+
+    assert _validation.incompressibility_residual(sol, points) < 1.0e-10
+    assert _validation.momentum_residual(sol, points) < 1.0e-10
+
+
+@pytest.mark.parametrize("eta_A,eta_B,x_c,n", REGIMES)
+def test_strain_rate_agrees_with_the_velocity_gradient(mesh, eta_A, eta_B, x_c, n):
+    """Two independently derived kernel outputs, cross-checked through derivatives.
+
+    A transcription can be right pointwise and wrong in its derivatives — which
+    is what a solver actually consumes.
+    """
+
+    from underworld3.analytic import _validation
+
+    sol = uw.analytic.SolCx(mesh, eta_A=eta_A, eta_B=eta_B, x_c=x_c, n=n)
+    points = _validation.adversarial_points(x_c=x_c, count=12)
+
+    assert _validation.strainrate_consistency(sol, points) < 1.0e-10
+
+
+def test_the_checks_reject_a_broken_transcription(mesh):
+    """Negative control: a check that passes a broken input measures nothing.
+
+    One coefficient of the transcribed velocity is perturbed by a part in a
+    thousand — small enough to be a plausible transcription slip, large enough
+    that a working check must see it. Both the comparison against the kernel and
+    the oracle-free residual have to fail.
+    """
+
+    from underworld3.analytic import _validation
+
+    eta_A, eta_B, x_c, n = 1.0, 1.0e3, 0.5, 1
+    sol = uw.analytic.SolCx(mesh, eta_A=eta_A, eta_B=eta_B, x_c=x_c, n=n)
+    points = _validation.adversarial_points(x_c=x_c, count=12)
+
+    # Intact first: if this did not pass, the control below would prove nothing.
+    intact = _validation.reference_agreement(
+        sol, _reference_fields(sol, eta_A, eta_B, x_c, n), points
+    )
+    assert max(intact.values()) < 1.0e-10
+    assert _validation.incompressibility_residual(sol, points) < 1.0e-10
+
+    sol.fn_velocity = sympy.Matrix(
+        [[sol.fn_velocity[0, 0] * sympy.Rational(1001, 1000), sol.fn_velocity[0, 1]]]
+    )
+
+    broken = _validation.reference_agreement(
+        sol, _reference_fields(sol, eta_A, eta_B, x_c, n), points
+    )
+    assert broken["velocity_x"] > 1.0e-6, "comparison did not see the perturbation"
+    assert (
+        _validation.incompressibility_residual(sol, points) > 1.0e-6
+    ), "residual did not see the perturbation"
 
 
 def test_arrangements_are_mirror_images():

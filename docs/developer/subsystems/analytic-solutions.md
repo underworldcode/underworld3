@@ -192,13 +192,37 @@ zero, so the ratio explodes wherever the solution is small — the values were
 close all along. Normalise by the field's magnitude over the sample. Suspect the
 metric before the result when every case fails alike.
 
-### Still to do for SolCx
+### The harness
 
-Gates 3 to 6 (derivatives against the kernel's independently derived strain rate,
-the physics residual, the negative control, and the high-precision separation)
-are demonstrated ad hoc above but are not yet a harness the test suite runs per
-solution. That harness is what makes the remaining eleven transcriptions cheap,
-and it should land before them.
+`underworld3.analytic._validation` holds the checks, so a new transcription gets
+them by calling four functions rather than reinventing them:
+
+| function | gate |
+|---|---|
+| `adversarial_points` | 2 — stratified, plus interface, walls and corners |
+| `reference_agreement` | 1, 2 — against the kernel, worst case, normalised |
+| `incompressibility_residual` | 4 — $\nabla\cdot\mathbf u$, no oracle |
+| `momentum_residual` | 4 — $\nabla\cdot\sigma + \mathbf f$, no oracle |
+| `strainrate_consistency` | 3 — derivatives, against separately derived output |
+| `high_precision_value` | 6 — 50 digits, to separate our error from the kernel's |
+
+Measured on SolCx at contrast 1e3: incompressibility 3.6e-17, momentum 2.3e-16,
+strain rate 8.5e-16 — each in under half a second.
+
+**Evaluate through `lambdify`, not `uw.function.evaluate`.** The checks
+differentiate the fields, and a viscosity-jump solution puts a large `Piecewise`
+inside a stress derivative. Routed through the JIT that combination takes so long
+to generate and compile that the suite becomes unrunnable — the same blow-up seen
+with `add_nitsche_bc` on SolCx. These expressions are pure SymPy in the mesh
+coordinates, so `lambdify(..., cse=True)` is both correct and three orders of
+magnitude faster. `_validation.sample` does this; note it must first swap the
+mesh coordinates for plain symbols, which `lambdify` cannot bind directly.
+
+Gate 5, the negative control, belongs in each solution's test rather than the
+harness: perturb one coefficient and assert the other checks fail.
+`test_the_checks_reject_a_broken_transcription` is the pattern — it perturbs the
+velocity by a part in a thousand and requires both the comparison and the
+oracle-free residual to report it.
 
 ## Provenance
 
