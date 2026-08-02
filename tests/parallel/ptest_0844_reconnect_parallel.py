@@ -147,11 +147,28 @@ def test_adapt_with_repair_runs_in_parallel():
     fS, fE = child.dm.getHeightStratum(1)
     assert _global(sum(1 for f in range(fS, fE)
                        if len(child.dm.getSupport(f)) > 2)) == 0
-    # Flips move no vertex, so the exact vertex prolongation must survive; the
-    # cell-parent map must NOT, because a flipped cell can straddle two coarse
-    # cells and using it would transfer from the wrong parent.
+    # Flips move no vertex, so the exact vertex prolongation must survive.
     assert child._adapt_prolongation and all(
         P is not None for P in child._adapt_prolongation)
-    assert all(pc is None for pc in child._adapt_parent_cells)
-    uw.pprint(0, f"[ptest_0844] np={uw.mpi.size}: repaired child "
-                 f"{_global(_owned_cells_and_area(child.dm)[0])} cells")
+
+    # The cell-parent map must NOT survive a repair, because a flipped cell can
+    # straddle two coarse cells and using it would transfer from the wrong
+    # parent. Checked at mg_coarsening_ratio=1.0, which is the only setting where
+    # the claim is observable: at the default 2.0 a level spans several
+    # generations, a cell has no single parent whatever the repair did, and the
+    # map is None in BOTH arms — so asserting it there says nothing about repair.
+    arms = {}
+    for repair in (False, True):
+        arm = base.adapt(metric, max_levels=2, engine="edge_split",
+                         repair=repair, mg_coarsening_ratio=1.0)
+        arms[repair] = arm._adapt_parent_cells
+
+    assert any(pc is not None for pc in arms[False]), (
+        "no parent-cell map survived WITHOUT repair, so the assertion below "
+        "cannot distinguish repair from anything else")
+    assert all(pc is None for pc in arms[True]), (
+        "a parent-cell map survived a repair pass; a flipped cell spans two "
+        "coarse cells and the transfer would read the wrong parent")
+
+    uw.pprint(f"[ptest_0844] np={uw.mpi.size}: repaired child "
+              f"{_global(_owned_cells_and_area(child.dm)[0])} cells")

@@ -94,7 +94,7 @@ def test_line_becomes_a_chain_of_mesh_edges(line):
     X = _coords(cut)
     s = _signed_distance(X, line).ravel()
     on = np.flatnonzero(np.abs(s) < 1e-11)
-    assert len(on) == info["n_split"] + info["n_snapped"]
+    assert len(on) == info["n_split"] + info["n_on_surface"]
 
     edges = {frozenset(int(v) - cut.getDepthStratum(0)[0] for v in cut.getCone(e)): e
              for e in range(*cut.getDepthStratum(1))}
@@ -121,7 +121,7 @@ def test_no_cell_straddles_the_line(line):
 def test_cut_vertices_lie_exactly_on_the_line():
     cut, info = cut_along_lines(_box().dm, [SLANTED])
     s = np.abs(_signed_distance(_coords(cut), SLANTED).ravel())
-    assert np.sort(s)[:info["n_split"] + info["n_snapped"]].max() < 1e-13
+    assert np.sort(s)[:info["n_split"] + info["n_on_surface"]].max() < 1e-13
 
 
 def test_vertices_already_on_the_line_are_used_not_split_beside():
@@ -132,23 +132,61 @@ def test_vertices_already_on_the_line_are_used_not_split_beside():
     angle, which no positivity check catches because the area is still positive.
     """
     cut, info = cut_along_lines(_box().dm, [VERTICAL])
-    assert info["n_snapped"] > 0, "the x=0.5 interface should meet mesh vertices"
+    assert info["n_on_surface"] > 0, "the x=0.5 interface should meet mesh vertices"
     assert info["min_angle"] > 5.0
     assert info["min_area"] > 1e-8
 
 
+# Worst interior angle of the cut, per snap fraction, on the 1/16 box. This is
+# the table the module docstring uses to justify the 0.10 default, so it is
+# pinned rather than described.
+SERIAL_MIN_ANGLE = {0.0: 1.60, 0.05: 3.88, 0.1: 6.56, 0.2: 13.93}
+
+
 @pytest.mark.parametrize("snap_frac", [0.0, 0.05, 0.1, 0.2])
-def test_no_inverted_cells(snap_frac):
-    cut, _info = cut_along_lines(_box().dm, [SLANTED], snap_frac=snap_frac)
+def test_snapping_buys_the_documented_element_quality(snap_frac):
+    """The snap tolerance has to deliver the angles the default rests on.
+
+    Asserting positivity instead would assert nothing: ``cut_along_lines``
+    already raises on ``(areas <= 0).any()`` computed from the SAME
+    ``cell_areas``, so an inverted cell never reaches here, and ``min_angles``
+    returns ``arccos`` of a clipped value, which cannot be negative. Both
+    assertions were true by construction. The worst angle is the quantity that
+    actually varies, and it is what the solver pays for.
+    """
+    cut, info = cut_along_lines(_box().dm, [SLANTED], snap_frac=snap_frac)
     assert (cell_areas(cut) > 0.0).all()
-    assert (min_angles(cut) > 0.0).all()
+
+    expected = SERIAL_MIN_ANGLE[snap_frac]
+    assert info["min_angle"] == pytest.approx(expected, abs=0.05), (
+        f"snap_frac={snap_frac}: worst angle {info['min_angle']:.2f} deg, "
+        f"documented {expected:.2f}")
 
 
-def test_snapping_raises_the_worst_angle():
-    """The tolerance has to actually buy something, or it is just a knob."""
-    _c0, no_snap = cut_along_lines(_box().dm, [SLANTED], snap_frac=0.0)
-    _c1, snapped = cut_along_lines(_box().dm, [SLANTED], snap_frac=0.2)
-    assert snapped["min_angle"] > no_snap["min_angle"]
+def test_the_worst_angle_rises_monotonically_with_the_snap_tolerance():
+    """The knob's whole justification: more snapping, better elements."""
+    angles = [cut_along_lines(_box().dm, [SLANTED], snap_frac=f)[1]["min_angle"]
+              for f in (0.0, 0.05, 0.1, 0.2)]
+    assert angles == sorted(angles), f"not monotone: {angles}"
+    assert angles[-1] > 5 * angles[0], (
+        f"snapping bought only {angles[-1] / angles[0]:.1f}x in the worst angle")
+
+
+@pytest.mark.parametrize("snap_frac,line", [
+    (0.0, SLANTED), (0.05, SLANTED), (0.1, SLANTED), (0.2, SLANTED),
+    (0.1, VERTICAL),
+])
+def test_the_cut_is_one_chain(snap_frac, line):
+    """``n_cut_edges == n_split + n_on_surface - 1``.
+
+    A single line crossing the mesh cuts ONE chain, so its facets number one
+    fewer than the vertices along it, and every vertex along it is either one the
+    routine inserted or one already on the line. An exact connectivity check that
+    costs nothing: a chain that broke in two, or a labelled edge that is not part
+    of it, breaks the identity immediately.
+    """
+    _cut, info = cut_along_lines(_box().dm, [line], snap_frac=snap_frac)
+    assert info["n_cut_edges"] == info["n_split"] + info["n_on_surface"] - 1, info
 
 
 def test_a_line_ending_inside_the_mesh_is_refused():
@@ -169,6 +207,46 @@ def test_the_base_mesh_is_not_modified():
     after_cells = base.dm.getHeightStratum(0)[1] - base.dm.getHeightStratum(0)[0]
     assert after_cells == before_cells
     assert np.array_equal(_coords(base.dm), before_coords)
+
+
+def test_the_surface_exists_on_the_finest_level_only():
+    """The stack-on invariant: nothing below the child is cut.
+
+    The surface's position is a design variable in an outer optimisation, so the
+    base and the multigrid hierarchy resting on it have to stay fixed while the
+    surface moves. The child's coarse tail is therefore the base's OWN levels,
+    the same objects, carrying neither the cut nor the label.
+
+    Nor would cutting them buy anything: custom-P sets ``pc_mg_galerkin=both``,
+    so every coarse operator is PᵀAP from the FINE operator and inherits the
+    material contrast whatever the coarse mesh looks like.
+    """
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
+        regular=False, qdegree=3, refinement=2)
+    tail_before = base._coarse_level_meshes()
+    counts_before = [m.dm.getHeightStratum(0)[1] - m.dm.getHeightStratum(0)[0]
+                     for m in tail_before]
+
+    child = base.add_conforming_surface(SLANTED, name="Fault")
+
+    assert child.dm.hasLabel("Fault")
+    for level in child._custom_mg_coarse_meshes:
+        assert not level.dm.hasLabel("Fault"), (
+            "a coarse level carries the surface; the base hierarchy must be "
+            "reusable unchanged when the surface moves")
+    counts_after = [m.dm.getHeightStratum(0)[1] - m.dm.getHeightStratum(0)[0]
+                    for m in base._coarse_level_meshes()]
+    assert counts_after == counts_before, "a coarse level gained cells"
+
+    # The child's tail is the base's levels, unchanged — same count, and its
+    # finest level is still the uncut base finest, not a cut copy of it.
+    assert len(child._custom_mg_coarse_meshes) == len(tail_before)
+    finest = child._custom_mg_coarse_meshes[-1]
+    assert np.array_equal(_coords(finest.dm), _coords(base.dm_hierarchy[-1]))
+    assert _coords(finest.dm).shape[0] < _coords(child.dm).shape[0], (
+        "the coarse tail's finest level has as many vertices as the child, so "
+        "it is not the uncut base")
 
 
 def test_surface_becomes_a_named_boundary():
@@ -344,3 +422,176 @@ def test_a_fault_network_cuts_at_a_shared_junction(branches):
     # to reconcile at the junction, which is why this route suits networks.
     assert 0 < len(zone) < cE - cS
     assert (cell_areas(dm) > 0.0).all()
+
+
+# ---------------------------------------------------------------------------
+# The stress leak — the claim every docstring and commit message on this branch
+# rests on, and the reason the feature exists at all.
+# ---------------------------------------------------------------------------
+
+ETA_WEAK, ETA_STRONG = 1.0, 1.0e4
+
+
+def _barycentric_lattice(n=12, inset=1e-5):
+    """Equally spaced barycentric points STRICTLY INSIDE a triangle.
+
+    The inset is load-bearing, not hygiene. On a cut mesh the interface IS a cell
+    edge, so a lattice including that edge samples points where the material is
+    genuinely ambiguous: the signed distance is ~1e-16 and its sign is arbitrary.
+    A seventh of the samples then take the wrong side and the metric reports a
+    leak of 30 for a mesh whose true leak is zero. Pulling the lattice a hair
+    inside asks the question that was meant — what does this cell CONTAIN.
+    """
+    ls = np.array([(i / n, j / n, (n - i - j) / n)
+                   for i in range(n + 1) for j in range(n + 1 - i)])
+    return (ls + inset) / (1.0 + 3.0 * inset)
+
+
+def _cell_vertex_indices(dm):
+    vS, vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    return np.array([[int(p) - vS for p in dm.getTransitiveClosure(c)[0]
+                      if vS <= p < vE] for c in range(cS, cE)])
+
+
+def _solve_pure_shear(mesh, eta_fn, tag):
+    """Pure-shear Stokes with the given viscosity; return the P1 nodal strain rate."""
+    v = uw.discretisation.MeshVariable(f"Vk{tag}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"Pk{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_fn
+    stokes.add_dirichlet_bc((0.5, None), "Left")
+    stokes.add_dirichlet_bc((-0.5, None), "Right")
+    stokes.add_dirichlet_bc((None, -0.5), "Bottom")
+    stokes.add_dirichlet_bc((None, 0.5), "Top")
+    stokes.solve()
+
+    edot = uw.discretisation.MeshVariable(f"Ek{tag}", mesh, 1, degree=1)
+    proj = uw.systems.Projection(mesh, edot)
+    proj.uw_function = stokes.Unknowns.Einv2
+    proj.solve()
+    return np.asarray(edot.array[:, 0, 0]).ravel()
+
+
+def _leak(mesh, eta_nodal, eta_cellwise, edot_nodal, line):
+    """Stress a cell manufactures by misrepresenting the viscosity.
+
+    The cell average of :math:`2\\eta\\dot\\varepsilon` computed from the DISCRETE
+    viscosity, minus the same average using the TRUE step viscosity, with the
+    strain rate held fixed:
+
+        leak = 2 | <eta_h edot_h> - <eta_true edot_h> |
+
+    Comparing the discrete field against ITSELF — the covariance of eta and edot
+    over the cell's own vertices — cannot do this job: for a cell-wise viscosity
+    that covariance is zero by construction on ANY mesh, cut or not, so it would
+    report success without the mesh having to be right about anything. The true
+    field is the only honest reference.
+    """
+    lattice = _barycentric_lattice()
+    idx = _cell_vertex_indices(mesh.dm)
+    X = _coords(mesh.dm)
+    P = X[idx]                                            # (cells, 3, 2)
+
+    area = 0.5 * np.abs((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+                        - (P[:, 2, 0] - P[:, 0, 0]) * (P[:, 1, 1] - P[:, 0, 1]))
+    xs = np.einsum("sk,ckd->csd", lattice, P)
+    edot_s = np.einsum("sk,ck->cs", lattice, edot_nodal[idx])
+    eta_true = np.where(
+        _signed_distance(xs.reshape(-1, 2), line).reshape(xs.shape[:2]) < 0.0,
+        ETA_WEAK, ETA_STRONG)
+
+    def integral(eta_s):
+        err = 2.0 * np.abs((eta_s * edot_s).mean(axis=1)
+                           - (eta_true * edot_s).mean(axis=1))
+        return float((err * area).sum())
+
+    s_nodes = _signed_distance(X, line).ravel()[idx]
+    straddle = int(((s_nodes > 1e-11).any(axis=1)
+                    & (s_nodes < -1e-11).any(axis=1)).sum())
+    return {
+        "straddle": straddle,
+        "nodal": integral(np.einsum("sk,ck->cs", lattice, eta_nodal[idx])),
+        "cellwise": integral(np.repeat(eta_cellwise[:, None], len(lattice), axis=1)),
+    }
+
+
+@pytest.mark.level_2
+def test_a_cut_mesh_carries_a_step_viscosity_without_leaking_stress():
+    """The headline claim, measured rather than argued.
+
+    A cell straddling a viscosity jump evaluates stress from the interpolated
+    viscosity times the interpolated strain rate, which differs from the honest
+    cell average by ``-2 Cov(eta, edot)``. Refinement shrinks the straddling band
+    but never empties it, so this is not a resolution problem — it is a
+    representation problem, and cutting is the cure.
+
+    Three things are asserted, and the middle one is the feature:
+
+    * a cell-wise viscosity on the CUT mesh leaks essentially nothing, because
+      every cell lies wholly on one side and can be given the true value;
+    * the same viscosity on the UNCUT mesh leaks a great deal;
+    * a continuous P1 viscosity leaks even on the cut mesh — the cut alone is NOT
+      enough. The nodes ON the interface are shared by both sides and a
+      continuous field has to take one value there. This is why the feature is
+      "cut AND assign per cell", not "cut".
+
+    Measured on a 1/16 box, viscosity 1 -> 1e4 across a slanted line:
+
+    =======  =========  ================  ===================
+    mesh     straddle   leak, P1 nodal    leak, cell-wise
+    =======  =========  ================  ===================
+    uncut    37         239.7             285.4
+    cut      0          298.7             0.0 exactly
+    =======  =========  ================  ===================
+
+    Stubbing ``add_conforming_surface`` to return the mesh unchanged fails the
+    first two assertions below, which is the check this suite has most needed.
+    """
+    base = _box(1 / 16)
+    cut = base.add_conforming_surface(SLANTED, name="Fault")
+
+    out = {}
+    for name, mesh in (("uncut", base), ("cut", cut)):
+        X = np.asarray(mesh.X.coords)
+        s = _signed_distance(X, SLANTED).ravel()
+        eta_nodal = np.where(s < 0.0, ETA_WEAK, ETA_STRONG)
+        # An interface node belongs to both sides; a continuous field must pick
+        # one. Which one does not matter — that it must be picked is the point.
+        eta_nodal[np.abs(s) < 1e-11] = ETA_STRONG
+
+        idx = _cell_vertex_indices(mesh.dm)
+        centroids = _coords(mesh.dm)[idx].mean(axis=1)
+        eta_cellwise = np.where(
+            _signed_distance(centroids, SLANTED).ravel() < 0.0,
+            ETA_WEAK, ETA_STRONG)
+
+        eta_var = uw.discretisation.MeshVariable(f"etak_{name}", mesh, 1, degree=1)
+        eta_var.array[:, 0, 0] = eta_nodal
+        edot = _solve_pure_shear(mesh, eta_var.sym[0], name)
+        out[name] = _leak(mesh, eta_nodal, eta_cellwise, edot, SLANTED)
+
+    # The geometric precondition. Without this the rest is not interpretable.
+    assert out["cut"]["straddle"] == 0, "the cut left straddling cells"
+    assert out["uncut"]["straddle"] > 0, (
+        "the uncut mesh does not straddle the line, so there is nothing to fix "
+        "and this test is measuring nothing")
+
+    # THE CLAIM: cut + cell-wise viscosity carries the true material exactly.
+    assert out["cut"]["cellwise"] < 1e-9, (
+        f"cell-wise viscosity on the cut mesh leaked "
+        f"{out['cut']['cellwise']:.3e}; on a conforming mesh every cell lies "
+        f"wholly on one side, so this must be zero to round-off.")
+
+    # ... and it is the CUT doing the work, not the cell-wise assignment alone.
+    assert out["uncut"]["cellwise"] > 1.0, (
+        f"cell-wise viscosity on the UNCUT mesh leaked only "
+        f"{out['uncut']['cellwise']:.3e}. If a P0 viscosity were enough on any "
+        f"mesh, cutting would buy nothing and this feature would be pointless.")
+
+    # ... and cutting ALONE is not enough, which is why the docs insist on both.
+    assert out["cut"]["nodal"] > 1.0, (
+        f"a continuous P1 viscosity on the cut mesh leaked only "
+        f"{out['cut']['nodal']:.3e}, which contradicts the documented reason "
+        f"cell-wise assignment is required.")

@@ -11,17 +11,25 @@ not merely different.
 
 One multigrid level now spans as many engine passes as it takes to halve `h`
 (``adapt(mg_coarsening_ratio=...)``), so a recorded transfer is the COMPOSITION
-of those passes. That widens two things and neither is a weakening:
+of those passes. That widens two things:
 
 * a fine vertex need no longer lie on a coarse EDGE. Composing two bisections
   can place it at the midpoint of a segment joining two midpoints, which is
-  strictly inside a coarse cell. The reference here is therefore the coarse P1
-  value at the vertex's position, computed barycentrically in the containing
-  coarse cell — which covers every fine vertex rather than the ~64 % that lie on
-  an edge, so the test now checks more than it did;
+  strictly inside a coarse cell, where the reference is the coarse P1 value at
+  that position computed barycentrically;
 * a row holds up to ``dim+1`` entries rather than 2, because that is how many
   coarse vertices a point inside a coarse cell depends on. It is still the exact
   embedding, and still far sparser than a point-located row would be dense.
+
+**Both references are kept, and replacing the first with the second was a
+LOOSENING.** The barycentric reference was once justified as covering every fine
+vertex rather than "the ~64 % that lie on an edge" — but that 64 % belongs to the
+3-D case, and in 2-D nothing composes: one transfer, at most 2 entries per row,
+and 100 % of fine vertices on a coarse edge. The edge reference already covered
+everything that ran, and it catches something barycentric position cannot — a
+PHANTOM parent edge, two coarse vertices straddling the fine vertex without
+spanning any coarse edge. That is the 3-D defect, and a symmetric wrong pair also
+reproduces linear fields exactly, so the linear test is blind to it too.
 """
 import numpy as np
 import pytest
@@ -65,11 +73,59 @@ def _coarse_p1_value(cx, cells, data, x, tol=1e-9):
     return None
 
 
-def _adapted(dim, cell_size):
+def _coarse_edges(cdm):
+    """(n_edges, 2) coarse vertex indices, for the edge-membership reference."""
+    vS, _vE = cdm.getDepthStratum(0)
+    eS, eE = cdm.getDepthStratum(1)
+    return np.array([[int(v) - vS for v in cdm.getCone(e)]
+                     for e in range(eS, eE)], dtype=np.int64)
+
+
+def _coarse_support_of(cx, edges, x, tol=1e-9):
+    """Where ``x`` sits in the coarse mesh: the vertices it can depend on.
+
+    Returns ``("vertex", (v,))``, ``("edge", (a, b))``, or ``("interior", ())``.
+
+    This is the reference the barycentric one REPLACED, and dropping it was a
+    loosening rather than the strengthening it was recorded as: in 2-D nothing
+    composes, every fine vertex lies on a coarse edge, and the barycentric check
+    is strictly weaker there because it cannot tell a correct parent edge from a
+    PHANTOM one — two coarse vertices that straddle the fine vertex without
+    spanning any coarse edge. That is exactly the 3-D defect, and it is why both
+    references are kept.
+    """
+    d = np.linalg.norm(cx - x, axis=1)
+    j = int(np.argmin(d))
+    if d[j] < tol:
+        return "vertex", (j,)
+
+    A, B = cx[edges[:, 0]], cx[edges[:, 1]]
+    seg = B - A
+    t = np.einsum("ij,ij->i", x - A, seg) / np.einsum("ij,ij->i", seg, seg)
+    foot = A + np.clip(t, 0.0, 1.0)[:, None] * seg
+    hit = np.flatnonzero((t > -tol) & (t < 1.0 + tol)
+                         & (np.linalg.norm(x - foot, axis=1) < tol))
+    if len(hit):
+        e = edges[hit[0]]
+        return "edge", (int(e[0]), int(e[1]))
+    return "interior", ()
+
+
+def _adapted(dim, cell_size, max_levels=2, ratio=2.0):
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
         cellSize=cell_size, refinement=1, qdegree=2)
-    return base.adapt(_metric, max_levels=2)
+    return base.adapt(_metric, max_levels=max_levels, mg_coarsening_ratio=ratio)
+
+
+# The parametrisation the embedding tests run over. The third case is a 2-D
+# hierarchy that genuinely COMPOSES — three engine generations folded into one
+# multigrid level, max 3 nonzeros per row. Without it the docstring's claim
+# about composition is not exercised anywhere that runs: in the standard 2-D
+# case nothing composes (one transfer, max 2 per row, every fine vertex on a
+# coarse edge) and the only composing case was the 3-D one, which is xfailed.
+CASES = [(2, 0.2, 2, 2.0), (3, 0.4, 2, 2.0), (2, 0.3, 4, 4.0)]
+CASE_IDS = ["2d", "3d", "2d-composed"]
 
 
 def _levels(child):
@@ -83,19 +139,19 @@ def _as_matrix(entry, coarse_dm, fine_dm):
     return sp.csr_matrix((vals, (rows, cols)), shape=(fvE - fvS, cvE - cvS))
 
 
-@pytest.mark.parametrize("dim,cell_size", [(2, 0.2), (3, 0.4)])
-def test_every_pass_records_a_prolongation(dim, cell_size):
-    child = _adapted(dim, cell_size)
+@pytest.mark.parametrize("dim,cell_size,max_levels,ratio", CASES, ids=CASE_IDS)
+def test_every_pass_records_a_prolongation(dim, cell_size, max_levels, ratio):
+    child = _adapted(dim, cell_size, max_levels, ratio)
     Ps = child._adapt_prolongation
     assert Ps, "adapt recorded no nested prolongations"
     assert all(P is not None for P in Ps), (
         "a refinement pass could not be expressed as a bisection embedding")
 
 
-@pytest.mark.parametrize("dim,cell_size", [(2, 0.2), (3, 0.4)])
-def test_partition_of_unity_and_no_zero_columns(dim, cell_size):
+@pytest.mark.parametrize("dim,cell_size,max_levels,ratio", CASES, ids=CASE_IDS)
+def test_partition_of_unity_and_no_zero_columns(dim, cell_size, max_levels, ratio):
     """No zero column is the property that makes #424 impossible here."""
-    child = _adapted(dim, cell_size)
+    child = _adapted(dim, cell_size, max_levels, ratio)
     Ps = child._adapt_prolongation
     lvl = _levels(child)[-(len(Ps) + 1):]
     for k, entry in enumerate(Ps):
@@ -109,36 +165,21 @@ def test_partition_of_unity_and_no_zero_columns(dim, cell_size):
             f"zero-column failure the nested transfer is meant to preclude")
 
 
-@pytest.mark.parametrize("dim,cell_size", [
-    (2, 0.2),
-    pytest.param(3, 0.4, marks=pytest.mark.xfail(
-        reason="TODO(BUG) nvb.nested_prolongation: in 3-D the recorded transfer "
-               "is not the coarse P1 embedding for vertices a closure cascade "
-               "places strictly INSIDE a coarse tet (worst error 1.19, measured "
-               "per generation with no composition). Pre-existing and masked by "
-               "this test's previous edge-based reference, which skipped exactly "
-               "those vertices. 2-D is exact.",
-        strict=True)),
-])
-def test_reproduces_an_arbitrary_coarse_field(dim, cell_size):
-    """The transfer must be the coarse P1 EMBEDDING, not merely a linear
-    interpolant.
+def _embedding_report(dim, cell_size, max_levels, ratio):
+    """Per-row verdict on whether the recorded transfer is the P1 embedding.
 
-    Reproducing a globally linear field (the test below) is far too weak — any
-    local averaging of nearby values passes it, so a prolongation that
-    attributed weights to the wrong coarse cell would go undetected. This uses
-    a RANDOM coarse nodal field, where only the true embedding agrees.
-
-    The reference is computed independently, by barycentric interpolation in the
-    coarse cell that contains the fine vertex. Deliberately NOT
-    `uw.function.evaluate`, which returns wrong values at points lying exactly on
-    cell boundaries (#432) — using it as the reference produced a convincing
-    false accusation against this code.
+    Returns ``(on_support, interior)``: lists of ``(pass, row, exact)`` for rows
+    whose fine vertex lies on a coarse vertex or edge, and for rows whose fine
+    vertex lies strictly inside a coarse cell. They are reported separately
+    because in 3-D only the second kind is broken, and lumping them together
+    loses the guarantee on the first — which is the majority.
     """
-    child = _adapted(dim, cell_size)
+    child = _adapted(dim, cell_size, max_levels, ratio)
     Ps = child._adapt_prolongation
     lvl = _levels(child)[-(len(Ps) + 1):]
     rng = np.random.default_rng(0)
+
+    on_support, interior = [], []
     for k, entry in enumerate(Ps):
         if entry is None:
             continue
@@ -152,27 +193,97 @@ def test_reproduces_an_arbitrary_coarse_field(dim, cell_size):
         got = P @ data
 
         cells = _coarse_cell_vertices(cdm, dim)
-        checked = 0
+        edges = _coarse_edges(cdm)
         for r in range(fvE - fvS):
             truth = _coarse_p1_value(cx, cells, data, fx[r])
-            if truth is None:
-                continue
-            assert abs(got[r] - truth) < 1e-10, (
-                f"pass {k}, fine vertex {r}: transfer {got[r]} != coarse P1 "
-                f"value {truth} at its position — the prolongation is not the "
-                f"coarse embedding")
-            checked += 1
-        assert checked == fvE - fvS, (
-            f"pass {k}: only {checked} of {fvE - fvS} fine vertices fell inside "
-            f"a coarse cell; the test is not covering what it claims")
+            assert truth is not None, (
+                f"pass {k}, fine vertex {r} lies in no coarse cell; the test is "
+                f"not covering what it claims")
+            exact = abs(got[r] - truth) < 1e-10
+            kind, support = _coarse_support_of(cx, edges, fx[r])
+            cols = set(int(c) for c in P.indices[P.indptr[r]:P.indptr[r + 1]])
+            if kind == "interior":
+                interior.append((k, r, exact))
+            else:
+                on_support.append((k, r, exact and cols <= set(support)))
+    return on_support, interior
 
 
-@pytest.mark.parametrize("dim,cell_size", [(2, 0.2), (3, 0.4)])
-def test_reproduces_a_linear_field_exactly(dim, cell_size):
+@pytest.mark.parametrize("dim,cell_size,max_levels,ratio", CASES, ids=CASE_IDS)
+def test_a_fine_vertex_on_a_coarse_edge_depends_only_on_that_edge(
+        dim, cell_size, max_levels, ratio):
+    """Two references, not one — this is the edge-membership half.
+
+    A fine vertex that sits on a coarse vertex or a coarse EDGE must take its
+    value from exactly those coarse vertices. A barycentric-position reference
+    alone cannot see the failure this catches: a PHANTOM parent edge, whose two
+    endpoints straddle the fine vertex symmetrically without spanning any coarse
+    edge, reproduces the position and reproduces linear fields exactly while
+    being the wrong parentage. That is the 3-D defect, characterised: fine vertex
+    1780 carries the row ``{484: 0.5, 798: 0.5}`` while its true barycentric
+    position is ``(0, 0.25, 0.5, 0.25)``.
+
+    Holds in EVERY case including 3-D, where it is the guarantee on the majority
+    of rows that the interior-vertex bug would otherwise take down with it.
+    """
+    on_support, _interior = _embedding_report(dim, cell_size, max_levels, ratio)
+    assert on_support, "no fine vertex lay on a coarse vertex or edge"
+    bad = [(k, r) for k, r, ok in on_support if not ok]
+    assert not bad, (
+        f"{len(bad)} of {len(on_support)} rows whose fine vertex lies on a "
+        f"coarse edge are not supported on that edge: {bad[:5]}")
+
+
+@pytest.mark.parametrize("dim,cell_size,max_levels,ratio", CASES, ids=CASE_IDS)
+def test_reproduces_an_arbitrary_coarse_field(dim, cell_size, max_levels, ratio):
+    """The transfer must be the coarse P1 EMBEDDING, not merely a linear
+    interpolant.
+
+    Reproducing a globally linear field (the test below) is far too weak — any
+    local averaging of nearby values passes it, so a prolongation that
+    attributed weights to the wrong coarse cell would go undetected. This uses
+    a RANDOM coarse nodal field, where only the true embedding agrees.
+
+    The reference is computed independently, by barycentric interpolation in the
+    coarse cell that contains the fine vertex. Deliberately NOT
+    `uw.function.evaluate`, which returns wrong values at points lying exactly on
+    cell boundaries (#432) — using it as the reference produced a convincing
+    false accusation against this code.
+
+    TODO(BUG) ``nvb.nested_prolongation`` is wrong in 3-D for vertices a closure
+    cascade places strictly INSIDE a coarse tet — worst error 1.19, measured per
+    generation with no composition involved, against 1.9e-15 in 2-D. The defect
+    is asserted POSITIVELY below rather than through ``xfail(strict=True)``: it
+    is carried by ONE row in 2336 of a gmsh mesh, so a strict xfail turns a gmsh
+    version bump into a hard failure, and it hides how narrow the breakage is.
+    When the bug is fixed this test fails and says so.
+    """
+    _on_support, interior = _embedding_report(dim, cell_size, max_levels, ratio)
+    wrong = [(k, r) for k, r, exact in interior if not exact]
+
+    if dim == 3:
+        assert wrong, (
+            "3-D interior-vertex rows are now exact — nvb.nested_prolongation "
+            "appears FIXED. Delete this branch and assert exactness for every "
+            "dimension.")
+        return
+
+    assert not wrong, (
+        f"{len(wrong)} of {len(interior)} rows whose fine vertex lies strictly "
+        f"inside a coarse cell are not the coarse P1 value there: {wrong[:5]}")
+
+
+@pytest.mark.parametrize("dim,cell_size,max_levels,ratio", CASES, ids=CASE_IDS)
+def test_reproduces_a_linear_field_exactly(dim, cell_size, max_levels, ratio):
     """Necessary but WEAK — see the embedding test above. Kept because a
     failure here localises the problem to the arithmetic rather than the
-    parentage."""
-    child = _adapted(dim, cell_size)
+    parentage.
+
+    Provably BLIND to the 3-D defect above, which is why it cannot be the only
+    embedding check: a symmetric wrong pair of parents reproduces a linear field
+    exactly. Kept for localisation, not for coverage.
+    """
+    child = _adapted(dim, cell_size, max_levels, ratio)
     Ps = child._adapt_prolongation
     lvl = _levels(child)[-(len(Ps) + 1):]
     for k, entry in enumerate(Ps):
@@ -185,24 +296,36 @@ def test_reproduces_a_linear_field_exactly(dim, cell_size):
             f"pass {k}: prolongation does not reproduce a linear field")
 
 
-def test_transfer_is_sparser_than_point_location():
-    """At most ``dim+1`` nonzeros per row — the exact embedding, still sparse.
+@pytest.mark.parametrize("dim,cell_size,max_levels,ratio", CASES, ids=CASE_IDS)
+def test_transfer_is_sparser_than_point_location(dim, cell_size, max_levels, ratio):
+    """At most ``dim+1`` nonzeros in EVERY row, and fewer than that on average.
 
     A single bisection gives 1-2 entries per row. A level that spans several
     passes composes them, and a fine vertex strictly inside a coarse cell depends
-    on that cell's ``dim+1`` vertices — which is the bound, not a symptom. The
-    point of the recorded transfer is that it is EXACT and sparse where point
-    location was approximate; ``dim+1`` per row keeps both.
+    on that cell's ``dim+1`` vertices — which is the bound, not a symptom.
+
+    Bounded PER ROW, not on the average. ``dim+1`` IS point-location density, so
+    a mean bounded by it cannot distinguish the recorded transfer from the thing
+    this test is named for beating: a mean of 4 tolerates a minority of rows with
+    20+ entries, which is precisely the "weights on the wrong coarse cell" mode.
+    The measured per-row maxima are 2 (2-D), 3 (2-D composed) and 4 (3-D) — tight
+    in two of the three, so the bound is doing work rather than being generous.
+    The mean is then required to be strictly below ``dim+1``, which is the actual
+    "sparser than point location" claim (measured 1.19 / 1.38 / 2.24).
     """
-    for dim, cell_size in ((2, 0.2), (3, 0.4)):
-        child = _adapted(dim, cell_size)
-        Ps = child._adapt_prolongation
-        lvl = _levels(child)[-(len(Ps) + 1):]
-        for k, entry in enumerate(Ps):
-            P = _as_matrix(entry, lvl[k], lvl[k + 1])
-            assert P.nnz / P.shape[0] <= dim + 1, (
-                f"{dim}D pass {k}: {P.nnz / P.shape[0]:.2f} nonzeros per row "
-                f"exceeds the {dim + 1} a coarse cell can supply")
+    child = _adapted(dim, cell_size, max_levels, ratio)
+    Ps = child._adapt_prolongation
+    lvl = _levels(child)[-(len(Ps) + 1):]
+    for k, entry in enumerate(Ps):
+        P = _as_matrix(entry, lvl[k], lvl[k + 1])
+        worst = int(np.diff(P.indptr).max())
+        assert worst <= dim + 1, (
+            f"{dim}D pass {k}: a row holds {worst} nonzeros, more than the "
+            f"{dim + 1} vertices a coarse cell can supply")
+        mean = P.nnz / P.shape[0]
+        assert mean < dim + 1, (
+            f"{dim}D pass {k}: {mean:.2f} nonzeros per row on average is "
+            f"point-location density; the recorded transfer should be sparser")
 
 
 def test_mg_actually_uses_the_recorded_transfer_for_degree_one():

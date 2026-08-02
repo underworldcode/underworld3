@@ -50,9 +50,49 @@ SERIAL_CELLS = 396
 SERIAL_SURFACE_FACETS = 26
 SERIAL_COORD_SHA = "c68821fc041cf94c"
 
+# Vertices lying exactly ON the surface, per snap fraction: (count, coord hash).
+# This is what the snap test compares against. On the UNCUT base the number is
+# ZERO and the nearest vertex is 5.5e-3 away, so any assertion phrased as "the
+# vertices near the surface are on it" is satisfied by an empty set and holds
+# with the feature removed entirely.
+SERIAL_ON_SURFACE = {
+    0.0:  (29, "38a5cf77322d57bc"),
+    0.05: (29, "38a5cf77322d57bc"),
+    0.2:  (18, "b8dfa8eadd27b59a"),
+}
+
 
 def _coords(dm):
     return np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dm.getCoordinateDim())
+
+
+def _owned(dm, points):
+    """Those of ``points`` this rank owns — held as a star-forest root, not leaf."""
+    try:
+        _nroots, ilocal, _iremote = dm.getPointSF().getGraph()
+    except (ValueError, TypeError):
+        ilocal = None
+    leaves = set() if ilocal is None else {int(p) for p in ilocal}
+    return [int(p) for p in points if int(p) not in leaves]
+
+
+def _owned_label_size(mesh, name):
+    """Globally, how many facets carry ``name`` — counted once per facet.
+
+    A labelled facet on a partition seam is present on every rank of the seam, so
+    summing local stratum sizes overstates it and cannot be compared with a serial
+    number.
+    """
+    value = mesh.boundaries[name].value
+    label = mesh.dm.getLabel(name)
+    # An EMPTY stratum yields a null IS that petsc4py will happily hand back and
+    # then segfault on in `getIndices()`. A rank owning no part of the surface is
+    # the normal case at np>2, so the size has to be checked first.
+    if label.getStratumSize(value) == 0:
+        points = []
+    else:
+        points = label.getStratumIS(value).getIndices()
+    return uw.mpi.comm.allreduce(len(_owned(mesh.dm, points)))
 
 
 def _owned_vertex_coords(dm):
@@ -103,6 +143,11 @@ def test_cut_is_independent_of_the_partition():
         f"np={uw.mpi.size} produced {parallel.shape[0]} owned vertices, serial "
         f"{SERIAL_VERTICES}. The cut must not depend on the partition.")
 
+    cS, cE = cut.dm.getHeightStratum(0)
+    cells = uw.mpi.comm.allreduce(len(_owned(cut.dm, range(cS, cE))))
+    assert cells == SERIAL_CELLS, (
+        f"np={uw.mpi.size} produced {cells} owned cells, serial {SERIAL_CELLS}")
+
     got = hashlib.sha256(np.round(parallel, 9).tobytes()).hexdigest()[:16]
     assert got == SERIAL_COORD_SHA, (
         f"np={uw.mpi.size} vertex coordinates hash {got}, serial "
@@ -127,14 +172,21 @@ def test_surface_is_a_chain_of_edges_on_every_rank():
     on = np.flatnonzero(np.abs(s) < 1e-11)
     order = on[np.argsort(((X[on] - A) @ d) / (d @ d))]
 
-    # Consecutive on-surface vertices that are BOTH local must be joined by a
-    # local edge. A pair straddling a partition seam legitimately is not.
-    missing = 0
-    for u, v in zip(order[:-1], order[1:]):
-        if frozenset((int(u), int(v))) not in edges:
-            missing += 1
-    assert uw.mpi.comm.allreduce(missing) <= 2 * uw.mpi.size, (
-        "more gaps in the surface chain than partition seams can explain")
+    # The chain is asserted GLOBALLY, by counting the facets that carry the
+    # surface label once each. A per-rank gap count cannot be: a pair of
+    # consecutive on-surface vertices straddling a seam legitimately has no local
+    # edge, so the bound has to be scaled by the number of seams — which LOOSENS
+    # as the partition gets harder, permitting 8 broken segments out of 26 at
+    # np=4. The owned facet count is exact and partition-independent.
+    assert _owned_label_size(cut, "Fault") == SERIAL_SURFACE_FACETS, (
+        f"np={uw.mpi.size}: the surface is {_owned_label_size(cut, 'Fault')} "
+        f"facets, serial {SERIAL_SURFACE_FACETS} — the chain is broken.")
+
+    # And locally: consecutive on-surface vertices that are both present here are
+    # joined by an edge here. Reported for diagnosis, bounded by the seams.
+    missing = sum(1 for u, v in zip(order[:-1], order[1:])
+                  if frozenset((int(u), int(v))) not in edges)
+    assert uw.mpi.comm.allreduce(missing) <= 2 * uw.mpi.size
 
     # No cell may straddle, on any rank — that is the property the whole feature
     # exists to provide, and it is purely local.
@@ -150,15 +202,22 @@ def test_surface_is_a_chain_of_edges_on_every_rank():
 
 
 def test_surface_label_survives_distribution():
-    """A boundary condition on the surface needs the label on every owning rank."""
+    """Finding the surface again needs the WHOLE label, not a facet of it.
+
+    ``allreduce(local) > 0`` is satisfied by one facet on one rank, which is the
+    state a distribution bug produces. The count of owned labelled facets is the
+    assertion that discriminates, and it must equal the serial one exactly.
+    """
     _base, cut = _surface_mesh()
     value = cut.boundaries["Fault"].value
 
     assert cut.dm.hasLabel("Fault")
-    local = cut.dm.getLabel("Fault").getStratumSize(value)
-    assert uw.mpi.comm.allreduce(local) > 0, "the surface label vanished"
+    assert _owned_label_size(cut, "Fault") == SERIAL_SURFACE_FACETS, (
+        f"np={uw.mpi.size}: {_owned_label_size(cut, 'Fault')} labelled facets, "
+        f"serial {SERIAL_SURFACE_FACETS}")
 
     # It must also be stacked into UW_Boundaries, which is what the solver reads.
+    local = cut.dm.getLabel("Fault").getStratumSize(value)
     stacked = cut.dm.getLabel("UW_Boundaries").getStratumSize(value)
     assert uw.mpi.comm.allreduce(stacked) == uw.mpi.comm.allreduce(local)
 
@@ -237,21 +296,84 @@ def test_snap_fraction_is_partition_independent(snap_frac):
     """The snap decision is read off an EDGE, so a rank holding one side of a
     shared vertex can decide differently from its neighbour. Reconciling that
     over the star-forest is what makes the cut converge at all — at np=3 the
-    unreconciled version converged at snap_frac=0 and never at 0.1."""
+    unreconciled version converged at snap_frac=0 and never at 0.1.
+
+    Asserted as the COUNT and the IDENTITY of the on-surface vertices against
+    serial, not as "whatever is near the surface is on it". The failure this
+    names — a vertex snapped on some ranks and not others — leaves that vertex
+    about ``snap_frac * h`` off the line, three or four orders OUTSIDE any
+    tolerance-band selector, and an empty band satisfies a band assertion.
+    """
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
         regular=False, qdegree=3)
     cut = base.add_conforming_surface(SLANTED, name="Fault", snap_frac=snap_frac)
     assert _over_shared_facets(cut.dm) == 0
-    # Every vertex NEAR the surface must lie exactly ON it: a snap that only some
-    # ranks applied leaves its vertex a hair off, which is how the disagreement
-    # shows up geometrically.
-    X = _coords(cut.dm)
+
     A, B = SLANTED[0], SLANTED[-1]
     d = B - A
     nrm = np.array([-d[1], d[0]]) / np.hypot(*d)
-    distance = np.abs((X - A) @ nrm)
-    near = distance < 1e-6
-    worst = float(distance[near].max()) if near.any() else 0.0
-    assert uw.mpi.comm.allreduce(worst, op=max) < 1e-12, (
-        f"np={uw.mpi.size}: a surface vertex sits {worst:.2e} off the line")
+
+    vS, vE = cut.dm.getDepthStratum(0)
+    X = _coords(cut.dm)
+    mine = np.array([X[v - vS] for v in _owned(cut.dm, range(vS, vE))])
+    gathered = [g for g in uw.mpi.comm.allgather(mine) if len(g)]
+    allX = np.vstack(gathered)
+    on = allX[np.abs((allX - A) @ nrm) < 1e-11]
+    on = on[np.lexsort((on[:, 1], on[:, 0]))]
+
+    n_expected, sha_expected = SERIAL_ON_SURFACE[snap_frac]
+    assert len(on) == n_expected, (
+        f"np={uw.mpi.size} snap={snap_frac}: {len(on)} vertices on the surface, "
+        f"serial {n_expected}. A snap applied on only some ranks changes this.")
+    got = hashlib.sha256(np.round(on, 9).tobytes()).hexdigest()[:16]
+    assert got == sha_expected, (
+        f"np={uw.mpi.size} snap={snap_frac}: on-surface vertices hash {got}, "
+        f"serial {sha_expected} — the same COUNT of different vertices.")
+
+
+# Inputs found by sweeping in serial (`~/+Simulations/mesh_reconnection_study/`
+# `cut_find_refusal_inputs.py`, `cut_hunt_inversion.py`) and confirmed to reach
+# the refusal each is named for. The first attempt at this test used plausible
+# inputs that quietly returned success for four of five cases.
+_BOX = dict(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), regular=False, qdegree=2)
+_ZIG = np.array([[-0.1, 0.5], [0.30, 0.62], [0.55, 0.38], [0.80, 0.62], [1.1, 0.5]])
+
+REFUSALS = [
+    ("nothing to cut", 1 / 12, np.array([[5.0, 5.0], [6.0, 6.0]]), 0.10, ValueError),
+    ("line ends inside", 1 / 12, np.array([[-0.1, 0.5], [0.5, 0.5]]), 0.0, ValueError),
+    ("edge crossed twice", 1 / 3, _ZIG, 0.0, ValueError),
+    ("snapping inverts a cell", 1 / 8,
+     np.array([[-0.1, 0.503], [1.1, 0.541]]), 0.48, RuntimeError),
+]
+
+
+@pytest.mark.parametrize("name,h,line,snap,expected",
+                         REFUSALS, ids=[r[0] for r in REFUSALS])
+def test_every_refusal_is_collective(name, h, line, snap, expected):
+    """A refusal must reach EVERY rank, or it is a hang rather than an error.
+
+    Each condition below is a property of one rank's cells — whether this rank
+    holds the inverted cell, the tip triangle, the twice-crossed edge — so a
+    rank-local ``raise`` aborts that rank while its peers walk on into the next
+    collective and block there. Nine defects of exactly this shape have been
+    found in this module; the parallel suite could not see any of them because it
+    only ever exercised the happy path.
+
+    Negative control, measured: restoring the rank-local form of the
+    cell-inversion test makes this file HANG at np=3 on the last case, while the
+    three before it still pass.
+    """
+    from underworld3.utilities.line_cut import cut_along_lines
+
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=h, **_BOX)
+    try:
+        cut_along_lines(mesh.dm, [line], snap_frac=snap)
+        outcome = "no refusal"
+    except (ValueError, RuntimeError) as exc:
+        outcome = type(exc).__name__
+
+    seen = uw.mpi.comm.allgather(outcome)
+    assert set(seen) == {expected.__name__}, (
+        f"np={uw.mpi.size} {name!r}: ranks disagreed — {seen}. Every rank must "
+        f"raise {expected.__name__}, or the ones that do not will hang.")

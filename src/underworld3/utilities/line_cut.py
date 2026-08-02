@@ -52,15 +52,15 @@ reads the operator and so is sensitive to element shape (the geometric hierarchy
 is deliberately not — it sat at 2-3 V-cycles across every mesh here and cannot
 discriminate). On a 5,432-cell box, CG iterations to ``rtol=1e-10``:
 
-===========  ===========  ==========
+=============  ===========  ==========
 ``snap_frac``  min angle    CG iters
-===========  ===========  ==========
+=============  ===========  ==========
 uncut          43.7 deg     20
 0.00            0.6 deg     32
 0.05            2.7 deg     28
 0.10            6.7 deg     23
 0.20           11.3 deg     21
-===========  ===========  ==========
+=============  ===========  ==========
 
 So cutting without snapping costs 60 % more iterations, and snapping buys it back.
 A Lawson flip pass (:func:`~underworld3.utilities.reconnect.flip_to_reduce_max_angle`,
@@ -75,6 +75,28 @@ Two dimensions, and lines that cross the mesh from boundary to boundary. A line
 *ending* inside the mesh (a fault tip) leaves a triangle the line enters but does
 not leave, which bisects without cutting; that is refused rather than silently
 mis-meshed, as are triangles crossed three times.
+
+Parallel
+--------
+Two rules hold everywhere in this module, and both are load-bearing rather than
+defensive.
+
+**Every refusal is global.** A rank-local ``raise`` aborts one rank while its
+peers walk on into the next collective and block there, so what should be a clear
+error message becomes a hang. Every condition tested here is a property of one
+rank's cells, so each is reduced *before* it is tested: either every rank raises
+or none does. The happy path is not evidence — a parallel test that never takes an
+error path cannot see this class of defect at all, and nine of them have been
+found this way so far. np=1 and np=2 both pass every one; np=3 is what exposes
+them.
+
+**Every tolerance is built from a GLOBAL length.** The cut is partition
+independent because each quantity is a pure function of the coordinates and the
+line, so every rank holding a shared edge computes the same crossing — which is
+what ``uwnvb_bisect`` needs to keep the child point star-forest conforming. A
+rank-local coordinate extent is not that: it varies with the partition (measured
+0.58-0.67 against 1.0 in serial), and it raises outright on a rank owning no
+vertices. :func:`_global_extent` is the one source of that number.
 """
 
 import numpy as np
@@ -104,6 +126,30 @@ def _edge_vertices(dm):
 
 def _coords(dm):
     return np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dm.getCoordinateDim())
+
+
+def _global_extent(dm):
+    """Longest side of the mesh's bounding box, reduced over every rank.
+
+    COLLECTIVE. Every tolerance in this module is a fraction of this length, and
+    the module's central invariant is that the crossings are a pure function of
+    the coordinates and the line — so the length has to be the same number on
+    every rank. A local ``np.ptp`` is not: it measures this rank's piece of the
+    mesh, which spread 0.58-0.67 against 1.0 in serial on a three-way partition,
+    and it raises on a rank owning no vertices, which is where the small coarse
+    levels of a cut hierarchy end up.
+
+    Reduced as a bounding BOX rather than as each rank's own longest side: the
+    maximum of local extents is not the extent of the union.
+    """
+    cdim = dm.getCoordinateDim()
+    X = _coords(dm)
+    # Pack as [lo, -hi] so one MIN reduction serves both ends. An empty rank
+    # contributes the identity, +inf, and must still take part in the reduce.
+    box = (np.concatenate([X.min(axis=0), -X.max(axis=0)]) if len(X)
+           else np.full(2 * cdim, np.inf))
+    uw.mpi.comm.Allreduce(MPI.IN_PLACE, box, op=MPI.MIN)
+    return float((-box[cdim:] - box[:cdim]).max())
 
 
 def _segments(lines):
@@ -180,7 +226,7 @@ def _crossing_parameters(X, ends, lines, on_line):
     return t, np.flatnonzero(multiply_crossed)
 
 
-def _resolve_snapping(dm, X, ends, lines, snap_frac):
+def _resolve_snapping(dm, X, ends, lines, snap_frac, scale):
     """Which vertices to move onto the line, and where the crossings then land.
 
     A crossing at parameter ``t`` on an edge sits ``t`` of the way along it, so
@@ -208,7 +254,7 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac):
     # invisible here. The validation then reads such a cell as "entered but not
     # left" and refuses a perfectly legal branch: measured on a three-way (Y)
     # junction, which this makes work.
-    on_line = _distance_to_lines(X, lines) < 1e-12 * np.ptp(X, axis=0).max()
+    on_line = _distance_to_lines(X, lines) < 1e-12 * scale
     for _ in range(10):
         X_snapped = X.copy()
         if on_line.any():
@@ -269,28 +315,33 @@ def _cell_edge_counts(dm, crossed_edges, on_line_vertices):
     return n_cross, n_corner
 
 
-def _child_vertex_of(parent, child, positions):
-    """Child vertex nearest each given position, insisting the match is exact.
+def _child_vertex_of(child, positions, scale):
+    """Child vertices nearest the given positions, and how many did not match.
 
     Parent vertices keep their coordinates through the transform and inserted
     vertices land on their parent edge's midpoint, so position identifies both.
     petsc4py does not expose ``DMPlexTransformGetTargetPoint``, so this is the
     available route, and matching on geometry keeps it independent of the
     transform's internal point numbering.
+
+    The mismatch COUNT is returned rather than raised on. Raising here would be
+    rank-local, and it would sit inside the caller's rank-local "did this rank
+    split anything?" guard as well — two ways for one rank to leave while its
+    peers wait in the next reduce. The caller reduces the count and raises for
+    everyone. A rank with nothing to look up returns empty and zero, which is a
+    result, not a special case.
     """
+    if not len(positions):
+        return np.empty(0, dtype=np.int64), 0
+
     Xc = _coords(child)
     vS, vE = child.getDepthStratum(0)
     tree = uw.kdtree.KDTree(np.ascontiguousarray(Xc[: vE - vS]))
     idx, dist_sqr, found = tree.find_closest_point(np.ascontiguousarray(positions))
 
-    scale = np.ptp(_coords(parent), axis=0).max()
-    bad = np.flatnonzero(~np.asarray(found).ravel()
-                         | (np.asarray(dist_sqr).ravel() > (1e-9 * scale) ** 2))
-    if len(bad):
-        raise RuntimeError(
-            f"{len(bad)} expected vertex position(s) have no child vertex; the "
-            "transform did not place points where this routine assumes it does.")
-    return np.asarray(idx, dtype=np.int64).ravel()
+    bad = (~np.asarray(found).ravel()
+           | (np.asarray(dist_sqr).ravel() > (1e-9 * scale) ** 2))
+    return np.asarray(idx, dtype=np.int64).ravel(), int(bad.sum())
 
 
 def _set_coordinates(dm, indices, values):
@@ -304,16 +355,20 @@ def _set_coordinates(dm, indices, values):
 
 
 def _label_cut_edges(dm, lines, tol, name, value):
-    """Mark the edges lying along the cut.
+    """Mark the edges lying along the cut; return the edge points marked.
 
     An edge is on the cut when both its endpoints and its midpoint lie on a line.
     The midpoint test is what distinguishes the cut from a chord: where a polyline
     turns, two vertices on different segments can be joined by an edge that is not
     part of the line at all.
+
+    The points are returned rather than counted here because a shared edge is held
+    by every rank on the seam: counting locally and summing would report it once
+    per sharer. The caller counts the OWNED ones.
     """
     X = _coords(dm)
     on = _distance_to_lines(X, lines) < tol
-    eS, eE = dm.getDepthStratum(1)
+    eS, _eE = dm.getDepthStratum(1)
     ends = _edge_vertices(dm)
     mid_on = _distance_to_lines(0.5 * (X[ends[:, 0]] + X[ends[:, 1]]), lines) < tol
     keep = on[ends[:, 0]] & on[ends[:, 1]] & mid_on
@@ -322,10 +377,10 @@ def _label_cut_edges(dm, lines, tol, name, value):
         dm.createLabel(name)
     label = dm.getLabel(name)
     label.setDefaultValue(0)
-    for e in np.flatnonzero(keep) + eS:
+    marked = np.flatnonzero(keep) + eS
+    for e in marked:
         label.setValue(int(e), int(value))
-    del eE
-    return int(keep.sum())
+    return marked
 
 
 def cell_areas(dm):
@@ -407,9 +462,15 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
         crossings is an edge. Those edges carry ``label`` with value
         ``label_value``.
     info : dict
-        ``n_split`` edges split, ``n_snapped`` vertices moved onto a line,
+        ``n_split`` edges split, ``n_on_surface`` vertices lying on a line,
         ``n_cut_edges`` edges labelled, ``min_area`` and ``min_angle`` of the
-        result.
+        result. Every entry is GLOBAL, and counts are over owned points, so the
+        numbers are the same at any communicator size.
+
+        ``n_on_surface`` counts vertices moved onto a line by snapping AND
+        vertices that were already on one — a tip or a junction placed on a
+        vertex, which is how those are represented. Both are cut vertices; the
+        distinction does not survive into the result.
 
     Raises
     ------
@@ -424,8 +485,12 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
 
     Examples
     --------
+    A single line crossing the mesh cuts ONE chain, so its facets number one
+    fewer than the vertices along it — and every vertex along it is either one
+    this routine inserted or one already on the line:
+
     >>> cut, info = cut_along_lines(mesh.dm, [np.array([[0.5, -0.1], [0.5, 1.1]])])
-    >>> info["n_cut_edges"] == info["n_split"] + info["n_snapped"] - 1
+    >>> info["n_cut_edges"] == info["n_split"] + info["n_on_surface"] - 1
     True
     """
     if dm.getDimension() != 2:
@@ -437,9 +502,13 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
 
     X = _coords(dm)
     ends = _edge_vertices(dm)
+    # One global length, computed once and threaded through every tolerance
+    # below. Cutting never moves a vertex outside the bounding box, so the same
+    # number is valid for the child meshes the pass loop produces.
+    scale = _global_extent(dm)
 
     on_line, X_snapped, t, multiply_crossed = _resolve_snapping(
-        dm, X, ends, lines, snap_frac)
+        dm, X, ends, lines, snap_frac, scale)
     eS, _eE = dm.getDepthStratum(1)
     crossed = np.flatnonzero(np.isfinite(t)) + eS
 
@@ -475,17 +544,23 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
             "near the line so no triangle sees more than one line segment.")
 
     # Both reduced before either is tested: a rank that owns no part of the line
-    # must not take a different branch from one that does.
-    totals = np.array([len(crossed), int(on_line.sum())], dtype=np.int64)
-    n_crossed_total, n_snapped = uw.mpi.comm.allreduce(totals, op=MPI.SUM)
-    if n_crossed_total == 0 and n_snapped == 0:
+    # must not take a different branch from one that does. Counted over OWNED
+    # points only — a shared edge or vertex sits on every rank of the seam, and
+    # summing local counts would report it once per sharer.
+    vS, _vE = dm.getDepthStratum(0)
+    totals = np.array([_owned_count(dm, crossed),
+                       _owned_count(dm, np.flatnonzero(on_line) + vS)],
+                      dtype=np.int64)
+    n_crossed_total, n_on_surface = uw.mpi.comm.allreduce(totals, op=MPI.SUM)
+    if n_crossed_total == 0 and n_on_surface == 0:
         raise ValueError("no mesh edge is crossed by any line: nothing to cut.")
 
     # Apply the snapping to a WORKING COPY. The caller's mesh is never touched, so
-    # a line can be moved and re-cut against the same fixed base.
+    # a line can be moved and re-cut against the same fixed base. Unconditional:
+    # an empty index set is a no-op, and a rank-local guard around mesh surgery is
+    # the shape every deadlock in this module has had.
     work = dm.clone()
-    if on_line.any():
-        _set_coordinates(work, np.flatnonzero(on_line), X_snapped[on_line])
+    _set_coordinates(work, np.flatnonzero(on_line), X_snapped[on_line])
 
     # Split in PASSES of pairwise-INDEPENDENT edges, never two edges of one cell
     # at once.
@@ -508,7 +583,6 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
     for _pass in range(12):
         X_now = _coords(cut)
         ends_now = _edge_vertices(cut)
-        scale = np.ptp(X_now, axis=0).max()
         on_now = _distance_to_lines(X_now, lines) < 1e-12 * scale
         t_now, _multi = _crossing_parameters(X_now, ends_now, lines, on_now)
 
@@ -539,33 +613,55 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1):
 
         # Move each inserted vertex from the midpoint, where the transform put it,
         # to the crossing. Everything else is already where it belongs.
-        if len(chosen):
-            ce = ends_now[chosen - eS_now]
-            tc = t_now[chosen - eS_now][:, None]
-            midpoints = 0.5 * (X_now[ce[:, 0]] + X_now[ce[:, 1]])
-            targets = _child_vertex_of(cut, child, midpoints)
-            _set_coordinates(child, targets,
-                             (1.0 - tc) * X_now[ce[:, 0]] + tc * X_now[ce[:, 1]])
+        #
+        # No `if len(chosen):` guard. A pass is entered by GLOBAL agreement, so a
+        # rank that happens to have split nothing still has to reach the reduce
+        # below; guarding the block would walk it straight past.
+        ce = ends_now[chosen - eS_now]
+        tc = t_now[chosen - eS_now][:, None]
+        midpoints = 0.5 * (X_now[ce[:, 0]] + X_now[ce[:, 1]])
+        targets, n_missing = _child_vertex_of(child, midpoints, scale)
+        if uw.mpi.comm.allreduce(n_missing, op=MPI.SUM):
+            raise RuntimeError(
+                "expected vertex position(s) have no child vertex; the transform "
+                "did not place points where this routine assumes it does.")
+        _set_coordinates(child, targets,
+                         (1.0 - tc) * X_now[ce[:, 0]] + tc * X_now[ce[:, 1]])
         cut = child
     else:
         raise RuntimeError(
             "the cut did not converge in 12 passes; every pass must split at "
             "least one edge and remove it from the crossing set.")
 
+    # Reduced before it is tested. Whether a rank holds an inverted cell depends
+    # on the partition, so this raise was rank-local at np>1 while its peers went
+    # on into `Mesh(cut_dm, ...)` and waited there. Measured: snap_frac=0.49 on a
+    # 1/12 box inverts a cell.
     areas = cell_areas(cut)
-    if (areas <= 0.0).any():
+    n_inverted = uw.mpi.comm.allreduce(int((areas <= 0.0).sum()), op=MPI.SUM)
+    if n_inverted:
         raise RuntimeError(
-            f"snapping inverted {int((areas <= 0).sum())} cell(s); snap_frac="
-            f"{snap_frac} is too large for this mesh.")
+            f"snapping inverted {n_inverted} cell(s); snap_frac={snap_frac} is "
+            "too large for this mesh.")
 
-    n_cut_edges = _label_cut_edges(cut, lines, 1e-9 * np.ptp(X, axis=0).max(),
-                                   label, label_value)
+    marked = _label_cut_edges(cut, lines, 1e-9 * scale, label, label_value)
+
+    # Every reported number is GLOBAL. They are printed together as one summary,
+    # so a mix of rank-local and reduced values would be read as agreeing when
+    # they do not — and the documented identity between them cannot hold.
+    # `min_angles` is O(cells), so it is computed once and reduced with the rest.
+    # An empty rank contributes the identity of each reduction, never a raise.
+    angles = min_angles(cut)
+    worst = np.array([areas.min() if areas.size else np.inf,
+                      angles.min() if angles.size else np.inf])
+    uw.mpi.comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MIN)
     return cut, {
-        "n_split": n_split,
-        "n_snapped": n_snapped,
-        "n_cut_edges": n_cut_edges,
-        "min_area": float(areas.min()),
-        "min_angle": float(min_angles(cut).min()),
+        "n_split": int(n_split),
+        "n_on_surface": int(n_on_surface),
+        "n_cut_edges": int(uw.mpi.comm.allreduce(_owned_count(cut, marked),
+                                                 op=MPI.SUM)),
+        "min_area": float(worst[0]),
+        "min_angle": float(worst[1]),
     }
 
 

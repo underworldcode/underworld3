@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 import underworld3 as uw
 from petsc4py import PETSc
+from _mg_ladder import assert_coarsening_ladder
 from underworld3.utilities.nvb import TaggedBisectionMesh
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
@@ -38,50 +39,21 @@ BOUNDS_3D = [("Bottom", 11), ("Top", 12), ("Right", 13), ("Left", 14),
              ("Front", 15), ("Back", 16)]
 
 
-def _level_resolutions(child):
-    """Cell size at each multigrid level, coarsest first.
-
-    The same low-percentile measure `adapt` selects levels with. Element COUNT
-    will not do: under adapt-on-top the mesh only grows where the feature is, so
-    a genuine halving of h can show as a global cell ratio near 1.
-    """
-    import numpy as _np
-    from underworld3.utilities import edge_split as _es
-    dms = [m.dm for m in child._custom_mg_coarse_meshes] + [child.dm]
-    return [float(_np.percentile(_es.cell_diameters(d), 5)) for d in dms]
+# The region the ladder measures `h` in. `_ball_metric`'s fine CORE is r < 0.18,
+# but the coarsest base level has edges ~0.6 long and not one midpoint lands
+# inside a ball that small — the measurement would have no sample to take. 0.25
+# is the smallest radius that contains edges of every level, and it still sits
+# well inside the metric's ramp (r_core 0.18 + width 0.25).
+BALL_CORE = 0.25
 
 
-def _assert_coarsening_ladder(child, ratio=2.0, slack=0.9, floor=1.3):
-    """No multigrid level may be a near-duplicate of its neighbour.
+def _in_ball(pts):
+    """The region `_ball_metric` asks to be refined."""
+    return np.linalg.norm(np.asarray(pts) - 0.5, axis=1) < BALL_CORE
 
-    This is what `mg_coarsening_ratio` buys, and it replaced a count tied to the
-    number of ENGINE PASSES. A pass is how an engine reaches a target size; a
-    level is a coarsening ratio, and the two are not the same number — tying
-    levels to passes produced hierarchies whose top levels differed by under 1 %
-    in h and which were measured 2.3-7.3x slower for the same iteration count.
 
-    Two things are deliberately NOT asserted:
-
-    * the step INTO the finest level. The finest level is the child and is
-      mandatory, so when the whole adapt amounts to less than one doubling its
-      single step is whatever the metric asked for (measured 1.74 in 3-D);
-    * the base tail, which is a uniform hierarchy with its own spacing.
-
-    What must hold everywhere is that no step is a near-duplicate, and that the
-    interior adapted steps reach the requested ratio.
-    """
-    h = _level_resolutions(child)
-    n_base = len(child.parent.dm_hierarchy)
-    steps = [(i, h[i] / h[i + 1]) for i in range(n_base - 1, len(h) - 1)]
-    assert steps, "no adapted level was recorded"
-    for i, r in steps:
-        assert r >= floor, (
-            f"levels {i}->{i+1} coarsen by only {r:.2f}: a near-duplicate level, "
-            f"which is the defect mg_coarsening_ratio exists to remove")
-    for i, r in steps[:-1]:
-        assert r >= ratio * slack, (
-            f"interior levels {i}->{i+1} coarsen by {r:.2f}, below the requested "
-            f"{ratio}")
+def _assert_coarsening_ladder(child, ratio=2.0):
+    return assert_coarsening_ladder(child, _in_ball, ratio=ratio)
 
 
 def _ncell(mesh):
