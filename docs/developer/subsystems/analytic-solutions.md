@@ -134,6 +134,56 @@ uses with `ex75.h` — so later refactors cannot drift silently. Record the meas
 maximum error, the sampling design, and which oracles were used in the solution's
 docstring. Not just "validated".
 
+## Status: SolCx transcription, open questions
+
+The transcriber is in place and measured. On `solCx.c` — the largest kernel in
+the family at 1500 lines — it reads both arrangements and both spatial branches
+in **0.25 s**, and the resulting expressions are 2000–7000 operations, well
+within what SymPy, `lambdify` and the JIT handle. That measurement is what makes
+the all-SymPy form viable for the whole family; it was not obvious in advance.
+
+Gate 1 and Gate 2 on the `_solCx_A` arrangement, against the published kernel, at
+40 stratified points per case:
+
+| eta_A | eta_B | x_c | n | max relative error |
+|---|---|---|---|---|
+| 1 | 10 | 0.5 | 1 | 4.3e-15 |
+| 1 | 1e3 | 0.5 | 1 | 1.7e-14 |
+| 1 | 1e6 | 0.5 | 1 | 1.1e-14 |
+| 1 | 1e8 | 0.5 | 1 | 9.3e-15 |
+| 1 | 1e6 | 0.5 | 3 | 4.9e-15 |
+| 1 | 1e6 | 0.75 | 1 | 4.1e-15 |
+| 1e6 | 1 | 0.5 | 1 | 1.5e-14 |
+| 1e3 | 1 | 0.25 | 2 | 8.9e-16 |
+| 1 | 1e-6 | 0.5 | 1 | 1.5e-14 |
+
+**Two gates are open, and nothing is exported until they close.**
+
+1. **The `_solCx_B` arrangement transcribes to a different answer.** The
+   published kernel dispatches on the viscosity ordering — `_solCx_A` for
+   $\eta_A > \eta_B$, `_solCx_B` otherwise — because the integration constants
+   lose precision differently depending on which column is stiff. The two should
+   therefore compute the same solution. They do in the compiled kernel: the
+   `_solCx_A` transcription reproduces the dispatcher's output *in the regime
+   where the dispatcher runs `_solCx_B`*, to 1e-14. But transcribing `_solCx_B`
+   directly gives an answer wrong by a factor of tens, in every regime. Both
+   arrangements parse to the same structure (same assigned names, same branch
+   shape, self-contained blocks), so the reader is treating them identically and
+   one of them is nonetheless being read wrongly. Unexplained; do not use
+   `_solCx_B` until it is.
+
+2. **The isoviscous case returns zero.** At $\eta_A = \eta_B$ the transcription
+   evaluates to zero where the kernel does not, which points at a $0/0$ in the
+   closed form at unit viscosity ratio. The published solution is built around
+   $Z_R = \eta_B/\eta_A$ and several denominators carry $Z_R - 1$.
+
+A note on method, worth keeping: the first run of Gate 2 reported errors of
+1e12, which looked catastrophic. It was the *metric* — a pointwise relative error
+divides by the true value, and these fields pass through zero, so the ratio
+explodes wherever the solution is small. The values themselves were close.
+Normalising by the field's magnitude over the sample is the honest measure.
+Suspect the metric before the result when every case fails alike.
+
 ## Provenance
 
 Each vendored reference kernel keeps its original copyright header.
