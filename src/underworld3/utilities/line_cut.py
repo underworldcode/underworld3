@@ -201,7 +201,14 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac):
     empties its crossing set — measured, at np=3, as a cut that converged at
     snap_frac=0 and never converged at snap_frac=0.1.
     """
-    on_line = np.zeros(len(X), dtype=bool)
+    # Seed with the vertices that are ALREADY on the surface, not just the ones
+    # snapping will move. A junction or a tip placed on a vertex lies exactly on
+    # the line, so the edges radiating from it show `s == 0` and register no
+    # strict sign change — nothing proposes them for snapping, and they would be
+    # invisible here. The validation then reads such a cell as "entered but not
+    # left" and refuses a perfectly legal branch: measured on a three-way (Y)
+    # junction, which this makes work.
+    on_line = _distance_to_lines(X, lines) < 1e-12 * np.ptp(X, axis=0).max()
     for _ in range(10):
         X_snapped = X.copy()
         if on_line.any():

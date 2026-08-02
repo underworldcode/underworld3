@@ -269,3 +269,78 @@ def test_serial_reference_for_parallel_confluence():
     poisson.solve()
     assert abs(uw.maths.Integral(bc_mesh, w.sym[0]).evaluate()
                - SERIAL_BC_INTEGRAL) < 1e-12
+
+
+def _pull_vertex_to(dm, target):
+    """Move the nearest vertex onto `target` — how a tip or junction is placed."""
+    out = dm.clone()
+    vec = out.getCoordinatesLocal()
+    arr = np.asarray(vec.array).reshape(-1, 2).copy()
+    arr[int(np.argmin(np.linalg.norm(arr - target, axis=1)))] = target
+    new = vec.duplicate()
+    new.array[:] = arr.reshape(-1)
+    out.setCoordinatesLocal(new)
+    return out
+
+
+@pytest.mark.parametrize("branches", [
+    # Y: three arms from one junction. Two of them START there, which is the case
+    # that failed.
+    ([[-0.2, 0.20], [0.5, 0.5]], [[0.5, 0.5], [1.2, 0.30]],
+     [[0.5, 0.5], [0.55, 1.2]]),
+    # T: one fault abutting another.
+    ([[-0.2, 0.34], [1.2, 0.66]], [[0.5, 0.5], [0.62, 1.2]]),
+    # X: two faults crossing.
+    ([[-0.2, 0.22], [1.2, 0.78]], [[0.30, -0.2], [0.70, 1.2]]),
+])
+def test_a_fault_network_cuts_at_a_shared_junction(branches):
+    """Branching, abutting and crossing faults, joined at a shared vertex.
+
+    A junction is the same problem as a tip: a distinguished point of the network
+    that has to coincide with a mesh vertex, after which every branch arrives at
+    the already-legal "one crossed edge, one on-surface corner" case.
+
+    The Y case regressed on a real defect. `_resolve_snapping` initialised its
+    on-surface set to all-False and only added vertices it decided to SNAP, so a
+    vertex ALREADY on the surface — a junction — was invisible: the edges
+    radiating from it have signed distance exactly zero and register no strict
+    sign change, so nothing proposes them. The validation then read such a cell as
+    "entered but not left" and refused a legal branch.
+    """
+    junction = np.array([0.5, 0.5])
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 20,
+        regular=False, qdegree=3)
+    dm = _pull_vertex_to(base.dm, junction)
+
+    for k, br in enumerate(branches):
+        dm, _info = cut_along_lines(dm, [np.asarray(br, dtype=float)],
+                                    label=f"F{k}", label_value=20 + k)
+
+    X = _coords(dm)
+    vS = dm.getDepthStratum(0)[0]
+    edges = {frozenset(int(v) - vS for v in dm.getCone(e)): e
+             for e in range(*dm.getDepthStratum(1))}
+
+    zone = set()
+    cS, cE = dm.getHeightStratum(0)
+    for k, br in enumerate(branches):
+        a, b = np.asarray(br[0], float), np.asarray(br[-1], float)
+        d = b - a
+        n = np.array([-d[1], d[0]]) / np.hypot(*d)
+        s = (X - a) @ n
+        u = ((X - a) @ d) / (d @ d)
+        on = np.flatnonzero((np.abs(s) < 1e-10) & (u > -1e-9) & (u < 1.0 + 1e-9))
+        order = on[np.argsort(u[on])]
+        labelled = set(dm.getLabel(f"F{k}").getStratumIS(20 + k).getIndices())
+        for p, q in zip(order[:-1], order[1:]):
+            e = edges.get(frozenset((int(p), int(q))))
+            assert e is not None, f"branch {k}: a segment is not a mesh edge"
+            assert e in labelled, f"branch {k}: a segment is not labelled"
+        for e in labelled:
+            zone.update(int(c) for c in dm.getSupport(e) if cS <= c < cE)
+
+    # The fault zone of a network is the UNION of its branch zones — no geometry
+    # to reconcile at the junction, which is why this route suits networks.
+    assert 0 < len(zone) < cE - cS
+    assert (cell_areas(dm) > 0.0).all()
