@@ -118,6 +118,22 @@ import underworld3 as uw
 # be copied onto a fresh plex, and an edge carrying one is not an interface.
 _TOPOLOGY_LABELS = ("depth", "celltype")
 
+#: Labels that partition the CELLS but carry no material meaning, so an edge
+#: between two cells holding different values of one is not an interface.
+#:
+#: ``uwnvb_refedge`` is the newest-vertex transform's per-triangle *slot*: which
+#: of a cell's edges is its refinement edge. It takes values 0/1/2 across any
+#: NVB-adapted mesh, which :func:`_cell_regions` read as three material regions —
+#: 2230/2184/134 cells on one measured fault mesh — and duly locked every edge
+#: between them. That silently disabled repair over most of ANY adapted mesh: of
+#: the edges around a sliver in a cut mesh, 113 were declined as a "region
+#: interface" against 54 genuinely locked on the fault.
+#:
+#: This is the same trap :func:`_labelled_points` documents for ``Elements``, one
+#: level along. ``Elements`` does not trip :func:`_cell_regions` only because it
+#: is uniform; a bookkeeping label that VARIES does.
+_BOOKKEEPING_LABELS = ("uwnvb_refedge",)
+
 # Shewchuk's static filters (Robust Predicates, 1997) with eps = 2^-53. A
 # determinant whose magnitude clears the bound has a certain sign; one that does
 # not is reported as _UNCERTAIN and the caller declines to act.
@@ -267,10 +283,15 @@ def _cell_regions(dm):
     interface even when the edge itself is unlabelled, so the signature is what
     lets those edges be locked. Built from label strata rather than a per-cell
     query, which would be one PETSc call per cell per label.
+
+    :data:`_BOOKKEEPING_LABELS` is excluded: a label may partition the cells for
+    reasons that have nothing to do with material, and treating one of those as a
+    region locks most of the mesh against repair without saying so.
     """
     cS, cE = dm.getHeightStratum(0)
     names = [dm.getLabelName(i) for i in range(dm.getNumLabels())
-             if dm.getLabelName(i) not in _TOPOLOGY_LABELS]
+             if dm.getLabelName(i) not in _TOPOLOGY_LABELS
+             and dm.getLabelName(i) not in _BOOKKEEPING_LABELS]
     sig = np.zeros((cE - cS, len(names)), dtype=np.int64)
     for j, name in enumerate(names):
         label = dm.getLabel(name)

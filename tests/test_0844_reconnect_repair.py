@@ -244,3 +244,54 @@ def test_three_dimensions_is_refused():
         regular=False, qdegree=2)
     with pytest.raises(NotImplementedError, match="2-D only"):
         reconnect.flip_to_reduce_max_angle(mesh.dm)
+
+
+def test_a_varying_bookkeeping_label_is_not_a_material_region():
+    """The newest-vertex slot label must not partition the mesh into regions.
+
+    Regression, and the sibling of
+    ``test_bulk_cell_labels_do_not_lock_interior_edges`` one level along.
+    ``_labelled_points`` learned to ignore a label carried by CELLS; that fixed
+    ``Elements``, which is uniform. ``uwnvb_refedge`` is not uniform — it records
+    which of a triangle's edges is its refinement edge, so it takes values 0/1/2
+    across any NVB-adapted mesh — and ``_cell_regions`` read those three values as
+    three material regions and locked every edge between them.
+
+    Measured on an adapted fault mesh: signatures of 2230/2184/134 cells, and of
+    the edges around a sliver, 113 declined as a "region interface" against 54
+    genuinely locked on the fault. Repair was therefore disabled over most of ANY
+    adapted mesh, cut or not — flips rose from 101 to 483 once it was excluded,
+    and cells below 15 degrees fell from 60 to 18.
+    """
+    # Through `adapt`, not `bisect_longest_edges`: the slot label belongs to the
+    # newest-vertex transform, and the fixture used elsewhere in this file does
+    # not go near it — which is precisely why the defect survived here.
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2,
+        regular=False, refinement=1, qdegree=2)
+
+    def metric(points):
+        d = np.linalg.norm(np.asarray(points) - np.array([0.35, 0.6]), axis=1)
+        return 1.0 / np.where(d < 0.2, 0.05, 0.2) ** 2
+
+    dm = base.adapt(metric, max_levels=2).dm
+    names = [dm.getLabelName(i) for i in range(dm.getNumLabels())]
+    assert "uwnvb_refedge" in names, (
+        "fixture no longer carries the slot label, so this test proves nothing")
+
+    # The negative control: read as a region, it DOES split the mesh.
+    cS, cE = dm.getHeightStratum(0)
+    label = dm.getLabel("uwnvb_refedge")
+    values = [int(v) for v in label.getValueIS().getIndices()]
+    carrying = sum(1 for v in values
+                   if label.getStratumSize(v) > 0
+                   and ((np.asarray(label.getStratumIS(v).getIndices()) >= cS)
+                        & (np.asarray(label.getStratumIS(v).getIndices())
+                           < cE)).any())
+    assert carrying > 1, (
+        "the slot label takes one value here, so it could not have partitioned "
+        "anything and this fixture cannot see the defect")
+
+    assert reconnect._cell_regions(dm) is None, (
+        "a bookkeeping label that varies over cells is being read as a material "
+        "region; every edge between two values would be locked against repair")
