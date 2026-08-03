@@ -470,3 +470,155 @@ class SolNL(FixedWalls, AnalyticSolution):
             ]
         )
         self.fn_viscosity = _velic.AnalyticSolNL_viscosity(*parameters, x, z)
+
+
+_B, _M = sympy.symbols("B m")
+
+# The kernel leaves the fields in u1..u6, each still to be multiplied by its
+# vertical mode. Same convention as SolCx, and the source says so in a comment:
+# "u1 = Vx, u2 = Vz, u3 = txx, u4 = tzx, u5 = pressure, u6 = tzz".
+_SOLKX_OUTPUTS = {
+    "velocity_x": ("u1", sympy.cos),
+    "velocity_z": ("u2", sympy.sin),
+    "stress_xx": ("u3", sympy.cos),
+    "stress_zx": ("u4", sympy.sin),
+    "pressure": ("u5", sympy.cos),
+    "stress_zz": ("u6", sympy.cos),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _solkx_kernel():
+    r"""Transcribe the Velic SolKx kernel into SymPy.
+
+    One straight-line block, no branches — the exponential viscosity has no
+    interface to split on, so unlike SolCx there is no ``Piecewise`` here.
+
+    Returns
+    -------
+    dict
+        Field name -> expression in the kernel's own symbols.
+    """
+
+    source = CSource(os.path.join(_REFERENCE_DIR, "solKx.c"))
+    body = source.function("SolKxSolution", returns="static PetscErrorCode")
+
+    # Stop at the output section (comments are already stripped, so anchor on
+    # code): it accumulates with `+=` and writes
+    # through pointers, neither of which this reader interprets.
+    body = body[: body.index("if (mu)")]
+
+    # The kernel takes its coordinates from an array, so `pos` is bound to one.
+    inputs = {"pos": (_X, _Z), "B": _B, "m": _M, "n": _N}
+    scope = evaluate_block(body, inputs)
+
+    km = _M * sympy.pi
+    return {
+        field: scope[symbol] * mode(km * _Z)
+        for field, (symbol, mode) in _SOLKX_OUTPUTS.items()
+    }
+
+
+class SolKx(FreeSlipWalls, AnalyticSolution):
+    r"""Stokes flow with an exponentially varying viscosity — the SolKx benchmark.
+
+    Viscosity :math:`\eta = e^{2Bx}` on the unit box, driven by the density
+    forcing :math:`\mathbf f = (0,\; \sin(m\pi z)\cos(n\pi x))`, free slip on all
+    four walls.
+
+    The companion to SolCx: same geometry and forcing, but the viscosity varies
+    *smoothly* rather than jumping. A solver can do well on one and badly on the
+    other — a jump tests how the discretisation handles a discontinuity, a
+    gradient tests whether the operator stays well conditioned as the contrast
+    builds across every element. Over the unit box the total contrast is
+    :math:`e^{2B}`, so ``B = 5`` already spans four orders of magnitude.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    B : float
+        Viscosity exponent.
+    n : int
+        Horizontal wavenumber of the forcing.
+    m : int
+        Vertical wavenumber.
+
+    Examples
+    --------
+    >>> sol = uw.analytic.SolKx(mesh, B=2.302585, n=3, m=2.0)
+    >>> stokes.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    >>> stokes.bodyforce = sol.fn_bodyforce
+    >>> sol.apply_boundary_conditions(stokes)
+
+    Notes
+    -----
+    Transcribed from PETSc's copy of the kernel rather than Underworld2's: it is
+    self-contained, returns every field in one call, and is actively maintained
+    upstream.
+
+    Validated by the equations rather than against a compiled kernel. The forcing
+    and boundary conditions are known, and a field set that satisfies Stokes with
+    them is *the* solution by uniqueness — so the momentum and incompressibility
+    residuals settle it without needing an oracle.
+    """
+
+    dim = 2
+    reference = (
+        "Velic; transcribed from PETSc src/snes/tutorials/ex69.c (SolKxSolution), "
+        "vendored at underworld3/analytic/_reference/solKx.c (BSD-2-Clause)."
+    )
+    eqn_viscosity = r"e^{2Bx}"
+    eqn_bodyforce = r"(0,\; \sin(m \pi z)\cos(n \pi x))"
+
+    def __init__(self, mesh, B=2.302585092994046, n=3, m=2):
+        super().__init__(mesh)
+
+        if int(n) != n or int(n) < 1:
+            raise ValueError("n (horizontal wavenumber) must be a positive integer.")
+        if int(m) != m or int(m) < 1:
+            # The kernel itself allows non-integral m, and PETSc says so. But the
+            # vertical velocity carries sin(m pi z), which vanishes at z = 1 only
+            # for integer m — so a fractional value silently stops satisfying free
+            # slip on the top wall while still solving the equations, and the
+            # benchmark quietly becomes a different problem.
+            raise ValueError(
+                "m (vertical wavenumber) must be a positive integer: the free-slip "
+                "condition on the top wall requires sin(m*pi) = 0."
+            )
+
+        self.B = float(B)
+        self.n = int(n)
+        self.m = float(m)
+
+        x, z = mesh.X
+        values = {
+            _B: sympy.Rational(self.B),
+            _N: self.n,
+            _M: sympy.Rational(self.m),
+            _X: x,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solkx_kernel().items()
+        }
+
+        self.fn_velocity = sympy.Matrix(
+            [[kernel["velocity_x"], kernel["velocity_z"]]]
+        )
+        self.fn_pressure = kernel["pressure"]
+        self.fn_stress = sympy.Matrix(
+            [
+                [kernel["stress_xx"], kernel["stress_zx"]],
+                [kernel["stress_zx"], kernel["stress_zz"]],
+            ]
+        )
+        self.fn_viscosity = sympy.exp(2 * sympy.Rational(self.B) * x)
+        self.fn_bodyforce = sympy.Matrix(
+            [[0, sympy.sin(sympy.Rational(self.m) * sympy.pi * z)
+                 * sympy.cos(self.n * sympy.pi * x)]]
+        )
+        self.fn_strainrate = (
+            self.fn_stress + self.fn_pressure * sympy.eye(2)
+        ) / (2 * self.fn_viscosity)

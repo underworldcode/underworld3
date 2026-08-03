@@ -295,7 +295,7 @@ setup(
         # Its own key: the "underworld3" globs above do not reach a directory
         # that is itself a package. Missing these headers fails at solve time,
         # when the JIT compiles, not at import.
-        "underworld3.analytic._reference": ["*.h"],
+        "underworld3.analytic._reference": ["*.h", "*.c"],
     },
     ext_modules=cythonize(
         extensions,

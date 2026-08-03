@@ -30,7 +30,8 @@ import re
 
 import sympy
 
-# The only functions the Velic kernels call.
+# The only functions these kernels call, in both the plain-C and PETSc spellings
+# — the same solutions are published in both forms.
 _C_FUNCTIONS = {
     "exp": sympy.exp,
     "sin": sympy.sin,
@@ -38,7 +39,18 @@ _C_FUNCTIONS = {
     "sqrt": sympy.sqrt,
     "pow": lambda base, exponent: base**exponent,
     "M_PI": sympy.pi,
+    "PetscExpReal": sympy.exp,
+    "PetscSinReal": sympy.sin,
+    "PetscCosReal": sympy.cos,
+    "PetscSqrtReal": sympy.sqrt,
+    "PetscPowReal": lambda base, exponent: base**exponent,
+    "PETSC_PI": sympy.pi,
 }
+
+# C casts, which are juxtaposition in Python and so a syntax error.
+_CAST = re.compile(
+    r"\(\s*(?:PetscReal|PetscScalar|PetscInt|double|float|int|unsigned)\s*\)\s*"
+)
 
 # The assignment target keeps any `struct.` prefix. Without it, `out.x = ...`
 # reads as an assignment to `x` and silently overwrites the coordinate symbol —
@@ -70,14 +82,15 @@ def _matching_brace(source, opening):
 def _as_python(expression):
     """Prepare one C expression for evaluation as Python.
 
-    Two rewrites. Float literals become exact ``Rational``\\s — ``0.4e1`` is the
-    generator's way of writing 4, and reading it as a float would make every
-    downstream comparison approximate for no reason. And the statement is folded
-    onto one line: C statements wrap freely, but a wrapped Python expression with
-    indented continuations is a syntax error.
+    Three rewrites. Float literals become exact ``Rational``\\s — ``0.4e1`` is
+    the generator's way of writing 4, and reading it as a float would make every
+    downstream comparison approximate for no reason. The statement is folded onto
+    one line, since C wraps freely but a wrapped Python expression with indented
+    continuations is a syntax error. And C casts are dropped: ``(PetscReal)n`` is
+    juxtaposition in Python, which does not parse.
     """
 
-    expression = " ".join(expression.split())
+    expression = _CAST.sub("", " ".join(expression.split()))
     return _FLOAT_LITERAL.sub(lambda m: f"Rational('{m.group(0)}')", expression)
 
 
