@@ -361,12 +361,86 @@ def meshVariable_to_pv_cloud(meshVar):
     return point_cloud
 
 
-def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
-    """Convert mesh variable to Delaunay-triangulated PyVista mesh.
+def meshVariable_to_native_pv_mesh(meshVar):
+    """The mesh's OWN cells, renumbered so point ``i`` is the variable's DOF ``i``.
 
-    Creates a mesh by triangulating the mesh variable's nodal points.
-    Useful for higher-order elements where the base mesh doesn't
-    capture all data points.
+    Returns ``None`` when the variable's degrees of freedom are not the mesh
+    vertices — a higher-order or discontinuous field — in which case there is no
+    native triangulation carrying it and the caller must fall back.
+
+    Why this exists
+    ---------------
+    A **continuous P1** field has exactly one degree of freedom per vertex, so
+    the triangulation that carries it already exists in the DM. Re-deriving it
+    with ``delaunay_2d`` is not merely redundant, it is lossy on a graded mesh:
+    Delaunay is a property of the point set alone, so it neither knows nor
+    respects which triangles the mesh actually has, and the ``alpha`` filter —
+    one length for the whole domain — **deletes** cells whose circumradius
+    exceeds it. On an adapted mesh those are precisely the coarse cells. Measured
+    on a fault mesh graded 8:1, 361 of 11610 cells were dropped, and they render
+    as blank holes in the middle of the field.
+
+    The points are returned in the VARIABLE's DOF order rather than the DM's
+    vertex order, so the documented pattern
+
+    >>> pvm = vis.meshVariable_to_pv_mesh_object(T)
+    >>> pvm.point_data["T"] = np.asarray(T.data[:, 0])
+
+    keeps working unchanged. Getting that backwards would draw the right mesh
+    with the values shuffled, which looks like noise rather than like an error.
+    """
+    import numpy as np
+    import pyvista as pv
+    from scipy.spatial import cKDTree
+
+    mesh = meshVar.mesh
+    dim = mesh.dim
+    pvm = mesh_to_pv_mesh(mesh)
+
+    coords = np.asarray(meshVar.coords, dtype=np.float64)
+    if coords.shape[0] != pvm.n_points:
+        return None                      # not one DOF per vertex
+
+    pts = np.asarray(pvm.points, dtype=np.float64)[:, :dim]
+    dist, dof_of_point = cKDTree(coords[:, :dim]).query(pts)
+    extent = float(np.ptp(pts)) or 1.0
+    if dist.max() > 1.0e-8 * extent:
+        return None                      # coincident in count but not in place
+
+    # Renumber the connectivity into DOF order, and hand back the variable's own
+    # coordinates as the points so the two are aligned by construction.
+    try:
+        conn = np.asarray(pvm.cell_connectivity)
+        offsets = np.asarray(pvm.offset)
+    except AttributeError:               # older pyvista
+        return None
+    sizes = np.diff(offsets)
+    if not len(sizes) or (sizes != sizes[0]).any():
+        return None                      # mixed cell types: not worth the risk
+    cells = np.column_stack(
+        [np.full(len(sizes), sizes[0]),
+         dof_of_point[conn].reshape(len(sizes), sizes[0])]).ravel()
+
+    points = np.zeros((coords.shape[0], 3))
+    points[:, :dim] = coords[:, :dim]
+    native = pv.UnstructuredGrid(cells, np.asarray(pvm.celltypes), points)
+    for attr in ("_units", "_coord_array"):
+        if hasattr(pvm, attr):
+            setattr(native, attr, getattr(pvm, attr))
+    native._coord_array = meshVar.coords
+    return native
+
+
+def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
+    """Convert a mesh variable to a PyVista mesh carrying its nodal points.
+
+    Uses the mesh's **own** triangulation when the variable's degrees of freedom
+    are the mesh vertices (a continuous P1 field) — see
+    :func:`meshVariable_to_native_pv_mesh`, which also explains why the Delaunay
+    route silently drops coarse cells on an adapted mesh.
+
+    Otherwise the points are Delaunay-triangulated, which is what higher-order
+    and discontinuous variables need: the base mesh does not carry their DOFs.
 
     Parameters
     ----------
@@ -374,17 +448,22 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
         Underworld mesh variable.
     alpha : float, optional
         Alpha parameter for Delaunay triangulation. If None, computed
-        automatically from coordinate range.
+        automatically from coordinate range. Ignored on the native path.
 
     Returns
     -------
     pyvista.UnstructuredGrid
-        Triangulated mesh through the variable's nodal points.
+        Mesh through the variable's nodal points, in the variable's DOF order.
     """
     import numpy as np
 
     mesh = meshVar.mesh
     dim = mesh.dim
+
+    if alpha is None:
+        native = meshVariable_to_native_pv_mesh(meshVar)
+        if native is not None:
+            return native
 
     point_cloud = meshVariable_to_pv_cloud(meshVar)
 

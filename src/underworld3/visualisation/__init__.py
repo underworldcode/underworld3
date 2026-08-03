@@ -17,6 +17,7 @@ from .visualisation import (
     plot_vector,
     meshVariable_to_pv_cloud,
     meshVariable_to_pv_mesh_object,
+    meshVariable_to_native_pv_mesh,
     swarm_to_pv_cloud,
 )
 
