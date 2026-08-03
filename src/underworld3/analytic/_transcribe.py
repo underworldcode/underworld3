@@ -67,6 +67,37 @@ def _rename_reserved(text):
     return _RESERVED_PATTERN.sub(lambda m: _RESERVED[m.group(1)], text)
 
 
+_CHAIN = re.compile(r"\b(\w+)\s*=\s*(?=\w+\s*=(?!=))")
+
+
+def _expand_chains(block):
+    """Give each target of a chained assignment its own statement.
+
+    ``a = b = c;`` assigns c to both. Read as one statement its *value* is
+    ``b = c``, which is not an expression and raises. Rewriting it as
+    ``b = c; a = b;`` keeps the order the C has — the rightmost target is bound
+    first, and the others follow from it.
+    """
+
+    out = []
+    for statement in block.split(";"):
+        targets = _CHAIN.findall(statement)
+        if not targets:
+            out.append(statement)
+            continue
+
+        remainder = _CHAIN.sub("", statement)
+        # Innermost first, so each target is defined before the next uses it.
+        pieces = [remainder]
+        previous = remainder.split("=")[0].strip()
+        for target in reversed(targets):
+            pieces.append(f" {target} = {previous}")
+            previous = target
+        out.append(";".join(pieces))
+
+    return ";".join(out)
+
+
 def _split_declarators(block):
     """Give each declarator in a C declaration its own statement.
 
@@ -263,7 +294,7 @@ def evaluate_block(block, environment):
     scope = {_RESERVED.get(name, name): value for name, value in environment.items()}
     namespace = {**_C_FUNCTIONS, "Rational": sympy.Rational}
 
-    for target, expression in _STATEMENT.findall(_split_declarators(block)):
+    for target, expression in _STATEMENT.findall(_expand_chains(_split_declarators(block))):
         value = eval(
             _as_python(expression), {"__builtins__": {}}, {**namespace, **scope}
         )

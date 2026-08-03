@@ -1341,3 +1341,211 @@ class SolC(FreeSlipWalls, AnalyticSolution):
                 (kernel["stress_zx"], kernel["stress_zz"]),
             ),
         )
+
+
+_ZC, _DX, _X0 = sympy.symbols("zc dx x0")
+
+# SolDA uses the transposed convention of SolA and SolC: u1 is the vertical
+# velocity and the modes run in x. Its pp and txx already carry their mode.
+_SOLDA_MODED = {
+    "velocity_x": ("u2", sympy.sin),
+    "velocity_z": ("u1", sympy.cos),
+    "stress_zz": ("u3", sympy.cos),
+    "stress_zx": ("u4", sympy.sin),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _solda_kernel(modes):
+    r"""Transcribe the Velic SolDA kernel.
+
+    The hardest of the family to read, and the only one combining every feature
+    the others have separately: a truncated series (as SolC), a viscosity jump
+    (as SolCx), and a rectangular forcing.
+
+    Both of its ``if (z < zc)`` blocks branch on the same condition, so each mode
+    is evaluated along one side and then the other and the two are combined into
+    a single :class:`sympy.Piecewise` — the SolCx pattern, applied per mode.
+
+    Returns
+    -------
+    dict
+        Field name -> expression, including ``bodyforce_z`` for the resolved
+        column.
+    """
+
+    source = CSource(os.path.join(_REFERENCE_DIR, "solDA.c"))
+    body = source.function("_Velic_solDA")
+
+    header = "for(n=1;n<nmodes;n++)"
+    preamble = body[: body.index(header)]
+    loop = CSource.loop_body(body, header)
+
+    constants_a, constants_b, rest = CSource.branches(loop, "if (z < zc)")
+    fields_a, fields_b, tail = CSource.branches(rest, "if (z < zc)")
+    mode_preamble = loop[: loop.index("if (z < zc)")]
+
+    inputs = {
+        "pos": (_X, _Z),
+        "_sigma": _SIGMA,
+        "_eta_A": _ZA,
+        "_eta_B": _ZB,
+        "_z_c": _ZC,
+        "_dx": _DX,
+        "_x_0": _X0,
+    }
+    outer = evaluate_block(preamble, inputs)
+
+    totals = {field: sympy.Integer(0) for field in _SOLDA_MODED}
+    totals["pressure"] = sympy.Integer(0)
+    totals["stress_xx"] = sympy.Integer(0)
+    density = sympy.Integer(0)
+
+    for index in range(1, modes):
+        scope = evaluate_block(mode_preamble, {**outer, "n": index})
+
+        sides = {}
+        for side, (constants, fields) in (
+            ("low", (constants_a, fields_a)),
+            ("high", (constants_b, fields_b)),
+        ):
+            sides[side] = evaluate_block(
+                tail, evaluate_block(fields, evaluate_block(constants, scope))
+            )
+
+        def across(symbol):
+            return sympy.Piecewise(
+                (sides["low"][symbol], _Z < _ZC), (sides["high"][symbol], True)
+            )
+
+        k = index * sympy.pi
+        for field, (symbol, mode) in _SOLDA_MODED.items():
+            totals[field] += across(symbol) * mode(k * _X)
+
+        # pp and txx are formed in the tail and already carry their mode.
+        totals["pressure"] += across("pp")
+        totals["stress_xx"] += across("txx")
+        density += scope["del_rho"] * sympy.cos(k * _X)
+
+    # The n = 0 terms, exactly as the source appends them: a uniform column, and
+    # a linear normal stress set to vanish at the viscosity interface.
+    zero_mode = _SIGMA * _DX
+    density += zero_mode
+    linear = zero_mode * (_Z - _ZC)
+    totals["stress_zz"] += linear
+    totals["stress_xx"] += linear
+    totals["pressure"] -= linear
+    totals["bodyforce_z"] = density
+
+    return totals
+
+
+class SolDA(FreeSlipWalls, AnalyticSolution):
+    r"""A dense column in a layered fluid — the SolDA benchmark.
+
+    A rectangular density anomaly of width *dx* centred at *x_0*, in a fluid
+    whose viscosity jumps from :math:`\eta_A` below :math:`z_c` to
+    :math:`\eta_B` above. Free slip on the unit box.
+
+    The most demanding solution in the family, and the only one that combines
+    what the others test separately: a discontinuous forcing (as SolC), a
+    discontinuous viscosity (as SolCx), and a truncated series. The
+    discontinuities are perpendicular to each other, so a scheme that handles
+    either alone still has to get their interaction right.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    sigma : float
+        Density contrast of the column.
+    eta_A, eta_B : float
+        Viscosity below and above :math:`z_c`.
+    z_c : float
+        Height of the viscosity jump.
+    dx : float
+        Width of the dense column.
+    x_0 : float
+        Centre of the dense column.
+    modes : int
+        Number of Fourier modes. As with :class:`SolC` the fields are exact for
+        the column *as resolved*, so this sets the sharpness of the column
+        rather than the accuracy of the solution.
+
+    Notes
+    -----
+    Each mode carries a ``Piecewise`` across the viscosity interface, so this is
+    much the most expensive solution here to build: measured at 20 s for 8 modes
+    and 47 s for 16, against 2.4 s for SolC at 40. The default is deliberately
+    low for that reason — raise it when the sharpness of the column matters more
+    than construction time, and note that the residuals are unchanged between 8
+    and 16 modes, so they are measuring the transcription rather than the
+    truncation.
+    """
+
+    dim = 2
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/solDA.c."
+    )
+    eqn_viscosity = r"\eta_A \;(z<z_c), \quad \eta_B \;(z \ge z_c)"
+    eqn_bodyforce = r"(0,\; \sigma \;\text{in a column of width } dx \text{ at } x_0)"
+
+    def __init__(
+        self,
+        mesh,
+        sigma=1.0,
+        eta_A=1.0,
+        eta_B=10.0,
+        z_c=0.75,
+        dx=0.25,
+        x_0=0.375,
+        modes=8,
+    ):
+        super().__init__(mesh)
+
+        if not (float(eta_A) > 0.0 and float(eta_B) > 0.0):
+            raise ValueError("eta_A and eta_B must be positive.")
+        if not 0.0 < float(z_c) < 1.0:
+            raise ValueError("z_c must lie strictly inside (0, 1).")
+        if int(modes) != modes or int(modes) < 2:
+            raise ValueError("modes must be an integer of at least 2.")
+
+        self.sigma = float(sigma)
+        self.eta_A = float(eta_A)
+        self.eta_B = float(eta_B)
+        self.z_c = float(z_c)
+        self.dx = float(dx)
+        self.x_0 = float(x_0)
+        self.modes = int(modes)
+
+        x, z = mesh.X
+        values = {
+            _SIGMA: sympy.Rational(self.sigma),
+            _ZA: sympy.Rational(self.eta_A),
+            _ZB: sympy.Rational(self.eta_B),
+            _ZC: sympy.Rational(self.z_c),
+            _DX: sympy.Rational(self.dx),
+            _X0: sympy.Rational(self.x_0),
+            _X: x,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solda_kernel(self.modes).items()
+        }
+
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=sympy.Piecewise(
+                (sympy.Rational(self.eta_A), z < self.z_c),
+                (sympy.Rational(self.eta_B), True),
+            ),
+            # Minus the density, as for SolC: this kernel accumulates rho itself.
+            bodyforce=(0, -kernel["bodyforce_z"]),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_zx"]),
+                (kernel["stress_zx"], kernel["stress_zz"]),
+            ),
+        )
