@@ -7373,12 +7373,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             for gc in range(Nc):
                 G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
-        # uu_G1[fc*Nc + gc, df]          = dF0[fc] / dL[gc, df]
+        # uu_G1[fc*Nc + gc, dg]          = dF0[fc] / dL[gc, dg]
         G1 = sympy.zeros(Nc * Nc, dim)
         for fc in range(Nc):
             for gc in range(Nc):
-                for df in range(dim):
-                    G1[fc * Nc + gc, df] = sympy.diff(f0_jac_list[fc], L[gc, df])
+                for dg in range(dim):
+                    G1[fc * Nc + gc, dg] = sympy.diff(f0_jac_list[fc], L[gc, dg])
 
         # uu_G2[fc*Nc + gc, df]          = dF1[fc, df] / dU[gc]
         G2 = sympy.zeros(Nc * Nc, dim)
@@ -7506,12 +7506,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     for gc in range(dim):
                         G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
 
-                # uu_G1[fc*dim + gc, df] = d bd_F0[fc] / dL[gc, df]
+                # uu_G1[fc*dim + gc, dg] = d bd_F0[fc] / dL[gc, dg]
                 G1 = sympy.zeros(dim * dim, dim)
                 for fc in range(dim):
                     for gc in range(dim):
-                        for df in range(dim):
-                            G1[fc * dim + gc, df] = sympy.diff(bd_f0_list[fc], L[gc, df])
+                        for dg in range(dim):
+                            G1[fc * dim + gc, dg] = sympy.diff(bd_f0_list[fc], L[gc, dg])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1)
@@ -7617,7 +7617,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## stiffness uu = ∂fn_f/∂u = r·(n⊗n)  (0, 0) which conditions the [p,h]
         ## Schur complement (r=0 ⇒ bare KKT, uu=0). Guarded: no-op for ordinary
         ## Stokes.
-        cbc_permutation = (0, 2, 1, 3)
         for cbc in self._block_constraint_bcs:
             n_row = cbc.normal           # sympy 1×dim Matrix
             g_sym = cbc.g
@@ -7643,11 +7642,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             cbc.fns["h_f0"] = sympy.ImmutableDenseMatrix(fn_h)
             fns_bd_residual += [cbc.fns["h_f0"]]
 
-            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape)
-            G0 = sympy.derive_by_array(sympy.Array(fn_f), self.Unknowns.u.sym)
-            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(
-                sympy.permutedims(G0, cbc_permutation).reshape(dim, dim)
-            )
+            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape).
+            # Explicit [fc, gc] placement like every other Jacobian block (the
+            # content is symmetric, but no permutedims survives on principle —
+            # see petsc-jacobian-layout.md).
+            G0 = sympy.zeros(dim, dim)
+            for fc in range(dim):
+                for gc in range(dim):
+                    G0[fc, gc] = sympy.diff(fn_f[fc], U_list[gc])
+            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
             fns_bd_jacobian += [cbc.fns["uu_G0"]]
 
             # uh (0, h):  ∂fn_f/∂h = n  — mirror the up_G0 (velocity,scalar) shape
