@@ -3109,9 +3109,16 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
         d = self.dim
         dv = uw.maths.tensor.idxmap[d][0]
 
-        # Use .sym to get sympy expressions from Parameters
-        eta_0 = self.Parameters.shear_viscosity_0.sym
-        eta_1 = self.Parameters.shear_viscosity_1.sym
+        # Bake the WRAPPED Parameter atoms into the tensor, exactly like the
+        # isotropic ViscousFlowModel path. sympy.diff treats a UWexpression
+        # atom as a constant, so the default (Picard) tangent stays genuinely
+        # frozen even when eta_0/eta_1 depend on strain rate; only the Newton
+        # path (_jacobian_unwrap) exposes that dependence. Baking `.sym`
+        # (unwrapped contents) here silently un-froze the TI Picard tangent —
+        # issue #457. The director is `.sym` only for component indexing;
+        # it carries no velocity dependence.
+        eta_0 = self.Parameters.shear_viscosity_0
+        eta_1 = self.Parameters.shear_viscosity_1
         n = self.Parameters.director.sym
 
         Delta = eta_0 - eta_1
@@ -3304,6 +3311,17 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         self._E_eff_inv_II = expression(
             r"{\dot{\varepsilon}_{II,\textrm{eff}}}", None,
             "Equivalent value of strain rate 2nd invariant (accounting for stress history)",
+        )
+
+        # Persistent container for the yield-limited weak-plane viscosity
+        # (the ViscoPlasticFlowModel._plastic_eff_viscosity pattern): the
+        # combined eta_1_eff is stored INSIDE this atom so the Picard tangent
+        # freezes it, and only _jacobian_unwrap (Newton) sees the strain-rate
+        # dependence of the yield law. See issue #457.
+        self._eta1_yield_eff = expression(
+            R"{\eta_{1,\textrm{eff,p}}}",
+            1,
+            "Yield-limited weak-plane viscosity (effective)",
         )
 
         self._order = order
@@ -3784,8 +3802,12 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
           branch of the hybrid integrator, where the bulk is
           structurally non-yieldable so clipping is a no-op anyway).
         """
+        # NOTE: bake the WRAPPED Parameter atoms (never `.sym`) — the Picard
+        # tangent freezes coefficients only while they stay inside UWexpression
+        # atoms; unwrapped contents expose grad-v to sympy.diff and silently
+        # un-freeze the default tangent (issue #457).
         if integrator_mode == "etd":
-            eta_0 = self.Parameters.shear_viscosity_0.sym
+            eta_0 = self.Parameters.shear_viscosity_0
             eta_1_eff = self.Parameters.shear_viscosity_1
         else:  # bdf
             eta_0_raw = self.Parameters.shear_viscosity_0
@@ -3794,7 +3816,7 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             c0 = self._bdf_c0
             mu_val = mu.sym if hasattr(mu, 'sym') else mu
             if mu_val is sympy.oo:
-                eta_0 = eta_0_raw.sym if hasattr(eta_0_raw, 'sym') else eta_0_raw
+                eta_0 = eta_0_raw
             else:
                 eta_0 = eta_0_raw * mu * dt_e / (c0 * eta_0_raw + mu * dt_e)
             eta_1_eff = self.Parameters.ve_effective_viscosity
@@ -3806,7 +3828,11 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
             # constants[] atom (so a homotopy can ramp it without a recompile) and
             # honours yield_smoother. Previously inlined here, which pinned this
             # model to the sqrt family and to a baked float delta.
-            eta_1_eff = self._combine_yield(eta_1_eff, vp_eff)
+            # The combined coefficient is stored INSIDE the persistent container
+            # so the Picard tangent freezes the yield law (the raw composite
+            # carries grad-v through the resolved fault-plane shear rate).
+            self._eta1_yield_eff._sym = self._combine_yield(eta_1_eff, vp_eff)
+            eta_1_eff = self._eta1_yield_eff
         return eta_0, eta_1_eff
 
     def _assemble_c_tensor(self, eta_0, eta_1_eff):
@@ -3896,7 +3922,8 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
     def _build_c_tensor_ve(self):
         """Build anisotropic tensor with VE η₁ only (no yield)."""
         d = self.dim
-        eta_0 = self.Parameters.shear_viscosity_0.sym
+        # Wrapped atom, not `.sym` — same freezing contract as _eta_for_tensor.
+        eta_0 = self.Parameters.shear_viscosity_0
         eta_1_ve = self.Parameters.ve_effective_viscosity
         n = self.Parameters.director.sym
         Delta = eta_0 - eta_1_ve

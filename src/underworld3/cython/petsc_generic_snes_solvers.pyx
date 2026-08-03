@@ -7343,42 +7343,100 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             F1_for_jac = self._jacobian_source(sympy.Array(F1_jac_src))
         else:
             F1_for_jac = self._jacobian_source(F1, self._newton_flux(F1))
+        # Normalise to strict (dim, dim) Array indexing for the explicit
+        # Jacobian loops below.
+        F1_for_jac = sympy.Array(F1_for_jac).reshape(dim, dim)
 
-        G0 = sympy.derive_by_array(F0_jac, self.u.sym)
-        G1 = sympy.derive_by_array(F0_jac, self.Unknowns.L)
-        G2 = sympy.derive_by_array(F1_for_jac, self.u.sym)
-        G3 = sympy.derive_by_array(F1_for_jac, self.Unknowns.L)
+        # Explicit-index Jacobian construction — writes each entry directly
+        # into PETSc's flat [fc, gc, df, dg] layout via row-major matrices.
+        # sympy.derive_by_array is dx-FIRST (derivative indices lead), so the
+        # previous derive_by_array + permutedims((0,2,1,3)) form assembled the
+        # MAJOR TRANSPOSE of uu_G3: it placed dF1[gc,dg]/dL[fc,df] in the
+        # [fc,gc,df,dg] slot. Invisible whenever the tangent has major symmetry
+        # (frozen C, isotropic eta(edot) Newton, linear transverse isotropy),
+        # wrong exactly when it does not (transverse-isotropic Newton — issue
+        # #457). Same explicit-loop construction as SNES_Vector above; the
+        # layout contract is docs/developer/subsystems/petsc-jacobian-layout.md.
+        U_list = [self.u.sym[0, c] for c in range(dim)]
+        L = self.Unknowns.L
+        Nc = dim
 
-        # reorganise indices from sympy to petsc orssdering / reshape to Matrix form
-        # ijkl -> LJKI (hence 3120)
-        # ij k -> KJ I (hence 210)
-        # i jk -> J KI (hence 201)
+        # Normalise the F0 Jacobian source to a flat list of dim scalar
+        # entries — F0 arrives as (1, dim) or (dim, 1) depending on how the
+        # template/bodyforce was written (Array indexing is strict).
+        _f0_flat = sympy.Array(F0_jac).reshape(dim)
+        f0_jac_list = [_f0_flat[c] for c in range(dim)]
 
-        # The indices need to be interleaved, but for symmetric problems
-        # there are lots of symmetries. This means we can find it hard to debug
-        # the required permutation for a non-symmetric problem
-        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
-        # permutation = (0,2,3,1) # ? same symmetry as I_ijkl ? # OK
-        # permutation = (3,1,2,0) # ? same symmetry as I_ijkl ? # OK
+        # uu_G0[fc, gc]                  = dF0[fc] / dU[gc]
+        G0 = sympy.zeros(Nc, Nc)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
-        self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
-        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
+        # uu_G1[fc*Nc + gc, dg]          = dF0[fc] / dL[gc, dg]
+        G1 = sympy.zeros(Nc * Nc, dim)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                for dg in range(dim):
+                    G1[fc * Nc + gc, dg] = sympy.diff(f0_jac_list[fc], L[gc, dg])
+
+        # uu_G2[fc*Nc + gc, df]          = dF1[fc, df] / dU[gc]
+        G2 = sympy.zeros(Nc * Nc, dim)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                for df in range(dim):
+                    G2[fc * Nc + gc, df] = sympy.diff(F1_for_jac[fc, df], U_list[gc])
+
+        # uu_G3[fc*Nc + gc, df*dim + dg] = dF1[fc, df] / dL[gc, dg]
+        G3 = sympy.zeros(Nc * Nc, dim * dim)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                for df in range(dim):
+                    for dg in range(dim):
+                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(
+                            F1_for_jac[fc, df], L[gc, dg]
+                        )
+
+        self._uu_G0 = sympy.ImmutableMatrix(G0)
+        self._uu_G1 = sympy.ImmutableMatrix(G1)
+        self._uu_G2 = sympy.ImmutableMatrix(G2)
+        self._uu_G3 = sympy.ImmutableMatrix(G3)
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
-        # U/P block (check permutations - hard to validate without a full collection of examples)
+        # U/P block. The constraint field is scalar (Nc_p == 1), so the g-index
+        # is size 1 and only the derivative indices need explicit placement.
+        p_scalar = self.p.sym[0]
+        Gp = self._G  # (1, dim) row of dp/dx_dg symbols
 
-        G0 = sympy.derive_by_array(F0_jac, self.p.sym)
-        G1 = sympy.derive_by_array(F0_jac, self._G)
-        G2 = sympy.derive_by_array(F1_for_jac, self.p.sym)
-        G3 = sympy.derive_by_array(F1_for_jac, self._G)
+        # up_G0[fc, 0]                   = dF0[fc] / dp
+        G0 = sympy.zeros(dim, 1)
+        for fc in range(dim):
+            G0[fc, 0] = sympy.diff(f0_jac_list[fc], p_scalar)
 
-        self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
-        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))  # zero in stokes tests
-        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim,dim))  # ?
-        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim))  # zeros
+        # up_G1[fc, dg]                  = dF0[fc] / d(dp/dx_dg)
+        G1 = sympy.zeros(dim, dim)
+        for fc in range(dim):
+            for dg in range(dim):
+                G1[fc, dg] = sympy.diff(f0_jac_list[fc], Gp[0, dg])
+
+        # up_G2[fc, df]                  = dF1[fc, df] / dp
+        G2 = sympy.zeros(dim, dim)
+        for fc in range(dim):
+            for df in range(dim):
+                G2[fc, df] = sympy.diff(F1_for_jac[fc, df], p_scalar)
+
+        # up_G3[fc*dim + df, dg]         = dF1[fc, df] / d(dp/dx_dg)
+        G3 = sympy.zeros(dim * dim, dim)
+        for fc in range(dim):
+            for df in range(dim):
+                for dg in range(dim):
+                    G3[fc * dim + df, dg] = sympy.diff(F1_for_jac[fc, df], Gp[0, dg])
+
+        self._up_G0 = sympy.ImmutableMatrix(G0)  # zero in stokes tests
+        self._up_G1 = sympy.ImmutableMatrix(G1)  # zero in stokes tests
+        self._up_G2 = sympy.ImmutableMatrix(G2)  # pressure coupling
+        self._up_G3 = sympy.ImmutableMatrix(G3)  # zero in stokes tests
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
@@ -7430,24 +7488,48 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             if bc.fn_f is not None:
 
-                permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
-
                 bd_F0  = sympy.Array(bc.fn_f)
 
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
                 fns_bd_residual += [bc.fns["u_f0"]]
 
-                G0 = sympy.derive_by_array(bd_F0, self.Unknowns.u.sym)
-                G1 = sympy.derive_by_array(bd_F0, self.Unknowns.L)
-                bc.fns["uu_G0"] = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-                bc.fns["uu_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                # Boundary Jacobians follow the same PETSc [fc, gc, df, dg]
+                # layout as the bulk blocks — build them with the same
+                # explicit-index loops (the old permutedims form transposed
+                # fc/gc here too; harmless only while every natural-BC
+                # tangent happened to be symmetric).
+                bd_f0_list = list(sympy.Array(bc.fn_f).reshape(dim))
+
+                # uu_G0[fc, gc]         = d bd_F0[fc] / dU[gc]
+                G0 = sympy.zeros(dim, dim)
+                for fc in range(dim):
+                    for gc in range(dim):
+                        G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
+
+                # uu_G1[fc*dim + gc, dg] = d bd_F0[fc] / dL[gc, dg]
+                G1 = sympy.zeros(dim * dim, dim)
+                for fc in range(dim):
+                    for gc in range(dim):
+                        for dg in range(dim):
+                            G1[fc * dim + gc, dg] = sympy.diff(bd_f0_list[fc], L[gc, dg])
+
+                bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
+                bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1)
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
-                G0 = sympy.derive_by_array(bc.fns["u_f0"], P)
-                G1 = sympy.derive_by_array(bc.fns["u_f0"], self._G)
+                # up_G0[fc, 0]          = d bd_F0[fc] / dp
+                G0 = sympy.zeros(dim, 1)
+                for fc in range(dim):
+                    G0[fc, 0] = sympy.diff(bd_f0_list[fc], p_scalar)
 
-                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
-                bc.fns["up_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))
+                # up_G1[fc, dg]         = d bd_F0[fc] / d(dp/dx_dg)
+                G1 = sympy.zeros(dim, dim)
+                for fc in range(dim):
+                    for dg in range(dim):
+                        G1[fc, dg] = sympy.diff(bd_f0_list[fc], Gp[0, dg])
+
+                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0)
+                bc.fns["up_G1"] = sympy.ImmutableMatrix(G1)
                 fns_bd_jacobian += [bc.fns["up_G0"], bc.fns["up_G1"]]
 
                 # Gradient boundary residual (f1_bd) and its Jacobians (g2, g3)
@@ -7461,16 +7543,47 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     # smooth-kink the Jacobian source so its tangent is Newton-
                     # consistent (same fix as the bulk). Residual u_F1 stays exact.
                     bd_F1_jac = self._jacobian_source(bd_F1)
-                    G2 = sympy.derive_by_array(bd_F1_jac, self.Unknowns.u.sym)
-                    G3 = sympy.derive_by_array(bd_F1_jac, self.Unknowns.L)
-                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim, dim))
-                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim, dim*dim))
+
+                    # uu_G2[fc*dim + gc, df]          = d bd_F1[fc, df] / dU[gc]
+                    G2 = sympy.zeros(dim * dim, dim)
+                    for fc in range(dim):
+                        for gc in range(dim):
+                            for df in range(dim):
+                                G2[fc * dim + gc, df] = sympy.diff(
+                                    bd_F1_jac[fc, df], U_list[gc]
+                                )
+
+                    # uu_G3[fc*dim + gc, df*dim + dg] = d bd_F1[fc, df] / dL[gc, dg]
+                    G3 = sympy.zeros(dim * dim, dim * dim)
+                    for fc in range(dim):
+                        for gc in range(dim):
+                            for df in range(dim):
+                                for dg in range(dim):
+                                    G3[fc * dim + gc, df * dim + dg] = sympy.diff(
+                                        bd_F1_jac[fc, df], L[gc, dg]
+                                    )
+
+                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(G2)
+                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(G3)
                     fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]
 
-                    G2 = sympy.derive_by_array(bc.fns["u_F1"], P)
-                    G3 = sympy.derive_by_array(bc.fns["u_F1"], self._G)
-                    bc.fns["up_G2"] = sympy.ImmutableMatrix(G2.reshape(dim, dim))
-                    bc.fns["up_G3"] = sympy.ImmutableMatrix(G3.reshape(dim, dim*dim))
+                    # up_G2[fc, df]          = d bd_F1[fc, df] / dp
+                    G2 = sympy.zeros(dim, dim)
+                    for fc in range(dim):
+                        for df in range(dim):
+                            G2[fc, df] = sympy.diff(bd_F1[fc, df], p_scalar)
+
+                    # up_G3[fc*dim + df, dg] = d bd_F1[fc, df] / d(dp/dx_dg)
+                    G3 = sympy.zeros(dim * dim, dim)
+                    for fc in range(dim):
+                        for df in range(dim):
+                            for dg in range(dim):
+                                G3[fc * dim + df, dg] = sympy.diff(
+                                    bd_F1[fc, df], Gp[0, dg]
+                                )
+
+                    bc.fns["up_G2"] = sympy.ImmutableMatrix(G2)
+                    bc.fns["up_G3"] = sympy.ImmutableMatrix(G3)
                     fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"]]
 
                 # Pressure boundary residual and Jacobians (pu, pp blocks)
@@ -7504,7 +7617,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## stiffness uu = ∂fn_f/∂u = r·(n⊗n)  (0, 0) which conditions the [p,h]
         ## Schur complement (r=0 ⇒ bare KKT, uu=0). Guarded: no-op for ordinary
         ## Stokes.
-        cbc_permutation = (0, 2, 1, 3)
         for cbc in self._block_constraint_bcs:
             n_row = cbc.normal           # sympy 1×dim Matrix
             g_sym = cbc.g
@@ -7530,11 +7642,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             cbc.fns["h_f0"] = sympy.ImmutableDenseMatrix(fn_h)
             fns_bd_residual += [cbc.fns["h_f0"]]
 
-            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape)
-            G0 = sympy.derive_by_array(sympy.Array(fn_f), self.Unknowns.u.sym)
-            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(
-                sympy.permutedims(G0, cbc_permutation).reshape(dim, dim)
-            )
+            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape).
+            # Explicit [fc, gc] placement like every other Jacobian block (the
+            # content is symmetric, but no permutedims survives on principle —
+            # see petsc-jacobian-layout.md).
+            G0 = sympy.zeros(dim, dim)
+            for fc in range(dim):
+                for gc in range(dim):
+                    G0[fc, gc] = sympy.diff(fn_f[fc], U_list[gc])
+            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
             fns_bd_jacobian += [cbc.fns["uu_G0"]]
 
             # uh (0, h):  ∂fn_f/∂h = n  — mirror the up_G0 (velocity,scalar) shape
