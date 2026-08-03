@@ -846,10 +846,21 @@ def _flippable(dm, X, verts, frozen, locked, regions):
             continue
 
         Xp, Xa, Xq, Xb = X[p - vS], X[a - vS], X[q - vS], X[b - vS]
-        before = _smallest_cosine(((Xp, Xa, Xb), (Xa, Xq, Xb)))
-        after = _smallest_cosine(((Xp, Xa, Xq), (Xp, Xq, Xb)))
+        old = ((Xp, Xa, Xb), (Xa, Xq, Xb))
+        new = ((Xp, Xa, Xq), (Xp, Xq, Xb))
+        before = _smallest_cosine(old)
+        after = _smallest_cosine(new)
         if after <= before + _MIN_GAIN:
             continue                     # no shape gain worth the flip
+        # ... and it may not buy that gain by making a NEEDLE. The objective
+        # stays the maximum angle, for the Babuska-Aziz reason above; this is
+        # only a floor under the other end. Without it the pass is free to
+        # trade an obtuse cell for a thin one, whose largest angle is
+        # unremarkable and so never registers here — measured on a cut graded
+        # mesh, flipping alone took the smallest angle in the mesh DOWN, which
+        # is what a caller composing this with a size field will not expect.
+        if _largest_cosine(new) > _largest_cosine(old) + _MIN_GAIN:
+            continue
         out.append((e, t, u, int(p), a, int(q), b, after - before))
 
     # Best gain first, so that when two candidate flips share a cell and only one

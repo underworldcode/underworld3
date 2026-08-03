@@ -827,3 +827,55 @@ def test_snap_dist_reaches_vertices_snap_frac_cannot():
         f"splits did not fall: {base['n_split']} -> {reached['n_split']}")
     assert (reached["n_cut_edges"]
             == reached["n_split"] + reached["n_on_surface"] - 1)
+
+
+def test_repair_fixes_the_cells_the_cut_leaves_thin():
+    """``repair=True`` runs the two operations a cut does not have.
+
+    A cut can only snap a vertex onto the surface or split an edge it crosses,
+    so a crossing landing near a vertex either drags the vertex to it or carves
+    a thin cell beside it. Flipping fixes the ones whose point set is fine and
+    whose connectivity is not; deleting fixes the ones whose point set is the
+    problem.
+
+    The surface itself must come through untouched — that is the whole point of
+    both passes refusing to act on a labelled edge — so the facet count is
+    asserted, not just the quality.
+    """
+    # A GRADED mesh. On a uniform one the flip pass alone already clears the
+    # thin cells and deletion is offered nothing worth taking (measured: 26 -> 25
+    # cells under 15 degrees, 0 removals), so a uniform fixture would assert the
+    # feature while exercising half of it.
+    line = np.array([[-0.1, 0.37], [1.1, 0.63]])
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 6,
+        regular=False, qdegree=2, refinement=2)
+    surf = _surf("Grade", base, line)
+    surf.discretize()
+    mesh = base.adapt(surf.refinement_metric_function(
+        h_near=1 / 48, h_far=1 / 6, width=1 / 12), max_levels=3)
+
+    plain = mesh.add_conforming_surface(_surf("Rp", mesh, line), snap_frac=0.30)
+    fixed = mesh.add_conforming_surface(_surf("Rr", mesh, line), snap_frac=0.30,
+                                        repair=True)
+
+    a0, a1 = min_angles(plain.dm), min_angles(fixed.dm)
+    assert int((a1 < 15).sum()) < int((a0 < 15).sum()), (
+        "repair did not reduce the count of thin cells")
+    assert a1.min() >= a0.min() - 1e-12, "repair lowered the worst angle"
+
+    info = fixed._surface_info
+    assert info["n_repair_flips"] > 0 and info["n_repair_removals"] > 0, (
+        "one of the two passes did nothing, so this is not testing both")
+    assert info["min_angle"] == pytest.approx(float(a1.min())), (
+        "_surface_info still reports the angle from before the repair")
+
+    # The surface is a chain of the same facets, and deleting cells conserves area.
+    n_plain = plain.dm.getLabel("Rp").getStratumSize(
+        int(plain.boundaries["Rp"].value))
+    n_fixed = fixed.dm.getLabel("Rr").getStratumSize(
+        int(fixed.boundaries["Rr"].value))
+    assert n_fixed == n_plain, "repair changed the surface itself"
+    assert cell_areas(fixed.dm).sum() == pytest.approx(
+        cell_areas(plain.dm).sum(), rel=1e-13)
+    assert (cell_areas(fixed.dm) > 0).all()
