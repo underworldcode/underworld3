@@ -271,8 +271,11 @@ would hide exactly that.
 
 | solution | its stress output is |
 |---|---|
-| SolCx, SolKx | total (Cauchy) $\sigma$ |
-| SolKz, SolDB2d, SolDB3d | deviatoric $\tau$ |
+| SolA, SolB, SolCx, SolKx | total (Cauchy) $\sigma$ |
+| SolKz, SolNL, SolDB2d, SolDB3d | deviatoric $\tau$ |
+
+SolA is the clearest case to read: its source writes `u3 = 2*kn*ss_z - pp`, with the
+pressure subtracted in plain sight. SolKz's writes the same quantity without it.
 
 SolKz is the trap: it writes into an array literally called `total_stress`, and
 the contents are the deviator. Taking the name at face value leaves the momentum

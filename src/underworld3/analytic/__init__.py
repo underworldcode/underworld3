@@ -29,13 +29,15 @@ underworld3.analytic._base : the contract each solution satisfies.
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
 from .inclusion import EllipticalInclusion
-from .velic import SolCx, SolDB2d, SolDB3d, SolKx, SolKz, SolNL
+from .velic import SolA, SolB, SolCx, SolDB2d, SolDB3d, SolKx, SolKz, SolNL
 
 __all__ = [
     "AnalyticSolution",
     "FreeSlipWalls",
     "FixedWalls",
     "EllipticalInclusion",
+    "SolA",
+    "SolB",
     "SolCx",
     "SolDB2d",
     "SolDB3d",
@@ -52,6 +54,8 @@ __all__ = [
 # without being importable.
 _SOLUTIONS = {
     "EllipticalInclusion": EllipticalInclusion,
+    "SolA": SolA,
+    "SolB": SolB,
     "SolCx": SolCx,
     "SolDB2d": SolDB2d,
     "SolDB3d": SolDB3d,

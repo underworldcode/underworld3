@@ -883,3 +883,171 @@ class SolKz(FreeSlipWalls, AnalyticSolution):
                 (kernel["stress_zx"], kernel["stress_zz"]),
             ),
         )
+
+
+_SIGMA = sympy.Symbol("sigma")
+
+# SolA and SolB share a kernel shape, and the source states it outright:
+# "u1 = Vz, u2 = Vx, u3 = tzz, u4 = tzx, pp = pressure", with txx alongside.
+# Modes run in x, as in SolKz. The stress is the TOTAL: u3 and txx both carry an
+# explicit `- pp`.
+_SOLAB_OUTPUTS = {
+    "velocity_x": ("u2", sympy.sin),
+    "velocity_z": ("u1", sympy.cos),
+    "stress_xx": ("txx", sympy.cos),
+    "stress_zz": ("u3", sympy.cos),
+    "stress_zx": ("u4", sympy.sin),
+    "pressure": ("pp", sympy.cos),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _solab_kernel(name):
+    """Transcribe SolA or SolB — one straight-line block, isoviscous."""
+
+    source = CSource(os.path.join(_REFERENCE_DIR, f"{name}.c"))
+    body = source.function(f"_Velic_{name}")
+    body = body[: body.index("e_zz =")]
+
+    inputs = {
+        "pos": (_X, _Z),
+        "sigma": _SIGMA,
+        "Z": _ETA0,
+        "n": _N,
+        "km": _KM,
+    }
+    scope = evaluate_block(body, inputs)
+
+    kn = _N * sympy.pi
+    return {
+        field: scope[symbol] * mode(kn * _X)
+        for field, (symbol, mode) in _SOLAB_OUTPUTS.items()
+    }
+
+
+class _SolAB(FreeSlipWalls, AnalyticSolution):
+    """Shared assembly for the two isoviscous Velic solutions."""
+
+    dim = 2
+    _kernel = None
+    _vertical = None
+
+    def __init__(self, mesh, sigma=1.0, eta=1.0, n=3, m=2):
+        super().__init__(mesh)
+
+        if int(n) != n or int(n) < 1:
+            raise ValueError("n (horizontal wavenumber) must be a positive integer.")
+        if float(eta) <= 0.0:
+            raise ValueError("eta must be positive.")
+
+        self.sigma = float(sigma)
+        self.eta = float(eta)
+        self.n = int(n)
+        self.m = float(m)
+
+        x, z = mesh.X
+        values = {
+            _SIGMA: sympy.Rational(self.sigma),
+            _ETA0: sympy.Rational(self.eta),
+            _N: self.n,
+            _KM: sympy.Rational(self.m) * sympy.pi,
+            _X: x,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solab_kernel(self._kernel).items()
+        }
+
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=sympy.Rational(self.eta),
+            bodyforce=(
+                0,
+                sympy.Rational(self.sigma)
+                * self._vertical(sympy.Rational(self.m) * sympy.pi * z)
+                * sympy.cos(self.n * sympy.pi * x),
+            ),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_zx"]),
+                (kernel["stress_zx"], kernel["stress_zz"]),
+            ),
+        )
+
+
+class SolA(_SolAB):
+    r"""Isoviscous Stokes flow with a sinusoidal body force — the SolA benchmark.
+
+    Constant viscosity on the unit box, free slip everywhere, forced by
+    :math:`\mathbf f = (0,\; \sigma\sin(m\pi z)\cos(n\pi x))`.
+
+    The simplest solution in the suite, and useful precisely for that: it removes
+    the viscosity structure entirely, so a discrepancy here is in the
+    discretisation or the solve rather than in how a hard coefficient is handled.
+    Run it before concluding anything from SolCx or SolKx.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    sigma : float
+        Forcing amplitude.
+    eta : float
+        The (constant) viscosity.
+    n : int
+        Horizontal wavenumber.
+    m : float
+        Vertical wavenumber; need not be an integer for the solution itself.
+    """
+
+    _kernel = "solA"
+    _vertical = staticmethod(sympy.sin)
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/solA.c."
+    )
+    eqn_viscosity = r"\eta"
+    eqn_bodyforce = r"(0,\; \sigma \sin(m \pi z)\cos(n \pi x))"
+
+
+class SolB(_SolAB):
+    r"""Isoviscous Stokes flow with a hyperbolic body force — the SolB benchmark.
+
+    As :class:`SolA`, but the forcing grows with depth as
+    :math:`\sinh(m\pi z)` rather than oscillating. The response is concentrated
+    near one boundary instead of filling the box, which is a different test of
+    the same machinery: it probes resolution where the solution is steep rather
+    than accuracy where it is smooth.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    sigma : float
+        Forcing amplitude.
+    eta : float
+        The (constant) viscosity.
+    n : int
+        Horizontal wavenumber.
+    m : float
+        Vertical decay parameter. Must differ from *n* — the kernel is singular
+        when they coincide.
+    """
+
+    _kernel = "solB"
+    _vertical = staticmethod(sympy.sinh)
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/solB.c."
+    )
+    eqn_viscosity = r"\eta"
+    eqn_bodyforce = r"(0,\; \sigma \sinh(m \pi z)\cos(n \pi x))"
+
+    def __init__(self, mesh, sigma=1.0, eta=1.0, n=3, m=2.0):
+        if abs(float(n) - float(m)) < 1.0e-5:
+            raise ValueError(
+                "SolB is singular when the horizontal and vertical wavenumbers "
+                "coincide; choose n != m."
+            )
+        super().__init__(mesh, sigma=sigma, eta=eta, n=n, m=m)
