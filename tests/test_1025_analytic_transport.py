@@ -64,7 +64,7 @@ def test_two_layer_darcy_satisfies_its_equation(mesh):
 
     from underworld3.analytic import _validation
 
-    sol = uw.analytic.TwoLayerDarcy(mesh, k1=1.0, k2=0.1)
+    sol = uw.analytic.TwoLayerDarcy(mesh, k_lower=1.0, k_upper=0.1)
     assert _validation.transport_residual(sol, sol.sample_points(count=8)) == 0.0
 
 
@@ -79,7 +79,9 @@ def test_two_layer_darcy_conserves_flux_across_the_interface(mesh):
     from underworld3.analytic import _validation
 
     k1, k2, interface = 1.0, 0.1, 0.5
-    sol = uw.analytic.TwoLayerDarcy(mesh, k1=k1, k2=k2, interface=interface)
+    sol = uw.analytic.TwoLayerDarcy(
+        mesh, k_lower=k1, k_upper=k2, interface=interface
+    )
     x, z = mesh.X
 
     gradient = sympy.diff(sol.fn_solution, z)

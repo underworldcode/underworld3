@@ -424,7 +424,7 @@ Collecting them gains the residual check, which they never had, and a name to ci
 | solution | equation | previously |
 |---|---|---|
 | `Poisson1D` | $\nabla^2 u + f = 0$, three sources | `test_1000_poissonCart.py` |
-| `TwoLayerDarcy` | $\nabla\cdot(k\nabla p) = 0$ across a permeability jump | `test_1004_DarcyCartesian.py` |
+| `TwoLayerDarcy` | $\nabla\cdot[k(\nabla p + S\hat z)] = 0$ across a permeability jump | `test_1004_DarcyCartesian.py` |
 | `ErfcDiffusion` | $\partial_t u = D\nabla^2 u$ | `test_1005_TransientDarcyCartesian.py` |
 | `AdvectedFront` | $\partial_t c + u\,\partial_x c = \kappa\,\partial_{xx} c$ | `test_1100_AdvDiffCartesian.py` |
 
@@ -442,6 +442,21 @@ which is what makes `test_1100`'s current comparison fragile.
 
 They cannot reuse the Stokes boundary-condition mixins, which apply a *velocity*.
 `_Transport` prescribes `fn_solution` on every wall instead.
+
+### The four tests now use them
+
+The inline copies are gone; each test keeps its assertions and tolerances and
+only swaps the expression for the class. Two details worth knowing:
+
+`TwoLayerDarcy` was generalised to take the column extent and a gravity term
+$S$, because the Darcy test is posed on $y \in (-1, 0)$ and runs the case twice,
+with and without gravity. The profile is now **derived** from constant flux
+rather than transcribed from the test's closed form — so agreement is a check on
+both, not a copy of one. It matches to 1.1e-16 in both cases.
+
+Its arguments are `k_lower` / `k_upper` rather than `k1` / `k2`, because
+`test_1004`'s `k1` is the *upper* layer and the opposite reading is silent: it
+produces a perfectly smooth wrong answer.
 
 ### The residual has to be the equation the solution actually solves
 

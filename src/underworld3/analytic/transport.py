@@ -205,16 +205,32 @@ class TwoLayerDarcy(_Transport):
     one, which makes it the scalar counterpart of SolCx — and the fastest way to
     tell whether a Darcy solver handles a permeability contrast at all.
 
+    With gravity the flux is :math:`q = -k(\partial_z p + S)`; setting
+    :math:`S = 0` recovers the pressure-driven case. Either way :math:`q` is
+    constant down the column, and that is what fixes the interface pressure:
+
+    .. math::
+        q = \frac{\Delta p - S(z_1 - z_0)}{d_{\rm low}/k_{\rm low}
+                                         + d_{\rm up}/k_{\rm up}}
+
+    with :math:`d` the layer thicknesses. The profile is then linear in each
+    layer with slope :math:`-q/k - S`.
+
     Parameters
     ----------
     mesh : Mesh
-        A 2D mesh; the layering is in :math:`z`.
-    k1, k2 : float
-        Permeability of the lower and upper layer.
+        A 2D mesh; the layering is in the vertical coordinate.
+    k_lower, k_upper : float
+        Permeability below and above the interface.
     interface : float
-        Height of the layer boundary.
+        Height of the layer boundary. Must lie strictly inside the column.
     pressure_drop : float
-        Pressure difference across the whole column.
+        Pressure at the bottom, taking the top as zero.
+    gravity : float
+        :math:`S` in the flux law. Zero for pressure-driven flow.
+    bottom, top : float
+        Extent of the column. Defaults to the unit interval; the Darcy tests
+        use :math:`(-1, 0)`.
     """
 
     reference = (
@@ -222,34 +238,67 @@ class TwoLayerDarcy(_Transport):
     )
     eqn_solution = r"\text{piecewise linear, kinked at the interface}"
 
-    def __init__(self, mesh, k1=1.0, k2=0.1, interface=0.5, pressure_drop=1.0):
+    def __init__(
+        self,
+        mesh,
+        k_lower=1.0,
+        k_upper=0.1,
+        interface=0.5,
+        pressure_drop=1.0,
+        gravity=0.0,
+        bottom=0.0,
+        top=1.0,
+    ):
         super().__init__(mesh)
 
-        if not (float(k1) > 0.0 and float(k2) > 0.0):
+        if not (float(k_lower) > 0.0 and float(k_upper) > 0.0):
             raise ValueError("permeabilities must be positive.")
-        if not 0.0 < float(interface) < 1.0:
-            raise ValueError("interface must lie strictly inside (0, 1).")
+        if not float(bottom) < float(interface) < float(top):
+            raise ValueError(
+                f"interface must lie strictly inside ({bottom}, {top}); "
+                f"got {interface}"
+            )
 
-        self.k1 = float(k1)
-        self.k2 = float(k2)
+        self.k_lower = float(k_lower)
+        self.k_upper = float(k_upper)
         self.interface = float(interface)
         self.pressure_drop = float(pressure_drop)
+        self.gravity = float(gravity)
+        self.bottom = float(bottom)
+        self.top = float(top)
 
-        x, z = mesh.X
-        lower, upper = sympy.Rational(self.interface), 1 - sympy.Rational(self.interface)
-        drop = sympy.Rational(self.pressure_drop)
+        z = mesh.X[mesh.dim - 1]
 
-        # Pressure at the interface, from continuity of flux: k1 dP1/dz = k2 dP2/dz.
-        at_interface = (drop / upper) / (1 / upper + sympy.Rational(self.k1, 1) / sympy.Rational(self.k2, 1) / lower)
+        k_low = sympy.Rational(str(k_lower))
+        k_up = sympy.Rational(str(k_upper))
+        z_int = sympy.Rational(str(interface))
+        z_bot = sympy.Rational(str(bottom))
+        z_top = sympy.Rational(str(top))
+        drop = sympy.Rational(str(pressure_drop))
+        S = sympy.Rational(str(gravity))
+
+        thick_low = z_int - z_bot
+        thick_up = z_top - z_int
+
+        # Constant flux, from p(top) = 0 and p(bottom) = drop. Derived here
+        # rather than transcribed, so that agreeing with the form the Darcy test
+        # carried is a check on both rather than a copy of one.
+        self.flux = (drop - S * (z_top - z_bot)) / (
+            thick_low / k_low + thick_up / k_up
+        )
+        self.at_interface = thick_up * (self.flux / k_up + S)
+
+        slope_low = -self.flux / k_low - S
+        slope_up = -self.flux / k_up - S
 
         self.set_scalar_field(
             sympy.Piecewise(
-                (at_interface * z / lower, z < self.interface),
-                (at_interface + (drop - at_interface) * (z - lower) / upper, True),
+                (self.at_interface + slope_low * (z - z_int), z < z_int),
+                (self.at_interface + slope_up * (z - z_int), True),
             ),
-            coefficient=sympy.Piecewise(
-                (sympy.Rational(self.k1), z < self.interface),
-                (sympy.Rational(self.k2), True),
-            ),
+            # Piecewise-constant k makes the gravity term vanish inside each
+            # layer, so the source is zero away from the interface — where flux
+            # continuity is imposed by construction rather than by a source.
+            coefficient=sympy.Piecewise((k_low, z < z_int), (k_up, True)),
             source=0,
         )
