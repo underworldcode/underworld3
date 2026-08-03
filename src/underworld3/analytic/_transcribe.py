@@ -93,11 +93,16 @@ def _split_declarators(block):
 
     return "".join(out)
 
-# The assignment target keeps any `struct.` prefix. Without it, `out.x = ...`
-# reads as an assignment to `x` and silently overwrites the coordinate symbol —
-# every later statement referring to x then gets the wrong thing, and the result
-# looks plausible rather than broken.
-_STATEMENT = re.compile(r"((?:\w+\.)?\w+)\s*=\s*([^;]+);")
+# The assignment target keeps whatever it is written through: a `struct.` prefix
+# or an `[index]` suffix. Both occur — these kernels return their results through
+# `out.xx = ...` or `out[0] = ...` depending on their vintage.
+#
+# The prefix is not cosmetic. Without it, `out.x = ...` reads as an assignment to
+# `x` and silently overwrites the coordinate symbol; every later statement using x
+# then gets the wrong thing, and the result looks plausible rather than broken.
+# Without the suffix, `out[0] = ...` matches nothing at all — a loud failure
+# rather than a quiet one, but a failure.
+_STATEMENT = re.compile(r"((?:\w+\.)?\w+(?:\[\d+\])?)\s*=\s*([^;]+);")
 _FLOAT_LITERAL = re.compile(r"\b\d+\.\d*(?:[eE][+-]?\d+)?")
 
 

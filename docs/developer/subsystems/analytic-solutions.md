@@ -277,6 +277,24 @@ would hide exactly that.
 SolA is the clearest case to read: its source writes `u3 = 2*kn*ss_z - pp`, with the
 pressure subtracted in plain sight. SolKz's writes the same quantity without it.
 
+### One published stress is simply wrong
+
+SolM's kernel declares its viscosity as $(1 + \cos(r\pi x))\eta_0 + 1$ and then
+computes its stress as $2(\eta - 1)\dot\varepsilon$ — the constant part is
+missing. The difference from $2(\eta-1)\dot\varepsilon$ is *exactly* zero, so
+this is a defect in the source rather than a transcription slip: using the
+published stress leaves the momentum residual at **0.21**, while deriving it from
+the kernel's own strain rate and viscosity gives **1.7e-16**.
+
+Everything else SolM publishes — velocity, pressure, strain rate, viscosity, body
+force — is mutually consistent. Only the stress output is defective, so the
+transcription supplies the strain rate to `set_fields` and lets the stress be
+derived.
+
+This is the case for having a check that consults no reference. Comparing SolM
+against its own kernel would have reproduced the error faithfully and reported
+agreement.
+
 SolKz is the trap: it writes into an array literally called `total_stress`, and
 the contents are the deviator. Taking the name at face value leaves the momentum
 residual at order $|\mathbf f|$ *and* manufactures a horizontal body force in a

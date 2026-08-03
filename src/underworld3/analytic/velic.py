@@ -414,6 +414,8 @@ class SolNL(FixedWalls, AnalyticSolution):
             pressure=kernel["pressure"],
             viscosity=kernel["viscosity"],
             bodyforce=(kernel["bodyforce_x"], kernel["bodyforce_z"]),
+            # Both are published and both are consistent, so both are supplied:
+            # the conformance check then compares them against each other.
             stress=(
                 (kernel["stress_xx"], kernel["stress_xz"]),
                 (kernel["stress_xz"], kernel["stress_zz"]),
@@ -455,6 +457,7 @@ class SolNL(FixedWalls, AnalyticSolution):
 
 
 _B, _M = sympy.symbols("B m")
+_KN = sympy.Symbol("kn_solm")
 _KM = sympy.Symbol("km")
 
 # The kernel leaves the fields in u1..u6, each still to be multiplied by its
@@ -1051,3 +1054,132 @@ class SolB(_SolAB):
                 "coincide; choose n != m."
             )
         super().__init__(mesh, sigma=sigma, eta=eta, n=n, m=m)
+
+
+_KR = sympy.Symbol("kr")
+
+
+@functools.lru_cache(maxsize=None)
+def _solm_kernel():
+    """Transcribe SolM. Short methods writing straight into the output array."""
+
+    source = CSource(os.path.join(_REFERENCE_DIR, "AnalyticSolM.hpp"))
+
+    # km, kn and kr are initialised in the class body rather than in any method,
+    # so they are supplied rather than read.
+    inputs = {"in": (_X, _Z), "eta0": _ETA0, "km": _KM, "kn": _KN, "kr": _KR}
+
+    def block(method):
+        return evaluate_block(source.function(method), inputs)
+
+    velocity, bodyforce = block("velocity"), block("bodyforce")
+    stress, strainrate = block("stress"), block("strainrate")
+
+    return {
+        "velocity_x": velocity["out[0]"],
+        "velocity_z": velocity["out[1]"],
+        "bodyforce_x": bodyforce["out[0]"],
+        "bodyforce_z": bodyforce["out[1]"],
+        "pressure": block("pressure")["p"],
+        "viscosity": block("viscosity")["out[0]"],
+        "stress_xx": stress["out[0]"],
+        "stress_zz": stress["out[1]"],
+        "stress_xz": stress["out[2]"],
+        "strainrate_xx": strainrate["out[0]"],
+        "strainrate_zz": strainrate["out[1]"],
+        "strainrate_xz": strainrate["out[2]"],
+    }
+
+
+class SolM(FreeSlipWalls, AnalyticSolution):
+    r"""Stokes flow with a laterally oscillating viscosity — the SolM benchmark.
+
+    Viscosity :math:`\eta = 1 + \eta_0(1 + \cos(r\pi x))` on the unit box, free
+    slip everywhere, with the body force chosen to make a simple sinusoidal
+    velocity exact.
+
+    The viscosity here *oscillates* rather than jumping (SolCx) or varying
+    monotonically (SolKx, SolKz), and its wavelength is independent of the
+    flow's. That makes it the one solution in the suite where the coefficient
+    structure and the solution structure can be deliberately mismatched — set
+    ``r`` incommensurate with ``n`` and every element sees a different viscosity
+    profile, which is a sharper test of quadrature than a smooth gradient.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    eta_0 : float
+        Amplitude of the viscosity oscillation.
+    n : int
+        Horizontal wavenumber of the flow.
+    m : int
+        Vertical wavenumber of the flow.
+    r : float
+        Wavenumber of the viscosity oscillation. Need not be an integer, and is
+        most interesting when it is not commensurate with *n*.
+
+    Notes
+    -----
+    The kernel names its wavenumbers the other way round — its ``m`` multiplies
+    :math:`x` and its ``n`` multiplies :math:`z`. The parameters here follow the
+    convention used across this suite, ``n`` horizontal and ``m`` vertical, and
+    the mapping is done at construction.
+    """
+
+    dim = 2
+    stress_is_deviatoric = True
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/AnalyticSolM.hpp."
+    )
+    eqn_velocity = r"(-\sin(n\pi x)\,m\pi\cos(m\pi z),\; \cos(n\pi x)\,n\pi\sin(m\pi z))"
+    eqn_viscosity = r"1 + \eta_0\,(1 + \cos(r \pi x))"
+
+    def __init__(self, mesh, eta_0=1.0, n=3, m=2, r=4.0):
+        super().__init__(mesh)
+
+        if int(n) != n or int(n) < 1:
+            raise ValueError("n (horizontal wavenumber) must be a positive integer.")
+        if int(m) != m or int(m) < 1:
+            # Free slip on the horizontal walls needs sin(m pi z) to vanish at
+            # z = 1, exactly as for SolKx.
+            raise ValueError("m (vertical wavenumber) must be a positive integer.")
+
+        self.eta_0 = float(eta_0)
+        self.n = int(n)
+        self.m = int(m)
+        self.r = float(r)
+
+        x, z = mesh.X
+        values = {
+            _ETA0: sympy.Rational(self.eta_0),
+            _KM: self.n * sympy.pi,  # the kernel's km multiplies x
+            _KN: self.m * sympy.pi,  # and its kn multiplies z
+            _KR: sympy.Rational(self.r) * sympy.pi,
+            _X: x,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solm_kernel().items()
+        }
+
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=kernel["viscosity"],
+            bodyforce=(kernel["bodyforce_x"], kernel["bodyforce_z"]),
+            # The stress is DERIVED from the strain rate here rather than taken
+            # from the kernel, because the kernel's is wrong. Its viscosity is
+            # (1 + cos(kr x)) eta0 + 1, but its stress is 2 (eta - 1) edot: the
+            # constant part is missing. Measured, not guessed — the difference
+            # from 2 (eta - 1) edot is exactly zero, and using the published
+            # stress leaves the momentum residual at 0.21 where deriving it gives
+            # 1.7e-16. Everything else the kernel publishes is mutually
+            # consistent; only this output is defective.
+            strainrate=(
+                (kernel["strainrate_xx"], kernel["strainrate_xz"]),
+                (kernel["strainrate_xz"], kernel["strainrate_zz"]),
+            ),
+        )
