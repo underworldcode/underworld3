@@ -7113,7 +7113,8 @@ class Mesh(Stateful, uw_object):
         return zone
 
     def add_conforming_surface(self, surface, snap_frac=0.10, verbose=False,
-                               snap_quality=0.15, snap_dist=0.0):
+                               snap_quality=0.15, snap_dist=0.0,
+                               mg_coarsening_ratio=2.0):
         r"""Add an internal surface that the mesh conforms to.
 
         The surface is added *on top of* an existing mesh rather than built into
@@ -7203,6 +7204,16 @@ class Mesh(Stateful, uw_object):
             bind at the recommended tolerances — it is what stops a large
             ``snap_frac`` from flattening cells onto the surface and silently
             breaking the chain.
+        snap_dist : float
+            Also snap any vertex within this multiple of its local h of the
+            surface, whatever the crossings on its edges look like; see
+            :func:`~underworld3.utilities.line_cut.cut_along_lines`.
+        mg_coarsening_ratio : float
+            How much finer the cut must be than the mesh it is cut from before
+            that mesh is kept as a multigrid level in its own right rather than
+            replaced by the child. Same meaning, and the same routine, as in
+            :meth:`adapt`: a level is a coarsening ratio, not a record that an
+            operation happened. A cut usually does not clear it, and should not.
 
         Returns
         -------
@@ -7311,6 +7322,30 @@ class Mesh(Stateful, uw_object):
         own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
         tail = (list(own_tail) + [self]) if own_tail is not None \
             else self._coarse_level_meshes()
+
+        # A cut is not necessarily a refinement. It re-represents the same grid
+        # with the surface conformed, so `self` earns its place as a separate
+        # level only if the child is genuinely finer — the same question `adapt`
+        # asks of an engine pass, so ask it with the same routine rather than a
+        # second rule that could drift from it.
+        #
+        # Measured on a box fault before this: nine levels, of which the two
+        # added by the two cuts coarsened h by 1.11x and 1.17x on the 5th
+        # percentile against a threshold of 1.8 — each costing a full Galerkin
+        # RAP and smoother sweep for no correction. Worse, transfer 7->8, BETWEEN
+        # those two, is where the barycentric builder ran out of coarse DOFs with
+        # a fine image and fell back to the dense RBF one (#424).
+        #
+        # `_subsample_mg_levels` already does "replace the level below rather
+        # than append to it" for its own finest generation; handing it the pair
+        # (self, child) against the level beneath them puts that decision here
+        # too. One level back means it kept only the child.
+        if len(tail) >= 2:
+            kept, _Ps, _pc = self._subsample_mg_levels(
+                tail[-2].dm, [tail[-1].dm, cut_dm], [None, None], [],
+                ratio=mg_coarsening_ratio, verbose=verbose)
+            if len(kept) == 1:
+                tail = tail[:-1]
         child._custom_mg_coarse_meshes = tail
         child._custom_mg_builder = self._custom_mg_builder
 

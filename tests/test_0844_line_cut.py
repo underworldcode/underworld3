@@ -250,14 +250,20 @@ def test_the_surface_exists_on_the_finest_level_only():
                     for m in base._coarse_level_meshes()]
     assert counts_after == counts_before, "a coarse level gained cells"
 
-    # The child's tail is the base's levels, unchanged — same count, and its
-    # finest level is still the uncut base finest, not a cut copy of it.
-    assert len(child._custom_mg_coarse_meshes) == len(tail_before)
+    # The child's tail is made of the base's own level objects, and the cut
+    # REPLACES the finest of them rather than sitting on top of it. A cut is not
+    # a refinement — it re-represents the same grid with the surface conformed —
+    # so the base finest and the child have the same resolution, and keeping
+    # both would record a multigrid level that coarsens nothing. That is the
+    # same test `adapt` applies to an engine pass, applied by the same routine.
+    assert len(child._custom_mg_coarse_meshes) == len(tail_before) - 1, (
+        "the cut was kept as a level of its own; it does not coarsen the mesh "
+        "it was cut from, so it should have replaced it")
     finest = child._custom_mg_coarse_meshes[-1]
-    assert np.array_equal(_coords(finest.dm), _coords(base.dm_hierarchy[-1]))
+    assert np.array_equal(_coords(finest.dm), _coords(base.dm_hierarchy[-2]))
     assert _coords(finest.dm).shape[0] < _coords(child.dm).shape[0], (
         "the coarse tail's finest level has as many vertices as the child, so "
-        "it is not the uncut base")
+        "it is not an uncut base level")
 
 
 def test_surface_becomes_a_named_boundary():
