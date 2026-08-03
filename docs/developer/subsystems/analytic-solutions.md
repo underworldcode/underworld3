@@ -374,6 +374,31 @@ conjugation, and unlike `sympy.conjugate` it distributes through a square root.
 The result is real-valued but complex-typed; SymPy cannot prove the imaginary
 part vanishes, so callers take `.real`.
 
+## What is not transcribed yet
+
+Two of the Velic solutions remain. Both are reachable with the machinery here —
+the mode loop is proven by SolC — but neither is a small addition, and the source
+for each is already vendored.
+
+**SolDA** (`solDA.c`, 34 KB) is the largest kernel in the family: a truncated
+series with *both* a viscosity jump and a rectangular forcing, so it combines
+what SolCx and SolC each test separately.
+
+**SolH** (`solH.c`) is 3D and needs three things at once:
+
+- a **double** mode loop, `n` and `m` each to `nmodes`. At the published default
+  of 30 that is 900 terms, and its own header warns that SolH "can become *very*
+  expensive to compute". Expect to choose a smaller default and document the
+  trade-off, as SolC does.
+- nested `if`/`else` inside the loop selecting `del_rho` for the `n = 0` and
+  `m = 0` modes. The conditions are on the loop indices, which are known integers
+  at transcription time, so the right branch can be picked per mode rather than
+  turned into a `Piecewise` — but `CSource.branches` handles one level, not three.
+- six stress components rather than three, laid out `xx, yy, zz, xy, xz, yz`.
+
+Its output mapping is transposed like SolKz's: `vel[0] = sum3`, `vel[1] = sum2`,
+`vel[2] = sum1`. Read it from the source, do not assume.
+
 ## Provenance
 
 Each vendored reference kernel keeps its original copyright header.
