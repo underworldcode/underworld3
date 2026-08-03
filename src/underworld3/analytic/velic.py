@@ -18,7 +18,12 @@ import os
 import sympy
 
 from ._base import AnalyticSolution, FixedWalls, FreeSlipWalls
-from ._transcribe import CSource, evaluate_block, evaluate_expression
+from ._transcribe import (
+    CSource,
+    evaluate_block,
+    evaluate_expression,
+    resolve_branches,
+)
 
 _REFERENCE_DIR = os.path.join(os.path.dirname(__file__), "_reference")
 
@@ -1547,5 +1552,167 @@ class SolDA(FreeSlipWalls, AnalyticSolution):
             stress=(
                 (kernel["stress_xx"], kernel["stress_zx"]),
                 (kernel["stress_zx"], kernel["stress_zz"]),
+            ),
+        )
+
+
+_DY = sympy.Symbol("dy")
+
+# SolH's output section, which transposes like SolKz's: vel[0]=sum3, [1]=sum2,
+# [2]=sum1, and the stress is laid out xx, yy, zz, xy, xz, yz.
+_SOLH_MODED = {
+    "velocity_z": ("u1", (sympy.cos, sympy.cos)),
+    "velocity_y": ("u2", (sympy.cos, sympy.sin)),
+    "velocity_x": ("u3", (sympy.sin, sympy.cos)),
+    "stress_zz": ("u4", (sympy.cos, sympy.cos)),
+    "stress_yz": ("u5", (sympy.cos, sympy.sin)),
+    "stress_xz": ("u6", (sympy.sin, sympy.cos)),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _solh_kernel(modes):
+    r"""Transcribe the Velic SolH kernel — 3D, and a double series.
+
+    Two nested mode loops, so the term count goes as ``modes**2``. The published
+    kernel warns that SolH is expensive to *evaluate*, which it is: a compiled
+    version sums every mode at every point. Transcribed it is the opposite —
+    each mode contributes about ninety operations, the cheapest in the family,
+    and the sum is built once.
+
+    Its guards (``if (m != 0)`` and friends) are on the loop indices, so they are
+    resolved per mode rather than becoming ``Piecewise``.
+    """
+
+    source = CSource(os.path.join(_REFERENCE_DIR, "solH.c"))
+    body = source.function("_Velic_solH")
+
+    outer = CSource.loop_body(body, "for(n=0;n<nmodes;n++)")
+    inner = CSource.loop_body(outer, "for(m=0;m<nmodes;m++)")
+    preamble = body[: body.index("for(n=0;n<nmodes;n++)")]
+
+    base = evaluate_block(
+        preamble,
+        {
+            "pos": (_X, _Y, _Z),
+            "_sigma": _SIGMA,
+            "_eta": _ETA0,
+            "_dx": _DX,
+            "_dy": _DY,
+        },
+    )
+
+    totals = {field: sympy.Integer(0) for field in _SOLH_MODED}
+    for extra in ("pressure", "stress_xx", "stress_yy", "stress_xy"):
+        totals[extra] = sympy.Integer(0)
+    density = sympy.Integer(0)
+
+    for n in range(modes):
+        for m in range(modes):
+            scope = evaluate_block(
+                resolve_branches(inner, {"n": n, "m": m}), {**base, "n": n, "m": m}
+            )
+
+            horizontal = (sympy.cos, sympy.sin)
+            kn, km = n * sympy.pi, m * sympy.pi
+            for field, (symbol, (fx, fy)) in _SOLH_MODED.items():
+                totals[field] += scope[symbol] * fx(kn * _X) * fy(km * _Y)
+
+            # pp is moded in the source's tail; txx, tyy and tyx already carry
+            # theirs where they are formed.
+            totals["pressure"] += scope["pp"] * sympy.cos(kn * _X) * sympy.cos(km * _Y)
+            totals["stress_xx"] += scope["txx"]
+            totals["stress_yy"] += scope["tyy"]
+            totals["stress_xy"] += scope["tyx"]
+            density += scope["del_rho"] * sympy.cos(kn * _X) * sympy.cos(km * _Y)
+
+    totals["bodyforce_z"] = density
+    return totals
+
+
+class SolH(FreeSlipWalls, AnalyticSolution):
+    r"""A dense block in three dimensions — the SolH benchmark.
+
+    Isoviscous flow in the unit cube, free slip everywhere, driven by a
+    rectangular density anomaly of extent *dx* by *dy* centred in the box.
+
+    The only 3D solution here with a *discontinuous* forcing, and the 3D
+    counterpart of SolC. Three-dimensional flow around a compact body is not a
+    2D problem with a third axis added: the return flow can go around the anomaly
+    rather than only over it, and a scheme can get the 2D case right while
+    mishandling that.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 3D mesh on the unit cube.
+    sigma : float
+        Density contrast of the block.
+    eta : float
+        The (constant) viscosity.
+    dx, dy : float
+        Horizontal extents of the block.
+    modes : int
+        Number of Fourier modes *per direction*, so the term count is its
+        square. The fields are exact for the block as resolved, as in
+        :class:`SolC`.
+
+    Notes
+    -----
+    The published kernel is slow because a compiled version re-sums every mode at
+    every evaluation point. Transcribed, the sum is built once and each mode is
+    small, so the cost here is in construction rather than evaluation.
+    """
+
+    dim = 3
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/solH.c."
+    )
+    eqn_viscosity = r"\eta"
+    eqn_bodyforce = r"(0,\;0,\; \sigma \;\text{in a block of extent } dx \times dy)"
+
+    def __init__(self, mesh, sigma=1.0, eta=1.0, dx=0.5, dy=0.5, modes=6):
+        super().__init__(mesh)
+
+        if float(eta) <= 0.0:
+            raise ValueError("eta must be positive.")
+        if int(modes) != modes or int(modes) < 2:
+            raise ValueError("modes must be an integer of at least 2.")
+
+        self.sigma = float(sigma)
+        self.eta = float(eta)
+        self.dx = float(dx)
+        self.dy = float(dy)
+        self.modes = int(modes)
+
+        x, y, z = mesh.X
+        values = {
+            _SIGMA: sympy.Rational(self.sigma),
+            _ETA0: sympy.Rational(self.eta),
+            _DX: sympy.Rational(self.dx),
+            _DY: sympy.Rational(self.dy),
+            _X: x,
+            _Y: y,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solh_kernel(self.modes).items()
+        }
+
+        self.set_fields(
+            velocity=(
+                kernel["velocity_x"],
+                kernel["velocity_y"],
+                kernel["velocity_z"],
+            ),
+            pressure=kernel["pressure"],
+            viscosity=sympy.Rational(self.eta),
+            bodyforce=(0, 0, -kernel["bodyforce_z"]),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_xy"], kernel["stress_xz"]),
+                (kernel["stress_xy"], kernel["stress_yy"], kernel["stress_yz"]),
+                (kernel["stress_xz"], kernel["stress_yz"], kernel["stress_zz"]),
             ),
         )

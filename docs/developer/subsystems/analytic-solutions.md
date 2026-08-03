@@ -374,24 +374,35 @@ conjugation, and unlike `sympy.conjugate` it distributes through a square root.
 The result is real-valued but complex-typed; SymPy cannot prove the imaginary
 part vanishes, so callers take `.real`.
 
-## What is not transcribed yet
+## The family is complete
 
-One Velic solution remains, and its source is vendored.
+All twelve Velic solutions are transcribed, plus the Schmid & Podladchikov
+inclusion. Every one is validated by the conformance suite.
 
-**SolH** (`solH.c`) is 3D and needs three things at once:
+Two lessons from the last three, which I had recorded as too large to attempt:
 
-- a **double** mode loop, `n` and `m` each to `nmodes`. At the published default
-  of 30 that is 900 terms, and its own header warns that SolH "can become *very*
-  expensive to compute". Expect to choose a smaller default and document the
-  trade-off, as SolC does.
-- nested `if`/`else` inside the loop selecting `del_rho` for the `n = 0` and
-  `m = 0` modes. The conditions are on the loop indices, which are known integers
-  at transcription time, so the right branch can be picked per mode rather than
-  turned into a `Piecewise` — but `CSource.branches` handles one level, not three.
-- six stress components rather than three, laid out `xx, yy, zz, xy, xz, yz`.
+**Measure before estimating.** SolDA was written off on a guess about expression
+size. Measuring took two minutes: one mode is 0.07 s and about four thousand
+operations, putting twenty modes in the same range as SolKz. SolH was written off
+on the source's own warning that it is "very expensive" — true of a *compiled*
+kernel, which re-sums every mode at every evaluation point, and backwards for a
+transcription, where the sum is built once and each mode is the smallest in the
+family at ninety operations. Both transcribed and validated on the first attempt.
 
-Its output mapping is transposed like SolKz's: `vel[0] = sum3`, `vel[1] = sum2`,
-`vel[2] = sum1`. Read it from the source, do not assume.
+**The named obstacle is the cheap one.** For SolDA the blocker I could point at —
+chained assignment, `del_rhoB = del_rhoA = del_rho` — was a ten-line fix, while
+the one I could only estimate was not an obstacle at all. Same for SolH: the C
+ternary and the index-conditioned guards were mechanical additions;
+the cost was imagined.
+
+### What the last three needed from the reader
+
+| addition | why |
+|---|---|
+| `CSource.loop_body` | the series solutions accumulate over modes with `+=`, which is not an assignment; the caller evaluates per mode and sums in SymPy |
+| chained assignment | `a = b = c;` read as one statement has `b = c` as its *value*, which is not an expression |
+| C ternary and `&&`/`\|\|` | SolH guards its zero modes with `(n!=0 \|\| m!=0) ? … : …` |
+| `resolve_branches` | guards on loop indices have an answer at transcription time. Left unresolved, `evaluate_block` reads every branch in order and each guarded variable keeps the *last* one — in SolH that silently zeroes two velocity components, which looks plausible rather than broken |
 
 ## Provenance
 

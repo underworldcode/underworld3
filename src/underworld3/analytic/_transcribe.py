@@ -63,6 +63,73 @@ _RESERVED = {"in": "_c_in", "lambda": "_c_lambda", "is": "_c_is", "not": "_c_not
 _RESERVED_PATTERN = re.compile(r"\b(" + "|".join(_RESERVED) + r")\b")
 
 
+def _rewrite_ternary(text):
+    """Rewrite C conditional expressions as Python ones.
+
+    ``c ? a : b`` becomes ``(a) if (c) else (b)``, and the C logical operators
+    become their Python spellings. ``!=`` is left alone — the only bare ``!``
+    these kernels use is part of it.
+
+    Parenthesised groups are rewritten first, so a conditional nested inside one
+    is resolved before the enclosing scan runs; the outer scan then only has to
+    find a ``?`` at depth zero. In practice the conditions are on loop indices,
+    bound to integers before evaluation, so the whole expression collapses to a
+    single branch.
+    """
+
+    text = text.replace("&&", " and ").replace("||", " or ")
+
+    # Inner groups first.
+    pieces, index = [], 0
+    while index < len(text):
+        if text[index] == "(":
+            close = _matching_paren(text, index)
+            pieces.append("(" + _rewrite_ternary(text[index + 1 : close]) + ")")
+            index = close + 1
+        else:
+            pieces.append(text[index])
+            index += 1
+    text = "".join(pieces)
+
+    depth = 0
+    for index, character in enumerate(text):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif character == "?" and depth == 0:
+            inner = 0
+            for offset, following in enumerate(text[index + 1 :]):
+                if following == "(":
+                    inner += 1
+                elif following == ")":
+                    inner -= 1
+                elif following == ":" and inner == 0:
+                    colon = index + 1 + offset
+                    return (
+                        f"(({text[index + 1 : colon]})"
+                        f" if ({text[:index]})"
+                        f" else ({text[colon + 1 :]}))"
+                    )
+            break
+
+    return text
+
+
+def _matching_paren(text, opening):
+    """Index of the ``)`` closing the ``(`` at *opening*."""
+
+    depth = 0
+    for index in range(opening, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return len(text) - 1
+
+
 def _rename_reserved(text):
     return _RESERVED_PATTERN.sub(lambda m: _RESERVED[m.group(1)], text)
 
@@ -167,7 +234,9 @@ def _as_python(expression):
     juxtaposition in Python, which does not parse.
     """
 
-    expression = _rename_reserved(_CAST.sub("", " ".join(expression.split())))
+    expression = _rewrite_ternary(
+        _rename_reserved(_CAST.sub("", " ".join(expression.split())))
+    )
     return _FLOAT_LITERAL.sub(lambda m: f"Rational('{m.group(0)}')", expression)
 
 
@@ -244,6 +313,61 @@ class CSource:
             tail = tail[: tail.index(tail_ends_at)]
 
         return then_block, else_block, tail
+
+
+def resolve_branches(block, bindings):
+    """Replace ``if``/``else`` whose condition is already decided by its branch.
+
+    The series kernels guard their zero modes with tests on the loop indices —
+    ``if (n != 0 && m != 0)`` and so on. Those indices are bound to integers
+    before anything is evaluated, so the condition has an answer at transcription
+    time and the construct collapses to whichever branch the C would take.
+
+    That matters because :func:`evaluate_block` does not interpret ``if``: it
+    reads every assignment in order, so an unresolved guard leaves each guarded
+    variable holding the *last* branch's value. In SolH that silently zeroes two
+    velocity components, which looks like a plausible solution rather than a
+    broken one.
+
+    Nested guards resolve outermost first, repeatedly, until none remain.
+
+    Parameters
+    ----------
+    block : str
+    bindings : dict
+        Names the condition may use, mapped to Python values — normally the loop
+        indices as integers.
+    """
+
+    namespace = {**_C_FUNCTIONS, "Rational": sympy.Rational}
+
+    while True:
+        marker = re.search(r"\bif\s*\(", block)
+        if marker is None:
+            return block
+
+        condition_start = block.index("(", marker.start())
+        condition_end = _matching_paren(block, condition_start)
+        condition = block[condition_start + 1 : condition_end]
+
+        opening = block.index("{", condition_end)
+        then_end = _matching_brace(block, opening)
+        taken = block[opening + 1 : then_end - 1]
+        after = block[then_end:]
+
+        otherwise = ""
+        stripped = after.lstrip()
+        if stripped.startswith("else"):
+            else_opening = block.index("{", then_end)
+            else_end = _matching_brace(block, else_opening)
+            otherwise = block[else_opening + 1 : else_end - 1]
+            after = block[else_end:]
+
+        chosen = taken if eval(
+            _as_python(condition), {"__builtins__": {}}, {**namespace, **bindings}
+        ) else otherwise
+
+        block = block[: marker.start()] + chosen + after
 
 
 def evaluate_expression(text, environment):
