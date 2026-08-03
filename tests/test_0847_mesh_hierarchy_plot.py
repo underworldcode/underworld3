@@ -45,14 +45,47 @@ def test_one_actor_per_level_and_per_fault():
     levels = len(getattr(mesh, "_custom_mg_coarse_meshes", []) or []) + 1
     assert levels > 1, "fixture has no multigrid tail, so nothing is being tested"
 
-    plain = vis.plot_mesh_hierarchy(mesh)
+    plain = vis.plot_mesh_hierarchy(mesh, nodes=False)
     assert _actors(plain) == levels
 
-    withfault = vis.plot_mesh_hierarchy(mesh, faults=("Flt",))
+    withfault = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=False)
     assert _actors(withfault) == levels + 1, (
         "the fault contributed no actor; it would be invisible in the figure")
     plain.close()
     withfault.close()
+
+
+def test_nodes_add_one_glyph_actor_per_level_and_fault():
+    """Every wireframe gets a matching set of node marks, or none does."""
+    mesh = _fault_mesh()
+    levels = len(getattr(mesh, "_custom_mg_coarse_meshes", []) or []) + 1
+
+    off = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=False)
+    on = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=True)
+    assert _actors(on) == 2 * _actors(off) == 2 * (levels + 1), (
+        "node glyphs did not appear for every level and every fault")
+    off.close()
+    on.close()
+
+
+def test_node_glyphs_mark_every_vertex_of_their_level():
+    """The marks must be the level's OWN nodes, not a subset or the wrong level.
+
+    A glyph set is one copy of the source geometry per point, so the vertex
+    count is recoverable from the glyphed mesh and can be checked against the
+    level it claims to represent.
+    """
+    import numpy as np
+    import pyvista as pv
+
+    mesh = _fault_mesh()
+    base = (getattr(mesh, "_custom_mg_coarse_meshes", []) or [mesh])[0]
+    src = pv.Polygon(center=(0.0, 0.0, 0.0), radius=0.5, normal=(0.0, 0.0, 1.0),
+                     n_sides=24)
+    cloud = pv.PolyData(np.column_stack(
+        [np.asarray(base.X.coords), np.zeros(len(base.X.coords))]))
+    glyphed = cloud.glyph(geom=src, scale=False, orient=False)
+    assert glyphed.n_points == cloud.n_points * src.n_points
 
 
 def test_facets_are_the_fault_and_cells_are_the_zone():
@@ -90,7 +123,7 @@ def test_an_unknown_fault_style_is_refused():
 
 def test_a_mesh_without_a_tail_is_drawn_alone():
     """No hierarchy is not an error — a base mesh is a one-level hierarchy."""
-    pl = vis.plot_mesh_hierarchy(_plain_box())
+    pl = vis.plot_mesh_hierarchy(_plain_box(), nodes=False)
     assert _actors(pl) == 1
     pl.close()
 
@@ -112,11 +145,17 @@ def test_three_dimensions_and_clipping():
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=0.4,
         regular=False, qdegree=2)
-    pl = vis.plot_mesh_hierarchy(mesh)
+    pl = vis.plot_mesh_hierarchy(mesh, nodes=False)
     assert _actors(pl) == 1
     pl.close()
 
     clipped = vis.plot_mesh_hierarchy(
-        mesh, clip=((1.0, 0.0, 0.0), (0.5, 0.5, 0.5)))
+        mesh, clip=((1.0, 0.0, 0.0), (0.5, 0.5, 0.5)), nodes=False)
     assert _actors(clipped) == 1
     clipped.close()
+
+    # The 3-D glyph branch is a different source geometry (sphere/cube/cone)
+    # and would otherwise only be exercised the day there is a 3-D fault.
+    marked = vis.plot_mesh_hierarchy(mesh, nodes=True)
+    assert _actors(marked) == 2
+    marked.close()

@@ -666,7 +666,8 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                         window_size=(1400, 1400), background="white",
                         colours=None, fault_colour=FAULT_COLOUR,
                         line_width=None, fault_style="facets",
-                        fault_line_width=3.0, opacity=1.0):
+                        fault_line_width=3.0, opacity=1.0,
+                        nodes=True, node_scale=0.30):
     """Wireframe of a mesh, its multigrid tail, and its faults, in one figure.
 
     The standard way to look at a stacked-on mesh: one colour per level, coarsest
@@ -707,6 +708,25 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
         viscosity", not "where is the fault".
     fault_line_width : float
         Width of the facet lines under ``fault_style="facets"``.
+    nodes : bool
+        Mark the vertices, with a different glyph for each kind: **circles** for
+        the base level, **squares** for the levels stacked on top of it, and
+        **triangles** for the fault's own nodes. Shape carries the distinction
+        as well as colour, so the figure survives being printed in grey and does
+        not rely on telling four blues apart.
+
+        In 3-D the same three roles become sphere, cube and cone.
+    node_scale : float
+        Glyph size as a fraction of the finest level's SMALL cells (its 5th
+        percentile) — one size for every level, so shape and colour carry the
+        distinction and size carries none.
+
+        Two ways to get this wrong, both tried. Scaling each level by its own
+        cell size draws a coarse level's marks at the coarse spacing, burying
+        the fine mesh at exactly the zoom the figure exists for. And using the
+        MEAN cell size of a graded mesh sizes the glyphs by the far field —
+        measured, mean h = 0.017 against h = 0.002 at the fault, so every mark
+        came out bigger than the cell it stood on.
     clip : tuple, optional
         ``(normal, origin)`` passed to PyVista's ``clip``. Mostly for 3-D, where
         an unclipped hierarchy shows only its outer skin.
@@ -756,6 +776,39 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
             pvm = pvm.extract_surface()
         return pvm.extract_all_edges()
 
+    def marks(points, n_sides, size, colour, label):
+        """Glyph a point set. Shape distinguishes the role, size the level."""
+        pts = np.asarray(points, dtype=float)
+        if not len(pts):
+            return
+        cloud = pv.PolyData(pts if pts.shape[1] == 3
+                            else np.column_stack([pts, np.zeros(len(pts))]))
+        if mesh.dim == 3:
+            geom = {24: pv.Sphere(radius=0.5 * size),
+                    4: pv.Cube(x_length=size, y_length=size, z_length=size),
+                    3: pv.Cone(radius=0.5 * size, height=size)}[n_sides]
+        else:
+            geom = pv.Polygon(center=(0.0, 0.0, 0.0), radius=0.5 * size,
+                              normal=(0.0, 0.0, 1.0), n_sides=n_sides)
+        kw = {} if label is None else {"label": label}
+        plotter.add_mesh(cloud.glyph(geom=geom, scale=False, orient=False),
+                         color=colour, lighting=False, **kw)
+
+    def fine_cell_size(level):
+        """A LOW PERCENTILE of the cell size, never the mean.
+
+        On a graded mesh the mean is set by the far field: on the fault meshes
+        here the finest level averages h = 0.017 while h at the fault is 0.002,
+        so glyphs sized on the mean come out several times larger than the cells
+        they are meant to mark and bury the refined region completely. Same trap
+        as judging a multigrid level by its mean h.
+        """
+        from underworld3.utilities.edge_split import cell_diameters
+        d = cell_diameters(level.dm)
+        return float(np.percentile(d, 5)) if len(d) else 0.0
+
+    node_size = node_scale * fine_cell_size(levels[-1])
+
     n = len(levels)
     for i, level in enumerate(levels):
         colour = palette[i % len(palette)]
@@ -766,6 +819,13 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                          line_width=w, lighting=False, opacity=opacity,
                          label=f"level {i}"
                                f"{' (finest)' if i == n - 1 else ''}")
+        if nodes:
+            # Circles for the base, squares for everything stacked on it.
+            # Unlabelled: the SHAPE is the key (circle = base, square = stacked
+            # on, triangle = fault), and a legend line per level per glyph
+            # doubles its length to say nothing the shapes do not.
+            marks(np.asarray(level.X.coords), 24 if i == 0 else 4,
+                  node_size, colour, None)
 
     for name in faults:
         if fault_style == "facets":
@@ -776,6 +836,8 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                 pvf = pvf.clip(normal=clip[0], origin=clip[1])
             plotter.add_mesh(pvf, color=fault_colour, lighting=False,
                              line_width=fault_line_width, label=name)
+            if nodes:
+                marks(pvf.points, 3, node_size, fault_colour, None)
         elif fault_style == "cells":
             zone = np.asarray(mesh.cells_supporting(name))
             if not zone.any():
