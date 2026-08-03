@@ -667,7 +667,7 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                         colours=None, fault_colour=FAULT_COLOUR,
                         line_width=None, fault_style="facets",
                         fault_line_width=3.0, opacity=1.0,
-                        nodes=True, node_scale=0.30):
+                        nodes=True, node_scale=0.30, legend=True):
     """Wireframe of a mesh, its multigrid tail, and its faults, in one figure.
 
     The standard way to look at a stacked-on mesh: one colour per level, coarsest
@@ -716,6 +716,12 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
         not rely on telling four blues apart.
 
         In 3-D the same three roles become sphere, cube and cone.
+    legend : bool
+        Build the key, with the RIGHT SHAPE against each entry. PyVista's
+        default legend face is a triangle for everything, so a hand-rolled
+        ``add_legend`` shows triangles beside wireframes and beside square
+        nodes — a key that contradicts the figure it is keying. Since this
+        routine chose the shapes, it is the thing that can label them.
     node_scale : float
         Glyph size as a fraction of the finest level's SMALL cells (its 5th
         percentile) — one size for every level, so shape and colour carry the
@@ -809,6 +815,13 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
 
     node_size = node_scale * fine_cell_size(levels[-1])
 
+    # PyVista's named legend faces are only triangle / circle / rectangle /
+    # none, so a WIREFRAME entry has to supply its own geometry — otherwise the
+    # mesh levels and the square nodes would both key as rectangles and the
+    # figure's own distinction would be lost in its key.
+    line_face = pv.Line((-0.5, 0.0, 0.0), (0.5, 0.0, 0.0))
+
+    key = []
     n = len(levels)
     for i, level in enumerate(levels):
         colour = palette[i % len(palette)]
@@ -819,6 +832,8 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                          line_width=w, lighting=False, opacity=opacity,
                          label=f"level {i}"
                                f"{' (finest)' if i == n - 1 else ''}")
+        key.append([f"level {i}{' (finest)' if i == n - 1 else ''}",
+                    colour, line_face])
         if nodes:
             # Circles for the base, squares for everything stacked on it.
             # Unlabelled: the SHAPE is the key (circle = base, square = stacked
@@ -836,6 +851,7 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                 pvf = pvf.clip(normal=clip[0], origin=clip[1])
             plotter.add_mesh(pvf, color=fault_colour, lighting=False,
                              line_width=fault_line_width, label=name)
+            key.append([name, fault_colour, line_face])
             if nodes:
                 marks(pvf.points, 3, node_size, fault_colour, None)
         elif fault_style == "cells":
@@ -848,10 +864,30 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
             plotter.add_mesh(cells, color=fault_colour, lighting=False,
                              show_edges=True, edge_color=fault_colour,
                              line_width=1.0, label=name)
+            key.append([f"{name} zone", fault_colour, "rectangle"])
         else:
             raise ValueError(
                 f"fault_style must be 'facets' or 'cells', not {fault_style!r}")
 
+    if nodes:
+        # One entry per ROLE, not per level: the shape says which role, the
+        # level colours are already keyed by the wireframe entries above.
+        key.append(["base nodes", palette[0], "circle"])
+        if n > 1:
+            key.append(["stacked-on nodes", palette[min(n - 1,
+                                                        len(palette) - 1)],
+                        "rectangle"])
+        if faults and fault_style == "facets":
+            key.append(["fault nodes", fault_colour, "triangle"])
+
+    # Exposed so the key can be INSPECTED rather than eyeballed: the failure
+    # this guards against is a legend that disagrees with the figure, and that
+    # is invisible in any check that only counts actors.
+    plotter._uw_legend_key = key
+    if legend and key:
+        plotter.add_legend(key, bcolor="white", border=True,
+                           size=(0.24, 0.030 * len(key) + 0.02),
+                           loc="lower right")
     return plotter
 
 

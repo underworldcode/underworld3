@@ -45,10 +45,10 @@ def test_one_actor_per_level_and_per_fault():
     levels = len(getattr(mesh, "_custom_mg_coarse_meshes", []) or []) + 1
     assert levels > 1, "fixture has no multigrid tail, so nothing is being tested"
 
-    plain = vis.plot_mesh_hierarchy(mesh, nodes=False)
+    plain = vis.plot_mesh_hierarchy(mesh, nodes=False, legend=False)
     assert _actors(plain) == levels
 
-    withfault = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=False)
+    withfault = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=False, legend=False)
     assert _actors(withfault) == levels + 1, (
         "the fault contributed no actor; it would be invisible in the figure")
     plain.close()
@@ -60,8 +60,8 @@ def test_nodes_add_one_glyph_actor_per_level_and_fault():
     mesh = _fault_mesh()
     levels = len(getattr(mesh, "_custom_mg_coarse_meshes", []) or []) + 1
 
-    off = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=False)
-    on = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=True)
+    off = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=False, legend=False)
+    on = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=True, legend=False)
     assert _actors(on) == 2 * _actors(off) == 2 * (levels + 1), (
         "node glyphs did not appear for every level and every fault")
     off.close()
@@ -123,7 +123,7 @@ def test_an_unknown_fault_style_is_refused():
 
 def test_a_mesh_without_a_tail_is_drawn_alone():
     """No hierarchy is not an error — a base mesh is a one-level hierarchy."""
-    pl = vis.plot_mesh_hierarchy(_plain_box(), nodes=False)
+    pl = vis.plot_mesh_hierarchy(_plain_box(), nodes=False, legend=False)
     assert _actors(pl) == 1
     pl.close()
 
@@ -145,17 +145,44 @@ def test_three_dimensions_and_clipping():
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0), cellSize=0.4,
         regular=False, qdegree=2)
-    pl = vis.plot_mesh_hierarchy(mesh, nodes=False)
+    pl = vis.plot_mesh_hierarchy(mesh, nodes=False, legend=False)
     assert _actors(pl) == 1
     pl.close()
 
     clipped = vis.plot_mesh_hierarchy(
-        mesh, clip=((1.0, 0.0, 0.0), (0.5, 0.5, 0.5)), nodes=False)
+        mesh, clip=((1.0, 0.0, 0.0), (0.5, 0.5, 0.5)), nodes=False, legend=False)
     assert _actors(clipped) == 1
     clipped.close()
 
     # The 3-D glyph branch is a different source geometry (sphere/cube/cone)
     # and would otherwise only be exercised the day there is a 3-D fault.
-    marked = vis.plot_mesh_hierarchy(mesh, nodes=True)
+    marked = vis.plot_mesh_hierarchy(mesh, nodes=True, legend=False)
     assert _actors(marked) == 2
     marked.close()
+
+
+def test_the_legend_shapes_match_what_was_drawn():
+    """A key that contradicts its figure is worse than no key.
+
+    PyVista's default legend face is a triangle for EVERY entry, so a legend
+    built by hand shows triangles beside wireframes and beside square nodes.
+    This asserts each entry carries the face that was actually plotted.
+    """
+    mesh = _fault_mesh()
+    pl = vis.plot_mesh_hierarchy(mesh, faults=("Flt",), nodes=True)
+    key = {row[0]: row[2] for row in pl._uw_legend_key}
+
+    import pyvista as pv
+
+    # Wireframes carry their own line geometry: PyVista's named faces are only
+    # triangle / circle / rectangle / none, so without it a mesh level and a
+    # square node would key identically.
+    assert isinstance(key["level 0"], pv.PolyData), (
+        "wireframes must be keyed with a line, not a named face")
+    assert isinstance(key["Flt"], pv.PolyData)
+    assert key["base nodes"] == "circle"
+    assert key["stacked-on nodes"] == "rectangle"
+    assert key["fault nodes"] == "triangle"
+    assert len({str(v) for v in key.values()}) >= 4, (
+        "the key does not distinguish the things the figure distinguishes")
+    pl.close()
