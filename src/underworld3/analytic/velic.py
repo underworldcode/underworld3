@@ -622,3 +622,178 @@ class SolKx(FreeSlipWalls, AnalyticSolution):
         self.fn_strainrate = (
             self.fn_stress + self.fn_pressure * sympy.eye(2)
         ) / (2 * self.fn_viscosity)
+
+
+_Y = sympy.Symbol("y")
+_BETA = sympy.Symbol("Beta")
+
+
+@functools.lru_cache(maxsize=None)
+def _soldb_kernel(dim):
+    r"""Transcribe a Dohrmann–Bochev solution into SymPy.
+
+    Six short methods rather than one kernel, each written as a C++ member of a
+    header-only class, and each taking its coordinates from an array.
+
+    Returns
+    -------
+    dict
+        Field name -> expression in the kernel's own symbols.
+    """
+
+    names = {2: ("x", "z"), 3: ("x", "y", "z")}[dim]
+    coordinates = {2: (_X, _Z), 3: (_X, _Y, _Z)}[dim]
+
+    source = CSource(
+        os.path.join(_REFERENCE_DIR, f"AnalyticSolDB{dim}d.hpp")
+    )
+    inputs = {"in": coordinates, "Beta": _BETA}
+
+    def block(method):
+        return evaluate_block(source.function(method), inputs)
+
+    velocity = block("velocity")
+    bodyforce = block("bodyforce")
+    stress = block("stress")
+    strainrate = block("strainrate")
+    pressure = block("pressure")
+
+    fields = {
+        "pressure": pressure["p"],
+        # SolDB2d writes its unit viscosity straight into the output array, so
+        # there is no named variable to read; 3D has one.
+        "viscosity": block("viscosity")["eta"] if dim == 3 else sympy.Integer(1),
+    }
+    for axis, name in enumerate(names):
+        fields[f"velocity_{name}"] = velocity[f"v{name}"]
+        fields[f"bodyforce_{name}"] = bodyforce[f"f{name}"]
+
+    for i, a in enumerate(names):
+        for b in names[i:]:
+            fields[f"stress_{a}{b}"] = stress[f"t{a}{b}"]
+            fields[f"strainrate_{a}{b}"] = strainrate[f"e{a}{b}"]
+
+    return fields
+
+
+class _SolDB(FixedWalls, AnalyticSolution):
+    """Shared assembly for the Dohrmann–Bochev manufactured solutions."""
+
+    def _assemble(self, mesh, values, names):
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _soldb_kernel(self.dim).items()
+        }
+
+        self.fn_velocity = sympy.Matrix(
+            [[kernel[f"velocity_{n}"] for n in names]]
+        )
+        self.fn_bodyforce = sympy.Matrix(
+            [[kernel[f"bodyforce_{n}"] for n in names]]
+        )
+        self.fn_pressure = kernel["pressure"]
+        self.fn_viscosity = kernel["viscosity"]
+
+        def tensor(prefix):
+            return sympy.Matrix(
+                [
+                    [
+                        kernel[f"{prefix}_{min(a, b)}{max(a, b)}"]
+                        if f"{prefix}_{min(a, b)}{max(a, b)}" in kernel
+                        else kernel[f"{prefix}_{max(a, b)}{min(a, b)}"]
+                        for b in names
+                    ]
+                    for a in names
+                ]
+            )
+
+        # These kernels publish the DEVIATORIC stress, unlike SolCx and SolKx
+        # which return the total. The contract wants Cauchy, so the pressure goes
+        # back in: sigma = tau - p I. Getting this wrong would leave the momentum
+        # residual non-zero by exactly grad(p), which is easy to mistake for a
+        # transcription error.
+        self.fn_stress = tensor("stress") - self.fn_pressure * sympy.eye(self.dim)
+        self.fn_strainrate = tensor("strainrate")
+
+
+class SolDB2d(_SolDB):
+    r"""Isoviscous polynomial manufactured solution — Dohrmann & Bochev, 2D.
+
+    Unit viscosity, a polynomial velocity, and whatever body force makes it
+    exact. There is no discontinuity and no large contrast, which is the point:
+    it isolates the discretisation from the conditioning, so an error here is an
+    error in the element or the solve rather than in how a hard coefficient was
+    handled.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+
+    Notes
+    -----
+    The velocity is not tangential to the walls, so this is posed with the exact
+    velocity prescribed on the boundary.
+    """
+
+    dim = 2
+    reference = (
+        "Dohrmann & Bochev (2004), Int. J. Numer. Meth. Fluids 46, 183-201, "
+        "doi:10.1002/fld.752. Transcribed from the kernel vendored at "
+        "underworld3/analytic/_reference/AnalyticSolDB2d.hpp."
+    )
+    eqn_viscosity = r"1"
+
+    def __init__(self, mesh):
+        super().__init__(mesh)
+
+        x, z = mesh.X
+        self._assemble(mesh, {_X: x, _Z: z}, ("x", "z"))
+
+
+class SolDB3d(_SolDB):
+    r"""Variable-viscosity manufactured solution in 3D — Burstedde et al.
+
+    Viscosity :math:`\eta = e^{1 - \beta\,[x(1-x) + y(1-y) + z(1-z))]}`, smooth
+    and peaked in the interior, with a polynomial velocity and a body force
+    chosen to make the pair exact.
+
+    The only 3D solution in the suite, and the only one whose viscosity varies in
+    every direction at once — a 2D benchmark cannot catch a term that is wrong
+    only in the third dimension, and several parts of a Stokes discretisation
+    (the pressure space, the null space, the tensor assembly) genuinely differ
+    between 2D and 3D.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 3D mesh on the unit cube.
+    beta : float
+        Viscosity exponent. Zero is isoviscous; larger makes the interior
+        viscosity peak sharper.
+
+    Notes
+    -----
+    The velocity is not tangential to the boundary, so the exact velocity is
+    prescribed there.
+    """
+
+    dim = 3
+    reference = (
+        "Burstedde et al. (2013), Geophys. J. Int. 192(3), 889-906, "
+        "doi:10.1093/gji/ggs070. Transcribed from the kernel vendored at "
+        "underworld3/analytic/_reference/AnalyticSolDB3d.hpp."
+    )
+    eqn_viscosity = r"e^{1 - \beta [x(1-x) + y(1-y) + z(1-z)]}"
+
+    def __init__(self, mesh, beta=4.0):
+        super().__init__(mesh)
+
+        self.beta = float(beta)
+
+        x, y, z = mesh.X
+        self._assemble(
+            mesh,
+            {_X: x, _Y: y, _Z: z, _BETA: sympy.Rational(self.beta)},
+            ("x", "y", "z"),
+        )

@@ -52,6 +52,44 @@ _CAST = re.compile(
     r"\(\s*(?:PetscReal|PetscScalar|PetscInt|double|float|int|unsigned)\s*\)\s*"
 )
 
+# C identifiers that Python reserves. `in` is the one that actually occurs —
+# these kernels take their coordinates as `const double* in`. Renamed in the
+# source text and in the caller's environment together, so a caller still writes
+# the name the C uses.
+_RESERVED = {"in": "_c_in", "lambda": "_c_lambda", "is": "_c_is", "not": "_c_not"}
+_RESERVED_PATTERN = re.compile(r"\b(" + "|".join(_RESERVED) + r")\b")
+
+
+def _rename_reserved(text):
+    return _RESERVED_PATTERN.sub(lambda m: _RESERVED[m.group(1)], text)
+
+
+def _split_declarators(block):
+    """Give each declarator in a C declaration its own statement.
+
+    ``double x=in[0], y=in[1], z=in[2];`` is one statement to the reader below,
+    whose value would run past the first comma and fail to parse. Splitting on
+    top-level commas that introduce a new ``name =`` turns it into three.
+
+    Only commas outside brackets count, so function arguments and array
+    subscripts are left alone.
+    """
+
+    out = []
+    depth = 0
+    for index, character in enumerate(block):
+        if character in "([":
+            depth += 1
+        elif character in ")]":
+            depth -= 1
+        elif character == "," and depth == 0:
+            if re.match(r"\s*\w+\s*=(?!=)", block[index + 1 :]):
+                out.append(";")
+                continue
+        out.append(character)
+
+    return "".join(out)
+
 # The assignment target keeps any `struct.` prefix. Without it, `out.x = ...`
 # reads as an assignment to `x` and silently overwrites the coordinate symbol —
 # every later statement referring to x then gets the wrong thing, and the result
@@ -90,7 +128,7 @@ def _as_python(expression):
     juxtaposition in Python, which does not parse.
     """
 
-    expression = _CAST.sub("", " ".join(expression.split()))
+    expression = _rename_reserved(_CAST.sub("", " ".join(expression.split())))
     return _FLOAT_LITERAL.sub(lambda m: f"Rational('{m.group(0)}')", expression)
 
 
@@ -162,8 +200,9 @@ def evaluate_expression(text, environment):
     """
 
     namespace = {**_C_FUNCTIONS, "Rational": sympy.Rational}
+    scope = {_RESERVED.get(name, name): value for name, value in environment.items()}
     return sympy.sympify(
-        eval(_as_python(text), {"__builtins__": {}}, {**namespace, **environment})
+        eval(_as_python(text), {"__builtins__": {}}, {**namespace, **scope})
     )
 
 
@@ -198,10 +237,10 @@ def evaluate_block(block, environment):
     subexpression elimination when the expression is compiled or lambdified.
     """
 
-    scope = dict(environment)
+    scope = {_RESERVED.get(name, name): value for name, value in environment.items()}
     namespace = {**_C_FUNCTIONS, "Rational": sympy.Rational}
 
-    for target, expression in _STATEMENT.findall(block):
+    for target, expression in _STATEMENT.findall(_split_declarators(block)):
         value = eval(
             _as_python(expression), {"__builtins__": {}}, {**namespace, **scope}
         )
