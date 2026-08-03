@@ -473,6 +473,7 @@ class SolNL(FixedWalls, AnalyticSolution):
 
 
 _B, _M = sympy.symbols("B m")
+_KM = sympy.Symbol("km")
 
 # The kernel leaves the fields in u1..u6, each still to be multiplied by its
 # vertical mode. Same convention as SolCx, and the source says so in a comment:
@@ -797,3 +798,124 @@ class SolDB3d(_SolDB):
             {_X: x, _Y: y, _Z: z, _BETA: sympy.Rational(self.beta)},
             ("x", "y", "z"),
         )
+
+
+# SolKz transposes SolKx: the viscosity varies with depth, the modes run in x,
+# and the kernel's u1 is the *vertical* velocity. Reading it with the SolCx
+# convention would silently transpose the whole solution, so the mapping is
+# spelled out from the kernel's own output section rather than assumed.
+_SOLKZ_OUTPUTS = {
+    "velocity_x": ("u2", sympy.sin),
+    "velocity_z": ("u1", sympy.cos),
+    "stress_xx": ("u6", sympy.cos),
+    "stress_zz": ("u3", sympy.cos),
+    "stress_zx": ("u4", sympy.sin),
+    "pressure": ("u5", sympy.cos),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _solkz_kernel():
+    """Transcribe the Velic SolKz kernel into SymPy. One straight-line block."""
+
+    source = CSource(os.path.join(_REFERENCE_DIR, "solKz.c"))
+    body = source.function("_Velic_solKz")
+    body = body[: body.index("rho =")]
+
+    inputs = {"pos": (_X, _Z), "_sigma": sympy.Integer(1), "_km": _KM, "_n": _N, "_B": _B}
+    scope = evaluate_block(body, inputs)
+
+    kn = _N * sympy.pi
+    return {
+        field: scope[symbol] * mode(kn * _X)
+        for field, (symbol, mode) in _SOLKZ_OUTPUTS.items()
+    }
+
+
+class SolKz(FreeSlipWalls, AnalyticSolution):
+    r"""Stokes flow with a depth-dependent viscosity — the SolKz benchmark.
+
+    Viscosity :math:`\eta = e^{2Bz}` on the unit box, free slip everywhere,
+    forced by :math:`\mathbf f = (0,\; \sin(m\pi z)\cos(n\pi x))`.
+
+    The vertical twin of :class:`SolKx`, and not a redundant one. A viscosity
+    that varies with *depth* stratifies the flow along the direction the buoyancy
+    acts, so the pressure and the vertical velocity are coupled through the
+    varying coefficient in a way that a horizontal gradient never produces. It is
+    also the closer analogue of a real mantle viscosity profile.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    B : float
+        Viscosity exponent; the contrast across the box is :math:`e^{2B}`.
+    n : int
+        Horizontal wavenumber of the forcing.
+    m : int
+        Vertical wavenumber.
+
+    Notes
+    -----
+    Validated by the equations rather than against a compiled kernel — the
+    forcing and boundary conditions are known, so satisfying Stokes with them
+    identifies the solution uniquely.
+    """
+
+    dim = 2
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/solKz.c."
+    )
+    eqn_viscosity = r"e^{2Bz}"
+    eqn_bodyforce = r"(0,\; \sin(m \pi z)\cos(n \pi x))"
+
+    def __init__(self, mesh, B=2.302585092994046, n=3, m=2):
+        super().__init__(mesh)
+
+        if int(n) != n or int(n) < 1:
+            raise ValueError("n (horizontal wavenumber) must be a positive integer.")
+        if int(m) != m or int(m) < 1:
+            raise ValueError("m (vertical wavenumber) must be a positive integer.")
+
+        self.B = float(B)
+        self.n = int(n)
+        self.m = int(m)
+
+        x, z = mesh.X
+        values = {
+            _B: sympy.Rational(self.B),
+            _N: self.n,
+            _KM: self.m * sympy.pi,
+            _X: x,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solkz_kernel().items()
+        }
+
+        self.fn_velocity = sympy.Matrix(
+            [[kernel["velocity_x"], kernel["velocity_z"]]]
+        )
+        self.fn_pressure = kernel["pressure"]
+
+        # The kernel writes these into an array it calls `total_stress`, but they
+        # are the DEVIATOR: its xx and zz entries are exact negatives of each
+        # other, and its zx agrees with 2*eta*edot computed from the velocity to
+        # machine precision. SolCx and SolKx publish the total, so the family is
+        # not uniform in this and the name cannot be trusted — measured, not
+        # assumed. Reading it as total leaves the momentum residual O(f), with
+        # spurious horizontal forcing, which is how it was found.
+        deviator = sympy.Matrix(
+            [
+                [kernel["stress_xx"], kernel["stress_zx"]],
+                [kernel["stress_zx"], kernel["stress_zz"]],
+            ]
+        )
+        self.fn_stress = deviator - self.fn_pressure * sympy.eye(2)
+        self.fn_viscosity = sympy.exp(2 * sympy.Rational(self.B) * z)
+        self.fn_bodyforce = sympy.Matrix(
+            [[0, sympy.sin(self.m * sympy.pi * z) * sympy.cos(self.n * sympy.pi * x)]]
+        )
+        self.fn_strainrate = deviator / (2 * self.fn_viscosity)

@@ -224,6 +224,33 @@ harness: perturb one coefficient and assert the other checks fail.
 velocity by a part in a thousand and requires both the comparison and the
 oracle-free residual to report it.
 
+## The stress convention is not uniform across the family
+
+**Check which stress a kernel publishes. Do not read it off the variable name.**
+
+| solution | its stress output is |
+|---|---|
+| SolCx, SolKx | total (Cauchy) $\sigma$ |
+| SolKz, SolDB2d, SolDB3d | deviatoric $\tau$ |
+
+SolKz is the trap: it writes into an array literally called `total_stress`, and
+the contents are the deviator. Taking the name at face value leaves the momentum
+residual at order $|\mathbf f|$ *and* manufactures a horizontal body force in a
+benchmark that has none — a large, structured error that reads like a
+transcription failure rather than a convention one.
+
+Two cheap signatures tell them apart, and both are worth running on any new
+kernel:
+
+- a deviator is traceless, so its $xx$ and $zz$ entries are exact negatives;
+- $\tau = 2\eta\dot\varepsilon$, and the strain rate follows from the velocity —
+  a *different* output of the same kernel, so the comparison is independent.
+
+On SolKz the shear component agreed with $2\eta\dot\varepsilon$ to machine
+precision while the normal components did not agree with anything, which located
+the problem immediately. `test_kernel_publishes_the_deviatoric_stress` keeps
+both checks.
+
 ## A solution that is derived rather than transcribed
 
 `EllipticalInclusion` (Schmid & Podladchikov 2003) is the one case so far where
