@@ -665,7 +665,8 @@ FAULT_COLOUR = "#ff1408"
 def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                         window_size=(1400, 1400), background="white",
                         colours=None, fault_colour=FAULT_COLOUR,
-                        line_width=None, show_fault_cells=True, opacity=1.0):
+                        line_width=None, fault_style="facets",
+                        fault_line_width=3.0, opacity=1.0):
     """Wireframe of a mesh, its multigrid tail, and its faults, in one figure.
 
     The standard way to look at a stacked-on mesh: one colour per level, coarsest
@@ -686,10 +687,26 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
         The finest mesh. Its ``_custom_mg_coarse_meshes`` tail is drawn beneath
         it, coarsest first; a mesh without one is simply drawn alone.
     faults : sequence of str
-        Boundary label names whose facet SUPPORT is filled in ``fault_colour``.
-        Uses :meth:`~underworld3.discretisation.Mesh.cells_supporting`, so this
-        is the fault ZONE — one element either side — and it needs no separate
-        treatment in 3-D.
+        Boundary label names to pick out in ``fault_colour``.
+    fault_style : {"facets", "cells"}
+        What "the fault" means in the picture, and the two are not the same
+        thing.
+
+        ``"facets"`` (the default) draws the LABELLED FACETS themselves, via
+        :func:`labelled_facets_to_pv_mesh` — the segments in 2-D, the triangles
+        in 3-D. This is the fault as the mesh actually represents it, and it is
+        the honest choice: a fault one element wide is one chain of facets, and
+        drawing it as such shows its width to be exactly what it is.
+
+        ``"cells"`` fills the fault ZONE instead, via
+        :meth:`~underworld3.discretisation.Mesh.cells_supporting` — every cell
+        with a labelled facet, which is one element on EACH side. That is the
+        right set for assigning a material property, but as a picture it makes a
+        one-element fault look two or three elements thick, so it is not the
+        default. Ask for it when the question is "which cells carry the weak
+        viscosity", not "where is the fault".
+    fault_line_width : float
+        Width of the facet lines under ``fault_style="facets"``.
     clip : tuple, optional
         ``(normal, origin)`` passed to PyVista's ``clip``. Mostly for 3-D, where
         an unclipped hierarchy shows only its outer skin.
@@ -713,6 +730,11 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
     >>> pl = vis.plot_mesh_hierarchy(mesh, faults=["FaultA", "FaultB"])
     >>> pl.camera.parallel_projection = True
     >>> pl.screenshot("hierarchy.png")
+
+    The cells carrying the weak viscosity, rather than the fault itself:
+
+    >>> pl = vis.plot_mesh_hierarchy(mesh, faults=["FaultA"],
+    ...                              fault_style="cells")
     """
     import numpy as np
     import pyvista as pv
@@ -745,8 +767,16 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
                          label=f"level {i}"
                                f"{' (finest)' if i == n - 1 else ''}")
 
-    if show_fault_cells:
-        for name in faults:
+    for name in faults:
+        if fault_style == "facets":
+            pvf = labelled_facets_to_pv_mesh(mesh, name)
+            if pvf.n_points == 0:
+                continue                 # this rank owns none of it; normal
+            if clip is not None:
+                pvf = pvf.clip(normal=clip[0], origin=clip[1])
+            plotter.add_mesh(pvf, color=fault_colour, lighting=False,
+                             line_width=fault_line_width, label=name)
+        elif fault_style == "cells":
             zone = np.asarray(mesh.cells_supporting(name))
             if not zone.any():
                 continue
@@ -756,6 +786,9 @@ def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
             plotter.add_mesh(cells, color=fault_colour, lighting=False,
                              show_edges=True, edge_color=fault_colour,
                              line_width=1.0, label=name)
+        else:
+            raise ValueError(
+                f"fault_style must be 'facets' or 'cells', not {fault_style!r}")
 
     return plotter
 

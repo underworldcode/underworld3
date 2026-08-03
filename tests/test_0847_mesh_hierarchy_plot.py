@@ -55,15 +55,37 @@ def test_one_actor_per_level_and_per_fault():
     withfault.close()
 
 
-def test_the_fault_actor_covers_the_labelled_zone():
-    """It must draw the fault ZONE, not an arbitrary subset."""
-    mesh = _fault_mesh()
-    zone = np.asarray(mesh.cells_supporting("Flt"))
-    assert zone.any()
+def test_facets_are_the_fault_and_cells_are_the_zone():
+    """The default must draw the fault, not the zone — they are different sets.
 
-    pvm = vis.mesh_to_pv_mesh(mesh)
-    drawn = pvm.extract_cells(np.flatnonzero(zone))
-    assert drawn.n_cells == int(zone.sum())
+    ``cells_supporting`` is every cell with a labelled facet, which is one
+    element on EACH side, so filling it makes a one-element fault look two or
+    three elements thick. The facets are the fault as the mesh represents it.
+    This asserts the two really do differ, so the default cannot quietly revert
+    to the fat one without failing.
+    """
+    mesh = _fault_mesh()
+    value = int(mesh.boundaries["Flt"].value)
+    n_facets = mesh.dm.getLabel("Flt").getStratumSize(value)
+    zone = np.asarray(mesh.cells_supporting("Flt"))
+    assert n_facets > 0 and zone.any()
+
+    facets = vis.labelled_facets_to_pv_mesh(mesh, "Flt")
+    # n_cells is the wrong counter: `pv.PolyData(points)` gives every point its
+    # own vertex cell, so n_cells is n_points + the lines. Count the lines (2-D)
+    # or faces (3-D) instead.
+    assert facets.n_lines + facets.n_faces_strict == n_facets
+
+    # The zone is strictly bigger: a facet has a cell on each side of it.
+    assert int(zone.sum()) > n_facets, (
+        "the zone is no larger than the facet chain, so this fixture cannot "
+        "show that the default picks the narrower set")
+
+
+def test_an_unknown_fault_style_is_refused():
+    mesh = _fault_mesh()
+    with pytest.raises(ValueError):
+        vis.plot_mesh_hierarchy(mesh, faults=("Flt",), fault_style="zone")
 
 
 def test_a_mesh_without_a_tail_is_drawn_alone():
