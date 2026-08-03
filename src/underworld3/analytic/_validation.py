@@ -28,41 +28,58 @@ input is measuring nothing.
 See ``docs/developer/subsystems/analytic-solutions.md``.
 """
 
+import itertools
+
 import numpy as np
 import sympy
 
 import underworld3 as uw
 
 
-def adversarial_points(x_c=None, count=40, seed=20260802):
+def adversarial_points(x_c=None, count=40, seed=20260802, dim=2):
     """Sample points that stress a solution rather than flatter it.
 
-    Stratified over the unit box, then loaded with the places these solutions are
-    hard: either side of a material interface, the walls, and the corners.
+    Stratified over the unit box or cube, then loaded with the places these
+    solutions are hard: either side of a material interface, the boundary faces,
+    and the corners.
 
     Parameters
     ----------
     x_c : float, optional
-        Position of a vertical material interface to sample across.
+        Position of a material interface normal to x, to sample across.
     count : int
         Number of interior points.
     seed : int
         Fixed, so a failure is reproducible.
+    dim : int
+        2 or 3. A 3D solution needs 3D points; sampling it on a plane would
+        leave any error in the third direction unseen.
 
     Returns
     -------
     numpy.ndarray
-        Shape ``(N, 2)``.
+        Shape ``(N, dim)``.
     """
 
     rng = np.random.default_rng(seed)
-    points = list(map(tuple, rng.uniform(0.0, 1.0, size=(count, 2))))
+    points = list(map(tuple, rng.uniform(0.0, 1.0, size=(count, dim))))
 
+    interior = (0.37,) * (dim - 1)
     if x_c is not None:
-        points += [(x_c - 1.0e-9, 0.37), (x_c + 1.0e-9, 0.37), (x_c, 0.37)]
+        points += [
+            (x_c - 1.0e-9,) + interior,
+            (x_c + 1.0e-9,) + interior,
+            (x_c,) + interior,
+        ]
 
-    points += [(0.0, 0.5), (1.0, 0.5), (0.31, 0.0), (0.31, 1.0)]
-    points += [(0.0, 0.0), (1.0, 1.0), (0.0, 1.0), (1.0, 0.0)]
+    # One point on each face, and every corner.
+    for axis in range(dim):
+        for value in (0.0, 1.0):
+            face = [0.31] * dim
+            face[axis] = value
+            points.append(tuple(face))
+
+    points += list(itertools.product((0.0, 1.0), repeat=dim))
 
     return np.array(points)
 
@@ -89,11 +106,39 @@ def sample(solution, expression, points):
     expression = sympy.sympify(expression).subs(dict(zip(coordinates, plain)))
 
     points = np.asarray(points, dtype=float)
-    values = sympy.lambdify(plain, expression, "numpy", cse=True)(
-        *(points[:, i] for i in range(len(coordinates)))
+    values = np.asarray(
+        sympy.lambdify(plain, expression, "numpy", cse=True)(
+            *(points[:, i] for i in range(len(coordinates)))
+        )
     )
+    values = np.broadcast_to(values, (len(points),))
 
-    return np.broadcast_to(np.asarray(values, dtype=float), (len(points),))
+    if np.iscomplexobj(values):
+        # A solution built from complex potentials is real-valued, but SymPy
+        # cannot prove it, so the generated code returns complex. Take the real
+        # part — after checking the imaginary one is round-off, because a
+        # genuinely complex result would mean the construction is wrong and
+        # discarding it silently would hide exactly that.
+        #
+        # The relative test alone is not enough. These same functions are used on
+        # residuals, which are meant to vanish: there the real part is round-off
+        # too, and comparing one round-off with another reports a large
+        # "imaginary fraction" for a perfectly good result. So an absolute floor
+        # comes first — an imaginary part at 1e-12 is noise whatever it is being
+        # compared with.
+        largest_imaginary = float(np.max(np.abs(values.imag)))
+        largest_real = float(np.max(np.abs(values.real)))
+
+        if largest_imaginary > 1.0e-12 and largest_imaginary > 1.0e-8 * largest_real:
+            raise ValueError(
+                f"expression evaluated complex: imaginary part reaches "
+                f"{largest_imaginary:.3e} against a real part of "
+                f"{largest_real:.3e}. It should be real-valued."
+            )
+
+        values = values.real
+
+    return np.asarray(values, dtype=float)
 
 
 def _worst_normalised(mine, theirs):
@@ -155,7 +200,7 @@ def incompressibility_residual(solution, points):
 
 
 def momentum_residual(solution, points):
-    r"""Largest :math:`|\nabla\cdot\sigma + \mathbf f|`, scaled by the forcing.
+    r"""Largest :math:`|\nabla\cdot\sigma + \mathbf f|`, relative to its terms.
 
     Uses the solution's own total (Cauchy) stress and body force, so it needs no
     reference and does not consult the solver. This is the check that catches a
@@ -172,15 +217,19 @@ def momentum_residual(solution, points):
     scale = 0.0
     worst = 0.0
     for i in range(dim):
-        residual = bodyforce[0, i] + sum(
-            sympy.diff(stress[i, j], coordinates[j]) for j in range(dim)
-        )
-        worst = max(
-            worst,
-            float(np.max(np.abs(sample(solution, residual, points)))),
-        )
-        forcing = sample(solution, bodyforce[0, i], points)
-        scale = max(scale, float(np.max(np.abs(forcing))))
+        terms = [sympy.diff(stress[i, j], coordinates[j]) for j in range(dim)]
+        terms.append(bodyforce[0, i])
+
+        residual = sum(terms)
+        worst = max(worst, float(np.max(np.abs(sample(solution, residual, points)))))
+
+        # Scale by the largest term being cancelled, not by the body force. A
+        # solution driven entirely by its boundary has no body force at all — the
+        # elliptical inclusion is one — and normalising by it divides by zero.
+        # The size of the terms is also the right yardstick for a cancellation:
+        # it says how many digits actually had to cancel.
+        for term in terms:
+            scale = max(scale, float(np.max(np.abs(sample(solution, term, points)))))
 
     return worst / max(scale, 1.0e-300)
 

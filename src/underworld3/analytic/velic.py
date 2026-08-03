@@ -213,30 +213,17 @@ class SolCx(FreeSlipWalls, AnalyticSolution):
             for field, expression in _solcx_kernel().items()
         }
 
-        self.fn_velocity = sympy.Matrix(
-            [[kernel["velocity_x"], kernel["velocity_z"]]]
-        )
-        self.fn_pressure = kernel["pressure"]
-        self.fn_stress = sympy.Matrix(
-            [
-                [kernel["stress_xx"], kernel["stress_zx"]],
-                [kernel["stress_zx"], kernel["stress_zz"]],
-            ]
-        )
-
         # The viscosity tie-break at x == x_c matches the kernel's own step, so a
         # point exactly on the interface is treated the same way by both.
-        self.fn_viscosity = sympy.Piecewise((self.eta_A, x < self.x_c), (self.eta_B, True))
-
-        # sigma = -p I + 2 eta edot, so the strain rate follows from the fields
-        # the kernel returns. It also returns its own strain rate, derived
-        # independently — the two are compared as one of the validation gates.
-        self.fn_strainrate = (
-            self.fn_stress + self.fn_pressure * sympy.eye(2)
-        ) / (2 * self.fn_viscosity)
-
-        self.fn_bodyforce = sympy.Matrix(
-            [[0, sympy.cos(sympy.pi * x) * sympy.sin(self.n * sympy.pi * z)]]
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=sympy.Piecewise((self.eta_A, x < self.x_c), (self.eta_B, True)),
+            bodyforce=(0, sympy.cos(sympy.pi * x) * sympy.sin(self.n * sympy.pi * z)),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_zx"]),
+                (kernel["stress_zx"], kernel["stress_zz"]),
+            ),
         )
 
         if reference:
@@ -387,6 +374,7 @@ class SolNL(FixedWalls, AnalyticSolution):
 
     dim = 2
     nonlinear = True
+    stress_is_deviatoric = True
     reference = (
         "Velic. Transcribed from the published kernel vendored at "
         "underworld3/analytic/_reference/AnalyticSolNL.c."
@@ -421,25 +409,19 @@ class SolNL(FixedWalls, AnalyticSolution):
             for field, expression in _solnl_kernel().items()
         }
 
-        self.fn_velocity = sympy.Matrix(
-            [[kernel["velocity_x"], kernel["velocity_z"]]]
-        )
-        self.fn_pressure = kernel["pressure"]
-        self.fn_viscosity = kernel["viscosity"]
-        self.fn_bodyforce = sympy.Matrix(
-            [[kernel["bodyforce_x"], kernel["bodyforce_z"]]]
-        )
-        self.fn_stress = sympy.Matrix(
-            [
-                [kernel["stress_xx"], kernel["stress_xz"]],
-                [kernel["stress_xz"], kernel["stress_zz"]],
-            ]
-        )
-        self.fn_strainrate = sympy.Matrix(
-            [
-                [kernel["strainrate_xx"], kernel["strainrate_xz"]],
-                [kernel["strainrate_xz"], kernel["strainrate_zz"]],
-            ]
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=kernel["viscosity"],
+            bodyforce=(kernel["bodyforce_x"], kernel["bodyforce_z"]),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_xz"]),
+                (kernel["stress_xz"], kernel["stress_zz"]),
+            ),
+            strainrate=(
+                (kernel["strainrate_xx"], kernel["strainrate_xz"]),
+                (kernel["strainrate_xz"], kernel["strainrate_zz"]),
+            ),
         )
 
         if reference:
@@ -605,24 +587,19 @@ class SolKx(FreeSlipWalls, AnalyticSolution):
             for field, expression in _solkx_kernel().items()
         }
 
-        self.fn_velocity = sympy.Matrix(
-            [[kernel["velocity_x"], kernel["velocity_z"]]]
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=sympy.exp(2 * sympy.Rational(self.B) * x),
+            bodyforce=(
+                0,
+                sympy.sin(self.m * sympy.pi * z) * sympy.cos(self.n * sympy.pi * x),
+            ),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_zx"]),
+                (kernel["stress_zx"], kernel["stress_zz"]),
+            ),
         )
-        self.fn_pressure = kernel["pressure"]
-        self.fn_stress = sympy.Matrix(
-            [
-                [kernel["stress_xx"], kernel["stress_zx"]],
-                [kernel["stress_zx"], kernel["stress_zz"]],
-            ]
-        )
-        self.fn_viscosity = sympy.exp(2 * sympy.Rational(self.B) * x)
-        self.fn_bodyforce = sympy.Matrix(
-            [[0, sympy.sin(sympy.Rational(self.m) * sympy.pi * z)
-                 * sympy.cos(self.n * sympy.pi * x)]]
-        )
-        self.fn_strainrate = (
-            self.fn_stress + self.fn_pressure * sympy.eye(2)
-        ) / (2 * self.fn_viscosity)
 
 
 _Y = sympy.Symbol("y")
@@ -680,20 +657,13 @@ def _soldb_kernel(dim):
 class _SolDB(FixedWalls, AnalyticSolution):
     """Shared assembly for the Dohrmann–Bochev manufactured solutions."""
 
+    stress_is_deviatoric = True
+
     def _assemble(self, mesh, values, names):
         kernel = {
             field: expression.subs(values)
             for field, expression in _soldb_kernel(self.dim).items()
         }
-
-        self.fn_velocity = sympy.Matrix(
-            [[kernel[f"velocity_{n}"] for n in names]]
-        )
-        self.fn_bodyforce = sympy.Matrix(
-            [[kernel[f"bodyforce_{n}"] for n in names]]
-        )
-        self.fn_pressure = kernel["pressure"]
-        self.fn_viscosity = kernel["viscosity"]
 
         def tensor(prefix):
             return sympy.Matrix(
@@ -708,13 +678,14 @@ class _SolDB(FixedWalls, AnalyticSolution):
                 ]
             )
 
-        # These kernels publish the DEVIATORIC stress, unlike SolCx and SolKx
-        # which return the total. The contract wants Cauchy, so the pressure goes
-        # back in: sigma = tau - p I. Getting this wrong would leave the momentum
-        # residual non-zero by exactly grad(p), which is easy to mistake for a
-        # transcription error.
-        self.fn_stress = tensor("stress") - self.fn_pressure * sympy.eye(self.dim)
-        self.fn_strainrate = tensor("strainrate")
+        self.set_fields(
+            velocity=[kernel[f"velocity_{n}"] for n in names],
+            pressure=kernel["pressure"],
+            viscosity=kernel["viscosity"],
+            bodyforce=[kernel[f"bodyforce_{n}"] for n in names],
+            stress=tensor("stress"),
+            strainrate=tensor("strainrate"),
+        )
 
 
 class SolDB2d(_SolDB):
@@ -863,6 +834,7 @@ class SolKz(FreeSlipWalls, AnalyticSolution):
     """
 
     dim = 2
+    stress_is_deviatoric = True
     reference = (
         "Velic. Transcribed from the published kernel vendored at "
         "underworld3/analytic/_reference/solKz.c."
@@ -898,24 +870,16 @@ class SolKz(FreeSlipWalls, AnalyticSolution):
         self.fn_velocity = sympy.Matrix(
             [[kernel["velocity_x"], kernel["velocity_z"]]]
         )
-        self.fn_pressure = kernel["pressure"]
-
-        # The kernel writes these into an array it calls `total_stress`, but they
-        # are the DEVIATOR: its xx and zz entries are exact negatives of each
-        # other, and its zx agrees with 2*eta*edot computed from the velocity to
-        # machine precision. SolCx and SolKx publish the total, so the family is
-        # not uniform in this and the name cannot be trusted — measured, not
-        # assumed. Reading it as total leaves the momentum residual O(f), with
-        # spurious horizontal forcing, which is how it was found.
-        deviator = sympy.Matrix(
-            [
-                [kernel["stress_xx"], kernel["stress_zx"]],
-                [kernel["stress_zx"], kernel["stress_zz"]],
-            ]
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=sympy.exp(2 * sympy.Rational(self.B) * z),
+            bodyforce=(
+                0,
+                sympy.sin(self.m * sympy.pi * z) * sympy.cos(self.n * sympy.pi * x),
+            ),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_zx"]),
+                (kernel["stress_zx"], kernel["stress_zz"]),
+            ),
         )
-        self.fn_stress = deviator - self.fn_pressure * sympy.eye(2)
-        self.fn_viscosity = sympy.exp(2 * sympy.Rational(self.B) * z)
-        self.fn_bodyforce = sympy.Matrix(
-            [[0, sympy.sin(self.m * sympy.pi * z) * sympy.cos(self.n * sympy.pi * x)]]
-        )
-        self.fn_strainrate = deviator / (2 * self.fn_viscosity)

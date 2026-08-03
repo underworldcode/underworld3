@@ -78,6 +78,14 @@ class AnalyticSolution(uw_object):
     nonlinear = False
     reference = ""
 
+    #: Whether this solution's published stress is the deviator rather than the
+    #: total. Declared, never inferred — the family is not consistent, and one
+    #: kernel writes its deviator into an array named ``total_stress``. Getting
+    #: it wrong leaves the momentum residual at order :math:`|\mathbf f|` and
+    #: invents a body force, which reads like a transcription failure rather
+    #: than a convention one. See the table in the subsystem documentation.
+    stress_is_deviatoric = False
+
     eqn_velocity = ""
     eqn_pressure = ""
     eqn_viscosity = ""
@@ -119,6 +127,85 @@ class AnalyticSolution(uw_object):
         if self.mesh.dim == 3:
             walls += ["Front", "Back"]
         return walls
+
+    def set_fields(
+        self, velocity, pressure, viscosity, bodyforce, stress=None, strainrate=None
+    ):
+        r"""Populate the ``fn_*`` attributes from a solution's own components.
+
+        Every solution goes through here, so the conventions are applied in one
+        place instead of being re-derived each time. In particular
+        :attr:`stress_is_deviatoric` is honoured here and nowhere else: a
+        solution declares which stress its source publishes and this converts,
+        rather than each one remembering to subtract the pressure.
+
+        Parameters
+        ----------
+        velocity, bodyforce : sequence
+            ``dim`` components each.
+        pressure, viscosity : sympy expression
+        stress : sequence of sequences, optional
+            ``dim x dim``. Read as the deviator or the total according to
+            :attr:`stress_is_deviatoric`. Derived from the strain rate if
+            omitted.
+        strainrate : sequence of sequences, optional
+            ``dim x dim``. Derived from the stress if omitted.
+
+        Notes
+        -----
+        Stress and strain rate are related by :math:`\sigma = -p\,I + 2\eta
+        \dot\varepsilon`, so either determines the other once the pressure and
+        viscosity are known; supplying both is fine and is worth doing when the
+        source publishes both, because then they can be checked against each
+        other.
+        """
+
+        self.fn_velocity = sympy.Matrix([list(velocity)])
+        self.fn_bodyforce = sympy.Matrix([list(bodyforce)])
+        self.fn_pressure = sympy.sympify(pressure)
+        self.fn_viscosity = sympy.sympify(viscosity)
+
+        identity = sympy.eye(self.dim)
+
+        if stress is not None:
+            given = sympy.Matrix(stress)
+            deviator = given if self.stress_is_deviatoric else given + self.fn_pressure * identity
+        elif strainrate is not None:
+            deviator = 2 * self.fn_viscosity * sympy.Matrix(strainrate)
+        else:
+            raise ValueError("a solution must supply either stress or strainrate")
+
+        self.fn_stress = deviator - self.fn_pressure * identity
+        self.fn_strainrate = (
+            sympy.Matrix(strainrate)
+            if strainrate is not None
+            else deviator / (2 * self.fn_viscosity)
+        )
+
+    def sample_points(self, count=12):
+        """Points at which this solution can meaningfully be evaluated.
+
+        The default is the unit box or cube, stratified and loaded with the
+        boundary and the corners. A solution posed on a different domain — or one
+        with a singularity somewhere a generic sampler would happily land on —
+        overrides this. The checks in :mod:`underworld3.analytic._validation` ask
+        the solution rather than assuming, so adding such a solution does not
+        require touching them.
+
+        Parameters
+        ----------
+        count : int
+            Number of interior points.
+
+        Returns
+        -------
+        numpy.ndarray
+            Shape ``(N, dim)``.
+        """
+
+        from ._validation import adversarial_points
+
+        return adversarial_points(count=count, dim=self.dim)
 
     def _exact(self, field):
         """Resolve a field name — or pass an expression straight through."""

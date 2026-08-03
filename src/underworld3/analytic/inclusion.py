@@ -366,6 +366,7 @@ class EllipticalInclusion(FixedWalls, AnalyticSolution):
         )
 
         self._potentials = potentials
+        self._centre = tuple(float(c) for c in centre)
 
     @property
     def semi_axes(self):
@@ -374,6 +375,37 @@ class EllipticalInclusion(FixedWalls, AnalyticSolution):
         rc = float(_shape_ratio(self.aspect_ratio))
         scale = float(self._scale)
         return scale * (rc + 1 / rc), scale * (rc - 1 / rc)
+
+    def sample_points(self, count=12):
+        """Points in the matrix, clear of the inclusion and of the map's foci.
+
+        The default unit-box sampler is wrong for this solution twice over: the
+        inclusion is centred wherever the caller put it rather than filling the
+        box, and the conformal map has branch points at the foci, where the
+        fields are singular. A generic sampler lands on both.
+
+        Points are laid on rings outside the inclusion, so they exercise the
+        matrix solution at a range of distances and azimuths without straddling
+        the interface — across which the stress is discontinuous, so a residual
+        evaluated there is meaningless rather than merely inaccurate.
+        """
+
+        import numpy as np
+
+        a, b = self.semi_axes
+        rings = np.linspace(1.6, 4.0, max(count // 4, 2))
+        angles = np.linspace(0.13, 2 * np.pi + 0.13, 4, endpoint=False)
+
+        return np.array(
+            [
+                (
+                    self._centre[0] + factor * a * np.cos(theta),
+                    self._centre[1] + factor * b * np.sin(theta),
+                )
+                for factor in rings
+                for theta in angles
+            ]
+        )
 
     @property
     def rotation_rate(self):

@@ -224,6 +224,47 @@ harness: perturb one coefficient and assert the other checks fail.
 velocity by a part in a thousand and requires both the comparison and the
 oracle-free residual to report it.
 
+## One interface, so a mistake cannot be local
+
+Each solution used to assemble its own `fn_*` attributes, and each had its own
+test file. That combination let a real error through: SolNL's kernel publishes
+the deviatoric stress, it was stored as the total, and its momentum residual was
+**1.06** rather than zero. Its test file checked agreement with the kernel and
+incompressibility — both passed — and nothing checked the momentum balance.
+
+Two changes make that class of mistake structural rather than a matter of
+remembering.
+
+**Assembly happens once.** A solution hands its components to
+`AnalyticSolution.set_fields`, which applies the conventions. Whether the source
+publishes $\sigma$ or $\tau$ is a class-level declaration,
+`stress_is_deviatoric`, honoured in exactly one place. A solution can no longer
+quietly disagree with its neighbours about what its own stress means.
+
+**Conformance is checked for every registered solution.**
+`tests/test_1024_analytic_conformance.py` iterates over `uw.analytic.available()`
+and applies the same checks to all of them: the contract is fully populated, the
+metadata is declared, the flow is incompressible, the momentum balance holds, the
+stress and strain rate agree, and the boundary conditions configure a solver. A
+solution added later is covered the moment it is registered.
+
+Where a solution differs from the others it says so through the contract rather
+than by being exempted:
+
+| method | default | why a solution overrides it |
+|---|---|---|
+| `sample_points` | unit box or cube, plus faces and corners | the elliptical inclusion is not box-filling, and the conformal map is singular at its foci — a generic sampler lands on both |
+| `boundaries` | box wall labels | a curved geometry has its own |
+| `apply_boundary_conditions` | free slip or Dirichlet mixin | — |
+| `stress_is_deviatoric` | `False` | the source publishes $\tau$ |
+
+One consequence worth knowing: `_validation.sample` returns real values, and if
+an expression evaluates complex it checks the imaginary part is round-off before
+discarding it. The elliptical inclusion is built from complex potentials and is
+real-valued without SymPy being able to prove it — but a *genuinely* complex
+result would mean the construction is wrong, and silently taking the real part
+would hide exactly that.
+
 ## The stress convention is not uniform across the family
 
 **Check which stress a kernel publishes. Do not read it off the variable name.**
