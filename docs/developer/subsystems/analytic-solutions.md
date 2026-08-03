@@ -380,9 +380,21 @@ Two of the Velic solutions remain. Both are reachable with the machinery here �
 the mode loop is proven by SolC — but neither is a small addition, and the source
 for each is already vendored.
 
-**SolDA** (`solDA.c`, 34 KB) is the largest kernel in the family: a truncated
-series with *both* a viscosity jump and a rectangular forcing, so it combines
-what SolCx and SolC each test separately.
+**SolDA** (`solDA.c`, 974 lines) is the largest kernel in the family: a truncated
+series with *both* a viscosity jump and a rectangular forcing, so it combines what
+SolCx and SolC each test separately. Probed, not attempted — three things are in
+the way:
+
+- **chained assignment.** The loop opens with `del_rhoB = del_rhoA = del_rho;`,
+  which the reader takes as one statement assigning `del_rhoA = del_rho` to
+  `del_rhoB` — not valid as an expression, so it raises. `_STATEMENT` needs to
+  split a chain into its individual targets.
+- **two sequential spatial branches inside the mode loop**, both `if (z < zc)`,
+  each about 790 lines. Each becomes a `Piecewise` *per mode*, so the expression
+  structure compounds with the mode count in a way SolC's does not.
+- **size**. SolC at 40 modes builds in 2.4 s from a 186-line kernel. SolDA's loop
+  body is an order of magnitude larger, so measure the per-mode expression before
+  choosing a default `modes` — and expect to justify a much smaller one.
 
 **SolH** (`solH.c`) is 3D and needs three things at once:
 
