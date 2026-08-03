@@ -271,11 +271,22 @@ would hide exactly that.
 
 | solution | its stress output is |
 |---|---|
-| SolA, SolB, SolCx, SolKx | total (Cauchy) $\sigma$ |
+| SolA, SolB, SolC, SolCx, SolKx | total (Cauchy) $\sigma$ |
 | SolKz, SolNL, SolDB2d, SolDB3d | deviatoric $\tau$ |
+| SolM | published, but wrong — see below |
 
 SolA is the clearest case to read: its source writes `u3 = 2*kn*ss_z - pp`, with the
 pressure subtracted in plain sight. SolKz's writes the same quantity without it.
+
+### The body force is minus the density
+
+Most of these kernels negate internally — they write `rho = -sigma*sin*cos` and
+force with `+sigma*sin*cos`. SolC does not: it accumulates the density itself, so
+the transcription negates. Measured, as always: as summed the momentum residual
+is 1.8; negated it is 1.6e-16.
+
+Worth stating as a rule because the sign is invisible to everything except the
+momentum balance. Incompressibility and the free-slip conditions hold either way.
 
 ### One published stress is simply wrong
 

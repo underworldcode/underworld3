@@ -1183,3 +1183,161 @@ class SolM(FreeSlipWalls, AnalyticSolution):
                 (kernel["strainrate_xz"], kernel["strainrate_zz"]),
             ),
         )
+
+
+_XC_C = sympy.Symbol("xc_solc")
+
+# SolC accumulates over modes; the source labels each in the loop tail. Same
+# transposed convention as SolA and SolKz — u1 is the vertical velocity.
+_SOLC_OUTPUTS = {
+    "velocity_x": ("u2", sympy.sin),
+    "velocity_z": ("u1", sympy.cos),
+    "stress_xx": ("u6", sympy.cos),
+    "stress_zz": ("u3", sympy.cos),
+    "stress_zx": ("u4", sympy.sin),
+    "pressure": ("u5", sympy.cos),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _solc_kernel(modes):
+    r"""Transcribe the Velic SolC kernel, summing its Fourier series.
+
+    Unlike the others this one is a truncated series: a step in density, resolved
+    as ``modes`` cosine terms. The loop body is evaluated once per mode with the
+    index bound to an integer, and the results summed in SymPy.
+
+    The series is also why the body force here is the *truncated* step rather
+    than an exact one. The kernel accumulates the density it actually used, and
+    that is what the solution solves exactly; comparing against a sharp step
+    instead would report the truncation error as though it were a defect.
+
+    Returns
+    -------
+    dict
+        Field name -> expression, including ``bodyforce_z`` for the resolved step.
+    """
+
+    source = CSource(os.path.join(_REFERENCE_DIR, "solC.c"))
+    body = source.function("_Velic_solC")
+    loop = CSource.loop_body(body, "for(n=1;n<nmodes;n++)")
+
+    totals = {field: sympy.Integer(0) for field in _SOLC_OUTPUTS}
+    density = sympy.Integer(0)
+
+    for index in range(1, modes):
+        scope = evaluate_block(
+            loop,
+            {
+                "pos": (_X, _Z),
+                "sigma": _SIGMA,
+                "Z": _ETA0,
+                "xc": _XC_C,
+                "x": _X,
+                "z": _Z,
+                "n": index,
+            },
+        )
+        k = index * sympy.pi
+        for field, (symbol, mode) in _SOLC_OUTPUTS.items():
+            totals[field] += scope[symbol] * mode(k * _X)
+        density += scope["del_rho"] * sympy.cos(k * _X)
+
+    # The n = 0 terms, applied after the loop exactly as the source does: the
+    # pressure gains its constant mode first, and the normal stresses are then
+    # completed from the finished pressure.
+    density += _SIGMA * _XC_C
+    totals["pressure"] += _SIGMA * _XC_C * (sympy.Rational(1, 2) - _Z)
+    totals["stress_zz"] -= totals["pressure"]
+    totals["stress_xx"] -= totals["pressure"]
+    totals["bodyforce_z"] = density
+
+    return totals
+
+
+class SolC(FreeSlipWalls, AnalyticSolution):
+    r"""Isoviscous flow driven by a dense column — the SolC benchmark.
+
+    Constant viscosity on the unit box, free slip everywhere, driven by a density
+    step: :math:`\sigma` for :math:`x < x_c` and zero beyond it.
+
+    The forcing is discontinuous where SolCx's *viscosity* is, which makes the two
+    a useful pair: SolCx asks whether a solver copes with a jump in the operator,
+    SolC with a jump in the right-hand side. The response is smooth in both cases,
+    so any trouble is in how the discontinuity is integrated.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A 2D mesh on the unit box.
+    sigma : float
+        Density contrast of the column.
+    eta : float
+        The (constant) viscosity.
+    x_c : float
+        Width of the dense column.
+    modes : int
+        Number of Fourier modes. The solution is exact for the step *as
+        resolved*, so this sets how sharp the step is rather than how accurate
+        the solution is — see Notes.
+
+    Notes
+    -----
+    This is a truncated series, and :attr:`fn_bodyforce` is the resolved step
+    rather than a sharp one. That is deliberate: the fields solve the problem
+    with the density the kernel actually summed, so the pair is exact and the
+    residual checks mean what they say. Raising *modes* sharpens the step and
+    slows every evaluation, since the expression carries one term per mode.
+    """
+
+    dim = 2
+    reference = (
+        "Velic. Transcribed from the published kernel vendored at "
+        "underworld3/analytic/_reference/solC.c."
+    )
+    eqn_viscosity = r"\eta"
+    eqn_bodyforce = r"(0,\; \sigma \;\text{for}\; x < x_c,\; 0 \;\text{beyond})"
+
+    def __init__(self, mesh, sigma=1.0, eta=1.0, x_c=0.5, modes=40):
+        super().__init__(mesh)
+
+        if float(eta) <= 0.0:
+            raise ValueError("eta must be positive.")
+        if not 0.0 < float(x_c) < 1.0:
+            raise ValueError("x_c must lie strictly inside (0, 1).")
+        if int(modes) != modes or int(modes) < 2:
+            raise ValueError("modes must be an integer of at least 2.")
+
+        self.sigma = float(sigma)
+        self.eta = float(eta)
+        self.x_c = float(x_c)
+        self.modes = int(modes)
+
+        x, z = mesh.X
+        values = {
+            _SIGMA: sympy.Rational(self.sigma),
+            _ETA0: sympy.Rational(self.eta),
+            _XC_C: sympy.Rational(self.x_c),
+            _X: x,
+            _Z: z,
+        }
+        kernel = {
+            field: expression.subs(values)
+            for field, expression in _solc_kernel(self.modes).items()
+        }
+
+        self.set_fields(
+            velocity=(kernel["velocity_x"], kernel["velocity_z"]),
+            pressure=kernel["pressure"],
+            viscosity=sympy.Rational(self.eta),
+            # The body force is MINUS the density. Every other kernel in this
+            # family negates internally — they write `rho = -sigma*sin*cos` and
+            # force with `+sigma*sin*cos` — but SolC accumulates the density
+            # itself, so the negation happens here. Measured: as summed it leaves
+            # the momentum residual at 1.8, negated at 1.6e-16.
+            bodyforce=(0, -kernel["bodyforce_z"]),
+            stress=(
+                (kernel["stress_xx"], kernel["stress_zx"]),
+                (kernel["stress_zx"], kernel["stress_zz"]),
+            ),
+        )

@@ -168,6 +168,21 @@ class CSource:
         return body[marker + len("return") : body.index(";", marker)]
 
     @staticmethod
+    def loop_body(body, header):
+        """The body of a ``for`` loop, braces excluded.
+
+        The series solutions accumulate over modes. The reader does not
+        interpret the loop — the caller evaluates this body once per mode with
+        the index bound, and sums — because the accumulation uses ``+=``, which
+        is not an assignment this reader recognises, and because the summation
+        has to happen in SymPy anyway.
+        """
+
+        marker = body.index(header)
+        opening = body.index("{", marker)
+        return body[opening + 1 : _matching_brace(body, opening) - 1]
+
+    @staticmethod
     def branches(body, condition, tail_ends_at=None):
         """Split ``if (<condition>) { A } else { B }`` into ``(A, B, tail)``.
 
