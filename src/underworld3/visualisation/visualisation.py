@@ -651,6 +651,115 @@ def clip_mesh(pvmesh, clip_angle):
     return [clip1, clip2]
 
 
+
+#: Wireframe colours for a multigrid tail, coarsest first. Blues and greys, so
+#: that the fault colour has the warm half of the wheel to itself — the whole
+#: point of the figure is that the fault is findable at a glance.
+MG_LEVEL_COLOURS = ("#9aa5ad", "#6fa8c7", "#3d86b4", "#1f5f96", "#123f6b",
+                    "#0a2748")
+
+#: The fault. Deliberately the loudest thing on the page.
+FAULT_COLOUR = "#ff1408"
+
+
+def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
+                        window_size=(1400, 1400), background="white",
+                        colours=None, fault_colour=FAULT_COLOUR,
+                        line_width=None, show_fault_cells=True, opacity=1.0):
+    """Wireframe of a mesh, its multigrid tail, and its faults, in one figure.
+
+    The standard way to look at a stacked-on mesh: one colour per level, coarsest
+    palest, and the fault cells filled in a contrasting red. It answers the three
+    questions that actually come up — did the hierarchy come out with the levels
+    expected, is the refinement where the fault is, and did the fault survive the
+    repair passes — without needing a separate figure for each.
+
+    Written to carry to 3-D. Nothing here reads the dimension except the defaults:
+    in 3-D the wireframes are taken from each level's SURFACE rather than every
+    interior edge, because a full edge extraction of a tetrahedral hierarchy is
+    an unreadable haze, and ``clip`` cuts the model open so the interior levels
+    and the fault can be seen at all.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The finest mesh. Its ``_custom_mg_coarse_meshes`` tail is drawn beneath
+        it, coarsest first; a mesh without one is simply drawn alone.
+    faults : sequence of str
+        Boundary label names whose facet SUPPORT is filled in ``fault_colour``.
+        Uses :meth:`~underworld3.discretisation.Mesh.cells_supporting`, so this
+        is the fault ZONE — one element either side — and it needs no separate
+        treatment in 3-D.
+    clip : tuple, optional
+        ``(normal, origin)`` passed to PyVista's ``clip``. Mostly for 3-D, where
+        an unclipped hierarchy shows only its outer skin.
+    plotter : pyvista.Plotter, optional
+        Draw into an existing plotter instead of making one. The plotter is
+        RETURNED either way, unrendered, so the caller sets the camera and
+        decides between ``show`` and ``screenshot``.
+    colours : sequence of str, optional
+        One per level, coarsest first; :data:`MG_LEVEL_COLOURS` by default,
+        cycled if the hierarchy is deeper than the palette.
+    line_width : sequence of float, optional
+        One per level. By default coarse levels are drawn thicker so they read
+        through the fine ones rather than being buried by them.
+
+    Returns
+    -------
+    pyvista.Plotter
+
+    Examples
+    --------
+    >>> pl = vis.plot_mesh_hierarchy(mesh, faults=["FaultA", "FaultB"])
+    >>> pl.camera.parallel_projection = True
+    >>> pl.screenshot("hierarchy.png")
+    """
+    import numpy as np
+    import pyvista as pv
+
+    initialise(None)
+
+    levels = list(getattr(mesh, "_custom_mg_coarse_meshes", None) or []) + [mesh]
+    palette = list(colours) if colours else list(MG_LEVEL_COLOURS)
+    widths = list(line_width) if line_width is not None else None
+
+    if plotter is None:
+        plotter = pv.Plotter(off_screen=pv.OFF_SCREEN, window_size=window_size)
+    plotter.set_background(background)
+
+    def wire(pvm):
+        if clip is not None:
+            pvm = pvm.clip(normal=clip[0], origin=clip[1])
+        if mesh.dim == 3:
+            pvm = pvm.extract_surface()
+        return pvm.extract_all_edges()
+
+    n = len(levels)
+    for i, level in enumerate(levels):
+        colour = palette[i % len(palette)]
+        # Coarse thick, fine thin: without the taper the finest level's edges
+        # cover every level under it and the hierarchy cannot be read.
+        w = widths[i] if widths else max(0.4, 2.6 - 2.0 * i / max(n - 1, 1))
+        plotter.add_mesh(wire(mesh_to_pv_mesh(level)), color=colour,
+                         line_width=w, lighting=False, opacity=opacity,
+                         label=f"level {i}"
+                               f"{' (finest)' if i == n - 1 else ''}")
+
+    if show_fault_cells:
+        for name in faults:
+            zone = np.asarray(mesh.cells_supporting(name))
+            if not zone.any():
+                continue
+            cells = mesh_to_pv_mesh(mesh).extract_cells(np.flatnonzero(zone))
+            if clip is not None:
+                cells = cells.clip(normal=clip[0], origin=clip[1])
+            plotter.add_mesh(cells, color=fault_colour, lighting=False,
+                             show_edges=True, edge_color=fault_colour,
+                             line_width=1.0, label=name)
+
+    return plotter
+
+
 def plot_mesh(
     mesh,
     title="",
