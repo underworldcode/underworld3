@@ -404,6 +404,112 @@ the cost was imagined.
 | C ternary and `&&`/`\|\|` | SolH guards its zero modes with `(n!=0 \|\| m!=0) ? … : …` |
 | `resolve_branches` | guards on loop indices have an answer at transcription time. Left unresolved, `evaluate_block` reads every branch in order and each guarded variable keeps the *last* one — in SolH that silently zeroes two velocity components, which looks plausible rather than broken |
 
+## The scalar transport family
+
+The Stokes solutions solve for a velocity-and-pressure pair. The scalar solutions
+solve for one field, so they declare `solves = "transport"` and carry a different
+set of `fn_*`:
+
+| | Stokes | transport |
+|---|---|---|
+| unknowns | `fn_velocity`, `fn_pressure` | `fn_solution` |
+| material | `fn_viscosity` | `fn_coefficient` |
+| forcing | `fn_bodyforce` | `fn_source` |
+| set by | `set_fields(...)` | `set_scalar_field(...)` |
+| residual | momentum + incompressibility | `transport_residual` / `diffusion_residual` |
+
+These were already in the repository — written inline in the tests that used them.
+Collecting them gains the residual check, which they never had, and a name to cite.
+
+| solution | equation | previously |
+|---|---|---|
+| `Poisson1D` | $\nabla^2 u + f = 0$, three sources | `test_1000_poissonCart.py` |
+| `TwoLayerDarcy` | $\nabla\cdot(k\nabla p) = 0$ across a permeability jump | `test_1004_DarcyCartesian.py` |
+| `ErfcDiffusion` | $\partial_t u = D\nabla^2 u$ | `test_1005_TransientDarcyCartesian.py` |
+| `AdvectedFront` | $\partial_t c + u\,\partial_x c = \kappa\,\partial_{xx} c$ | `test_1100_AdvDiffCartesian.py` |
+
+The transient ones expose time as a symbol, so a solver is checked at whatever
+time it actually reached:
+
+```python
+sol = uw.analytic.ErfcDiffusion(mesh, diffusivity=0.5)
+exact = sol.fn_solution.subs(sol.t, t_end)
+```
+
+Starting a comparison from a smooth profile at $t > 0$ rather than from the step
+itself is the point of using these: the step is not representable on the mesh,
+which is what makes `test_1100`'s current comparison fragile.
+
+They cannot reuse the Stokes boundary-condition mixins, which apply a *velocity*.
+`_Transport` prescribes `fn_solution` on every wall instead.
+
+### The residual has to be the equation the solution actually solves
+
+`AdvectedFront` reported a residual of 1.44 against 0.00 for everything else. The
+solution was right; the check was the wrong equation. `diffusion_residual` tested
+$\partial_t u = \nabla\cdot(k\nabla u)$, and an advecting front does not satisfy
+that — it satisfies advection-diffusion.
+
+The failure is worth recording because of how it presents: an order-one residual
+next to a column of zeros reads unambiguously as a broken solution, and the
+tempting next step is to go looking for the transcription error. The fix was to
+include the advection term, which is the general case — a purely diffusive
+solution declares no advecting velocity and the term drops out, leaving the other
+three at zero exactly as before. The lesson mirrors Gate 4's: a residual only
+means something if it is the residual of the right equation, and a check narrower
+than the family it is applied to will convict a correct solution.
+
+## The Richards family
+
+Unsaturated flow is the one nonlinear scalar equation in the suite:
+
+$$C(\psi)\,\frac{\partial\psi}{\partial t}
+    = \nabla\cdot\!\left[K(\psi)\left(\nabla\psi + \hat y\right)\right]$$
+
+so it declares `solves = "richards"` and carries `fn_conductivity` and
+`fn_capacity` rather than a single coefficient. Gardner's exponential model
+$K = K_s e^{\alpha\psi}$ is the case that closes, because $u = e^{\alpha\psi}$
+linearises it *exactly* — under that substitution Richards becomes linear
+advection–diffusion in $u$, which is why `GardnerTransient` is an Ogata–Banks
+form and shares its shape with `AdvectedFront`.
+
+| solution | content |
+|---|---|
+| `GardnerSteady` | constant flux down a column; head is $\ln[(u_0-q^*)e^{-\alpha y} + q^*]/\alpha$ |
+| `GardnerTransient` | a wetting front advancing at $V = K_s/\Delta\theta$ |
+
+Both already existed as NumPy functions in `utilities/retention_curves.py`. Those
+functions keep their signatures and now evaluate the same SymPy expression the
+classes build, so there is one formula rather than two copies that can drift.
+
+### Two things this family taught the harness
+
+**A residual can be degenerate rather than wrong.** The first `richards_residual`
+normalised by the flux divergence — which *is* the residual. It reported exactly
+`1.00` for a solution that turned out to be exact to the last bit. An order-one
+number from a normalised residual is not automatically a failing solution; it can
+be a scale that divides the quantity by itself. The fix is to normalise by the
+terms that have to *cancel*, kept separately.
+
+**Not every perturbation is a negative control.** Gate 5 says a check that passes
+a broken input is measuring nothing — but scaling $K$ by a constant leaves the
+steady residual at zero, and that is correct: it is a genuine symmetry of
+$\nabla\cdot[K(\nabla\psi+\hat y)]=0$, not a defect the gate missed. A control has
+to break something the solution actually asserts. Three that do: a wrong $\alpha$
+inside $K$ (0.64), a head scaled by 1% (0.0099, tracking the perturbation), and a
+conductivity that ignores the head at all (1.0). Both facts are asserted in
+`tests/test_1026_analytic_richards.py`, the symmetry included, so neither is left
+as a claim in prose.
+
+### `erfc` is not in NumPy
+
+`lambdify(..., "numpy")` falls back to the scalar `math.erfc` without complaint;
+the failure surfaces much later as `only 0-dimensional arrays can be converted to
+Python scalars`, from generated code, at the first array. It went unseen for as
+long as it did because differentiating an `erfc` removes it — every earlier
+residual differentiated, and only the Richards head keeps one inside a logarithm.
+`_validation.sample` now asks for `["scipy", "numpy"]`.
+
 ## Provenance
 
 Each vendored reference kernel keeps its original copyright header.
@@ -421,14 +527,49 @@ A solution requiring a package Underworld3 does not depend on is wrapped lazily,
 in the style SciPy uses for its optional backends: the import happens at
 construction, and its absence raises with an install message rather than breaking
 `import underworld3`. `uw.analytic.available()` lists such solutions and marks
-them unavailable rather than omitting them.
+them unavailable rather than omitting them — omitting would make the listing
+truthful about what constructs and silent about what exists, leaving a user with
+no way to discover that a benchmark is one `pip install` away.
+
+There is one: `CylindricalStokes`, wrapping `assess` (Kramer et al. 2021) for
+curved-geometry Stokes. It is declared as the `benchmarks` extra:
+
+```bash
+pip install "underworld3[benchmarks]"
+```
+
+Four scripts under `docs/examples/` already imported `assess` while nothing
+declared it, so on a normal install they failed with a bare
+`ModuleNotFoundError`.
+
+### It is an oracle, not a member of the family
+
+`assess` gives numeric callables, so there is nothing to differentiate — a
+Kramer solution can be compared against a solver but **cannot be checked against
+the equations it claims to solve**. None of the six gates reaches it.
+
+That is a real gap, not a technicality, so it is declared rather than
+described: `symbolic = False`, and the conformance sweep excludes on the
+declaration. The sweep then asserts what it excluded and why, so an accidental
+exclusion — a mistyped class attribute — fails the suite instead of quietly
+shrinking it.
+
+Two class attributes carry this:
+
+| attribute | meaning |
+|---|---|
+| `symbolic` | fields are SymPy on `mesh.X`. False means the residual gates cannot be applied at all |
+| `requires` | name of an optional package, or `None` |
 
 ## Adding a new solution
 
 1. Subclass `AnalyticSolution` and one of the boundary-condition mixins
-   (`FreeSlipWalls`, `FixedWalls`).
+   (`FreeSlipWalls`, `FixedWalls`) — or `_Transport` for a scalar solution.
 2. Build the exact fields on `mesh.X` in `__init__`; set `dim`, `reference`, and
-   the `eqn_*` LaTeX strings that document the *problem*.
+   the `eqn_*` LaTeX strings that document the *problem*. Set the fields through
+   `set_fields` (Stokes) or `set_scalar_field` (transport) rather than assigning
+   `fn_*` directly — that is where the stress convention and the advection term
+   are applied, and the conformance suite trusts the declaration.
 3. Export it from `underworld3/analytic/__init__.py` and register it in
    `_SOLUTIONS` — a namespace entry and the registry entry land in the same PR.
 4. If it was transcribed from a reference kernel, clear all six gates and pin the

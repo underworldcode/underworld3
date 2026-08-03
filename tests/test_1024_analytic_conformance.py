@@ -24,7 +24,35 @@ import sympy
 import underworld3 as uw
 
 
-SOLUTIONS = sorted(uw.analytic.available())
+# Solutions that are SymPy and installable here. The two exclusions are
+# declared by the solutions themselves, not listed by name, so a later solution
+# in either category is handled without touching this file.
+#
+#   symbolic = False   an external numeric oracle; nothing to differentiate, so
+#                      the residual gates cannot be applied to it at all
+#   requires = "..."   an optional dependency that is not installed
+#
+# The excluded names are asserted below, so an accidental exclusion — a typo in
+# a class attribute, say — fails here rather than quietly shrinking the sweep.
+SOLUTIONS = sorted(
+    name
+    for name in uw.analytic.available()
+    if getattr(uw.analytic, name).symbolic and uw.analytic.is_available(name)
+)
+
+
+def test_the_sweep_covers_everything_it_can():
+    """What this file skips, and on what declared grounds."""
+
+    excluded = set(uw.analytic.available()) - set(SOLUTIONS)
+
+    for name in excluded:
+        solution = getattr(uw.analytic, name)
+        assert not solution.symbolic or not uw.analytic.is_available(name), (
+            f"{name} is symbolic and available but is not being swept"
+        )
+
+    assert len(SOLUTIONS) >= 19, "the sweep has lost solutions"
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +101,16 @@ def test_solution_declares_its_metadata(name):
     assert isinstance(solution.nonlinear, bool)
 
 
-@pytest.mark.parametrize("name", SOLUTIONS)
+STOKES = [n for n in SOLUTIONS if getattr(uw.analytic, n).solves == "stokes"]
+TRANSPORT = [n for n in SOLUTIONS if getattr(uw.analytic, n).solves == "transport"]
+RICHARDS = [n for n in SOLUTIONS if getattr(uw.analytic, n).solves == "richards"]
+
+# Every registered solution belongs to exactly one family, so adding a solution
+# with a new `solves` value fails here rather than being quietly untested.
+assert set(STOKES) | set(TRANSPORT) | set(RICHARDS) == set(SOLUTIONS)
+
+
+@pytest.mark.parametrize("name", STOKES)
 def test_solution_exposes_the_whole_contract(name, built):
     sol = built[name]
     dim = sol.dim
@@ -86,7 +123,7 @@ def test_solution_exposes_the_whole_contract(name, built):
     assert sol.fn_viscosity is not None
 
 
-@pytest.mark.parametrize("name", SOLUTIONS)
+@pytest.mark.parametrize("name", STOKES)
 def test_solution_is_incompressible(name, built):
     from underworld3.analytic import _validation
 
@@ -96,7 +133,7 @@ def test_solution_is_incompressible(name, built):
     assert _validation.incompressibility_residual(sol, points) < 1.0e-8
 
 
-@pytest.mark.parametrize("name", SOLUTIONS)
+@pytest.mark.parametrize("name", STOKES)
 def test_solution_satisfies_the_momentum_balance(name, built):
     r""":math:`\nabla\cdot\sigma + \mathbf f = 0`, for every solution.
 
@@ -113,7 +150,7 @@ def test_solution_satisfies_the_momentum_balance(name, built):
     assert _validation.momentum_residual(sol, points) < 1.0e-8
 
 
-@pytest.mark.parametrize("name", SOLUTIONS)
+@pytest.mark.parametrize("name", STOKES)
 def test_stress_and_strain_rate_agree(name, built):
     r""":math:`\sigma + p\,I = 2\eta\dot\varepsilon`, however each was obtained.
 
@@ -145,3 +182,67 @@ def test_stress_and_strain_rate_agree(name, built):
 # Building a Stokes solver per solution here as well was not worth what it cost:
 # it dominated the runtime of this file without checking anything the contract
 # tests do not already cover.
+
+
+@pytest.mark.parametrize("name", TRANSPORT)
+def test_transport_solution_exposes_its_contract(name, built):
+    sol = built[name]
+
+    assert sol.fn_solution is not None
+    assert sol.fn_coefficient is not None
+    assert sol.fn_source is not None
+
+
+@pytest.mark.parametrize("name", TRANSPORT)
+def test_transport_solution_satisfies_its_equation(name, built):
+    r"""Steady or transient, whichever the solution declares.
+
+    A time symbol means the equation is
+    :math:`\partial_t u + \mathbf v\cdot\nabla u = \nabla\cdot(k\nabla u)`, and
+    those are checked at three times rather than skipped. Skipping them here is
+    what let `AdvectedFront` be judged against the wrong equation for as long as
+    it was — the whole point of this file is that no registered solution goes
+    unchecked.
+    """
+
+    from underworld3.analytic import _validation
+
+    sol = built[name]
+    points = sol.sample_points(count=8)
+
+    if getattr(sol, "t", None) is None:
+        assert _validation.transport_residual(sol, points) < 1.0e-10
+        return
+
+    for time in (0.05, 0.2, 0.5):
+        assert _validation.diffusion_residual(sol, points, time) < 1.0e-10
+
+
+@pytest.mark.parametrize("name", RICHARDS)
+def test_richards_solution_exposes_its_contract(name, built):
+    sol = built[name]
+
+    assert sol.fn_solution is not None
+    assert sol.fn_conductivity is not None
+    assert sol.fn_capacity is not None
+
+
+@pytest.mark.parametrize("name", RICHARDS)
+def test_richards_solution_satisfies_its_equation(name, built):
+    r""":math:`C(\psi)\partial_t\psi = \nabla\cdot[K(\psi)(\nabla\psi + \hat y)]`.
+
+    Nonlinear, and the conductivity is the solution's own — so this consults
+    nothing external, exactly as the Stokes momentum residual does.
+    """
+
+    from underworld3.analytic import _validation
+
+    sol = built[name]
+    points = sol.sample_points(count=8)
+
+    if getattr(sol, "t", None) is None:
+        assert _validation.richards_residual(sol, points) < 1.0e-10
+        return
+
+    for time in (0.05, 0.2):
+        assert _validation.richards_residual(sol, points, time) < 1.0e-10

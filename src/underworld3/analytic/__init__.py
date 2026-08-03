@@ -29,13 +29,22 @@ underworld3.analytic._base : the contract each solution satisfies.
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
 from .inclusion import EllipticalInclusion
+from .kramer import CylindricalStokes
+from .richards import GardnerSteady, GardnerTransient
+from .transport import AdvectedFront, ErfcDiffusion, Poisson1D, TwoLayerDarcy
 from .velic import SolA, SolB, SolC, SolCx, SolDA, SolDB2d, SolDB3d, SolH, SolKx, SolKz, SolM, SolNL
 
 __all__ = [
     "AnalyticSolution",
     "FreeSlipWalls",
     "FixedWalls",
+    "AdvectedFront",
     "EllipticalInclusion",
+    "ErfcDiffusion",
+    "CylindricalStokes",
+    "GardnerSteady",
+    "GardnerTransient",
+    "Poisson1D",
     "SolA",
     "SolB",
     "SolC",
@@ -48,8 +57,10 @@ __all__ = [
     "SolKz",
     "SolM",
     "SolNL",
+    "TwoLayerDarcy",
     "available",
     "describe",
+    "is_available",
 ]
 
 # The solutions this namespace offers. Explicit rather than introspected, so the
@@ -57,7 +68,13 @@ __all__ = [
 # contract, and so a solution needing an optional dependency can be listed
 # without being importable.
 _SOLUTIONS = {
+    "AdvectedFront": AdvectedFront,
+    "CylindricalStokes": CylindricalStokes,
     "EllipticalInclusion": EllipticalInclusion,
+    "ErfcDiffusion": ErfcDiffusion,
+    "GardnerSteady": GardnerSteady,
+    "GardnerTransient": GardnerTransient,
+    "Poisson1D": Poisson1D,
     "SolA": SolA,
     "SolB": SolB,
     "SolC": SolC,
@@ -70,19 +87,60 @@ _SOLUTIONS = {
     "SolKz": SolKz,
     "SolM": SolM,
     "SolNL": SolNL,
+    "TwoLayerDarcy": TwoLayerDarcy,
 }
 
 
-def available():
+def is_available(name):
+    """Whether *name* can actually be constructed here and now.
+
+    False only when a solution needs an optional package that is not installed.
+    Kept separate from :func:`available` because a missing optional dependency
+    should not make a solution disappear — silently shortening the listing hides
+    the very thing the user needs to be told.
+
+    Parameters
+    ----------
+    name : str
+        A name from :func:`available`.
+
+    Returns
+    -------
+    bool
+    """
+
+    solution = _SOLUTIONS[name]
+    requires = getattr(solution, "requires", None)
+
+    if requires is None:
+        return True
+
+    import importlib.util
+
+    return importlib.util.find_spec(requires) is not None
+
+
+def available(installed_only=False):
     """Names of the solutions in this namespace, in alphabetical order.
+
+    Parameters
+    ----------
+    installed_only : bool
+        Omit solutions whose optional dependency is missing. The default lists
+        everything; use :func:`is_available` to tell them apart, or
+        :func:`describe`, which says so in words.
 
     Returns
     -------
     list of str
-        Every name that can be constructed as ``uw.analytic.<name>(mesh, ...)``.
     """
 
-    return sorted(_SOLUTIONS)
+    names = sorted(_SOLUTIONS)
+
+    if installed_only:
+        return [name for name in names if is_available(name)]
+
+    return names
 
 
 def describe(name):
@@ -108,4 +166,9 @@ def describe(name):
         ) from None
 
     docstring = solution.__doc__ or ""
-    return docstring.strip().split("\n")[0]
+    summary = docstring.strip().split("\n")[0]
+
+    if not is_available(name):
+        return f"{summary}  [unavailable: needs the '{solution.requires}' package]"
+
+    return summary

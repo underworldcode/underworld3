@@ -78,6 +78,28 @@ class AnalyticSolution(uw_object):
     nonlinear = False
     reference = ""
 
+    #: Which equation this solution answers. The suite began as Stokes-only and
+    #: the field names still read that way, so a solution that answers something
+    #: else says so here rather than being exempted from the checks: the
+    #: conformance suite dispatches on this, and applies the residual for the
+    #: equation the solution actually claims.
+    solves = "stokes"
+
+    #: Whether the fields are SymPy expressions on ``mesh.X``. True for every
+    #: solution in the suite proper — that is the one-form rule. A solution that
+    #: wraps an external *numeric* library says so here, and thereby says that
+    #: the residual gates cannot be applied to it: there is no expression to
+    #: differentiate, so it can be compared against a solver but never checked
+    #: against the equations it claims to solve. Treat those as oracles rather
+    #: than as validated members of the family.
+    symbolic = True
+
+    #: Name of an optional package this solution needs, or None. A solution with
+    #: an unmet requirement is still listed by :func:`available` — it just says
+    #: it is unavailable, because silently omitting it hides the one fact the
+    #: user needs.
+    requires = None
+
     #: Whether this solution's published stress is the deviator rather than the
     #: total. Declared, never inferred — the family is not consistent, and one
     #: kernel writes its deviator into an array named ``total_stress``. Getting
@@ -95,6 +117,9 @@ class AnalyticSolution(uw_object):
     # field (a temperature, a pressure head) extends this so error() and
     # evaluate() reach it by name.
     _fields = {
+        "solution": "fn_solution",
+        "coefficient": "fn_coefficient",
+        "source": "fn_source",
         "velocity": "fn_velocity",
         "pressure": "fn_pressure",
         "stress": "fn_stress",
@@ -127,6 +152,39 @@ class AnalyticSolution(uw_object):
         if self.mesh.dim == 3:
             walls += ["Front", "Back"]
         return walls
+
+    def set_scalar_field(self, solution, coefficient, source, advection=None):
+        r"""Populate the fields of a scalar solution.
+
+        For the transport family — steady diffusion, Darcy flow, Richards — where
+        the unknown is one field satisfying
+        :math:`\nabla\cdot(k\,\nabla u) + f = 0` rather than a velocity and a
+        pressure.
+
+        Parameters
+        ----------
+        solution : sympy expression
+            The exact field: temperature, pressure head, hydraulic head.
+        coefficient : sympy expression
+            Diffusivity, conductivity or permeability — whatever multiplies the
+            gradient in this solution's equation.
+        source : sympy expression
+            The source term the solution is posed with.
+        advection : sequence, optional
+            Velocity carrying the field, if it is transported as well as
+            diffused. Omitted means no advection, which is the common case;
+            supplying it is what distinguishes an advection-diffusion solution
+            from a purely diffusive one, and the residual check needs to know.
+        """
+
+        self.fn_solution = sympy.sympify(solution)
+        self.fn_coefficient = sympy.sympify(coefficient)
+        self.fn_source = sympy.sympify(source)
+        self.fn_advection = (
+            sympy.Matrix([list(advection)])
+            if advection is not None
+            else sympy.zeros(1, self.dim)
+        )
 
     def set_fields(
         self, velocity, pressure, viscosity, bodyforce, stress=None, strainrate=None
@@ -296,6 +354,28 @@ class AnalyticSolution(uw_object):
         exact_squared = uw.mpi.comm.allreduce(float((exact_values**2).sum()))
 
         return float(np.sqrt(error_squared / exact_squared))
+
+    def set_richards_field(self, solution, conductivity, capacity):
+        r"""Declare an unsaturated-flow solution.
+
+        Richards is neither of the other two: the coefficient depends on the
+        unknown, and there is a capacity term multiplying the time derivative,
+        so it gets its own declaration rather than being forced into
+        :meth:`set_scalar_field`.
+
+        Parameters
+        ----------
+        solution : sympy expression
+            Pressure head :math:`\psi`.
+        conductivity : sympy expression
+            :math:`K(\psi)`, in terms of the solution itself.
+        capacity : sympy expression
+            :math:`C(\psi) = \mathrm d\theta/\mathrm d\psi`.
+        """
+
+        self.fn_solution = sympy.sympify(solution)
+        self.fn_conductivity = sympy.sympify(conductivity)
+        self.fn_capacity = sympy.sympify(capacity)
 
     def apply_boundary_conditions(self, solver):
         """Impose the boundary conditions this solution is posed under."""

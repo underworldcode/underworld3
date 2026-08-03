@@ -107,7 +107,9 @@ def sample(solution, expression, points):
 
     points = np.asarray(points, dtype=float)
     values = np.asarray(
-        sympy.lambdify(plain, expression, "numpy", cse=True)(
+        # SciPy first: NumPy has no erfc, and lambdify then silently falls back
+        # to the scalar `math.erfc`, which fails only once an array reaches it.
+        sympy.lambdify(plain, expression, ["scipy", "numpy"], cse=True)(
             *(points[:, i] for i in range(len(coordinates)))
         )
     )
@@ -234,6 +236,76 @@ def momentum_residual(solution, points):
     return worst / max(scale, 1.0e-300)
 
 
+def transport_residual(solution, points):
+    r"""Largest :math:`|\nabla\cdot(k\nabla u) + f|`, relative to its terms.
+
+    The scalar counterpart of :func:`momentum_residual`, and the same argument
+    for it: the coefficient, the source and the field all come from the solution
+    itself, so this consults nothing external and cannot be fooled by a mistake
+    the solution shares with whatever it might be compared against.
+    """
+
+    coordinates = solution.mesh.X
+    dim = solution.mesh.dim
+
+    flux = [
+        solution.fn_coefficient * sympy.diff(solution.fn_solution, coordinates[i])
+        for i in range(dim)
+    ]
+    terms = [sympy.diff(flux[i], coordinates[i]) for i in range(dim)]
+    terms.append(solution.fn_source)
+
+    worst = float(np.max(np.abs(sample(solution, sum(terms), points))))
+    scale = max(
+        float(np.max(np.abs(sample(solution, term, points)))) for term in terms
+    )
+
+    return worst / max(scale, 1.0e-300)
+
+
+def diffusion_residual(solution, points, time):
+    r"""Transient scalar residual at *time*.
+
+    .. math::
+        \partial_t u + \mathbf v\cdot\nabla u - \nabla\cdot(k\nabla u)
+
+    The advection term is included because it is the general case: a purely
+    diffusive solution declares no advecting velocity and it drops out. Leaving
+    it off instead reports an order-one residual for a perfectly good
+    advection-diffusion solution, which reads like a broken solution rather than
+    a check applied to the wrong equation.
+
+    Needs no reference — every term comes from the solution itself.
+    """
+
+    coordinates = solution.mesh.X
+    dim = solution.mesh.dim
+
+    rate = sympy.diff(solution.fn_solution, solution.t)
+    carried = sum(
+        solution.fn_advection[0, i] * sympy.diff(solution.fn_solution, coordinates[i])
+        for i in range(dim)
+    )
+    spread = sum(
+        sympy.diff(
+            solution.fn_coefficient * sympy.diff(solution.fn_solution, coordinates[i]),
+            coordinates[i],
+        )
+        for i in range(dim)
+    )
+
+    at_time = {solution.t: time}
+    residual = (rate + carried - spread).subs(at_time)
+    worst = float(np.max(np.abs(sample(solution, residual, points))))
+    scale = max(
+        float(np.max(np.abs(sample(solution, term.subs(at_time), points))))
+        for term in (rate, carried, spread)
+        if term != 0
+    )
+
+    return worst / max(scale, 1.0e-300)
+
+
 def strainrate_consistency(solution, points):
     r"""Compare :math:`\tfrac12(\nabla\mathbf u + \nabla\mathbf u^{T})` with
     the solution's own strain rate, scaled by its magnitude.
@@ -287,3 +359,62 @@ def high_precision_value(expression, substitutions, digits=50):
     """
 
     return sympy.N(expression.subs(substitutions), digits)
+
+
+def richards_residual(solution, points, time=None):
+    r"""Residual of the Richards equation for an unsaturated-flow solution.
+
+    .. math::
+        C(\psi)\,\partial_t \psi - \nabla\cdot\!\left[K(\psi)(\nabla\psi + \hat y)\right]
+
+    The :math:`\hat y` is gravity, and leaving it out is the same class of
+    mistake as leaving advection out of :func:`diffusion_residual` — it turns a
+    correct solution into an order-one failure.
+
+    *time* is ``None`` for a steady solution, which drops the capacity term.
+    Needs no oracle: the conductivity and capacity are the solution's own.
+    """
+
+    coordinates = solution.mesh.X
+    dim = solution.mesh.dim
+    vertical = dim - 1
+
+    gravity = [0] * dim
+    gravity[vertical] = 1
+
+    # The conducted and gravitational parts of the flux divergence are kept
+    # apart because they are what has to cancel, and so they are the honest
+    # scale. Normalising by the divergence itself divides the residual by the
+    # residual, which reports 1.0 for a flawless solution — that is not a
+    # tolerance failure, it is a meaningless number.
+    terms = []
+    for i in range(dim):
+        conducted = solution.fn_conductivity * sympy.diff(
+            solution.fn_solution, coordinates[i]
+        )
+        terms.append(sympy.diff(conducted, coordinates[i]))
+        if gravity[i]:
+            terms.append(
+                sympy.diff(solution.fn_conductivity * gravity[i], coordinates[i])
+            )
+
+    divergence = sum(terms)
+
+    if time is None:
+        residual = -divergence
+        at_time = {}
+    else:
+        storage = solution.fn_capacity * sympy.diff(solution.fn_solution, solution.t)
+        terms.append(storage)
+        residual = storage - divergence
+        at_time = {solution.t: time}
+
+    terms = [term for term in terms if term != 0]
+
+    worst = float(np.max(np.abs(sample(solution, residual.subs(at_time), points))))
+    scale = max(
+        float(np.max(np.abs(sample(solution, term.subs(at_time), points))))
+        for term in terms
+    )
+
+    return worst / max(scale, 1.0e-300)
