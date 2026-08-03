@@ -8,6 +8,11 @@ did not nominate — gains a thin one. Reconnection is the missing third operati
 of the classical refine / swap / smooth triple: UW3 has refine (:meth:`Mesh.adapt`)
 and smooth (:meth:`Mesh.relax`), and this is swap.
 
+Two passes live here. :func:`flip_to_reduce_max_angle` changes *connectivity* and
+keeps every point; :func:`remove_vertices` deletes a point and retriangulates the
+hole. They fix different damage and they compose — in one order only. See
+`Deleting a vertex`_.
+
 What it is worth, and where the benefit actually comes from
 ----------------------------------------------------------
 Measured on the production path — ``edge_split`` refinement of a real DM, flat-core
@@ -65,6 +70,51 @@ solve gives the same vrms to four significant figures with and without repair. A
 fault that must not be crossed has to be a labelled interface, not a distance
 field.
 
+.. _Deleting a vertex:
+
+Deleting a vertex
+-----------------
+A conforming cut (:mod:`underworld3.utilities.line_cut`) has only two primitives:
+**snap** a vertex onto the surface, or **split** an edge the surface crosses.
+Every sliver it leaves follows from that — a crossing falling near a vertex must
+either drag the vertex to it or carve a thin cell beside it, and tightening the
+snap tolerance only trades one for the other. **Delete** is the missing third. It
+dissolves the case rather than trading it, and it is the only one of the three
+that *removes* work instead of adding it.
+
+Measured on a box fault cut into an adapted mesh, counting cells whose smallest
+angle is under 15 degrees:
+
+===========================  =====  ========  ==========
+pass                         cells  < 15 deg  max angle
+===========================  =====  ========  ==========
+the cut                       4548        60      148.45
+flip                          4548        18      133.27
+flip, then delete             4306         4      133.27
+delete, then flip             4076        60      138.81
+===========================  =====  ========  ==========
+
+Two things to read off that. The order is **not** symmetric: flipping first and
+deleting second removes 242 cells *and* takes the sliver count from 60 to 4,
+while deleting first leaves it at 60. Deletion retriangulates a cavity from the
+point set it is given, so running it on connectivity the flip pass has not yet
+cleaned up spends its independent set on cavities that a flip would have fixed
+for free — and the cavity, once ear-clipped, no longer presents the quad the flip
+pass was looking for. Flip is cheap and reversible; delete is neither. Flip
+first. A second round of each then finds nothing, so the pair converges.
+
+The second is that the acceptance test needs both shape measures, unlike the flip
+pass. Gating on the largest angle alone — correct for flipping, since the P1
+interpolation bound depends on it — let the minimum angle fall from 10.80 to
+10.23 degrees and *raised* the sliver count from 60 to 61, because a needle has
+one tiny angle and two close to 90 and never registers as obtuse. Hence
+``gate="both"``.
+
+Where deletion is *wanted* is not decided here: :func:`remove_vertices` takes a
+candidate list, and refuses whatever it cannot improve. Offered every vertex of a
+clean mesh it does nothing, which is the behaviour a pass that removes degrees of
+freedom has to have.
+
 Parallel: the frozen seam
 -------------------------
 A flip cannot be a :c:type:`DMPlexTransform` — a child's cone may only reference
@@ -99,9 +149,26 @@ A related cost: the 99th-percentile maximum angle recovers fully under a frozen
 seam, but the absolute maximum does not — a few of the worst cells sit on the seam
 and are exactly the ones that may not be touched.
 
+Deletion freezes the same seam, for a stronger reason: it compacts the point
+chart, so unlike a flip it cannot hand the star-forest across verbatim. Every
+point after a deleted one shifts, and each leaf's *remote* index is a number only
+its owner holds. :func:`rebuild_without_vertices` renumbers locally and
+broadcasts the new numbering root-to-leaf **once** to close that gap. One
+exchange of bookkeeping over the existing partition — no cell changes rank and
+nothing is redistributed, which is the property an external remesher costs us.
+Freezing the seam is then what keeps the *leaf set* itself unchanged, so the
+forest need only be renumbered and never rebuilt. Measured cost at np=2..4 on a
+cut mesh: 113-115 deletions against 121 serial.
+
 Status
 ------
-2-D only. In 3-D no single flip suffices: the operator set has to become
+2-D only, both passes. A deleted vertex's cavity is a polygon in 2-D and a
+polyhedron in 3-D, and ear clipping does not generalise to one — though cavity
+insertion is standard practice in 3-D meshing where ad-hoc cutting of tets along
+a surface is not, so this is the operation that generalises *better* than the cut
+it replaces.
+
+In 3-D no single flip suffices either: the operator set has to become
 quality-gated edge removal, and the empty-sphere property is no help either since
 a Delaunay tetrahedralisation still contains slivers — measured directly, a
 Delaunay tet mesh of a random cloud has 10 % of its cells below q=0.1. See
@@ -129,7 +196,7 @@ _TOPOLOGY_LABELS = ("depth", "celltype")
 #: the edges around a sliver in a cut mesh, 113 were declined as a "region
 #: interface" against 54 genuinely locked on the fault.
 #:
-#: This is the same trap :func:`_labelled_points` documents for ``Elements``, one
+#: This is the same trap :func:`_interface_edges` documents for ``Elements``, one
 #: level along. ``Elements`` does not trip :func:`_cell_regions` only because it
 #: is uniform; a bookkeeping label that VARIES does.
 _BOOKKEEPING_LABELS = ("uwnvb_refedge",)
@@ -174,6 +241,28 @@ def _orient2d(pa, pb, pc):
     if abs(det) >= _ORIENT_BOUND * (abs(left) + abs(right)):
         return 1 if det > 0.0 else -1
     return _UNCERTAIN
+
+
+def _largest_cosine(triangles):
+    """The largest cosine of any interior angle across ``triangles``.
+
+    The companion of :func:`_smallest_cosine`, and a monotone stand-in for "the
+    smallest angle" by the same argument. The two measure different failures and
+    a pass that watches only one is blind to the other: an obtuse cell has a
+    cosine near ``-1`` and a *needle* — one tiny angle and two near right angles
+    — has one near ``+1`` while its largest angle stays close to 90 degrees, so
+    it slips past a maximum-angle test untouched.
+    """
+    worst = -1.0
+    for P in triangles:
+        for i in range(3):
+            u = P[(i + 1) % 3] - P[i]
+            v = P[(i + 2) % 3] - P[i]
+            denom = np.hypot(u[0], u[1]) * np.hypot(v[0], v[1])
+            if denom == 0.0:
+                return 1.0
+            worst = max(worst, float((u[0] * v[0] + u[1] * v[1]) / denom))
+    return worst
 
 
 def _smallest_cosine(triangles):
@@ -232,29 +321,49 @@ def _shared_points(dm):
     return flag
 
 
-def _labelled_points(dm):
-    """Chart-indexed flags for points belonging to an **interface** label.
+def _interface_edges(dm):
+    """Chart-indexed flags for the **edges** of an interface label.
 
     A labelled interior edge is an interface — a named boundary, or a registered
-    surface — and must never be flipped, since that is what protects a fault or a
-    material boundary from being reconnected across.
+    surface — and must never be flipped, nor be dissolved by deleting one of its
+    end points, since that is what protects a fault or a material boundary from
+    being reconnected across.
 
-    A label value carried by a **cell** is excluded, because it describes a
-    *volume* and not an interface. That distinction is load-bearing rather than
-    fastidious. ``Elements`` labels every cell of a gmsh mesh, and the
-    ``uwnvb_bisect`` transform propagates a parent's labels to its children, so
-    after refinement every new *interior edge* carries ``Elements`` as well.
-    Treating any labelled point as an interface therefore locked 81 % of the
-    interior edges of a plain refined box, and repair quietly did almost nothing
-    on every real UW3 mesh — while hand-built fixtures, which have no such label,
-    kept working. Over-locking is safe in the sense that it cannot corrupt a mesh,
-    but it is not safe in the sense that matters: it disables the feature silently.
+    Two whole strata are ignored, and both exclusions are load-bearing rather
+    than fastidious.
+
+    A label value carried by a **cell** is a *volume* and not an interface.
+    ``Elements`` labels every cell of a gmsh mesh, and the ``uwnvb_bisect``
+    transform propagates a parent's labels to its children, so after refinement
+    every new *interior edge* carries ``Elements`` as well. Treating any labelled
+    point as an interface therefore locked 81 % of the interior edges of a plain
+    refined box, and repair quietly did almost nothing on every real UW3 mesh —
+    while hand-built fixtures, which have no such label, kept working.
+
+    **Vertices** are ignored because in 2-D an interface is a *curve*, so it is
+    identified by the edges that make it up; a vertex on one always carries
+    interface edges too, and reading the vertices adds nothing but noise. It adds
+    a great deal of noise: ``Null_Boundary`` marks **every vertex of every UW3
+    mesh** with the reserved value 666 — the sentinel a natural boundary
+    condition attaches to when it applies to no boundary — and ``UW_Boundaries``
+    re-packs every per-boundary stratum, sentinel included, into one stacked
+    label. Between them every vertex in the chart is labelled. That costs the
+    flip pass nothing, since it asks only about edges, but a vertex-level test
+    built on it refuses every candidate it is ever offered. Measured: 1114 of
+    1114 on a cut mesh, before a single one reached a shape test.
+
+    Over-locking is safe in the sense that it cannot corrupt a mesh, but not in
+    the sense that matters: it disables the feature silently. Third instance of
+    the same trap, after ``Elements`` here and ``uwnvb_refedge`` in
+    :data:`_BOOKKEEPING_LABELS`. A label's *presence* on a point says nothing
+    about whether it means a material interface.
 
     A region *join* is handled separately, by :func:`_cell_regions`, which
     compares the two cells rather than reading the edge.
     """
     pStart, pEnd = dm.getChart()
     cS, cE = dm.getHeightStratum(0)
+    eS, eE = dm.getDepthStratum(1)
     flag = np.zeros(pEnd - pStart, dtype=bool)
     for i in range(dm.getNumLabels()):
         if dm.getLabelName(i) in _TOPOLOGY_LABELS:
@@ -272,7 +381,7 @@ def _labelled_points(dm):
                 continue
             if ((idx >= cS) & (idx < cE)).any():
                 continue                 # a volume label, not an interface
-            flag[idx - pStart] = True
+            flag[idx[(idx >= eS) & (idx < eE)] - pStart] = True
     return flag
 
 
@@ -337,6 +446,62 @@ def _cell_vertices_and_seam(dm, X, shared):
 
 # ------------------------------------------------------------------- the rebuild
 
+def _write_coordinates(new, dm, vertex_range, source):
+    """Give ``new`` a local vertex coordinate section holding ``source``'s rows.
+
+    ``vertex_range`` is the new mesh's vertex stratum and ``source`` indexes the
+    source mesh's coordinate rows, one per new vertex — the identity for a
+    rebuild that preserves the numbering, and the survivor list for one that
+    compacts the chart. Written through a section rather than ``setCoordinates``
+    because this is purely local data and the latter wants a global vector.
+    """
+    cdim = dm.getCoordinateDim()
+    vS, vE = vertex_range
+    new.setCoordinateDim(cdim)
+    section = new.getCoordinateSection()
+    section.setNumFields(1)
+    section.setFieldComponents(0, cdim)
+    section.setChart(vS, vE)
+    for v in range(vS, vE):
+        section.setDof(v, cdim)
+        section.setFieldDof(v, 0, cdim)
+    section.setUp()
+    coords = PETSc.Vec().createSeq(section.getStorageSize(),
+                                   comm=PETSc.COMM_SELF)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    coords.array[:] = X[source].reshape(-1)
+    new.setCoordinatesLocal(coords)
+
+
+def _copy_labels(new, dm, point_map=None):
+    """Copy every non-topology label across, by point id.
+
+    ``point_map`` is chart-indexed and may be ``None`` for an unchanged chart.
+    A point mapped to a negative entry has been deleted and its label value goes
+    with it. No coordinate matching is involved anywhere, which is the whole
+    reason both rebuilds work in terms of a point map.
+    """
+    pStart, _pEnd = dm.getChart()
+    for i in range(dm.getNumLabels()):
+        name = dm.getLabelName(i)
+        if name in _TOPOLOGY_LABELS:
+            continue
+        new.createLabel(name)
+        source, target = dm.getLabel(name), new.getLabel(name)
+        values = source.getValueIS()
+        if values is None:
+            continue
+        for val in values.getIndices():
+            points = source.getStratumIS(int(val))
+            if points is None:
+                continue
+            for p in points.getIndices():
+                q = int(p) if point_map is None else int(point_map[int(p)
+                                                                  - pStart])
+                if q >= 0:
+                    target.setValue(q, int(val))
+
+
 def rebuild_with_cones(dm, new_cells, new_edges):
     """Build a fresh plex on the **same point chart** with the given cones replaced.
 
@@ -371,7 +536,6 @@ def rebuild_with_cones(dm, new_cells, new_edges):
     pStart, pEnd = dm.getChart()
     vS, vE = dm.getDepthStratum(0)
     eS, eE = dm.getDepthStratum(1)
-    cdim = dm.getCoordinateDim()
 
     new = PETSc.DMPlex().create(comm=dm.comm)
     new.setDimension(dm.getDimension())
@@ -412,43 +576,217 @@ def rebuild_with_cones(dm, new_cells, new_edges):
 
     # Coordinates verbatim: the vertex points are unchanged, so this is the same
     # section over the same chart holding the same values.
-    new.setCoordinateDim(cdim)
-    section = new.getCoordinateSection()
-    section.setNumFields(1)
-    section.setFieldComponents(0, cdim)
-    section.setChart(vS, vE)
-    for v in range(vS, vE):
-        section.setDof(v, cdim)
-        section.setFieldDof(v, 0, cdim)
-    section.setUp()
-    coords = PETSc.Vec().createSeq(section.getStorageSize(),
-                                   comm=PETSc.COMM_SELF)
-    coords.array[:] = np.asarray(dm.getCoordinatesLocal().array)
-    new.setCoordinatesLocal(coords)
-
-    # Labels by point id. No coordinate matching is involved, which is the whole
-    # reason for preserving the numbering.
-    for i in range(dm.getNumLabels()):
-        name = dm.getLabelName(i)
-        if name in _TOPOLOGY_LABELS:
-            continue
-        new.createLabel(name)
-        source, target = dm.getLabel(name), new.getLabel(name)
-        values = source.getValueIS()
-        if values is None:
-            continue
-        for val in values.getIndices():
-            points = source.getStratumIS(int(val))
-            if points is None:
-                continue
-            for p in points.getIndices():
-                target.setValue(int(p), int(val))
+    _write_coordinates(new, dm, (vS, vE), np.arange(vE - vS))
+    _copy_labels(new, dm)
 
     # The star-forest transfers verbatim: every rank preserves its numbering, so
     # the remote point numbers it carries are still the right ones.
     if uw.mpi.size > 1:
         new.setPointSF(dm.getPointSF())
     return new
+
+
+def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
+    """Build a fresh plex with vertices deleted and their links retriangulated.
+
+    Parameters
+    ----------
+    dm : PETSc.DMPlex
+        Source mesh. Not modified.
+    victims : sequence of int
+        Vertex points to delete.
+    drop_cells : sequence of int
+        Cell points to delete — the union of the victims' stars.
+    new_cells : sequence of tuple
+        Replacement cells as anticlockwise vertex triples, in the **source**
+        point numbering.
+
+    Returns
+    -------
+    new : PETSc.DMPlex
+        The rebuilt mesh, on a compacted chart.
+    point_map : numpy.ndarray
+        Chart-indexed source point -> new point, ``-1`` for a deleted point.
+
+    Notes
+    -----
+    This is :func:`rebuild_with_cones` with its one restriction lifted. A flip
+    adds and removes no points, so that function can preserve the numbering and
+    hand the star-forest across verbatim. A deletion cannot: the chart shrinks,
+    and every point after a deleted one shifts. So the numbering is rebuilt, and
+    with it the edges — which are not given, but **derived from the new cells**,
+    since an edge of the retriangulated cavity may be an old edge that survived
+    or a chord the ear-clip invented and there is no way to tell them apart
+    except by looking.
+
+    Ordering is by source point number for everything that survives and by
+    vertex tuple for everything new, so the result is a function of the input
+    topology and not of the order the caller happened to accumulate it in.
+
+    The parallel cost is one exchange. Renumbering the star-forest's *local*
+    indices is local knowledge, but the *remote* index of each leaf is the
+    owner's new number for that point, which only the owner knows — so the new
+    numbering is broadcast root-to-leaf once and read back off the leaves. That
+    is bookkeeping over the existing partition; no cell moves rank, and nothing
+    is redistributed.
+
+    The caller is responsible for never deleting a point that the star-forest
+    touches (see :func:`remove_vertices`), which is what lets the leaf set carry
+    across unchanged rather than having to be recomputed.
+    """
+    pStart, pEnd = dm.getChart()
+    cS, cE = dm.getHeightStratum(0)
+    vS, vE = dm.getDepthStratum(0)
+    eS, eE = dm.getDepthStratum(1)
+
+    dead_v = np.zeros(vE - vS, dtype=bool)
+    dead_v[np.asarray(victims, dtype=np.int64) - vS] = True
+    dead_c = np.zeros(cE - cS, dtype=bool)
+    dead_c[np.asarray(drop_cells, dtype=np.int64) - cS] = True
+
+    surv_v = np.flatnonzero(~dead_v) + vS
+    surv_c = np.flatnonzero(~dead_c) + cS
+
+    # Cells, in the source numbering, as vertex triples: survivors keep their
+    # relative order, the replacements follow sorted by vertex tuple. Every
+    # triple is turned anticlockwise here, because the cone orientations below
+    # are derived from the traversal and a clockwise cell would be wired to a
+    # negative volume without raising.
+    X = _coords(dm)
+
+    def anticlockwise(tri):
+        a, b, c = (int(v) for v in tri)
+        if _orient2d(X[a - vS], X[b - vS], X[c - vS]) < 0:
+            return (a, c, b)
+        return (a, b, c)
+
+    kept = []
+    for c in surv_c:
+        closure = np.asarray(dm.getTransitiveClosure(int(c))[0], dtype=np.int64)
+        kept.append(anticlockwise([p for p in closure if vS <= p < vE]))
+    made = sorted((anticlockwise(tri) for tri in new_cells),
+                  key=lambda tri: tuple(sorted(tri)))
+    cells = kept + made
+
+    # Edges are whatever the cells ask for. An old edge is reused when its pair
+    # is still wanted, which keeps its labels; the rest are new.
+    wanted = set()
+    for tri in cells:
+        a, b, c = tri
+        wanted.update(((a, b) if a < b else (b, a),
+                       (b, c) if b < c else (c, b),
+                       (c, a) if c < a else (a, c)))
+    surv_e, pair_of = [], {}
+    for e in range(eS, eE):
+        a, b = (int(v) for v in dm.getCone(e))
+        pair = (a, b) if a < b else (b, a)
+        if pair in wanted:
+            surv_e.append(e)
+            pair_of[e] = pair
+    edges = [pair_of[e] for e in surv_e] + sorted(wanted
+                                                  - {pair_of[e]
+                                                     for e in surv_e})
+
+    # Strata keep the source's relative order; only their sizes change.
+    sizes = {"c": len(cells), "v": len(surv_v), "e": len(edges)}
+    offset, at = {}, pStart
+    for _start, key in sorted(((cS, "c"), (vS, "v"), (eS, "e"))):
+        offset[key] = at
+        at += sizes[key]
+
+    point_map = np.full(pEnd - pStart, -1, dtype=np.int64)
+    point_map[surv_c - pStart] = offset["c"] + np.arange(len(surv_c))
+    point_map[surv_v - pStart] = offset["v"] + np.arange(len(surv_v))
+    point_map[np.asarray(surv_e, dtype=np.int64) - pStart] = (
+        offset["e"] + np.arange(len(surv_e)))
+
+    def v_new(v):
+        return int(point_map[v - pStart])
+
+    new = PETSc.DMPlex().create(comm=dm.comm)
+    new.setDimension(dm.getDimension())
+    new.setChart(pStart, at)
+    for i in range(len(cells)):
+        new.setConeSize(offset["c"] + i, 3)
+    for i in range(len(edges)):
+        new.setConeSize(offset["e"] + i, 2)
+    new.setUp()
+
+    edge_of, first_of = {}, {}
+    for i, (a, b) in enumerate(edges):
+        e = offset["e"] + i
+        new.setCone(e, [v_new(a), v_new(b)])
+        edge_of[(a, b)] = e
+        first_of[e] = a
+
+    for i, (v0, v1, v2) in enumerate(cells):
+        cone, orientation = [], []
+        for x, y in ((v0, v1), (v1, v2), (v2, v0)):
+            e = edge_of[(x, y) if x < y else (y, x)]
+            cone.append(e)
+            orientation.append(0 if first_of[e] == x else -1)
+        new.setCone(offset["c"] + i, cone)
+        new.setConeOrientation(offset["c"] + i, orientation)
+
+    new.symmetrize()
+    new.stratify()
+
+    _write_coordinates(new, dm, (offset["v"], offset["v"] + len(surv_v)),
+                       surv_v - vS)
+    _copy_labels(new, dm, point_map)
+
+    if uw.mpi.size > 1:
+        _rebuild_point_sf(new, dm, point_map, at - pStart)
+    return new, point_map
+
+
+def _rebuild_point_sf(new, dm, point_map, nroots):
+    """Carry the point star-forest onto a renumbered chart, in one exchange.
+
+    A leaf's remote entry names the *owner's* local index for the shared point,
+    so renumbering it needs a number this rank does not hold. Broadcasting the
+    new numbering root-to-leaf over the star-forest that is being replaced
+    delivers exactly that, one value per leaf.
+
+    The leaf set itself is unchanged: :func:`remove_vertices` never deletes a
+    shared point, so every leaf still exists and only its number has moved.
+    """
+    pStart, pEnd = dm.getChart()
+    sf = dm.getPointSF()
+    try:
+        _nroots, ilocal, iremote = sf.getGraph()
+    except (ValueError, TypeError):
+        return                            # unpopulated: nothing is shared
+
+    root_new = np.ascontiguousarray(point_map, dtype=np.int32)
+    leaf_new = np.full(pEnd - pStart, -1, dtype=np.int32)
+    # COLLECTIVE, and reached on every rank of a parallel run: a rank sharing
+    # nothing still has to participate or its peers block.
+    sf.bcastBegin(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
+    sf.bcastEnd(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
+
+    # petsc4py will not narrow an index array for us — the graph must arrive as
+    # PETSc's own integer type or `setGraph` raises an unsafe-cast TypeError.
+    new_sf = PETSc.SF().create(comm=dm.comm)
+    if ilocal is None or not len(ilocal):
+        new_sf.setGraph(nroots, np.zeros(0, dtype=PETSc.IntType),
+                        np.zeros(0, dtype=PETSc.IntType))
+        new.setPointSF(new_sf)
+        return
+
+    leaves = np.asarray(ilocal, dtype=np.int64)
+    local = point_map[leaves - pStart]
+    remote_index = leaf_new[leaves - pStart]
+    if (local < 0).any() or (remote_index < 0).any():
+        raise RuntimeError(
+            "reconnect: a shared point was deleted. The removal pass must "
+            "freeze the seam; see remove_vertices.")
+
+    remote = np.empty((len(leaves), 2), dtype=PETSc.IntType)
+    remote[:, 0] = np.asarray(iremote).reshape(-1, 2)[:, 0]
+    remote[:, 1] = remote_index
+    new_sf.setGraph(nroots, local.astype(PETSc.IntType), remote.reshape(-1))
+    new.setPointSF(new_sf)
 
 
 # ---------------------------------------------------------------- the flip pass
@@ -563,7 +901,7 @@ def flip_to_reduce_max_angle(dm, max_sweeps=12):
     for _sweep in range(max_sweeps):
         X = _coords(dm)
         verts, frozen = _cell_vertices_and_seam(dm, X, _shared_points(dm))
-        candidates = _flippable(dm, X, verts, frozen, _labelled_points(dm),
+        candidates = _flippable(dm, X, verts, frozen, _interface_edges(dm),
                                 _cell_regions(dm))
 
         claimed = set()
@@ -587,5 +925,245 @@ def flip_to_reduce_max_angle(dm, max_sweeps=12):
         uw.pprint(0, f"[reconnect] reached the {max_sweeps}-sweep cap with flips "
                      f"still pending. The mesh is valid and conforming but not "
                      f"fully repaired; raise max_sweeps if this matters.")
+
+    return dm, total
+
+
+# ------------------------------------------------------------- the removal pass
+
+def _link_ring(cells_of_v, v, verts, cS):
+    """The victim's link as a closed anticlockwise ring, or ``None``.
+
+    Each incident cell contributes the directed edge of its link that the cell
+    traverses, so following them from any start walks the ring once. Anything
+    other than a single closed walk visiting every incident cell — a boundary
+    vertex, a non-manifold fan, a vertex reached twice — returns ``None`` and the
+    victim is declined. That is the cheapest available test for "the link is a
+    simple polygon", which is the one thing the ear-clip below assumes.
+    """
+    step = {}
+    for c in cells_of_v:
+        tri = list(verts[c - cS])
+        i = tri.index(v)
+        step[tri[(i + 1) % 3]] = tri[(i + 2) % 3]
+    if len(step) != len(cells_of_v):
+        return None
+    start = min(step)
+    ring, cur = [start], step[start]
+    while cur != start:
+        if cur not in step or len(ring) > len(step):
+            return None
+        ring.append(cur)
+        cur = step[cur]
+    return ring if len(ring) == len(step) else None
+
+
+def _ear_clip(ring, X, vS):
+    """Triangulate a simple polygon, choosing each ear by shape.
+
+    The ear taken is the one whose triangle has the smallest largest angle —
+    the same objective the flip pass optimises, and for the same reason, that
+    the P1 interpolation bound depends on the maximum angle and not the minimum
+    (Babuska-Aziz). Ties break on the ear tip's coordinates.
+
+    Neither the choice nor the order depends on point numbers or on traversal
+    order, only on geometry, so two ranks holding the same polygon would produce
+    the same triangulation. Nothing here relies on that yet — the removal pass
+    freezes the seam — but a pass that did not have the property could never
+    have the restriction lifted.
+
+    Returns ``None`` if no ear can be cut, which is what a polygon that is not
+    simple looks like from the inside.
+    """
+    poly = list(ring)
+    out = []
+    while len(poly) > 3:
+        n = len(poly)
+        best, best_key = None, None
+        for i in range(n):
+            a, b, c = poly[(i - 1) % n], poly[i], poly[(i + 1) % n]
+            Xa, Xb, Xc = X[a - vS], X[b - vS], X[c - vS]
+            if _orient2d(Xa, Xb, Xc) <= 0:
+                continue                      # reflex, or unresolved
+            # An ear may not contain another vertex of the polygon. The test is
+            # inclusive, so a vertex lying ON the candidate ear's long side
+            # blocks it: that is exactly the chord which would run along a
+            # straight run of the link and leave a vertex stranded inside an
+            # edge, and it is how a cut whose flank passes through the link
+            # survives this pass intact.
+            if any(_orient2d(Xa, Xb, X[p - vS]) >= 0
+                   and _orient2d(Xb, Xc, X[p - vS]) >= 0
+                   and _orient2d(Xc, Xa, X[p - vS]) >= 0
+                   for p in poly if p not in (a, b, c)):
+                continue
+            key = (-_smallest_cosine(((Xa, Xb, Xc),)), Xb[0], Xb[1])
+            if best_key is None or key < best_key:
+                best, best_key = (i, a, b, c), key
+        if best is None:
+            return None
+        i, a, b, c = best
+        out.append((a, b, c))
+        poly.pop(i)
+    return out + [tuple(poly)]
+
+
+def _removable(dm, X, verts, frozen, locked, regions, candidates, gate):
+    """Vertices worth deleting, as ``(gain, tie, victim, cells, triangles)``.
+
+    A candidate is declined unless every one of these holds:
+
+    * it is **not shared**, and no cell of its link is — the seam is frozen for
+      the same reason the flip pass freezes it, and one level more strictly,
+      since a deletion changes the chart and not merely a few cones;
+    * no incident edge carries an **interface label**, which is what keeps a cut
+      or a named boundary intact. Testing the *edges* rather than the vertex is
+      what makes this work at all, in both directions:
+      :func:`~underworld3.utilities.line_cut.cut_along_lines` labels the cut's
+      edges and not its vertices, so a vertex test would delete a vertex out of
+      the middle of a fault and leave a gap in it — while every vertex of every
+      UW3 mesh carries a sentinel label, so a vertex test would equally refuse
+      every candidate. See :func:`_interface_edges`;
+    * every incident edge has **two cells**, so the vertex is interior. A
+      boundary vertex would change the domain, and its link is not closed
+      anyway;
+    * its link cells all lie in the **same region**, so a material join is not
+      dissolved;
+    * the retriangulation **improves the shape** of the cells it replaces, in
+      the sense ``gate`` names.
+
+    The last is a refusal, not a policy: it stops the pass making a mesh worse,
+    but it does not decide where deletion is *wanted*. That is the caller's job,
+    and it matters, because unlike a flip a deletion removes a degree of freedom
+    — run over every vertex it would coarsen wherever the mesh happens to be
+    slightly ill-shaped. The intended candidate set is the vertices a conforming
+    cut had to distort, which is where the damage is.
+    """
+    cS, cE = dm.getHeightStratum(0)
+    vS, _vE = dm.getDepthStratum(0)
+    eS, eE = dm.getDepthStratum(1)
+    pStart, _pEnd = dm.getChart()
+
+    out = []
+    for v in candidates:
+        v = int(v)
+        star = np.asarray(dm.getTransitiveClosure(v, useCone=False)[0],
+                          dtype=np.int64)
+        cells = [int(p) for p in star if cS <= p < cE]
+        edges = [int(p) for p in star if eS <= p < eE]
+        if any(locked[e - pStart] for e in edges):
+            continue
+        if any(len(dm.getSupport(e)) != 2 for e in edges):
+            continue                          # boundary vertex
+        if any(frozen[c - cS] for c in cells):
+            continue                          # seam
+        if regions is not None and not all(
+                np.array_equal(regions[c - cS], regions[cells[0] - cS])
+                for c in cells):
+            continue
+
+        ring = _link_ring(cells, v, verts, cS)
+        if ring is None:
+            continue
+        tris = _ear_clip(ring, X, vS)
+        if tris is None:
+            continue
+
+        old = [X[np.asarray(verts[c - cS]) - vS] for c in cells]
+        new = [X[np.asarray(t) - vS] for t in tris]
+        obtuse = _smallest_cosine(new) - _smallest_cosine(old)
+        needle = _largest_cosine(old) - _largest_cosine(new)
+        if gate in ("obtuse", "both") and obtuse <= -_MIN_GAIN:
+            continue
+        if gate in ("needle", "both") and needle <= -_MIN_GAIN:
+            continue
+        gain = {"obtuse": obtuse, "needle": needle,
+                "both": min(obtuse, needle)}[gate]
+        if gain <= _MIN_GAIN:
+            continue
+        out.append((gain, tuple(X[v - vS]), v, cells, tris))
+
+    # Best gain first, as in the flip pass, so that when two candidates share a
+    # cell the pass keeps the better of the two rather than whichever the loop
+    # reached first. The coordinate tie-break keeps the order geometric.
+    out.sort(key=lambda row: (-row[0], row[1]))
+    return out
+
+
+def remove_vertices(dm, candidates, max_passes=3, gate="both"):
+    """Delete vertices and retriangulate their links, leaving the seam alone.
+
+    The third mesh primitive. A conforming cut has only two — move a vertex onto
+    the surface, or split an edge the surface crosses — and every sliver it
+    leaves follows from that: a crossing that falls near a vertex must either
+    drag the vertex to it or carve a thin cell beside it. Deleting the vertex
+    dissolves the case instead of trading it, and it is the only one of the three
+    that *removes* work rather than adding it.
+
+    Parameters
+    ----------
+    dm : PETSc.DMPlex
+        A 2-D simplex mesh. Not modified.
+    candidates : sequence of int
+        Vertex points offered for deletion. Which vertices to offer is a policy
+        decision and deliberately not made here — see :func:`_removable`.
+    max_passes : int
+        Cap on passes. Each pass deletes an independent set, so a candidate
+        beaten to a shared cell needs another pass to be reconsidered.
+    gate : {"both", "obtuse", "needle"}
+        Which shape measure a deletion must improve, and may never degrade:
+        the cavity's largest angle (``obtuse``), its smallest (``needle``), or
+        both. See the notes.
+
+    Returns
+    -------
+    reduced : PETSc.DMPlex
+        A new mesh, or ``dm`` itself if nothing was deleted.
+    n_removed : int
+        Vertices deleted across all ranks.
+
+    Notes
+    -----
+    Deletions are applied an independent set at a time — no two victims sharing
+    a cell — because two overlapping links would each be retriangulated from a
+    stale reading of the other's result.
+
+    The candidate list is carried between passes through the point map the
+    rebuild returns, so a caller chooses its vertices once against the mesh it
+    was handed rather than having to re-derive them against a renumbered chart.
+    """
+    if dm.getDimension() != 2:
+        raise NotImplementedError(
+            "reconnect.remove_vertices is 2-D only. The cavity of a deleted "
+            "vertex is a polygon in 2-D and a polyhedron in 3-D, and ear "
+            "clipping does not generalise to one.")
+
+    cand = np.unique(np.asarray(candidates, dtype=np.int64))
+    total = 0
+    for _pass in range(max_passes):
+        pStart, _pEnd = dm.getChart()
+        cS, _cE = dm.getHeightStratum(0)
+        X = _coords(dm)
+        verts, frozen = _cell_vertices_and_seam(dm, X, _shared_points(dm))
+        plans = _removable(dm, X, verts, frozen, _interface_edges(dm),
+                           _cell_regions(dm), cand, gate)
+
+        claimed, victims, drop, made = set(), [], [], []
+        for _gain, _tie, v, cells, tris in plans:
+            if any(c in claimed for c in cells):
+                continue
+            claimed.update(cells)
+            victims.append(v)
+            drop.extend(cells)
+            made.extend(tris)
+
+        # COLLECTIVE, and reached on every rank: one with nothing to delete
+        # still has to vote or its peers block waiting for it.
+        n = uw.mpi.comm.allreduce(len(victims), op=MPI.SUM)
+        if n == 0:
+            break
+        dm, point_map = rebuild_without_vertices(dm, victims, drop, made)
+        cand = point_map[cand - pStart]
+        cand = cand[cand >= 0]
+        total += n
 
     return dm, total

@@ -182,7 +182,7 @@ def test_bulk_cell_labels_do_not_lock_interior_edges():
     dm = _refined_dm()
     eS, eE = dm.getDepthStratum(1)
     interior = [e for e in range(eS, eE) if len(dm.getSupport(e)) == 2]
-    locked = reconnect._labelled_points(dm)
+    locked = reconnect._interface_edges(dm)
     pStart, _pEnd = dm.getChart()
     n_locked = sum(1 for e in interior if locked[e - pStart])
 
@@ -295,3 +295,160 @@ def test_a_varying_bookkeeping_label_is_not_a_material_region():
     assert reconnect._cell_regions(dm) is None, (
         "a bookkeeping label that varies over cells is being read as a material "
         "region; every edge between two values would be locked against repair")
+
+
+# ------------------------------------------------------- the removal primitive
+
+def test_a_vertex_blanket_label_is_not_an_interface():
+    """Negative control for the third instance of the labelling trap.
+
+    ``Null_Boundary`` marks every vertex of every UW3 mesh with the reserved
+    value 666, and ``UW_Boundaries`` re-packs every per-boundary stratum —
+    sentinel included — into one stacked label. Reading labelled *points* as
+    interfaces therefore locks the entire vertex stratum. That costs the flip
+    pass nothing, which asks only about edges, and it refused 1114 of 1114
+    candidates the first time the removal pass was offered a cut mesh.
+
+    The first assertion is the control: it fails if the fixture stops blanketing
+    the vertices, at which point the rest of this test proves nothing.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.3,
+        regular=False, qdegree=2)
+    dm = mesh.dm
+    pStart, _pEnd = dm.getChart()
+    vS, vE = dm.getDepthStratum(0)
+    eS, eE = dm.getDepthStratum(1)
+
+    blanket = set()
+    for name in ("Null_Boundary", "UW_Boundaries"):
+        label = dm.getLabel(name)
+        values = label.getValueIS()
+        if values is None:
+            continue
+        for val in values.getIndices():
+            points = label.getStratumIS(int(val))
+            if points is not None:
+                blanket.update(int(p) for p in points.getIndices()
+                               if vS <= p < vE)
+    assert len(blanket) == vE - vS, (
+        "the fixture no longer labels every vertex, so this test cannot show "
+        "that reading vertex labels as interfaces is fatal")
+
+    locked = reconnect._interface_edges(dm)
+    assert not locked[vS - pStart: vE - pStart].any(), (
+        "a vertex is flagged as an interface; every candidate the removal pass "
+        "is offered would be refused")
+    # The edges must still be read, or the fault would not be protected at all.
+    boundary = [e for e in range(eS, eE) if len(dm.getSupport(e)) == 1]
+    assert boundary and all(locked[e - pStart] for e in boundary)
+
+
+def test_removal_conserves_area_and_conformity():
+    dm = _refined_dm()
+    vS, vE = dm.getDepthStratum(0)
+    area = _signed_areas(dm).sum()
+
+    out, n = reconnect.remove_vertices(dm, np.arange(vS, vE))
+
+    assert n > 0, "nothing removed — the fixture is not exercising the pass"
+    # Unlike a flip, a deletion changes the chart: exactly ``n`` vertices go,
+    # and each cavity of ``k`` cells comes back as ``k - 2``.
+    assert out.getDepthStratum(0)[1] - out.getDepthStratum(0)[0] == vE - vS - n
+    assert (out.getHeightStratum(0)[1] - out.getHeightStratum(0)[0]
+            < dm.getHeightStratum(0)[1] - dm.getHeightStratum(0)[0])
+    assert _over_shared_facets(out) == 0
+
+    new_areas = _signed_areas(out)
+    assert (new_areas > 0).all(), "removal inverted a cell"
+    assert new_areas.sum() == pytest.approx(area, rel=1e-13)
+
+    nv = out.getDepthStratum(0)[1] - out.getDepthStratum(0)[0]
+    ne = out.getDepthStratum(1)[1] - out.getDepthStratum(1)[0]
+    nc = out.getHeightStratum(0)[1] - out.getHeightStratum(0)[0]
+    assert nv - ne + nc == 1, "the result is not a disc"
+
+
+def test_removal_cannot_degrade_either_shape_measure():
+    """The gain gate is per cavity; the invariant it buys is global.
+
+    Each pass deletes an independent set, so no two retriangulations interact,
+    and the default gate refuses any cavity whose largest angle would rise or
+    whose smallest would fall. The extremes over the whole mesh therefore cannot
+    move the wrong way.
+
+    Both halves are needed. Gating on the largest angle alone — the criterion
+    the flip pass uses, since the P1 interpolation bound depends on it — let the
+    minimum angle of a cut mesh fall from 10.80 to 10.23 degrees and *raised* the
+    count of cells under 15 degrees from 60 to 61, because a needle has one tiny
+    angle and two close to 90 and so never registers as obtuse.
+    """
+    from underworld3.utilities.line_cut import min_angles
+
+    dm = _refined_dm()
+    before_max, before_min = _max_angles(dm).max(), min_angles(dm).min()
+
+    out, n = reconnect.remove_vertices(dm, np.arange(*dm.getDepthStratum(0)))
+
+    assert n > 0
+    assert _max_angles(out).max() <= before_max + 1e-12
+    assert min_angles(out).min() >= before_min - 1e-12
+
+
+def test_removal_never_dissolves_a_labelled_interface():
+    """A vertex on an interface may not be deleted — its edges would go with it.
+
+    Deleting a vertex removes every edge incident on it, so a victim sitting in
+    the middle of a fault would leave a gap in the chain. The guard reads the
+    *edges*, which is the only reading that works: ``cut_along_lines`` labels the
+    cut's edges and not its vertices.
+
+    The control runs the same removal with the label absent and requires that at
+    least one of those vertices does go, so a guard that never had anything to
+    refuse cannot pass this quietly.
+    """
+    def interface_run(with_label):
+        dm = _refined_dm()
+        vS, vE = dm.getDepthStratum(0)
+        eS, eE = dm.getDepthStratum(1)
+        X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
+        interior = [e for e in range(eS, eE) if len(dm.getSupport(e)) == 2]
+        chosen = interior[::7]
+        ends = set()
+        for e in chosen:
+            ends.update(int(v) for v in dm.getCone(e))
+        marked = np.array(sorted(tuple(X[v - vS]) for v in ends))
+
+        if with_label:
+            dm.createLabel("test_interface")
+            label = dm.getLabel("test_interface")
+            for e in chosen:
+                label.setValue(int(e), 7)
+
+        out, n = reconnect.remove_vertices(dm, np.arange(vS, vE))
+        assert n > 0
+        oS, oE = out.getDepthStratum(0)
+        Y = np.asarray(out.getCoordinatesLocal().array).reshape(-1, 2)[: oE - oS]
+        survived = {tuple(row) for row in Y}
+        return sum(1 for row in marked if tuple(row) not in survived)
+
+    assert interface_run(with_label=False) > 0, (
+        "no vertex of the chosen edges was removable anyway, so the guard is "
+        "not being tested")
+    assert interface_run(with_label=True) == 0, (
+        "a vertex of a labelled interface was deleted; its edges went with it")
+
+
+def test_removal_declines_a_mesh_it_cannot_improve():
+    """Offered every vertex of a clean mesh, the pass must do nothing.
+
+    A deletion removes a degree of freedom, so a pass willing to act without a
+    shape gain would quietly coarsen any mesh it were pointed at.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.12,
+        regular=False, refinement=1, qdegree=2)
+    out, n = reconnect.remove_vertices(mesh.dm,
+                                       np.arange(*mesh.dm.getDepthStratum(0)))
+    assert n == 0
+    assert out is mesh.dm

@@ -172,3 +172,108 @@ def test_adapt_with_repair_runs_in_parallel():
 
     uw.pprint(f"[ptest_0844] np={uw.mpi.size}: repaired child "
               f"{_global(_owned_cells_and_area(child.dm)[0])} cells")
+
+
+# ------------------------------------------------------- the removal primitive
+
+def _sf_coordinate_drift(dm):
+    """Broadcast every vertex's coordinates root-to-leaf; leaves must agree.
+
+    Deletion compacts the point chart, so the star-forest cannot be reused
+    verbatim the way a flip's can: every point after a deleted one shifts, and a
+    leaf's *remote* index is a number only its owner holds.
+    ``rebuild_without_vertices`` renumbers locally and broadcasts the new
+    numbering once to close that gap.
+
+    This is the check a mis-renumbering cannot pass and nothing else catches.
+    Conformity, Euler and area are all rank-local: they stay perfect while the
+    forest points at the wrong points, and only a solve — much later — disagrees.
+    """
+    pStart, pEnd = dm.getChart()
+    vS, vE = dm.getDepthStratum(0)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
+    sf = dm.getPointSF()
+    worst = 0.0
+    for comp in range(2):
+        root = np.zeros(pEnd - pStart, dtype=np.float64)
+        root[vS - pStart: vE - pStart] = X[: vE - vS, comp]
+        leaf = np.full(pEnd - pStart, np.nan, dtype=np.float64)
+        sf.bcastBegin(MPI.DOUBLE, root, leaf, MPI.REPLACE)
+        sf.bcastEnd(MPI.DOUBLE, root, leaf, MPI.REPLACE)
+        seen = np.isfinite(leaf[vS - pStart: vE - pStart])
+        if seen.any():
+            worst = max(worst, float(np.abs(
+                leaf[vS - pStart: vE - pStart][seen]
+                - X[: vE - vS, comp][seen]).max()))
+    return _global(worst, op=MPI.MAX)
+
+
+def test_removal_renumbers_the_star_forest():
+    dm = _refined_dm()
+    vS, vE = dm.getDepthStratum(0)
+    ncells, area = _owned_cells_and_area(dm)
+    assert _global(len(_owned(dm, range(*dm.getChart()))) ) > 0
+
+    out, n = reconnect.remove_vertices(dm, np.arange(vS, vE))
+
+    assert _global(n, op=MPI.MAX) > 0, (
+        "nothing was deleted on any rank, so the renumbering is untested")
+    assert _sf_coordinate_drift(out) == 0.0, (
+        "a leaf no longer resolves to its own coordinates; the compacted chart "
+        "was not propagated correctly")
+
+    ncells_after, area_after = _owned_cells_and_area(out)
+    assert _global(ncells_after) < _global(ncells), "no cell was removed"
+    assert _global(area_after) == pytest.approx(_global(area), rel=1e-12)
+    fS, fE = out.getHeightStratum(1)
+    assert _global(sum(1 for f in range(fS, fE)
+                       if len(out.getSupport(f)) > 2)) == 0
+
+
+def test_removal_leaves_the_seam_alone():
+    """No shared point may be deleted, which is what keeps the leaf set intact.
+
+    ``rebuild_without_vertices`` renumbers the star-forest but does not rebuild
+    it, so a deleted shared point would leave a leaf pointing at nothing. The
+    pass freezes any cavity touching the seam; this is that rule as a
+    postcondition, checked by coordinates because the numbering has moved.
+    """
+    dm = _refined_dm()
+    shared = reconnect._shared_points(dm)
+    pStart, _pEnd = dm.getChart()
+    vS, vE = dm.getDepthStratum(0)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
+    seam = {tuple(X[v - vS]) for v in np.flatnonzero(shared) + pStart
+            if vS <= v < vE}
+    assert _global(len(seam)) > 0, "no vertex is shared; the rule is untested"
+
+    out, n = reconnect.remove_vertices(dm, np.arange(vS, vE))
+    assert _global(n, op=MPI.MAX) > 0
+
+    oS, oE = out.getDepthStratum(0)
+    Y = np.asarray(out.getCoordinatesLocal().array).reshape(-1, 2)[: oE - oS]
+    survived = {tuple(row) for row in Y}
+    assert all(p in survived for p in seam), (
+        f"rank {uw.mpi.rank}: a shared vertex was deleted")
+
+
+def test_reduced_mesh_still_solves():
+    """The only real proof the rebuilt forest and labels came through usable."""
+    dm = _refined_dm()
+    out, n = reconnect.remove_vertices(dm, np.arange(*dm.getDepthStratum(0)))
+    assert _global(n, op=MPI.MAX) > 0
+
+    mesh = uw.discretisation.Mesh(out, qdegree=2)
+    u = uw.discretisation.MeshVariable("u_del", mesh, 1, degree=1)
+    poisson = uw.systems.Poisson(mesh, u_Field=u)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 1.0
+    poisson.add_dirichlet_bc(0.0, "All_Boundaries")
+    poisson.solve()
+    assert poisson.snes.getConvergedReason() > 0
+
+    one = uw.discretisation.MeshVariable("one_del", mesh, 1, degree=1)
+    one.array[:, 0, 0] = 1.0
+    assert uw.maths.Integral(mesh, one.sym[0]).evaluate() == pytest.approx(
+        1.0, rel=1e-10)
