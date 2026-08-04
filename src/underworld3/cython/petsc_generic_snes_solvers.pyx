@@ -6053,10 +6053,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         :meth:`solve`.
 
         ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
-        triangles, and the required consistent surface-mass solve for 3D P2 triangles.
+        triangles, and the consistent surface-mass solve for 3D P2 triangles.
         Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
-        mathematically valid. Three-dimensional recovery currently supports triangular
-        P1/P2 traces only.
+        mathematically valid, and ``"p1"`` selects P1-PROJECTED recovery on a 3D
+        P2 trace (edge-midpoint loads folded onto vertices, lumped P1 triangle
+        mass — sound where the consistent P2 path carries the vertex-integral
+        checkerboard; the FreeSurface default in 3D). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only.
 
         .. warning::
            On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge

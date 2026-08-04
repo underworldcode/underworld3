@@ -669,6 +669,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # residual for singular systems. The Cartesian reaction stash is UNPROJECTED
     # (σ_nn reads velocity rows only).
     use_pnull = bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
+    # L2 norm of the LAST projected-out gauge component (|mean|·√N over the
+    # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
+    # behind the projection (see the guard after the Newton loop).
+    pnull_gauge = [0.0]
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
@@ -679,9 +683,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         _zero_rows_local(Fh, normal_rows)
         if use_pnull:
             sp = Fh.getSubVector(pres_is)
-            mean = sp.sum() / max(sp.getSize(), 1)
+            n_p = sp.getSize()
+            mean = sp.sum() / max(n_p, 1)
             sp.shift(-mean)                  # project out the pressure-gauge mode
             Fh.restoreSubVector(pres_is, sp)
+            pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
         return Fh
 
     # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).
@@ -848,6 +854,25 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         mpi.pprint(f"[rotated_bc] WARNING: nonlinear rotated free-slip did NOT converge "
                    f"in {newton_its} iterations (rel |F̂| = {rel:.2e} of the reference "
                    f"residual); the fields hold the last (unconverged) iterate.")
+
+    # The quotient projection makes the outer test blind to the pressure-gauge
+    # component. A COMPATIBLE datum leaves that component at discretisation
+    # level; an INCOMPATIBLE one (net wall-normal flux into an enclosed
+    # incompressible domain) parks an O(forcing) constant there — and the loop
+    # above would report convergence while mass conservation is violated.
+    # Surface the component: readable state always, loud when it dominates.
+    if use_pnull:
+        solver._rotated_pressure_gauge_residual = pnull_gauge[0]
+        if converged and pnull_gauge[0] > 10.0 * max(rnorm, atol):
+            mpi.pprint(f"[rotated_bc] WARNING: converged in the pressure-gauge "
+                       f"QUOTIENT space, but the projected-out gauge component "
+                       f"(|F̂_p·1|/√N = {pnull_gauge[0]:.2e}) dominates the "
+                       f"converged residual ({rnorm:.2e}). The wall-normal datum "
+                       f"carries a net boundary flux this enclosed incompressible "
+                       f"domain cannot absorb — the velocity field violates mass "
+                       f"conservation at that level. Check the datum's surface "
+                       f"integral (solver._rotated_pressure_gauge_residual holds "
+                       f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
     _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
@@ -1312,7 +1337,12 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
         3D P2 triangles.
       * ``"lumped"`` — the diagonal row-sum mass. It is monotone for supported traces,
         but invalid for 3D P2 triangles because their vertex row sums are exactly zero.
-      * ``"consistent"`` — the full trace mass. Required for pointwise 3D P2 recovery.
+      * ``"consistent"`` — the full trace mass. Pointwise-exact 3D P2 recovery, but
+        carries the vertex-integral checkerboard on P2 triangles (#404 hold).
+      * ``"p1"`` — P1-PROJECTED recovery on a 3D P2 trace (edge-midpoint loads folded
+        onto vertices, lumped P1 triangle mass). Sound where the consistent P2 path
+        checkerboards; the FreeSurface default in 3D. On a P1 trace, identical to
+        ``"lumped"``.
 
     Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
     section offset; the boundary mass is assembled globally by a coordinate-keyed

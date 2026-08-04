@@ -328,6 +328,12 @@ class FreeSurface:
 
         dm = self.mesh.dm
         facet_is = _boundary_stratum_is(dm, self.mesh, self.surface)
+        # In parallel a rank may own NO surface facets → a NULL-handle IS; any
+        # method call on it segfaults (the house guard every other stratum-IS
+        # call site carries — see rotated_bc._boundary_velocity_nodes). Return
+        # no local surface nodes; every consumer already handles the empty case.
+        if not (facet_is and facet_is.getSize() > 0):
+            return np.empty((0, self.mesh.cdim))
         v_start, v_end = dm.getDepthStratum(0)
         csec = dm.getCoordinateSection()
         cdim = self.mesh.cdim
@@ -418,13 +424,25 @@ class FreeSurface:
         # align to the local ring order by position (both sides read the SAME live
         # plex coordinates, so the rounded keys match exactly)
         wmap = {tuple(np.round(cvec[cr], 9)): w for cr, w in acc.items()}
-        return np.array([wmap.get(tuple(np.round(c, 9)), 0.0) for c in rc])
+        w = np.array([wmap.get(tuple(np.round(c, 9)), 0.0) for c in rc])
+        # Every owned-facet vertex is a local surface node, so the key matching
+        # must conserve the accumulated trace mass EXACTLY — a mismatch between
+        # mesh.X.coords and getCoordinatesLocal() would otherwise drop weights
+        # silently (0.0 fallback) and corrupt the datum gauge invisibly.
+        acc_total = float(sum(acc.values()))
+        if not np.isclose(w.sum(), acc_total, rtol=1e-12, atol=1e-300):
+            raise RuntimeError(
+                f"surface trace-mass weights lost {acc_total - w.sum():.3e} of "
+                f"{acc_total:.3e} in coordinate-key matching — the ring coords "
+                "and the plex coordinates have diverged (gauge would be corrupt)."
+            )
+        return w
 
     def _surface_mean(self, values):
         r"""Area-weighted global mean of a surface-node array, identical on every rank
         (a datum gauge must be single-valued across the partition).
 
-        Weighted by arc length, NOT by node count. The distinction is not cosmetic for
+        Weighted by the FE trace mass (boundary length in 2D, area in 3D), NOT by node count. The distinction is not cosmetic for
         the one place it matters most: :math:`\tilde u_n`, the normal velocity the
         consistent solve is asked to reproduce, must satisfy :math:`\oint \tilde u_n
         \,\mathrm{d}s = 0` — an incompressible interior over a closed base can neither
@@ -572,7 +590,7 @@ class FreeSurface:
             converges in one increment (the cold-start affine lift IS the linear solve),
             and a nonlinear rheology iterates with the datum held exactly at every
             accepted iterate. It requires the datum to be discretely flux-free, which
-            :meth:`_surface_mean` guarantees by weighting the demean by arc length.
+            :meth:`_surface_mean` guarantees by weighting the demean by the FE trace mass.
 
         ``"penalty"``
             A weak natural BC. It tolerates a datum that carries a small net flux, at the
@@ -1076,7 +1094,7 @@ class FreeSurface:
         return shape, h_inf, u_n
 
     def _solve_consistent(self, increment, dt):
-        r"""Prescribe :math:`\tilde u_n = \Delta h/\Delta t` (mean-removed by arc length,
+        r"""Prescribe :math:`\tilde u_n = \Delta h/\Delta t` (mean-removed by the FE trace mass,
         so the net flux is zero) on the surface and solve for the material-consistent
         velocity."""
         u_tilde = self._demean(increment / dt)
