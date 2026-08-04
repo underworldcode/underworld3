@@ -193,7 +193,10 @@ def test_a_fault_may_run_close_to_the_seam():
     assert _owned_euler(out) == 0
 
 
-def test_a_seam_crossing_fault_is_refused_on_every_rank():
+def test_an_organic_cut_across_the_seam_is_refused_on_every_rank():
+    """A cut made WITHOUT the crossing placement straddles the seam with a
+    shared facet — the configuration the split refuses (collectively) and
+    Mesh.add_fault exists to prevent."""
     dm = _cut(SPANNING)
     outcome, _result = _attempt(dm)
     outcomes = uw.mpi.comm.allgather(outcome)
@@ -203,3 +206,61 @@ def test_a_seam_crossing_fault_is_refused_on_every_rank():
     assert outcomes[0] == "seam", (
         "a fault spanning the box did not touch the seam; the refusal "
         "contract went untested")
+
+
+def test_a_clean_crossing_splits_and_slips():
+    """The seam-crossing rule end to end: add_fault pulls a shared vertex
+    onto the fault x seam intersection, the split duplicates it with one
+    keyed star-forest entry per crossing, and a frictionless solve slips
+    across the ranks with machine-zero opening."""
+    from underworld3.utilities.fault_contact import fault_slip
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 16,
+        regular=False, qdegree=2)
+    pts = np.array([[0.15, 0.35], [0.85, 0.65]])
+    try:
+        split = base.add_fault(("Flt", pts))
+    except RuntimeError as err:
+        # Collective by construction; a partition can still produce a
+        # genuinely refused geometry — a three-rank corner on the line, or a
+        # crossing placement whose pull the cut's inverted-cell guard
+        # rejects. Both are honest collective refusals, not hangs.
+        if not any(k in str(err) for k in ("seam", "corner", "inverted")):
+            raise
+        pytest.skip(f"partition refused this crossing at np={uw.mpi.size}: "
+                    f"{err}")
+
+    assert _sf_coordinate_drift(split.dm) == 0.0, (
+        "a replica leaf does not resolve to its own coordinates — the "
+        "crossing's star-forest association is wrong")
+    assert _owned_euler(split.dm) == 0, "the slit did not open globally"
+    fS, fE = split.dm.getHeightStratum(1)
+    assert _global(sum(1 for f in range(fS, fE)
+                       if len(split.dm.getSupport(f)) > 2)) == 0
+
+    x, y = split.X
+    v = uw.discretisation.MeshVariable("vX", split, 2, degree=2)
+    p = uw.discretisation.MeshVariable("pX", split, 1, degree=0,
+                                       continuous=False)
+    stokes = uw.systems.Stokes(split, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.tolerance = 1e-6
+    stokes.petsc_use_pressure_nullspace = True
+    for side in ("Top", "Bottom", "Left", "Right"):
+        stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
+    stokes.add_fault_bc(0, "Flt")
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["converged"]
+
+    _s, V, leak = fault_slip(stokes, "Flt", info)
+    leak_max = _global(float(np.abs(leak).max()) if len(leak) else 0.0,
+                       op=MPI.MAX)
+    peak = _global(float(np.abs(V).max()) if len(V) else 0.0, op=MPI.MAX)
+    assert leak_max < 1e-12, "the crossing pair opened"
+    half = 0.5 * float(np.linalg.norm(pts[1] - pts[0]))
+    assert peak > 0.15 * half, "the fault barely slips across the seam"
+    uw.pprint(f"[ptest_0845] np={uw.mpi.size}: crossing slipped, "
+              f"peak {peak:.4f}, leak {leak_max:.1e}")

@@ -51,6 +51,7 @@ algebraic-multigrid default.
 """
 
 import numpy as np
+from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
@@ -59,7 +60,32 @@ from underworld3.utilities.reconnect import (
     _rebuild_point_sf, _shared_points, _write_coordinates)
 
 
-def _fault_chain(dm, fault_edges, X, vS, shared, pStart):
+def _sf_sum(dm, arr):
+    """Sum a chart-indexed int32 array over the point star-forest, in place.
+
+    The same-array leaf/root convention proven by ``edge_split._sf_logical_or``;
+    used to give every rank the GLOBAL fault-facet count at a shared vertex,
+    which is what distinguishes a seam crossing (2) from a tip resting on the
+    seam (1) and a junction on the seam (>2). COLLECTIVE — reached on every
+    rank, gated only on communicator size.
+    """
+    if uw.mpi.size == 1:
+        return arr
+    sf = dm.getPointSF()
+    try:
+        nroots, _il, _ir = sf.getGraph()
+    except (ValueError, TypeError):
+        return arr
+    if nroots < 0:
+        return arr
+    sf.reduceBegin(MPI.INT32_T, arr, arr, MPI.SUM)
+    sf.reduceEnd(MPI.INT32_T, arr, arr, MPI.SUM)
+    sf.bcastBegin(MPI.INT32_T, arr, arr, MPI.REPLACE)
+    sf.bcastEnd(MPI.INT32_T, arr, arr, MPI.REPLACE)
+    return arr
+
+
+def _fault_chain(dm, fault_edges, X, vS, shared, pStart, orientation=None):
     """The fault as an ordered vertex path, tip to tip.
 
     Returns ``(problem, chain)`` where ``problem`` is ``None`` or an
@@ -86,7 +112,9 @@ def _fault_chain(dm, fault_edges, X, vS, shared, pStart):
         nbr.setdefault(a, []).append(b)
         nbr.setdefault(b, []).append(a)
 
-    if len(fault_edges) < 2:
+    endpoint_shared = any(
+        shared[v - pStart] for v, ns in nbr.items() if len(ns) == 1)
+    if len(fault_edges) < 2 and not endpoint_shared:
         return (ValueError,
                 "fault_split: the chain has a single facet, so no interior "
                 "vertex exists to split. A one-facet fault cannot slip."), None
@@ -117,15 +145,18 @@ def _fault_chain(dm, fault_edges, X, vS, shared, pStart):
                         "Only strictly interior faults, with both tips inside "
                         "the mesh, are supported in this version."), None
 
-    # No chain vertex on the seam: an unshared vertex owns its whole fan, so
-    # the split stays rank-local; a shared one is a seam crossing.
-    for v in nbr:
-        if shared[v - pStart]:
+    # A shared chain vertex is legal ONLY as a local endpoint — the seam
+    # crossing, where this rank holds one of the two fault facets and the
+    # other rank the other. A shared vertex with BOTH fault facets local has
+    # its cell fan divided by the seam without the fault crossing it, and no
+    # rank could walk the fan.
+    for v, ns in nbr.items():
+        if shared[v - pStart] and len(ns) > 1:
             return (RuntimeError,
-                    "fault_split: the fault has a vertex on the partition "
-                    "seam (a seam crossing). Crossing support is the next "
-                    "milestone of the deployment design; until then, "
-                    "repartition or keep the fault inside one rank."), None
+                    "fault_split: a fault vertex sits on the partition seam "
+                    "with both its facets on this rank — the fault touches "
+                    "the seam without crossing it. Move the fault or the "
+                    "crossing point."), None
 
     start = min(tips, key=lambda t: (float(X[t - vS][0]),
                                      float(X[t - vS][1]), t))
@@ -144,10 +175,25 @@ def _fault_chain(dm, fault_edges, X, vS, shared, pStart):
         return (ValueError,
                 "fault_split: the labelled facets are not one connected "
                 "chain. Cut and split one polyline at a time."), None
+
+    # Globally consistent chain direction: a rank holding only a FRAGMENT of
+    # a seam-crossing fault cannot use the lexicographic-tip rule (each rank
+    # would pick its own), so the caller passes the fault's global direction
+    # and every fragment is oriented against it. The Plus side is then the
+    # LEFT of the same directed line on every rank.
+    if orientation is not None and len(chain) >= 2:
+        d = np.asarray(orientation, dtype=float).ravel()[:2]
+        if float((X[chain[-1] - vS] - X[chain[0] - vS]) @ d) < 0.0:
+            chain.reverse()
+    elif endpoint_shared:
+        return (RuntimeError,
+                "fault_split: a seam-crossing fault needs the fault's global "
+                "orientation to keep Plus/Minus consistent across ranks — "
+                "pass orientation= (Mesh.add_fault does this itself)."), None
     return None, chain
 
 
-def _take_sides(dm, chain, verts, cS, cE):
+def _take_sides(dm, chain, verts, cS, cE, crossings=()):
     """Classify every fault-fan cell as Plus (+1) or Minus (-1).
 
     At each interior chain vertex the incident cells are walked as a fan,
@@ -163,8 +209,65 @@ def _take_sides(dm, chain, verts, cS, cE):
     Returns ``(problem, side_of_cell, substitutions)`` where ``substitutions``
     maps a Minus cell to the set of chain vertices it must replace with
     replicas.
+
+    ``crossings`` lists chain ENDPOINTS that are genuine seam crossings:
+    globally interior vertices whose fan is divided between two ranks. Their
+    local fan is OPEN — bounded by the one local fault facet and the seam —
+    so the walk cannot close; instead, walking anticlockwise from the local
+    fault neighbour ``u`` to the fan's dead end sweeps exactly the LEFT side
+    of the ray v->u, and the missing (other-rank) fault direction lies inside
+    the gap. Whether that left sweep is Plus depends on whether ``u`` is
+    forward or backward along the globally oriented chain.
     """
     side_of_cell, substitutions = {}, {}
+
+    def _fan_step(v, fan):
+        step = {}
+        for c in fan:
+            tri = [int(t) for t in verts[c - cS]]
+            j = tri.index(v)
+            pp, qq = tri[(j + 1) % 3], tri[(j + 2) % 3]
+            if pp in step:
+                return None
+            step[pp] = (qq, c)
+        return step
+
+    def _assign(cells, side, v):
+        for c in cells:
+            if side_of_cell.setdefault(c, side) != side:
+                return (ValueError,
+                        "fault_split: a cell meets the fault from both "
+                        "sides (the chain kinks through it). Refine the "
+                        "mesh near the kink and re-cut.")
+            if side < 0:
+                substitutions.setdefault(c, set()).add(v)
+        return None
+
+    for v in (crossings or ()):
+        u = chain[1] if v == chain[0] else chain[-2]
+        u_is_forward = (v == chain[0])
+        fan = [int(p) for p in dm.getTransitiveClosure(v, useCone=False)[0]
+               if cS <= int(p) < cE]
+        step = _fan_step(v, fan)
+        if step is None:
+            return (ValueError,
+                    "fault_split: inconsistent fan orientation at a seam "
+                    "crossing."), None, None
+        swept, cur, guard = [], u, 0
+        while cur in step and guard <= len(step):
+            cur, c = step[cur]
+            swept.append(c)
+            guard += 1
+        if cur == u and swept:
+            return (ValueError,
+                    "fault_split: the fan at a seam-crossing vertex closes "
+                    "on this rank — it is not a crossing."), None, None
+        rest = [c for c in fan if c not in set(swept)]
+        left, right = (swept, rest)
+        plus, minus = (left, right) if u_is_forward else (right, left)
+        problem = _assign(plus, 1, v) or _assign(minus, -1, v)
+        if problem is not None:
+            return problem, None, None
     for i in range(1, len(chain) - 1):
         v, before, after = chain[i], chain[i - 1], chain[i + 1]
         fan = [int(p) for p in dm.getTransitiveClosure(v, useCone=False)[0]
@@ -198,19 +301,12 @@ def _take_sides(dm, chain, verts, cS, cE):
                     "side, which cannot happen on a manifold interior "
                     "chain."), None, None
 
-        for cells, side in ((plus_arc, 1), (minus_arc, -1)):
-            for c in cells:
-                if side_of_cell.setdefault(c, side) != side:
-                    # A cell can meet the fault at two chain vertices and be
-                    # walked onto opposite sides only when the chain kinks
-                    # through it (a chord cell). No side assignment is right
-                    # for such a cell, so it is refused, not resolved.
-                    return (ValueError,
-                            "fault_split: a cell meets the fault from both "
-                            "sides (the chain kinks through it). Refine the "
-                            "mesh near the kink and re-cut."), None, None
-        for c in minus_arc:
-            substitutions.setdefault(c, set()).add(v)
+        # A cell can meet the fault at two chain vertices and be walked
+        # onto opposite sides only when the chain kinks through it (a chord
+        # cell); _assign refuses rather than resolves.
+        problem = _assign(plus_arc, 1, v) or _assign(minus_arc, -1, v)
+        if problem is not None:
+            return problem, None, None
     return None, side_of_cell, substitutions
 
 
@@ -248,7 +344,8 @@ def _clone_labels(new, dm, clone_map):
 
 
 def split_along_label(dm, name, value, plus_name, plus_value,
-                      minus_name, minus_value, verbose=False):
+                      minus_name, minus_value, orientation=None,
+                      verbose=False):
     """Duplicate the interior vertices of a labelled facet chain.
 
     Builds a fresh plex in which the cells on the Minus side of the chain are
@@ -317,14 +414,64 @@ def split_along_label(dm, name, value, plus_name, plus_value,
     shared = _shared_points(dm)
     verts, _frozen = _cell_vertices_and_seam(dm, X, shared)
 
+    # Global fault-facet count per vertex (COLLECTIVE, reached on every
+    # rank): distinguishes, at a shared chain endpoint, a seam CROSSING
+    # (2 facets worldwide) from a tip resting on the seam (1) and a junction
+    # on the seam (>2).
+    local_count = np.zeros(pEnd - pStart, dtype=np.int32)
+    try:
+        _nr, _il, _ir = dm.getPointSF().getGraph()
+        leafset = set() if _il is None else {int(q) for q in _il}
+    except (ValueError, TypeError):
+        leafset = set()
+    for e in fault_edges:
+        # owned facets only: a facet shared across the seam is held by both
+        # ranks and would be double-counted by the star-forest sum.
+        if int(e) in leafset:
+            continue
+        for q in dm.getCone(e):
+            local_count[int(q) - pStart] += 1
+    global_count = _sf_sum(dm, local_count.copy())
+
     problem, chain = (None, None)
     if fault_edges:
-        problem, chain = _fault_chain(dm, fault_edges, X, vS, shared, pStart)
+        problem, chain = _fault_chain(dm, fault_edges, X, vS, shared, pStart,
+                                      orientation=orientation)
+
+    crossings = []
+    if problem is None and chain:
+        for v in {chain[0], chain[-1]}:
+            if not shared[v - pStart]:
+                continue
+            total = int(global_count[v - pStart])
+            if total == 2:
+                crossings.append(v)
+            elif total > 2:
+                problem = (ValueError,
+                           "fault_split: a junction sits on the partition "
+                           "seam. Junctions are refused, and doubly so on a "
+                           "seam — offset the segments (the J0 pattern).")
+                break
+            # total == 1: a true tip resting on the seam — unsplit, allowed.
+
+    # A crossing is legal only when exactly the two fault-carrying ranks
+    # share the vertex: a third rank holding cells there has no local fault
+    # structure to classify them with, and its cells would stay welded.
+    if problem is None:
+        third = ((global_count[vS - pStart:vE - pStart] == 2)
+                 & (local_count[vS - pStart:vE - pStart] == 0)
+                 & (shared[vS - pStart:vE - pStart] > 0))
+        if bool(third.any()):
+            problem = (RuntimeError,
+                       "fault_split: a seam crossing lands on a vertex "
+                       "shared with a rank that carries none of the fault — "
+                       "a corner of three or more subdomains. Move the "
+                       "crossing point along the fault.")
 
     side_of_cell, substitutions = {}, {}
     if problem is None and fault_edges:
         problem, side_of_cell, substitutions = _take_sides(
-            dm, chain, verts, cS, cE)
+            dm, chain, verts, cS, cE, crossings=crossings)
 
     fault_pair_edge = {}
     for e in fault_edges:
@@ -372,7 +519,11 @@ def split_along_label(dm, name, value, plus_name, plus_value,
     # stratum, and the edges are re-derived from the substituted cell list so
     # that a facet is reused — labels intact — exactly where its vertex pair
     # survived, and re-homed onto replicas where it did not.
-    interior = chain[1:-1] if chain else []
+    # Replicas: the chain interior, plus any seam-crossing endpoint — the
+    # crossing vertex is globally interior, and its replica is created even
+    # when this rank's Minus arc is empty, because the OTHER rank's replica
+    # needs a root (or partner) to associate with.
+    interior = (chain[1:-1] + crossings) if chain else []
     replicas_of = {v: pEnd + i for i, v in enumerate(sorted(interior))}
     original_of = {t: v for v, t in replicas_of.items()}
 
@@ -482,13 +633,124 @@ def split_along_label(dm, name, value, plus_name, plus_value,
         minus.setValue(int(e), int(minus_value))
 
     if uw.mpi.size > 1:
-        _rebuild_point_sf(new, dm, point_map, at - pStart)
+        # The replica/replacement map rides a second broadcast so a leaf rank
+        # can associate ITS replica of a shared point with the owner's — the
+        # keyed exchange that makes a seam crossing one star-forest entry.
+        dup_new = np.full(pEnd - pStart, -1, dtype=np.int64)
+        for new_pt, old_pt in clone_map.items():
+            dup_new[old_pt - pStart] = new_pt
+        _rebuild_point_sf(new, dm, point_map, at - pStart, dup_new=dup_new)
 
     if verbose and fault_edges:
         uw.pprint(f"[fault_split {name!r}] duplicated {len(interior)} "
                   f"vertices along {len(fault_edges)} facets; sides are "
                   f"{plus_name!r} / {minus_name!r}")
     return new, point_map, clone_map
+
+
+def _pull_seam_vertices_onto_crossings(dm, poly):
+    """Move a SHARED vertex onto each fault-polyline x partition-seam
+    intersection; return the (possibly copied) dm.
+
+    The seam-crossing rule needs the fault to pass through a vertex that is
+    already shared between the two ranks — only then are the two adjacent
+    fault facets rank-local and the fan halves walkable. The nearest vertex
+    in general is NOT shared (sharing is topology, not position), so this is
+    ``pull_vertex_onto`` restricted to shared vertices: intersections are
+    computed rank-locally on the shared (seam) edges, allgathered and
+    deduplicated so every rank sees the same targets, and the winning vertex
+    is chosen by the same global (distance, x, y) reduction — every rank
+    moves its own copy of the same shared vertex, keeping the coordinates of
+    the copies identical. COLLECTIVE; a serial run returns immediately.
+    """
+    if uw.mpi.size == 1:
+        return dm
+
+    from underworld3.utilities.reconnect import _coords, _shared_points
+
+    shared = _shared_points(dm)
+    pStart, _pEnd = dm.getChart()
+    vS, vE = dm.getDepthStratum(0)
+    eS, eE = dm.getDepthStratum(1)
+    X = _coords(dm)
+    P = np.asarray(poly, dtype=float)
+
+    def _segment_hits(a, b):
+        """Intersections of seam edge (a, b) with the polyline's segments."""
+        hits = []
+        d1 = b - a
+        for s0, s1 in zip(P[:-1], P[1:]):
+            d2 = s1 - s0
+            den = d1[0] * d2[1] - d1[1] * d2[0]
+            if abs(den) < 1e-14:
+                continue
+            r = ((s0[0] - a[0]) * d2[1] - (s0[1] - a[1]) * d2[0]) / den
+            t = ((s0[0] - a[0]) * d1[1] - (s0[1] - a[1]) * d1[0]) / den
+            if -1e-9 <= r <= 1 + 1e-9 and -1e-9 <= t <= 1 + 1e-9:
+                hits.append(a + r * d1)
+        return hits
+
+    local_hits = []
+    for e in range(eS, eE):
+        if not shared[e - pStart]:
+            continue
+        a, b = (X[int(q) - vS] for q in dm.getCone(e))
+        local_hits.extend(_segment_hits(np.asarray(a), np.asarray(b)))
+
+    gathered = uw.mpi.comm.allgather(
+        [tuple(np.round(h, 12)) for h in local_hits])
+    targets = sorted({h for rank_hits in gathered for h in rank_hits})
+    if not targets:
+        return dm
+
+    arr = X.copy()
+    # Prefer vertices shared by EXACTLY two ranks: a crossing pulled onto a
+    # subdomain corner (three or more holders) is refused downstream, so the
+    # corner vertices are excluded whenever a two-rank seam vertex exists.
+    # The holder count is an SF-sum of ones.
+    mult = _sf_sum(dm, np.ones(len(shared), dtype=np.int32))
+    two_rank = np.flatnonzero((shared[vS - pStart:vE - pStart] > 0)
+                              & (mult[vS - pStart:vE - pStart] == 2))
+    # COLLECTIVE choice of candidate pool, so every rank reduces over the
+    # same set. Local emptiness is fine (that rank bids infinity).
+    if uw.mpi.comm.allreduce(len(two_rank), op=MPI.SUM) > 0:
+        cand = two_rank
+    else:
+        cand = np.flatnonzero(shared[vS - pStart:vE - pStart])
+    every_shared = np.flatnonzero(shared[vS - pStart:vE - pStart])
+
+    def _nearest(pool, t):
+        if len(pool):
+            d = np.linalg.norm(arr[pool] - t, axis=1)
+            k = int(d.argmin())
+            return (float(d[k]), float(arr[pool[k], 0]),
+                    float(arr[pool[k], 1]))
+        return (np.inf, np.inf, np.inf)
+
+    for t in targets:
+        t = np.asarray(t, dtype=float)
+        # The local cell scale at the crossing: distance to the nearest
+        # vertex of any kind. A pull much longer than this squashes cells
+        # and the cut's inverted-cell guard then refuses the whole mesh, so
+        # a distant two-rank vertex loses to a nearby corner vertex — the
+        # corner is refused DOWNSTREAM with a clear message, which beats an
+        # inverted-cell refusal here.
+        d_all = np.linalg.norm(arr - t, axis=1)
+        h_local = uw.mpi.comm.allreduce(
+            float(d_all.min()) if len(d_all) else np.inf, op=MPI.MIN)
+        dist, cx, cy = uw.mpi.comm.allreduce(_nearest(cand, t), op=MPI.MIN)
+        if dist > 3.0 * max(h_local, 1e-12):
+            dist, cx, cy = uw.mpi.comm.allreduce(
+                _nearest(every_shared, t), op=MPI.MIN)
+        move = np.flatnonzero((np.abs(arr[:, 0] - cx) < 1e-12)
+                              & (np.abs(arr[:, 1] - cy) < 1e-12))
+        arr[move] = t
+
+    out = dm.clone()
+    cvec = out.getCoordinatesLocal()
+    cvec.array[:] = arr.reshape(-1)
+    out.setCoordinatesLocal(cvec)
+    return out
 
 
 def add_fault(mesh, faults, verbose=False):
@@ -569,6 +831,13 @@ def add_fault(mesh, faults, verbose=False):
     dm = mesh.dm
     for name, poly in segments:
         dm = pull_vertex_onto(dm, np.vstack([poly[0], poly[-1]]))
+        # Manufacture CLEAN seam crossings: a shared vertex pulled exactly
+        # onto each fault x seam intersection, so the cut chain passes
+        # through a seam VERTEX with its two fault facets rank-local — the
+        # crossing rule's premise. Without this the cut produces a facet
+        # STRADDLING the seam (held by both ranks, one support each), which
+        # the split rightly refuses as untractable.
+        dm = _pull_seam_vertices_onto_crossings(dm, poly)
         dm, info = cut_along_lines(dm, [poly], label=name,
                                    label_value=values[name])
         if verbose:
@@ -587,8 +856,9 @@ def add_fault(mesh, faults, verbose=False):
     mesh._registered_children.add(cut)
 
     out = cut
-    for name, _poly in segments:
-        out = split_fault(out, name, verbose=verbose)
+    for name, poly in segments:
+        out = split_fault(out, name, orientation=poly[-1] - poly[0],
+                          verbose=verbose)
     return out
 
 
@@ -621,7 +891,7 @@ def _boundaries_with_sides(mesh, name):
     return Enum("boundaries", members)
 
 
-def split_fault(mesh, name, verbose=False):
+def split_fault(mesh, name, orientation=None, verbose=False):
     """Split the nodes along the conforming surface ``name``; return the mesh.
 
     The result is a new, standalone :class:`Mesh` on which every continuous FE
@@ -665,7 +935,7 @@ def split_fault(mesh, name, verbose=False):
         mesh.dm, name, int(mesh.boundaries[name].value),
         plus_name, int(boundaries[plus_name].value),
         minus_name, int(boundaries[minus_name].value),
-        verbose=verbose)
+        orientation=orientation, verbose=verbose)
 
     child = Mesh(
         new_dm,

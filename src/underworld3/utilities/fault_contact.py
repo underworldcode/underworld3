@@ -268,7 +268,10 @@ def _interface_slip_operator(solver, Q):
                                      - cvec[csec.getOffset(vb) // dim]))
             rows = [slip_row(va), slip_row(f), slip_row(vb)]
             for i, gi in enumerate(rows):
-                if gi is None or not (rstart <= gi < rend):
+                # off-rank rows are legal: at a seam crossing the pair is
+                # owned across the seam, and PETSc communicates stashed
+                # entries at assembly.
+                if gi is None:
                     continue
                 for j, gj in enumerate(rows):
                     if gj is None:
