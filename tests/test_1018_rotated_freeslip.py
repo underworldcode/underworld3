@@ -726,3 +726,44 @@ def test_rotated_freeslip_nonlinear_prescribed_normal_datum():
     err = np.abs(vn - target).max()
     assert err < 1e-8, f"nonlinear u.n=cos(theta) not imposed: max nodal error {err:.2e}"
     assert vn.max() > 0.9 and vn.min() < -0.9, "prescribed normal velocity magnitude wrong"
+
+
+def test_rotated_solve_fields_carry_inhomogeneous_dirichlet_walls():
+    """The copy-back gap: essential DOFs are absent from the global vector, so
+    the rotated path's field scatter left them at ZERO wherever the Dirichlet
+    datum g != 0 — the solve was right, every field-based diagnostic
+    (projection, integral, evaluate) read a garbage boundary strip. Caught by
+    the split-fault work (far-field stress off by 20%); fixed by the
+    DMPlexInsertBoundaryValues shim in the copy-back. Homogeneous walls hid
+    this from every earlier rotated test — zero happens to be their datum.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("vIB", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("pIB", mesh, 1, degree=1,
+                                       continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    s.tolerance = 1e-8
+    s.petsc_use_pressure_nullspace = True
+    # Inhomogeneous Dirichlet lid and floor, rotated free-slip sides: the
+    # combination that exposes the gap.
+    s.add_dirichlet_bc((y - 0.5, 0.0), "Top")
+    s.add_dirichlet_bc((y - 0.5, 0.0), "Bottom")
+    s.add_rotated_freeslip_bc(0, "Left")
+    s.add_rotated_freeslip_bc(0, "Right")
+    s.solve()
+
+    vc = np.asarray(v.coords)
+    vd = np.asarray(v.data)
+    for name, mask, target in (
+            ("Top", vc[:, 1] > 1 - 1e-9, +0.5),
+            ("Bottom", vc[:, 1] < 1e-9, -0.5)):
+        assert mask.sum() > 0
+        err = np.abs(vd[mask, 0] - target).max()
+        assert err < 1e-10, (
+            f"{name} wall u_x in the FIELD is off by {err:.2e}; the rotated "
+            "copy-back dropped the inhomogeneous essential values")
+        assert np.abs(vd[mask, 1]).max() < 1e-10

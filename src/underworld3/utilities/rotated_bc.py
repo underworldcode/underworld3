@@ -386,11 +386,19 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
             q.destroy()
             removed = True
 
-    # scatter U → velocity/pressure fields
+    # scatter U → velocity/pressure fields. Constrained (essential-BC) DOFs
+    # are absent from the global vector, so the scatter leaves them at ZERO in
+    # the local field — silently wrong wherever the datum g != 0 (an
+    # inhomogeneous Dirichlet wall next to a rotated boundary). Complete each
+    # field with the DS's own essential values, exactly as the native SNES
+    # copy-back does (the #407/#411 insertion, via the cython shim).
+    from underworld3.cython.petsc_discretisation import \
+        petsc_dm_insert_boundary_values
     for name, var in solver.fields.items():
         sg = U.getSubVector(solver._subdict[name][0])
         solver._subdict[name][1].globalToLocal(sg, var.vec)
         U.restoreSubVector(solver._subdict[name][0], sg)
+        petsc_dm_insert_boundary_values(solver._subdict[name][1], var.vec)
 
     # Parity with the normal solve's post-scatter sync (pyx: after the field copy-back):
     # refresh the enhanced-variable gvec cache and drop the canonical-data cache so
