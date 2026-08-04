@@ -152,14 +152,38 @@ class TestRotatedFreeslipValueFirst:
                 stokes.add_rotated_freeslip_bc(zero, "Top")
             assert stokes._rotated_freeslip_bcs[-1] == ("Top", None)
 
-    def test_nonzero_datum_not_implemented(self, mesh, stokes):
-        with pytest.raises(NotImplementedError):
+    def test_nonzero_datum_is_recorded(self, mesh, stokes):
+        # #458 implemented the prescribed wall-normal datum through the nonlinear
+        # SNES path, so a non-zero value is now ACCEPTED rather than refused. These
+        # two tests asserted the old NotImplementedError and were left red on
+        # development by that merge (#470).
+        with _no_deprecation():
             stokes.add_rotated_freeslip_bc(1.0, "Top")
+        assert stokes._rotated_freeslip_datum["Top"] == 1.0
+        assert stokes._rotated_freeslip_bcs[-1] == ("Top", None)
 
-    def test_symbolic_possibly_nonzero_datum_not_implemented(self, mesh, stokes):
-        # An expression sympy cannot prove zero must be rejected, not let through.
-        with pytest.raises(NotImplementedError):
-            stokes.add_rotated_freeslip_bc(sympy.Symbol("a"), "Top")
+    def test_symbolic_possibly_nonzero_datum_is_recorded(self, mesh, stokes):
+        # An expression sympy cannot PROVE zero must be kept as a datum, not
+        # silently folded into pure free-slip: `is_zero` is True only for a provable
+        # zero, so a field read or an expression is carried through.
+        a = sympy.Symbol("a")
+        with _no_deprecation():
+            stokes.add_rotated_freeslip_bc(a, "Top")
+        assert stokes._rotated_freeslip_datum["Top"] == a
+
+    def test_zero_datum_records_no_datum(self, mesh, stokes):
+        # The other side of the same guard: a provable zero is pure free-slip and
+        # must leave NO datum behind, or every free-slip solve would carry a
+        # redundant constraint through the Newton loop.
+        with _no_deprecation():
+            stokes.add_rotated_freeslip_bc(0.0, "Top")
+        assert "Top" not in stokes._rotated_freeslip_datum
+
+    def test_vector_datum_still_rejected(self, mesh, stokes):
+        # What IS still refused: the datum is the SCALAR wall-normal component, so a
+        # vector value is a genuine mistake and must not be silently reinterpreted.
+        with pytest.raises(TypeError):
+            stokes.add_rotated_freeslip_bc(sympy.Matrix([[0.0, 1.0]]), "Top")
 
 
 class TestConstraintBCValueFirst:
