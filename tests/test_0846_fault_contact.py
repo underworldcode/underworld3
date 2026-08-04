@@ -27,7 +27,8 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
-from underworld3.utilities.fault_contact import (add_frictionless_fault_bc,
+from underworld3.utilities.fault_contact import (add_coulomb_fault_bc,
+                                                 add_frictionless_fault_bc,
                                                  add_viscous_fault_bc,
                                                  fault_slip, solve_with_fault)
 from underworld3.utilities.fault_split import split_fault
@@ -152,6 +153,67 @@ def test_viscous_fault_bridges_welded_to_free():
         f"eta_f = eta/a should sit mid-family: {peaks}")
     assert peaks["hard"] < 0.02 * peaks["free"], (
         f"a stiff dashpot should weld the fault: {peaks}")
+
+
+def test_coulomb_fault_slides_and_sticks():
+    """The first nonlinear law, against its two analytic regimes.
+
+    The fault plane here is ~14 deg to x, so the resolved driving shear is
+    tau_inf = cos(2*theta) ~ 0.88 of the unit far-field shear. A regularised
+    Coulomb fault with strength mu*sigma_n BELOW tau_inf slides at constant
+    stress drop: by superposition its slip is the frictionless crack's
+    scaled by (tau_inf - strength)/tau_inf. Strength ABOVE tau_inf sticks:
+    the slip collapses to the regularisation creep ~ V0, orders of
+    magnitude below the crack. Both regimes must come out of the SAME
+    consistent-Newton machinery — the tangent is sympy-derived from the
+    arctan law, and the loop must genuinely converge in each.
+    """
+    mesh = _split_box()
+    x, y = mesh.X
+    d = (TIP_B - TIP_A) / np.linalg.norm(TIP_B - TIP_A)
+    tau_inf = float(d[0] ** 2 - d[1] ** 2)      # cos(2*theta) resolved shear
+
+    def solve_case(tag, register):
+        v = uw.discretisation.MeshVariable(f"v{tag}", mesh, 2, degree=2)
+        p = uw.discretisation.MeshVariable(f"p{tag}", mesh, 1, degree=0,
+                                           continuous=False)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.tolerance = 1e-6
+        stokes.petsc_use_pressure_nullspace = True
+        for side in ("Top", "Bottom", "Left", "Right"):
+            stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
+        register(stokes)
+        info = solve_with_fault(stokes)
+        assert info["converged"], f"{tag}: did not converge"
+        _s, V, leak = fault_slip(stokes, "Flt", info)
+        assert np.abs(leak).max() < 1e-12
+        return float(np.abs(V).max()), info["nonlinear_iterations"]
+
+    V_free, _ = solve_case(
+        "cf", lambda st: add_frictionless_fault_bc(st, "Flt"))
+
+    # Sliding: strength = half the resolved driving shear.
+    strength = 0.5 * tau_inf
+    V_slide, its_slide = solve_case(
+        "cs", lambda st: add_coulomb_fault_bc(
+            st, 1.0, "Flt", sigma_n=strength, V0=1e-4 * V_free))
+    ratio = V_slide / V_free
+    assert 0.3 < ratio < 0.7, (
+        f"sliding slip ratio {ratio:.3f}; constant-stress-drop scaling "
+        f"predicts ~{(tau_inf - strength) / tau_inf:.2f}")
+    assert its_slide < 30, f"sliding solve took {its_slide} Newton iterations"
+
+    # Stuck: strength safely above the resolved driving shear.
+    V0_stick = 1e-6
+    V_stick, its_stick = solve_case(
+        "ck", lambda st: add_coulomb_fault_bc(
+            st, 1.0, "Flt", sigma_n=2.0, V0=V0_stick))
+    assert V_stick < 20 * V0_stick, (
+        f"stuck fault creeps at {V_stick:.2e}, far above the "
+        f"regularisation velocity {V0_stick:.0e}")
+    assert its_stick < 40, f"stick solve took {its_stick} Newton iterations"
 
 
 def test_registration_refuses_an_unsplit_mesh():

@@ -42,6 +42,8 @@ module functions::
 """
 
 import numpy as np
+import sympy
+from petsc4py import PETSc
 
 from underworld3 import mpi
 
@@ -97,9 +99,103 @@ def add_viscous_fault_bc(solver, conds, boundary):
     eta_f = float(conds)
     if eta_f < 0.0:
         raise ValueError(f"interface viscosity must be >= 0 (got {eta_f}).")
-    registered = dict(getattr(solver, "_fault_interface_viscosity", {}))
-    registered[boundary] = eta_f
-    solver._fault_interface_viscosity = registered
+    if eta_f > 0.0:
+        _register_law(solver, boundary, ViscousFaultLaw(eta_f))
+
+
+#: The canonical slip-rate symbol an interface law is written in: a fault
+#: law is ``tau(slip_rate)`` as a SYMPY expression, and its consistent
+#: Newton tangent is derived by ``sympy.diff`` — never hand-coded. This is
+#: the same division of labour as the bulk constitutive models: the law is
+#: symbolic; only the innermost trace quadrature evaluates compiled
+#: (lambdified) callables.
+slip_rate = sympy.Symbol(r"V_{slip}", real=True)
+
+
+class SymbolicFaultLaw:
+    r"""An interface law :math:`\tau(V)` given as a sympy expression in
+    :data:`slip_rate`.
+
+    The consistent tangent :math:`d\tau/dV` is derived symbolically and
+    both are lambdified ONCE at registration into fast numpy callables —
+    the interface analogue of the JIT step for bulk kernels. A physical law
+    should be monotone (:math:`d\tau/dV > 0`), which keeps the Newton
+    block positive; nothing enforces it, exactly as nothing stops a
+    negative bulk viscosity.
+    """
+
+    def __init__(self, tau_expr):
+        expr = sympy.sympify(tau_expr)
+        stray = expr.free_symbols - {slip_rate}
+        if stray:
+            raise ValueError(
+                f"a fault law must be an expression in fault_contact."
+                f"slip_rate alone (found {sorted(map(str, stray))}); "
+                "substitute parameters before registering.")
+        self.expr = expr
+        self._tau = sympy.lambdify(slip_rate, expr, "numpy")
+        self._dtau = sympy.lambdify(slip_rate, sympy.diff(expr, slip_rate),
+                                    "numpy")
+
+    def tau(self, V):
+        V = np.asarray(V, dtype=float)
+        return np.broadcast_to(np.asarray(self._tau(V), dtype=float),
+                               V.shape).copy()
+
+    def dtau_dV(self, V):
+        V = np.asarray(V, dtype=float)
+        return np.broadcast_to(np.asarray(self._dtau(V), dtype=float),
+                               V.shape).copy()
+
+
+def ViscousFaultLaw(eta_f):
+    r"""The linear member, :math:`\tau = \eta_f V`, as a symbolic law."""
+    return SymbolicFaultLaw(float(eta_f) * slip_rate)
+
+
+def CoulombFaultLaw(mu, sigma_n, V0):
+    r"""Regularised Coulomb friction,
+    :math:`\tau = \mu\sigma_n\,\tfrac{2}{\pi}\arctan(V/V_0)`.
+
+    Smooth, bounded by the strength :math:`\mu\sigma_n`, monotone. Below
+    the regularisation velocity :math:`V_0` the fault sticks (residual
+    creep :math:`\sim V_0`); above it the shear traction saturates and the
+    fault slides at constant stress drop. ``sigma_n`` is PRESCRIBED here;
+    feeding it from the no-opening constraint's reaction (Picard-lagged) is
+    the follow-up increment. The tangent comes from ``sympy.diff``, not a
+    hand-coded derivative.
+    """
+    strength = float(mu) * float(sigma_n)
+    return SymbolicFaultLaw(
+        strength * (2 / sympy.pi) * sympy.atan(slip_rate / float(V0)))
+
+
+def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5):
+    """Regularised Coulomb friction on the split fault ``boundary``
+    (value-first: ``conds`` is the friction coefficient mu).
+
+    ``sigma_n`` is the effective normal stress, prescribed and required in
+    this version (reaction-fed sigma_n is the next increment). ``V0`` is the
+    regularisation velocity — choose it well below the slip rates the flow
+    produces; below it the fault sticks (creep ~ V0), above it the shear
+    traction saturates at mu*sigma_n and the fault slides at constant
+    stress drop.
+    """
+    if sigma_n is None:
+        raise ValueError(
+            "add_coulomb_fault_bc requires sigma_n (the prescribed effective "
+            "normal stress) in this version.")
+    mu = float(conds)
+    if mu <= 0.0 or float(sigma_n) <= 0.0 or float(V0) <= 0.0:
+        raise ValueError("mu, sigma_n and V0 must all be positive.")
+    add_frictionless_fault_bc(solver, boundary)
+    _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0))
+
+
+def _register_law(solver, boundary, law):
+    registered = dict(getattr(solver, "_fault_interface_laws", {}))
+    registered[boundary] = law
+    solver._fault_interface_laws = registered
 
 
 def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
@@ -186,100 +282,165 @@ def _fault_pair_nodes(solver, boundary):
     return out
 
 
-def _interface_slip_operator(solver, Q):
-    r"""The interface constitutive operator on the rotated slip rows, or None.
+# 3-point Gauss-Legendre on [0,1] (exact through quartics — the tangent's
+# N_i N_j weighting of a P2 trace is quartic) and the quadratic line shape
+# functions at those points, node order (end, midpoint, end).
+_XI = 0.5 + (np.sqrt(15.0) / 10.0) * np.array([-1.0, 0.0, 1.0])
+_WQ = np.array([5.0, 8.0, 5.0]) / 18.0
+_NQ = np.column_stack([2.0 * (_XI - 0.5) * (_XI - 1.0),
+                       4.0 * _XI * (1.0 - _XI),
+                       2.0 * _XI * (_XI - 0.5)])
 
-    For every registered fault with :math:`\eta_f > 0`, assembles
-    :math:`\hat K = 2\eta_f M` where :math:`M` is the consistent 1-D P2 trace
-    mass over the fault facets and the factor 2 converts between the slip
-    :math:`V` and the rotated slip row's value :math:`V/\sqrt 2` (the term is
-    :math:`\eta_f\int V\,\delta V\,d\Gamma = 2\eta_f\,\hat u^T M\,\delta\hat
-    u`). Rows/columns live only on slip rows, so the operator adds to the
-    rotated Jacobian and contributes :math:`\hat K\hat u` to the rotated
-    residual — the solve driver owns both hooks.
 
-    A tip vertex has no slip DOF — both sides share the point, the jump
-    space vanishes there — so its trace-mass entries are simply dropped:
-    the interface law inherits V = 0 at the tips topologically, with no
-    boundary condition on the interface system.
+class _InterfaceAssembler:
+    r"""Residual and consistent tangent of the interface laws, per iterate.
 
-    ``Q`` is accepted for interface laws that need the rotated frame; the
-    linear law only needs the row map, which is rebuilt here from the same
-    deterministic pairing ``build_rotation`` used.
+    The interface term is :math:`\int_\Gamma \tau(V)\,\delta V\,d\Gamma`
+    on the fault trace. In the rotated frame the slip row carries
+    :math:`V/\sqrt2`, so the residual lands on the slip rows as
+    :math:`\sqrt2\,L\sum_q w_q\,\tau(V_q)N_i` per facet and the tangent
+    as :math:`2\,L\sum_q w_q\,(d\tau/dV)(V_q)\,N_iN_j` — for a linear
+    law exactly :math:`2\eta_f M`, the measured dashpot. Geometry (facet
+    tables, pair offsets, tangent vectors) is cached at construction; each
+    call evaluates the lambdified law at the CURRENT iterate's slip rates,
+    which is what makes the tangent consistent Newton rather than Picard.
+
+    Tip nodes have no slip DOF (the jump space vanishes there): they enter
+    the quadrature with V = 0 and receive no row or column. A crossing
+    pair's row may be owned across the seam; both Vec and Mat additions go
+    through PETSc's off-process stash. All entry points are COLLECTIVE —
+    ranks holding no fault still participate in the assemblies.
     """
-    from petsc4py import PETSc
 
-    registered = {name: eta for name, eta in
-                  getattr(solver, "_fault_interface_viscosity", {}).items()
-                  if eta > 0.0}
-    if not registered:
-        return None
+    def __init__(self, solver):
+        dm = solver.dm
+        dim = solver.mesh.dim
+        lsec = dm.getLocalSection()
+        l2g = dm.getLGMap()
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        fS, fE = dm.getHeightStratum(1)
 
-    dm = solver.dm
-    dim = solver.mesh.dim
-    lsec = dm.getLocalSection()
-    l2g = dm.getLGMap()
-    csec = dm.getCoordinateSection()
-    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
-    v0, v1 = dm.getDepthStratum(0)
-    fS, fE = dm.getHeightStratum(1)
+        rows, lo_p, lo_m, tans, laws_of, facets = [], [], [], [], [], []
+        index_of = {}
 
-    A = solver.snes.getJacobian()[0]
-    rstart, rend = A.getOwnershipRange()
-    nloc = rend - rstart
-    N = A.getSize()[0]
-    K = PETSc.Mat().create(comm=dm.comm)
-    K.setSizes(((nloc, N), (nloc, N)))
-    K.setType("aij")
-    K.setPreallocationNNZ((3, 0))
-    K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+        for name, law in getattr(solver, "_fault_interface_laws",
+                                 {}).items():
+            pairs = solver.mesh._fault_point_pairs[name]
+            minus_of = {qp: qm for qm, qp in pairs.items()}
+            normals = {q: n for q, _qm, n in
+                       ((q_plus, q_minus, nrm) for q_plus, q_minus, nrm in
+                        _fault_pair_nodes(solver, name))}
 
-    # Consistent mass of a P2 line element of unit length, nodes ordered
-    # (end, midpoint, end).
-    M_e = np.array([[4.0, 2.0, -1.0],
-                    [2.0, 16.0, 2.0],
-                    [-1.0, 2.0, 4.0]]) / 30.0
+            def node_index(q):
+                q = int(q)
+                qm = minus_of.get(q)
+                if qm is None:
+                    return -1                     # a tip: V = 0, no DOF
+                if q in index_of:
+                    return index_of[q]
+                lo = lsec.getFieldOffset(qm, _VELOCITY_FIELD)
+                g = int(l2g.apply([lo + 1])[0])
+                nrm = normals[q]
+                index_of[q] = len(rows)
+                rows.append(g)
+                lo_p.append(lsec.getFieldOffset(q, _VELOCITY_FIELD))
+                lo_m.append(lsec.getFieldOffset(qm, _VELOCITY_FIELD))
+                tans.append((-nrm[1], nrm[0]))
+                return index_of[q]
 
-    for name, eta_f in registered.items():
-        pairs = solver.mesh._fault_point_pairs[name]
-        minus_of = {q_plus: q_minus for q_minus, q_plus in pairs.items()}
-
-        def slip_row(q_plus):
-            """Global row of the pair's rotated slip component, or None at a
-            tip (no replica, no slip DOF)."""
-            q_minus = minus_of.get(int(q_plus))
-            if q_minus is None:
-                return None
-            lo = lsec.getFieldOffset(q_minus, _VELOCITY_FIELD)
-            g = int(l2g.apply([lo + 1])[0])
-            return g if g >= 0 else None
-
-        plus_name = f"{name}Plus"
-        value = solver.mesh.boundaries[plus_name].value
-        if not (dm.hasLabel(plus_name)
-                and dm.getLabel(plus_name).getStratumSize(value) > 0):
-            continue
-        facets = [int(p) for p in
-                  dm.getLabel(plus_name).getStratumIS(value).getIndices()
-                  if fS <= int(p) < fE]
-        for f in facets:
-            va, vb = (int(q) for q in dm.getCone(f))
-            L = float(np.linalg.norm(cvec[csec.getOffset(va) // dim]
-                                     - cvec[csec.getOffset(vb) // dim]))
-            rows = [slip_row(va), slip_row(f), slip_row(vb)]
-            for i, gi in enumerate(rows):
-                # off-rank rows are legal: at a seam crossing the pair is
-                # owned across the seam, and PETSc communicates stashed
-                # entries at assembly.
-                if gi is None:
+            plus_name = f"{name}Plus"
+            value = solver.mesh.boundaries[plus_name].value
+            if not (dm.hasLabel(plus_name) and
+                    dm.getLabel(plus_name).getStratumSize(value) > 0):
+                continue
+            law_id = len(laws_of)
+            laws_of.append(law)
+            for f in (int(q) for q in dm.getLabel(plus_name)
+                      .getStratumIS(value).getIndices()):
+                if not (fS <= f < fE):
                     continue
-                for j, gj in enumerate(rows):
-                    if gj is None:
-                        continue
-                    K.setValue(gi, gj, 2.0 * eta_f * L * M_e[i, j],
-                               addv=True)
-    K.assemble()
-    return K
+                va, vb = (int(q) for q in dm.getCone(f))
+                L = float(np.linalg.norm(
+                    cvec[csec.getOffset(va) // dim]
+                    - cvec[csec.getOffset(vb) // dim]))
+                facets.append((node_index(va), node_index(f),
+                               node_index(vb), L, law_id))
+
+        # petsc4py refuses to narrow index arrays — Vec/Mat setValues need
+        # PETSc's own integer type.
+        self._rows = np.asarray(rows, dtype=PETSc.IntType)
+        self._lo_p = np.asarray(lo_p, dtype=np.int64)
+        self._lo_m = np.asarray(lo_m, dtype=np.int64)
+        self._tan = np.asarray(tans, dtype=float).reshape(-1, 2)
+        self._laws = laws_of
+        self._facets = facets
+        self._dim = dim
+
+    def _nodal_slip(self, solver, uvec):
+        """V at every law-carrying pair node, from the CURRENT iterate —
+        read through the local vector so ghosted (cross-seam) values
+        resolve, and padded with the tips' identically-zero slip."""
+        dm = solver.dm
+        lvec = dm.getLocalVec()
+        dm.globalToLocal(uvec, lvec)
+        a = np.asarray(lvec.getArray())
+        V = np.zeros(len(self._rows) + 1)
+        for k in range(len(self._rows)):
+            du = (a[self._lo_p[k]:self._lo_p[k] + 2]
+                  - a[self._lo_m[k]:self._lo_m[k] + 2])
+            V[k] = float(self._tan[k] @ du)
+        dm.restoreLocalVec(lvec)
+        return V                                   # V[-1] == 0: the tip pad
+
+    def residual_add(self, solver, uvec, Fh):
+        """Add the interface force to the ROTATED residual, in place.
+        COLLECTIVE (the Vec assembly): every rank calls, fault or not."""
+        V = self._nodal_slip(solver, uvec)
+        vals = np.zeros(len(self._rows))
+        s2 = np.sqrt(2.0)
+        for ia, im, ib, L, law_id in self._facets:
+            idx = (ia, im, ib)
+            Vq = _NQ @ V[list(idx)]
+            tq = self._laws[law_id].tau(Vq)
+            contrib = s2 * L * (_NQ.T @ (_WQ * tq))
+            for j, k in enumerate(idx):
+                if k >= 0:
+                    vals[k] += contrib[j]
+        if len(self._rows):
+            Fh.setValues(self._rows, vals, addv=True)
+        Fh.assemblyBegin()
+        Fh.assemblyEnd()
+
+    def tangent(self, solver, uvec):
+        """The consistent interface tangent at the current iterate, as a
+        fresh Mat on the composite layout (caller destroys). COLLECTIVE."""
+        dm = solver.dm
+        A = solver.snes.getJacobian()[0]
+        rstart, rend = A.getOwnershipRange()
+        K = PETSc.Mat().create(comm=dm.comm)
+        K.setSizes(((rend - rstart, A.getSize()[0]),
+                    (rend - rstart, A.getSize()[0])))
+        K.setType("aij")
+        K.setPreallocationNNZ((3, 0))
+        K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+
+        V = self._nodal_slip(solver, uvec)
+        for ia, im, ib, L, law_id in self._facets:
+            idx = (ia, im, ib)
+            Vq = _NQ @ V[list(idx)]
+            dq = self._laws[law_id].dtau_dV(Vq)
+            Ke = 2.0 * L * (_NQ.T @ (_NQ * (_WQ * dq)[:, None]))
+            for i, ki in enumerate(idx):
+                if ki < 0:
+                    continue
+                for j, kj in enumerate(idx):
+                    if kj >= 0:
+                        K.setValue(int(self._rows[ki]),
+                                   int(self._rows[kj]),
+                                   float(Ke[i, j]), addv=True)
+        K.assemble()
+        return K
 
 
 def fault_slip(solver, boundary, solve_result):
