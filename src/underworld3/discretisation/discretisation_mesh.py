@@ -7423,6 +7423,33 @@ class Mesh(Stateful, uw_object):
         self._registered_children.add(child)
         return child
 
+    def add_fault(self, faults, verbose=False):
+        """Cut AND split one or more faults; return the split mesh.
+
+        The split-node fault pipeline in one call: each fault becomes a
+        genuine velocity discontinuity — a conforming facet chain whose
+        nodes are duplicated, with boundaries ``<name>Plus`` /
+        ``<name>Minus`` and the coincident DOF pairing recorded. Interface
+        conditions then go through ``solver.add_fault_bc(conds, name)``
+        (``conds = 0`` frictionless, ``conds`` > 0 a viscous interface) and
+        an ordinary ``solve()``.
+
+        ``faults`` is a ``Surface``, a ``(name, points)`` pair, or a
+        sequence of either (a network — cut all, then split all). Each
+        fault is one open polyline with both tips strictly inside the
+        domain; segments must not share vertices, so branches and
+        crossings are represented as OFFSET segments (a one-to-two-cell
+        ligament). The result is standalone — no geometric-MG tail, since
+        the coarse levels do not carry the fault (see
+        :meth:`add_conforming_surface`); solvers take their
+        algebraic-multigrid defaults.
+
+        Implementation and design: ``underworld3.utilities.fault_split``
+        and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
+        """
+        from underworld3.utilities.fault_split import add_fault
+        return add_fault(self, faults, verbose=verbose)
+
 
     def adapt(self, metric_field, max_levels=None, node_budget=None,
               builder=None, adapter=None, engine=None, verbose=False,

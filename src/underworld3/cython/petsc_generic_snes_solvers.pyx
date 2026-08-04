@@ -1267,9 +1267,11 @@ class SolverBaseClass(uw_object):
         unguard : remove the deadline.
         estimate_difficulty : bound the *work* (an iteration count) instead.
         """
-        if getattr(self, "_rotated_freeslip_bcs", None):
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
             raise NotImplementedError(
-                "guard() is not available with rotated free-slip BCs: that path runs "
+                "guard() is not available with rotated free-slip / fault-contact "
+                "BCs: that path runs "
                 "its own Krylov loop outside self.snes (utilities/rotated_bc.py), so "
                 "the deadline cannot reach it and the guard would be silently inert."
             )
@@ -1325,9 +1327,11 @@ class SolverBaseClass(uw_object):
         ``consistent_jacobian="continuation"`` the cap applies to EACH stage (Picard
         then Newton), so one probe may run up to twice ``max_nl_its``.
         """
-        if getattr(self, "_rotated_freeslip_bcs", None):
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
             raise NotImplementedError(
-                "estimate_difficulty() is not available with rotated free-slip BCs: "
+                "estimate_difficulty() is not available with rotated free-slip / "
+                "fault-contact BCs: "
                 "that path solves outside self.snes (utilities/rotated_bc.py), so the "
                 "iteration cap and resume anchor cannot be applied to it."
             )
@@ -5663,6 +5667,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._rotated_freeslip_bcs = []
         self._rotated_freeslip_datum = {}
         self._rotated_freeslip_info = None
+        # Split-fault interface conditions (add_fault_bc): fault names whose
+        # coincident DOF pairs carry a contact, and the interface viscosity
+        # per fault (0 = frictionless). Non-empty => solve() takes the rotated
+        # path, where utilities/fault_contact.py supplies the pair blocks and
+        # the interface operator.
+        self._fault_contact_faults = []
+        self._fault_interface_viscosity = {}
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -5902,6 +5913,45 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if sympy.sympify(conds).is_zero is not True:
                 self._rotated_freeslip_datum[boundary] = conds
         self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def add_fault_bc(self, conds=0, boundary=None):
+        r"""Interface condition on a split-node fault (value-first).
+
+        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
+        ``fault_split.split_fault``); the mesh carries its coincident DOF
+        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
+        is always imposed strongly; ``conds`` sets the tangential law:
+
+        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
+          traction, the slip emerges (the stress-driven crack).
+        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
+          ``conds`` = :math:`\eta_f` (bulk viscosity per unit length; the
+          zero-thickness limit of a band of viscosity :math:`\eta_b` and
+          width :math:`w` is :math:`\eta_f = \eta_b/w`). ``conds`` large
+          removes the fault (only the JUMP is penalised — nothing becomes
+          rigid).
+
+        The solve then takes the rotated strong-constraint path
+        (``utilities/rotated_bc.py`` with the pair blocks of
+        ``utilities/fault_contact.py``); ``guard()`` /
+        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
+        Slip and leak per coincident pair afterwards:
+        ``fault_contact.fault_slip(solver, boundary,
+        solver._rotated_freeslip_info)``.
+        """
+        from underworld3.utilities import fault_contact
+
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_fault_bc() requires the fault's boundary name string; "
+                f"got {type(boundary).__name__}")
+        eta_f = float(conds)
+        if eta_f == 0.0:
+            fault_contact.add_frictionless_fault_bc(self, boundary)
+        else:
+            fault_contact.add_viscous_fault_bc(self, eta_f, boundary)
         self.is_setup = False
         return
 
@@ -8679,7 +8729,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
-        if self._rotated_freeslip_bcs:
+        if self._rotated_freeslip_bcs or self._fault_contact_faults:
             # Run the same pre-solve preamble as the standard path so the pointwise
             # functions see the DM time, the auxiliary vector, and updated constants
             # (needed for problems whose coefficients live in auxiliary fields). This

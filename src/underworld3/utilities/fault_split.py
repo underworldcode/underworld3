@@ -484,6 +484,107 @@ def split_along_label(dm, name, value, plus_name, plus_value,
     return new, point_map, clone_map
 
 
+def add_fault(mesh, faults, verbose=False):
+    """Cut AND split one or more faults into a mesh; return the split Mesh.
+
+    The one-call form of the split-node pipeline: for each fault, the tips
+    are placed onto mesh vertices, the mesh is cut so the fault becomes a
+    conforming facet chain, and the chain is split into a genuine
+    discontinuity with boundaries ``<name>Plus`` / ``<name>Minus`` and the
+    coincident DOF pairing recorded. Slip conditions then go through
+    ``solver.add_fault_bc(conds, name)`` and an ordinary ``solve()``.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The mesh to fault — typically an adapted child already refined
+        toward the fault. Not modified; the fault position stays a design
+        variable (re-call on the base when it moves).
+    faults : Surface, (name, points), or a sequence of either
+        Each fault is a single open polyline with both tips strictly inside
+        the domain. A sequence is a NETWORK: every fault is cut first, then
+        every fault is split, so disjoint (offset-junction) networks work in
+        one call. Segments must not share vertices — represent a branch or
+        crossing as offset segments (a ligament of one or two local cell
+        sizes), the J0 pattern of the deployment design.
+    verbose : bool, optional
+        Report each cut and split.
+
+    Returns
+    -------
+    Mesh
+        The split mesh, carrying every fault's side boundaries and pairing.
+    """
+    from enum import Enum
+
+    from underworld3.discretisation import Mesh
+    from underworld3.meshing.surfaces import (Surface,
+                                              _fault_collect_polylines)
+    from underworld3.utilities.line_cut import (cut_along_lines,
+                                                pull_vertex_onto)
+
+    if isinstance(faults, (Surface, tuple)) or (
+            hasattr(faults, "name") and hasattr(faults, "control_points")):
+        faults = [faults]
+
+    segments = []
+    for entry in faults:
+        if isinstance(entry, tuple) and len(entry) == 2 \
+                and isinstance(entry[0], str):
+            name, points = entry
+            polylines = [np.asarray(points, dtype=float)]
+        else:
+            name = entry.name
+            polylines = [np.array([segs[0][0]] + [b for _a, b in segs])
+                         for segs in _fault_collect_polylines(entry)]
+        if len(polylines) != 1:
+            raise ValueError(
+                f"fault {name!r} holds {len(polylines)} polylines; a fault "
+                "segment is ONE open polyline — pass a sequence of "
+                "single-segment faults for a network.")
+        segments.append((name, polylines[0]))
+
+    # One boundary value per fault, minted with _boundaries_with's rule
+    # (first free ordinary value, stepped past anything taken).
+    members = {b.name: b.value for b in mesh.boundaries}
+    values = {}
+    for name, _poly in segments:
+        if name in members:
+            raise ValueError(
+                f"this mesh already has a boundary called {name!r}.")
+        taken = set(members.values())
+        ordinary = [v for v in taken if v < 666]
+        candidate = (max(ordinary) + 1) if ordinary else 1
+        while candidate in taken:
+            candidate += 1
+        members[name] = values[name] = candidate
+
+    dm = mesh.dm
+    for name, poly in segments:
+        dm = pull_vertex_onto(dm, np.vstack([poly[0], poly[-1]]))
+        dm, info = cut_along_lines(dm, [poly], label=name,
+                                   label_value=values[name])
+        if verbose:
+            uw.pprint(f"[add_fault {name!r}] {info['n_cut_edges']} facets, "
+                      f"min angle {info['min_angle']:.2f} deg")
+
+    cut = Mesh(dm, simplex=mesh.dm.isSimplex(),
+               coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
+               qdegree=mesh.qdegree,
+               boundaries=Enum("boundaries", members), verbose=False)
+    cut.parent = mesh
+    cut._relationship_kind = "refinement"
+    cut._refine_dofs_coincide = False
+    cut.regions = mesh.regions
+    cut._parent_mesh_version = mesh._mesh_version
+    mesh._registered_children.add(cut)
+
+    out = cut
+    for name, _poly in segments:
+        out = split_fault(out, name, verbose=verbose)
+    return out
+
+
 def _boundaries_with_sides(mesh, name):
     """The mesh's boundary enum extended with ``<name>Plus`` / ``<name>Minus``.
 
@@ -584,7 +685,22 @@ def split_fault(mesh, name, verbose=False):
     # pairing — the sides are geometrically coincident, so no coordinate
     # query can ever recover it — and it is what a fault interface condition
     # (slip constraint, friction) pairs degrees of freedom with.
-    child._fault_point_pairs = getattr(mesh, "_fault_point_pairs", {}).copy()
+    #
+    # Splitting renumbers the whole chart, so PRIOR faults' pairings are
+    # carried through point_map rather than copied verbatim — copied ids
+    # would silently index the wrong points on the new mesh. A prior fault's
+    # points always survive this split (only this fault's minus spokes are
+    # re-homed), asserted rather than assumed.
+    child._fault_point_pairs = {}
+    for prior, pairs in getattr(mesh, "_fault_point_pairs", {}).items():
+        remapped = {int(point_map[qm - pStart]): int(point_map[qp - pStart])
+                    for qm, qp in pairs.items()}
+        if any(q < 0 for kv in remapped.items() for q in kv):
+            raise RuntimeError(
+                f"fault_split internal: splitting {name!r} dropped a point "
+                f"of the prior fault {prior!r}'s pairing — the faults are "
+                "not disjoint.")
+        child._fault_point_pairs[prior] = remapped
     child._fault_point_pairs[name] = {
         int(q_minus): int(point_map[old_pt - pStart])
         for q_minus, old_pt in clone_map.items()
