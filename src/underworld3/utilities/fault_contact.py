@@ -118,6 +118,14 @@ slip_rate = sympy.Symbol(r"V_{slip}", real=True)
 #: nonlocal and non-stiff; the stiff direction dtau/dV stays full Newton).
 normal_stress = sympy.Symbol(r"\sigma_{n,eff}", real=True, nonnegative=True)
 
+#: The interface state variable (rate-state theta), per node like the
+#: normal stress: a law may use it; the values are held per fault on the
+#: solver (``solver._fault_state``) and advanced between solves by
+#: :func:`update_fault_state` — the ageing-law ODE integrated exactly for
+#: piecewise-constant V. (When manifold MeshVariables land, theta moves
+#: there; the law layer is unchanged either way.)
+state_variable = sympy.Symbol(r"\theta_{state}", real=True, positive=True)
+
 
 class SymbolicFaultLaw:
     r"""An interface law :math:`\tau(V)` given as a sympy expression in
@@ -133,27 +141,28 @@ class SymbolicFaultLaw:
 
     def __init__(self, tau_expr):
         expr = sympy.sympify(tau_expr)
-        stray = expr.free_symbols - {slip_rate, normal_stress}
+        stray = expr.free_symbols - {slip_rate, normal_stress,
+                                     state_variable}
         if stray:
             raise ValueError(
                 f"a fault law must be an expression in fault_contact."
-                f"slip_rate (and optionally normal_stress) alone (found "
-                f"{sorted(map(str, stray))}); substitute other parameters "
-                "before registering.")
+                f"slip_rate (and optionally normal_stress and "
+                f"state_variable) alone (found {sorted(map(str, stray))}); "
+                "substitute other parameters before registering.")
         self.expr = expr
-        args = (slip_rate, normal_stress)
+        args = (slip_rate, normal_stress, state_variable)
         self._tau = sympy.lambdify(args, expr, "numpy")
         self._dtau = sympy.lambdify(args, sympy.diff(expr, slip_rate),
                                     "numpy")
 
-    def tau(self, V, S):
+    def tau(self, V, S, T):
         V = np.asarray(V, dtype=float)
-        return np.broadcast_to(np.asarray(self._tau(V, S), dtype=float),
+        return np.broadcast_to(np.asarray(self._tau(V, S, T), dtype=float),
                                V.shape).copy()
 
-    def dtau_dV(self, V, S):
+    def dtau_dV(self, V, S, T):
         V = np.asarray(V, dtype=float)
-        return np.broadcast_to(np.asarray(self._dtau(V, S), dtype=float),
+        return np.broadcast_to(np.asarray(self._dtau(V, S, T), dtype=float),
                                V.shape).copy()
 
 
@@ -204,6 +213,83 @@ def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5):
         raise ValueError("mu, sigma_n and V0 must all be positive.")
     add_frictionless_fault_bc(solver, boundary)
     _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0))
+
+
+def RateStateFaultLaw(a, b, V0, f0, Dc, sigma_n="reaction"):
+    r"""Regularised rate-and-state friction (arcsinh form — never the raw
+    logarithmic law, which is singular at V = 0):
+
+    .. math:: \tau = a\,\sigma_n\,\mathrm{asinh}\!\left[
+        \frac{V}{2V_0}\exp\!\left(\frac{f_0 + b\ln(V_0\theta/D_c)}
+        {a}\right)\right],
+
+    smooth and odd in V (sign-correct for either slip direction), with the
+    state :math:`\theta` entering per node through
+    :data:`state_variable` and evolving by the ageing law between solves
+    (:func:`update_fault_state`). At steady state
+    (:math:`\theta = D_c/V`) it reduces to
+    :math:`\tau = \sigma_n(f_0 + (a-b)\ln V/V_0)`: velocity
+    strengthening for a > b, weakening for a < b. The consistent tangent
+    in V comes from ``sympy.diff``, exactly as for every other law.
+    """
+    a, b, V0, f0, Dc = (float(q) for q in (a, b, V0, f0, Dc))
+    sn = normal_stress if sigma_n == "reaction" else float(sigma_n)
+    return SymbolicFaultLaw(
+        a * sn * sympy.asinh(
+            (slip_rate / (2 * V0)) * sympy.exp(
+                (f0 + b * sympy.log(V0 * state_variable / Dc)) / a)))
+
+
+def add_rate_state_fault_bc(solver, conds, boundary, *, a, b, V0, Dc,
+                            sigma_n="reaction", theta0=None):
+    """Rate-and-state friction on the split fault ``boundary``
+    (value-first: ``conds`` is the reference friction coefficient f0).
+
+    ``a``/``b`` are the direct-effect and evolution coefficients, ``V0``
+    the reference slip rate, ``Dc`` the state-evolution distance;
+    ``sigma_n`` as for Coulomb. The state starts at ``theta0`` (default
+    ``Dc/V0``, steady at the reference rate) and is advanced after each
+    solve with :func:`update_fault_state`.
+    """
+    add_frictionless_fault_bc(solver, boundary)
+    _register_law(solver, boundary,
+                  RateStateFaultLaw(a, b, V0, conds, Dc, sigma_n=sigma_n))
+    states = dict(getattr(solver, "_fault_state", {}))
+    states.setdefault(boundary, {"theta0": float(
+        theta0 if theta0 is not None else float(Dc) / float(V0)),
+        "Dc": float(Dc), "by_point": {}})
+    solver._fault_state = states
+
+
+def update_fault_state(solver, boundary, dt, solve_result):
+    """Advance the fault's state variable by the ageing law over ``dt``:
+
+    d(theta)/dt = 1 - V*theta/Dc, integrated EXACTLY for the solve's
+    (piecewise-constant) slip rates:
+    theta' = theta*exp(-x) + (Dc/|V|)*(1 - exp(-x)), x = |V| dt / Dc —
+    written with expm1 so the V -> 0 limit degrades smoothly to pure
+    ageing, theta' = theta + dt. Returns the median of theta*|V|/Dc over
+    the slipping nodes (1.0 at steady state — the convergence monitor).
+    """
+    state = solver._fault_state[boundary]
+    Dc = state["Dc"]
+    assembler = _InterfaceAssembler(solver, include=(boundary,))
+    V = np.abs(assembler._nodal_slip(solver, solve_result["U"])[:-1])
+    pts = sorted(assembler._points, key=assembler._points.get)
+    theta = np.array([state["by_point"].get(q, state["theta0"])
+                      for q in pts])
+    x = V * float(dt) / Dc
+    decay = np.exp(-x)
+    growth = np.where(x > 1e-8,
+                      (Dc / np.maximum(V, 1e-300)) * (-np.expm1(-x)),
+                      float(dt) * (1.0 - 0.5 * x))
+    theta = theta * decay + growth
+    state["by_point"] = {q: float(t) for q, t in zip(pts, theta)}
+    slipping = V > 0.2 * V.max() if V.size and V.max() > 0 else \
+        np.zeros(0, dtype=bool)
+    if not slipping.any():
+        return float("nan")
+    return float(np.median(theta[slipping] * V[slipping] / Dc))
 
 
 def _register_law(solver, boundary, law):
@@ -338,11 +424,14 @@ class _InterfaceAssembler:
         rows, lo_p, lo_m, tans, nrms, laws_of, facets = \
             [], [], [], [], [], [], []
         index_of = {}
+        fault_of = []
+        current = [None]                      # the fault being walked
 
         registered = dict(getattr(solver, "_fault_interface_laws", {}))
         for name in include:
             registered.setdefault(name, None)   # geometry only (diagnostics)
         for name, law in registered.items():
+            current[0] = name
             pairs = solver.mesh._fault_point_pairs[name]
             minus_of = {qp: qm for qm, qp in pairs.items()}
             normals = {q: n for q, _qm, n in
@@ -360,6 +449,7 @@ class _InterfaceAssembler:
                 g = int(l2g.apply([lo + 1])[0])
                 nrm = normals[q]
                 index_of[q] = len(rows)
+                fault_of.append(current[0])
                 rows.append(g)
                 lo_p.append(lsec.getFieldOffset(q, _VELOCITY_FIELD))
                 lo_m.append(lsec.getFieldOffset(qm, _VELOCITY_FIELD))
@@ -435,6 +525,17 @@ class _InterfaceAssembler:
         # which makes a reaction-fed law START frictionless — a natural
         # homotopy from the crack toward the frictional state.
         self._sigma = np.zeros(len(rows) + 1)
+        # Interface state (rate-state theta) per pair node, loaded from the
+        # solver's per-fault store; 1.0 for faults without state (the value
+        # is inert unless the law references state_variable).
+        self._theta = np.ones(len(rows) + 1)
+        fault_states = getattr(solver, "_fault_state", {})
+        points_in_order = sorted(index_of, key=index_of.get)
+        for k, fname in enumerate(fault_of):
+            st = fault_states.get(fname)
+            if st is not None:
+                self._theta[k] = st["by_point"].get(points_in_order[k],
+                                                    st["theta0"])
 
     def _nodal_slip(self, solver, uvec):
         """V at every law-carrying pair node, from the CURRENT iterate —
@@ -465,7 +566,13 @@ class _InterfaceAssembler:
             idx = (ia, im, ib)
             Vq = _NQ @ V[list(idx)]
             Sq = _NQ @ S[list(idx)]
-            tq = self._laws[law_id].tau(Vq, Sq)
+            # theta varies by orders of magnitude along a fault and only ever
+            # enters a law through ln(theta): interpolate the LOG, which
+            # is also what keeps a positive-only state positive under
+            # quadratic shape functions (their undershoot sent theta
+            # negative at a quadrature point the plain way).
+            Tq = np.exp(_NQ @ np.log(self._theta[list(idx)]))
+            tq = self._laws[law_id].tau(Vq, Sq, Tq)
             contrib = s2 * L * (_NQ.T @ (_WQ * tq))
             for j, k in enumerate(idx):
                 if k >= 0:
@@ -523,7 +630,13 @@ class _InterfaceAssembler:
             idx = (ia, im, ib)
             Vq = _NQ @ V[list(idx)]
             Sq = _NQ @ S[list(idx)]
-            dq = self._laws[law_id].dtau_dV(Vq, Sq)
+            # theta varies by orders of magnitude along a fault and only ever
+            # enters a law through ln(theta): interpolate the LOG, which
+            # is also what keeps a positive-only state positive under
+            # quadratic shape functions (their undershoot sent theta
+            # negative at a quadrature point the plain way).
+            Tq = np.exp(_NQ @ np.log(self._theta[list(idx)]))
+            dq = self._laws[law_id].dtau_dV(Vq, Sq, Tq)
             Ke = 2.0 * L * (_NQ.T @ (_NQ * (_WQ * dq)[:, None]))
             for i, ki in enumerate(idx):
                 if ki < 0:

@@ -29,9 +29,11 @@ import pytest
 import underworld3 as uw
 from underworld3.utilities.fault_contact import (add_coulomb_fault_bc,
                                                  add_frictionless_fault_bc,
+                                                 add_rate_state_fault_bc,
                                                  add_viscous_fault_bc,
                                                  fault_normal_traction,
-                                                 fault_slip, solve_with_fault)
+                                                 fault_slip, solve_with_fault,
+                                                 update_fault_state)
 from underworld3.utilities.fault_split import split_fault
 from underworld3.utilities.line_cut import cut_along_lines, pull_vertex_onto
 
@@ -279,6 +281,48 @@ def test_reaction_fed_normal_stress():
         f"prediction {predicted:.3f} (strength {strength:.3f} from the "
         f"recovered compression)")
     assert info_rc["nonlinear_iterations"] < 40
+
+
+def test_rate_state_fault_evolves_to_steady_state():
+    """Rate-and-state on the split fault: solve <-> state-update cycling.
+
+    Velocity-strengthening parameters (a > b) under steady loading: each
+    solve is full Newton in V at frozen theta (sigma_n reaction-fed), the
+    ageing law then advances theta exactly for the solved slip rates. The
+    fixed point is theta = Dc/V (the monitor theta*V/Dc -> 1) with the slip
+    rate settling to the steady value of tau_ss = sigma(f0+(a-b)ln V/V0)
+    against the crack compliance. Six cycles with ~3 state e-folds each
+    must converge both the state and the slip.
+    """
+    mesh = _split_box()
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("vRS", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("pRS", mesh, 1, degree=0,
+                                       continuous=False)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.tolerance = 1e-6
+    stokes.petsc_use_pressure_nullspace = True
+    for side in ("Top", "Bottom", "Left", "Right"):
+        stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
+    add_rate_state_fault_bc(stokes, 0.3, "Flt", a=0.020, b=0.010,
+                            V0=1e-3, Dc=2e-3, sigma_n="reaction")
+
+    peaks, monitors = [], []
+    for step in range(6):
+        info = solve_with_fault(stokes, zero_init_guess=(step == 0))
+        assert info["converged"], f"step {step} did not converge"
+        _s, V, leak = fault_slip(stokes, "Flt", info)
+        assert np.abs(leak).max() < 1e-12
+        peaks.append(float(np.abs(V).max()))
+        monitors.append(update_fault_state(stokes, "Flt", 0.05, info))
+
+    assert peaks[-1] > 0.02, "the strengthening fault should still slide"
+    assert abs(peaks[-1] - peaks[-2]) < 0.05 * peaks[-1], (
+        f"slip did not settle: {peaks}")
+    assert abs(monitors[-1] - 1.0) < 0.15, (
+        f"state did not reach Dc/V: monitors {monitors}")
 
 
 def test_registration_refuses_an_unsplit_mesh():
