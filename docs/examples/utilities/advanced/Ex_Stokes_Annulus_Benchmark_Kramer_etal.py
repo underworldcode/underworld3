@@ -44,7 +44,12 @@ from sympy import lambdify
 import os
 import matplotlib.pyplot as plt
 import cmcrameri.cm as cmc
-import assess
+# `assess` (Kramer et al. 2021) is an optional dependency: pip install
+# "underworld3[benchmarks]". Imported through the wrapper so a missing install
+# reports what to do about it rather than a bare ModuleNotFoundError.
+from underworld3.analytic.kramer import require_assess
+
+assess = require_assess()
 # -
 
 os.environ["SYMPY_USE_CACHE"] = "no"

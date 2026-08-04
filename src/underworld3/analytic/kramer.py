@@ -43,12 +43,27 @@ _INSTALL_MESSAGE = (
 )
 
 
-def _require_assess():
+def require_assess():
     """Import `assess`, or explain how to get it.
 
     Deferred to construction rather than to module import so that
     ``import underworld3`` works without it and
     :func:`underworld3.analytic.available` can still list the solution.
+
+    Public because the curved-geometry benchmark scripts under
+    ``docs/examples/`` call it directly: they use `assess` for cases this
+    wrapper does not cover, and should still fail with an install message
+    rather than a bare ``ModuleNotFoundError``.
+
+    Returns
+    -------
+    module
+        The imported `assess` module.
+
+    Raises
+    ------
+    ImportError
+        With installation instructions, if `assess` is not present.
     """
 
     try:
@@ -63,7 +78,7 @@ def assess_available():
     """Whether the optional `assess` dependency can be imported."""
 
     try:
-        _require_assess()
+        require_assess()
     except ImportError:
         return False
 
@@ -141,7 +156,7 @@ class CylindricalStokes(AnalyticSolution):
         if boundary not in ("free", "zero"):
             raise ValueError(f"boundary must be 'free' or 'zero'; got {boundary!r}")
 
-        assess = _require_assess()
+        assess = require_assess()
 
         self.n = int(n)
         self.k = int(k)

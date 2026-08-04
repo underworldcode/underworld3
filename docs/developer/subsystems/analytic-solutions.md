@@ -557,11 +557,38 @@ Four scripts under `docs/examples/` already imported `assess` while nothing
 declared it, so on a normal install they failed with a bare
 `ModuleNotFoundError`.
 
+`assess` is also a dev dependency in `pixi.toml`, so the tests actually run
+rather than skipping themselves into a green tick.
+
 ### It is an oracle, not a member of the family
 
 `assess` gives numeric callables, so there is nothing to differentiate — a
 Kramer solution can be compared against a solver but **cannot be checked against
 the equations it claims to solve**. None of the six gates reaches it.
+
+What can still be asked is asked by finite differences, which is the same idea
+as Gate 4 with a weaker instrument. All four cases give
+$|\nabla\cdot\mathbf u|/|\mathbf u| \approx 10^{-9}$ — the difference floor at
+$h=10^{-6}$, so machine-level. Free slip gives $\mathbf u\cdot\hat n \sim
+10^{-17}$ on both arcs while $|\mathbf u| \sim 10^{-2}$ there, and zero slip
+gives $|\mathbf u| \sim 10^{-17}$ on the walls with $10^{-5}$ inside. Each of
+those carries its own control: the free-slip wall is demonstrably *slipping*, so
+$\mathbf u\cdot\hat n = 0$ is not passing because everything is zero, and the
+divergence probe is checked against $\mathbf u = (x, y)$ to confirm it reports 2
+rather than reporting 0 for everything.
+
+### Testing the absent path once the package is present
+
+Installing `assess` silently removed the coverage that mattered most: the
+missing-dependency path is what a normal install takes, and it was the thing the
+previous arrangement got wrong. Skipping it whenever the package is present
+means it never runs in CI.
+
+So absence is **simulated** — `builtins.__import__` and `importlib.util.find_spec`
+are monkeypatched — and the fixture has its own negative control asserting that
+the simulation actually blocks. Without that, a Python change to import
+resolution would let every one of those tests pass by importing the real
+package while appearing to cover a path they never touch.
 
 That is a real gap, not a technicality, so it is declared rather than
 described: `symbolic = False`, and the conformance sweep excludes on the
