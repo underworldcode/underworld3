@@ -139,6 +139,13 @@ class FreeSurface:
         self.composition = composition
         self._conserve_integrand = conserve
         self._smooth_length = smooth_length
+        # sigma_nn de-smear: "lumped" is the monotone 2D default; on a 3D P2
+        # trace the lumped vertex mass is identically zero, and the consistent
+        # P2 mass carries the vertex-integral checkerboard (#404 hold) exactly
+        # at the vertices the P1 h_inf field reads — so 3D translates the
+        # default to the sound P1-PROJECTED recovery (boundary_flux mass="p1").
+        if stokes.mesh.dim == 3 and mass == "lumped":
+            mass = "p1"
         self._mass = mass
         self.max_surface_cfl = max_surface_cfl
         # First-pass along-surface (tangential) transport of the surface fields:
@@ -176,18 +183,29 @@ class FreeSurface:
                 "free surface the sigma_nn recovery zigzags. Prefer continuous pressure."
             )
 
-        # Topography direction: vertical (last axis) on a Cartesian box, radial on a
-        # cylindrical annulus. The surface height and the mesh deformation follow it.
-        if self.mesh.dim != 2:
-            raise NotImplementedError(
-                "FreeSurface is 2D-only for now: the surface ring machinery (filter, "
-                "tangential transport, arc-length datum) and the sigma_nn de-smear have "
-                "no 3D counterparts yet (the 3D boundary mass is PR #404's scope). "
-                "Without this guard a 3D run would proceed and be silently wrong."
-            )
-        self._cylindrical = (
-            self.mesh.CoordinateSystem.coordinate_type == CoordinateSystemType.CYLINDRICAL2D
-        )
+        # Topography direction: vertical (last axis) on a Cartesian box/slab, radial
+        # on a cylindrical annulus or spherical shell. The surface height and the
+        # mesh deformation follow it. `_radial` steers the geometry (any dimension);
+        # `_cylindrical` additionally selects the 2D ring's angular ordering.
+        ctype = self.mesh.CoordinateSystem.coordinate_type
+        self._cylindrical = ctype == CoordinateSystemType.CYLINDRICAL2D
+        self._radial = self._cylindrical or ctype == CoordinateSystemType.SPHERICAL
+        # 3D runs on the dimension-general primitives (facet trace-mass gauge,
+        # directed flux strip, unordered surface gather, nodal carrier). The two
+        # 2D-ONLY features are refused per piece rather than by a blanket guard:
+        if self.mesh.dim == 3:
+            if tangent_advect is not None:
+                raise NotImplementedError(
+                    "FreeSurface: tangential surface transport is 2D-only (it runs "
+                    "on the ordered surface ring; a 3D counterpart needs surface FE "
+                    "advection). Construct with tangent_advect=None in 3D."
+                )
+            if int(surface_filter) > 0:
+                raise NotImplementedError(
+                    "FreeSurface: the Taubin surface filter is 2D-only (1-D ring "
+                    "stencil); pass surface_filter=0 in 3D (the trace-mass gauge "
+                    "and the interior carrier do not require it)."
+                )
         self._walls = self._classify_walls()
         # Reference-configuration surface nodes: used ONCE to match each surface node to
         # its row in the mesh coordinate field and in the derived surface fields. Row
@@ -252,15 +270,16 @@ class FreeSurface:
 
     def _surface_height(self, coords):
         """The coordinate along the topography direction: the last axis on a Cartesian
-        box, the radius on a cylindrical annulus."""
-        if self._cylindrical:
+        box/slab, the radius on a cylindrical annulus or spherical shell."""
+        if self._radial:
             return np.linalg.norm(coords, axis=1)
         return np.asarray(coords[:, -1], dtype=float)
 
     def _normal_direction(self, coords):
         """Per-node unit vectors along the topography direction that the surface
-        increment is deformed along — vertical (Cartesian) or radial (annulus)."""
-        if self._cylindrical:
+        increment is deformed along — vertical (Cartesian) or radial (annulus /
+        spherical shell); dimension-general."""
+        if self._radial:
             r = np.linalg.norm(coords, axis=1)
             r[r == 0.0] = 1.0
             return coords / r[:, None]
@@ -309,6 +328,12 @@ class FreeSurface:
 
         dm = self.mesh.dm
         facet_is = _boundary_stratum_is(dm, self.mesh, self.surface)
+        # In parallel a rank may own NO surface facets → a NULL-handle IS; any
+        # method call on it segfaults (the house guard every other stratum-IS
+        # call site carries — see rotated_bc._boundary_velocity_nodes). Return
+        # no local surface nodes; every consumer already handles the empty case.
+        if not (facet_is and facet_is.getSize() > 0):
+            return np.empty((0, self.mesh.cdim))
         v_start, v_end = dm.getDepthStratum(0)
         csec = dm.getCoordinateSection()
         cdim = self.mesh.cdim
@@ -333,31 +358,91 @@ class FreeSurface:
         return rows[order], coords[order, 0]
 
     def _ring_weights(self):
-        r"""Arc-length quadrature weights on the globally s-sorted surface ring.
+        r"""P1 lumped trace-mass quadrature weights on the globally s-sorted surface
+        ring: :math:`w_i = \oint \phi_i \,\mathrm{d}s`, accumulated per boundary FACET
+        from the DMPlex (each facet contributes measure/nverts to each of its
+        vertices — edge length/2 in 2D, triangle area/3 in 3D), from LIVE
+        coordinates so the weights follow the deforming surface.
 
-        The trapezoidal weight of node :math:`i` is half the distance to each neighbour
-        — :math:`\tfrac12 (s_{i+1}-s_{i-1}) r_i` on a cylindrical ring, :math:`\tfrac12
-        (x_{i+1}-x_{i-1})` on an open Cartesian surface (with half-cells at the ends).
-        Radii are read live, so the weights follow the deforming surface.
+        The facet (chord) measure — not an arc approximation — is deliberate: the
+        prescribed :math:`\tilde u_n` must be flux-free in the FINITE-ELEMENT sense
+        (:math:`\oint` over the deformed polygon the discretisation actually
+        integrates), or the strong datum asks the incompressible interior for a flow
+        that does not exist. With trapezoid arc weights the consistent solve floored
+        at rel ~2e-3 with the entire residual in the pressure (divergence) rows —
+        measured, block-split; the trace-mass weights are exact for the P1 datum
+        field by construction. Dimension-general: the same accumulation is the
+        area-weighted gauge on a 3D boundary triangulation.
         """
-        s = self._s_sorted                             # UNIQUE ring: one entry per node
-        if s.size == 0:
-            return s
-        if self._ring_period is not None:
-            ds = 0.5 * np.mod(np.roll(s, -1) - np.roll(s, 1), self._ring_period)
-            radius = self._ring_gather(np.linalg.norm(self._ring_coords, axis=1))
-            return ds * radius
-        ds = np.empty_like(s)
-        ds[1:-1] = 0.5 * (s[2:] - s[:-2])
-        ds[0] = 0.5 * (s[1] - s[0])
-        ds[-1] = 0.5 * (s[-1] - s[-2])
-        return ds
+        return self._ring_gather(self._surface_weights_local(), op="sum")
+
+    def _surface_weights_local(self):
+        """This rank's OWNED-facet partial trace-mass weights, aligned with the
+        local ring order. Because every facet is counted exactly once globally,
+        plain sums of (weight x value) over all ranks' local arrays are exact —
+        no gather, no ordering, no seam bookkeeping — which is what
+        :meth:`_surface_mean` reduces over, in any dimension."""
+        from underworld3.utilities.boundary_flux import _boundary_stratum_is
+
+        rc = self._ring_coords                         # local nodes, x-sorted order
+        if rc.shape[0] == 0 and uw.mpi.size == 1:
+            return np.empty(0)
+        dm = self.mesh.dm
+        cdim = self.mesh.cdim
+        csec = dm.getCoordinateSection()
+        cvec = dm.getCoordinatesLocal().array.reshape(-1, cdim)
+        v0, v1 = dm.getDepthStratum(0)
+        fS, fE = dm.getHeightStratum(1)
+        # OWNED facets only: a ghost facet's contribution belongs to the owning
+        # rank, and each facet must be counted exactly once globally — the seam
+        # weight is then assembled by SUMMING the per-rank partial contributions
+        # in the gather (op="sum"), not by averaging copies (a seam copy only
+        # carries the facets its rank owns).
+        ghosts = set()
+        if uw.mpi.size > 1:
+            nroots, ilocal, _ = dm.getPointSF().getGraph()
+            if nroots > 0 and ilocal is not None:
+                ghosts = set(int(i) for i in ilocal)
+        acc = {}                                       # vertex coord-row -> weight
+        sis = _boundary_stratum_is(dm, self.mesh, self.surface)
+        if sis and sis.getSize() > 0:
+            for f in sis.getIndices():
+                if not (fS <= int(f) < fE) or int(f) in ghosts:
+                    continue
+                verts = [int(p) for p in dm.getTransitiveClosure(int(f))[0]
+                         if v0 <= p < v1]
+                crows = [csec.getOffset(v) // cdim for v in verts]
+                xs = cvec[crows]
+                if len(verts) == 2:                    # 2D: boundary edge
+                    measure = float(np.linalg.norm(xs[1] - xs[0]))
+                else:                                  # 3D: boundary triangle
+                    measure = 0.5 * float(np.linalg.norm(
+                        np.cross(xs[1] - xs[0], xs[2] - xs[0])))
+                wv = measure / len(verts)
+                for cr in crows:
+                    acc[cr] = acc.get(cr, 0.0) + wv
+        # align to the local ring order by position (both sides read the SAME live
+        # plex coordinates, so the rounded keys match exactly)
+        wmap = {tuple(np.round(cvec[cr], 9)): w for cr, w in acc.items()}
+        w = np.array([wmap.get(tuple(np.round(c, 9)), 0.0) for c in rc])
+        # Every owned-facet vertex is a local surface node, so the key matching
+        # must conserve the accumulated trace mass EXACTLY — a mismatch between
+        # mesh.X.coords and getCoordinatesLocal() would otherwise drop weights
+        # silently (0.0 fallback) and corrupt the datum gauge invisibly.
+        acc_total = float(sum(acc.values()))
+        if not np.isclose(w.sum(), acc_total, rtol=1e-12, atol=1e-300):
+            raise RuntimeError(
+                f"surface trace-mass weights lost {acc_total - w.sum():.3e} of "
+                f"{acc_total:.3e} in coordinate-key matching — the ring coords "
+                "and the plex coordinates have diverged (gauge would be corrupt)."
+            )
+        return w
 
     def _surface_mean(self, values):
         r"""Area-weighted global mean of a surface-node array, identical on every rank
         (a datum gauge must be single-valued across the partition).
 
-        Weighted by arc length, NOT by node count. The distinction is not cosmetic for
+        Weighted by the FE trace mass (boundary length in 2D, area in 3D), NOT by node count. The distinction is not cosmetic for
         the one place it matters most: :math:`\tilde u_n`, the normal velocity the
         consistent solve is asked to reproduce, must satisfy :math:`\oint \tilde u_n
         \,\mathrm{d}s = 0` — an incompressible interior over a closed base can neither
@@ -368,10 +453,18 @@ class FreeSurface:
         The same weighting makes the ``h`` / ``h_inf`` datum volume-preserving rather
         than node-count-preserving.
         """
-        weights = self._ring_weights()
-        gathered = self._ring_gather(values)
-        total = float(weights.sum())
-        return float((gathered * weights).sum() / total) if total else 0.0
+        # Reduction over OWNED partial weights: each facet's contribution is
+        # counted exactly once globally, so two scalar allreduces give the exact
+        # weighted mean with no gather and no ordering — dimension-general (the
+        # ordered ring remains only for the 2D-only filter and transport).
+        w = self._surface_weights_local()
+        v = np.asarray(values, dtype=float)
+        local_wv = float(np.dot(w, v)) if w.size else 0.0
+        local_w = float(w.sum()) if w.size else 0.0
+        comm = uw.mpi.comm
+        total_wv = comm.allreduce(local_wv, op=MPI.SUM)
+        total_w = comm.allreduce(local_w, op=MPI.SUM)
+        return total_wv / total_w if total_w else 0.0
 
     def _demean(self, values):
         """Remove the global surface mean (topography datum floats)."""
@@ -497,7 +590,7 @@ class FreeSurface:
             converges in one increment (the cold-start affine lift IS the linear solve),
             and a nonlinear rheology iterates with the datum held exactly at every
             accepted iterate. It requires the datum to be discretely flux-free, which
-            :meth:`_surface_mean` guarantees by weighting the demean by arc length.
+            :meth:`_surface_mean` guarantees by weighting the demean by the FE trace mass.
 
         ``"penalty"``
             A weak natural BC. It tolerates a datum that carries a small net flux, at the
@@ -520,6 +613,25 @@ class FreeSurface:
             # conds datum, re-evaluated at the boundary nodes at each solve.
             self.consistent.add_rotated_freeslip_bc(
                 self._un_target.sym[0], self.surface, normal=self.normal)
+            # Flux-consistent datum gauge: the divergence rows enforce
+            # ∮ u·n̂_facet over the DEFORMED faceted surface, while the constraint
+            # fixes u·n̂_node — the directions differ on a deformed surface, so a
+            # nodal demean of the datum leaves a small net volume flux that an
+            # incompressible interior cannot absorb (measured: rel ~2e-3 residual
+            # floor sitting 100% in the pressure rows). Strip the datum's DIRECTED
+            # mean using the same FE surface integral the residual uses:
+            # Φ = ∮ ũ_n (n̂·Γ̂) ds and S = ∮ (n̂·Γ̂) ds with Γ̂ = mesh.Gamma (the
+            # facet normal at quadrature points), then shift ũ_n by Φ/S so the
+            # discrete net flux of the constrained field is exactly zero.
+            nrm = (self.normal if self.normal is not None
+                   else self.mesh.boundary_normal(self.surface))
+            ncomps = sympy.flatten(sympy.Matrix(nrm))
+            ndotg = sum(ncomps[k] * self.mesh.Gamma[k] for k in range(self.mesh.dim))
+            self._datum_flux = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=self._un_target.sym[0] * ndotg,
+                boundary=self.surface)
+            self._datum_flux_scale = uw.maths.BdIntegral(
+                mesh=self.mesh, fn=ndotg, boundary=self.surface)
         else:
             n_hat = (self.normal if self.normal is not None
                      else self.mesh.boundary_normal(self.surface))
@@ -561,6 +673,16 @@ class FreeSurface:
         self._diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
         self._diffuser.constitutive_model.Parameters.diffusivity = 1.0
         self._diffuser.tolerance = 1.0e-3
+        # Row map for the deform read: the carrier is P1 and (on our P1-geometry
+        # meshes) its nodes coincide with the mesh coordinate nodes, so the
+        # displacement is a DIRECT nodal read — never a point evaluation at the
+        # field's own nodes (the on-node location class, O(1)-wrong on 3D cell
+        # edges, #432). Row identities survive deformation; matched once here.
+        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords))
+        dist, rows = tree.query(np.ascontiguousarray(self.mesh.X.coords), k=1)
+        self._carry_rows_at_mesh_nodes = (
+            np.asarray(rows).flatten()
+            if float(np.max(dist)) < 1.0e-12 else None)   # exotic geometry: fall back
         self._base = self._opposite_boundary()
         self._diffuser.add_essential_bc(self._carry_bc.sym, self.surface)
         if self._base is not None:
@@ -625,19 +747,32 @@ class FreeSurface:
         comm = uw.mpi.comm
         rc = self._ring_coords                         # local nodes, x-sorted order
         if self._cylindrical:
-            s_local = np.arctan2(rc[:, 1], rc[:, 0])
+            keys_local = np.arctan2(rc[:, 1], rc[:, 0])[:, None]
             self._ring_period = 2.0 * np.pi
-        else:
-            s_local = rc[:, 0].astype(float)
+        elif self.mesh.dim == 3:
+            # No natural 1-D surface ordering in 3D. The ordered-ring FEATURES
+            # (Taubin filter, tangential transport) are 2D-only and refused at
+            # construction; the gather itself only needs a deterministic global
+            # order with exact same-node grouping, which lexicographic rounded
+            # coordinates provide (the surface deforms along the normal, so the
+            # reference ordering is built once, like the 2D ring).
+            keys_local = np.round(np.asarray(rc, dtype=float), 12)
             self._ring_period = None
-        self._s_local_n = int(s_local.size)
+        else:
+            keys_local = rc[:, 0].astype(float)[:, None]
+            self._ring_period = None
+        self._s_local_n = int(keys_local.shape[0])
         counts = comm.allgather(self._s_local_n)
         self._ring_offset = int(np.sum(counts[: comm.rank]))
-        s_global = (np.concatenate(comm.allgather(s_local))
-                    if comm.size > 1 else s_local.copy())
-        self._ring_order = np.argsort(s_global, kind="stable")     # concat -> s-sorted
+        keys_global = (np.concatenate(comm.allgather(np.ascontiguousarray(keys_local)))
+                       if comm.size > 1 else keys_local.copy())
+        keys_global = keys_global.reshape(self._s_local_n if comm.size == 1
+                                          else -1, keys_local.shape[1])
+        # lexicographic stable order over the key columns (a single column in 2D)
+        self._ring_order = np.lexsort(keys_global.T[::-1])
         self._ring_inv = np.empty_like(self._ring_order)
         self._ring_inv[self._ring_order] = np.arange(self._ring_order.size)
+        s_global = keys_global[:, 0] if keys_global.shape[1] == 1 else None
         # DEDUPLICATE partition-seam copies (#421). A vertex on a partition cut appears
         # once per adjacent rank in the gathered ring. Every ring operation must see each
         # PHYSICAL node exactly once: the Taubin filter's roll-stencil otherwise treats
@@ -646,31 +781,36 @@ class FreeSurface:
         # value — measured as a ~50% seam disagreement in h_inf after 20 iterations and
         # a few-percent net flux in the prescribed datum. Gather averages the copies
         # (identical up to round-off); scatter expands back to every copy.
-        s_srt = s_global[self._ring_order]
-        uniq_of_sorted = np.empty(s_srt.size, dtype=int)
-        uniq_id = -1
-        prev = None
-        for i, val in enumerate(np.round(s_srt, 12)):
-            if prev is None or val != prev:
-                uniq_id += 1
-                prev = val
-            uniq_of_sorted[i] = uniq_id
+        keys_srt = np.round(keys_global[self._ring_order], 12)
+        if keys_srt.shape[0] == 0:
+            new_group = np.empty(0, dtype=bool)
+        else:
+            new_group = np.r_[True, np.any(np.diff(keys_srt, axis=0) != 0.0, axis=1)]
+        uniq_of_sorted = np.cumsum(new_group) - 1 if keys_srt.shape[0] else \
+            np.empty(0, dtype=int)
         self._ring_uniq_of_sorted = uniq_of_sorted
-        self._ring_n_uniq = uniq_id + 1
+        self._ring_n_uniq = int(uniq_of_sorted[-1] + 1) if keys_srt.shape[0] else 0
         self._ring_dup_count = np.bincount(uniq_of_sorted, minlength=self._ring_n_uniq)
         first_pos = np.searchsorted(uniq_of_sorted, np.arange(self._ring_n_uniq))
-        self._s_sorted = s_srt[first_pos]
+        # the 1-D along-surface coordinate exists only where the ordering is real
+        # (2D); the 3D gather is order-agnostic and the ring features that read
+        # _s_sorted are refused at construction there.
+        self._s_sorted = (s_global[self._ring_order][first_pos]
+                          if s_global is not None else None)
 
-    def _ring_gather(self, local_vals):
-        """Local (x-sorted-order) surface values -> the globally s-sorted UNIQUE ring
-        (partition-seam copies averaged — they agree to round-off by construction)."""
+    def _ring_gather(self, local_vals, op="mean"):
+        """Local (x-sorted-order) surface values -> the globally s-sorted UNIQUE ring.
+        ``op="mean"`` averages partition-seam copies (field values: the copies agree
+        to round-off by construction); ``op="sum"`` accumulates them (per-rank
+        PARTIAL contributions such as owned-facet quadrature weights, where the
+        copies deliberately each carry only their rank's share)."""
         comm = uw.mpi.comm
         v = (np.concatenate(comm.allgather(np.ascontiguousarray(local_vals)))
              if comm.size > 1 else np.asarray(local_vals, dtype=float))
         v_sorted = v[self._ring_order]
         sums = np.bincount(self._ring_uniq_of_sorted, weights=v_sorted,
                            minlength=self._ring_n_uniq)
-        return sums / self._ring_dup_count
+        return sums if op == "sum" else sums / self._ring_dup_count
 
     def _ring_scatter(self, v_uniq):
         """Unique-ring values -> this rank's local (x-sorted-order) nodes. Every seam
@@ -954,12 +1094,22 @@ class FreeSurface:
         return shape, h_inf, u_n
 
     def _solve_consistent(self, increment, dt):
-        r"""Prescribe :math:`\tilde u_n = \Delta h/\Delta t` (mean-removed by arc length,
+        r"""Prescribe :math:`\tilde u_n = \Delta h/\Delta t` (mean-removed by the FE trace mass,
         so the net flux is zero) on the surface and solve for the material-consistent
         velocity."""
         u_tilde = self._demean(increment / dt)
         self._un_target.array[...] = 0.0
         self._un_target.array[self._un_target_rows, 0, 0] = u_tilde
+        # Exact FE-consistent flux strip (STRONG constraint only — the penalty
+        # absorbs a datum flux weakly and builds no integrals): remove the
+        # DIRECTED mean so the datum carries zero discrete net flux through the
+        # deformed facets — the quantity the pressure rows actually enforce.
+        # Collective (BdIntegral), so the shift is identical on every rank.
+        if self.consistent_constraint == "strong":
+            flux = float(self._datum_flux.evaluate())
+            scale = float(self._datum_flux_scale.evaluate())
+            if abs(scale) > 1.0e-30:
+                self._un_target.array[self._un_target_rows, 0, 0] -= flux / scale
         # Warm-start from the free solve: the consistent solution IS the free
         # solution with the (small) material-boundary datum imposed, and the free
         # solve has already converged this step. Starting there keeps a power-law
@@ -990,8 +1140,15 @@ class FreeSurface:
         self._carry_bc.array[self._carry_bc_rows, 0, 0] = increment
         self._diffuser.solve(zero_init_guess=False)
         coords = self.mesh.X.coords
-        displacement = np.asarray(
-            function.evaluate(self._carry.sym[0], coords)
-        ).flatten()
+        if self._carry_rows_at_mesh_nodes is not None:
+            # direct nodal read (see _build_interior_diffuser: the on-node
+            # evaluation class is what this avoids)
+            displacement = np.asarray(
+                self._carry.array[self._carry_rows_at_mesh_nodes, 0, 0]
+            ).flatten()
+        else:
+            displacement = np.asarray(
+                function.evaluate(self._carry.sym[0], coords)
+            ).flatten()
         new_coords = coords + displacement[:, None] * self._normal_direction(coords)
         self.mesh.deform(new_coords, dt=dt)
