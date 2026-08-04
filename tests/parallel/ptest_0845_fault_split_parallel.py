@@ -171,6 +171,28 @@ def test_a_rank_interior_fault_splits_cleanly():
               f"{counts[f'{FAULT}Plus']} fault facets cleanly")
 
 
+def test_a_fault_may_run_close_to_the_seam():
+    """The refined seam rule: only a CHAIN VERTEX on the seam refuses.
+
+    A fault whose cell fans merely touch the seam is rank-local in every
+    point the split moves (an unshared vertex owns its whole fan), so it
+    must split cleanly — the original blanket star-based refusal rejected
+    these. The fault below reaches toward the box centre, where the np=2/3
+    partitions put their seams; whichever outcome the partition produces
+    must be collective, and a success must be a valid slit.
+    """
+    dm = _cut((np.array([0.10, 0.12]), np.array([0.46, 0.22])))
+    outcome, result = _attempt(dm)
+    outcomes = uw.mpi.comm.allgather(outcome)
+    assert len(set(outcomes)) == 1, f"outcomes {outcomes} disagree"
+    if outcomes[0] == "seam":
+        pytest.skip(f"a chain vertex landed on the np={uw.mpi.size} seam; "
+                    "the crossing milestone will lift this")
+    out, _pm, _cm = result
+    assert _sf_coordinate_drift(out) == 0.0
+    assert _owned_euler(out) == 0
+
+
 def test_a_seam_crossing_fault_is_refused_on_every_rank():
     dm = _cut(SPANNING)
     outcome, _result = _attempt(dm)

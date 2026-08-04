@@ -59,7 +59,7 @@ from underworld3.utilities.reconnect import (
     _rebuild_point_sf, _shared_points, _write_coordinates)
 
 
-def _fault_chain(dm, fault_edges, X, vS):
+def _fault_chain(dm, fault_edges, X, vS, shared, pStart):
     """The fault as an ordered vertex path, tip to tip.
 
     Returns ``(problem, chain)`` where ``problem`` is ``None`` or an
@@ -67,6 +67,16 @@ def _fault_chain(dm, fault_edges, X, vS):
     in walk order, starting from the tip lower in coordinate order so the walk
     — and with it the Plus/Minus sides — is a function of the geometry, not of
     label-stratum order.
+
+    ``shared`` (chart-indexed rank-sharing flags) refines the two boundary
+    rules: a support-1 facet in a fault vertex's star is the DOMAIN boundary
+    only if it is unshared — on a partition seam every facet is locally
+    one-sided, and a fault may run arbitrarily close to a seam. What it may
+    not yet do is have a CHAIN VERTEX on the seam: an unshared vertex owns
+    its whole cell fan (any cell touching it would make it shared), so every
+    replica and every re-homed spoke stays rank-local; a shared chain vertex
+    is a seam crossing, which needs the replica-pair star-forest extension
+    (deployment design, milestone 2) and is refused until that lands.
     """
     eS, eE = dm.getDepthStratum(1)
 
@@ -92,17 +102,30 @@ def _fault_chain(dm, fault_edges, X, vS):
                 "several fragments, not a single open chain."), None
 
     # The fault must be strictly interior. An edge with a single support cell
-    # is a domain-boundary facet; one in the star of any fault vertex means the
-    # slit would reach the boundary, where the tip-clamping argument fails.
+    # is a domain-boundary facet — unless it is SHARED, in which case it is a
+    # partition-seam facet that merely looks one-sided locally. One in the
+    # star of any fault vertex means the slit would reach the boundary, where
+    # the tip-clamping argument fails.
     for v in nbr:
         star = dm.getTransitiveClosure(v, useCone=False)[0]
         for p in star:
             p = int(p)
-            if eS <= p < eE and len(dm.getSupport(p)) != 2:
+            if eS <= p < eE and len(dm.getSupport(p)) != 2 \
+                    and not shared[p - pStart]:
                 return (ValueError,
                         "fault_split: the fault touches the domain boundary. "
                         "Only strictly interior faults, with both tips inside "
                         "the mesh, are supported in this version."), None
+
+    # No chain vertex on the seam: an unshared vertex owns its whole fan, so
+    # the split stays rank-local; a shared one is a seam crossing.
+    for v in nbr:
+        if shared[v - pStart]:
+            return (RuntimeError,
+                    "fault_split: the fault has a vertex on the partition "
+                    "seam (a seam crossing). Crossing support is the next "
+                    "milestone of the deployment design; until then, "
+                    "repartition or keep the fault inside one rank."), None
 
     start = min(tips, key=lambda t: (float(X[t - vS][0]),
                                      float(X[t - vS][1]), t))
@@ -287,32 +310,16 @@ def split_along_label(dm, name, value, plus_name, plus_value,
         fault_edges = [int(p) for p in stratum.getIndices()
                        if eS <= int(p) < eE]
 
+    # COLLECTIVE, and reached on every rank whatever the local verdict:
+    # the sharing flags feed the chain validation (seam facets are not the
+    # domain boundary; a shared chain vertex is a crossing) and the cell
+    # triples feed the rebuild.
+    shared = _shared_points(dm)
+    verts, _frozen = _cell_vertices_and_seam(dm, X, shared)
+
     problem, chain = (None, None)
     if fault_edges:
-        problem, chain = _fault_chain(dm, fault_edges, X, vS)
-
-    # COLLECTIVE, and reached on every rank whatever the local verdict so far:
-    # the seam flags and the cell triples are needed for the rebuild anyway,
-    # and computing them before any refusal keeps every rank in step.
-    shared = _shared_points(dm)
-    verts, frozen = _cell_vertices_and_seam(dm, X, shared)
-
-    # The seam verdict is taken from the facet cones alone, independent of the
-    # chain checks, and OUTRANKS them: a fault crossing the seam presents to
-    # each rank as a broken chain, so the fragments are the symptom and the
-    # seam is the diagnosis.
-    if fault_edges:
-        fault_vertices = {int(p) for e in fault_edges for p in dm.getCone(e)}
-        for v in fault_vertices:
-            star = dm.getTransitiveClosure(v, useCone=False)[0]
-            if any(frozen[int(p) - cS] for p in star
-                   if cS <= int(p) < cE):
-                problem = (RuntimeError,
-                           "fault_split: the fault's cell fans touch the "
-                           "partition seam. This version refuses to split "
-                           "across ranks — repartition, or place the fault "
-                           "inside one rank's subdomain.")
-                break
+        problem, chain = _fault_chain(dm, fault_edges, X, vS, shared, pStart)
 
     side_of_cell, substitutions = {}, {}
     if problem is None and fault_edges:
