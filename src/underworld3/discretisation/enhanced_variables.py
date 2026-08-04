@@ -463,9 +463,30 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
 
     # === ADDITIONAL DELEGATED METHODS ===
 
-    def clone(self):
-        """Clone the variable."""
-        return self._base_var.clone()
+    def clone(self, name, varsymbol):
+        """Clone the variable under a new name and symbol.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new variable.
+        varsymbol : str
+            LaTeX symbol for the new variable.
+
+        Returns
+        -------
+        MeshVariable
+            A new variable with the same shape, type, degree and continuity,
+            and independent data.
+
+        Notes
+        -----
+        This forwarded no arguments at all until issue #498, so it raised
+        whichever way it was called: with the two arguments every caller uses,
+        and without them inside the base. Six shipped examples aborted on it.
+        """
+
+        return self._base_var.clone(name, varsymbol)
 
     def max(self):
         """Maximum value of the variable."""
