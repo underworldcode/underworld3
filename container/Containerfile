@@ -39,8 +39,8 @@ RUN userdel -r ubuntu 2>/dev/null || true && \
 USER jovyan
 WORKDIR /home/jovyan/underworld3
 
-# Install pixi
-RUN curl -fsSL https://pixi.sh/install.sh | sh
+# Install pixi (pinned to match the lock file format)
+RUN curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=0.63.2 sh
 ENV PATH="/home/jovyan/.pixi/bin:$PATH"
 
 # Install the pixi runtime environment (resolved from pixi.lock — no solver run)

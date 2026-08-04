@@ -97,9 +97,13 @@ pytest-xdist = ">=3.8,<4"
 psutil = ">=5.9,<8"  # leak-loop regression test in tests/test_0111_swarm_lifecycle.py
 
 # Mesh generation
-# gmsh is in [dependencies] (conda-forge) rather than [pypi-dependencies]
-# because PyPI gmsh wheels have no linux-aarch64 build; conda-forge does.
+# gmsh and python-gmsh are in [dependencies] (conda-forge) rather than [pypi-dependencies]:
+# - PyPI gmsh wheels have no linux-aarch64 build; conda-forge does.
+# - conda-forge gmsh ships only the binary/library; python-gmsh is the separate
+#   conda-forge package that provides the Python module (import gmsh).
+#   The original environment.yaml listed both; pixi.toml must too.
 gmsh = ">=4.13,<5"
+python-gmsh = ">=4.13,<5"
 meshio = ">=5.3,<6"
 
 # Utilities
