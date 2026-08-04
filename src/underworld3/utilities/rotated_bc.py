@@ -653,6 +653,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
     custom_Pl = None if use_lu else _build_rotated_custom_Pl(solver, Q, normal_rows)
+    # Interface constitutive operator (fault_contact.add_viscous_fault_bc):
+    # K̂ lives on the rotated slip rows, adds K̂·û to the rotated residual and
+    # K̂ to the rotated tangent. Geometry- and coefficient-fixed for the
+    # linear law, so built once; a nonlinear interface law re-enters here as
+    # a per-iteration rebuild with the tangent dτ/dV.
+    Khat = None
+    if any(eta > 0.0 for eta in
+           getattr(solver, "_fault_interface_viscosity", {}).values()):
+        from underworld3.utilities import fault_contact
+        Khat = fault_contact._interface_slip_operator(solver, Q)
     # The null space is built INSIDE the loop, after the first Jacobian assembly:
     # _mode_satisfies_constraints verifies each candidate mode against the
     # ASSEMBLED operator (‖J·m‖ ≈ 0), which an unassembled J cannot support.
@@ -701,6 +711,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # diagonal scale (frozen at the first tangent — only the magnitude matters),
     # and the KSP/PC context (fieldsplit ISs, FMG hierarchy, GAMG setup survive).
     Ahat = None
+    Atot = None
     Mp = None
     ctx = None
     diag_scale = None
@@ -712,6 +723,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Fc.copy(reaction)                # stash the Cartesian reaction for σ_nn
         Fh = Fc.duplicate()
         Q.mult(Fc, Fh)
+        if Khat is not None:
+            # interface constitutive force: K̂·û on the slip rows (the pair's
+            # equal-and-opposite tractions, already in the rotated frame)
+            uh = Fh.duplicate()
+            Q.mult(uvec, uh)
+            Khat.multAdd(uh, Fh, Fh)
+            uh.destroy()
         _zero_rows_local(Fh, normal_rows)
         return Fh
 
@@ -766,6 +784,24 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Ahat = J.ptap(Qt)
         else:
             J.ptap(Qt, result=Ahat)          # same nonzero pattern → in-place refresh
+        # The interface operator is added to a COPY: the ptap-with-result
+        # refresh above owns Ahat's structure, and injected entries would be
+        # stale-or-doubled on the next refresh.
+        if Khat is not None:
+            if Atot is not None:
+                Atot.destroy()
+            Atot = Ahat.copy()
+            Atot.axpy(1.0, Khat,
+                      structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            # A recreated operator loses the null space the first solve
+            # attached; re-attach for iterations after the first (a nonlinear
+            # interface law is what reaches them).
+            if ctx is not None and ctx.get("nsp") is not None:
+                Atot.setNullSpace(ctx["nsp"])
+                Atot.setTransposeNullSpace(ctx["nsp"])
+            Aop = Atot
+        else:
+            Aop = Ahat
         if not use_lu:
             if ctx is None:
                 Mp = _pressure_mass_schur_pmat(solver)
@@ -773,7 +809,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             elif Mp is not None:
                 Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
-            diag_scale = _velocity_diag_scale(Ahat, solver)
+            diag_scale = _velocity_diag_scale(Aop, solver)
         bhat = Fhat.copy()
         bhat.scale(-1.0)
         if lift_datum and iters == 0:
@@ -781,11 +817,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # b̂[rows] = diag·x̂ and the eliminated columns' A[:,cols]·x̂ are
             # subtracted from the other rows. For a LINEAR model this increment IS
             # the whole solve; the loop converges at the next residual check.
-            Ahat.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
+            Aop.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
             xhat.destroy()
             xhat = None
         else:
-            Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
+            Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
         if use_lu:
             if ctx is None:
                 ksp_lu = PETSc.KSP().create(comm=dm.comm)
@@ -797,10 +833,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        "pin": _naive_pressure_pin(dm)}
             pin = ctx["pin"]
             if pin is not None:
-                Ahat.zeroRows([pin], diag=1.0)
+                Aop.zeroRows([pin], diag=1.0)
                 _zero_rows_local(bhat, [pin])
-            ctx["ksp"].setOperators(Ahat)     # values changed in place → refactor
-            dhat = Ahat.createVecRight()
+            ctx["ksp"].setOperators(Aop)      # values changed in place → refactor
+            dhat = Aop.createVecRight()
             dhat.set(0.0)
             ctx["ksp"].solve(bhat, dhat)
             last_reason = ctx["ksp"].getConvergedReason()
@@ -810,7 +846,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             _zero_rows_local(dhat, normal_rows)
         else:
             dhat, last_reason, ctx = _solve_rotated_iterative(
-                solver, Ahat, bhat, Q, Qt, normal_rows,
+                solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
         lin_its.append(ctx["ksp"].getIterationNumber())
         d = dm.createGlobalVec()
@@ -882,6 +918,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
     if Ahat is not None:
         Ahat.destroy()                       # the reused rotated operator
+    if Atot is not None:
+        Atot.destroy()                       # rotated operator + interface term
+    if Khat is not None:
+        Khat.destroy()
     if xhat is not None:
         xhat.destroy()                       # unused lift vector (loop exited before it)
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)

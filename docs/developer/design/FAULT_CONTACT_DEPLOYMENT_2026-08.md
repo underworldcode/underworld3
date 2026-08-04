@@ -1,0 +1,136 @@
+# Split-node fault contacts: deployment design
+
+**Status**: agreed direction (maintainer + AI session, 2026-08-04). The
+backend primitives are prototyped and validated on `feature/fault-split-node`;
+this note records the architecture and the path from prototype to deployed
+capability. Companion study with all reference numbers:
+`~/+Simulations/fault_split_gate/`.
+
+## What exists and what it measured
+
+A fault as a **zero-thickness contact**: the mesh's nodes are duplicated along
+a conforming facet chain (`utilities/fault_split.py`), so continuous FE spaces
+jump across the fault and nowhere else; interface conditions act on the
+coincident DOF pairs through an orthogonal mean/jump extension of the rotated
+strong-BC machinery (`utilities/fault_contact.py`, pair blocks in
+`rotated_bc.build_rotation`).
+
+Validated so far, all at the fault-study resolution (13k cells):
+
+| what | result |
+|---|---|
+| Schur conditioning | 10 iterations vs the thin weak inclusion's 147, resolution-independent |
+| no-opening constraint | machine zero (5e-18) in every configuration tested |
+| frictionless (stress-driven) slip | elliptical to 1.35 % RMS; peak 92 % of the infinite-medium crack (finite box) |
+| viscous interface law τ = η_f·V | welded↔free family follows the crack compliance 1/(1 + 0.91 η_f a/η) |
+| welded limit | removes the fault (recovers the uncut continuum) — it penalises the JUMP only; the mean velocity is never constrained, so nothing becomes rigid |
+
+The Coulomb lobe geometry matches the inclusion representation across all
+three fault laws tried (prescribed slip, frictionless, viscous), with
+amplitudes ordered exactly by their slip.
+
+## The three-layer architecture (settled)
+
+1. **The fault manifold** — persistent, owns the physics identity. A genuine
+   lower-dimensional mesh (polyline in 2-D; the placed-surface branch's
+   pyvista triangulation in 3-D), **replicated on every rank**. Its NODES are
+   the Lagrangian markers of the fault: per-node internal state (rate-state
+   θ, slip history) and property fields live here — arc length is NOT a
+   material coordinate under fault deformation, nodes are. A network is a
+   set of manifold components plus a junction table.
+2. **The split bulk mesh** — ephemeral, rebuilt whenever the fault moves
+   (the non-cumulative `adapt` pattern: re-cut and re-split from the static
+   base). It carries only the **trace mapping**: the Minus→Plus point pairs
+   (`mesh._fault_point_pairs`, from the split's clone map — the sides are
+   coincident, so no coordinate query can ever recover the pairing), and
+   what derives from them (slip rows, normals, s-coordinates for sampling
+   against the manifold).
+3. **The constraint/constitutive layer** — the pair transform (no opening
+   strong; slip row free = frictionless, datum = prescribed jump-only slip,
+   linear operator = viscous, nonlinear relation = friction). Interface
+   operators assemble as slip-row trace-mass blocks; tips need no interface
+   BC because the jump space vanishes where the sides share a point.
+
+## Two entry paths, one backend
+
+- **(a) Submesh-surface path**: a persistent fault object supplies the
+  manifold and its data; the bulk mesh conforms to it and splits along it.
+  This is the natural interface for models where the fault is a first-class
+  design object (earthquake studies, faulted margins).
+- **(b) Ephemeral adapt-on-top path**: per step or per re-adaptation, the
+  manifold drives the refinement metric, the cut, and the split on a child of
+  the static base; fields and manifold state transfer across rebuilds
+  (bulk fields via the existing re-adaptation machinery, manifold state by
+  identity — it never lived on the bulk mesh).
+
+Both funnel through the same backend contract:
+
+    manifold → conforming labelled chain on the bulk mesh
+             → split (pairs recorded)
+             → trace mapping (pairs ↔ manifold nodes)
+             → interface laws on the pairs
+
+API sketch (interface-first discipline: land the signatures on `development`
+as stubs before the feature branch fills them):
+
+```python
+fault = uw.meshing.FaultSurface(name, geometry, properties=..., )   # layer 1
+child = mesh.add_fault(fault, ...)          # adapt→cut→split, or split-only
+stokes.add_fault_bc(law, fault.name)        # "free" | ("viscous", eta_f) | friction later
+```
+
+## Parallel: the seam-vertex crossing rule (maintainer ruling, 2026-08-04)
+
+Never synchronise interior replicas across ranks. Instead **pin a mesh vertex
+exactly at every fault–seam crossing** (`pull_vertex_onto` is already
+collective and partition-consistent), and require crossings to be
+transversal. Then:
+
+- every fault facet, and every interior replica, is rank-local — the current
+  machinery applies unchanged;
+- the ONLY shared object is the crossing vertex, which needs one shared
+  replica pair: a single new star-forest entry per crossing, associated
+  deterministically by the key **(original root point, side)** — both ranks
+  compute the side identically because both hold the replicated manifold and
+  the chain-direction rule (lexicographically smaller tip first) is global;
+- replicas inherit the original's owner, so the pair blocks in Q stay inside
+  one rank's diagonal portion and the existing "pair straddles ranks" guard
+  remains an invariant, not a limitation.
+
+Still refused, deliberately: a fault running *along* a seam (facets on the
+seam), and junctions on a seam (first version). The current blanket seam
+refusal stays in place until this lands, and remains the fallback error.
+
+## Staging
+
+1. **API layer + common backend, serial** — `FaultSurface`, `add_fault`,
+   `add_fault_bc`; docs; promote the module functions behind the methods.
+2. **Parallel crossing rule** — the one-entry-per-crossing SF extension,
+   np=2–4 tests including a fault deliberately spanning two ranks.
+3. **Nonlinear interface laws** — regularised Coulomb with σ_n from the
+   normal-row reaction (Picard-lagged), tangent 2·(dτ/dV)·M rebuilt per
+   Newton iteration in the existing hook; oracle: at fixed τ the solution
+   must land on the measured compliance curve at the secant η_f = τ/V.
+   Then rate-state (arcsinh form; θ ODE on manifold nodes between steps).
+4. **Manifold state plumbing** — trace↔manifold sampling, the gather/reduce
+   collective for V and σ_n feeding the θ ODE, checkpointing via the
+   manifold object.
+
+Geometric multigrid is a separate track (split only the finest 1–2 levels;
+side-aware transfer at the single split/unsplit seam) and is not a
+prerequisite for any of the above — GAMG holds comfortably at current scale.
+
+## Traps already paid for (do not rediscover)
+
+- petsc4py `getLabel` on a missing name and `getStratumIS` on an empty
+  stratum return NULL-wrapping objects that SEGFAULT on first use — guard
+  with `hasLabel` / `getStratumSize`.
+- The rotated path's field copy-back dropped inhomogeneous essential values
+  (#497, fixed): essential DOFs are absent from the global vector. The tell
+  is the divergence theorem failing on a field diagnostic.
+- Never inject interface entries into the `ptap`-refreshed rotated operator —
+  add them to a copy; re-attach the null space on each rebuilt copy.
+- The pairing comes from the clone map only; coordinate matching is
+  impossible-by-construction at zero distance. Protect the property that the
+  two trace spaces are identical with exactly paired DOFs — losing it means
+  genuine mortar machinery.

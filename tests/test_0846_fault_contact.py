@@ -28,6 +28,7 @@ import pytest
 
 import underworld3 as uw
 from underworld3.utilities.fault_contact import (add_frictionless_fault_bc,
+                                                 add_viscous_fault_bc,
                                                  fault_slip, solve_with_fault)
 from underworld3.utilities.fault_split import split_fault
 from underworld3.utilities.line_cut import cut_along_lines, pull_vertex_onto
@@ -109,6 +110,48 @@ def test_frictionless_fault_slips_like_a_crack():
     # (finite box), but the right size.
     assert 0.4 * HALF < Vmag.max() < 1.05 * HALF, (
         f"peak slip {Vmag.max():.4f} vs crack value {HALF:.4f}")
+
+
+def test_viscous_fault_bridges_welded_to_free():
+    """The linear interface law spans its two exact limits monotonically.
+
+    tau = eta_f * V: at eta_f = 0 the frictionless crack must be reproduced
+    bit-for-bit in character (same peak); at eta_f >> eta/a the fault welds
+    (slip collapses, the box shears as if uncut); in between the slip drops
+    monotonically through the compliance scale eta/a. The dashpot occupies
+    exactly the tangent slot a friction law will use, so this family is the
+    coupling machinery's calibration curve.
+    """
+    mesh = _split_box()
+    x, y = mesh.X
+
+    peaks = {}
+    for tag, eta_f in (("free", 0.0), ("mid", 1.0 / HALF), ("hard", 5.0e3)):
+        v = uw.discretisation.MeshVariable(f"v{tag}", mesh, 2, degree=2)
+        p = uw.discretisation.MeshVariable(f"p{tag}", mesh, 1, degree=0,
+                                           continuous=False)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.tolerance = 1e-6
+        stokes.petsc_use_pressure_nullspace = True
+        for side in ("Top", "Bottom", "Left", "Right"):
+            stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
+        add_viscous_fault_bc(stokes, eta_f, "Flt")
+        info = solve_with_fault(stokes)
+        assert info["converged"], f"eta_f={eta_f}: solve did not converge"
+        _s, V, leak = fault_slip(stokes, "Flt", info)
+        assert np.abs(leak).max() < 1e-13, (
+            f"eta_f={eta_f}: the no-opening constraint leaked")
+        peaks[tag] = float(np.abs(V).max())
+
+    assert peaks["free"] > 0.1 * HALF, "the eta_f=0 member does not slip"
+    # strict monotone bridging, with a genuinely intermediate middle member
+    assert peaks["free"] > peaks["mid"] > peaks["hard"]
+    assert 0.15 * peaks["free"] < peaks["mid"] < 0.9 * peaks["free"], (
+        f"eta_f = eta/a should sit mid-family: {peaks}")
+    assert peaks["hard"] < 0.02 * peaks["free"], (
+        f"a stiff dashpot should weld the fault: {peaks}")
 
 
 def test_registration_refuses_an_unsplit_mesh():

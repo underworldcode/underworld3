@@ -73,6 +73,35 @@ def add_frictionless_fault_bc(solver, boundary):
         solver._fault_contact_faults = registered + [boundary]
 
 
+def add_viscous_fault_bc(solver, conds, boundary):
+    r"""Register a viscous (linear dashpot) law on the split fault ``boundary``:
+
+    .. math::  \hat t\cdot\sigma\cdot\hat n = \eta_f\, V,
+               \qquad V = [\mathbf v]\cdot\hat t,
+
+    with ``conds`` = :math:`\eta_f`, the interface viscosity (bulk viscosity
+    per unit length: the zero-thickness limit of a shear band of viscosity
+    :math:`\eta_b` and width :math:`w` is :math:`\eta_f = \eta_b/w`). The
+    no-opening constraint rides along as always. Limits: ``conds = 0`` is the
+    frictionless contact; ``conds`` large welds the fault. The natural scale
+    is :math:`\eta/a` (bulk viscosity over fault half-length), at which the
+    fault slips at roughly half its free rate.
+
+    This is the linear member of the interface-law family: the term enters
+    the rotated system as :math:`2\eta_f M` on the slip rows (:math:`M` the
+    1-D trace mass), which is exactly the tangent structure a friction law
+    occupies with :math:`2\,(\partial\tau/\partial V)\,M` — so everything
+    downstream of this hook is what friction will reuse.
+    """
+    add_frictionless_fault_bc(solver, boundary)
+    eta_f = float(conds)
+    if eta_f < 0.0:
+        raise ValueError(f"interface viscosity must be >= 0 (got {eta_f}).")
+    registered = dict(getattr(solver, "_fault_interface_viscosity", {}))
+    registered[boundary] = eta_f
+    solver._fault_interface_viscosity = registered
+
+
 def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
     """Solve with the registered fault contact(s) imposed; returns the
     rotated-solve result dict (see ``rotated_bc.solve_rotated_freeslip``).
@@ -155,6 +184,99 @@ def _fault_pair_nodes(solver, boundary):
         out.append((int(q_plus), int(q_minus),
                     acc / (np.linalg.norm(acc) + 1e-30)))
     return out
+
+
+def _interface_slip_operator(solver, Q):
+    r"""The interface constitutive operator on the rotated slip rows, or None.
+
+    For every registered fault with :math:`\eta_f > 0`, assembles
+    :math:`\hat K = 2\eta_f M` where :math:`M` is the consistent 1-D P2 trace
+    mass over the fault facets and the factor 2 converts between the slip
+    :math:`V` and the rotated slip row's value :math:`V/\sqrt 2` (the term is
+    :math:`\eta_f\int V\,\delta V\,d\Gamma = 2\eta_f\,\hat u^T M\,\delta\hat
+    u`). Rows/columns live only on slip rows, so the operator adds to the
+    rotated Jacobian and contributes :math:`\hat K\hat u` to the rotated
+    residual — the solve driver owns both hooks.
+
+    A tip vertex has no slip DOF — both sides share the point, the jump
+    space vanishes there — so its trace-mass entries are simply dropped:
+    the interface law inherits V = 0 at the tips topologically, with no
+    boundary condition on the interface system.
+
+    ``Q`` is accepted for interface laws that need the rotated frame; the
+    linear law only needs the row map, which is rebuilt here from the same
+    deterministic pairing ``build_rotation`` used.
+    """
+    from petsc4py import PETSc
+
+    registered = {name: eta for name, eta in
+                  getattr(solver, "_fault_interface_viscosity", {}).items()
+                  if eta > 0.0}
+    if not registered:
+        return None
+
+    dm = solver.dm
+    dim = solver.mesh.dim
+    lsec = dm.getLocalSection()
+    l2g = dm.getLGMap()
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+    v0, v1 = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+
+    A = solver.snes.getJacobian()[0]
+    rstart, rend = A.getOwnershipRange()
+    nloc = rend - rstart
+    N = A.getSize()[0]
+    K = PETSc.Mat().create(comm=dm.comm)
+    K.setSizes(((nloc, N), (nloc, N)))
+    K.setType("aij")
+    K.setPreallocationNNZ((3, 0))
+    K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+
+    # Consistent mass of a P2 line element of unit length, nodes ordered
+    # (end, midpoint, end).
+    M_e = np.array([[4.0, 2.0, -1.0],
+                    [2.0, 16.0, 2.0],
+                    [-1.0, 2.0, 4.0]]) / 30.0
+
+    for name, eta_f in registered.items():
+        pairs = solver.mesh._fault_point_pairs[name]
+        minus_of = {q_plus: q_minus for q_minus, q_plus in pairs.items()}
+
+        def slip_row(q_plus):
+            """Global row of the pair's rotated slip component, or None at a
+            tip (no replica, no slip DOF)."""
+            q_minus = minus_of.get(int(q_plus))
+            if q_minus is None:
+                return None
+            lo = lsec.getFieldOffset(q_minus, _VELOCITY_FIELD)
+            g = int(l2g.apply([lo + 1])[0])
+            return g if g >= 0 else None
+
+        plus_name = f"{name}Plus"
+        value = solver.mesh.boundaries[plus_name].value
+        if not (dm.hasLabel(plus_name)
+                and dm.getLabel(plus_name).getStratumSize(value) > 0):
+            continue
+        facets = [int(p) for p in
+                  dm.getLabel(plus_name).getStratumIS(value).getIndices()
+                  if fS <= int(p) < fE]
+        for f in facets:
+            va, vb = (int(q) for q in dm.getCone(f))
+            L = float(np.linalg.norm(cvec[csec.getOffset(va) // dim]
+                                     - cvec[csec.getOffset(vb) // dim]))
+            rows = [slip_row(va), slip_row(f), slip_row(vb)]
+            for i, gi in enumerate(rows):
+                if gi is None or not (rstart <= gi < rend):
+                    continue
+                for j, gj in enumerate(rows):
+                    if gj is None:
+                        continue
+                    K.setValue(gi, gj, 2.0 * eta_f * L * M_e[i, j],
+                               addv=True)
+    K.assemble()
+    return K
 
 
 def fault_slip(solver, boundary, solve_result):
