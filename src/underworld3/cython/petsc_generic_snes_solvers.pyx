@@ -5927,9 +5927,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         * ``conds = 0`` — frictionless (perfectly slippery): zero shear
           traction, the slip emerges (the stress-driven crack).
         * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
-          ``conds`` = :math:`\eta_f` (bulk viscosity per unit length; the
-          zero-thickness limit of a band of viscosity :math:`\eta_b` and
-          width :math:`w` is :math:`\eta_f = \eta_b/w`). ``conds`` large
+          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
+          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
+          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
+          not the background's — and :math:`w` its width). ``conds`` large
           removes the fault (only the JUMP is penalised — nothing becomes
           rigid).
 

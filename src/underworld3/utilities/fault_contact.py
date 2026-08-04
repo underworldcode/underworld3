@@ -67,9 +67,6 @@ def add_frictionless_fault_bc(solver, boundary):
             "solver's mesh must come from fault_split.split_fault, which is "
             "what records the coincident DOF pairs. "
             f"Available: {sorted(pairs) or 'none'}")
-    if solver.mesh.dim != 2:
-        raise NotImplementedError(
-            "fault contact is 2-D; the 3-D fault is not yet a split surface.")
     registered = getattr(solver, "_fault_contact_faults", [])
     if boundary not in registered:
         solver._fault_contact_faults = registered + [boundary]
@@ -81,9 +78,12 @@ def add_viscous_fault_bc(solver, conds, boundary):
     .. math::  \hat t\cdot\sigma\cdot\hat n = \eta_f\, V,
                \qquad V = [\mathbf v]\cdot\hat t,
 
-    with ``conds`` = :math:`\eta_f`, the interface viscosity (bulk viscosity
-    per unit length: the zero-thickness limit of a shear band of viscosity
-    :math:`\eta_b` and width :math:`w` is :math:`\eta_f = \eta_b/w`). The
+    with ``conds`` = :math:`\eta_f`, the interface viscosity (viscosity per
+    unit length: the zero-thickness limit of a shear band is
+    :math:`\eta_f = \eta_{band}/w` with :math:`\eta_{band}` the band's OWN
+    — weak-zone — viscosity and :math:`w` its width. Not the background
+    viscosity: matching a layer means :math:`V = \tau w/\eta_{band}`, and
+    with the background value the layer would not be weak). The
     no-opening constraint rides along as always. Limits: ``conds = 0`` is the
     frictionless contact; ``conds`` large welds the fault. The natural scale
     is :math:`\eta/a` (bulk viscosity over fault half-length), at which the
@@ -274,7 +274,8 @@ def update_fault_state(solver, boundary, dt, solve_result):
     state = solver._fault_state[boundary]
     Dc = state["Dc"]
     assembler = _InterfaceAssembler(solver, include=(boundary,))
-    V = np.abs(assembler._nodal_slip(solver, solve_result["U"])[:-1])
+    V = np.linalg.norm(assembler._nodal_slip(solver, solve_result["U"])[:-1],
+                       axis=1)
     pts = sorted(assembler._points, key=assembler._points.get)
     theta = np.array([state["by_point"].get(q, state["theta0"])
                       for q in pts])
@@ -382,6 +383,25 @@ def _fault_pair_nodes(solver, boundary):
     return out
 
 
+def _tangent_frame(nrm):
+    """The in-fault tangent(s) completing a pair block's rotation frame.
+
+    One tangent in 2-D (the quarter-turn of the normal), two in 3-D (t̂1
+    from the coordinate axis least aligned with the normal — deterministic
+    per node — and t̂2 completing the right-handed triad). The SINGLE
+    authority for the frame: the pair blocks in ``rotated_bc`` and the
+    interface assembler's slip components must agree row for row.
+    """
+    nrm = np.asarray(nrm, dtype=float)
+    if len(nrm) == 2:
+        return [np.array([-nrm[1], nrm[0]])]
+    axis = np.zeros(3)
+    axis[int(np.argmin(np.abs(nrm)))] = 1.0
+    t1 = np.cross(nrm, axis)
+    t1 = t1 / np.linalg.norm(t1)
+    return [t1, np.cross(nrm, t1)]
+
+
 # 3-point Gauss-Legendre on [0,1] (exact through quartics — the tangent's
 # N_i N_j weighting of a P2 trace is quartic) and the quadratic line shape
 # functions at those points, node order (end, midpoint, end).
@@ -390,6 +410,22 @@ _WQ = np.array([5.0, 8.0, 5.0]) / 18.0
 _NQ = np.column_stack([2.0 * (_XI - 0.5) * (_XI - 1.0),
                        4.0 * _XI * (1.0 - _XI),
                        2.0 * _XI * (_XI - 0.5)])
+
+# The 3-D trace element is the P2 TRIANGLE: 6-point degree-4 Dunavant rule
+# (N_i N_j of P2 is quartic, as on the line) with weights summing to 1 on
+# the unit-area reference, and the quadratic shapes in barycentric
+# coordinates, node order (v0, v1, v2, e01, e12, e20).
+_L1, _W1 = 0.445948490915965, 0.223381589678011
+_L2, _W2 = 0.091576213509771, 0.109951743655322
+_LAMBDA3 = np.array([[1 - 2 * _L1, _L1, _L1], [_L1, 1 - 2 * _L1, _L1],
+                     [_L1, _L1, 1 - 2 * _L1],
+                     [1 - 2 * _L2, _L2, _L2], [_L2, 1 - 2 * _L2, _L2],
+                     [_L2, _L2, 1 - 2 * _L2]])
+_WQ3 = np.array([_W1, _W1, _W1, _W2, _W2, _W2])
+_NQ3 = np.column_stack(
+    [_LAMBDA3[:, i] * (2.0 * _LAMBDA3[:, i] - 1.0) for i in range(3)]
+    + [4.0 * _LAMBDA3[:, i] * _LAMBDA3[:, j]
+       for i, j in ((0, 1), (1, 2), (2, 0))])
 
 
 class _InterfaceAssembler:
@@ -415,6 +451,7 @@ class _InterfaceAssembler:
     def __init__(self, solver, include=()):
         dm = solver.dm
         dim = solver.mesh.dim
+        ncomp = dim - 1                       # slip components per node
         lsec = dm.getLocalSection()
         l2g = dm.getLGMap()
         csec = dm.getCoordinateSection()
@@ -442,19 +479,21 @@ class _InterfaceAssembler:
                 q = int(q)
                 qm = minus_of.get(q)
                 if qm is None:
-                    return -1                     # a tip: V = 0, no DOF
+                    return -1              # a tip/rim node: V = 0, no DOF
                 if q in index_of:
                     return index_of[q]
                 lo = lsec.getFieldOffset(qm, _VELOCITY_FIELD)
-                g = int(l2g.apply([lo + 1])[0])
                 nrm = normals[q]
                 index_of[q] = len(rows)
                 fault_of.append(current[0])
-                rows.append(g)
+                # one global row per slip component, on the Minus point's
+                # rotated rows — the jump-tangent rows of the pair block
+                rows.append([int(l2g.apply([lo + 1 + a])[0])
+                             for a in range(ncomp)])
                 lo_p.append(lsec.getFieldOffset(q, _VELOCITY_FIELD))
-                lo_m.append(lsec.getFieldOffset(qm, _VELOCITY_FIELD))
-                tans.append((-nrm[1], nrm[0]))
-                nrms.append((nrm[0], nrm[1]))
+                lo_m.append(lo)
+                tans.append(_tangent_frame(nrm))
+                nrms.append(nrm)
                 return index_of[q]
 
             plus_name = f"{name}Plus"
@@ -469,35 +508,66 @@ class _InterfaceAssembler:
                       .getStratumIS(value).getIndices()):
                 if not (fS <= f < fE):
                     continue
-                va, vb = (int(q) for q in dm.getCone(f))
-                L = float(np.linalg.norm(
-                    cvec[csec.getOffset(va) // dim]
-                    - cvec[csec.getOffset(vb) // dim]))
-                facets.append((node_index(va), node_index(f),
-                               node_index(vb), L, law_id))
+                if dim == 2:
+                    va, vb = (int(q) for q in dm.getCone(f))
+                    L = float(np.linalg.norm(
+                        cvec[csec.getOffset(va) // dim]
+                        - cvec[csec.getOffset(vb) // dim]))
+                    facets.append(((node_index(va), node_index(f),
+                                    node_index(vb)), L, law_id))
+                else:
+                    # P2 triangle: vertex nodes carry barycentric shapes
+                    # in list order, edge nodes pair them (v0v1, v1v2,
+                    # v2v0) — the _NQ3 node convention.
+                    edges = [int(q) for q in dm.getCone(f)]
+                    epair = {e: tuple(int(q) for q in dm.getCone(e))
+                             for e in edges}
+                    verts = sorted({v for pr in epair.values() for v in pr})
+                    Xv = [cvec[csec.getOffset(v) // dim] for v in verts]
+                    area = 0.5 * float(np.linalg.norm(
+                        np.cross(Xv[1] - Xv[0], Xv[2] - Xv[0])))
+                    edge_of_pair = {frozenset(pr): e
+                                    for e, pr in epair.items()}
+                    idx = tuple(node_index(v) for v in verts) + tuple(
+                        node_index(edge_of_pair[frozenset(
+                            (verts[i], verts[j]))])
+                        for i, j in ((0, 1), (1, 2), (2, 0)))
+                    facets.append((idx, area, law_id))
 
         # petsc4py refuses to narrow index arrays — Vec/Mat setValues need
         # PETSc's own integer type.
-        self._rows = np.asarray(rows, dtype=PETSc.IntType)
+        self._ncomp = ncomp
+        self._rows = np.asarray(rows, dtype=PETSc.IntType).reshape(-1, ncomp)
         self._lo_p = np.asarray(lo_p, dtype=np.int64)
         self._lo_m = np.asarray(lo_m, dtype=np.int64)
-        self._tan = np.asarray(tans, dtype=float).reshape(-1, 2)
-        self._nrm = np.asarray(nrms, dtype=float).reshape(-1, 2)
+        self._tan = np.asarray(tans, dtype=float).reshape(-1, ncomp, dim)
+        self._nrm = np.asarray(nrms, dtype=float).reshape(-1, dim)
+        self._NQ = _NQ if dim == 2 else _NQ3
+        self._WQ = _WQ if dim == 2 else _WQ3
         self._laws = laws_of
         self._facets = facets
         self._dim = dim
         self._points = {q: k for q, k in index_of.items()}
 
-        # Lumped 1-D P2 trace mass per pair node, for de-smearing the
-        # constraint reaction into a pointwise normal traction (row sums
-        # L/6, 2L/3, L/6 — positive for a P2 LINE, unlike P2 triangles).
-        # At a seam crossing the two adjacent facets live on different
+        # Positive trace mass per pair node, for de-smearing the constraint
+        # reaction into a pointwise normal traction. On the P2 LINE the
+        # lumped (row-sum) mass is positive (L/6, 2L/3, L/6) and is used
+        # directly. On the P2 TRIANGLE the lumped VERTEX rows vanish (the
+        # known trap: row sums are 0, 0, 0, A/3, A/3, A/3), so the triangle
+        # uses the P1 SUB-LUMPING instead — each straight P2 triangle is
+        # four P1 sub-triangles of area A/4, whose lumped masses give every
+        # node a positive weight (A/12 per vertex, A/4 per midpoint).
+        # At a 2-D seam crossing the two adjacent facets live on different
         # ranks, so the mass is completed over the star-forest, keyed on
         # the PLUS point of each pair.
         mass = np.zeros(len(rows))
-        for ia, im, ib, L, _law_id in facets:
-            for k, w in ((ia, L / 6.0), (im, 2.0 * L / 3.0),
-                         (ib, L / 6.0)):
+        for idx, measure, _law_id in facets:
+            if dim == 2:
+                weights = (measure / 6.0, 2.0 * measure / 3.0,
+                           measure / 6.0)
+            else:
+                weights = (measure / 12.0,) * 3 + (measure / 4.0,) * 3
+            for k, w in zip(idx, weights):
                 if k >= 0:
                     mass[k] += w
         if mpi.size > 1:
@@ -538,47 +608,63 @@ class _InterfaceAssembler:
                                                     st["theta0"])
 
     def _nodal_slip(self, solver, uvec):
-        """V at every law-carrying pair node, from the CURRENT iterate —
-        read through the local vector so ghosted (cross-seam) values
-        resolve, and padded with the tips' identically-zero slip."""
+        """The slip components at every law-carrying pair node, from the
+        CURRENT iterate — shape ``(n + 1, dim - 1)``, one column per
+        in-fault tangent — read through the local vector so ghosted
+        (cross-seam) values resolve, and padded with the tips'/rim's
+        identically-zero slip in the final row."""
         dm = solver.dm
+        dim = self._nrm.shape[1]
         lvec = dm.getLocalVec()
         dm.globalToLocal(uvec, lvec)
         a = np.asarray(lvec.getArray())
-        V = np.zeros(len(self._rows) + 1)
+        V = np.zeros((len(self._rows) + 1, self._ncomp))
         for k in range(len(self._rows)):
-            du = (a[self._lo_p[k]:self._lo_p[k] + 2]
-                  - a[self._lo_m[k]:self._lo_m[k] + 2])
-            V[k] = float(self._tan[k] @ du)
+            du = (a[self._lo_p[k]:self._lo_p[k] + dim]
+                  - a[self._lo_m[k]:self._lo_m[k] + dim])
+            V[k] = self._tan[k] @ du
         dm.restoreLocalVec(lvec)
-        return V                                   # V[-1] == 0: the tip pad
+        return V                          # V[-1] == 0: the tip/rim pad
 
     def residual_add(self, solver, uvec, Fh):
         """Add the interface force to the ROTATED residual, in place.
-        COLLECTIVE (the Vec assembly): every rank calls, fault or not."""
+        COLLECTIVE (the Vec assembly): every rank calls, fault or not.
+
+        The slip is a scalar in 2-D (the law reads it SIGNED — every law
+        is odd in V) and an in-plane vector in 3-D, where the traction is
+        collinear with the slip: tau_vec = tau(|V|) V-hat.
+        """
+        NQ, WQ = self._NQ, self._WQ
         V = self._nodal_slip(solver, uvec)
         S = self._sigma
-        vals = np.zeros(len(self._rows))
+        vals = np.zeros((len(self._rows), self._ncomp))
         s2 = np.sqrt(2.0)
-        for ia, im, ib, L, law_id in self._facets:
+        for idx, measure, law_id in self._facets:
             if law_id < 0:
                 continue                       # geometry-only (diagnostics)
-            idx = (ia, im, ib)
-            Vq = _NQ @ V[list(idx)]
-            Sq = _NQ @ S[list(idx)]
+            Vq = NQ @ V[list(idx)]
+            Sq = NQ @ S[list(idx)]
             # theta varies by orders of magnitude along a fault and only ever
             # enters a law through ln(theta): interpolate the LOG, which
             # is also what keeps a positive-only state positive under
             # quadratic shape functions (their undershoot sent theta
             # negative at a quadrature point the plain way).
-            Tq = np.exp(_NQ @ np.log(self._theta[list(idx)]))
-            tq = self._laws[law_id].tau(Vq, Sq, Tq)
-            contrib = s2 * L * (_NQ.T @ (_WQ * tq))
+            Tq = np.exp(NQ @ np.log(self._theta[list(idx)]))
+            if self._ncomp == 1:
+                tvec = self._laws[law_id].tau(Vq[:, 0], Sq, Tq)[:, None]
+            else:
+                mag = np.linalg.norm(Vq, axis=1)
+                tq = self._laws[law_id].tau(mag, Sq, Tq)
+                # collinear traction; where |V| vanishes so does tau(|V|)
+                scale = np.where(mag > 1e-300, tq / np.maximum(mag, 1e-300),
+                                 0.0)
+                tvec = scale[:, None] * Vq
+            contrib = s2 * measure * (NQ.T @ (WQ[:, None] * tvec))
             for j, k in enumerate(idx):
                 if k >= 0:
                     vals[k] += contrib[j]
         if len(self._rows):
-            Fh.setValues(self._rows, vals, addv=True)
+            Fh.setValues(self._rows.ravel(), vals.ravel(), addv=True)
         Fh.assemblyBegin()
         Fh.assemblyEnd()
 
@@ -589,13 +675,14 @@ class _InterfaceAssembler:
         mass. The reaction must be the PURE bulk residual — the loop
         stashes it before the interface force is added."""
         dm = solver.dm
+        dim = self._nrm.shape[1]
         lvec = dm.getLocalVec()
         dm.globalToLocal(reaction, lvec)
         a = np.asarray(lvec.getArray())
         sig = np.zeros(len(self._rows))
         for k in range(len(self._rows)):
-            rp = a[self._lo_p[k]:self._lo_p[k] + 2]
-            rm = a[self._lo_m[k]:self._lo_m[k] + 2]
+            rp = a[self._lo_p[k]:self._lo_p[k] + dim]
+            rm = a[self._lo_m[k]:self._lo_m[k] + dim]
             load = 0.5 * float(self._nrm[k] @ (rp - rm))
             sig[k] = load / max(self._mass[k], 1e-300)
         dm.restoreLocalVec(lvec)
@@ -611,51 +698,90 @@ class _InterfaceAssembler:
 
     def tangent(self, solver, uvec):
         """The consistent interface tangent at the current iterate, as a
-        fresh Mat on the composite layout (caller destroys). COLLECTIVE."""
+        fresh Mat on the composite layout (caller destroys). COLLECTIVE.
+
+        In 3-D the per-quadrature block on the two slip components is the
+        collinear-traction tangent
+
+        .. math:: (d\\tau/dV)\\,\\hat V\\hat V^T
+                  + (\\tau/|V|)\\,(I - \\hat V\\hat V^T),
+
+        regularised at :math:`|V| \\to 0` by the laws' own smoothness —
+        arctan/asinh forms give :math:`\\tau/|V| \\to d\\tau/dV(0)`, so the
+        zero-slip block is the isotropic :math:`d\\tau/dV(0)\\,I`.
+        """
         dm = solver.dm
+        NQ, WQ = self._NQ, self._WQ
         A = solver.snes.getJacobian()[0]
         rstart, rend = A.getOwnershipRange()
         K = PETSc.Mat().create(comm=dm.comm)
         K.setSizes(((rend - rstart, A.getSize()[0]),
                     (rend - rstart, A.getSize()[0])))
         K.setType("aij")
-        K.setPreallocationNNZ((3, 0))
+        K.setPreallocationNNZ((3 if self._ncomp == 1 else 40, 0))
         K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
         V = self._nodal_slip(solver, uvec)
         S = self._sigma
-        for ia, im, ib, L, law_id in self._facets:
+        for idx, measure, law_id in self._facets:
             if law_id < 0:
                 continue                       # geometry-only (diagnostics)
-            idx = (ia, im, ib)
-            Vq = _NQ @ V[list(idx)]
-            Sq = _NQ @ S[list(idx)]
+            Vq = NQ @ V[list(idx)]
+            Sq = NQ @ S[list(idx)]
             # theta varies by orders of magnitude along a fault and only ever
             # enters a law through ln(theta): interpolate the LOG, which
             # is also what keeps a positive-only state positive under
             # quadratic shape functions (their undershoot sent theta
             # negative at a quadrature point the plain way).
-            Tq = np.exp(_NQ @ np.log(self._theta[list(idx)]))
-            dq = self._laws[law_id].dtau_dV(Vq, Sq, Tq)
-            Ke = 2.0 * L * (_NQ.T @ (_NQ * (_WQ * dq)[:, None]))
-            for i, ki in enumerate(idx):
-                if ki < 0:
-                    continue
-                for j, kj in enumerate(idx):
-                    if kj >= 0:
-                        K.setValue(int(self._rows[ki]),
-                                   int(self._rows[kj]),
-                                   float(Ke[i, j]), addv=True)
+            Tq = np.exp(NQ @ np.log(self._theta[list(idx)]))
+            if self._ncomp == 1:
+                dq = self._laws[law_id].dtau_dV(Vq[:, 0], Sq, Tq)
+                Ke = 2.0 * measure * (NQ.T @ (NQ * (WQ * dq)[:, None]))
+                for i, ki in enumerate(idx):
+                    if ki < 0:
+                        continue
+                    for j, kj in enumerate(idx):
+                        if kj >= 0:
+                            K.setValue(int(self._rows[ki, 0]),
+                                       int(self._rows[kj, 0]),
+                                       float(Ke[i, j]), addv=True)
+                continue
+            mag = np.linalg.norm(Vq, axis=1)
+            tq = self._laws[law_id].tau(mag, Sq, Tq)
+            dq = self._laws[law_id].dtau_dV(mag, Sq, Tq)
+            for q in range(len(WQ)):
+                if mag[q] > 1e-12:
+                    vhat = Vq[q] / mag[q]
+                    P = np.outer(vhat, vhat)
+                    B = dq[q] * P + (tq[q] / mag[q]) * (np.eye(2) - P)
+                else:
+                    B = dq[q] * np.eye(2)
+                w = 2.0 * measure * WQ[q]
+                for i, ki in enumerate(idx):
+                    if ki < 0:
+                        continue
+                    for j, kj in enumerate(idx):
+                        if kj < 0:
+                            continue
+                        NiNj = w * NQ[q, i] * NQ[q, j]
+                        for aa in range(2):
+                            for bb in range(2):
+                                K.setValue(int(self._rows[ki, aa]),
+                                           int(self._rows[kj, bb]),
+                                           float(NiNj * B[aa, bb]),
+                                           addv=True)
         K.assemble()
         return K
 
 
 def fault_normal_traction(solver, boundary, solve_result):
     """Signed normal traction sigma_nn along the split fault ``boundary``
-    (negative in compression), per coincident pair on this rank, with the
-    along-fault coordinate — recovered from the solve's stashed reaction,
-    exactly as the interface laws read their effective normal stress.
-    Returns ``(s, sigma_nn)`` ordered along the fault.
+    (negative in compression), per coincident pair on this rank —
+    recovered from the solve's stashed reaction, exactly as the interface
+    laws read their effective normal stress. In 2-D returns
+    ``(s, sigma_nn)`` ordered by the along-fault coordinate; a 3-D patch
+    has no such ordering, so there the first element is the pair
+    COORDINATES instead: ``(coords, sigma_nn)``.
     """
     from underworld3.utilities.rotated_bc import _point_coord
 
@@ -672,7 +798,9 @@ def fault_normal_traction(solver, boundary, solve_result):
                        for q in pts]) if pts else np.zeros((0, dim))
     if not len(coords):
         return np.zeros(0), np.zeros(0)
-    tbar = assembler._tan.mean(axis=0)
+    if dim == 3:
+        return coords, sig
+    tbar = assembler._tan[:, 0, :].mean(axis=0)
     tbar /= np.linalg.norm(tbar) + 1e-30
     s_coord = coords @ tbar
     s_coord -= s_coord.min()
@@ -680,17 +808,17 @@ def fault_normal_traction(solver, boundary, solve_result):
     return s_coord[order], sig[order]
 
 
-def fault_slip(solver, boundary, solve_result):
-    """Slip and leak across the fault, per coincident pair, from the solve.
+def fault_pair_jumps(solver, boundary, solve_result):
+    """The velocity jump at every coincident pair, from the solve.
 
-    Returns ``(s, V, leak)`` on this rank: the along-fault coordinate of each
-    pair (arc-length-like, measured along the fault's mean tangent from the
-    first tip), the tangential velocity jump :math:`V = \\hat t\\cdot(v^+ -
-    v^-)`, and the normal jump :math:`\\hat n\\cdot(v^+ - v^-)` — the leak,
-    which the strong constraint holds at machine zero. Reads the composite
-    solution ``solve_result["U"]`` through the pairing, which is the only
-    correct route: the pair coordinates are identical, so field queries by
-    position see one side only.
+    Returns ``(coords, jumps, normals)`` on this rank — the pair position,
+    the full jump vector :math:`v^+ - v^-`, and the fault unit normal —
+    in any dimension. Reads the composite solution ``solve_result["U"]``
+    through the pairing, which is the only correct route: the pair
+    coordinates are identical, so field queries by position see one side
+    only. The tangential part of the jump is the slip (a scalar against
+    the in-fault tangent in 2-D, an in-plane vector in 3-D); the normal
+    part is the leak, held at machine zero by the strong constraint.
     """
     dm = solver.dm
     dim = solver.mesh.dim
@@ -722,10 +850,28 @@ def fault_slip(solver, boundary, solve_result):
         jumps.append(vals["plus"] - vals["minus"])
         normals.append(nrm)
     if not coords:
+        return (np.zeros((0, dim)),) * 3
+    return np.array(coords), np.array(jumps), np.array(normals)
+
+
+def fault_slip(solver, boundary, solve_result):
+    """Slip and leak along a 2-D fault, per coincident pair, from the solve.
+
+    Returns ``(s, V, leak)`` on this rank: the along-fault coordinate of each
+    pair (arc-length-like, measured along the fault's mean tangent from the
+    first tip), the tangential velocity jump :math:`V = \\hat t\\cdot(v^+ -
+    v^-)`, and the normal jump :math:`\\hat n\\cdot(v^+ - v^-)` — the leak,
+    which the strong constraint holds at machine zero. The 2-D profile view
+    of :func:`fault_pair_jumps`; a 3-D patch has no along-fault ordering, so
+    read the jumps directly there.
+    """
+    coords, jumps, normals = fault_pair_jumps(solver, boundary, solve_result)
+    if not len(coords):
         return (np.zeros(0),) * 3
-    coords = np.array(coords)
-    jumps = np.array(jumps)
-    normals = np.array(normals)
+    if solver.mesh.dim != 2:
+        raise NotImplementedError(
+            "fault_slip's arc-length profile is 2-D; use fault_pair_jumps "
+            "for a 3-D patch.")
     tangents = np.column_stack([-normals[:, 1], normals[:, 0]])
     # Along-fault coordinate from the mean tangent, origin at the trailing end.
     tbar = tangents.mean(axis=0)

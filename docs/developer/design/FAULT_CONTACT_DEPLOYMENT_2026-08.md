@@ -79,6 +79,16 @@ child = mesh.add_fault(fault, ...)          # adapt→cut→split, or split-only
 stokes.add_fault_bc(law, fault.name)        # "free" | ("viscous", eta_f) | friction later
 ```
 
+The manifold contract is a PROTOCOL, not one class (placed-surface
+session's counter-proposal, 2026-08-05, adopted): a fault manifold is
+anything with a ``name``, geometry, signed-distance/director sampling,
+and per-node ``point_data``. The concrete types are ``uw.meshing.Surface``
+(the 2-D polyline — what ``add_fault`` consumes today) and
+``uw.meshing.FaultSurface`` (the 3-D pyvista-triangulated sheet, which
+predates both branches and has no 2-D form). Documentation must not name
+``FaultSurface`` as "the" manifold object — the landed 2-D capability
+would then have none.
+
 ## Parallel: the seam-vertex crossing rule (maintainer ruling, 2026-08-04)
 
 Never synchronise interior replicas across ranks. Instead **pin a mesh vertex

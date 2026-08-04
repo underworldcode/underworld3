@@ -197,6 +197,77 @@ def test_refusals(box_with_patch):
         split_fault(child, "FltA")
 
 
+def _stokes_on(split_box, drive, tag):
+    v = uw.discretisation.MeshVariable(f"v_{tag}", split_box, 3, degree=2)
+    p = uw.discretisation.MeshVariable(f"p_{tag}", split_box, 1, degree=0,
+                                       continuous=False)
+    stokes = uw.systems.Stokes(split_box, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.bodyforce = [0.0, 0.0, 0.0]
+    for wall in ("Bottom", "Top", "Right", "Left", "Front", "Back"):
+        stokes.add_dirichlet_bc(drive, wall)
+    stokes.tolerance = 1e-6
+    return stokes
+
+
+def _slip_and_leak(stokes):
+    from underworld3.utilities import fault_contact
+
+    coords, jumps, normals = fault_contact.fault_pair_jumps(
+        stokes, "FltA", stokes._rotated_freeslip_info)
+    leak = np.einsum("ij,ij->i", jumps, normals)
+    slip = np.linalg.norm(jumps - leak[:, None] * normals, axis=1)
+    return coords, slip, leak
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_viscous_family_3d(split_box):
+    """The interface dashpot in 3-D: slip monotone in eta_f, weld limit."""
+    x, y, z = split_box.X
+    shear = (0.0, x - 0.5, 0.0)
+    peaks = []
+    for tag, eta_f in (("vf0", 0.0), ("vf1", 5.0), ("vf2", 500.0)):
+        stokes = _stokes_on(split_box, shear, tag)
+        stokes.add_fault_bc(eta_f, boundary="FltA")
+        stokes.solve(verbose=False)
+        _coords, slip, leak = _slip_and_leak(stokes)
+        assert np.abs(leak).max() < 1e-10
+        peaks.append(slip.max())
+    assert peaks[0] > peaks[1] > peaks[2]
+    assert peaks[2] < 0.05 * peaks[0]          # the weld removes the fault
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_coulomb_slide_stick_3d(split_box):
+    """Coulomb with reaction-fed sigma_n in 3-D: the drive
+    v = (-(x-c), (y-c) + gamma (x-c), 0) carries compression 2 eta onto
+    the patch and resolved shear gamma eta; against strength mu sigma_n
+    the fault slides at gamma = 2 and sticks (creep ~ V0) at 0.4."""
+    from underworld3.utilities import fault_contact
+
+    x, y, z = split_box.X
+    results = {}
+    for tag, gamma in (("cs2", 2.0), ("cs04", 0.4)):
+        drive = (-(x - 0.5), (y - 0.5) + gamma * (x - 0.5), 0.0)
+        stokes = _stokes_on(split_box, drive, tag)
+        fault_contact.add_coulomb_fault_bc(stokes, 0.6, "FltA",
+                                           sigma_n="reaction", V0=1e-3)
+        fault_contact.solve_with_fault(stokes, picard=2)
+        coords, slip, leak = _slip_and_leak(stokes)
+        assert np.abs(leak).max() < 1e-10
+        crds, sig = fault_contact.fault_normal_traction(
+            stokes, "FltA", stokes._rotated_freeslip_info)
+        inner = np.linalg.norm(crds[:, 1:] - 0.5, axis=1) < 0.12
+        # the de-smeared reaction recovers the driven compression
+        assert -3.5 < np.median(sig[inner]) < -1.2
+        results[gamma] = slip.max()
+    assert results[2.0] > 0.05                 # sliding
+    assert results[0.4] < 5e-3                 # stuck at ~V0 creep
+
+
 @pytest.mark.level_1
 @pytest.mark.tier_b
 def test_daylighting_patch_refused():

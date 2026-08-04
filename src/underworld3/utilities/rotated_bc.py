@@ -289,8 +289,6 @@ def build_rotation(solver, boundaries, datum_specs=None):
     # on it is friction.)
     if fault_names:
         from underworld3.utilities import fault_contact
-        if dim != 2:
-            raise NotImplementedError("fault contact pair blocks are 2-D.")
         s2 = 1.0 / np.sqrt(2.0)
         for fname in fault_names:
             for q_plus, q_minus, nrm in fault_contact._fault_pair_nodes(
@@ -300,7 +298,12 @@ def build_rotation(solver, boundaries, datum_specs=None):
                         f"fault {fname!r} shares a node with a rotated "
                         "free-slip boundary; a point cannot carry both a "
                         "wall block and a pair block.")
-                tan = np.array([-nrm[1], nrm[0]])
+                # The tangent frame: one in-fault direction in 2-D, two in
+                # 3-D. Shared with the interface assembler's slip rows —
+                # _tangent_frame is the single authority. The specific
+                # in-plane directions carry no physics: both slip rows are
+                # free (frictionless) or enter through |V| (laws).
+                frame = [nrm] + fault_contact._tangent_frame(nrm)
                 gp, gm = [], []
                 for q, rows in ((q_plus, gp), (q_minus, gm)):
                     lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
@@ -317,11 +320,11 @@ def build_rotation(solver, boundaries, datum_specs=None):
                         "impossible.")
                 if not owned_p:
                     continue
-                for row, e, sgn in ((gp[0], nrm, +1.0), (gp[1], tan, +1.0),
-                                    (gm[0], nrm, -1.0), (gm[1], tan, -1.0)):
-                    for j in range(dim):
-                        Q.setValue(row, gp[j], s2 * float(e[j]))
-                        Q.setValue(row, gm[j], sgn * s2 * float(e[j]))
+                for i, e in enumerate(frame):
+                    for row, sgn in ((gp[i], +1.0), (gm[i], -1.0)):
+                        for j in range(dim):
+                            Q.setValue(row, gp[j], s2 * float(e[j]))
+                            Q.setValue(row, gm[j], sgn * s2 * float(e[j]))
                 normal_rows.append(gm[0])          # [v]·n̂ = 0, datum 0
 
     Q.assemble()
