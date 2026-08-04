@@ -101,10 +101,53 @@ Still refused, deliberately: a fault running *along* a seam (facets on the
 seam), and junctions on a seam (first version). The current blanket seam
 refusal stays in place until this lands, and remains the fallback error.
 
+## Crossing and branching faults: the three-level strategy
+
+Faults branch even where they cannot cross, and crossings evolve (an
+inactive crossing deforms into two abutments and reactivates). Three levels,
+each usable on its own; the approximate ones are legitimate models, not
+placeholders.
+
+- **J0 — offset junctions (available now).** A branch or crossing is a set
+  of DISJOINT segments separated by a ligament of one or two local h. Each
+  splits independently under the existing refusals; the intact ligament
+  transmits stress between them. Junction process zones are physical, the
+  error is ligament-scale and shrinks with the near-fault refinement.
+  Validation: the King two-fault interaction pattern. A crossing is two
+  offset abutments.
+- **J1 — true abutment, tip-on-fault (a refusal refinement).** Split the
+  through-going fault FIRST; the abutter's tip vertex then belongs to one
+  side's copy (the sector it approaches from), and the abutter splits as an
+  ordinary fault whose UNSPLIT tip sits on the master's slit. Tips are never
+  fan-walked, so the only change is the boundary-touching refusal learning
+  to distinguish, for tips only, a domain boundary from a prior fault's slit
+  (the labels tell them apart). Exact T kinematics: the master slips through
+  freely; branch slip tapers to zero over its last facet. This is the
+  locked-branch case — sufficient wherever the branch does not actively
+  partition slip.
+- **J2 — the exact d-sector split (scheduled).** A degree-d junction vertex
+  receives d sector copies (the fan walk opened at ALL incident fault
+  edges); branch compatibility — trunk slip partitioning onto splays — is a
+  TELESCOPING IDENTITY of sector differences around the vertex, so no cycle
+  constraint and no multiplier exists; per-branch no-opening plus per-branch
+  interface laws close the system, and a crossing is simply d = 4. New
+  pieces, all contained: the generalised fan walk, d−1 replicas per junction
+  vertex, per-branch pairing in the trace mapping, and a d-sector BC block
+  at junction nodes in place of the pair block. Acceptance test: the vector
+  sum of branch slips at the junction closes to machine precision — an
+  identity of the representation, not a physics tolerance. The ordinary
+  chain vertex is d = 2 and the tip is d = 1 under the same rule.
+
+Junctions stay OFF partition seams at every level, consistent with the
+seam-vertex crossing rule.
+
 ## Staging
 
 1. **API layer + common backend, serial** — `FaultSurface`, `add_fault`,
    `add_fault_bc`; docs; promote the module functions behind the methods.
+   Includes J0 (offset junctions) as a documented pattern with a two-fault
+   interaction test, and J1 (tip-on-fault abutment) as the refusal
+   refinement.
 2. **Parallel crossing rule** — the one-entry-per-crossing SF extension,
    np=2–4 tests including a fault deliberately spanning two ranks.
 3. **Nonlinear interface laws** — regularised Coulomb with σ_n from the
