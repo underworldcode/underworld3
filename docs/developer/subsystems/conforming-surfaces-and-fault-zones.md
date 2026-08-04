@@ -210,6 +210,82 @@ Every one of these is raised **collectively**. A rank-local refusal aborts one
 rank while its peers walk on into the next collective and block there, turning a
 clear error into a hang.
 
+## The other way: place the surface, do not cut for it
+
+Everything above describes **cutting** — splitting the edges the surface crosses.
+There is a second implementation,
+`underworld3.utilities.place_surface.place_along_lines`, which reaches the same
+end by the opposite move: it asserts the surface's **own points** as mesh
+vertices, deletes the mesh vertices in the way, and retriangulates the cavity so
+that the placed segments survive as element edges.
+
+Both produce a chain of labelled facets with no straddling cell, and both leave
+the base mesh untouched. What differs is which restrictions come with the method.
+Every one of the cut's refusals above is a consequence of *splitting*, and none of
+them applies to placing:
+
+| | cut | place |
+|---|---|---|
+| a surface ending **inside** the mesh | refused — a triangle entered and not left has no split that represents it | the tip is a placed vertex like any other, and the cavity closes round it |
+| two surfaces **closer than one element** | refused — they cross the same edge, and an edge can be split once | free; neither is competing for an edge of the original mesh |
+| surface **finer than the local `h`** | impossible — the surface's vertices *are* the mesh's crossings | `spacing` is a parameter |
+| what it does to the mesh | moves vertices onto the surface (`snap_frac`) and splits edges | deletes vertices near the surface and refills the hole |
+| parallel | yes, and partition-independent | **serial only** — see below |
+
+Measured on the same box, viscosity contrast irrelevant: the cut accepts two
+parallel surfaces one element apart and refuses them at half an element, while
+placement carries them down to a tenth of an element with a worst angle of 4.2
+degrees.
+
+The construction is the same operation in 2-D on a curve and in 3-D on a sheet —
+place, delete, refill — which matters because cutting tetrahedra along a surface
+is an unsolved pattern problem while filling a cavity is standard meshing
+practice. Only the 2-D half exists.
+
+### How the cavity is filled
+
+Clearing the vertices in the way leaves one hole, and what has to be triangulated
+inside it depends only on how many ends of the surface reach the domain boundary:
+none leaves an annulus, one leaves a disc, two leave a disc per flank. All three
+are the same **walk** between two chains — the cavity ring outside, the surface
+traversed *out and back* inside — advancing whichever chain is further behind in a
+shared parameter.
+
+The parameter is arc length around the surface's own boundary: down one flank,
+around the tip, back up the other. Two cheaper choices were tried and both fail.
+Arc length along each chain measures the cavity ring's *wiggle* rather than its
+progress, and the two rings drifted four surface widths apart. Position along
+strike is discontinuous at the tips, which is exactly where the difficulty lives.
+
+At a zero-thickness tip the two flanks meet at a point, so the parameter would go
+flat over the whole turn through 180 degrees and the walk would have nothing left
+to order by. The turn is therefore given a window of the parameter to itself, one
+point spacing wide, interpolated by **angle about the tip** — which turns the tip
+into a fan of one placed vertex against many cavity vertices.
+
+The walk has a third move, and without it it wedges. A cavity ring is not convex,
+so a corner of it can protrude into the region; clipping such a corner off as an
+**ear** consumes both of its ring edges and lets the walk carry on. Where even
+that fails the ring vertex is a *spike* of surviving mesh poking into the cavity —
+the only triangle that would fill the notch uses a vertex the walk has already
+passed — and the answer is to swallow that vertex and re-clear, which is what the
+routine does, up to eight times. Measured over 100 random traces on a uniform mesh
+and 100 on a graded adapt-on-top mesh: 2 and 8 failures respectively without the
+growth step, none with it, and the total area exact to 2e-16 throughout.
+
+### What it costs
+
+The walk fills the cavity by parameter, not by shape, so the cells it leaves are
+worse than the cut's before repair. Flipping (`reconnect.flip_to_reduce_max_angle`)
+fixes that, and both repair passes refuse to touch a labelled edge, so the surface
+itself comes through with the same facets. This is the normal composition, not a
+workaround.
+
+Placement is **serial**. It adds points, and a point added across a partition seam
+needs the star-forest's leaf set extended — the chart-expansion rebuild, which does
+not exist. A parallel call is refused rather than returning a mesh whose
+star-forest is silently wrong. The cut remains the parallel path.
+
 ## Limitations
 
 * **Two dimensions.** The 3-D mechanism is validated on single tets and small
@@ -228,3 +304,6 @@ clear error into a hang.
 * {doc}`meshing` — mesh construction and `Surface`
 * {doc}`mesh-metric-redistribution` — the adapt metric that sets the local `h`
 * `underworld3.utilities.line_cut` — the cutting mechanism
+* `underworld3.utilities.place_surface` — the placing mechanism
+* `underworld3.utilities.reconnect` — the repair passes, and `rebuild_cavities`,
+  the rebuild both deletion and placement go through
