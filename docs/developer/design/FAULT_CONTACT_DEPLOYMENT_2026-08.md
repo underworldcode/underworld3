@@ -101,6 +101,44 @@ Still refused, deliberately: a fault running *along* a seam (facets on the
 seam), and junctions on a seam (first version). The current blanket seam
 refusal stays in place until this lands, and remains the fallback error.
 
+## Representation policy: the fault chooses its implementation per equation
+
+The fault object is the PHYSICAL entity; how an equation system feels it is
+a per-solver choice, and different equations on one model may choose
+differently — a sharp interface for Stokes, a damage zone for Darcy flow.
+The fault object supplies the ingredients; each solver picks its adapter:
+
+| representation | mechanism | status |
+|---|---|---|
+| **surface** (sharp contact) | split mesh + pair constraints, `add_fault_bc` | built (this branch) |
+| **volume** (weak zone / damage) | distance field from the same manifold → viscosity, damage, permeability k(d) | exists (`meshing/faults.py`: `compute_distance_field`, `create_weakness_function`) |
+| **TI weak zone** | director transfer from the manifold normals → `TransverseIsotropicFlowModel` | exists (`meshing/faults.py`: `transfer_normals`) |
+
+Composition across equations, two patterns:
+
+1. **Different meshes per continuity class (the default).** Stokes solves on
+   the split child; Darcy / thermal solve on the PARENT (continuous) with a
+   volume representation from the same manifold's distance field. No new
+   machinery — multi-mesh field transfer exists, and each equation gets a
+   mesh whose continuity matches its physics.
+2. **One shared split mesh (tight coupling only).** A solver that must NOT
+   see the slit needs a continuity (weld) constraint: jump = 0 on its field
+   across every pair. For Stokes this is the measured welded limit; for a
+   scalar system it is a small new piece (the pair transform on a scalar
+   field). Build it when a tightly coupled problem actually demands one
+   mesh; until then pattern 1 is simpler and exact.
+
+## Parallel robustness (measured, np = 3/4/5)
+
+`~/+Simulations/fault_split_gate/crossing_sweep.py`: nine fault geometries
+per rank count. 17/27 split cleanly (every success: zero star-forest drift,
+global Euler 0, conformity; one frictionless solve per np with machine-zero
+leak); every refusal was COLLECTIVE and categorised — three-rank corners on
+the line, and faults running along a seam. No hangs, no invalid meshes, no
+unclassified failures. The sweep also established the kink rule: EVERY
+polyline control point needs a vertex pulled onto it, interior kinks
+included — a kink is the same problem as a tip.
+
 ## Crossing and branching faults: the three-level strategy
 
 Faults branch even where they cannot cross, and crossings evolve (an

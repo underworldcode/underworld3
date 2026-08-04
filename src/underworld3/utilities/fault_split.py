@@ -830,7 +830,11 @@ def add_fault(mesh, faults, verbose=False):
 
     dm = mesh.dm
     for name, poly in segments:
-        dm = pull_vertex_onto(dm, np.vstack([poly[0], poly[-1]]))
+        # EVERY control point gets a vertex, not just the tips: an interior
+        # kink is the same problem as a tip — a distinguished point of the
+        # geometry that must coincide with a mesh vertex, or the cut leaves
+        # the chain fragmented at the turn.
+        dm = pull_vertex_onto(dm, np.asarray(poly, dtype=float))
         # Manufacture CLEAN seam crossings: a shared vertex pulled exactly
         # onto each fault x seam intersection, so the cut chain passes
         # through a seam VERTEX with its two fault facets rank-local — the
