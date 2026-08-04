@@ -134,6 +134,15 @@ constraint holds it shut regardless.
 
 ## 3. The mesh operation
 
+![The stack-on progression](figures/split-node-faults/stack-progression.png)
+
+*Fig. 4 — where the split sits in the meshing pipeline. The base mesh is
+static and never carries the fault; adapt-on-top layers refine toward the
+fault manifold (a dashed geometric object until (d)); the finest child is
+cut so the fault becomes a conforming facet chain, and only then split.
+When the fault moves, the whole top of the stack is re-derived from the
+same base — the operation is non-cumulative by construction.*
+
 ### 3.1 Input contract and provenance
 
 Input: a *conforming labelled facet set* — the fault's name labels
