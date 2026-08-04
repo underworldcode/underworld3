@@ -970,6 +970,179 @@ def BoxInternalBoundary(
 
 
 @timing.routine_timer_decorator
+def BoxInternalPatch(
+    cellSize: float = 0.1,
+    minCoords: Optional[Tuple[float, float, float]] = (0, 0, 0),
+    maxCoords: Optional[Tuple[float, float, float]] = (1, 1, 1),
+    patch_points=None,
+    patch_name: str = "Fault",
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    gmsh_verbosity=0,
+    units=None,
+    verbose=False,
+):
+    r"""
+    Create a 3-D simplex box with an interior conforming surface patch.
+
+    The patch is a planar polygon embedded in the tetrahedral mesh so that
+    a set of mesh FACES coincides with it exactly, labelled ``patch_name``.
+    Its rim stays strictly inside the box — this is the geometry a
+    split-node fault needs (:func:`underworld3.utilities.fault_split.
+    split_fault` duplicates everything inside the rim, and the rim is where
+    slip must taper to zero). Unlike :func:`BoxInternalBoundary`, the patch
+    does not span the domain and does not partition it into regions.
+
+    Parameters
+    ----------
+    cellSize : float
+        Target element size.
+    minCoords, maxCoords : tuple of float
+        Box corners.
+    patch_points : array_like, shape (N, 3)
+        Corners of the planar patch polygon, in order around its rim,
+        N >= 3. All points must be coplanar and strictly inside the box.
+        A disc (penny) patch is a many-sided polygon: sides of length
+        ``cellSize`` resolve the rim as well as the mesh can.
+    patch_name : str
+        Physical name for the patch — the fault name ``split_fault`` and
+        ``add_fault_bc`` will use.
+
+    Example
+    -------
+    >>> patch = np.array([[0.5, 0.3, 0.3], [0.5, 0.7, 0.3],
+    ...                   [0.5, 0.7, 0.7], [0.5, 0.3, 0.7]])
+    >>> mesh = uw.meshing.BoxInternalPatch(cellSize=0.1,
+    ...                                    patch_points=patch,
+    ...                                    patch_name="FltA")
+    >>> child = uw.utilities.fault_split.split_fault(mesh, "FltA")
+    """
+
+    class boundaries_3D(Enum):
+        Bottom = 11
+        Top = 12
+        Right = 13
+        Left = 14
+        Front = 15
+        Back = 16
+
+    class boundary_normals_3D(Enum):
+        Bottom = sympy.Matrix([0, 0, 1])
+        Top = sympy.Matrix([0, 0, 1])
+        Right = sympy.Matrix([1, 0, 0])
+        Left = sympy.Matrix([1, 0, 0])
+        Front = sympy.Matrix([0, 1, 0])
+        Back = sympy.Matrix([0, 1, 0])
+
+    minCoords = tuple(uw.scaling.non_dimensionalise(c) for c in minCoords)
+    maxCoords = tuple(uw.scaling.non_dimensionalise(c) for c in maxCoords)
+    cellSize = uw.scaling.non_dimensionalise(cellSize)
+
+    if len(minCoords) != 3:
+        raise ValueError("BoxInternalPatch is 3-D; in 2-D a fault is a "
+                         "polyline — use Mesh.add_fault on any box mesh.")
+    patch = np.asarray(patch_points, dtype=float)
+    if patch.ndim != 2 or patch.shape[0] < 3 or patch.shape[1] != 3:
+        raise ValueError("patch_points must be an (N, 3) polygon, N >= 3.")
+    lo, hi = np.asarray(minCoords), np.asarray(maxCoords)
+    if not ((patch > lo).all() and (patch < hi).all()):
+        raise ValueError("the patch must sit strictly inside the box — a "
+                         "fault that daylights is not yet supported.")
+
+    members = {b.name: b.value for b in boundaries_3D}
+    patch_tag = max(members.values()) + 4
+    members[patch_name] = patch_tag
+    boundaries = Enum("boundaries", members)
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(".meshes", exist_ok=True)
+        uw_filename = (f".meshes/uw_boxpatch_minC{minCoords}_"
+                       f"maxC{maxCoords}_csize{cellSize}_"
+                       f"{patch_name}{len(patch)}.msh")
+    else:
+        uw_filename = filename
+
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("BoxInternalPatch")
+
+        box = gmsh.model.occ.addBox(
+            minCoords[0], minCoords[1], minCoords[2],
+            maxCoords[0] - minCoords[0], maxCoords[1] - minCoords[1],
+            maxCoords[2] - minCoords[2])
+
+        corner_tags = [gmsh.model.occ.addPoint(*p, cellSize) for p in patch]
+        line_tags = [gmsh.model.occ.addLine(corner_tags[i],
+                                            corner_tags[(i + 1) % len(patch)])
+                     for i in range(len(patch))]
+        loop = gmsh.model.occ.addCurveLoop(line_tags)
+        patch_surface = gmsh.model.occ.addPlaneSurface([loop])
+        gmsh.model.occ.synchronize()
+
+        # The embed makes the volume mesh conform to the patch: its faces
+        # become tet faces, shared by one cell on each side.
+        gmsh.model.mesh.embed(2, [patch_surface], 3, box)
+
+        # OCC numbers the box walls itself; identify them by centre of mass.
+        centre = {
+            "Bottom": (None, None, minCoords[2]),
+            "Top": (None, None, maxCoords[2]),
+            "Left": (minCoords[0], None, None),
+            "Right": (maxCoords[0], None, None),
+            "Front": (None, minCoords[1], None),
+            "Back": (None, maxCoords[1], None),
+        }
+        for dim2, tag in gmsh.model.getEntities(2):
+            if tag == patch_surface:
+                continue
+            com = gmsh.model.occ.getCenterOfMass(dim2, tag)
+            for wall, probe in centre.items():
+                if all(p is None or abs(c - p) < 1e-9
+                       for c, p in zip(com, probe)):
+                    value = boundaries[wall].value
+                    gmsh.model.addPhysicalGroup(2, [tag], value)
+                    gmsh.model.setPhysicalName(2, value, wall)
+                    break
+
+        gmsh.model.addPhysicalGroup(2, [patch_surface], patch_tag)
+        gmsh.model.setPhysicalName(2, patch_tag, patch_name)
+        gmsh.model.addPhysicalGroup(3, [box], 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
+
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
+        gmsh.model.mesh.generate(3)
+        gmsh.write(uw_filename)
+        gmsh.finalize()
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        boundaries=boundaries,
+        boundary_normals=boundary_normals_3D,
+        coordinate_system_type=CoordinateSystemType.CARTESIAN,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        refinement=refinement,
+        refinement_callback=None,
+        units=units,
+        verbose=verbose,
+    )
+
+    from underworld3.meshing.bounding_surface import register_box_face_surfaces
+    register_box_face_surfaces(new_mesh, minCoords, maxCoords)
+
+    return new_mesh
+
+
+@timing.routine_timer_decorator
 def StructuredQuadBox(
     elementRes: Optional[Tuple[int, int, int]] = (16, 16),
     minCoords: Optional[Tuple[float, float, float]] = None,

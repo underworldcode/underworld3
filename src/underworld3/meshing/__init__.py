@@ -10,6 +10,7 @@ from .cartesian import (
     UnstructuredSimplexBox,
     StructuredQuadBox,
     BoxInternalBoundary,
+    BoxInternalPatch,
 )
 
 from .spherical import (
@@ -78,6 +79,7 @@ __all__ = [
     "UnstructuredSimplexBox",
     "StructuredQuadBox",
     "BoxInternalBoundary",
+    "BoxInternalPatch",
     # Spherical meshes
     "SphericalShell",
     "SphericalShellInternalBoundary",

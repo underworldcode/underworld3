@@ -36,12 +36,15 @@ pair is still wanted, which is what carries its labels), and the same
 one-broadcast star-forest renumbering. Where the deletion pass compacts the
 point chart, the split grows it.
 
-Restrictions in this version, all refused loudly rather than mishandled:
-2-D only; a single open chain (no junctions, no loops, no single-facet
-chains); the fault must not touch the domain boundary; and in parallel the
-fault's cell fans must not touch the partition seam — the replicas are then
-rank-local and the star-forest carries over by renumbering alone, exactly as
-the deletion pass argues for its own seam freeze.
+Restrictions in this version, all refused loudly rather than mishandled: a
+single open chain in 2-D (no junctions, no loops, no single-facet chains) or
+a single orientable manifold patch in 3-D (:func:`split_along_label_3d`; the
+patch rim is the tip rule one dimension up); the fault must not touch the
+domain boundary; and in parallel the fault's cell fans must not touch the
+partition seam — the replicas are then rank-local and the star-forest carries
+over by renumbering alone, exactly as the deletion pass argues for its own
+seam freeze. (2-D additionally supports point crossings of the seam; 3-D does
+not yet — a 3-D crossing is a curve, a design of its own.)
 
 An essential condition on the fault is NOT sound under the custom-P geometric
 multigrid hierarchy (the coarse levels do not carry the fault — see the
@@ -387,8 +390,8 @@ def split_along_label(dm, name, value, plus_name, plus_value,
     """
     if dm.getDimension() != 2:
         raise NotImplementedError(
-            "fault_split handles 2-D meshes; in 3-D the fault is not yet a "
-            "conforming facet chain to begin with.")
+            "split_along_label handles 2-D facet chains; use "
+            "split_along_label_3d for a labelled facet patch in 3-D.")
 
     pStart, pEnd = dm.getChart()
     cS, cE = dm.getHeightStratum(0)
@@ -648,6 +651,468 @@ def split_along_label(dm, name, value, plus_name, plus_value,
     return new, point_map, clone_map
 
 
+def _patch_faces_and_edges(dm, fault_faces):
+    """Classify the labelled patch: rim vs interior edges and vertices.
+
+    Returns ``(face_verts, edge_faces, rim_edges, interior_edges, rim_verts,
+    interior_verts, problem)`` where ``face_verts[f]`` is the face's vertex
+    triple and ``edge_faces`` maps each patch edge to the fault faces using
+    it. A patch edge used by one fault face is the RIM (the tip rule one
+    dimension up — those points stay unsplit); by two, patch interior; by
+    more, a non-manifold junction, refused.
+    """
+    vS, vE = dm.getDepthStratum(0)
+    face_verts, edge_faces = {}, {}
+    for f in fault_faces:
+        closure, _ = dm.getTransitiveClosure(f)
+        face_verts[f] = [int(p) for p in closure if vS <= int(p) < vE]
+        for e in dm.getCone(f):
+            edge_faces.setdefault(int(e), []).append(f)
+
+    problem = None
+    if any(len(fs) > 2 for fs in edge_faces.values()):
+        problem = (ValueError,
+                   "fault_split: three or more fault faces meet along an "
+                   "edge — the patch is non-manifold (a branching sheet). "
+                   "Label each sheet separately.")
+    rim_edges = [e for e, fs in edge_faces.items() if len(fs) == 1]
+    interior_edges = [e for e, fs in edge_faces.items() if len(fs) == 2]
+    rim_verts = set()
+    for e in rim_edges:
+        rim_verts.update(int(q) for q in dm.getCone(e))
+    all_verts = set()
+    for vv in face_verts.values():
+        all_verts.update(vv)
+    interior_verts = all_verts - rim_verts
+    return (face_verts, edge_faces, rim_edges, interior_edges,
+            rim_verts, interior_verts, problem)
+
+
+def _orient_patch(face_verts, edge_faces, X, vS, orientation=None):
+    """Give every fault face a consistently oriented vertex triple.
+
+    Adjacent faces must traverse their shared edge in opposite directions —
+    the standard orientability propagation over the patch's face-adjacency
+    graph. The propagation also proves the patch is one connected, orientable
+    sheet; either failure is refused. The global sign — which side is Plus —
+    is the side the oriented normal points into: the ``orientation`` vector
+    when given, otherwise the sign making the largest component of the
+    area-weighted mean normal positive (deterministic, documented, and no
+    more meaningful than 2-D's coordinate-order tip rule).
+
+    Returns ``(oriented, problem)`` with ``oriented[f]`` an ordered triple.
+    """
+    faces = list(face_verts)
+    oriented, problem = {}, None
+
+    def _directed(tri):
+        a, b, c = tri
+        return {(a, b), (b, c), (c, a)}
+
+    stack = [faces[0]]
+    oriented[faces[0]] = list(face_verts[faces[0]])
+    while stack:
+        f = stack.pop()
+        dirs = _directed(oriented[f])
+        for e, fs in edge_faces.items():
+            if f not in fs or len(fs) != 2:
+                continue
+            g = fs[0] if fs[1] == f else fs[1]
+            shared = [v for v in face_verts[g] if v in face_verts[f]]
+            u, w = shared[0], shared[1]
+            forward = (u, w) if (u, w) in dirs else (w, u)
+            if g not in oriented:
+                tri = list(face_verts[g])
+                if forward in _directed(tri):
+                    tri = [tri[0], tri[2], tri[1]]
+                oriented[g] = tri
+                stack.append(g)
+            elif forward in _directed(oriented[g]):
+                return oriented, (ValueError,
+                                  "fault_split: the patch is not orientable "
+                                  "— no consistent two-sided normal exists.")
+    if len(oriented) != len(faces):
+        return oriented, (ValueError,
+                          "fault_split: the labelled faces form more than "
+                          "one connected patch. Split one fault at a time — "
+                          "label each patch under its own name.")
+
+    normal_sum = np.zeros(3)
+    for tri in oriented.values():
+        a, b, c = (X[t - vS] for t in tri)
+        normal_sum += np.cross(b - a, c - a)
+    reference = (np.asarray(orientation, dtype=float)
+                 if orientation is not None
+                 else np.eye(3)[int(np.argmax(np.abs(normal_sum)))])
+    if float(normal_sum @ reference) < 0.0:
+        for f in oriented:
+            t0, t1, t2 = oriented[f]
+            oriented[f] = [t0, t2, t1]
+    return oriented, problem
+
+
+def _take_sides_3d(dm, oriented, face_verts, cell_verts, interior_verts,
+                   fault_face_set, X, vS, cS):
+    """Assign every patch-adjacent cell to the Plus or Minus half-ball.
+
+    The two support cells of each fault face are classified geometrically:
+    with the face's oriented triple :math:`(a, b, c)` and the cell's fourth
+    vertex :math:`d`, the sign of :math:`\\det[b-a,\\; c-a,\\; d-a]` says
+    which side of the oriented plane the cell lies on (positive = Plus, the
+    side the normal points into). Around each interior patch vertex the rest
+    of the star is then flooded: cells connect through shared non-fault faces
+    containing the vertex, the patch cuts that star into exactly two
+    components, and each component inherits the side of the fault-face
+    supports it contains. Anything else — one component (a pinched sheet),
+    an unseeded component, conflicting seeds — is a mis-labelling, refused.
+
+    Returns ``(side_of_cell, substitutions, problem)``; ``substitutions[c]``
+    is the set of vertices cell ``c`` must swap for replicas.
+    """
+    side_of_cell, substitutions = {}, {}
+    for f in fault_face_set:
+        a, b, c = (X[t - vS] for t in oriented[f])
+        for cell in (int(q) for q in dm.getSupport(f)):
+            tet = cell_verts[cell - cS]
+            d = next(t for t in tet if t not in face_verts[f])
+            volume = float(np.linalg.det(
+                np.array([b - a, c - a, X[d - vS] - a])))
+            if volume == 0.0:
+                return {}, {}, (ValueError,
+                                "fault_split: a fault-flanking cell is "
+                                "degenerate — zero volume against the fault "
+                                "plane.")
+            side = 1 if volume > 0.0 else -1
+            if side_of_cell.setdefault(cell, side) != side:
+                return {}, {}, (ValueError,
+                                "fault_split: a cell flanks fault faces "
+                                "from opposite sides — the patch folds "
+                                "back through its own star.")
+
+    star = {v: [] for v in interior_verts}
+    for i, tet in enumerate(cell_verts):
+        for t in tet:
+            if int(t) in star:
+                star[int(t)].append(cS + i)
+
+    vS_dm, vE_dm = dm.getDepthStratum(0)
+    verts_of_face = dict(face_verts)
+
+    def _face_verts(f):
+        if f not in verts_of_face:
+            closure, _ = dm.getTransitiveClosure(f)
+            verts_of_face[f] = [int(p) for p in closure
+                                if vS_dm <= int(p) < vE_dm]
+        return verts_of_face[f]
+
+    for v, cells in star.items():
+        in_star = set(cells)
+        neighbours = {c: [] for c in cells}
+        for c in cells:
+            for f in (int(q) for q in dm.getCone(c)):
+                if f in fault_face_set or v not in _face_verts(f):
+                    continue
+                for other in (int(q) for q in dm.getSupport(f)):
+                    if other != c and other in in_star:
+                        neighbours[c].append(other)
+        components, seen = [], set()
+        for c in cells:
+            if c in seen:
+                continue
+            component, queue = [], [c]
+            seen.add(c)
+            while queue:
+                q = queue.pop()
+                component.append(q)
+                for r in neighbours[q]:
+                    if r not in seen:
+                        seen.add(r)
+                        queue.append(r)
+            components.append(component)
+        if len(components) != 2:
+            return {}, {}, (ValueError,
+                            "fault_split: the patch does not cut a vertex "
+                            "star into two half-balls — the sheet is "
+                            "pinched or the label leaks off the patch.")
+        for component in components:
+            seeds = {side_of_cell[c] for c in component if c in side_of_cell}
+            if len(seeds) != 1:
+                return {}, {}, (ValueError,
+                                "fault_split: a star component seeds from "
+                                "both sides (or neither) — the side "
+                                "assignment is inconsistent at a vertex.")
+            side = seeds.pop()
+            for c in component:
+                if side_of_cell.setdefault(c, side) != side:
+                    return {}, {}, (ValueError,
+                                    "fault_split: a cell is assigned to "
+                                    "opposite sides by two vertex stars.")
+                if side < 0:
+                    substitutions.setdefault(c, set()).add(v)
+    return side_of_cell, substitutions, None
+
+
+def split_along_label_3d(dm, name, value, plus_name, plus_value,
+                         minus_name, minus_value, orientation=None,
+                         verbose=False):
+    """Duplicate the interior of a labelled facet patch in a 3-D mesh.
+
+    The 3-D counterpart of :func:`split_along_label`: the fault is a
+    triangulated PATCH of interior faces, its RIM (the boundary edges and
+    vertices of the patch) is the tip rule one dimension up and stays
+    unsplit, and everything strictly inside the rim — vertices, edges, and
+    the faces themselves — is doubled. Slip data must vanish on the rim.
+
+    Where the 2-D rebuild hand-wires edge cones, this one builds the
+    substituted cells UNINTERPOLATED (vertex 4-tuples carry no orientation)
+    and lets ``DMPlexInterpolate`` derive faces and edges — cell and vertex
+    numbering are preserved, and every old face or edge is recovered in the
+    new chart by joining its (mapped) vertex tuple. A tuple that no longer
+    joins was re-homed onto replicas; its replacement is found by collapsing
+    replicas back to originals, exactly the 2-D fresh-facet rule.
+
+    COLLECTIVE. Refusals beyond the 2-D list: a non-manifold or pinched or
+    non-orientable patch; a patch so coarse that a fault face has no
+    interior vertex (its two copies would be the same vertex triple — the
+    3-D analogue of the single-facet chain); and, in this version, ANY
+    contact between the patch's cell star and the partition seam — 3-D seam
+    crossings are a curve, not a point, and are not yet designed.
+
+    Parameters and returns match :func:`split_along_label`, with
+    ``orientation`` a reference NORMAL vector (Plus is the side it points
+    into) rather than a chain direction.
+    """
+    if dm.getDimension() != 3:
+        raise NotImplementedError(
+            "split_along_label_3d handles 3-D meshes; use split_along_label "
+            "for a 2-D facet chain.")
+
+    pStart, pEnd = dm.getChart()
+    cS, cE = dm.getHeightStratum(0)
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    eS, eE = dm.getDepthStratum(1)
+    X = _coords(dm)
+    nc, nv = cE - cS, vE - vS
+
+    fault_faces = []
+    # hasLabel + stratum-size guards for the petsc4py NULL-wrapper aborts,
+    # exactly as in the 2-D path.
+    if dm.hasLabel(name) and dm.getLabel(name).getStratumSize(int(value)) > 0:
+        stratum = dm.getLabel(name).getStratumIS(int(value))
+        fault_faces = [int(p) for p in stratum.getIndices()
+                       if fS <= int(p) < fE]
+    fault_face_set = set(fault_faces)
+
+    shared = _shared_points(dm)
+
+    cell_verts = np.empty((nc, 4), dtype=np.int64)
+    for c in range(cS, cE):
+        closure, _ = dm.getTransitiveClosure(c)
+        cell_verts[c - cS] = [int(p) for p in closure if vS <= int(p) < vE]
+
+    problem = None
+    interior_verts, interior_edges, rim_verts = set(), [], set()
+    face_verts, oriented, substitutions = {}, {}, {}
+    if fault_faces:
+        (face_verts, edge_faces, _rim_edges, interior_edges, rim_verts,
+         interior_verts, problem) = _patch_faces_and_edges(dm, fault_faces)
+
+        if problem is None and any(
+                dm.getSupportSize(f) != 2 for f in fault_faces):
+            problem = (ValueError,
+                       "fault_split: a fault face lies on the domain "
+                       "boundary — the patch rim must be strictly interior.")
+
+        if problem is None:
+            patch_verts = rim_verts | interior_verts
+            boundary_verts = set()
+            for f in range(fS, fE):
+                if dm.getSupportSize(f) == 1 and not shared[f - pStart]:
+                    boundary_verts.update(
+                        int(p) for p in dm.getTransitiveClosure(f)[0]
+                        if vS <= int(p) < vE)
+            if patch_verts & boundary_verts:
+                problem = (ValueError,
+                           "fault_split: the patch touches the domain "
+                           "boundary. A fault that daylights is not yet "
+                           "supported — keep the rim strictly interior.")
+
+        if problem is None and any(
+                not (set(face_verts[f]) & interior_verts)
+                for f in fault_faces):
+            problem = (ValueError,
+                       "fault_split: a fault face has no interior vertex, "
+                       "so its two copies would carry the same vertex "
+                       "triple. The patch is too coarse to split — refine "
+                       "it until every face reaches inside the rim.")
+
+        # v1 seam rule, deliberately the most conservative one: the whole
+        # cell star of the patch must be rank-interior. A 3-D seam crossing
+        # is a CURVE of shared points, a genuinely new design, not the 2-D
+        # crossing-vertex rule applied pointwise.
+        if problem is None and bool(shared.any()):
+            patch_verts = rim_verts | interior_verts
+            for i, tet in enumerate(cell_verts):
+                if not (set(int(t) for t in tet) & patch_verts):
+                    continue
+                closure, _ = dm.getTransitiveClosure(cS + i)
+                if shared[np.asarray(closure, dtype=np.int64)
+                          - pStart].any():
+                    problem = (RuntimeError,
+                               "fault_split: the fault patch's cell star "
+                               "touches the partition seam. 3-D faults must "
+                               "be rank-interior in this version — "
+                               "partition around the fault.")
+                    break
+
+        if problem is None:
+            oriented, problem = _orient_patch(face_verts, edge_faces, X, vS,
+                                              orientation=orientation)
+
+        side_of_cell = {}
+        if problem is None:
+            side_of_cell, substitutions, problem = _take_sides_3d(
+                dm, oriented, face_verts, cell_verts, interior_verts,
+                fault_face_set, X, vS, cS)
+
+        if problem is None:
+            for f in fault_faces:
+                sides = sorted(side_of_cell.get(int(q), 0)
+                               for q in dm.getSupport(f))
+                if sides != [-1, 1]:
+                    problem = (ValueError,
+                               "fault_split: the two cells of a fault face "
+                               "were not classified onto opposite sides — "
+                               "the side assignment is inconsistent across "
+                               "the patch.")
+                    break
+
+    # One synchronisation point for every refusal — the 2-D contract.
+    if uw.mpi.size > 1:
+        gathered = uw.mpi.comm.allgather((problem, len(fault_faces)))
+        problems = [p for p, _m in gathered if p is not None]
+        seam = [p for p in problems if p[0] is RuntimeError]
+        problem = seam[0] if seam else (problems[0] if problems else None)
+        if problem is None and sum(m for _p, m in gathered) == 0:
+            problem = (ValueError,
+                       f"fault_split: no faces carry label {name!r} value "
+                       f"{value} on any rank.")
+    elif problem is None and not fault_faces:
+        problem = (ValueError,
+                   f"fault_split: no faces carry label {name!r} value "
+                   f"{value}.")
+    if problem is not None:
+        exc, message = problem
+        raise exc(message)
+
+    # ----------------------------------------------------------- the rebuild
+    interior_sorted = sorted(interior_verts)
+    replica_index = {v: i for i, v in enumerate(interior_sorted)}
+    k = len(interior_sorted)
+
+    def v_uninterp(t, subs):
+        if t in subs:
+            return nc + nv + replica_index[t]
+        return nc + (t - vS)
+
+    new = PETSc.DMPlex().create(comm=dm.comm)
+    new.setDimension(3)
+    new.setChart(0, nc + nv + k)
+    for i in range(nc):
+        new.setConeSize(i, 4)
+    new.setUp()
+    empty = frozenset()
+    for c in range(cS, cE):
+        subs = substitutions.get(c, empty)
+        new.setCone(c - cS, [v_uninterp(int(t), subs)
+                             for t in cell_verts[c - cS]])
+    new.symmetrize()
+    new.stratify()
+    new.interpolate()
+
+    vS2, vE2 = new.getDepthStratum(0)
+    if (new.getHeightStratum(0) != (0, nc)
+            or (vS2, vE2) != (nc, nc + nv + k)):
+        raise RuntimeError(
+            "fault_split internal: DMPlexInterpolate moved the cell or "
+            "vertex numbering — the point-map arithmetic below relies on "
+            "both being preserved.")
+
+    source_rows = np.concatenate([
+        np.arange(nv, dtype=np.int64),
+        np.asarray(interior_sorted, dtype=np.int64) - vS]) \
+        if k else np.arange(nv, dtype=np.int64)
+    _write_coordinates(new, dm, (vS2, vE2), source_rows)
+
+    point_map = np.full(pEnd - pStart, -1, dtype=np.int64)
+    point_map[np.arange(cS, cE) - pStart] = np.arange(nc)
+    point_map[np.arange(vS, vE) - pStart] = vS2 + np.arange(nv)
+
+    def v_new(t):
+        return int(vS2 + (t - vS))
+
+    def replica_new(t):
+        return int(vS2 + nv + replica_index[t])
+
+    clone_map = {replica_new(v): v for v in interior_sorted}
+
+    # Every old face and edge is recovered by joining its vertex tuple in the
+    # new chart: found directly, it survived (Plus side keeps the original
+    # vertices); found only after replica substitution, it was re-homed onto
+    # the Minus side. The doubled points — fault faces and interior patch
+    # edges — are found BOTH ways: the original maps, the substituted copy
+    # clones. The split invents no connectivity, so a tuple found neither
+    # way is a wiring bug, raised.
+    interior_edge_set = set(interior_edges)
+    minus_faces = []
+    for p, tuple_size in ((slice(fS, fE), 3), (slice(eS, eE), 2)):
+        for q in range(p.start, p.stop):
+            closure, _ = dm.getTransitiveClosure(q)
+            verts = [int(t) for t in closure if vS <= int(t) < vE]
+            direct = new.getFullJoin([v_new(t) for t in verts])
+            doubled = (q in fault_face_set) or (q in interior_edge_set)
+            if len(direct) == 1:
+                point_map[q - pStart] = int(direct[0])
+            subs_tuple = [replica_new(t) if t in replica_index else v_new(t)
+                          for t in verts]
+            if doubled or len(direct) != 1:
+                rehomed = new.getFullJoin(subs_tuple)
+                if len(rehomed) != 1:
+                    raise RuntimeError(
+                        "fault_split internal: an old point joins to "
+                        f"{len(direct)} direct and {len(rehomed)} "
+                        "substituted points in the new chart.")
+                clone_map[int(rehomed[0])] = q
+                if q in fault_face_set:
+                    minus_faces.append(int(rehomed[0]))
+
+    _copy_labels(new, dm, point_map)
+    _clone_labels(new, dm, clone_map)
+
+    new.createLabel(plus_name)
+    plus = new.getLabel(plus_name)
+    for f in fault_faces:
+        plus.setValue(int(point_map[f - pStart]), int(plus_value))
+    new.createLabel(minus_name)
+    minus = new.getLabel(minus_name)
+    for f in minus_faces:
+        minus.setValue(int(f), int(minus_value))
+
+    if uw.mpi.size > 1:
+        # No dup_new: the seam rule above guarantees every shared point is
+        # far from the patch, so the leaf set carries over by renumbering
+        # alone — the 2-D no-crossing case.
+        _rebuild_point_sf(new, dm, point_map, new.getChart()[1])
+
+    if verbose and fault_faces:
+        uw.pprint(f"[fault_split {name!r}] duplicated {k} vertices, "
+                  f"{len(interior_edges)} edges and {len(fault_faces)} "
+                  f"faces of the patch; sides are {plus_name!r} / "
+                  f"{minus_name!r}")
+    return new, point_map, clone_map
+
+
 def _pull_seam_vertices_onto_crossings(dm, poly):
     """Move a SHARED vertex onto each fault-polyline x partition-seam
     intersection; return the (possibly copied) dm.
@@ -901,9 +1366,10 @@ def split_fault(mesh, name, orientation=None, verbose=False):
     The result is a new, standalone :class:`Mesh` on which every continuous FE
     space is discontinuous across the fault: the surface's facets are doubled
     into boundaries ``<name>Plus`` and ``<name>Minus`` (coincident, no shared
-    DOFs except the two tips), and slip is prescribed with ordinary essential
-    conditions on those two names. A slip datum must taper to zero at the
-    tips, which stay single points shared by both sides.
+    DOFs except the tips — the two chain endpoints in 2-D, the patch rim in
+    3-D), and slip is prescribed with ordinary essential conditions on those
+    two names. A slip datum must taper to zero at the tips/rim, which stay
+    single points shared by both sides.
 
     The source mesh is untouched, and the operation is re-applicable: when the
     fault moves, re-cut the base mesh at the new position and split again —
@@ -935,7 +1401,9 @@ def split_fault(mesh, name, orientation=None, verbose=False):
     boundaries = _boundaries_with_sides(mesh, name)
     plus_name, minus_name = f"{name}Plus", f"{name}Minus"
     pStart, _pEnd = mesh.dm.getChart()
-    new_dm, point_map, clone_map = split_along_label(
+    splitter = (split_along_label if mesh.dm.getDimension() == 2
+                else split_along_label_3d)
+    new_dm, point_map, clone_map = splitter(
         mesh.dm, name, int(mesh.boundaries[name].value),
         plus_name, int(boundaries[plus_name].value),
         minus_name, int(boundaries[minus_name].value),
