@@ -30,6 +30,7 @@ import underworld3 as uw
 from underworld3.utilities.fault_contact import (add_coulomb_fault_bc,
                                                  add_frictionless_fault_bc,
                                                  add_viscous_fault_bc,
+                                                 fault_normal_traction,
                                                  fault_slip, solve_with_fault)
 from underworld3.utilities.fault_split import split_fault
 from underworld3.utilities.line_cut import cut_along_lines, pull_vertex_onto
@@ -214,6 +215,70 @@ def test_coulomb_fault_slides_and_sticks():
         f"stuck fault creeps at {V_stick:.2e}, far above the "
         f"regularisation velocity {V0_stick:.0e}")
     assert its_stick < 40, f"stick solve took {its_stick} Newton iterations"
+
+
+def test_reaction_fed_normal_stress():
+    """sigma_n from the no-opening constraint's reaction, not prescribed.
+
+    Two claims. (1) The recovery itself: on the frictionless fault under
+    unit far-field shear, the transmitted normal traction should match the
+    resolved background sigma_nn = 2 n_x n_y (mode-II slip perturbs the
+    normal traction antisymmetrically, so the MEAN along the fault stays at
+    the background value). (2) The law coupling: Coulomb with
+    sigma_n="reaction" must land between frictionless and a strong
+    prescribed fault, sliding at the strength the recovered compression
+    actually provides — with the whole sigma feedback Picard-lagged inside
+    the same Newton loop.
+    """
+    mesh = _split_box()
+    x, y = mesh.X
+    d = (TIP_B - TIP_A) / np.linalg.norm(TIP_B - TIP_A)
+    nrm = np.array([-d[1], d[0]])
+    sigma_bg = 2.0 * nrm[0] * nrm[1] * d[0] * d[1] / (d[0] * d[1])  # sign via components
+    sigma_bg = 2.0 * (-d[1]) * d[0]          # n_x n_y * 2 with n = (-dy, dx)
+    tau_inf = float(d[0] ** 2 - d[1] ** 2)
+
+    def solve_case(tag, register):
+        v = uw.discretisation.MeshVariable(f"v{tag}", mesh, 2, degree=2)
+        p = uw.discretisation.MeshVariable(f"p{tag}", mesh, 1, degree=0,
+                                           continuous=False)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.tolerance = 1e-6
+        stokes.petsc_use_pressure_nullspace = True
+        for side in ("Top", "Bottom", "Left", "Right"):
+            stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
+        register(stokes)
+        info = solve_with_fault(stokes)
+        assert info["converged"], f"{tag}: did not converge"
+        _s, V, leak = fault_slip(stokes, "Flt", info)
+        assert np.abs(leak).max() < 1e-12
+        return stokes, info, float(np.abs(V).max())
+
+    # (1) traction recovery against the resolved background
+    st_free, info_free, V_free = solve_case(
+        "rf", lambda st: add_frictionless_fault_bc(st, "Flt"))
+    _s, sig = fault_normal_traction(st_free, "Flt", info_free)
+    mean_sig = float(np.mean(sig))
+    assert np.sign(mean_sig) == np.sign(sigma_bg)
+    assert abs(mean_sig - sigma_bg) < 0.35 * abs(sigma_bg), (
+        f"recovered mean sigma_nn {mean_sig:.3f} vs background "
+        f"{sigma_bg:.3f}")
+
+    # (2) the reaction-fed Coulomb law
+    mu = 1.0
+    _st, info_rc, V_rc = solve_case(
+        "rc", lambda st: add_coulomb_fault_bc(
+            st, mu, "Flt", sigma_n="reaction", V0=1e-4 * V_free))
+    strength = mu * abs(sigma_bg)
+    predicted = max(tau_inf - strength, 0.0) / tau_inf
+    ratio = V_rc / V_free
+    assert 0.5 * predicted < ratio < min(1.6 * predicted + 0.05, 0.95), (
+        f"reaction-fed slip ratio {ratio:.3f} vs constant-stress-drop "
+        f"prediction {predicted:.3f} (strength {strength:.3f} from the "
+        f"recovered compression)")
+    assert info_rc["nonlinear_iterations"] < 40
 
 
 def test_registration_refuses_an_unsplit_mesh():

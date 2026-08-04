@@ -111,6 +111,13 @@ def add_viscous_fault_bc(solver, conds, boundary):
 #: (lambdified) callables.
 slip_rate = sympy.Symbol(r"V_{slip}", real=True)
 
+#: The effective normal stress symbol (positive in compression, clamped at
+#: zero in tension): a law may use it, and the assembler feeds it per node
+#: from the no-opening constraint's REACTION, Picard-lagged once per Newton
+#: iteration — the one deliberately lagged quantity (its derivative is
+#: nonlocal and non-stiff; the stiff direction dtau/dV stays full Newton).
+normal_stress = sympy.Symbol(r"\sigma_{n,eff}", real=True, nonnegative=True)
+
 
 class SymbolicFaultLaw:
     r"""An interface law :math:`\tau(V)` given as a sympy expression in
@@ -126,25 +133,27 @@ class SymbolicFaultLaw:
 
     def __init__(self, tau_expr):
         expr = sympy.sympify(tau_expr)
-        stray = expr.free_symbols - {slip_rate}
+        stray = expr.free_symbols - {slip_rate, normal_stress}
         if stray:
             raise ValueError(
                 f"a fault law must be an expression in fault_contact."
-                f"slip_rate alone (found {sorted(map(str, stray))}); "
-                "substitute parameters before registering.")
+                f"slip_rate (and optionally normal_stress) alone (found "
+                f"{sorted(map(str, stray))}); substitute other parameters "
+                "before registering.")
         self.expr = expr
-        self._tau = sympy.lambdify(slip_rate, expr, "numpy")
-        self._dtau = sympy.lambdify(slip_rate, sympy.diff(expr, slip_rate),
+        args = (slip_rate, normal_stress)
+        self._tau = sympy.lambdify(args, expr, "numpy")
+        self._dtau = sympy.lambdify(args, sympy.diff(expr, slip_rate),
                                     "numpy")
 
-    def tau(self, V):
+    def tau(self, V, S):
         V = np.asarray(V, dtype=float)
-        return np.broadcast_to(np.asarray(self._tau(V), dtype=float),
+        return np.broadcast_to(np.asarray(self._tau(V, S), dtype=float),
                                V.shape).copy()
 
-    def dtau_dV(self, V):
+    def dtau_dV(self, V, S):
         V = np.asarray(V, dtype=float)
-        return np.broadcast_to(np.asarray(self._dtau(V), dtype=float),
+        return np.broadcast_to(np.asarray(self._dtau(V, S), dtype=float),
                                V.shape).copy()
 
 
@@ -165,7 +174,10 @@ def CoulombFaultLaw(mu, sigma_n, V0):
     the follow-up increment. The tangent comes from ``sympy.diff``, not a
     hand-coded derivative.
     """
-    strength = float(mu) * float(sigma_n)
+    if sigma_n == "reaction":
+        strength = float(mu) * normal_stress
+    else:
+        strength = float(mu) * float(sigma_n)
     return SymbolicFaultLaw(
         strength * (2 / sympy.pi) * sympy.atan(slip_rate / float(V0)))
 
@@ -183,10 +195,12 @@ def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5):
     """
     if sigma_n is None:
         raise ValueError(
-            "add_coulomb_fault_bc requires sigma_n (the prescribed effective "
-            "normal stress) in this version.")
+            "add_coulomb_fault_bc requires sigma_n: a prescribed effective "
+            "normal stress, or \"reaction\" to feed it from the no-opening "
+            "constraint's reaction (Picard-lagged).")
     mu = float(conds)
-    if mu <= 0.0 or float(sigma_n) <= 0.0 or float(V0) <= 0.0:
+    if mu <= 0.0 or float(V0) <= 0.0 or (
+            sigma_n != "reaction" and float(sigma_n) <= 0.0):
         raise ValueError("mu, sigma_n and V0 must all be positive.")
     add_frictionless_fault_bc(solver, boundary)
     _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0))
@@ -312,7 +326,7 @@ class _InterfaceAssembler:
     ranks holding no fault still participate in the assemblies.
     """
 
-    def __init__(self, solver):
+    def __init__(self, solver, include=()):
         dm = solver.dm
         dim = solver.mesh.dim
         lsec = dm.getLocalSection()
@@ -321,11 +335,14 @@ class _InterfaceAssembler:
         cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
         fS, fE = dm.getHeightStratum(1)
 
-        rows, lo_p, lo_m, tans, laws_of, facets = [], [], [], [], [], []
+        rows, lo_p, lo_m, tans, nrms, laws_of, facets = \
+            [], [], [], [], [], [], []
         index_of = {}
 
-        for name, law in getattr(solver, "_fault_interface_laws",
-                                 {}).items():
+        registered = dict(getattr(solver, "_fault_interface_laws", {}))
+        for name in include:
+            registered.setdefault(name, None)   # geometry only (diagnostics)
+        for name, law in registered.items():
             pairs = solver.mesh._fault_point_pairs[name]
             minus_of = {qp: qm for qm, qp in pairs.items()}
             normals = {q: n for q, _qm, n in
@@ -347,6 +364,7 @@ class _InterfaceAssembler:
                 lo_p.append(lsec.getFieldOffset(q, _VELOCITY_FIELD))
                 lo_m.append(lsec.getFieldOffset(qm, _VELOCITY_FIELD))
                 tans.append((-nrm[1], nrm[0]))
+                nrms.append((nrm[0], nrm[1]))
                 return index_of[q]
 
             plus_name = f"{name}Plus"
@@ -354,8 +372,9 @@ class _InterfaceAssembler:
             if not (dm.hasLabel(plus_name) and
                     dm.getLabel(plus_name).getStratumSize(value) > 0):
                 continue
-            law_id = len(laws_of)
-            laws_of.append(law)
+            law_id = len(laws_of) if law is not None else -1
+            if law is not None:
+                laws_of.append(law)
             for f in (int(q) for q in dm.getLabel(plus_name)
                       .getStratumIS(value).getIndices()):
                 if not (fS <= f < fE):
@@ -373,9 +392,49 @@ class _InterfaceAssembler:
         self._lo_p = np.asarray(lo_p, dtype=np.int64)
         self._lo_m = np.asarray(lo_m, dtype=np.int64)
         self._tan = np.asarray(tans, dtype=float).reshape(-1, 2)
+        self._nrm = np.asarray(nrms, dtype=float).reshape(-1, 2)
         self._laws = laws_of
         self._facets = facets
         self._dim = dim
+        self._points = {q: k for q, k in index_of.items()}
+
+        # Lumped 1-D P2 trace mass per pair node, for de-smearing the
+        # constraint reaction into a pointwise normal traction (row sums
+        # L/6, 2L/3, L/6 — positive for a P2 LINE, unlike P2 triangles).
+        # At a seam crossing the two adjacent facets live on different
+        # ranks, so the mass is completed over the star-forest, keyed on
+        # the PLUS point of each pair.
+        mass = np.zeros(len(rows))
+        for ia, im, ib, L, _law_id in facets:
+            for k, w in ((ia, L / 6.0), (im, 2.0 * L / 3.0),
+                         (ib, L / 6.0)):
+                if k >= 0:
+                    mass[k] += w
+        if mpi.size > 1:
+            pStart, pEnd = dm.getChart()
+            chart_mass = np.zeros(pEnd - pStart, dtype=np.float64)
+            for q, k in index_of.items():
+                chart_mass[q - pStart] = mass[k]
+            sf = dm.getPointSF()
+            try:
+                nroots, _il, _ir = sf.getGraph()
+            except (ValueError, TypeError):
+                nroots = -1
+            if nroots >= 0:
+                from mpi4py import MPI
+                sf.reduceBegin(MPI.DOUBLE, chart_mass, chart_mass, MPI.SUM)
+                sf.reduceEnd(MPI.DOUBLE, chart_mass, chart_mass, MPI.SUM)
+                sf.bcastBegin(MPI.DOUBLE, chart_mass, chart_mass,
+                              MPI.REPLACE)
+                sf.bcastEnd(MPI.DOUBLE, chart_mass, chart_mass, MPI.REPLACE)
+            for q, k in index_of.items():
+                mass[k] = float(chart_mass[q - pStart])
+        self._mass = mass
+        # Effective normal stress per pair node (positive in compression),
+        # fed by update_normal_stress; zero until the first reaction exists,
+        # which makes a reaction-fed law START frictionless — a natural
+        # homotopy from the crack toward the frictional state.
+        self._sigma = np.zeros(len(rows) + 1)
 
     def _nodal_slip(self, solver, uvec):
         """V at every law-carrying pair node, from the CURRENT iterate —
@@ -397,12 +456,16 @@ class _InterfaceAssembler:
         """Add the interface force to the ROTATED residual, in place.
         COLLECTIVE (the Vec assembly): every rank calls, fault or not."""
         V = self._nodal_slip(solver, uvec)
+        S = self._sigma
         vals = np.zeros(len(self._rows))
         s2 = np.sqrt(2.0)
         for ia, im, ib, L, law_id in self._facets:
+            if law_id < 0:
+                continue                       # geometry-only (diagnostics)
             idx = (ia, im, ib)
             Vq = _NQ @ V[list(idx)]
-            tq = self._laws[law_id].tau(Vq)
+            Sq = _NQ @ S[list(idx)]
+            tq = self._laws[law_id].tau(Vq, Sq)
             contrib = s2 * L * (_NQ.T @ (_WQ * tq))
             for j, k in enumerate(idx):
                 if k >= 0:
@@ -411,6 +474,33 @@ class _InterfaceAssembler:
             Fh.setValues(self._rows, vals, addv=True)
         Fh.assemblyBegin()
         Fh.assemblyEnd()
+
+    def nodal_normal_traction(self, solver, reaction):
+        """Signed normal traction sigma_nn per pair node from the Cartesian
+        reaction (negative in compression): the jump-normal constraint's
+        nodal load l_i = (n.r+ - n.r-)/2, de-smeared by the lumped trace
+        mass. The reaction must be the PURE bulk residual — the loop
+        stashes it before the interface force is added."""
+        dm = solver.dm
+        lvec = dm.getLocalVec()
+        dm.globalToLocal(reaction, lvec)
+        a = np.asarray(lvec.getArray())
+        sig = np.zeros(len(self._rows))
+        for k in range(len(self._rows)):
+            rp = a[self._lo_p[k]:self._lo_p[k] + 2]
+            rm = a[self._lo_m[k]:self._lo_m[k] + 2]
+            load = 0.5 * float(self._nrm[k] @ (rp - rm))
+            sig[k] = load / max(self._mass[k], 1e-300)
+        dm.restoreLocalVec(lvec)
+        return sig
+
+    def update_normal_stress(self, solver, reaction):
+        """Picard-lag the effective normal stress into the laws: positive
+        in compression, clamped at zero in tension (an opening-tending
+        fault has no frictional strength; the no-opening constraint holds
+        it shut regardless)."""
+        sig = self.nodal_normal_traction(solver, reaction)
+        self._sigma[:len(sig)] = np.maximum(-sig, 0.0)
 
     def tangent(self, solver, uvec):
         """The consistent interface tangent at the current iterate, as a
@@ -426,10 +516,14 @@ class _InterfaceAssembler:
         K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
 
         V = self._nodal_slip(solver, uvec)
+        S = self._sigma
         for ia, im, ib, L, law_id in self._facets:
+            if law_id < 0:
+                continue                       # geometry-only (diagnostics)
             idx = (ia, im, ib)
             Vq = _NQ @ V[list(idx)]
-            dq = self._laws[law_id].dtau_dV(Vq)
+            Sq = _NQ @ S[list(idx)]
+            dq = self._laws[law_id].dtau_dV(Vq, Sq)
             Ke = 2.0 * L * (_NQ.T @ (_NQ * (_WQ * dq)[:, None]))
             for i, ki in enumerate(idx):
                 if ki < 0:
@@ -441,6 +535,36 @@ class _InterfaceAssembler:
                                    float(Ke[i, j]), addv=True)
         K.assemble()
         return K
+
+
+def fault_normal_traction(solver, boundary, solve_result):
+    """Signed normal traction sigma_nn along the split fault ``boundary``
+    (negative in compression), per coincident pair on this rank, with the
+    along-fault coordinate — recovered from the solve's stashed reaction,
+    exactly as the interface laws read their effective normal stress.
+    Returns ``(s, sigma_nn)`` ordered along the fault.
+    """
+    from underworld3.utilities.rotated_bc import _point_coord
+
+    assembler = _InterfaceAssembler(solver, include=(boundary,))
+    sig = assembler.nodal_normal_traction(solver, solve_result["reaction"])
+
+    dm = solver.dm
+    dim = solver.mesh.dim
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+    v0, v1 = dm.getDepthStratum(0)
+    pts = sorted(assembler._points, key=assembler._points.get)
+    coords = np.array([_point_coord(dm, dim, cvec, csec, v0, v1, q)
+                       for q in pts]) if pts else np.zeros((0, dim))
+    if not len(coords):
+        return np.zeros(0), np.zeros(0)
+    tbar = assembler._tan.mean(axis=0)
+    tbar /= np.linalg.norm(tbar) + 1e-30
+    s_coord = coords @ tbar
+    s_coord -= s_coord.min()
+    order = np.argsort(s_coord)
+    return s_coord[order], sig[order]
 
 
 def fault_slip(solver, boundary, solve_result):

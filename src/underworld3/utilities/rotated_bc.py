@@ -721,6 +721,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         snes.computeFunction(uvec, Fc)
         if keep_cartesian:
             Fc.copy(reaction)                # stash the Cartesian reaction for σ_nn
+            if interface is not None:
+                # Picard-lag the reaction-fed normal stress into the laws:
+                # the stash IS the pure transmitted traction at this iterate
+                # (the interface force is added below, after it). Updated
+                # only at ITERATION STARTS — line-search trials
+                # (keep_cartesian=False) evaluate against the frozen sigma,
+                # which is what makes the lag a consistent comparison.
+                # Iteration 0 sees a zero state: a reaction-fed law starts
+                # frictionless and tightens as the stress field forms.
+                interface.update_normal_stress(solver, reaction)
         Fh = Fc.duplicate()
         Q.mult(Fc, Fh)
         if interface is not None:
