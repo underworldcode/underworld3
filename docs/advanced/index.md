@@ -103,6 +103,7 @@ multigrid-preconditioning
 solver-iteration-callbacks
 complex-rheologies
 vep-transverse-isotropy-faults
+split-node-faults
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
