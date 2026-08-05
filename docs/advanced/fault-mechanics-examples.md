@@ -51,8 +51,18 @@ stress state:
 
 ![Mohr circle from welded faults](figures/fault-examples/mohr-circle.png)
 
-The drive imposes a uniform stress with deviatoric Mohr radius
-$R = \eta\sqrt{4a^2 + \gamma^2}$; the probes (labelled by fault angle)
+The boundary condition is Dirichlet velocity on all four walls,
+imposing the homogeneous flow $\mathbf v = (a(x-\tfrac12) +
+\gamma(y-\tfrac12),\; -a(y-\tfrac12))$ with $a = 0.5$, $\gamma = 1$
+— a pure-shear (stretching) part plus a simple-shear part. Stress sees
+only the symmetric gradient, so this is equivalent to pure shear of
+magnitude $R = \eta\sqrt{4a^2+\gamma^2}$ with principal axes at
+$22.5°$ to the box: deliberately not axis-aligned, so the circle's
+orientation must be measured, not guessed. Because the linear flow is
+an exact homogeneous Stokes solution, the stress is uniform to the
+walls and every probe samples the same state; the pressure gauge (the
+nullspace constant) sets the circle's centre. The probes (labelled by
+fault angle)
 land on that circle, centred at the (gauge-fixed) mean pressure. The
 classical double-angle rule is the labels' spacing: $22.5°$ of fault
 rotation moves a probe $45°$ around the circle, and $180°$ of rotation

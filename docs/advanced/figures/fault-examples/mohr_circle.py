@@ -8,10 +8,16 @@ orientation theta and plotting (−sigma_n, |tau|) traces the Mohr
 circle of the ambient stress state — measured by the machinery itself,
 against the analytic circle of the imposed flow.
 
-Drive: v = (a(x−c) + gamma(y−c), −a(y−c)), deviatoric stress
-[[2 eta a, eta gamma], [eta gamma, −2 eta a]]; Mohr radius
-R = eta sqrt(4 a^2 + gamma^2). The centre sits at the (gauge-fixed)
-mean pressure, which the fit reports rather than assumes.
+Boundary conditions: Dirichlet velocity on all four walls imposing
+the homogeneous flow v = (a(x−c) + gamma(y−c), −a(y−c)) — a PURE-SHEAR
+(irrotational stretching) part a plus a SIMPLE-SHEAR part gamma.
+Stress sees only the symmetric gradient, so the state is equivalent to
+pure shear of magnitude R = eta sqrt(4 a^2 + gamma^2) with principal
+axes at 22.5 degrees to the box (deliberately not axis-aligned: the
+circle's orientation must be measured, not guessed). The linear flow
+is an exact homogeneous Stokes solution — constant stress, no wall
+boundary layers — and the centre sits at the (gauge-fixed) mean
+pressure, which the fit reports rather than assumes.
 """
 import os
 
