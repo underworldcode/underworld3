@@ -192,10 +192,17 @@ own $\Delta$CFF ($\mu' = 0.4$, King's value):
 
 ![En echelon interaction](figures/fault-examples/interacting-faults.png)
 
-The right-stepping overlapped receiver sits in the source's stress
-shadow: its cloud steps away from failure. Rotating the regional
+The receiver sits in the source's along-strike tip lobe, and the
+friction bookkeeping is dressed so the crossing is visible: a declared
+confining pressure $P_0 = 1$ puts the whole circle in compression, and
+a cohesive envelope $\tau = \pm(C + \mu'\sigma)$ with $C = 0.75$
+passes just below the ambient cloud. Neither constant changes
+$\Delta$CFF — they only place the failure line where the physics can
+reach it. The loaded near-tip nodes then cross into the shaded failure
+region while the far end barely moves. Rotating the regional
 compression axis (the boundary velocities rotate with it) relocates
-the ambient cloud around the circle and modulates the transfer:
+the ambient cloud around the circle, and what rotation controls is the
+MARGIN to the envelope:
 
 ![Rotating the regional stress](figures/fault-examples/interacting-rotation.png)
 
@@ -216,13 +223,13 @@ positions and orientations. One slip event, four verdicts:
 
 ![California-like planform](figures/fault-examples/california.png)
 
-The minors broadside of the slipped trunk are relaxed (blue clouds,
-$\Delta$CFF $\approx -0.3$); the minor off the far tip is loaded
-(red, $+0.3$) — the sign flip that a fixed two-fault geometry cannot
-show, read simultaneously on the field and on each fault's own Mohr
-diagram. Note the loaded minor sits at *tensile* ambient normal stress
-for its orientation: driven toward failure in shear while unclamped —
-the kind of nuance the per-fault Mohr panels surface automatically.
+The minors broadside of the slipped trunk are relaxed (blue clouds
+retreating into the safe wedge, $\Delta$CFF $\approx -0.3$); the
+minor off the far tip is loaded (red, $+0.3$) and driven bodily across
+the failure envelope — the sign flip that a fixed two-fault geometry
+cannot show, read simultaneously on the field and on each fault's own
+Mohr diagram (same $P_0 = 1$, $C = 0.75$ dressing as the en echelon
+case).
 
 Script: `figures/fault-examples/california.py`.
 

@@ -32,6 +32,10 @@ MU_P = 0.4
 TAU0 = 1.0
 PHI = 70.0                     # compression axis: drives the ~25 deg trunk
 ETA_WELD = 200.0 * common.ETA / 0.2
+# declared confining pressure + cohesion: neither changes Delta CFF,
+# they place the failure envelope over a fully compressive circle
+P0 = 1.0
+COH = 0.75
 
 TRUNK = np.array([[0.15, 0.35], [0.30, 0.42], [0.45, 0.475],
                   [0.60, 0.52], [0.72, 0.555], [0.85, 0.62]])
@@ -190,13 +194,18 @@ for k, r, ccol in panels:
     tau1 = data[f"{k}_tau1"]
     tau_dir = np.sign(np.median(tau0))
     dcff = tau_dir * (tau1 - tau0) + MU_P * (sig1 - sig0)
-    sc0, sc1 = -sig0, -sig1
-    ss = np.linspace(0, 2.0, 30)
+    sc0, sc1 = P0 - sig0, P0 - sig1
+    ss = np.linspace(-0.4, P0 + 1.8, 80)
+    strength = np.maximum(COH + MU_P * ss, 0.0)
     for sgn in (+1, -1):
-        ax.plot(ss, sgn * MU_P * ss, "--", color="0.6", lw=0.7)
+        ax.plot(ss, sgn * strength, "-", color="0.4", lw=0.9)
+    ax.fill_between(ss, strength, 2.4, color="#c62828", alpha=0.06,
+                    lw=0)
+    ax.fill_between(ss, -strength, -2.4, color="#c62828", alpha=0.06,
+                    lw=0)
     tt = np.linspace(0, 2 * np.pi, 150)
-    ax.plot(TAU0 * np.cos(tt), TAU0 * np.sin(tt), "-", color="0.88",
-            lw=0.7)
+    ax.plot(P0 + TAU0 * np.cos(tt), TAU0 * np.sin(tt), "-",
+            color="0.88", lw=0.7)
     ax.scatter(sc0, tau0, s=10, facecolors="none", edgecolors="0.6",
                linewidths=0.8)
     for j in range(0, len(sc0), 2):
@@ -207,10 +216,9 @@ for k, r, ccol in panels:
                      vmin=-0.25, vmax=0.25, zorder=5,
                      edgecolors="0.3", linewidths=0.25)
     ax.axhline(0, color="0.92", lw=0.5)
-    ax.axvline(0, color="0.92", lw=0.5)
     ax.set_aspect("equal")
-    ax.set_xlim(-1.5, 2.0)
-    ax.set_ylim(-1.3, 1.3)
+    ax.set_xlim(-0.4, P0 + 1.8)
+    ax.set_ylim(-1.6, 1.6)
     ax.tick_params(labelsize=7)
     for spine in ax.spines.values():
         spine.set_color(minor_cols[k])

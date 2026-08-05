@@ -43,12 +43,24 @@ ETA_WELD = 200.0 * common.ETA / 0.18
 PHIS = (20.0, 45.0, 70.0)               # regional compression axis
 
 SOURCE = np.array([[0.22, 0.46], [0.58, 0.46]])
-RECEIVER = np.array([[0.42, 0.54], [0.78, 0.54]])
-T_HAT = np.array([1.0, 0.0])            # both faults horizontal
+# The receiver sits in the source's ALONG-STRIKE tip lobe, where the
+# transfer is strongly positive at its near end and fades along it.
+RECEIVER = np.array([[0.65, 0.44], [0.86, 0.44]])
+T_HAT = np.array([1.0, 0.0])
+
+# The friction bookkeeping is dressed with a declared confining
+# pressure and cohesion — NEITHER changes Delta CFF (both are
+# constants under differencing), they only place the failure envelope
+# where the teaching needs it: P0 shifts the whole circle into
+# compression (no tensile regime anywhere), and the cohesive envelope
+# tau = +-(C + mu' sigma) arcs over it with the phi = 45 receiver
+# ambient sitting ~0.15 below the line, so the loaded nodes CROSS.
+P0 = 1.0
+COH = 0.75
 
 
 def solve_pair(phi, source_free):
-    child = common.base_mesh(0.04).add_fault(
+    child = common.base_mesh(0.028).add_fault(
         [("Source", SOURCE), ("Receiver", RECEIVER)])
     stokes = common.stokes_on(child, common.pure_shear_drive(child, phi,
                                                              TAU0))
@@ -128,7 +140,7 @@ print(f"far-field gauge constant removed: {GAUGE_C:+.4f}")
 pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float))
 pvm.point_data["dcff"] = dcff_field
 pvm = pvm.delaunay_2d()
-pl = pv.Plotter(off_screen=True, window_size=(900, 700))
+pl = pv.Plotter(off_screen=True, window_size=(1050, 820))
 pl.set_background("white")
 lim = 0.4 * TAU0
 pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-lim, lim),
@@ -139,7 +151,7 @@ for pts, col, w in ((SOURCE, "black", 4.0), (RECEIVER, "#1a6b1a", 4.0)):
     pl.add_mesh(line, color=col, line_width=w, lighting=False)
 pl.view_xy()
 pl.camera.parallel_projection = True
-pl.camera.parallel_scale = 0.30
+pl.camera.parallel_scale = 0.33
 pl.camera.focal_point = (0.5, 0.5, 0.0)
 field_png = os.path.join(D, "_interacting_field.png")
 pl.screenshot(field_png)
@@ -157,15 +169,22 @@ def mohr_panel(ax, phi, legend=False):
     tau1 = data[f"p1_tau_{phi}"]
     tau_dir = np.sign(np.median(tau0))
     dcff = tau_dir * (tau1 - tau0) + MU_P * (sig1 - sig0)
-    sc0, sc1 = -sig0, -sig1              # geo convention
-    ss = np.linspace(0, 2.0, 40)
+    # geo convention, with the declared confining pressure superposed
+    sc0, sc1 = P0 - sig0, P0 - sig1
+    ss = np.linspace(-0.4, P0 + 1.8, 90)
+    strength = np.maximum(COH + MU_P * ss, 0.0)
     for sgn in (+1, -1):
-        ax.plot(ss, sgn * MU_P * ss, "--", color="0.55", lw=0.9,
-                label=(r"$\tau = \pm\mu'\sigma$ trend" if sgn > 0
-                       and legend else None))
+        ax.plot(ss, sgn * strength, "-", color="0.35", lw=1.1,
+                label=(r"envelope $\tau = \pm(C + \mu'\sigma)$"
+                       if sgn > 0 and legend else None))
+    ax.fill_between(ss, strength, 2.4, color="#c62828", alpha=0.06,
+                    lw=0)
+    ax.fill_between(ss, -strength, -2.4, color="#c62828", alpha=0.06,
+                    lw=0)
     tt = np.linspace(0, 2 * np.pi, 200)
-    ax.plot(TAU0 * np.cos(tt), TAU0 * np.sin(tt), "-", color="0.85",
-            lw=0.8, label="regional circle" if legend else None)
+    ax.plot(P0 + TAU0 * np.cos(tt), TAU0 * np.sin(tt), "-",
+            color="0.85", lw=0.8,
+            label="regional circle" if legend else None)
     ax.scatter(sc0, tau0, s=16, facecolors="none", edgecolors="0.55",
                linewidths=1.0,
                label="receiver nodes, before" if legend else None)
@@ -178,11 +197,12 @@ def mohr_panel(ax, phi, legend=False):
                      linewidths=0.3,
                      label="after (colour: dCFF)" if legend else None)
     ax.axhline(0, color="0.9", lw=0.5)
-    ax.axvline(0, color="0.9", lw=0.5)
+    ax.set_xlim(-0.4, P0 + 1.8)
+    ax.set_ylim(-1.75, 1.75)
     ax.set_aspect("equal")
     ax.set_title(rf"$\phi = {phi:.0f}°$  "
                  rf"(median dCFF {np.median(dcff):+.2f})", fontsize=9)
-    ax.set_xlabel(r"$\sigma$ (compression +)", fontsize=8)
+    ax.set_xlabel(r"$\sigma$ (compression +, $P_0 = 1$)", fontsize=8)
     return pts
 
 
