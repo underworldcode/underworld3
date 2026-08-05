@@ -18,8 +18,9 @@
 #let mesh-stroke = rgb("#8899aa")
 #let fault-col = rgb("#c62828")
 #let arrow-col = rgb("#444444")
+#let approx-col = rgb("#b57500")
 
-#let PH = 1.2
+#let PH = 1.0
 #let VGAP = 0.62
 #let panel-y(k) = k * (PH + VGAP)
 
@@ -41,13 +42,13 @@
        stroke: (paint: fault-col, thickness: 0.9pt, dash: "dashed"))
 }
 
-#let rise-arrow(k, label) = {
+#let rise-arrow(k, label, col: rgb("#444444")) = {
   import cetz.draw: *
   let y = panel-y(k) + PH + 0.08
   line((-0.35, y), (-0.35, y + VGAP - 0.16),
-       stroke: (paint: arrow-col, thickness: 0.8pt), mark: (end: ">"))
+       stroke: (paint: col, thickness: 0.8pt), mark: (end: ">"))
   content((-0.52, y + (VGAP - 0.16) / 2), angle: 90deg,
-          text(size: 4.5pt, label))
+          text(size: 4.5pt, fill: col, label))
 }
 
 #let caption(k, body) = {
@@ -61,26 +62,26 @@
 
   // ---- the geometric hierarchy, bottom up --------------------------------
   draw-mesh(panel-y(0), coarse.coarse2)
-  caption(0, [coarsest level])
-  rise-arrow(0, [refine])
+  caption(0, [coarsest level\ (structured)])
+  rise-arrow(0, [refine ×2, nested])
 
   draw-mesh(panel-y(1), coarse.coarse1)
-  caption(1, [coarse level])
-  rise-arrow(1, [refine])
+  caption(1, [coarse level\ (structured)])
+  rise-arrow(1, [refine ×2, nested])
 
   draw-mesh(panel-y(2), stack.panels.base)
   draw-manifold(panel-y(2))
-  caption(2, [the STATIC base\ (fault = geometry only)])
-  rise-arrow(2, [adapt])
+  caption(2, [the STATIC base\ (finest NESTED level;\ fault = geometry only)])
+  rise-arrow(2, [adapt, non-nested], col: approx-col)
 
   draw-mesh(panel-y(3), stack.panels.l1)
   draw-manifold(panel-y(3))
   caption(3, [adapted child, layer 1])
-  rise-arrow(3, [adapt])
+  rise-arrow(3, [adapt, non-nested], col: approx-col)
 
   draw-mesh(panel-y(4), stack.panels.l2)
   draw-manifold(panel-y(4))
-  caption(4, [adapted child, layer 2\ (finest level)])
+  caption(4, [adapted child, layer 2\ (finest mesh)])
 
   // ---- the separator: everything above is NOT a level --------------------
   let ysep = panel-y(5) - VGAP / 2 + 0.06
@@ -92,7 +93,7 @@
     let y = panel-y(4) + PH + 0.08
     line((-0.35, y), (-0.35, panel-y(5) - 0.08),
          stroke: (paint: arrow-col, thickness: 0.8pt), mark: (end: ">"))
-    content((-0.62, (y + panel-y(5)) / 2 - 0.04), angle: 90deg,
+    content((-0.72, (y + panel-y(5)) / 2 - 0.04), angle: 90deg,
             text(size: 4.5pt)[cut + split])
   }
 
@@ -126,15 +127,22 @@
               the stack,\ OUTSIDE the hierarchy]))
   }
 
-  // ---- the bracket: which levels form the solver hierarchy ----------------
+  // ---- brackets: exact nesting below the base, approximate above ---------
   {
     let x = 3.72
     let y0 = panel-y(0)
-    let y1 = panel-y(4) + PH
+    let y1 = panel-y(2) + PH
     line((x, y0), (x + 0.1, y0), (x + 0.1, y1), (x, y1),
          stroke: (paint: arrow-col, thickness: 0.7pt))
     content((x + 0.28, (y0 + y1) / 2), angle: 90deg,
-            text(size: 4.5pt)[geometric multigrid hierarchy (FMG) — one
-              level per doubling of resolution])
+            text(size: 4.5pt)[FMG hierarchy: structured refinement,
+              EXACTLY nested — level transfers are lossless])
+    let y2 = panel-y(3)
+    let y3 = panel-y(4) + PH
+    line((x, y2), (x + 0.1, y2), (x + 0.1, y3), (x, y3),
+         stroke: (paint: approx-col, thickness: 0.7pt))
+    content((x + 0.28, (y2 + y3) / 2), angle: 90deg,
+            text(size: 4.5pt, fill: approx-col)[adapted levels:
+              non-nested — transfers are APPROXIMATE])
   }
 })

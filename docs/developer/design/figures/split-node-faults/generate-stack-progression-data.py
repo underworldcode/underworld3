@@ -14,8 +14,8 @@ import os
 import numpy as np
 from scipy.spatial import Delaunay
 
-A = np.array([0.55, 0.45])
-B = np.array([1.55, 0.80])
+A = np.array([0.50, 0.32])
+B = np.array([1.50, 0.66])
 T = (B - A) / np.linalg.norm(B - A)
 N = np.array([-T[1], T[0]])
 LEN = float(np.linalg.norm(B - A))
@@ -28,7 +28,7 @@ def seg_dist(p):
 
 def grid(h):
     xs = np.arange(0.0, 2.0 + 1e-9, h)
-    ys = np.arange(0.0, 1.2 + 1e-9, h)
+    ys = np.arange(0.0, 1.0 + 1e-9, h)
     return np.array([[x, y] for x in xs for y in ys])
 
 
@@ -40,14 +40,14 @@ def band(h, width):
     contribution, not an accident of the refinement layout."""
     out = []
     xs = np.arange(0.06, 1.95, h)
-    ys = np.arange(0.06, 1.15, h)
+    ys = np.arange(0.05, 0.96, h)
     for i, x in enumerate(xs):
         for j, y in enumerate(ys):
             q = np.array([
                 x + 0.33 * h * np.sin(12.9898 * i + 78.233 * j),
                 y + 0.33 * h * np.sin(39.3460 * i + 11.135 * j)])
             if (seg_dist(q) < width
-                    and 0.03 < q[0] < 1.97 and 0.03 < q[1] < 1.17):
+                    and 0.03 < q[0] < 1.97 and 0.03 < q[1] < 0.97):
                 out.append(q)
     return np.array(out)
 
@@ -72,20 +72,20 @@ def pack(points, tris):
 panels = {}
 
 # (a) base: coarse uniform
-base_pts = grid(0.4)
+base_pts = grid(0.25)
 panels["base"] = pack(*triangulate(base_pts))
 
 # (b) layer 1: base + a coarse band toward the manifold
-l1 = dedup(np.vstack([grid(0.4), band(0.19, 0.30)]), 0.105)
+l1 = dedup(np.vstack([grid(0.25), band(0.125, 0.22)]), 0.07)
 panels["l1"] = pack(*triangulate(l1))
 
 # (c) layer 2: tighter band on top
-l2 = dedup(np.vstack([grid(0.4), band(0.19, 0.32), band(0.085, 0.12)]), 0.048)
+l2 = dedup(np.vstack([grid(0.25), band(0.125, 0.24), band(0.062, 0.10)]), 0.036)
 panels["l2"] = pack(*triangulate(l2))
 
 # (d) cut: clear a corridor around the segment, then place vertices ON it
-keep = np.array([p for p in l2 if seg_dist(p) > 0.065])
-on_seg = np.array([A + s * T for s in np.arange(0.0, LEN + 1e-9, 0.085)])
+keep = np.array([p for p in l2 if seg_dist(p) > 0.048])
+on_seg = np.array([A + s * T for s in np.arange(0.0, LEN + 1e-9, 0.062)])
 cut_pts = np.vstack([keep, on_seg])
 cut_pts, cut_tris = triangulate(cut_pts)
 panels["cut"] = pack(cut_pts, cut_tris)
@@ -102,7 +102,7 @@ for t in cut_tris:
     inside = 0.0 < (cen - A) @ T < LEN
     side.append(-1 if ((cen - (A + s * T)) @ N < 0 and touches and inside)
                 else +1)
-DELTA = 0.085
+DELTA = 0.06
 exploded = [list(p) for p in cut_pts]
 replicas = {}
 for v in interior:

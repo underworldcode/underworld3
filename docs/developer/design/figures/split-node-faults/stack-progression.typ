@@ -42,9 +42,9 @@
 #let stage-arrow(k, label) = {
   import cetz.draw: *
   let x = panel-x(k) + PW + 0.06
-  line((x, 0.6), (x + GAP - 0.12, 0.6),
+  line((x, 0.5), (x + GAP - 0.12, 0.5),
        stroke: (paint: arrow-col, thickness: 0.8pt), mark: (end: ">"))
-  content((x + GAP / 2 - 0.06, 0.86), text(size: 4pt, label))
+  content((x + GAP / 2 - 0.06, 0.76), text(size: 4pt, label))
 }
 
 #cetz.canvas(length: 1.5cm, {

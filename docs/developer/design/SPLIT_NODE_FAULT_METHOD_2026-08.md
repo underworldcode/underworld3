@@ -145,12 +145,15 @@ same base — the operation is non-cumulative by construction.*
 
 ![The grid hierarchy](figures/split-node-faults/grid-hierarchy.png)
 
-*Fig. 5 — the same stack seen as a solver hierarchy. The static base is
-itself the finest level of a geometric (FMG) hierarchy, and the adapted
-children extend that hierarchy upward — one level per doubling of
-resolution. The cut + split working mesh sits on top of the stack but
-OUTSIDE the hierarchy: a cut is not a multigrid level, and the coarse
-levels never carry the fault.*
+*Fig. 5 — the same stack seen as a solver hierarchy. Below the base the
+refinement is STRUCTURED and exactly nested (each level is the regular
+refinement of the one beneath — the nesting in the drawing is generated,
+and verified, not sketched), so level transfers are lossless: perfect
+FMG. The adapted children above the base are non-nested, and their
+transfers are approximate — that is where the approximation begins. The
+cut + split working mesh sits on top of the stack but OUTSIDE the
+hierarchy: a cut is not a multigrid level, and no level below it ever
+carries the fault.*
 
 ### 3.1 Input contract and provenance
 
