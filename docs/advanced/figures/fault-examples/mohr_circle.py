@@ -34,22 +34,10 @@ R_ANALYTIC = common.ETA * np.sqrt(4 * A_RATE**2 + GAMMA**2)
 angles = np.arange(0.0, 180.0 - 1e-9, 22.5)
 points = []
 for theta in angles:
-    child = common.split_with_fault(
-        common.base_mesh(0.04), common.fault_segment(theta, HALF))
-    stokes = common.stokes_on(
-        child, common.shear_plus_stretch(child, A_RATE, GAMMA))
-    stokes.add_fault_bc(ETA_WELD, boundary="Fault")
-    fault_contact.solve_with_fault(stokes, picard=2)
-
-    s, V, leak = common.slip_profile(stokes)
-    s_n, sig = common.normal_traction(stokes)
-    mid_v = common.inner(s)
-    mid_s = common.inner(s_n)
-    tau = ETA_WELD * float(np.median(V[mid_v]))
-    sigma_n = float(np.median(sig[mid_s]))
+    sigma_n, tau = common.mohr_probe(theta, A_RATE, GAMMA,
+                                     eta_weld=ETA_WELD, half_length=HALF)
     points.append((theta, sigma_n, tau))
-    print(f"theta {theta:5.1f}: sigma_n {sigma_n:8.4f}  tau {tau:7.4f}  "
-          f"leak {np.abs(leak).max():.1e}")
+    print(f"theta {theta:5.1f}: sigma_n {sigma_n:8.4f}  tau {tau:7.4f}")
 
 points = np.array(points)
 

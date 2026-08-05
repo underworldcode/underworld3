@@ -17,6 +17,13 @@ $V(s)$ tells each law's story:
 
 ![The fault-strength ladder](figures/fault-examples/ladder.png)
 
+The right-hand column shows the shear-stress field $\sigma_{xy}$ for
+each rung (colour range $0 \to 2\tau_\infty$, white at the far-field
+value): a slipping fault shadows itself with a stress drop and
+concentrates stress at its tips, in proportion to how much of
+$\tau_\infty$ its law lets go; the stuck fault leaves the field
+untouched.
+
 - **Frictionless** — the free crack: full stress drop, elliptical
   profile (the dashed shape), slip vanishing at the unsplit tips.
 - **Viscous, $\eta_f = \eta/a$** — the natural interface-viscosity
@@ -52,6 +59,15 @@ rotation moves a probe $45°$ around the circle, and $180°$ of rotation
 closes it.
 
 Script: `figures/fault-examples/mohr_circle.py`.
+
+The measured points land on the circle too neatly to teach from a
+static figure — the lesson is in the *construction*. The animated
+version rotates the fault through $180°$ while its probe sweeps the
+full circle at $2\theta$, one welded-fault solve per frame:
+
+![Building the Mohr circle](figures/fault-examples/mohr-circle-build.gif)
+
+Script: `figures/fault-examples/mohr_animate.py`.
 
 ## Orientation and slip: the circle's other face
 
