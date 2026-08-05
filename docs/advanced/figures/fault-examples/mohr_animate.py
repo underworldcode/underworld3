@@ -41,6 +41,11 @@ else:
     probes = np.array(probes)
     np.savez(cache, probes=probes)
 centre = float(np.mean(probes[:, 1]))
+# GEOLOGICAL convention on the stress plane: compression positive.
+# The left panel's traction vector stays in physical (tension-positive)
+# components; only the Mohr diagram flips.
+cg = -centre
+scg = -probes[:, 1]
 
 frames = []
 for k in range(len(probes)):
@@ -86,25 +91,25 @@ for k in range(len(probes)):
 
     # ---- right: the probe sweeps the circle, twice as fast --------------
     tt = np.linspace(0, 2 * np.pi, 300)
-    axr.plot(centre + R_ANALYTIC * np.cos(tt), R_ANALYTIC * np.sin(tt),
+    axr.plot(cg + R_ANALYTIC * np.cos(tt), R_ANALYTIC * np.sin(tt),
              "-", color="0.75", lw=0.9)
     axr.axhline(0, color="0.8", lw=0.6)
-    axr.axvline(centre, color="0.8", lw=0.6)
-    axr.plot([centre - R_ANALYTIC, centre + R_ANALYTIC], [0, 0], "D",
+    axr.axvline(cg, color="0.8", lw=0.6)
+    axr.plot([cg - R_ANALYTIC, cg + R_ANALYTIC], [0, 0], "D",
              ms=5, color="0.3", zorder=4)
-    axr.text(centre - R_ANALYTIC, -0.16 * R_ANALYTIC,
+    axr.text(cg + R_ANALYTIC, -0.16 * R_ANALYTIC,
              "principal\nstresses", fontsize=7, ha="center", va="top",
              color="0.3")
-    axr.plot(probes[:k + 1, 1], probes[:k + 1, 2], "o", ms=5,
+    axr.plot(scg[:k + 1], probes[:k + 1, 2], "o", ms=5,
              mfc="none", mec="#c62828", mew=1.2)
-    axr.plot([centre, sig_k], [0.0 * centre, tau_k], "-",
+    axr.plot([cg, -sig_k], [0.0, tau_k], "-",
              color="#4a7bf7", lw=1.2)
-    axr.plot([sig_k], [tau_k], "o", ms=9, color="#c62828", zorder=5)
+    axr.plot([-sig_k], [tau_k], "o", ms=9, color="#c62828", zorder=5)
     axr.text(0.04, 0.94, r"... its stress probe sweeps at $2\theta$",
              fontsize=10, transform=axr.transAxes)
-    axr.set_xlabel(r"normal traction $\sigma_n$")
+    axr.set_xlabel(r"normal stress $\sigma$ (compression positive)")
     axr.set_ylabel(r"shear traction $\tau$")
-    axr.set_xlim(centre - 1.35 * R_ANALYTIC, centre + 1.35 * R_ANALYTIC)
+    axr.set_xlim(cg - 1.35 * R_ANALYTIC, cg + 1.35 * R_ANALYTIC)
     axr.set_ylim(-1.35 * R_ANALYTIC, 1.35 * R_ANALYTIC)
     axr.set_aspect("equal")
 

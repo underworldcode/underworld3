@@ -40,6 +40,10 @@ Script: `figures/fault-examples/ladder.py`.
 
 ## The Mohr circle, measured by faults
 
+All the stress-plane figures below use the **geological sign
+convention**: compression positive, tension on the negative axis. (The
+solver's tractions are tension-positive; only the plots flip.)
+
 A *welded* split fault (interface dashpot with large $\eta_f$) does not
 perturb the flow — the welded limit recovers the uncut continuum — but
 its machinery still reports the tractions across it: the no-opening
@@ -88,13 +92,13 @@ Three regimes appear in one sweep:
 ![Coulomb fault vs the Mohr circle](figures/fault-examples/mohr-friction.png)
 
 - **Stuck** (circles): the ambient resolved stress lies inside the
-  envelope $|\tau| < \mu|\sigma_n|$ — the fault transmits it and the
+  envelope $|\tau| < \mu\sigma$ — the fault transmits it and the
   probe sits on the Mohr circle;
 - **Sliding** (squares): the ambient stress would exceed the envelope —
   the fault slips, drops the shear traction to its strength, and the
   probe is pinned to the yield line;
-- **Tensile**: $\sigma_n > 0$ carries no frictional strength, and the
-  probe collapses to the $\sigma_n$ axis (a freely slipping crack).
+- **Tensile** ($\sigma < 0$): no frictional strength at all, and the
+  probe collapses to the axis (a freely slipping crack).
 
 The shear traction here is read from the Coulomb law at the measured
 slip rate — which is exact in every regime, because the regularised
@@ -105,6 +109,33 @@ half-arrows when it unlocks:
 ![A frictional fault against the Mohr circle](figures/fault-examples/mohr-friction-build.gif)
 
 Script: `figures/fault-examples/mohr_friction.py`.
+
+### Cohesion keeps more of the circle
+
+Add cohesion — the envelope becomes $\tau = \pm(C + \mu\sigma)$ —
+and strength survives into the tensile sector (the no-opening
+constraint already excludes tensile opening, so cohesion appears there
+as a flat shear strength $C$). Stuck arcs now survive around **both**
+principal poles, with envelope-pinned sliding between: on the rising
+Coulomb rays where compressive, on the flat cohesion lines where
+tensile.
+
+![Cohesive Mohr-Coulomb fault](figures/fault-examples/mohr-cohesion.png)
+
+The cohesive law is not a canned option — it is registered as a sympy
+expression in the canonical interface symbols, which is the intended
+extension path for any fault rheology:
+
+```python
+V = fault_contact.slip_rate
+S = fault_contact.normal_stress          # reaction-fed, clamped >= 0
+law = fault_contact.SymbolicFaultLaw(
+    (C + mu * S) * (2 / sympy.pi) * sympy.atan(V / V0))
+```
+
+![Cohesion keeps more of the circle](figures/fault-examples/mohr-cohesion-build.gif)
+
+Script: `figures/fault-examples/mohr_cohesion.py`.
 
 ## Orientation and slip: the circle's other face
 

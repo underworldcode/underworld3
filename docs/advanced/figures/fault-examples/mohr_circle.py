@@ -46,6 +46,10 @@ for theta in angles:
     print(f"theta {theta:5.1f}: sigma_n {sigma_n:8.4f}  tau {tau:7.4f}")
 
 points = np.array(points)
+# GEOLOGICAL sign convention for the stress plane: compression positive,
+# tension on the negative axis (the solver's tractions are
+# tension-positive; only the plot flips).
+points[:, 1] *= -1.0
 
 # circle fit: centre c on the sigma axis, radius R, from the probes
 sig, tau = points[:, 1], points[:, 2]
@@ -70,7 +74,7 @@ for theta, sg, tu in points:
     ax.annotate(f"{theta:.0f}°", (sg, tu), textcoords="offset points",
                 xytext=(6, 5), fontsize=8)
 ax.axhline(0, color="0.6", lw=0.6)
-ax.set_xlabel(r"normal traction $\sigma_n$")
+ax.set_xlabel(r"normal stress $\sigma$ (compression positive)")
 ax.set_ylabel(r"shear traction $\tau$")
 ax.set_title("The Mohr circle, measured by welded split-node faults")
 ax.set_aspect("equal")
