@@ -84,13 +84,17 @@ def stress_fields(child, stokes):
                                              + v.sym[1].diff(x))),
                        ("syy", -p.sym[0] + 2 * common.ETA
                         * v.sym[1].diff(y))):
+        # P0 cell stress: continuous-P1 projection rings at node scale
+        # near the fault (see california.py)
         s_var = uw.discretisation.MeshVariable(
-            f"{name}_{stress_fields.counter}", child, 1, degree=1)
+            f"{name}_{stress_fields.counter}", child, 1, degree=0,
+            continuous=False)
         proj = uw.systems.Projection(child, s_var)
         proj.uw_function = expr
         proj.smoothing = 0.0
         proj.solve()
-        out.append(np.asarray(s_var.data[:, 0]).copy())
+        row = common.split_mesh_cell_rows(child, s_var)
+        out.append(np.asarray(s_var.data[:, 0])[row].copy())
     stress_fields.counter += 1
     return out, s_var                    # arrays share the P1 layout
 
@@ -124,8 +128,9 @@ else:
             (sxy0, syy0), _ = stress_fields(child, s0b)
             tau_dir = np.sign(np.median(data[f"p0_tau_{phi}"]))
             dcff = tau_dir * (sxy1 - sxy0) + MU_P * (syy1 - syy0)
-            pvm = vis.meshVariable_to_pv_mesh_object(s_var)
-            data["field_points"] = np.asarray(pvm.points)
+            _pts, _faces = common.split_mesh_cell_render(child)
+            data["field_points"] = _pts
+            data["field_faces"] = _faces
             data["field_dcff"] = dcff
         print(f"phi {phi}: receiver ambient tau "
               f"{np.median(data[f'p0_tau_{phi}']):+.3f}, sigma_n "
@@ -137,12 +142,14 @@ else:
 
 # ---- figure A: the field + the receiver's Mohr move (phi = 45) -----------
 # gauge the difference to the far field (see common.far_field_anchor)
+_fc = np.asarray(data["field_faces"]).reshape(-1, 4)[:, 1:]
+_cent = np.asarray(data["field_points"])[_fc].mean(axis=1)
 dcff_field, GAUGE_C = common.far_field_anchor(
-    data["field_points"], data["field_dcff"], (SOURCE, RECEIVER))
+    _cent, data["field_dcff"], (SOURCE, RECEIVER))
 print(f"far-field gauge constant removed: {GAUGE_C:+.4f}")
-pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float))
-pvm.point_data["dcff"] = dcff_field
-pvm = pvm.delaunay_2d()
+pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float),
+                  faces=np.asarray(data["field_faces"], dtype=np.int64))
+pvm.cell_data["dcff"] = dcff_field
 pl = pv.Plotter(off_screen=True, window_size=(1050, 820))
 pl.set_background("white")
 # linear colour scale with generous limits (the gate-study

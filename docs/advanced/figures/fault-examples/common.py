@@ -242,3 +242,85 @@ def signed_log_annotations(values, linthresh=0.02):
     """Scalar-bar tick positions/labels in transformed units."""
     return {float(np.sign(v) * np.log10(1.0 + abs(v) / linthresh)):
             f"{v:+.2f}" if v else "0" for v in values}
+
+
+def dedupe_average(points, values, decimals=9):
+    """Merge geometrically coincident points, averaging their values —
+    for RENDERING split-mesh fields only. The split mesh carries
+    coincident duplicated nodes along each fault; a Delaunay of the raw
+    cloud picks sides arbitrarily and paints alternating plus/minus
+    values along the trace (beading). Averaging collapses the jump in a
+    one-node strip that the drawn fault line covers."""
+    pts = np.asarray(points, dtype=float)
+    vals = np.asarray(values, dtype=float)
+    key = np.round(pts[:, :2], decimals)
+    _uniq, inverse, counts = np.unique(key, axis=0, return_inverse=True,
+                                       return_counts=True)
+    sums = np.zeros(len(counts))
+    np.add.at(sums, inverse, vals)
+    first = np.full(len(counts), -1, dtype=int)
+    for i, g in enumerate(inverse):
+        if first[g] < 0:
+            first[g] = i
+    return pts[first], sums / counts
+
+
+def split_mesh_cell_render(child):
+    """Points (mesh vertices) + faces (true cell connectivity) for
+    rendering CELL data on a split mesh. Node-order mapping is trivial
+    (v - vS) because the points ARE the vertices; pair cell values via
+    split_mesh_cell_rows."""
+    dm = child.dm
+    vS, vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
+    faces = []
+    for c in range(cS, cE):
+        closure, _ = dm.getTransitiveClosure(c)
+        tri = [int(p) - vS for p in closure if vS <= int(p) < vE]
+        faces.extend([3, *tri])
+    return (np.column_stack([X, np.zeros(len(X))]),
+            np.asarray(faces, dtype=np.int64))
+
+
+def split_mesh_cell_rows(child, var):
+    """Data-row index of a P0 variable for each cell, in plex cell
+    order (rank of the combined-section offsets)."""
+    dm = child.dm
+    sec = dm.getLocalSection()
+    cS, cE = dm.getHeightStratum(0)
+    offs = np.array([sec.getFieldOffset(c, var.field_id)
+                     for c in range(cS, cE)])
+    row = np.empty(len(offs), dtype=np.int64)
+    row[np.argsort(offs)] = np.arange(len(offs))
+    return row
+
+
+def split_mesh_faces(child, var):
+    """The mesh's own triangulation as a pyvista faces array, indexed in
+    ``var``'s DOF order (P1 vertex variable). Rendering a split-mesh
+    field through delaunay_2d of the DOF cloud is WRONG twice over: the
+    coincident fault pairs get arbitrary side-picking, and unconstrained
+    Delaunay edges hop across a curved trace — both paint beading along
+    the fault. The true connectivity keeps the two sheets separate and
+    renders the jump sharply."""
+    dm = child.dm
+    sec = dm.getLocalSection()
+    vS, vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    fid = var.field_id
+    # getFieldOffset indexes the COMBINED local vector; the variable's
+    # own rows are the RANKS of those offsets (dof order = offset order)
+    offs = np.array([sec.getFieldOffset(v, fid) for v in range(vS, vE)])
+    row = np.empty(len(offs), dtype=np.int64)
+    row[np.argsort(offs)] = np.arange(len(offs))
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
+    assert np.allclose(np.asarray(var.coords)[row], X), \
+        "variable DOF order does not match the offset ranking"
+    faces = []
+    for c in range(cS, cE):
+        closure, _ = dm.getTransitiveClosure(c)
+        tri = [int(row[int(p) - vS]) for p in closure
+               if vS <= int(p) < vE]
+        faces.extend([3, *tri])
+    return np.asarray(faces, dtype=np.int64)

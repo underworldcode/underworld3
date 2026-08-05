@@ -78,13 +78,26 @@ them render fine anywhere.
    crossing the cohesive envelope. The rotation sweep shows orientation
    controls the MARGIN to failure. 6 solves + projections.
 9. **`california.py` → `california.png`** — schematic southern
-   California: the San Andreas (Big Bend) slips right-laterally under
-   boundary-parallel simple shear; Garlock (resolves sinistral — the
-   real sense, from the kinematics not by assumption), three ECSZ
-   strands and a San Jacinto analogue welded as probes, all inboard.
-   Verdicts: SJF relaxed (-0.41), Garlock loaded (+0.22), ECSZ mildly
-   loaded (+0.09); slip arrows drawn from the MEASURED jump. The
-   capstone. 2 solves at h = 0.02.
+   California: the San Andreas as TWO parallel offset dextral segments
+   (left step = restraining; the stepover is the Transverse Ranges,
+   beside the Garlock). Straight segments by design: curved polyline
+   trunks leave kink roughness (tried, measured, rejected). Garlock
+   (resolves sinistral from the kinematics), three ECSZ strands and a
+   San Jacinto analogue welded as probes, all inboard. Verdicts: SJF
+   relaxed (-0.45), ECSZ neutral, the Garlock cloud STRETCHED
+   (stepover end loaded, far end relaxed); slip arrows from the
+   MEASURED jump (+0.167 right-lateral). ~50 s of compute at
+   h = 0.012. The capstone.
+
+   RENDERING RULES the interaction fields obey (hard-won, measured):
+   stress fields are P0 (cell) projections — continuous-P1 projection
+   of rough near-fault stress rings at node scale (residual rms 0.26
+   at half-wavelength h/2) — rendered as CELL data on the split
+   mesh's TRUE connectivity (common.split_mesh_cell_render /
+   split_mesh_cell_rows); never Delaunay the DOF point cloud of a
+   split mesh (coincident fault pairs + trace-crossing edges paint
+   false beading). Colour: linear RdBu_r at +-1 (dCFF per unit
+   stress drop) — log scaling makes the far field "overflow".
 
 ## The harness contracts (`common.py`)
 

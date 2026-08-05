@@ -1,21 +1,22 @@
-"""A schematic southern California: the San Andreas slips, its
-neighbours read the stress.
+"""A schematic southern California: the San Andreas as a restraining
+stepover, read by its neighbours.
 
 Geography (schematic, not to scale, x = east / y = north): the SAN
-ANDREAS trunk runs NW-SE with its Big Bend; the GARLOCK heads ENE off
-the bend; three EAST CALIFORNIA SHEAR ZONE strands and a SAN
-JACINTO-like fault sit INBOARD (northeast of the SAF, in the
-continental crust — not in the Pacific plate). The regional drive is
-right-lateral SIMPLE SHEAR parallel to the plate-boundary trend
-(~N40W), which resolves DEXTRAL on the NW-striking faults and
-SINISTRAL on the Garlock — exactly the real senses, and the map's
-half-arrows are drawn from the MEASURED slip, not assumed.
+ANDREAS is represented as TWO PARALLEL, laterally OFFSET dextral
+transform segments — a left step, which under right-lateral shear is
+RESTRAINING: the overlap zone between the tips is where the
+TRANSVERSE RANGES belong, right beside the Garlock. Straight segments
+carry none of the polyline roughness a curved trace acquires. The
+GARLOCK (resolving sinistral — the real sense, from the kinematics),
+three EAST CALIFORNIA SHEAR ZONE strands and a SAN JACINTO-like fault
+sit inboard as welded probes.
 
-The SAF slips freely (the extreme event: the whole trunk drops its
-shear); every other fault is welded — a per-node stress probe. Field:
-Delta CFF on boundary-parallel planes, symmetric-log colour. Probes:
-Garlock / pooled ECSZ / San Jacinto clouds against the cohesive
-envelope (P0 = 1, C = 0.75 — neither enters Delta CFF).
+Both San Andreas segments slip freely under right-lateral simple
+shear parallel to the plate-boundary trend; the slip half-arrows on
+the map come from the MEASURED jump. Field: Delta CFF on
+boundary-parallel planes, P0 (cell) stress — continuous-P1 projection
+of the rough near-fault stress rings at the node scale (measured) —
+rendered on the split mesh's true connectivity.
 """
 import os
 import time
@@ -27,7 +28,6 @@ import numpy as np
 import pyvista as pv
 
 import underworld3 as uw
-import underworld3.visualisation as vis
 from underworld3.utilities import fault_contact
 
 import common
@@ -41,10 +41,19 @@ ETA_WELD = 200.0 * common.ETA / 0.2
 P0 = 1.0
 COH = 0.75
 
-SAF = np.array([[0.88, 0.06], [0.72, 0.24], [0.55, 0.36],
-                [0.38, 0.44], [0.22, 0.58], [0.10, 0.78]])
+# Two straight dextral segments, left-stepping (restraining): the
+# northern segment sits SW of the southern segment's trend, overlapping
+# it slightly; the stepover between the tips is the Transverse Ranges.
+_A = np.array([0.88, 0.06])
+_t = np.array([np.cos(np.radians(TREND)), np.sin(np.radians(TREND))])
+_n = np.array([-_t[1], _t[0]])                  # CCW normal (points SW)
+SAF_S = np.array([_A, _A + 0.48 * _t])
+SAF_N = np.array([_A + 0.42 * _t + 0.07 * _n,
+                  _A + 0.94 * _t + 0.07 * _n])
+STEPOVER = _A + 0.45 * _t + 0.035 * _n
+
 MINORS = {
-    "Garlock": np.array([[0.44, 0.47], [0.74, 0.57]]),
+    "Garlock": np.array([[0.52, 0.44], [0.80, 0.53]]),
     "E1": np.array([[0.62, 0.64], [0.56, 0.78]]),
     "E2": np.array([[0.72, 0.62], [0.66, 0.76]]),
     "E3": np.array([[0.81, 0.68], [0.75, 0.82]]),
@@ -58,12 +67,14 @@ COLOUR = {"Garlock": "#6a1b9a", "E1": "#1a6b1a", "E2": "#1a6b1a",
 
 
 def build_and_solve(trunk_free):
-    faults = [("SAF", SAF)] + [(k, v) for k, v in MINORS.items()]
+    faults = ([("SAF_S", SAF_S), ("SAF_N", SAF_N)]
+              + [(k, v) for k, v in MINORS.items()])
     child = common.base_mesh(0.012).add_fault(faults)
     stokes = common.stokes_on(child,
                               common.boundary_simple_shear(child, TREND,
                                                            TAU0))
-    stokes.add_fault_bc(0 if trunk_free else ETA_WELD, boundary="SAF")
+    for seg in ("SAF_S", "SAF_N"):
+        stokes.add_fault_bc(0 if trunk_free else ETA_WELD, boundary=seg)
     for k in MINORS:
         stokes.add_fault_bc(ETA_WELD, boundary=k)
     fault_contact.solve_with_fault(stokes, picard=2)
@@ -85,14 +96,19 @@ def stress_components(child, stokes, tag):
         sxy=common.ETA * (v.sym[0].diff(y) + v.sym[1].diff(x)))
     out = {}
     for name, expr in exprs.items():
+        # P0 (cell) stress: projecting the rough near-fault stress onto
+        # CONTINUOUS P1 rings at the node scale (measured: residual rms
+        # 0.26 at half-wavelength h/2); cellwise averages are honest and
+        # pixel-scale at this resolution.
         s_var = uw.discretisation.MeshVariable(f"{name}_{tag}", child, 1,
-                                               degree=1)
+                                               degree=0, continuous=False)
         proj = uw.systems.Projection(child, s_var)
         proj.uw_function = expr
         proj.smoothing = 0.0
         proj.solve()
-        out[name] = np.asarray(s_var.data[:, 0]).copy()
-    return out, s_var
+        row = common.split_mesh_cell_rows(child, s_var)
+        out[name] = np.asarray(s_var.data[:, 0])[row].copy()
+    return out
 
 
 cache = os.path.join(D, "_california_probes.npz")
@@ -102,23 +118,22 @@ if os.path.exists(cache):
 else:
     t_wall = time.perf_counter()
     child, s1, probes1 = build_and_solve(trunk_free=True)
-    print(f"[timing] trunk-free solve+probes: "
+    print(f"[timing] slipping solve + probes: "
           f"{time.perf_counter() - t_wall:.1f} s")
     t_wall = time.perf_counter()
-    # the trunk's own slip: report the sense, drawn on the map
-    t_saf = SAF[-1] - SAF[0]
     s_saf, V_saf = common.slip_vs_position(
-        s1, t_saf, centre=SAF.mean(axis=0), name="SAF")
-    comp1, s_var = stress_components(child, s1, "a")
+        s1, SAF_S[1] - SAF_S[0], centre=SAF_S.mean(axis=0), name="SAF_S")
+    comp1 = stress_components(child, s1, "a")
 
     s0 = common.stokes_on(child,
                           common.boundary_simple_shear(child, TREND,
                                                        TAU0))
-    s0.add_fault_bc(ETA_WELD, boundary="SAF")
+    for seg in ("SAF_S", "SAF_N"):
+        s0.add_fault_bc(ETA_WELD, boundary=seg)
     for k in MINORS:
         s0.add_fault_bc(ETA_WELD, boundary=k)
     fault_contact.solve_with_fault(s0, picard=2)
-    comp0, _ = stress_components(child, s0, "b")
+    comp0 = stress_components(child, s0, "b")
     print(f"[timing] welded solve + all projections: "
           f"{time.perf_counter() - t_wall:.1f} s")
     probes0 = {}
@@ -127,7 +142,7 @@ else:
                                                ETA_WELD)
         probes0[k] = (sig, tau)
 
-    # Delta CFF on boundary-parallel planes
+    # Delta CFF on boundary-parallel planes (per cell)
     beta = np.radians(TREND)
     nx, ny = -np.sin(beta), np.cos(beta)
     tx, ty = np.cos(beta), np.sin(beta)
@@ -142,35 +157,34 @@ else:
     nn0, t0 = resolve(comp0)
     nn1, t1 = resolve(comp1)
     tau_dir = np.sign(np.median(t0))
+    _pts, _faces = common.split_mesh_cell_render(child)
+    # cell centroids, for the far-field gauge anchor
+    fc = np.asarray(_faces).reshape(-1, 4)[:, 1:]
+    _cent = np.asarray(_pts)[fc].mean(axis=1)
     data = dict(field_dcff=tau_dir * (t1 - t0) + MU_P * (nn1 - nn0),
-                field_points=np.asarray(
-                    vis.meshVariable_to_pv_mesh_object(s_var).points),
-                saf_v=V_saf)
+                field_points=_pts, field_faces=_faces,
+                field_centroids=_cent, saf_v=V_saf)
     for k in MINORS:
         data[f"{k}_sig0"], data[f"{k}_tau0"] = probes0[k]
         data[f"{k}_sig1"], data[f"{k}_tau1"] = probes1[k]
     np.savez(cache, **data)
     data = dict(np.load(cache, allow_pickle=True))
 
-t_hat_saf = (SAF[-1] - SAF[0]) / np.linalg.norm(SAF[-1] - SAF[0])
 v_med = float(np.median(data["saf_v"]))
-# dextral: an observer on the fault sees the far side move to the
-# right. With the tangent pointing NW and the split's Plus side on its
-# LEFT (SW, the Pacific side), a POSITIVE jump (v+ - v-) along +t means
-# the Pacific side moves NW relative to North America — right-lateral.
+# dextral: with the tangent pointing NW and the split's Plus side on
+# its LEFT (SW, the Pacific side), a POSITIVE jump (v+ - v-) along +t
+# means the Pacific side moves NW relative to North America.
 sense = "right-lateral" if v_med > 0 else "LEFT-LATERAL?!"
 print(f"SAF slip: median tangential jump {v_med:+.3f} ({sense})")
 
 # ---- the field render ------------------------------------------------------
 dcff_field, GAUGE_C = common.far_field_anchor(
-    data["field_points"], data["field_dcff"],
-    [SAF] + list(MINORS.values()), cut=0.18)
+    data["field_centroids"], data["field_dcff"],
+    [SAF_S, SAF_N] + list(MINORS.values()), cut=0.18)
 print(f"far-field gauge constant removed: {GAUGE_C:+.4f}")
-# linear colour scale, generous limits (the gate-study convention):
-# the far field stays pale and the lobes grade instead of saturating
-pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float))
-pvm.point_data["dcff"] = dcff_field
-pvm = pvm.delaunay_2d()
+pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float),
+                  faces=np.asarray(data["field_faces"], dtype=np.int64))
+pvm.cell_data["dcff"] = dcff_field
 pl = pv.Plotter(off_screen=True, window_size=(1000, 950))
 pl.set_background("white")
 pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-1.0, 1.0),
@@ -183,26 +197,29 @@ def polyline(pts):
         np.column_stack([pts, np.full(len(pts), 0.001)]))
 
 
-pl.add_mesh(polyline(SAF), color="black", line_width=5.0, lighting=False)
+for seg in (SAF_S, SAF_N):
+    pl.add_mesh(polyline(seg), color="black", line_width=5.0,
+                lighting=False)
 for k, pts in MINORS.items():
     pl.add_mesh(polyline(pts), color=COLOUR[k], line_width=4.0,
                 lighting=False)
 
-# measured slip sense on the SAF, as half-arrows either side of mid-trunk
-mid = 0.5 * (SAF[2] + SAF[3])
-n_saf = np.array([-t_hat_saf[1], t_hat_saf[0]])
+# measured slip sense, half-arrows either side of the southern segment
+mid = SAF_S.mean(axis=0)
 sense_sign = np.sign(v_med)
 for pm in (+1.0, -1.0):
-    base = mid + pm * 0.05 * n_saf - pm * sense_sign * 0.06 * t_hat_saf
+    base = mid + pm * 0.05 * _n - pm * sense_sign * 0.06 * _t
     pl.add_arrows(np.array([np.append(base, 0.002)]),
-                  np.array([np.append(pm * sense_sign * t_hat_saf, 0.0)]),
+                  np.array([np.append(pm * sense_sign * _t, 0.0)]),
                   mag=0.11, color="black")
 
 pl.add_point_labels(
-    np.array([[0.26, 0.40, 0.002], [0.64, 0.49, 0.002],
-              [0.58, 0.82, 0.002], [0.84, 0.20, 0.002]]),
-    ["San Andreas", "Garlock", "ECSZ", "San Jacinto"],
-    font_size=22, text_color="black", shape=None, always_visible=True,
+    np.array([[0.30, 0.44, 0.002], [0.86, 0.12, 0.002],
+              [0.68, 0.50, 0.002], [0.60, 0.82, 0.002],
+              [0.84, 0.20, 0.002], [0.40, 0.24, 0.002]]),
+    ["San Andreas (N)", "San Andreas (S)", "Garlock", "ECSZ",
+     "San Jacinto", "Transverse Ranges\n(restraining stepover)"],
+    font_size=20, text_color="black", shape=None, always_visible=True,
     show_points=False)
 
 pl.view_xy()
@@ -222,8 +239,9 @@ axf.imshow(plt.imread(field_png))
 axf.set_xticks([])
 axf.set_yticks([])
 axf.set_title(r"$\Delta$CFF on boundary-parallel planes ($\mu' = 0.4$);"
-              "\nSAF slips (right-lateral), neighbours welded as probes"
-              "\n(schematic geometry, not to scale)", fontsize=9)
+              "\nboth SAF segments slip (right-lateral), neighbours "
+              "welded as probes\n(schematic geometry, not to scale)",
+              fontsize=9)
 
 for row, (label, members, col) in enumerate(GROUPS):
     ax = fig.add_subplot(gs[row, 1])
@@ -273,8 +291,8 @@ for row, (label, members, col) in enumerate(GROUPS):
 
 cax = fig.add_subplot(gs[:, 2])
 fig.colorbar(pts, cax=cax, label=r"node $\Delta$CFF")
-fig.suptitle("A San Andreas slip event, read by its neighbours",
-             fontsize=11.5)
+fig.suptitle("A San Andreas slip event (stepover), read by its "
+             "neighbours", fontsize=11.5)
 fig.tight_layout()
 out = os.path.join(D, "california.png")
 fig.savefig(out, dpi=200)
