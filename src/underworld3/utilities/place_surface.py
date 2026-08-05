@@ -16,9 +16,19 @@ crossed, so nothing has to be split twice, and none of those restrictions apply:
 * a tip terminates *inside* the mesh, because the tip is a placed vertex like
   any other and the cavity closes around it;
 * the surface's point spacing is chosen by the caller, not by wherever the mesh
-  happened to put its edges;
-* two surfaces may run arbitrarily close together, because neither is competing
-  for an edge of the original mesh.
+  happened to put its edges.
+
+Not, however, two surfaces closer together than a cell. That was claimed here
+once and it was wrong: the second surface's cavity was consuming the first, and
+the identity being asserted summed each placement's own counts and so could not
+see it. A cavity is cleared and filled for ONE surface, and the cells carrying
+an earlier surface's facets are held back so that surface survives — which
+eventually leaves no room. Measured on a 1/16 box: placing one at a time accepts
+1.5 h separation and refuses 1.0 h, where the cut accepts 1.0 h and refuses
+0.5 h. The two limits are not the same KIND of limit — the cut's is inherent
+(converging flanks cross one edge, and an edge splits at one point) while this
+one is an implementation limit, lifted by placing both surfaces into a single
+cavity, which is the finite-width ribbon and is not built.
 
 The operation is the same on a curve in 2-D and on a sheet in 3-D — place,
 delete, retriangulate — which is the other reason to prefer it: cutting
@@ -133,24 +143,72 @@ def _boundary_vertices(dm, n_vertices):
     return on
 
 
-def _interface_vertices(dm, n_vertices):
-    """Vertices carrying an edge of an already-embedded surface.
+def _interface_vertices_and_cells(dm, n_vertices, n_cells):
+    """Vertices and cells that an already-embedded surface may not lose.
 
-    Deleting one would put a gap in a surface placed earlier, so these are
-    refused as victims. Read through :func:`reconnect._interface_edges`, which
-    already knows which labels mean *interface* and which are PETSc's or UW3's
-    own bookkeeping — a distinction that has produced three separate silent
-    failures when guessed at.
+    Two masks, and the second is the one that is easy to forget. Protecting the
+    interface's VERTICES from deletion does not protect its FACETS: a cell is
+    not a vertex, and both cells supporting an interface facet can be cleared
+    while every one of their corners is protected. The facet then has no support
+    left, the refill has no reason to recreate that edge, and the earlier
+    surface loses a facet out of the middle of its chain — silently. Measured on
+    a T junction: a trunk of 21 facets came back with 20 and nothing raised.
+
+    Read through :func:`reconnect._interface_edges`, which already knows which
+    labels mean *interface* and which are PETSc's or UW3's own bookkeeping — a
+    distinction that has produced three separate silent failures when guessed at.
+    Narrowed here to INTERIOR facets, which is what "a surface already embedded"
+    means: the domain's own walls carry edge labels too, and holding their cells
+    would forbid clearing anything against a wall — which is exactly what a
+    surface crossing the domain has to do.
     """
     pStart, _pEnd = dm.getChart()
     vS, _vE = dm.getDepthStratum(0)
+    cS, _cE = dm.getHeightStratum(0)
     locked = reconnect._interface_edges(dm)
-    on = np.zeros(n_vertices, dtype=bool)
-    for e in range(*dm.getDepthStratum(1)):
-        if locked[e - pStart]:
-            for v in dm.getCone(e):
-                on[int(v) - vS] = True
-    return on
+    vertices = np.zeros(n_vertices, dtype=bool)
+    cells = np.zeros(n_cells, dtype=bool)
+    for e in _interior_interface_facets(dm, locked, pStart):
+        for v in dm.getCone(e):
+            vertices[int(v) - vS] = True
+        for c in dm.getSupport(e):
+            cells[int(c) - cS] = True
+    return vertices, cells
+
+
+def _interior_interface_facets(dm, locked, pStart):
+    """The labelled facets that lie INSIDE the mesh — an embedded surface."""
+    return [e for e in range(*dm.getDepthStratum(1))
+            if locked[e - pStart] and len(dm.getSupport(e)) == 2]
+
+
+def _interface_facet_counts(dm):
+    """How many INTERIOR facets each label holds, so a breach can be detected.
+
+    Interior only, for the reason :func:`_interface_vertices_and_cells` gives:
+    a wall label's count legitimately changes when a surface's end splits a wall
+    facet, and comparing that would refuse the ordinary case.
+    """
+    pStart, _pEnd = dm.getChart()
+    locked = reconnect._interface_edges(dm)
+    interior = set(_interior_interface_facets(dm, locked, pStart))
+    counts = {}
+    for i in range(dm.getNumLabels()):
+        name = dm.getLabelName(i)
+        if name in reconnect._TOPOLOGY_LABELS:
+            continue
+        label = dm.getLabel(name)
+        values = label.getValueIS()
+        if values is None:
+            continue
+        for val in values.getIndices():
+            if label.getStratumSize(int(val)) == 0:
+                continue
+            held = [p for p in label.getStratumIS(int(val)).getIndices()
+                    if int(p) in interior]
+            if held:
+                counts[(name, int(val))] = len(held)
+    return counts
 
 
 # ------------------------------------------------------------------ the polyline
@@ -697,7 +755,15 @@ def _place_one(dm, pts, label, label_value, clearance, spacing, end_snap):
     # Which vertices are in the way. A domain-boundary vertex is never one:
     # deleting it would change the domain. Nor is a vertex of a surface already
     # embedded, which would put a gap in that surface.
-    protected = on_boundary | _interface_vertices(dm, len(X))
+    held_v, held_c = _interface_vertices_and_cells(dm, len(X), len(cells))
+    held_counts = _interface_facet_counts(dm)
+    # A vertex may only be deleted if every cell of its star may be cleared.
+    # Held cells stay, so a vertex beside a surface already embedded would end
+    # up deleted while still on the cavity's boundary — a cavity that is not the
+    # union of its victims' stars, which the walk cannot fill.
+    beside_held = np.zeros(len(X), dtype=bool)
+    beside_held[cells[held_c].ravel()] = True
+    protected = on_boundary | held_v | beside_held
     victim = ((_distance_to_lines(X, [pts])
                < clearance * _vertex_h(X, _edge_vertices(dm))) & ~protected)
 
@@ -733,6 +799,14 @@ def _place_one(dm, pts, label, label_value, clearance, spacing, end_snap):
     # the domain wall, or on a surface already embedded.
     for _attempt in range(8):
         drop = np.union1d(np.flatnonzero(victim[cells].any(axis=1)), crossed)
+        # A cell owning a facet of a surface already embedded is never cleared.
+        # Clearing BOTH cells of such a facet destroys it — the facet's support
+        # is gone, so the refill has no reason to recreate that edge — and the
+        # earlier surface loses a facet out of the middle of its chain without
+        # anything raising. Holding the cells instead stops the cavity at the
+        # earlier surface, which is also what makes the ligament of an offset
+        # junction survive.
+        drop = drop[~held_c[drop]]
         if not len(drop):
             raise ValueError(
                 "the surface meets no cell of this mesh: there is nothing to "
@@ -798,6 +872,27 @@ def _place_one(dm, pts, label, label_value, clearance, spacing, end_snap):
     _inherit_boundary_labels(
         new_dm, dm, [(e, new_point(a), new_point(int(index[k])), new_point(b))
                      for k, (e, a, b) in split_at.items()])
+
+    # Every surface already embedded must come through with the facets it had.
+    # Held cells are what makes that true; this is the check that it IS true,
+    # and it is not redundant — losing a facet of an earlier surface produces a
+    # mesh that passes conformity, area and orientation, and is wrong only in
+    # the one place nothing else looks.
+    after = _interface_facet_counts(new_dm)
+    for key, before in held_counts.items():
+        now = after.get(key, 0)
+        # The label being written may GROW — several polylines may share a name,
+        # which is how a fault with more than one segment is labelled. Any other
+        # label must come through with exactly the facets it had.
+        if now < before or (now != before and key != (label, int(label_value))):
+            raise RuntimeError(
+                f"placing {label!r} would leave the surface {key[0]!r} with "
+                f"{now} facets instead of {before}: this surface's cavity "
+                "reached one already embedded. Surfaces must be separated by "
+                "at least a cell when placed one at a time; two that run closer "
+                "than that have to be placed together, into one cavity, which "
+                "is not yet implemented.")
+
     return new_dm, {"n_placed": len(placed),
                     "n_on_surface": len(pts) - len(placed),
                     "n_removed": int(victim.sum()),

@@ -185,30 +185,59 @@ def test_a_surface_ending_inside_the_mesh_is_placed_where_the_cut_refuses():
     assert int(tip[0]) in on
 
 
-def test_two_surfaces_closer_than_one_element_are_placed():
-    """An edge can be split once, so the cut refuses converging flanks.
+def _parallel_pair(gap, h=1 / 16):
+    return [np.array([[-0.2, 0.5 + gap * h / 2], [1.2, 0.5 + gap * h / 2]]),
+            np.array([[-0.2, 0.5 - gap * h / 2], [1.2, 0.5 - gap * h / 2]])]
 
-    This is the restriction that makes a tapering fault unmeshable by cutting,
-    and it is a property of the METHOD rather than of the mesh: refining shrinks
-    the separation at which it bites but never removes it. Placement is not
-    competing for the mesh's edges at all, so the separation is free.
+
+def test_two_surfaces_placed_one_at_a_time_survive_each_other():
+    """Well separated, both come through with every facet they were given.
+
+    Read the counts back off the RESULT, not off the returned info. The info is
+    accumulated as each surface is placed, so it reports what was labelled at
+    the time and cannot see the second cavity eating the first — which is
+    exactly how a capability that never worked was reported as working. Any
+    identity that a partial corruption still satisfies is not a test.
     """
     base = _box()
-    h = 1 / 16
+    first, info_one = place_along_lines(base.dm, [_parallel_pair(3.0)[0]],
+                                        label="A", label_value=9)
+    both, info_two = place_along_lines(first, [_parallel_pair(3.0)[1]],
+                                       label="B", label_value=10)
 
-    def pair(gap):
-        return [np.array([[-0.2, 0.5 + gap * h / 2], [1.2, 0.5 + gap * h / 2]]),
-                np.array([[-0.2, 0.5 - gap * h / 2], [1.2, 0.5 - gap * h / 2]])]
+    assert _conforming(both)
+    assert both.getLabel("A").getStratumSize(9) == info_one["n_surface_facets"], (
+        "the second surface ate facets from the first")
+    assert both.getLabel("B").getStratumSize(10) == info_two["n_surface_facets"]
 
+
+def test_surfaces_closer_than_a_cell_are_refused_rather_than_merged():
+    """One cavity holds one surface, so placing them one at a time has a limit.
+
+    The two methods reach their limits for different reasons, and the difference
+    matters for where each can be taken. The CUT's limit is inherent: converging
+    flanks cross the same edge and an edge can be split at one point, so no
+    amount of implementation removes it. Placement's is an implementation limit
+    — a cavity is cleared and filled for ONE surface, and the cells carrying an
+    earlier surface's facets are held back so that surface survives, which
+    eventually leaves no room. Lifting it means placing both into one cavity,
+    which is the finite-width ribbon and is not built.
+
+    Measured on the 1/16 box: the cut accepts 1.0 h and refuses 0.5 h; placing
+    one at a time accepts 1.5 h and refuses 1.0 h. Placement is currently the
+    MORE restrictive of the two here, and this test pins that rather than the
+    opposite claim, which an earlier version of this file asserted on an
+    identity that could not see the damage.
+    """
+    base = _box()
     with pytest.raises(ValueError, match="crossed more than once"):
-        cut_along_lines(base.dm, pair(0.25))
+        cut_along_lines(base.dm, _parallel_pair(0.5))
 
-    dm, info = place_along_lines(base.dm, pair(0.25), label="Pair",
+    first, _ = place_along_lines(base.dm, [_parallel_pair(0.5)[0]], label="A",
                                  label_value=9, clearance=0.8)
-    assert _conforming(dm)
-    # Two chains, so two fewer facets than vertices along them.
-    assert info["n_surface_facets"] == (info["n_placed"]
-                                        + info["n_on_surface"] - 2)
+    with pytest.raises(RuntimeError):
+        place_along_lines(first, [_parallel_pair(0.5)[1]], label="B",
+                          label_value=10, clearance=0.8)
 
 
 def test_the_surface_may_be_finer_than_the_mesh():
@@ -290,6 +319,39 @@ def test_a_second_surface_does_not_damage_the_first():
     assert _conforming(two)
     assert two.getLabel("Fault").getStratumSize(7) == info_one["n_surface_facets"]
     assert two.getLabel("Moho").getStratumSize(8) > 0
+
+
+def test_a_surface_placed_against_an_existing_one_cannot_break_it():
+    """A second surface reaching an existing one must not eat its facets.
+
+    Protecting interface VERTICES from deletion — which placement does — is not
+    enough. A cell is not a vertex: both cells supporting an interface facet can
+    be cleared while every one of their corners is protected, and then the facet
+    has no support left, the refill has no reason to recreate that edge, and the
+    first surface loses a facet in the middle of its chain.
+
+    Measured before the guard existed, on the T fixture below: the trunk went 21
+    facets to 20 and the junction vertex came out carrying only the branch's
+    label. Nothing raised. That is the failure mode this whole construction is
+    meant to prevent — a mesh that looks plausible and is quietly wrong — so it
+    is checked on every placement, not just here.
+    """
+    base = _box(1 / 20)
+    trunk = np.array([[-0.2, 0.34], [1.2, 0.66]])
+    branch = np.array([[0.5, 0.5], [0.62, 1.2]])
+
+    one, info = place_along_lines(base.dm, [trunk], label="F0", label_value=20)
+    assert one.getLabel("F0").getStratumSize(20) == info["n_surface_facets"]
+
+    # Either the branch places and the trunk is untouched, or it is refused.
+    # What must never happen is placing while the trunk quietly loses facets.
+    try:
+        two, _ = place_along_lines(one, [branch], label="F1", label_value=21)
+    except RuntimeError as exc:
+        assert "already embedded" in str(exc) or "would lose" in str(exc)
+        return
+    assert two.getLabel("F0").getStratumSize(20) == info["n_surface_facets"], (
+        "the trunk lost facets to the branch's cavity")
 
 
 @pytest.mark.level_2
