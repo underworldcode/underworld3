@@ -227,15 +227,31 @@ them applies to placing:
 | | cut | place |
 |---|---|---|
 | a surface ending **inside** the mesh | refused — a triangle entered and not left has no split that represents it | the tip is a placed vertex like any other, and the cavity closes round it |
-| two surfaces **closer than one element** | refused — they cross the same edge, and an edge can be split once | free; neither is competing for an edge of the original mesh |
 | surface **finer than the local `h`** | impossible — the surface's vertices *are* the mesh's crossings | `spacing` is a parameter |
+| two surfaces **closer than one element** | refused (inherent) | refused (implementation) — see below |
 | what it does to the mesh | moves vertices onto the surface (`snap_frac`) and splits edges | deletes vertices near the surface and refills the hole |
 | parallel | yes, and partition-independent | **serial only** — see below |
 
-Measured on the same box, viscosity contrast irrelevant: the cut accepts two
-parallel surfaces one element apart and refuses them at half an element, while
-placement carries them down to a tenth of an element with a worst angle of 4.2
-degrees.
+```{warning}
+An earlier version of this section claimed placement carried two parallel
+surfaces down to a tenth of an element. That was wrong. The second surface's
+cavity was consuming the first, and the identity being asserted summed each
+placement's own facet counts, so it could not see the damage. Read such counts
+back off the RESULT mesh.
+
+Measured on a 1/16 box, both surfaces checked intact afterwards: placing one at
+a time accepts 1.5 `h` separation and refuses 1.0 `h`; the cut accepts 1.0 `h`
+and refuses 0.5 `h`. **For closely spaced surfaces the cut is currently the more
+capable of the two.**
+
+The two limits are not the same kind. The cut's is inherent — converging flanks
+cross the same edge and an edge can be split at one point, so no implementation
+removes it. Placement's is an implementation limit: a cavity is cleared and
+filled for one surface, and the cells carrying an earlier surface's facets are
+held back so that surface survives, which eventually leaves no room. Lifting it
+means placing both surfaces into a single cavity — the finite-width ribbon,
+which is not built.
+```
 
 The construction is the same operation in 2-D on a curve and in 3-D on a sheet —
 place, delete, refill — which matters because cutting tetrahedra along a surface
