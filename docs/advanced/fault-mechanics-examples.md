@@ -238,6 +238,23 @@ $P_0 = 1$, $C = 0.75$ envelope dressing.)
 
 Script: `figures/fault-examples/california.py`.
 
+## What these models are, and are not
+
+For the static problem, incompressible linear elasticity and Stokes
+are the same mathematics (displacement ↔ velocity, shear modulus ↔
+viscosity), so every stress pattern here is exactly the elastic
+$\nu = 1/2$ pattern with slip rate standing in for coseismic slip.
+What is deliberately absent: depth and half-space geometry (these are
+plane-strain boxes with velocity-driven walls — no free-surface
+amplification), topography, gravity except where stated (the graded
+fault), compressibility ($\nu \ne 1/2$ shifts normal-stress lobes
+modestly), and postseismic processes of any kind. The slipping faults
+are completely weak during their event (frictionless: the full
+ambient resolved shear drops); because the problem is linear,
+$\Delta$CFF scales essentially linearly with the dropped stress, so
+the transfer maps read as stress change per unit stress drop. A
+partial-drop event is the Coulomb rung applied to the source fault.
+
 ## Where next
 
 Remaining extensions on the same harness: tip-to-tip vs overlapped
