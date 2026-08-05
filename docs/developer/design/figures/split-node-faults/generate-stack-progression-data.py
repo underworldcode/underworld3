@@ -33,13 +33,22 @@ def grid(h):
 
 
 def band(h, width):
-    """Points laid out along the fault frame within +-width of it."""
+    """Refinement points near the fault, deliberately NOT conforming to it:
+    an axis-aligned lattice with deterministic jitter, restricted to the
+    distance band. A real adapted mesh refines TOWARD the line without
+    containing it — the conforming chain must be visibly the CUT's
+    contribution, not an accident of the refinement layout."""
     out = []
-    for s in np.arange(-2 * h, LEN + 2 * h + 1e-9, h):
-        for d in np.arange(-width, width + 1e-9, h):
-            p = A + s * T + d * N
-            if 0.02 < p[0] < 1.98 and 0.02 < p[1] < 1.18:
-                out.append(p)
+    xs = np.arange(0.06, 1.95, h)
+    ys = np.arange(0.06, 1.15, h)
+    for i, x in enumerate(xs):
+        for j, y in enumerate(ys):
+            q = np.array([
+                x + 0.33 * h * np.sin(12.9898 * i + 78.233 * j),
+                y + 0.33 * h * np.sin(39.3460 * i + 11.135 * j)])
+            if (seg_dist(q) < width
+                    and 0.03 < q[0] < 1.97 and 0.03 < q[1] < 1.17):
+                out.append(q)
     return np.array(out)
 
 
