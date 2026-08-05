@@ -202,7 +202,9 @@ reach it. The loaded near-tip nodes then cross into the shaded failure
 region while the far end barely moves. Rotating the regional
 compression axis (the boundary velocities rotate with it) relocates
 the ambient cloud around the circle, and what rotation controls is the
-MARGIN to the envelope:
+MARGIN to the envelope. (Fields here and below are P0 cell stress on
+the split mesh's true connectivity, linear colour at $\pm 1$ — see
+the California example for why.)
 
 ![Rotating the regional stress](figures/fault-examples/interacting-rotation.png)
 

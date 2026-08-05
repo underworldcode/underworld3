@@ -20,7 +20,7 @@ them render fine anywhere.
 ## Where everything is
 
 - **Page**: `docs/advanced/fault-mechanics-examples.md` (in the
-  `docs/advanced` toctree). Thirteen figures + two animations, each
+  `docs/advanced` toctree). Nine figures + three animations, each
   with a short teaching narrative and a closing "what these models
   are, and are not" caveat section.
 - **Scripts, figures, caches**: `docs/advanced/figures/fault-examples/`
@@ -72,11 +72,17 @@ them render fine anywhere.
    swept orientations: peak slip follows |cos 2 theta| with an exact
    zero at 45 degrees. Teaches: resolved stress controls slip.
 8. **`interacting_faults.py` → `interacting-faults.png` +
-   `interacting-rotation.png`** — King-style stress transfer: source
-   slips, receiver welded; Delta CFF as a field (symmetric-log colour)
-   AND as the receiver's probe cloud moving in the Mohr plane, nodes
-   crossing the cohesive envelope. The rotation sweep shows orientation
-   controls the MARGIN to failure. 6 solves + projections.
+   `interacting-rotation.png`** — King-style stress transfer: the
+   source slips, the receiver is welded in the source's along-strike
+   tip lobe. Delta CFF as a field (linear RdBu_r at +-1, P0 cells)
+   AND as the receiver's probe cloud moving in the Mohr plane, with
+   the loaded near-tip nodes CROSSING the cohesive envelope into the
+   shaded failure zone while the far end retreats. The friction
+   dressing (P0 = 1 confining pressure, C = 0.75 cohesion) enters the
+   ENVELOPE only, never Delta CFF — both docs say so explicitly. The
+   rotation sweep's message: the regional stress orientation controls
+   the MARGIN to the envelope (grazing at phi = 20, crossing at 45,
+   parked safe at 70). 6 solves at h = 0.016, 13-18 s each.
 9. **`california.py` → `california.png`** — schematic southern
    California: the San Andreas as TWO parallel offset dextral segments
    (left step = restraining; the stepover is the Transverse Ranges,
@@ -125,9 +131,21 @@ them render fine anywhere.
   away), absolute probe pressures with `ambient_sigma_n` /
   `ambient_sigma_n_simple` (analytic ambient states). Every removed
   constant is printed, never silently absorbed.
-- `signed_log` / `signed_log_annotations`: the symmetric-log colour
-  transform for Delta CFF fields (linear inside |x| = 0.02), with
-  scalar bars annotated in true units.
+- Field rendering (the standing rules, measured not guessed): stress
+  fields are P0 (cell) projections rendered as CELL data on the split
+  mesh's TRUE connectivity via `split_mesh_cell_render` /
+  `split_mesh_cell_rows`. Never Delaunay the DOF point cloud of a
+  split mesh (coincident fault pairs + trace-crossing edges paint
+  false beading), and never project rough near-fault stress to
+  continuous P1 (node-scale ringing, residual rms 0.26 at
+  half-wavelength h/2). Colour: linear RdBu_r at +-1 — dCFF per unit
+  stress drop, pale far field. (`signed_log` remains in the harness
+  if a far-field-emphasis view is ever wanted, but the maintainer
+  rejected it for these figures: it makes the far field "overflow".)
+- Straight fault segments wherever possible: any polyline sampling of
+  a curved trace leaves kink roughness that a slipping fault
+  faithfully amplifies (a curved SAF was tried twice and rejected —
+  the stepover representation is both cleaner and better geology).
 
 ## Conventions (consistent across every figure)
 
@@ -155,9 +173,11 @@ needs mpicc):
 
 With the committed `_*.npz` caches present, every script regenerates
 its figures/animations in seconds (plot-only). Delete a cache to
-re-measure (costs: ladder ~5 solves; each Mohr sweep 25; interactions
-6; California 2 at h = 0.02 — minutes each on a laptop). pyvista emits
-harmless `__del__` AttributeError noise at interpreter exit; ignore it.
+re-measure. Measured costs on a laptop: ladder ~5 solves of ~30 s;
+each Mohr sweep 25 solves of ~30-60 s; the en echelon sweep 6 solves
+of 13-18 s (h = 0.016); California ~50 s total (h = 0.012: 37 s
+slipping solve, 11 s welded + projections). pyvista emits harmless
+`__del__` AttributeError noise at interpreter exit; ignore it.
 
 ## Physics caveats (ready-made prose on the page)
 
