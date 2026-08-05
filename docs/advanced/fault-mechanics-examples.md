@@ -79,6 +79,33 @@ full circle at $2\theta$, one welded-fault solve per frame:
 
 Script: `figures/fault-examples/mohr_animate.py`.
 
+### The circle meets the friction envelope
+
+Give the rotating fault Coulomb friction (reaction-fed normal stress)
+and the probe can no longer go everywhere the ambient stress points.
+Three regimes appear in one sweep:
+
+![Coulomb fault vs the Mohr circle](figures/fault-examples/mohr-friction.png)
+
+- **Stuck** (circles): the ambient resolved stress lies inside the
+  envelope $|\tau| < \mu|\sigma_n|$ — the fault transmits it and the
+  probe sits on the Mohr circle;
+- **Sliding** (squares): the ambient stress would exceed the envelope —
+  the fault slips, drops the shear traction to its strength, and the
+  probe is pinned to the yield line;
+- **Tensile**: $\sigma_n > 0$ carries no frictional strength, and the
+  probe collapses to the $\sigma_n$ axis (a freely slipping crack).
+
+The shear traction here is read from the Coulomb law at the measured
+slip rate — which is exact in every regime, because the regularised
+law *is* the traction the fault carries. The animated build shows the
+switch happening as the fault rotates, with the slip sense drawn as
+half-arrows when it unlocks:
+
+![A frictional fault against the Mohr circle](figures/fault-examples/mohr-friction-build.gif)
+
+Script: `figures/fault-examples/mohr_friction.py`.
+
 ## Orientation and slip: the circle's other face
 
 The same orientation sweep with *frictionless* faults under pure shear.
