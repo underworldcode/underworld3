@@ -181,10 +181,53 @@ shear and barely slips; the aligned fault slips fully:
 
 Script: `figures/fault-examples/orientations.py`.
 
+## Interacting faults: stress transfer on the Mohr plane
+
+Two faults via `add_fault`'s network form: the *source* slips freely,
+the *receiver* is welded — the passive probe from the Mohr examples.
+Differencing two solves on the same mesh gives the classical Coulomb
+stress transfer, and the receiver's probes show it in the diagram
+students already know: each node's point MOVES, and its colour is its
+own $\Delta$CFF ($\mu' = 0.4$, King's value):
+
+![En echelon interaction](figures/fault-examples/interacting-faults.png)
+
+The right-stepping overlapped receiver sits in the source's stress
+shadow: its cloud steps away from failure. Rotating the regional
+compression axis (the boundary velocities rotate with it) relocates
+the ambient cloud around the circle and modulates the transfer:
+
+![Rotating the regional stress](figures/fault-examples/interacting-rotation.png)
+
+Two gauge points, handled explicitly in the scripts because a closed
+velocity-driven box fixes pressure only up to a constant: differenced
+fields are anchored to zero in the far field (a slip event changes
+nothing far away), and each solve's absolute probe pressures are
+anchored to the analytic ambient state. Both constants are printed,
+never silently absorbed.
+
+Script: `figures/fault-examples/interacting_faults.py`.
+
+### A California-like planform
+
+One curved trunk fault (a kinked polyline — every control point is
+pulled onto a mesh vertex) and four welded minor faults at different
+positions and orientations. One slip event, four verdicts:
+
+![California-like planform](figures/fault-examples/california.png)
+
+The minors broadside of the slipped trunk are relaxed (blue clouds,
+$\Delta$CFF $\approx -0.3$); the minor off the far tip is loaded
+(red, $+0.3$) — the sign flip that a fixed two-fault geometry cannot
+show, read simultaneously on the field and on each fault's own Mohr
+diagram. Note the loaded minor sits at *tensile* ambient normal stress
+for its orientation: driven toward failure in shear while unclamped —
+the kind of nuance the per-fault Mohr panels surface automatically.
+
+Script: `figures/fault-examples/california.py`.
+
 ## Where next
 
-Planned extensions of this set (same harness): a pair of interacting
-faults (stress shadowing vs tip-to-tip enhancement), a small fault
-network via `add_fault`'s list form, and a fault with kinked geometry.
-The stress-transfer (Coulomb $\Delta$CFF lobe) example is the natural
-companion piece for these.
+Remaining extensions on the same harness: tip-to-tip vs overlapped
+en echelon arrangements side by side, a denser fault network, and the
+graded (gravity-loaded) versions of the interaction cases.

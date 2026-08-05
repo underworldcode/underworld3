@@ -44,6 +44,11 @@ def stokes_on(child, drive, name="Fault"):
     stokes.bodyforce = [0.0, 0.0]
     for wall in ("Bottom", "Top", "Left", "Right"):
         stokes.add_dirichlet_bc(drive, wall)
+    # all-Dirichlet walls leave the pressure level to the solver unless
+    # the constant nullspace is declared — without it, two solves with
+    # different fault laws land on DIFFERENT gauges and any differenced
+    # quantity (Delta CFF above all) inherits a spurious constant
+    stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1e-6
     return stokes
 
@@ -99,6 +104,63 @@ def slip_vs_position(stokes, tangent, centre=CENTRE, name="Fault"):
     return s[order], V[order]
 
 
+def pure_shear_drive(child, phi_deg, tau0=1.0):
+    """Uniform pure shear with the COMPRESSION axis at ``phi_deg`` to x:
+    sigma' = tau0 (e_perp e_perp - e_phi e_phi), i.e. sigma'_xx =
+    -tau0 cos 2phi and sigma'_xy = -tau0 sin 2phi. (Check: compression
+    at phi = 45 deg gives sigma_xy = -tau0; a plane of strike
+    phi - 45 deg carries the full resolved shear.) Irrotational
+    velocity field, imposed as Dirichlet on all walls — rotating phi
+    rotates the whole regional stress field."""
+    x, y = child.X
+    two_phi = 2.0 * np.radians(phi_deg)
+    exx = -tau0 * np.cos(two_phi) / (2.0 * ETA)
+    exy = -tau0 * np.sin(two_phi) / (2.0 * ETA)
+    return (exx * (x - 0.5) + exy * (y - 0.5),
+            exy * (x - 0.5) - exx * (y - 0.5))
+
+
+def probe_nodes(stokes, name, tangent, eta_weld):
+    """Per-node stress probes on a WELDED fault: along-fault coordinate,
+    position, signed normal traction (tension-positive, as measured) and
+    signed shear traction from the weld's own law tau = eta_f V.
+
+    Works with SEVERAL law-carrying faults on one mesh: the interface
+    assembler holds every fault's nodes, so this fault's are selected
+    through its OWN pairing (the plus points), never by position."""
+    from underworld3.utilities.rotated_bc import _point_coord
+
+    assembler = fault_contact._InterfaceAssembler(stokes, include=(name,))
+    sig_all = assembler.nodal_normal_traction(
+        stokes, stokes._rotated_freeslip_info["reaction"])
+    plus = set(stokes.mesh._fault_point_pairs[name].values())
+
+    dm = stokes.dm
+    dim = stokes.mesh.dim
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+    v0, v1 = dm.getDepthStratum(0)
+    rows = [(np.asarray(_point_coord(dm, dim, cvec, csec, v0, v1, q)),
+             sig_all[k]) for q, k in assembler._points.items()
+            if q in plus]
+    xy_sig = np.array([r[0] for r in rows])
+    sig = np.array([r[1] for r in rows])
+
+    t = np.asarray(tangent, dtype=float)
+    t = t / np.linalg.norm(t)
+    order_sig = np.argsort(xy_sig @ t)
+    xy_sig, sig = xy_sig[order_sig], sig[order_sig]
+
+    coords, jumps, _normals = fault_contact.fault_pair_jumps(
+        stokes, name, stokes._rotated_freeslip_info)
+    s = coords @ t
+    order = np.argsort(s)
+    V = (jumps @ t)[order]
+    assert len(sig) == len(V), "pair-node sets disagree"
+    assert np.allclose(coords[order], xy_sig), "node ordering disagrees"
+    return (s[order], coords[order], sig, eta_weld * V)
+
+
 def mohr_probe(theta, a_rate=0.5, gamma=1.0, eta_weld=None,
                half_length=0.2, cell_size=0.04):
     """One welded-fault stress probe: (sigma_n, tau_signed) at fault
@@ -117,3 +179,30 @@ def mohr_probe(theta, a_rate=0.5, gamma=1.0, eta_weld=None,
     tau = eta_weld * float(np.median(V[inner(s)]))
     sigma_n = float(np.median(sig[inner(s_n)]))
     return sigma_n, tau
+
+
+def ambient_sigma_n(phi_deg, tangent, tau0=1.0):
+    """The analytic ambient normal stress (tension-positive) on a plane
+    of tangent direction ``tangent`` under pure_shear_drive(phi):
+    sigma_nn = tau0 cos 2(phi - theta). Used to anchor a probe set's
+    absolute pressure gauge, which a closed-box solve does not fix."""
+    theta = np.degrees(np.arctan2(tangent[1], tangent[0]))
+    return tau0 * np.cos(2.0 * np.radians(phi_deg - theta))
+
+
+def far_field_anchor(points, dcff, segments, cut=0.3):
+    """Gauge the DIFFERENCED stress to the physics: a slip event changes
+    nothing far from the faults, so the far-field median of Delta CFF is
+    the spurious pressure-gauge constant between the two solves. Returns
+    (anchored dcff, the constant) — apply c / mu' to the probes' sigma."""
+    p = np.asarray(points, dtype=float)[:, :2]
+    far = np.ones(len(p), dtype=bool)
+    for seg in segments:
+        a, b = np.asarray(seg[0]), np.asarray(seg[-1])
+        t = b - a
+        L = np.linalg.norm(t)
+        t = t / L
+        s = np.clip((p - a) @ t, 0.0, L)
+        far &= np.linalg.norm(p - (a + s[:, None] * t), axis=1) > cut
+    c = float(np.median(np.asarray(dcff)[far]))
+    return np.asarray(dcff) - c, c
