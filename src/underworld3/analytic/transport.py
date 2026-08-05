@@ -96,13 +96,25 @@ class ErfcDiffusion(_Transport):
     a semi-infinite column to a step held at its boundary.
 
     Time appears as a symbol, :attr:`t`, so a transient solver can be checked at
-    whatever time it reached::
+    whatever time it reached.
 
-        exact = sol.fn_solution.subs(sol.t, t_end)
+    .. warning::
+       **Singular at** :math:`t = 0`, and so is every diffusive similarity
+       solution. At the origin the profile is a step with unbounded gradient —
+       a state no finite element space can hold. Do not start a benchmark
+       there, and do not quote an error at one time: a transient comparison is
+       a *pair* of times, and the error depends on the start as much as the
+       finish.
 
-    Starting a comparison at :math:`t > 0` rather than at the step itself is the
-    point of using this: the initial condition is then smooth and representable
-    on the mesh, where a sharp step is not.
+       ``sol.at(t)`` refuses :math:`t \le 0` outright, and
+       ``sol.earliest_resolvable_time(h)`` gives the resolution-dependent floor
+       below which you are measuring interpolation error rather than the
+       solver::
+
+           t0 = sol.earliest_resolvable_time(mesh.get_min_radius())
+           field.array = uw.function.evaluate(sol.at(t0), field.coords)
+           ...                                  # step to t1
+           error = sol.error("solution", field) # against sol.at(t1)
 
     Parameters
     ----------
@@ -117,6 +129,7 @@ class ErfcDiffusion(_Transport):
         "tests/test_1005_TransientDarcyCartesian.py."
     )
     eqn_solution = r"\mathrm{erfc}\left(z / 2\sqrt{Dt}\right)"
+    singular_at_origin = True
 
     def __init__(self, mesh, diffusivity=1.0):
         super().__init__(mesh)
@@ -144,10 +157,27 @@ class AdvectedFront(_Transport):
     :math:`\kappa`. Time is the symbol :attr:`t`, as for :class:`ErfcDiffusion`.
 
     This is the solution `tests/test_1100_AdvDiffCartesian.py` needs. Its own
-    note says the test is fragile because a step initial condition is not
-    representable on the mesh, and that the fix is to start from a smooth profile
-    at :math:`t > 0` — which is exactly what evaluating this at a positive time
-    gives.
+    note said the test was fragile because a step initial condition is not
+    representable on the mesh — which is the singularity below, and the reason
+    that test has to name a start time as well as an end time.
+
+    .. warning::
+       **Singular at** :math:`t = 0`, and so is every diffusive similarity
+       solution. At the origin the profile is a step with unbounded gradient —
+       a state no finite element space can hold. Do not start a benchmark
+       there, and do not quote an error at one time: a transient comparison is
+       a *pair* of times, and the error depends on the start as much as the
+       finish.
+
+       ``sol.at(t)`` refuses :math:`t \le 0` outright, and
+       ``sol.earliest_resolvable_time(h)`` gives the resolution-dependent floor
+       below which you are measuring interpolation error rather than the
+       solver::
+
+           t0 = sol.earliest_resolvable_time(mesh.get_min_radius())
+           field.array = uw.function.evaluate(sol.at(t0), field.coords)
+           ...                                  # step to t1
+           error = sol.error("solution", field) # against sol.at(t1)
 
     Parameters
     ----------
@@ -169,6 +199,7 @@ class AdvectedFront(_Transport):
         r"\tfrac12\left[\mathrm{erf}\frac{x_1 - x + ut}{2\sqrt{\kappa t}}"
         r" + \mathrm{erf}\frac{x - x_0 - ut}{2\sqrt{\kappa t}}\right]"
     )
+    singular_at_origin = True
 
     def __init__(self, mesh, kappa=1.0e-3, speed=1.0, x0=0.1, x1=0.3):
         super().__init__(mesh)
@@ -177,6 +208,7 @@ class AdvectedFront(_Transport):
             raise ValueError("kappa must be positive.")
 
         self.kappa = float(kappa)
+        self.diffusivity = float(kappa)
         self.speed = float(speed)
         self.x0 = float(x0)
         self.x1 = float(x1)

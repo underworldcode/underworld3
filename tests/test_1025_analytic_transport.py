@@ -162,3 +162,96 @@ def test_transport_solutions_are_registered():
 
     for name in ("Poisson1D", "TwoLayerDarcy", "ErfcDiffusion", "AdvectedFront"):
         assert getattr(uw.analytic, name).solves == "transport"
+
+
+# ---------------------------------------------------------------------------
+# The t = 0 singularity
+# ---------------------------------------------------------------------------
+
+
+TRANSIENT = [
+    (uw.analytic.ErfcDiffusion, dict(diffusivity=0.5)),
+    (uw.analytic.AdvectedFront, dict(kappa=1.0e-2, speed=0.5)),
+]
+
+
+@pytest.mark.parametrize("cls, kwargs", TRANSIENT)
+def test_transient_solutions_declare_their_singularity(mesh, cls, kwargs):
+    sol = cls(mesh, **kwargs)
+
+    assert sol.singular_at_origin is True
+    assert sol.diffusivity is not None and sol.diffusivity > 0
+
+
+@pytest.mark.parametrize("cls, kwargs", TRANSIENT)
+@pytest.mark.parametrize("time", [0.0, -1.0])
+def test_the_singular_origin_is_refused(mesh, cls, kwargs, time):
+    r"""At :math:`t = 0` the profile is a step with unbounded gradient.
+
+    No finite element space holds that, so returning it would only ever produce
+    a benchmark measuring its own projection error. The refusal is the point:
+    the caller has to choose a start time, and be told why.
+    """
+
+    sol = cls(mesh, **kwargs)
+
+    with pytest.raises(ValueError, match="singular at t = 0"):
+        sol.at(time)
+
+
+@pytest.mark.parametrize("cls, kwargs", TRANSIENT)
+def test_a_positive_time_is_allowed_and_is_the_right_field(mesh, cls, kwargs):
+    from underworld3.analytic import _validation
+
+    sol = cls(mesh, **kwargs)
+    frozen = sol.at(0.3)
+
+    assert sol.t not in frozen.free_symbols
+    points = sol.sample_points(count=6)
+    assert np.allclose(
+        _validation.sample(sol, frozen, points),
+        _validation.sample(sol, sol.fn_solution.subs(sol.t, 0.3), points),
+    )
+
+
+def test_steady_solutions_have_no_time_to_be_evaluated_at(mesh):
+    with pytest.raises(ValueError, match="steady"):
+        uw.analytic.Poisson1D(mesh).at(0.5)
+
+
+@pytest.mark.parametrize("cls, kwargs", TRANSIENT)
+def test_the_resolvable_floor_scales_as_h_squared_over_D(mesh, cls, kwargs):
+    r""":math:`t_0 = (n_{\rm el} h / 2)^2 / D`, so refining buys an early start."""
+
+    sol = cls(mesh, **kwargs)
+
+    coarse = sol.earliest_resolvable_time(0.1)
+    fine = sol.earliest_resolvable_time(0.05)
+
+    assert np.isclose(coarse / fine, 4.0), "floor must fall as h^2"
+    assert np.isclose(sol.earliest_resolvable_time(0.1, elements_across=8) / coarse, 4.0)
+
+
+@pytest.mark.parametrize("cls, kwargs", TRANSIENT)
+def test_the_floor_really_does_resolve_the_front(mesh, cls, kwargs):
+    """The number is only worth having if it means what it claims.
+
+    At the returned time the diffusive width should be `elements_across`
+    elements wide — that is the definition, asserted rather than trusted.
+    """
+
+    sol = cls(mesh, **kwargs)
+    h, across = 0.02, 4
+
+    t0 = sol.earliest_resolvable_time(h, elements_across=across)
+    width = 2.0 * np.sqrt(sol.diffusivity * t0)
+
+    assert np.isclose(width / h, across)
+
+
+def test_a_solution_with_no_diffusive_scale_says_so(mesh):
+    sol = uw.analytic.ErfcDiffusion(mesh)
+    sol.diffusivity = None
+
+    with pytest.raises(ValueError, match="no diffusivity"):
+        sol.earliest_resolvable_time(0.01)

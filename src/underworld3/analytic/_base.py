@@ -265,6 +265,110 @@ class AnalyticSolution(uw_object):
 
         return adversarial_points(count=count, dim=self.dim)
 
+    #: Whether this solution is singular at :math:`t = 0`. True for every
+    #: diffusive similarity solution in the suite: at the origin the profile is
+    #: a step and its gradient is unbounded, so the state the solution describes
+    #: at :math:`t = 0` **cannot be represented on any mesh**. Such a solution
+    #: must be started from a positive time. See :meth:`at`.
+    singular_at_origin = False
+
+    #: The diffusive scale that sets how fast the singularity heals — the
+    #: :math:`D` in :math:`\sqrt{Dt}`. Transient solutions set this so that
+    #: :meth:`earliest_resolvable_time` can answer in numbers rather than
+    #: advice.
+    diffusivity = None
+
+    def at(self, time, field=None):
+        r"""The solution frozen at *time*.
+
+        Parameters
+        ----------
+        time : float
+            Must be **strictly positive** if :attr:`singular_at_origin`.
+        field : str, optional
+            Which field. Defaults to the solution's primary unknown.
+
+        Returns
+        -------
+        sympy expression
+
+        Raises
+        ------
+        ValueError
+            If the solution has no time symbol, or if *time* is at or before the
+            singular origin.
+
+        Notes
+        -----
+        **A transient benchmark is a pair of times, never one.** You initialise
+        the solver from this solution at :math:`t_0` and compare against it at
+        :math:`t_1`, and the error you measure depends on *both* — a small
+        :math:`t_0` means starting from a profile the mesh cannot hold, and the
+        error you then attribute to the timestepper is mostly initial
+        projection error. Quoting an error at a single time says nothing unless
+        the start time is quoted with it.
+
+        :math:`t_0` also has a floor that depends on the mesh, not just on the
+        solution — see :meth:`earliest_resolvable_time`.
+        """
+
+        if getattr(self, "t", None) is None:
+            raise ValueError(
+                f"{type(self).__name__} is steady — it has no time symbol, so "
+                f"there is no time to evaluate it at."
+            )
+
+        time = float(time)
+
+        if self.singular_at_origin and time <= 0.0:
+            raise ValueError(
+                f"{type(self).__name__} is singular at t = 0: the profile there "
+                f"is a step with unbounded gradient, which no mesh can "
+                f"represent. Start from a positive time instead — "
+                f"`earliest_resolvable_time(h)` will tell you how positive it "
+                f"has to be for your resolution. Got t = {time}."
+            )
+
+        expression = self._exact(field) if field is not None else self.fn_solution
+
+        return expression.subs(self.t, time)
+
+    def earliest_resolvable_time(self, h, elements_across=4):
+        r"""The earliest start time this mesh can actually represent.
+
+        The diffusive front has width :math:`\sim 2\sqrt{Dt}`. Asking for it to
+        span *elements_across* cells of size *h* gives
+
+        .. math::
+            t \ge \frac{1}{D}\left(\frac{n_{\rm el}\,h}{2}\right)^2
+
+        Below that the exact profile varies faster than the discretisation can
+        follow, and a benchmark started there measures interpolation error
+        rather than anything about the solver. The floor falls as
+        :math:`h^2`, so refining buys an earlier start quickly.
+
+        Parameters
+        ----------
+        h : float
+            Element size. ``mesh.get_min_radius()`` is a reasonable source.
+        elements_across : int
+            How many elements the front should span. Four is a working
+            minimum; fewer and the initial condition is visibly stepped.
+
+        Returns
+        -------
+        float
+            Earliest sensible :math:`t_0`.
+        """
+
+        if self.diffusivity is None:
+            raise ValueError(
+                f"{type(self).__name__} declares no diffusivity, so there is no "
+                f"diffusive scale to set a floor from."
+            )
+
+        return (float(elements_across) * float(h) / 2.0) ** 2 / float(self.diffusivity)
+
     def _exact(self, field):
         """Resolve a field name — or pass an expression straight through."""
 

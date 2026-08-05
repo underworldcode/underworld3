@@ -238,6 +238,7 @@ class GardnerTransient(_Gardner):
         r"\frac1\alpha\ln\left[u_{\rm dry} "
         r"+ (u_{\rm wet} - u_{\rm dry})H(z,t)\right]"
     )
+    singular_at_origin = True
 
     def __init__(
         self,

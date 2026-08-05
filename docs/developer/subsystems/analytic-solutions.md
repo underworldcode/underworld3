@@ -443,6 +443,59 @@ which is what makes `test_1100`'s current comparison fragile.
 They cannot reuse the Stokes boundary-condition mixins, which apply a *velocity*.
 `_Transport` prescribes `fn_solution` on every wall instead.
 
+### Transient solutions are singular at t = 0, and that changes how you use them
+
+Every diffusive similarity solution here — `ErfcDiffusion`, `AdvectedFront`,
+`GardnerTransient` — is a step with unbounded gradient at $t = 0$. **That state
+cannot be represented on any mesh.** Two consequences, and both are enforced in
+code rather than left to the reader:
+
+**You cannot start at $t = 0$.** `sol.at(t)` refuses $t \le 0$ with an
+explanation instead of returning the singular profile. Returning it would only
+ever produce a benchmark measuring its own projection error.
+
+**A transient benchmark is a pair of times, never one.** You initialise from the
+solution at $t_0$ and compare at $t_1$, and the error depends on *both*. An
+error quoted at a single time is not interpretable — a small $t_0$ means
+starting from a profile the mesh cannot hold, and the error you then attribute
+to the timestepper is mostly initial projection error.
+
+**And $t_0$ has a floor set by the mesh, not by the solution.** The front has
+width $\sim 2\sqrt{Dt}$; asking it to span $n$ elements of size $h$ gives
+
+$$t_0 \ge \frac{1}{D}\left(\frac{n h}{2}\right)^2$$
+
+which is `sol.earliest_resolvable_time(h, elements_across=4)`. It falls as
+$h^2$, so refining buys an earlier start quickly.
+
+```python
+t0 = sol.earliest_resolvable_time(mesh.get_min_radius())
+field.array = uw.function.evaluate(sol.at(t0), field.coords)
+...                                        # step to t1
+error = sol.error("solution", field)       # against sol.at(t1)
+```
+
+#### What this diagnoses
+
+`tests/test_1100_AdvDiffCartesian.py` has carried an `xfail` describing itself
+as "not a great test", with a note saying it needs "an error-function IC
+starting at $t > 0$ with a meaningful transport distance". The floor says
+exactly how badly, at its own parameters ($res=24$, $\kappa=1$, $u=1/24$,
+$t_0=10^{-4}$, $t_1=2\times10^{-4}$):
+
+| | |
+|---|---|
+| earliest resolvable $t_0$ | $3.5\times10^{-3}$ — the test starts **35× too early** |
+| front width at its $t_0$ | 0.68 elements, i.e. narrower than one cell |
+| transport over the whole run | $4.2\times10^{-6}$ = **0.0001 elements** |
+
+So it initialises a profile the mesh cannot represent and then advects it by a
+ten-thousandth of a cell. It measures neither advection nor diffusion, which is
+why it has always been sensitive to which evaluation path `uw.function.evaluate`
+happens to take. Reworking it needs a timestep convergence study, not just new
+constants — a resolution-consistent setup at $res=24$ still shows 11% error in
+five steps, dominated by time discretisation. That is left as follow-up work.
+
 ### The four tests now use them
 
 The inline copies are gone; each test keeps its assertions and tolerances and
@@ -604,6 +657,45 @@ Two class attributes carry this:
 | `requires` | name of an optional package, or `None` |
 
 ## Adding a new solution
+
+### The format to supply a new solution in
+
+If you are deriving a solution rather than porting one, supply it in the form
+below and it drops in with no translation step. This is the format to ask
+contributors for.
+
+**Fields as SymPy expressions in the mesh coordinates**, not as callables,
+lambdas, or NumPy code. `mesh.X` gives the coordinate symbols; build everything
+from those. Expressions route through the JIT, so an analytic viscosity or body
+force compiles to C *and* supplies its own Jacobian — neither of which a numeric
+callable can do. `CylindricalStokes` is the one exception in the suite and it
+pays for it: none of the six gates can reach it.
+
+**Do not simplify.** Preserve whatever grouping the derivation produced. The
+Maple grouping in the Velic kernels is what keeps `sinh(k)*exp(-k)` products
+stable at large wavenumber; a re-derived, "tidier" grouping can lose eight
+digits. `cse=True` at evaluation time recovers the sharing anyway.
+
+**State the stress convention explicitly** if the solution has one — deviatoric
+or total. It is a declaration (`stress_is_deviatoric`), never inferred, because
+the family is not consistent and one kernel writes its deviator into an array
+named `total_stress`. Getting it wrong leaves the momentum residual at order
+$|\mathbf f|$ and looks like a transcription failure rather than a convention
+one.
+
+**Give the equation the solution solves**, not just the answer. The oracle-free
+residual is the strongest check in the suite — it caught four defects that
+comparison against the source could not, including a published stress that is
+simply wrong. It needs to know what to substitute back into.
+
+**Say whether it is singular anywhere**, in time or in space. A $t = 0$
+similarity singularity needs `singular_at_origin = True` and a `diffusivity`;
+a spatial singularity (the inclusion's foci, SolCx's isoviscous limit) needs a
+`sample_points` override so the validation harness does not land on it.
+
+**Say what parameter ranges it is valid over.** SolKx is only free-slip for
+integer wavenumbers; the Gardner solutions require $\psi < 0$. Ranges become
+constructor validation, which is where they stop being folklore.
 
 1. Subclass `AnalyticSolution` and one of the boundary-condition mixins
    (`FreeSlipWalls`, `FixedWalls`) — or `_Transport` for a scalar solution.
