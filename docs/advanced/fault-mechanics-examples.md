@@ -229,9 +229,9 @@ the map are drawn from the *measured* jump, not assumed:
 
 One trunk-spanning event, three verdicts: the parallel San Jacinto is
 deeply relaxed ($\Delta$CFF $-0.4$, its cloud retreating into the
-safe wedge); the conjugate Garlock is *loaded* ($+0.2$, pushed toward
-the envelope); the distant ECSZ strands are mildly loaded ($+0.1$) in
-the far-field lobe. The kinked trunk adds its own lesson — each bend
+safe wedge); the conjugate Garlock is *loaded* ($+0.1$, pushed toward
+the envelope); the distant ECSZ strands are mildly loaded ($+0.08$)
+in the far-field lobe. The kinked trunk adds its own lesson — each bend
 carries a local stress pocket, with restraining-bend loading visible
 on the Big Bend's flank. (Schematic geometry, not to scale; same
 $P_0 = 1$, $C = 0.75$ envelope dressing.)

@@ -22,6 +22,7 @@ the receiver cloud pushed toward failure under one orientation and
 away under another.
 """
 import os
+import time
 
 import matplotlib
 matplotlib.use("Agg")
@@ -60,7 +61,7 @@ COH = 0.75
 
 
 def solve_pair(phi, source_free):
-    child = common.base_mesh(0.028).add_fault(
+    child = common.base_mesh(0.016).add_fault(
         [("Source", SOURCE), ("Receiver", RECEIVER)])
     stokes = common.stokes_on(child, common.pure_shear_drive(child, phi,
                                                              TAU0))
@@ -103,6 +104,7 @@ if os.path.exists(cache):
 else:
     data = {}
     for phi in PHIS:
+        t_wall = time.perf_counter()
         _c0, s0, probe0 = solve_pair(phi, source_free=False)
         child, s1, probe1 = solve_pair(phi, source_free=True)
         data[f"probe0_{phi}"] = np.array(probe0[0]), probe0[1], probe0[2], \
@@ -127,7 +129,8 @@ else:
             data["field_dcff"] = dcff
         print(f"phi {phi}: receiver ambient tau "
               f"{np.median(data[f'p0_tau_{phi}']):+.3f}, sigma_n "
-              f"{np.median(data[f'p0_sig_{phi}']):+.3f}")
+              f"{np.median(data[f'p0_sig_{phi}']):+.3f}  "
+              f"[{time.perf_counter() - t_wall:.1f} s]")
     np.savez(cache, **{k: v for k, v in data.items()
                        if not k.startswith("probe0")})
     data = dict(np.load(cache, allow_pickle=True))
@@ -142,17 +145,11 @@ pvm.point_data["dcff"] = dcff_field
 pvm = pvm.delaunay_2d()
 pl = pv.Plotter(off_screen=True, window_size=(1050, 820))
 pl.set_background("white")
-# symmetric-log colour scale: the near-fault values saturate a linear
-# map and hide the far-field lobes
-LT = 0.02
-pvm.point_data["dcff"] = common.signed_log(pvm.point_data["dcff"], LT)
-lim = float(common.signed_log(0.5, LT))
-pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-lim, lim),
+# linear colour scale with generous limits (the gate-study
+# convention): pale far field, graded lobes
+pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-1.0, 1.0),
             show_edges=False, lighting=False,
-            annotations=common.signed_log_annotations(
-                (-0.4, -0.1, -0.02, 0.0, 0.02, 0.1, 0.4), LT),
-            scalar_bar_args=dict(title="dCFF (log scale)", color="black",
-                                 n_labels=0))
+            scalar_bar_args=dict(title="dCFF", color="black"))
 for pts, col, w in ((SOURCE, "black", 4.0), (RECEIVER, "#1a6b1a", 4.0)):
     line = pv.Line(tuple(pts[0]) + (0.001,), tuple(pts[1]) + (0.001,))
     pl.add_mesh(line, color=col, line_width=w, lighting=False)

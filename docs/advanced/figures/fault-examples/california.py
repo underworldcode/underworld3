@@ -18,6 +18,7 @@ Garlock / pooled ECSZ / San Jacinto clouds against the cohesive
 envelope (P0 = 1, C = 0.75 — neither enters Delta CFF).
 """
 import os
+import time
 
 import matplotlib
 matplotlib.use("Agg")
@@ -58,7 +59,7 @@ COLOUR = {"Garlock": "#6a1b9a", "E1": "#1a6b1a", "E2": "#1a6b1a",
 
 def build_and_solve(trunk_free):
     faults = [("SAF", SAF)] + [(k, v) for k, v in MINORS.items()]
-    child = common.base_mesh(0.02).add_fault(faults)
+    child = common.base_mesh(0.012).add_fault(faults)
     stokes = common.stokes_on(child,
                               common.boundary_simple_shear(child, TREND,
                                                            TAU0))
@@ -99,7 +100,11 @@ if os.path.exists(cache):
     data = dict(np.load(cache, allow_pickle=True))
     print("loaded cached run")
 else:
+    t_wall = time.perf_counter()
     child, s1, probes1 = build_and_solve(trunk_free=True)
+    print(f"[timing] trunk-free solve+probes: "
+          f"{time.perf_counter() - t_wall:.1f} s")
+    t_wall = time.perf_counter()
     # the trunk's own slip: report the sense, drawn on the map
     t_saf = SAF[-1] - SAF[0]
     s_saf, V_saf = common.slip_vs_position(
@@ -114,6 +119,8 @@ else:
         s0.add_fault_bc(ETA_WELD, boundary=k)
     fault_contact.solve_with_fault(s0, picard=2)
     comp0, _ = stress_components(child, s0, "b")
+    print(f"[timing] welded solve + all projections: "
+          f"{time.perf_counter() - t_wall:.1f} s")
     probes0 = {}
     for k, pts in MINORS.items():
         _s, _xy, sig, tau = common.probe_nodes(s0, k, pts[1] - pts[0],
@@ -159,19 +166,16 @@ dcff_field, GAUGE_C = common.far_field_anchor(
     data["field_points"], data["field_dcff"],
     [SAF] + list(MINORS.values()), cut=0.18)
 print(f"far-field gauge constant removed: {GAUGE_C:+.4f}")
+# linear colour scale, generous limits (the gate-study convention):
+# the far field stays pale and the lobes grade instead of saturating
 pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float))
-LT = 0.02
-pvm.point_data["dcff"] = common.signed_log(dcff_field, LT)
+pvm.point_data["dcff"] = dcff_field
 pvm = pvm.delaunay_2d()
 pl = pv.Plotter(off_screen=True, window_size=(1000, 950))
 pl.set_background("white")
-lim = float(common.signed_log(0.5, LT))
-pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-lim, lim),
+pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-1.0, 1.0),
             show_edges=False, lighting=False,
-            annotations=common.signed_log_annotations(
-                (-0.4, -0.1, -0.02, 0.0, 0.02, 0.1, 0.4), LT),
-            scalar_bar_args=dict(title="dCFF (log scale)", color="black",
-                                 n_labels=0))
+            scalar_bar_args=dict(title="dCFF", color="black"))
 
 
 def polyline(pts):
