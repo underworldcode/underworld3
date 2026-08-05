@@ -139,10 +139,17 @@ pvm.point_data["dcff"] = dcff_field
 pvm = pvm.delaunay_2d()
 pl = pv.Plotter(off_screen=True, window_size=(950, 850))
 pl.set_background("white")
-lim = 0.4 * TAU0
+# symmetric-log colour scale: the near-fault values saturate a linear
+# map and hide the far-field lobes
+LT = 0.02
+pvm.point_data["dcff"] = common.signed_log(pvm.point_data["dcff"], LT)
+lim = float(common.signed_log(0.5, LT))
 pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-lim, lim),
             show_edges=False, lighting=False,
-            scalar_bar_args=dict(title="dCFF", color="black"))
+            annotations=common.signed_log_annotations(
+                (-0.4, -0.1, -0.02, 0.0, 0.02, 0.1, 0.4), LT),
+            scalar_bar_args=dict(title="dCFF (log scale)", color="black",
+                                 n_labels=0))
 
 
 def polyline(pts):

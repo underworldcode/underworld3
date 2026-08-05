@@ -206,3 +206,17 @@ def far_field_anchor(points, dcff, segments, cut=0.3):
         far &= np.linalg.norm(p - (a + s[:, None] * t), axis=1) > cut
     c = float(np.median(np.asarray(dcff)[far]))
     return np.asarray(dcff) - c, c
+
+
+def signed_log(x, linthresh=0.02):
+    """Symmetric log transform for signed stress-change fields: linear
+    inside |x| < linthresh, logarithmic beyond — the near-fault values
+    saturate any linear colour scale and hide the far-field lobes."""
+    x = np.asarray(x, dtype=float)
+    return np.sign(x) * np.log10(1.0 + np.abs(x) / linthresh)
+
+
+def signed_log_annotations(values, linthresh=0.02):
+    """Scalar-bar tick positions/labels in transformed units."""
+    return {float(np.sign(v) * np.log10(1.0 + abs(v) / linthresh)):
+            f"{v:+.2f}" if v else "0" for v in values}
