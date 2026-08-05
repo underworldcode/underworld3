@@ -104,6 +104,7 @@ solver-iteration-callbacks
 complex-rheologies
 vep-transverse-isotropy-faults
 split-node-faults
+fault-mechanics-examples
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation
