@@ -33,6 +33,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: write
 
     steps:
       - name: Checkout repository
@@ -75,6 +76,8 @@ jobs:
             SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           # tags: |
           #   ghcr.io/underworldcode/underworld3:${{ env.BRANCH }}
           #   ghcr.io/underworldcode/underworld3:latest
