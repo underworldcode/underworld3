@@ -23,13 +23,23 @@ R_ANALYTIC = common.ETA * np.sqrt(4 * A_RATE**2 + GAMMA**2)
 STEP = 7.5
 angles = np.arange(0.0, 180.0 + 1e-9, STEP)
 
-probes = []
-for theta in angles:
-    sigma_n, tau = common.mohr_probe(theta, A_RATE, GAMMA,
-                                     half_length=HALF)
-    probes.append((theta, sigma_n, tau))
-    print(f"theta {theta:6.1f}: sigma_n {sigma_n:8.4f}  tau {tau:8.4f}")
-probes = np.array(probes)
+# The sweep is 25 welded-fault solves; cache it so iterating on the
+# animation's look does not re-measure the physics.
+cache = os.path.join(D, "_mohr_probes.npz")
+if os.path.exists(cache):
+    probes = np.load(cache)["probes"]
+    assert len(probes) == len(angles)
+    print(f"loaded {len(probes)} cached probes")
+else:
+    probes = []
+    for theta in angles:
+        sigma_n, tau = common.mohr_probe(theta, A_RATE, GAMMA,
+                                         half_length=HALF)
+        probes.append((theta, sigma_n, tau))
+        print(f"theta {theta:6.1f}: sigma_n {sigma_n:8.4f}  "
+              f"tau {tau:8.4f}")
+    probes = np.array(probes)
+    np.savez(cache, probes=probes)
 centre = float(np.mean(probes[:, 1]))
 
 frames = []
@@ -49,9 +59,24 @@ for k in range(len(probes)):
              [c[1] - HALF * t[1], c[1] + HALF * t[1]],
              "-", color="#c62828", lw=2.5)
     axl.annotate("", xytext=c, xy=c + 0.14 * n,
-                 arrowprops=dict(arrowstyle="->", lw=1.2))
-    axl.text(*(c + 0.18 * n), r"$\hat n$", fontsize=10, ha="center")
+                 arrowprops=dict(arrowstyle="->", lw=1.0, color="0.35"))
+    axl.text(*(c + 0.18 * n), r"$\hat n$", fontsize=9, ha="center",
+             color="0.35")
+    # the traction vector on the fault plane, from the MEASURED probe:
+    # purely normal (aligned with n-hat) exactly at the principal
+    # orientations — the same instant the probe crosses tau = 0
+    T = sig_k * n + tau_k * t
+    scale = 0.16 / R_ANALYTIC
+    axl.annotate("", xytext=c, xy=c + scale * T,
+                 arrowprops=dict(arrowstyle="-|>", lw=2.2,
+                                 color="#4a7bf7"))
     axl.text(0.06, 0.9, rf"$\theta = {theta:.1f}°$", fontsize=12)
+    axl.text(0.06, 0.135, r"$\sigma\cdot\hat n$: traction on the plane",
+             fontsize=9, color="#4a7bf7", transform=axl.transAxes)
+    if abs(tau_k) < 0.05 * R_ANALYTIC:
+        axl.text(0.5, 0.06, "principal orientation: traction ∥ normal",
+                 fontsize=10, color="#c62828", ha="center",
+                 transform=axl.transAxes)
     axl.set_xlim(-0.06, 1.06)
     axl.set_ylim(-0.06, 1.06)
     axl.set_aspect("equal")
@@ -65,6 +90,11 @@ for k in range(len(probes)):
              "-", color="0.75", lw=0.9)
     axr.axhline(0, color="0.8", lw=0.6)
     axr.axvline(centre, color="0.8", lw=0.6)
+    axr.plot([centre - R_ANALYTIC, centre + R_ANALYTIC], [0, 0], "D",
+             ms=5, color="0.3", zorder=4)
+    axr.text(centre - R_ANALYTIC, -0.16 * R_ANALYTIC,
+             "principal\nstresses", fontsize=7, ha="center", va="top",
+             color="0.3")
     axr.plot(probes[:k + 1, 1], probes[:k + 1, 2], "o", ms=5,
              mfc="none", mec="#c62828", mew=1.2)
     axr.plot([centre, sig_k], [0.0 * centre, tau_k], "-",
