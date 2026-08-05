@@ -5,7 +5,7 @@
 #import "@preview/cetz:0.3.4"
 
 #set page(width: auto, height: auto, margin: 12pt)
-#set text(size: 10pt)
+#set text(font: ("Noto Sans", "Helvetica", "Arial"), size: 5pt)
 
 #let fault-col = rgb("#c62828")
 #let mean-bg = rgb("#dce8fc")
@@ -33,38 +33,38 @@
   circle((0.8, 1.0), radius: 0.05, fill: fault-col, stroke: none)
   circle((0.8, 0.84), radius: 0.05, fill: white,
          stroke: (paint: fault-col, thickness: 0.9pt))
-  content((0.28, 1.28), text(size: 9pt)[$v^+$])
-  content((0.3, 0.52), text(size: 9pt)[$v^-$])
+  content((0.28, 1.28), text(size: 4.5pt)[$v^+$])
+  content((0.3, 0.52), text(size: 4.5pt)[$v^-$])
   // frame at the pair
   line((0.8, 1.0), (0.42, 2.0), stroke: (thickness: 0.8pt), mark: (end: ">"))
   content((0.28, 2.2), $hat(n)$)
   line((0.8, 1.0), (1.9, 1.44), stroke: (thickness: 0.8pt), mark: (end: ">"))
   content((2.14, 1.56), $hat(t)_1$)
-  content((1.62, 0.92), text(size: 8.5pt, fill: rgb("#555555"))[($hat(t)_2$ in 3-D)])
+  content((1.62, 0.92), text(size: 4.5pt, fill: rgb("#555555"))[($hat(t)_2$ in 3-D)])
 
-  content((0.8, -0.4), align(center, text(size: 9pt)[coincident pair
+  content((0.8, -0.4), align(center, text(size: 4.5pt)[coincident pair
     (2·dim DOFs), \ no shared unknowns]))
 
   // arrow to the rotated rows
   line((2.25, 0.65), (2.95, 0.65), stroke: (thickness: 0.9pt),
        mark: (end: ">"))
-  content((2.6, 1.0), text(size: 9pt)[$Q$])
+  content((2.6, 1.0), text(size: 4.5pt)[$Q$])
 
   // ---- right: the rotated rows -------------------------------------------
   content((4.75, 2.6), align(center)[rotated unknowns (per pair)])
   content((8.55, 2.6), align(center)[role])
 
   row(1.9, mean-bg, [$(v^+ + v^-) dot hat(n) slash sqrt(2)$],
-      text(size: 9pt)[free — bulk momentum])
+      text(size: 4.5pt)[free — bulk momentum])
   row(1.1, mean-bg, [$(v^+ + v^-) dot hat(t) slash sqrt(2)$],
-      text(size: 9pt)[free — bulk momentum])
+      text(size: 4.5pt)[free — bulk momentum])
   row(0.3, jump-n-bg, [$[v] dot hat(n) slash sqrt(2)$],
-      text(size: 9pt)[constrained $= 0$ — no opening; \ reaction $arrow.r sigma_n$])
+      text(size: 4.5pt)[constrained $= 0$ — no opening; \ reaction $arrow.r sigma_n$])
   row(-0.7, jump-t-bg, [$[v] dot hat(t) slash sqrt(2) = V slash sqrt(2)$],
-      text(size: 9pt)[the law: $integral_Gamma tau(V, sigma_n, theta)
+      text(size: 4.5pt)[the law: $integral_Gamma tau(V, sigma_n, theta)
         thin delta V$; \ tangent $2 (diff tau slash diff V) M$ per iterate])
 
-  content((4.75, -1.65), align(center, text(size: 9pt)[
+  content((4.75, -1.65), align(center, text(size: 4.5pt)[
     frictionless: slip row simply FREE (zero shear traction) \
     3-D: two slip rows, collinear traction
     $bold(tau) = tau(|V|) hat(V)$]))

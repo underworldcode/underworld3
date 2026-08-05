@@ -5,7 +5,7 @@
 #import "@preview/cetz:0.3.4"
 
 #set page(width: auto, height: auto, margin: 12pt)
-#set text(size: 10pt)
+#set text(font: ("Noto Sans", "Helvetica", "Arial"), size: 5pt)
 
 #let data = json("split-anatomy-data.json")
 
@@ -70,21 +70,21 @@
   content((1.5, 1.78), align(center)[conforming chain — facets shared,
     every FE space continuous])
   content((3.35, 2.6), text(fill: fault-col)[$Gamma$])
-  content((0.5, 2.36), text(size: 8pt)[tip])
-  content((2.5, 2.36), text(size: 8pt)[tip])
+  content((0.5, 2.36), text(size: 4pt)[tip])
+  content((2.5, 2.36), text(size: 4pt)[tip])
 
   // ---- panel (b): after the split (exploded for display) -----------------
   panel(0.0, data.exploded, data.moved_tris, exploded: true)
   content((-0.35, 1.0), [(b)])
   content((1.5, -0.62), align(center)[split — interior vertices duplicated,
     Minus cells rewired (exploded: the copies are coincident)])
-  content((3.42, 0.62), text(fill: fault-col, size: 9pt)[$Gamma^+$])
-  content((3.42, 0.13), text(fill: fault-col, size: 9pt)[$Gamma^-$])
+  content((3.42, 0.62), text(fill: fault-col, size: 4.5pt)[$Gamma^+$])
+  content((3.42, 0.13), text(fill: fault-col, size: 4.5pt)[$Gamma^-$])
   // annotate one replica pair
   line((1.5, 0.44), (1.75, 0.85), stroke: (paint: rgb("#555555"),
        thickness: 0.3pt))
-  content((2.15, 0.95), text(size: 8pt)[$v^+$ (original)])
+  content((2.15, 0.95), text(size: 4pt)[$v^+$ (original)])
   line((1.5, 0.24), (1.78, -0.12), stroke: (paint: rgb("#555555"),
        thickness: 0.3pt))
-  content((2.2, -0.2), text(size: 8pt)[$v^-$ (replica)])
+  content((2.2, -0.2), text(size: 4pt)[$v^-$ (replica)])
 })

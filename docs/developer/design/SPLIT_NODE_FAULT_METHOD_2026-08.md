@@ -143,6 +143,15 @@ cut so the fault becomes a conforming facet chain, and only then split.
 When the fault moves, the whole top of the stack is re-derived from the
 same base — the operation is non-cumulative by construction.*
 
+![The grid hierarchy](figures/split-node-faults/grid-hierarchy.png)
+
+*Fig. 5 — the same stack seen as a solver hierarchy. The static base is
+itself the finest level of a geometric (FMG) hierarchy, and the adapted
+children extend that hierarchy upward — one level per doubling of
+resolution. The cut + split working mesh sits on top of the stack but
+OUTSIDE the hierarchy: a cut is not a multigrid level, and the coarse
+levels never carry the fault.*
+
 ### 3.1 Input contract and provenance
 
 Input: a *conforming labelled facet set* — the fault's name labels
