@@ -120,6 +120,28 @@ def pure_shear_drive(child, phi_deg, tau0=1.0):
             exy * (x - 0.5) - exx * (y - 0.5))
 
 
+def boundary_simple_shear(child, trend_deg, rate=1.0):
+    """RIGHT-LATERAL simple shear parallel to a plate-boundary trend:
+    v = rate ((X - c) . n) t with t the boundary-parallel direction and
+    n its CCW normal — material on the +n side moves along +t, which an
+    observer on the fault sees moving to the RIGHT (dextral). Resolved
+    shear tau0 = ETA * rate on boundary-parallel planes."""
+    x, y = child.X
+    t = np.array([np.cos(np.radians(trend_deg)),
+                  np.sin(np.radians(trend_deg))])
+    n = np.array([-t[1], t[0]])
+    s = (x - 0.5) * n[0] + (y - 0.5) * n[1]
+    return (rate * s * t[0], rate * s * t[1])
+
+
+def ambient_sigma_n_simple(trend_deg, tangent, tau0=1.0):
+    """Analytic ambient normal stress (tension-positive) on a plane of
+    direction ``tangent`` under boundary_simple_shear(trend):
+    sigma_nn = -tau0 sin 2(theta - trend)."""
+    theta = np.degrees(np.arctan2(tangent[1], tangent[0]))
+    return -tau0 * np.sin(2.0 * np.radians(theta - trend_deg))
+
+
 def probe_nodes(stokes, name, tangent, eta_weld):
     """Per-node stress probes on a WELDED fault: along-fault coordinate,
     position, signed normal traction (tension-positive, as measured) and

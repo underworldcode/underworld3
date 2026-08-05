@@ -215,21 +215,26 @@ never silently absorbed.
 
 Script: `figures/fault-examples/interacting_faults.py`.
 
-### A California-like planform
+### A schematic southern California
 
-One curved trunk fault (a kinked polyline — every control point is
-pulled onto a mesh vertex) and four welded minor faults at different
-positions and orientations. One slip event, four verdicts:
+The San Andreas (with its Big Bend) as the slipping trunk; the
+Garlock, three East California Shear Zone strands and a San
+Jacinto-like fault welded as probes — all inboard, in the continental
+crust. The drive is right-lateral simple shear parallel to the plate
+boundary (~N40W), which resolves dextral on the NW-striking faults and
+sinistral on the Garlock, exactly the real senses; the slip arrows on
+the map are drawn from the *measured* jump, not assumed:
 
-![California-like planform](figures/fault-examples/california.png)
+![Schematic southern California](figures/fault-examples/california.png)
 
-The minors broadside of the slipped trunk are relaxed (blue clouds
-retreating into the safe wedge, $\Delta$CFF $\approx -0.3$); the
-minor off the far tip is loaded (red, $+0.3$) and driven bodily across
-the failure envelope — the sign flip that a fixed two-fault geometry
-cannot show, read simultaneously on the field and on each fault's own
-Mohr diagram (same $P_0 = 1$, $C = 0.75$ dressing as the en echelon
-case).
+One trunk-spanning event, three verdicts: the parallel San Jacinto is
+deeply relaxed ($\Delta$CFF $-0.4$, its cloud retreating into the
+safe wedge); the conjugate Garlock is *loaded* ($+0.2$, pushed toward
+the envelope); the distant ECSZ strands are mildly loaded ($+0.1$) in
+the far-field lobe. The kinked trunk adds its own lesson — each bend
+carries a local stress pocket, with restraining-bend loading visible
+on the Big Bend's flank. (Schematic geometry, not to scale; same
+$P_0 = 1$, $C = 0.75$ envelope dressing.)
 
 Script: `figures/fault-examples/california.py`.
 

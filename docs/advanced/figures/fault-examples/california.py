@@ -1,16 +1,21 @@
-"""A California-like planform: one curved trunk fault, four minor faults.
+"""A schematic southern California: the San Andreas slips, its
+neighbours read the stress.
 
-The trunk (a kinked polyline — every control point is pulled onto a
-mesh vertex by add_fault) slips freely under a regional compression
-oriented to drive it; the minor faults are welded probes at different
-positions and orientations. One slip event, four different verdicts:
-minors in the tip lobes are pushed TOWARD failure (red), minors
-broadside of the slipped section are relaxed (blue) — the sign flip
-that the en echelon example's fixed geometry cannot show.
+Geography (schematic, not to scale, x = east / y = north): the SAN
+ANDREAS trunk runs NW-SE with its Big Bend; the GARLOCK heads ENE off
+the bend; three EAST CALIFORNIA SHEAR ZONE strands and a SAN
+JACINTO-like fault sit INBOARD (northeast of the SAF, in the
+continental crust — not in the Pacific plate). The regional drive is
+right-lateral SIMPLE SHEAR parallel to the plate-boundary trend
+(~N40W), which resolves DEXTRAL on the NW-striking faults and
+SINISTRAL on the Garlock — exactly the real senses, and the map's
+half-arrows are drawn from the MEASURED slip, not assumed.
 
-Field: Delta CFF on trunk-parallel planes (mu' = 0.4). Probes: each
-minor's per-node before/after cloud in the Mohr plane, coloured by its
-own Delta CFF (computed in the minor's OWN orientation).
+The SAF slips freely (the extreme event: the whole trunk drops its
+shear); every other fault is welded — a per-node stress probe. Field:
+Delta CFF on boundary-parallel planes, symmetric-log colour. Probes:
+Garlock / pooled ECSZ / San Jacinto clouds against the cohesive
+envelope (P0 = 1, C = 0.75 — neither enters Delta CFF).
 """
 import os
 
@@ -30,38 +35,41 @@ pv.OFF_SCREEN = True
 D = os.path.dirname(os.path.abspath(__file__))
 MU_P = 0.4
 TAU0 = 1.0
-PHI = 70.0                     # compression axis: drives the ~25 deg trunk
+TREND = 132.0                 # plate-boundary trend (~N42W), degrees CCW of E
 ETA_WELD = 200.0 * common.ETA / 0.2
-# declared confining pressure + cohesion: neither changes Delta CFF,
-# they place the failure envelope over a fully compressive circle
 P0 = 1.0
 COH = 0.75
 
-TRUNK = np.array([[0.15, 0.35], [0.30, 0.42], [0.45, 0.475],
-                  [0.60, 0.52], [0.72, 0.555], [0.85, 0.62]])
+SAF = np.array([[0.88, 0.06], [0.72, 0.24], [0.55, 0.36],
+                [0.38, 0.44], [0.22, 0.58], [0.10, 0.78]])
 MINORS = {
-    "m1": np.array([[0.42, 0.62], [0.58, 0.66]]),     # broadside above
-    "m2": np.array([[0.86, 0.70], [0.94, 0.76]]),     # off the far tip
-    "m3": np.array([[0.25, 0.20], [0.40, 0.22]]),     # broadside below
-    "m4": np.array([[0.76, 0.40], [0.84, 0.33]]),     # conjugate, in the shadow
+    "Garlock": np.array([[0.44, 0.47], [0.74, 0.57]]),
+    "E1": np.array([[0.62, 0.64], [0.56, 0.78]]),
+    "E2": np.array([[0.72, 0.62], [0.66, 0.76]]),
+    "E3": np.array([[0.81, 0.68], [0.75, 0.82]]),
+    "SJF": np.array([[0.84, 0.24], [0.70, 0.38]]),
 }
-TRUNK_STRIKE = np.arctan2(TRUNK[-1, 1] - TRUNK[0, 1],
-                          TRUNK[-1, 0] - TRUNK[0, 0])
+GROUPS = (("Garlock (sinistral)", ("Garlock",), "#6a1b9a"),
+          ("ECSZ, 3 strands (dextral)", ("E1", "E2", "E3"), "#1a6b1a"),
+          ("San Jacinto (dextral)", ("SJF",), "#e65100"))
+COLOUR = {"Garlock": "#6a1b9a", "E1": "#1a6b1a", "E2": "#1a6b1a",
+          "E3": "#1a6b1a", "SJF": "#e65100"}
 
 
 def build_and_solve(trunk_free):
-    faults = [("Trunk", TRUNK)] + [(k, v) for k, v in MINORS.items()]
-    child = common.base_mesh(0.035).add_fault(faults)
-    stokes = common.stokes_on(child, common.pure_shear_drive(child, PHI,
-                                                             TAU0))
-    stokes.add_fault_bc(0 if trunk_free else ETA_WELD, boundary="Trunk")
+    faults = [("SAF", SAF)] + [(k, v) for k, v in MINORS.items()]
+    child = common.base_mesh(0.02).add_fault(faults)
+    stokes = common.stokes_on(child,
+                              common.boundary_simple_shear(child, TREND,
+                                                           TAU0))
+    stokes.add_fault_bc(0 if trunk_free else ETA_WELD, boundary="SAF")
     for k in MINORS:
         stokes.add_fault_bc(ETA_WELD, boundary=k)
     fault_contact.solve_with_fault(stokes, picard=2)
     probes = {}
     for k, pts in MINORS.items():
-        t_hat = pts[1] - pts[0]
-        s, xy, sig, tau = common.probe_nodes(stokes, k, t_hat, ETA_WELD)
+        _s, _xy, sig, tau = common.probe_nodes(stokes, k, pts[1] - pts[0],
+                                               ETA_WELD)
         probes[k] = (sig, tau)
     return child, stokes, probes
 
@@ -92,23 +100,30 @@ if os.path.exists(cache):
     print("loaded cached run")
 else:
     child, s1, probes1 = build_and_solve(trunk_free=True)
+    # the trunk's own slip: report the sense, drawn on the map
+    t_saf = SAF[-1] - SAF[0]
+    s_saf, V_saf = common.slip_vs_position(
+        s1, t_saf, centre=SAF.mean(axis=0), name="SAF")
     comp1, s_var = stress_components(child, s1, "a")
-    s0 = common.stokes_on(child, common.pure_shear_drive(child, PHI,
-                                                         TAU0))
-    s0.add_fault_bc(ETA_WELD, boundary="Trunk")
+
+    s0 = common.stokes_on(child,
+                          common.boundary_simple_shear(child, TREND,
+                                                       TAU0))
+    s0.add_fault_bc(ETA_WELD, boundary="SAF")
     for k in MINORS:
         s0.add_fault_bc(ETA_WELD, boundary=k)
     fault_contact.solve_with_fault(s0, picard=2)
     comp0, _ = stress_components(child, s0, "b")
     probes0 = {}
     for k, pts in MINORS.items():
-        t_hat = pts[1] - pts[0]
-        _s, _xy, sig, tau = common.probe_nodes(s0, k, t_hat, ETA_WELD)
+        _s, _xy, sig, tau = common.probe_nodes(s0, k, pts[1] - pts[0],
+                                               ETA_WELD)
         probes0[k] = (sig, tau)
 
-    # Delta CFF on trunk-parallel planes
-    nx, ny = -np.sin(TRUNK_STRIKE), np.cos(TRUNK_STRIKE)
-    tx, ty = np.cos(TRUNK_STRIKE), np.sin(TRUNK_STRIKE)
+    # Delta CFF on boundary-parallel planes
+    beta = np.radians(TREND)
+    nx, ny = -np.sin(beta), np.cos(beta)
+    tx, ty = np.cos(beta), np.sin(beta)
 
     def resolve(c):
         s_nn = (c["sxx"] * nx * nx + 2 * c["sxy"] * nx * ny
@@ -122,27 +137,34 @@ else:
     tau_dir = np.sign(np.median(t0))
     data = dict(field_dcff=tau_dir * (t1 - t0) + MU_P * (nn1 - nn0),
                 field_points=np.asarray(
-                    vis.meshVariable_to_pv_mesh_object(s_var).points))
+                    vis.meshVariable_to_pv_mesh_object(s_var).points),
+                saf_v=V_saf)
     for k in MINORS:
         data[f"{k}_sig0"], data[f"{k}_tau0"] = probes0[k]
         data[f"{k}_sig1"], data[f"{k}_tau1"] = probes1[k]
     np.savez(cache, **data)
     data = dict(np.load(cache, allow_pickle=True))
 
+t_hat_saf = (SAF[-1] - SAF[0]) / np.linalg.norm(SAF[-1] - SAF[0])
+v_med = float(np.median(data["saf_v"]))
+# dextral: an observer on the fault sees the far side move to the
+# right. With the tangent pointing NW and the split's Plus side on its
+# LEFT (SW, the Pacific side), a POSITIVE jump (v+ - v-) along +t means
+# the Pacific side moves NW relative to North America — right-lateral.
+sense = "right-lateral" if v_med > 0 else "LEFT-LATERAL?!"
+print(f"SAF slip: median tangential jump {v_med:+.3f} ({sense})")
+
 # ---- the field render ------------------------------------------------------
 dcff_field, GAUGE_C = common.far_field_anchor(
     data["field_points"], data["field_dcff"],
-    [TRUNK] + list(MINORS.values()), cut=0.22)
+    [SAF] + list(MINORS.values()), cut=0.18)
 print(f"far-field gauge constant removed: {GAUGE_C:+.4f}")
 pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float))
-pvm.point_data["dcff"] = dcff_field
-pvm = pvm.delaunay_2d()
-pl = pv.Plotter(off_screen=True, window_size=(950, 850))
-pl.set_background("white")
-# symmetric-log colour scale: the near-fault values saturate a linear
-# map and hide the far-field lobes
 LT = 0.02
-pvm.point_data["dcff"] = common.signed_log(pvm.point_data["dcff"], LT)
+pvm.point_data["dcff"] = common.signed_log(dcff_field, LT)
+pvm = pvm.delaunay_2d()
+pl = pv.Plotter(off_screen=True, window_size=(1000, 950))
+pl.set_background("white")
 lim = float(common.signed_log(0.5, LT))
 pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-lim, lim),
             show_edges=False, lighting=False,
@@ -153,90 +175,102 @@ pl.add_mesh(pvm, scalars="dcff", cmap="RdBu_r", clim=(-lim, lim),
 
 
 def polyline(pts):
-    line = pv.lines_from_points(
+    return pv.lines_from_points(
         np.column_stack([pts, np.full(len(pts), 0.001)]))
-    return line
 
 
-pl.add_mesh(polyline(TRUNK), color="black", line_width=4.5,
-            lighting=False)
-minor_cols = {"m1": "#1a6b1a", "m2": "#6a1b9a", "m3": "#00695c",
-              "m4": "#e65100"}
+pl.add_mesh(polyline(SAF), color="black", line_width=5.0, lighting=False)
 for k, pts in MINORS.items():
-    pl.add_mesh(polyline(pts), color=minor_cols[k], line_width=4.0,
+    pl.add_mesh(polyline(pts), color=COLOUR[k], line_width=4.0,
                 lighting=False)
+
+# measured slip sense on the SAF, as half-arrows either side of mid-trunk
+mid = 0.5 * (SAF[2] + SAF[3])
+n_saf = np.array([-t_hat_saf[1], t_hat_saf[0]])
+sense_sign = np.sign(v_med)
+for pm in (+1.0, -1.0):
+    base = mid + pm * 0.05 * n_saf - pm * sense_sign * 0.06 * t_hat_saf
+    pl.add_arrows(np.array([np.append(base, 0.002)]),
+                  np.array([np.append(pm * sense_sign * t_hat_saf, 0.0)]),
+                  mag=0.11, color="black")
+
+pl.add_point_labels(
+    np.array([[0.26, 0.40, 0.002], [0.64, 0.49, 0.002],
+              [0.58, 0.82, 0.002], [0.84, 0.20, 0.002]]),
+    ["San Andreas", "Garlock", "ECSZ", "San Jacinto"],
+    font_size=22, text_color="black", shape=None, always_visible=True,
+    show_points=False)
+
 pl.view_xy()
 pl.camera.parallel_projection = True
-pl.camera.parallel_scale = 0.42
-pl.camera.focal_point = (0.52, 0.47, 0.0)
+pl.camera.parallel_scale = 0.48
+pl.camera.focal_point = (0.48, 0.44, 0.0)
 field_png = os.path.join(D, "_california_field.png")
 pl.screenshot(field_png)
 pl.close()
 
-# ---- the figure: field + one mini-Mohr per minor ---------------------------
-fig = plt.figure(figsize=(12.6, 6.2))
-gs = fig.add_gridspec(2, 4, width_ratios=[2.4, 1, 1, 0.12])
+# ---- the figure: field + one Mohr panel per fault group --------------------
+fig = plt.figure(figsize=(13.2, 6.6))
+gs = fig.add_gridspec(3, 3, width_ratios=[2.6, 1.15, 0.06])
 
 axf = fig.add_subplot(gs[:, 0])
 axf.imshow(plt.imread(field_png))
 axf.set_xticks([])
 axf.set_yticks([])
-axf.set_title(r"$\Delta$CFF on trunk-parallel planes ($\mu' = 0.4$);"
-              "\ntrunk slips freely, minors welded as probes",
-              fontsize=9)
+axf.set_title(r"$\Delta$CFF on boundary-parallel planes ($\mu' = 0.4$);"
+              "\nSAF slips (right-lateral), neighbours welded as probes"
+              "\n(schematic geometry, not to scale)", fontsize=9)
 
-panels = [("m1", 0, 1), ("m2", 0, 2), ("m3", 1, 1), ("m4", 1, 2)]
-for k, r, ccol in panels:
-    ax = fig.add_subplot(gs[r, ccol])
-    # each solve carries its own pressure-gauge constant; anchor the
-    # welded probes to the ANALYTIC ambient normal stress for this
-    # minor's orientation, and the after-probes to the (far-field
-    # anchored) difference on top of that
-    t_hat = MINORS[k][1] - MINORS[k][0]
-    c0 = float(np.median(data[f"{k}_sig0"])
-               - common.ambient_sigma_n(PHI, t_hat, TAU0))
-    sig0 = data[f"{k}_sig0"] - c0
-    tau0 = data[f"{k}_tau0"]
-    sig1 = data[f"{k}_sig1"] - c0 - GAUGE_C / MU_P
-    tau1 = data[f"{k}_tau1"]
-    tau_dir = np.sign(np.median(tau0))
-    dcff = tau_dir * (tau1 - tau0) + MU_P * (sig1 - sig0)
-    sc0, sc1 = P0 - sig0, P0 - sig1
-    ss = np.linspace(-0.4, P0 + 1.8, 80)
+for row, (label, members, col) in enumerate(GROUPS):
+    ax = fig.add_subplot(gs[row, 1])
+    ss = np.linspace(-0.4, P0 + 1.9, 80)
     strength = np.maximum(COH + MU_P * ss, 0.0)
     for sgn in (+1, -1):
         ax.plot(ss, sgn * strength, "-", color="0.4", lw=0.9)
-    ax.fill_between(ss, strength, 2.4, color="#c62828", alpha=0.06,
-                    lw=0)
-    ax.fill_between(ss, -strength, -2.4, color="#c62828", alpha=0.06,
+    ax.fill_between(ss, strength, 2.6, color="#c62828", alpha=0.06, lw=0)
+    ax.fill_between(ss, -strength, -2.6, color="#c62828", alpha=0.06,
                     lw=0)
     tt = np.linspace(0, 2 * np.pi, 150)
-    ax.plot(P0 + TAU0 * np.cos(tt), TAU0 * np.sin(tt), "-",
-            color="0.88", lw=0.7)
-    ax.scatter(sc0, tau0, s=10, facecolors="none", edgecolors="0.6",
-               linewidths=0.8)
-    for j in range(0, len(sc0), 2):
-        ax.annotate("", xytext=(sc0[j], tau0[j]), xy=(sc1[j], tau1[j]),
-                    arrowprops=dict(arrowstyle="->", lw=0.5,
-                                    color="0.6"))
-    pts = ax.scatter(sc1, tau1, c=dcff, cmap="RdBu_r", s=20,
-                     vmin=-0.25, vmax=0.25, zorder=5,
-                     edgecolors="0.3", linewidths=0.25)
+    ax.plot(P0 + TAU0 * np.cos(tt), TAU0 * np.sin(tt), "-", color="0.88",
+            lw=0.7)
+    medians = []
+    for k in members:
+        t_hat = MINORS[k][1] - MINORS[k][0]
+        c0 = float(np.median(data[f"{k}_sig0"])
+                   - common.ambient_sigma_n_simple(TREND, t_hat, TAU0))
+        sig0 = data[f"{k}_sig0"] - c0
+        tau0 = data[f"{k}_tau0"]
+        sig1 = data[f"{k}_sig1"] - c0 - GAUGE_C / MU_P
+        tau1 = data[f"{k}_tau1"]
+        tau_dir = np.sign(np.median(tau0))
+        dcff = tau_dir * (tau1 - tau0) + MU_P * (sig1 - sig0)
+        medians.append(np.median(dcff))
+        sc0, sc1 = P0 - sig0, P0 - sig1
+        ax.scatter(sc0, tau0, s=9, facecolors="none", edgecolors="0.6",
+                   linewidths=0.7)
+        for j in range(0, len(sc0), 3):
+            ax.annotate("", xytext=(sc0[j], tau0[j]),
+                        xy=(sc1[j], tau1[j]),
+                        arrowprops=dict(arrowstyle="->", lw=0.45,
+                                        color="0.6"))
+        pts = ax.scatter(sc1, tau1, c=dcff, cmap="RdBu_r", s=16,
+                         vmin=-0.3, vmax=0.3, zorder=5,
+                         edgecolors="0.3", linewidths=0.2)
     ax.axhline(0, color="0.92", lw=0.5)
     ax.set_aspect("equal")
-    ax.set_xlim(-0.4, P0 + 1.8)
-    ax.set_ylim(-1.6, 1.6)
+    ax.set_xlim(-0.4, P0 + 1.9)
+    ax.set_ylim(-1.7, 1.7)
     ax.tick_params(labelsize=7)
     for spine in ax.spines.values():
-        spine.set_color(minor_cols[k])
+        spine.set_color(col)
         spine.set_linewidth(1.8)
-    ax.set_title(f"{k}: median $\\Delta$CFF {np.median(dcff):+.2f}",
-                 fontsize=8, color=minor_cols[k])
+    ax.set_title(f"{label}: median $\\Delta$CFF "
+                 f"{np.median(medians):+.2f}", fontsize=8.5, color=col)
 
-cax = fig.add_subplot(gs[:, 3])
+cax = fig.add_subplot(gs[:, 2])
 fig.colorbar(pts, cax=cax, label=r"node $\Delta$CFF")
-fig.suptitle("One slip event, four verdicts: minor faults in the lobes "
-             "load, broadside minors relax", fontsize=11)
+fig.suptitle("A San Andreas slip event, read by its neighbours",
+             fontsize=11.5)
 fig.tight_layout()
 out = os.path.join(D, "california.png")
 fig.savefig(out, dpi=200)
