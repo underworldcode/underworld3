@@ -128,9 +128,16 @@ $\theta$ varies by orders of magnitude along a fault and enters laws only
 through $\ln\theta$, so the trace quadrature interpolates the *logarithm*
 — which is also what keeps a positive-only quantity positive under the
 quadratic shape functions (their undershoot sends a plainly interpolated
-$\theta$ negative). $\sigma_n$ is clamped at zero in tension: an
-opening-tending fault has no frictional strength, and the no-opening
-constraint holds it shut regardless.
+$\theta$ negative). $\sigma_n$ is fed to the laws SIGNED (positive in
+compression); each law clamps its own strength at zero — bare friction
+at $\sigma = 0$, cohesion at $\sigma = -C/\mu$ — because where
+strength vanishes is constitutive. Where the strength is zero and the
+normal stress is tensile, a real fault would open: no static solution
+exists, and the bilateral no-opening constraint manufactures one by
+carrying a tensile reaction. The computed state is then unphysical,
+and the tell is the sign of the recovered normal traction. (A
+unilateral contact — opening allowed — is a complementarity problem,
+deferred.)
 
 ## 3. The mesh operation
 

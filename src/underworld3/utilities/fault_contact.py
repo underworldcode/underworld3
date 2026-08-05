@@ -111,12 +111,20 @@ def add_viscous_fault_bc(solver, conds, boundary):
 #: (lambdified) callables.
 slip_rate = sympy.Symbol(r"V_{slip}", real=True)
 
-#: The effective normal stress symbol (positive in compression, clamped at
-#: zero in tension): a law may use it, and the assembler feeds it per node
-#: from the no-opening constraint's REACTION, Picard-lagged once per Newton
-#: iteration — the one deliberately lagged quantity (its derivative is
-#: nonlocal and non-stiff; the stiff direction dtau/dV stays full Newton).
-normal_stress = sympy.Symbol(r"\sigma_{n,eff}", real=True, nonnegative=True)
+#: The effective normal stress symbol, SIGNED: positive in compression,
+#: negative in tension. The assembler feeds it per node from the no-opening
+#: constraint's REACTION, Picard-lagged once per Newton iteration — the one
+#: deliberately lagged quantity (its derivative is nonlocal and non-stiff;
+#: the stiff direction dtau/dV stays full Newton). A law must clamp its OWN
+#: strength at zero — e.g. ``Max(0, C + mu*normal_stress)`` — because the
+#: physics of losing strength lives in the law: a cohesive fault keeps
+#: shear strength into MILD tension (down to sigma = -C/mu), a cohesionless
+#: one loses it the moment the normal stress turns tensile. Where the
+#: strength is zero AND the normal stress is tensile the fault would OPEN:
+#: the bilateral no-opening constraint then holds it shut with a tensile
+#: reaction (glue), and the computed solution is no longer physical —
+#: detect this by the sign of ``fault_normal_traction``.
+normal_stress = sympy.Symbol(r"\sigma_{n,eff}", real=True)
 
 #: The interface state variable (rate-state theta), per node like the
 #: normal stress: a law may use it; the values are held per fault on the
@@ -184,7 +192,9 @@ def CoulombFaultLaw(mu, sigma_n, V0):
     hand-coded derivative.
     """
     if sigma_n == "reaction":
-        strength = float(mu) * normal_stress
+        # the strength clamp is the law's own: bare friction loses all
+        # strength the moment the normal stress turns tensile
+        strength = float(mu) * sympy.Max(normal_stress, 0)
     else:
         strength = float(mu) * float(sigma_n)
     return SymbolicFaultLaw(
@@ -233,7 +243,8 @@ def RateStateFaultLaw(a, b, V0, f0, Dc, sigma_n="reaction"):
     in V comes from ``sympy.diff``, exactly as for every other law.
     """
     a, b, V0, f0, Dc = (float(q) for q in (a, b, V0, f0, Dc))
-    sn = normal_stress if sigma_n == "reaction" else float(sigma_n)
+    sn = (sympy.Max(normal_stress, 0) if sigma_n == "reaction"
+          else float(sigma_n))
     return SymbolicFaultLaw(
         a * sn * sympy.asinh(
             (slip_rate / (2 * V0)) * sympy.exp(
@@ -689,12 +700,13 @@ class _InterfaceAssembler:
         return sig
 
     def update_normal_stress(self, solver, reaction):
-        """Picard-lag the effective normal stress into the laws: positive
-        in compression, clamped at zero in tension (an opening-tending
-        fault has no frictional strength; the no-opening constraint holds
-        it shut regardless)."""
+        """Picard-lag the SIGNED effective normal stress into the laws:
+        positive in compression, negative in tension. Each law clamps its
+        own strength at zero (Max in the sympy expression) — the clamp
+        cannot live here, because where strength vanishes is constitutive:
+        at sigma = 0 for bare friction, at sigma = -C/mu with cohesion."""
         sig = self.nodal_normal_traction(solver, reaction)
-        self._sigma[:len(sig)] = np.maximum(-sig, 0.0)
+        self._sigma[:len(sig)] = -sig
 
     def tangent(self, solver, uvec):
         """The consistent interface tangent at the current iterate, as a

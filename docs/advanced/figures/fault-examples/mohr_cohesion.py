@@ -1,12 +1,19 @@
 """Cohesive Mohr-Coulomb: strength survives into the tensile sector.
 
 The cohesive sequel to mohr_friction: the fault's yield envelope is
-tau = C + mu sigma (compression positive). Cohesion holds shear even
-where the normal stress is tensile — the no-opening constraint already
-excludes tensile OPENING, so cohesion appears as a flat shear strength
-C on the tensile side. Compared with the cohesionless case, stuck arcs
-now survive around BOTH principal poles, with envelope-pinned sliding
-between them.
+tau = +-(C + mu sigma) (compression positive), declining through mild
+tension and reaching ZERO at sigma = -C/mu. Three physical regimes and
+one UNPHYSICAL one appear as the fault rotates:
+
+- stuck (on the circle) — now around BOTH principal poles, because
+  cohesion holds shear through mild tension;
+- sliding, pinned to the declining envelope;
+- HELD SHUT — beyond sigma = -C/mu the strength is zero and the normal
+  stress is tensile: a real fault would OPEN, no static solution
+  exists, and the bilateral no-opening constraint manufactures one by
+  gluing the surfaces together (a tensile constraint reaction). The
+  solver converges; the physics has failed. Detect it from the SIGN of
+  the recovered normal traction.
 
 The law is not a canned option — it is registered as a sympy
 expression in the canonical symbols, which is the whole design: a new
@@ -39,13 +46,14 @@ angles = np.arange(0.0, 180.0 + 1e-9, STEP)
 
 
 def register_cohesive_law(stokes):
-    """Mohr-Coulomb with cohesion, as a symbolic law: the assembler
-    feeds normal_stress from the constraint reaction (clamped at zero
-    in tension), so the strength is C there — cohesion in tension."""
+    """Mohr-Coulomb with cohesion as a symbolic law. normal_stress is
+    the SIGNED effective normal stress (reaction-fed; negative in
+    tension), and the strength clamp is the law's own: Max(0, C + mu s)
+    declines through mild tension and vanishes at s = -C/mu."""
     V = fault_contact.slip_rate
     S = fault_contact.normal_stress
     law = fault_contact.SymbolicFaultLaw(
-        (C + MU * S) * (2 / sympy.pi) * sympy.atan(V / V0))
+        sympy.Max(C + MU * S, 0) * (2 / sympy.pi) * sympy.atan(V / V0))
     fault_contact.add_frictionless_fault_bc(stokes, "Fault")
     fault_contact._register_law(stokes, "Fault", law)
 
@@ -68,18 +76,21 @@ else:
         s_n, sig = common.normal_traction(stokes)
         v_med = float(np.median(V[common.inner(s)]))
         sigma_n = float(np.median(sig[common.inner(s_n)]))
-        sigma_eff = max(-sigma_n, 0.0)
-        tau = (C + MU * sigma_eff) * (2 / np.pi) * np.arctan(v_med / V0)
+        strength = max(C + MU * (-sigma_n), 0.0)
+        tau = strength * (2 / np.pi) * np.arctan(v_med / V0)
         rows.append((theta, sigma_n, tau, v_med))
         print(f"theta {theta:6.1f}: sigma_n {sigma_n:8.4f}  "
               f"tau {tau:8.4f}  V {v_med:9.5f}")
     probes = np.array(rows)
     np.savez(cache, probes=probes)
 
-sliding = np.abs(probes[:, 3]) > 5 * V0
 # GEO convention for plotting: compression positive
 sc = -probes[:, 1]
 tau = probes[:, 2]
+# beyond sigma = -C/mu the strength is zero and the fault is in
+# tension: it would open — the constraint holds it shut (unphysical)
+held_shut = sc < -C / MU + 1e-6
+sliding = (np.abs(probes[:, 3]) > 5 * V0) & ~held_shut
 
 
 def draw_stress_plane(ax):
@@ -87,16 +98,17 @@ def draw_stress_plane(ax):
     ax.plot(R_ANALYTIC * np.cos(tt), R_ANALYTIC * np.sin(tt),
             "-", color="0.8", lw=0.9,
             label="ambient stress (welded circle)")
-    s_pos = np.linspace(0, 1.5 * R_ANALYTIC, 50)
-    s_neg = np.linspace(-1.5 * R_ANALYTIC, 0, 50)
+    s_env = np.linspace(-C / MU, 1.5 * R_ANALYTIC, 60)
     for sgn in (+1, -1):
-        ax.plot(s_pos, sgn * (C + MU * s_pos), "--", color="0.35",
-                lw=1.0, label=(r"envelope $\tau = \pm(C + \mu\sigma)$"
+        ax.plot(s_env, sgn * (C + MU * s_env), "--", color="0.35",
+                lw=1.0, label=(r"envelope $\tau = \pm(C + \mu\sigma)$,"
+                               r" zero at $\sigma = -C/\mu$"
                                if sgn > 0 else None))
-        ax.plot(s_neg, sgn * C * np.ones_like(s_neg), "--",
-                color="0.6", lw=0.9,
-                label=("cohesion under tension (no opening)"
-                       if sgn > 0 else None))
+    ax.axvspan(-1.6 * R_ANALYTIC, -C / MU, color="0.92", zorder=0)
+    ax.text(-1.5 * R_ANALYTIC, 1.1 * R_ANALYTIC,
+            "fault would open:\nno static solution\n(held shut by the\n"
+            "no-opening constraint)", fontsize=7.5, va="top",
+            color="0.35")
     ax.axhline(0, color="0.85", lw=0.6)
     ax.axvline(0, color="0.85", lw=0.6)
     ax.set_xlabel(r"normal stress $\sigma$ (compression positive)")
@@ -108,10 +120,13 @@ def draw_stress_plane(ax):
 
 fig, ax = plt.subplots(figsize=(7.6, 5.4))
 draw_stress_plane(ax)
-ax.plot(sc[~sliding], tau[~sliding], "o", ms=7, color="#c62828",
+stuck = ~sliding & ~held_shut
+ax.plot(sc[stuck], tau[stuck], "o", ms=7, color="#c62828",
         label="stuck: on the circle", zorder=5)
 ax.plot(sc[sliding], tau[sliding], "s", ms=6, color="#d9960a",
         label="sliding: on the envelope", zorder=5)
+ax.plot(sc[held_shut], tau[held_shut], "x", ms=8, mew=2.0,
+        color="0.45", label="held shut (unphysical)", zorder=5)
 ax.legend(fontsize=8, loc="lower right")
 ax.set_title(rf"Cohesive Mohr-Coulomb fault, $C = {C}$, $\mu = {MU}$")
 fig.tight_layout()
@@ -123,7 +138,8 @@ print("wrote", out)
 frames = []
 for k in range(len(probes)):
     theta, sig_k, tau_k, v_k = probes[k]
-    slide_k = abs(v_k) > 5 * V0
+    shut_k = bool(held_shut[k])
+    slide_k = (abs(v_k) > 5 * V0) and not shut_k
     fig, (axl, axr) = plt.subplots(
         1, 2, figsize=(9.6, 4.6),
         gridspec_kw=dict(width_ratios=[1.0, 1.25]))
@@ -150,8 +166,10 @@ for k in range(len(probes)):
                          arrowprops=dict(arrowstyle="->", lw=1.4,
                                          color="#d9960a"))
     axl.text(0.06, 0.9, rf"$\theta = {theta:.1f}°$", fontsize=12)
-    axl.text(0.06, 0.82, "SLIDING" if slide_k else "stuck", fontsize=10,
-             color="#d9960a" if slide_k else "#c62828")
+    status, scol = (("HELD SHUT (unphysical)", "0.45") if shut_k
+                    else ("SLIDING", "#d9960a") if slide_k
+                    else ("stuck", "#c62828"))
+    axl.text(0.06, 0.82, status, fontsize=10, color=scol)
     axl.set_xlim(-0.06, 1.06)
     axl.set_ylim(-0.06, 1.06)
     axl.set_aspect("equal")
@@ -162,15 +180,21 @@ for k in range(len(probes)):
 
     draw_stress_plane(axr)
     axr.legend(fontsize=7, loc="lower right")
-    stuck_prev = ~sliding[:k + 1]
+    stuck_prev = (~sliding & ~held_shut)[:k + 1]
     slide_prev = sliding[:k + 1]
+    shut_prev = held_shut[:k + 1]
     axr.plot(sc[:k + 1][stuck_prev], tau[:k + 1][stuck_prev], "o", ms=5,
              mfc="none", mec="#c62828", mew=1.2)
     axr.plot(sc[:k + 1][slide_prev], tau[:k + 1][slide_prev], "s", ms=5,
              mfc="none", mec="#d9960a", mew=1.2)
-    axr.plot([sc[k]], [tau[k]], "s" if slide_k else "o", ms=9,
-             color="#d9960a" if slide_k else "#c62828", zorder=6)
-    axr.set_title("... stuck arcs at BOTH poles now", fontsize=10)
+    axr.plot(sc[:k + 1][shut_prev], tau[:k + 1][shut_prev], "x", ms=6,
+             mew=1.6, color="0.45")
+    mark, mcol = (("x", "0.45") if shut_k else
+                  ("s", "#d9960a") if slide_k else ("o", "#c62828"))
+    axr.plot([sc[k]], [tau[k]], mark, ms=9, mew=2.2, color=mcol,
+             zorder=6)
+    axr.set_title("... strength declines to zero, then the fault "
+                  "would open", fontsize=10)
 
     fig.suptitle("Cohesion keeps more of the Mohr circle", fontsize=11)
     fig.tight_layout()

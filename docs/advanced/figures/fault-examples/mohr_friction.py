@@ -10,8 +10,11 @@ stress. Three regimes appear as the fault rotates:
 - SLIDING — the ambient stress would exceed the envelope: the fault
   slips, drops the shear traction to its strength, and the probe is
   pinned to the yield line tau = ±mu |sigma_n|;
-- TENSILE — sigma_n > 0 carries no frictional strength at all: the
-  probe collapses to the sigma axis (a freely slipping crack).
+- HELD SHUT — under tensile normal stress bare friction has no
+  strength: a real fault would OPEN, no static solution exists, and
+  the bilateral no-opening constraint manufactures one by gluing the
+  surfaces (tensile reaction). The solver converges; the physics has
+  failed. The probes ride the axis at tau = 0, marked as unphysical.
 
 sigma_n comes from the no-opening constraint's reaction; tau is read
 from the Coulomb law at the measured slip rate — exact in both
@@ -67,9 +70,11 @@ else:
     np.savez(cache, probes=probes)
 
 centre = 0.0                        # the welded sweep's measured gauge
-sliding = np.abs(probes[:, 3]) > 5 * V0
 # GEOLOGICAL convention on the stress plane: compression positive.
 scg = -probes[:, 1]
+# bare friction: strength vanishes the moment the stress turns tensile
+held_shut = scg < -1e-6
+sliding = (np.abs(probes[:, 3]) > 5 * V0) & ~held_shut
 
 
 def draw_stress_plane(ax):
@@ -84,6 +89,11 @@ def draw_stress_plane(ax):
                        if sgn > 0 else None))
     ax.axhline(0, color="0.85", lw=0.6)
     ax.axvline(centre, color="0.85", lw=0.6)
+    ax.axvspan(-1.6 * R_ANALYTIC, 0, color="0.92", zorder=0)
+    ax.text(-1.45 * R_ANALYTIC, 1.1 * R_ANALYTIC,
+            "fault would open:\nno static solution\n(held shut by the\n"
+            "no-opening constraint)", fontsize=7.5, va="top",
+            color="0.35")
     ax.set_xlabel(r"normal stress $\sigma$ (compression positive)")
     ax.set_ylabel(r"shear traction $\tau$")
     ax.set_xlim(centre - 1.5 * R_ANALYTIC, centre + 1.5 * R_ANALYTIC)
@@ -94,10 +104,13 @@ def draw_stress_plane(ax):
 # ---- the static summary -----------------------------------------------------
 fig, ax = plt.subplots(figsize=(7.2, 5.4))
 draw_stress_plane(ax)
-ax.plot(scg[~sliding], probes[~sliding, 2], "o", ms=7,
+stuck = ~sliding & ~held_shut
+ax.plot(scg[stuck], probes[stuck, 2], "o", ms=7,
         color="#c62828", label="stuck: on the circle", zorder=5)
 ax.plot(scg[sliding], probes[sliding, 2], "s", ms=6,
         color="#d9960a", label="sliding: on the envelope", zorder=5)
+ax.plot(scg[held_shut], probes[held_shut, 2], "x", ms=8, mew=2.0,
+        color="0.45", label="held shut (unphysical)", zorder=5)
 ax.legend(fontsize=8, loc="upper left")
 ax.set_title(rf"Coulomb fault probes, $\mu = {MU}$: "
              "the stress switches to the yield envelope")
@@ -110,7 +123,8 @@ print("wrote", out)
 frames = []
 for k in range(len(probes)):
     theta, sig_k, tau_k, v_k = probes[k]
-    slide_k = abs(v_k) > 5 * V0
+    shut_k = bool(held_shut[k])
+    slide_k = (abs(v_k) > 5 * V0) and not shut_k
     fig, (axl, axr) = plt.subplots(
         1, 2, figsize=(9.6, 4.6),
         gridspec_kw=dict(width_ratios=[1.0, 1.25]))
@@ -142,9 +156,10 @@ for k in range(len(probes)):
                          arrowprops=dict(arrowstyle="->", lw=1.4,
                                          color="#d9960a"))
     axl.text(0.06, 0.9, rf"$\theta = {theta:.1f}°$", fontsize=12)
-    status = "SLIDING" if slide_k else "stuck"
-    axl.text(0.06, 0.82, status, fontsize=10,
-             color="#d9960a" if slide_k else "#c62828")
+    status, scol = (("HELD SHUT (unphysical)", "0.45") if shut_k
+                    else ("SLIDING", "#d9960a") if slide_k
+                    else ("stuck", "#c62828"))
+    axl.text(0.06, 0.82, status, fontsize=10, color=scol)
     axl.text(0.06, 0.135, r"$\sigma\cdot\hat n$: traction on the plane",
              fontsize=9, color="#4a7bf7", transform=axl.transAxes)
     axl.set_xlim(-0.06, 1.06)
@@ -157,14 +172,19 @@ for k in range(len(probes)):
 
     draw_stress_plane(axr)
     axr.legend(fontsize=7, loc="upper left")
-    stuck_prev = ~sliding[:k + 1]
+    stuck_prev = (~sliding & ~held_shut)[:k + 1]
     slide_prev = sliding[:k + 1]
+    shut_prev = held_shut[:k + 1]
     axr.plot(scg[:k + 1][stuck_prev], probes[:k + 1][stuck_prev, 2],
              "o", ms=5, mfc="none", mec="#c62828", mew=1.2)
     axr.plot(scg[:k + 1][slide_prev], probes[:k + 1][slide_prev, 2],
              "s", ms=5, mfc="none", mec="#d9960a", mew=1.2)
-    axr.plot([-sig_k], [tau_k], "o" if not slide_k else "s", ms=9,
-             color="#d9960a" if slide_k else "#c62828", zorder=6)
+    axr.plot(scg[:k + 1][shut_prev], probes[:k + 1][shut_prev, 2],
+             "x", ms=6, mew=1.6, color="0.45")
+    mark, mcol = (("x", "0.45") if shut_k else
+                  ("s", "#d9960a") if slide_k else ("o", "#c62828"))
+    axr.plot([-sig_k], [tau_k], mark, ms=9, mew=2.2, color=mcol,
+             zorder=6)
     axr.set_title("... its traction cannot leave the envelope",
                   fontsize=10)
 

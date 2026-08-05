@@ -42,7 +42,11 @@ Script: `figures/fault-examples/ladder.py`.
 
 All the stress-plane figures below use the **geological sign
 convention**: compression positive, tension on the negative axis. (The
-solver's tractions are tension-positive; only the plots flip.)
+solver's tractions are tension-positive; only the plots flip.) There is
+no confining pressure in these problems: the walls prescribe velocity
+and the flow is incompressible, so pressure exists only up to the
+nullspace constant and the solver's gauge centres the Mohr circle on
+the origin — which is exactly why the tensile sector is reachable.
 
 A *welded* split fault (interface dashpot with large $\eta_f$) does not
 perturb the flow — the welded limit recovers the uncut continuum — but
@@ -97,8 +101,13 @@ Three regimes appear in one sweep:
 - **Sliding** (squares): the ambient stress would exceed the envelope —
   the fault slips, drops the shear traction to its strength, and the
   probe is pinned to the yield line;
-- **Tensile** ($\sigma < 0$): no frictional strength at all, and the
-  probe collapses to the axis (a freely slipping crack).
+- **Held shut** ($\sigma < 0$, grey crosses): bare friction has no
+  strength under tension — a real fault would OPEN, and no static
+  solution exists. The bilateral no-opening constraint manufactures one
+  by gluing the surfaces together (a tensile reaction), so the solver
+  still converges; the probes ride the axis at $\tau = 0$, but they
+  are marked unphysical. The tell, in any real model, is the sign of
+  the recovered normal traction.
 
 The shear traction here is read from the Coulomb law at the measured
 slip rate — which is exact in every regime, because the regularised
@@ -113,12 +122,11 @@ Script: `figures/fault-examples/mohr_friction.py`.
 ### Cohesion keeps more of the circle
 
 Add cohesion — the envelope becomes $\tau = \pm(C + \mu\sigma)$ —
-and strength survives into the tensile sector (the no-opening
-constraint already excludes tensile opening, so cohesion appears there
-as a flat shear strength $C$). Stuck arcs now survive around **both**
-principal poles, with envelope-pinned sliding between: on the rising
-Coulomb rays where compressive, on the flat cohesion lines where
-tensile.
+and strength survives into MILD tension, declining along the envelope
+and reaching zero at $\sigma = -C/\mu$. Stuck arcs now survive
+around **both** principal poles, with envelope-pinned sliding between;
+beyond the cutoff the fault is in the same held-shut (unphysical)
+regime as the cohesionless case, just pushed further into tension.
 
 ![Cohesive Mohr-Coulomb fault](figures/fault-examples/mohr-cohesion.png)
 
