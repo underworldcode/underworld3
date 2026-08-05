@@ -216,6 +216,30 @@ from both sides and no special treatment is needed.
   no thin feature and no viscosity contrast for the Schur complement
   to fight (measured: 10 outer iterations vs 147 for a $10^{-4}$
   contrast band on the same mesh).
+- **Curved faults need their analytic normal**: a curved trace is
+  sampled as a polyline, and by default each fault node's normal is the
+  average of its adjacent facet normals — exact on a straight fault, but
+  zig-zagging at the sampling kinks of a curve. The no-opening
+  constraint then forbids smooth slip past each kink, producing slip
+  notches and normal-traction sawteeth that *grow* under mesh
+  refinement. Pass the smooth curve's normal instead:
+
+  ```python
+  x, y = mesh.X
+  # e.g. a circular arc about (cx, cy): the radial direction
+  stokes.add_fault_bc(0, boundary="Arc",
+                      normal=sympy.Matrix([[x - cx, y - cy]]))
+  ```
+
+  Same conventions as `add_rotated_freeslip_bc`: a sympy `1×dim` matrix
+  in `mesh.X` (need not be unit length; it is normalised per node and
+  sign-aligned to the split's Plus→Minus orientation), or a constant
+  array. Every fault-law variant (`add_coulomb_fault_bc`,
+  `add_rate_state_fault_bc`, ...) accepts the same `normal=` argument,
+  and the slip/traction diagnostics read the same frame automatically.
+  Measured on a sampled circular arc: the analytic normal reduces the
+  kink sawtooth by an order of magnitude and restores convergence under
+  refinement. On straight faults it changes nothing — omit it.
 - **Moving faults**: re-derive, don't update. Cut and split again from
   the static base mesh at the new fault position; transfer fields with
   the standard re-adaptation machinery.

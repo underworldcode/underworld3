@@ -118,3 +118,55 @@ def test_offset_network_in_one_call():
         _s, V, leak = fault_slip(stokes, name, info)
         assert np.abs(leak).max() < 1e-13, f"{name} opened"
         assert np.abs(V).max() > 0.02, f"{name} does not slip"
+
+
+def test_analytic_normal_smooths_a_sampled_curve():
+    """``add_fault_bc(normal=...)`` on a polyline-sampled arc.
+
+    The facet-AVERAGED per-node normal zig-zags at the sampling kinks, so
+    the no-opening constraint forbids smooth slip past each kink — a
+    normal-traction sawtooth locked to the kink positions (the negative
+    control: it MUST be there, or this test can't see the fix). The
+    analytic arc normal on the SAME kinked mesh removes it. Measured at
+    h = 0.02 the ratio is ~7x; asserted at 3x. The exact-normal case runs
+    on the SECOND mesh of the test, which is the regression for the
+    unwrap coordinate re-tagging (issue #501's fault-side twin).
+    """
+    import sympy
+
+    from underworld3.utilities.fault_contact import fault_normal_traction
+
+    R, half_chord = 0.35, 0.22
+    alpha = np.arcsin(half_chord / R)
+    centre = np.array([0.5, 0.5 - R * np.cos(alpha)])
+    ang = np.linspace(np.pi / 2 + alpha, np.pi / 2 - alpha, 9)  # 8 segments
+    pts = centre + R * np.column_stack([np.cos(ang), np.sin(ang)])
+
+    rough = {}
+    for tag, use_exact in (("avg", False), ("exact", True)):
+        split = _box(0.02).add_fault(("Arc", pts))
+        stokes = _shear_stokes(split, f"an_{tag}")
+        if use_exact:
+            x, y = split.X
+            stokes.add_fault_bc(0, boundary="Arc", normal=sympy.Matrix(
+                [[x - centre[0], y - centre[1]]]))
+        else:
+            stokes.add_fault_bc(0, boundary="Arc")
+        stokes.solve()
+        info = stokes._rotated_freeslip_info
+        _s, _V, leak = fault_slip(stokes, "Arc", info)
+        assert np.abs(leak).max() < 1e-10, f"{tag}: fault opened"
+        s_n, sig = fault_normal_traction(stokes, "Arc", info)
+        mid = (s_n > 0.08) & (s_n < s_n.max() - 0.08)
+        rough[tag] = float(np.sqrt(np.mean(np.diff(sig[mid], 2) ** 2)))
+
+    assert rough["avg"] > 3.0 * rough["exact"], (
+        f"analytic normal did not smooth the sampled curve: "
+        f"avg {rough['avg']:.4f} vs exact {rough['exact']:.4f}")
+
+    # a genuinely foreign symbol is still refused, and refusal must not
+    # corrupt the already-registered override
+    with pytest.raises(ValueError, match="not mesh coordinates"):
+        stokes.add_fault_bc(0, boundary="Arc", normal=sympy.Matrix(
+            [[sympy.Symbol("q_foreign"), 1]]))
+    assert "Arc" in stokes._fault_normal_overrides

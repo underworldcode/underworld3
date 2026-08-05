@@ -5916,7 +5916,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.is_setup = False
         return
 
-    def add_fault_bc(self, conds=0, boundary=None):
+    def add_fault_bc(self, conds=0, boundary=None, normal=None):
         r"""Interface condition on a split-node fault (value-first).
 
         ``boundary`` names a fault split by ``Mesh.add_fault`` (or
@@ -5934,6 +5934,18 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
           removes the fault (only the JUMP is penalised — nothing becomes
           rigid).
 
+        ``normal`` optionally supplies the fault's ANALYTIC unit normal —
+        a sympy ``1×dim`` Matrix in ``mesh.X``, or a constant ``(dim,)``
+        array — with the same conventions as
+        :meth:`add_rotated_freeslip_bc`. Use it whenever the fault trace is
+        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
+        adjacent facet normals, which zig-zags at the sampling kinks, and
+        the no-opening constraint then forbids smooth slip past each kink —
+        slip notches and normal-traction sawteeth that GROW under mesh
+        refinement. The analytic normal restores the smooth curve's
+        mechanics on the same polyline mesh. On a straight fault the
+        default is already exact.
+
         The solve then takes the rotated strong-constraint path
         (``utilities/rotated_bc.py`` with the pair blocks of
         ``utilities/fault_contact.py``); ``guard()`` /
@@ -5950,9 +5962,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 f"got {type(boundary).__name__}")
         eta_f = float(conds)
         if eta_f == 0.0:
-            fault_contact.add_frictionless_fault_bc(self, boundary)
+            fault_contact.add_frictionless_fault_bc(self, boundary,
+                                                    normal=normal)
         else:
-            fault_contact.add_viscous_fault_bc(self, eta_f, boundary)
+            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
+                                               normal=normal)
         self.is_setup = False
         return
 

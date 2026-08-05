@@ -59,11 +59,31 @@ Each coincident pair $(v^+, v^-)$ carries $2\,d$ velocity unknowns
 ($d$ the dimension). One orthogonal $2d \times 2d$ block per pair rotates
 them to mean and jump components in the fault frame
 $(\hat n, \hat t_1[, \hat t_2])$, with the frame built per node from the
-one-sided fault facet normals (so curved and kinked faults are handled by
-construction). The rotation rides the same machinery as rotated free-slip
-walls; the mean rows and the slip rows remain ordinary unknowns of the
-bulk momentum balance, and only the jump-normal row enters the constrained
-set.
+one-sided fault facet normals. The rotation rides the same machinery as
+rotated free-slip walls; the mean rows and the slip rows remain ordinary
+unknowns of the bulk momentum balance, and only the jump-normal row
+enters the constrained set.
+
+**The frame, not the mesh, sets a curved fault's smoothness.** The
+default per-node normal is the average of the adjacent facet normals —
+exact on a straight fault, but zig-zagging at the sampling kinks of a
+polyline-sampled curve. Slip past a kink is then geometrically
+incompatible with the no-opening constraint, and the solver answers with
+slip notches and normal-traction sawteeth locked to the kink positions
+that *grow* under refinement (the discretisation converges to the
+kinked-constraint problem, faithfully). A controlled experiment
+(circular arc, $78°$ total turn, $N = 2$–$24$ segments vs a straight
+control) exonerated both the meshing (near-trace cell quality is
+uncorrelated with the roughness; the straight cut is the worst-quality
+case yet perfectly smooth) and the constraint enforcement (leak
+$\le 10^{-17}$ throughout), and convicted the frame: supplying the
+smooth curve's analytic normal (`add_fault_bc(..., normal=...)`, same
+conventions as rotated free-slip walls) on the *same kinked mesh* cuts
+the traction sawtooth by $7$–$17\times$, makes it $h$-independent, and
+collapses the slip profiles of different samplings onto one smooth
+curve. Sampled curved faults should therefore always carry their
+analytic (or smoothed) normal; the facet-averaged default is for
+straight segments and genuinely kinked geometry.
 
 ![Pair transform](figures/split-node-faults/pair-transform.png)
 

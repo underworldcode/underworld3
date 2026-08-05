@@ -1,22 +1,28 @@
-"""A schematic southern California: the San Andreas as a restraining
-stepover, read by its neighbours.
+"""A schematic southern California: the San Andreas with a smooth
+restraining bend (the Big Bend), read by its neighbours.
 
 Geography (schematic, not to scale, x = east / y = north): the SAN
-ANDREAS is represented as TWO PARALLEL, laterally OFFSET dextral
-transform segments — a left step, which under right-lateral shear is
-RESTRAINING: the overlap zone between the tips is where the
-TRANSVERSE RANGES belong, right beside the Garlock. Straight segments
-carry none of the polyline roughness a curved trace acquires. The
-GARLOCK (resolving sinistral — the real sense, from the kinematics),
-three EAST CALIFORNIA SHEAR ZONE strands and a SAN JACINTO-like fault
-sit inboard as welded probes.
+ANDREAS is ONE continuous dextral trace with a smooth tanh S-bend — the
+smoothed version of a left-stepping stepover. Under right-lateral shear
+the bend is RESTRAINING: the bend zone is where the TRANSVERSE RANGES
+belong, right beside the Garlock. The GARLOCK (resolving sinistral —
+the real sense, from the kinematics), three EAST CALIFORNIA SHEAR ZONE
+strands and a SAN JACINTO-like fault sit inboard as welded probes.
 
-Both San Andreas segments slip freely under right-lateral simple
-shear parallel to the plate-boundary trend; the slip half-arrows on
-the map come from the MEASURED jump. Field: Delta CFF on
-boundary-parallel planes, P0 (cell) stress — continuous-P1 projection
-of the rough near-fault stress rings at the node scale (measured) —
-rendered on the split mesh's true connectivity.
+The curved trace is sampled as a polyline, and the fault's constraint
+frame uses the curve's ANALYTIC normal (``add_fault_bc(normal=...)``).
+Without it the per-node normal averages the adjacent facet normals and
+zig-zags at the sampling kinks; the no-opening constraint then forbids
+smooth slip past each kink — sawtooth tractions that GROW under mesh
+refinement (measured: ~/+Simulations/curved_fault_roughness/). With the
+analytic normal the polyline behaves as the smooth fault it represents.
+
+The San Andreas slips freely under right-lateral simple shear parallel
+to the plate-boundary trend; the slip half-arrows on the map come from
+the MEASURED jump. Field: Delta CFF on boundary-parallel planes, P0
+(cell) stress — continuous-P1 projection of the rough near-fault stress
+rings at the node scale (measured) — rendered on the split mesh's true
+connectivity.
 """
 import os
 import time
@@ -25,6 +31,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import sympy
 import pyvista as pv
 
 import underworld3 as uw
@@ -41,16 +48,44 @@ ETA_WELD = 200.0 * common.ETA / 0.2
 P0 = 1.0
 COH = 0.75
 
-# Two straight dextral segments, left-stepping (restraining): the
-# northern segment sits SW of the southern segment's trend, overlapping
-# it slightly; the stepover between the tips is the Transverse Ranges.
+# One continuous dextral trace with a smooth restraining bend: the
+# centreline runs along the trend from A, offset by a tanh step of
+# BEND_W toward the SW (the CCW normal) — an S in map view, stepping
+# LEFT, so right-lateral slip must converge through the bend. Max
+# deviation from the trend: atan(BEND_W / (2 LAM)) ~ 30 degrees, about
+# the real Big Bend.
 _A = np.array([0.88, 0.06])
 _t = np.array([np.cos(np.radians(TREND)), np.sin(np.radians(TREND))])
 _n = np.array([-_t[1], _t[0]])                  # CCW normal (points SW)
-SAF_S = np.array([_A, _A + 0.48 * _t])
-SAF_N = np.array([_A + 0.42 * _t + 0.07 * _n,
-                  _A + 0.94 * _t + 0.07 * _n])
-STEPOVER = _A + 0.45 * _t + 0.035 * _n
+S_END = 0.94
+BEND_W = 0.07                                   # total SW offset
+BEND_S0 = 0.45                                  # bend centre, arc parameter
+LAM = 0.06                                      # bend half-width
+
+
+def _w(s):
+    return 0.5 * BEND_W * (1.0 + np.tanh((s - BEND_S0) / LAM))
+
+
+def saf_trace(n_seg=47):
+    """The smooth trace sampled as a polyline (kinks land on mesh
+    vertices; the analytic normal makes them harmless)."""
+    s = np.linspace(0.0, S_END, n_seg + 1)
+    return _A + np.outer(s, _t) + np.outer(_w(s), _n)
+
+
+def saf_normal(child):
+    """The EXACT unit-normal direction of the smooth trace as a sympy
+    row matrix in mesh coordinates: with X(s) = A + s t + w(s) n and
+    s(X) = (X - A).t, the tangent is t + w'(s) n and the normal its
+    quarter turn, n - w'(s) t (normalisation is the caller's)."""
+    x, y = child.X
+    s = (x - _A[0]) * _t[0] + (y - _A[1]) * _t[1]
+    wp = (0.5 * BEND_W / LAM) * (1 - sympy.tanh((s - BEND_S0) / LAM) ** 2)
+    return sympy.Matrix([[_n[0] - wp * _t[0], _n[1] - wp * _t[1]]])
+
+
+SAF_PTS = saf_trace()
 
 MINORS = {
     "Garlock": np.array([[0.52, 0.44], [0.80, 0.53]]),
@@ -67,14 +102,15 @@ COLOUR = {"Garlock": "#6a1b9a", "E1": "#1a6b1a", "E2": "#1a6b1a",
 
 
 def build_and_solve(trunk_free):
-    faults = ([("SAF_S", SAF_S), ("SAF_N", SAF_N)]
-              + [(k, v) for k, v in MINORS.items()])
+    faults = [("SAF", SAF_PTS)] + [(k, v) for k, v in MINORS.items()]
     child = common.base_mesh(0.012).add_fault(faults)
     stokes = common.stokes_on(child,
                               common.boundary_simple_shear(child, TREND,
                                                            TAU0))
-    for seg in ("SAF_S", "SAF_N"):
-        stokes.add_fault_bc(0 if trunk_free else ETA_WELD, boundary=seg)
+    # the analytic normal in BOTH states, so the slipping and welded
+    # solves share one constraint frame and difference cleanly
+    stokes.add_fault_bc(0 if trunk_free else ETA_WELD, boundary="SAF",
+                        normal=saf_normal(child))
     for k in MINORS:
         stokes.add_fault_bc(ETA_WELD, boundary=k)
     fault_contact.solve_with_fault(stokes, picard=2)
@@ -122,14 +158,13 @@ else:
           f"{time.perf_counter() - t_wall:.1f} s")
     t_wall = time.perf_counter()
     s_saf, V_saf = common.slip_vs_position(
-        s1, SAF_S[1] - SAF_S[0], centre=SAF_S.mean(axis=0), name="SAF_S")
+        s1, _t, centre=_A + 0.47 * _t, name="SAF")
     comp1 = stress_components(child, s1, "a")
 
     s0 = common.stokes_on(child,
                           common.boundary_simple_shear(child, TREND,
                                                        TAU0))
-    for seg in ("SAF_S", "SAF_N"):
-        s0.add_fault_bc(ETA_WELD, boundary=seg)
+    s0.add_fault_bc(ETA_WELD, boundary="SAF", normal=saf_normal(child))
     for k in MINORS:
         s0.add_fault_bc(ETA_WELD, boundary=k)
     fault_contact.solve_with_fault(s0, picard=2)
@@ -180,7 +215,7 @@ print(f"SAF slip: median tangential jump {v_med:+.3f} ({sense})")
 # ---- the field render ------------------------------------------------------
 dcff_field, GAUGE_C = common.far_field_anchor(
     data["field_centroids"], data["field_dcff"],
-    [SAF_S, SAF_N] + list(MINORS.values()), cut=0.18)
+    [SAF_PTS[:26], SAF_PTS[24:]] + list(MINORS.values()), cut=0.18)
 print(f"far-field gauge constant removed: {GAUGE_C:+.4f}")
 pvm = pv.PolyData(np.asarray(data["field_points"], dtype=float),
                   faces=np.asarray(data["field_faces"], dtype=np.int64))
@@ -197,15 +232,14 @@ def polyline(pts):
         np.column_stack([pts, np.full(len(pts), 0.001)]))
 
 
-for seg in (SAF_S, SAF_N):
-    pl.add_mesh(polyline(seg), color="black", line_width=5.0,
-                lighting=False)
+pl.add_mesh(polyline(SAF_PTS), color="black", line_width=5.0,
+            lighting=False)
 for k, pts in MINORS.items():
     pl.add_mesh(polyline(pts), color=COLOUR[k], line_width=4.0,
                 lighting=False)
 
-# measured slip sense, half-arrows either side of the southern segment
-mid = SAF_S.mean(axis=0)
+# measured slip sense, half-arrows either side of the southern leg
+mid = _A + 0.20 * _t
 sense_sign = np.sign(v_med)
 for pm in (+1.0, -1.0):
     base = mid + pm * 0.05 * _n - pm * sense_sign * 0.06 * _t
@@ -218,7 +252,7 @@ pl.add_point_labels(
               [0.68, 0.50, 0.002], [0.60, 0.82, 0.002],
               [0.84, 0.20, 0.002], [0.40, 0.24, 0.002]]),
     ["San Andreas (N)", "San Andreas (S)", "Garlock", "ECSZ",
-     "San Jacinto", "Transverse Ranges\n(restraining stepover)"],
+     "San Jacinto", "Transverse Ranges\n(restraining bend)"],
     font_size=20, text_color="black", shape=None, always_visible=True,
     show_points=False)
 
@@ -239,8 +273,9 @@ axf.imshow(plt.imread(field_png))
 axf.set_xticks([])
 axf.set_yticks([])
 axf.set_title(r"$\Delta$CFF on boundary-parallel planes ($\mu' = 0.4$);"
-              "\nboth SAF segments slip (right-lateral), neighbours "
-              "welded as probes\n(schematic geometry, not to scale)",
+              "\nthe San Andreas slips (right-lateral) through its "
+              "restraining bend, neighbours welded as probes\n"
+              "(schematic geometry, not to scale)",
               fontsize=9)
 
 for row, (label, members, col) in enumerate(GROUPS):
@@ -291,7 +326,7 @@ for row, (label, members, col) in enumerate(GROUPS):
 
 cax = fig.add_subplot(gs[:, 2])
 fig.colorbar(pts, cax=cax, label=r"node $\Delta$CFF")
-fig.suptitle("A San Andreas slip event (stepover), read by its "
+fig.suptitle("A San Andreas slip event (Big Bend), read by its "
              "neighbours", fontsize=11.5)
 fig.tight_layout()
 out = os.path.join(D, "california.png")

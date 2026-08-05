@@ -84,16 +84,21 @@ them render fine anywhere.
    the MARGIN to the envelope (grazing at phi = 20, crossing at 45,
    parked safe at 70). 6 solves at h = 0.016, 13-18 s each.
 9. **`california.py` → `california.png`** — schematic southern
-   California: the San Andreas as TWO parallel offset dextral segments
-   (left step = restraining; the stepover is the Transverse Ranges,
-   beside the Garlock). Straight segments by design: curved polyline
-   trunks leave kink roughness (tried, measured, rejected). Garlock
-   (resolves sinistral from the kinematics), three ECSZ strands and a
-   San Jacinto analogue welded as probes, all inboard. Verdicts: SJF
-   relaxed (-0.45), ECSZ neutral, the Garlock cloud STRETCHED
-   (stepover end loaded, far end relaxed); slip arrows from the
-   MEASURED jump (+0.167 right-lateral). ~50 s of compute at
-   h = 0.012. The capstone.
+   California: the San Andreas as ONE continuous dextral trace with a
+   smooth tanh S-bend (the Big Bend — the smoothed stepover; left
+   step = restraining). The curved trace is sampled as a polyline and
+   carries the smooth curve's ANALYTIC NORMAL via
+   `add_fault_bc(..., normal=...)` — the capability that made curved
+   traces viable (see the rendering/roughness rules below). The
+   restraining bend fills with strong compression: a dCFF bowtie
+   exactly where the Transverse Ranges belong — the model puts the
+   mountains where the mountains are. Garlock (resolves sinistral
+   from the kinematics), three ECSZ strands and a San Jacinto
+   analogue welded as probes, all inboard. Verdicts: SJF relaxed
+   (-0.41), Garlock and ECSZ mildly loaded (+0.05/+0.06); slip
+   arrows from the MEASURED jump (+0.242 right-lateral — a
+   continuous trace slips more than the two offset segments did).
+   ~50 s of compute at h = 0.012. The capstone.
 
    RENDERING RULES the interaction fields obey (hard-won, measured):
    stress fields are P0 (cell) projections — continuous-P1 projection
@@ -142,10 +147,18 @@ them render fine anywhere.
   stress drop, pale far field. (`signed_log` remains in the harness
   if a far-field-emphasis view is ever wanted, but the maintainer
   rejected it for these figures: it makes the far field "overflow".)
-- Straight fault segments wherever possible: any polyline sampling of
-  a curved trace leaves kink roughness that a slipping fault
-  faithfully amplifies (a curved SAF was tried twice and rejected —
-  the stepover representation is both cleaner and better geology).
+- Curved faults carry their ANALYTIC NORMAL
+  (`add_fault_bc(..., normal=sympy 1×dim Matrix in mesh.X)`). The kink
+  roughness of a sampled curve was diagnosed (2026-08-05,
+  ~/+Simulations/curved_fault_roughness/): NOT the meshing, NOT the
+  integration — the default per-node normal AVERAGES the adjacent
+  facet normals and zig-zags at the sampling kinks, so the no-opening
+  constraint forbids smooth slip past each kink (sawteeth that GROW
+  under refinement). The analytic normal on the same kinked mesh cuts
+  the sawtooth 7-17x and restores h-convergence. Straight faults need
+  nothing (the average is exact there); a deliberately kinked fault
+  should NOT be given a smooth normal — the kink response is then the
+  physics.
 
 ## Conventions (consistent across every figure)
 

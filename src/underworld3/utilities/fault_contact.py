@@ -52,13 +52,24 @@ from underworld3 import mpi
 _VELOCITY_FIELD = 0
 
 
-def add_frictionless_fault_bc(solver, boundary):
+def add_frictionless_fault_bc(solver, boundary, normal=None):
     """Register the frictionless contact on the split fault ``boundary``.
 
     ``boundary`` is the fault's original surface name; the mesh must be one
     returned by :func:`fault_split.split_fault`, which records the
     Plus/Minus DOF pairing. The condition itself is imposed inside the
     rotated solve — run it with :func:`solve_with_fault`.
+
+    ``normal`` optionally supplies the fault's ANALYTIC unit normal — a
+    sympy ``1×dim`` Matrix in ``mesh.X`` or a constant ``(dim,)`` array,
+    the same conventions as ``add_rotated_freeslip_bc``. Without it the
+    per-node normal is the average of the adjacent facet normals, which is
+    exact on a straight fault but on a SAMPLED CURVE zig-zags at node
+    scale: slip past each sampling kink is then geometrically incompatible
+    with the no-opening constraint, producing slip notches and normal-
+    traction spikes that INTENSIFY under mesh refinement. The analytic
+    normal restores the smooth curve's mechanics on the same kinked mesh
+    (measured: an order of magnitude off the sawtooth, h-convergent).
     """
     pairs = getattr(solver.mesh, "_fault_point_pairs", {})
     if boundary not in pairs:
@@ -70,9 +81,70 @@ def add_frictionless_fault_bc(solver, boundary):
     registered = getattr(solver, "_fault_contact_faults", [])
     if boundary not in registered:
         solver._fault_contact_faults = registered + [boundary]
+    if normal is not None:
+        _compile_normal_spec(normal, solver.mesh, boundary)   # fail fast
+        overrides = dict(getattr(solver, "_fault_normal_overrides", {}))
+        overrides[boundary] = normal
+        solver._fault_normal_overrides = overrides
 
 
-def add_viscous_fault_bc(solver, conds, boundary):
+def _compile_normal_spec(spec, mesh, boundary):
+    """Compile an analytic-normal spec into ``callable(X) -> n``.
+
+    Mirrors the rotated-free-slip normal conventions
+    (:func:`rotated_bc._boundary_velocity_nodes`): a sympy ``1×dim`` Matrix
+    in ``mesh.X`` is unwrapped and lambdified ONCE into a numpy callable
+    (per-node ``.subs()`` is orders of magnitude slower); anything else is
+    a constant ``(dim,)`` vector. The result need not be unit length — the
+    caller normalises — but must be nonzero at every fault node.
+    """
+    dim = mesh.dim
+    if isinstance(spec, sympy.MatrixBase):
+        if len(spec) != dim:
+            raise ValueError(
+                f"analytic normal for fault {boundary!r} has {len(spec)} "
+                f"components; the mesh is {dim}-D.")
+        from underworld3.function.expressions import unwrap
+        comps = [sympy.sympify(unwrap(spec[k], keep_constants=False,
+                                      return_self=False))
+                 for k in range(dim)]
+        # unwrap canonicalises coordinate BaseScalars onto the FIRST
+        # mesh's frame (multi-mesh symbol identity, see issue #501), so
+        # on any later mesh the unwrapped x is not ``mesh.X[0]`` by
+        # identity even though it prints the same. Re-tag by NAME onto
+        # this mesh's coordinates before the stray check and the
+        # lambdify.
+        by_name = {str(xk): xk for xk in mesh.X}
+        retag = {s: by_name[str(s)] for c in comps for s in c.free_symbols
+                 if str(s) in by_name and s is not by_name[str(s)]}
+        if retag:
+            comps = [c.subs(retag) for c in comps]
+        stray = set().union(*[c.free_symbols for c in comps]) \
+            - set(mesh.X)
+        if stray:
+            raise ValueError(
+                f"analytic normal for fault {boundary!r} contains symbols "
+                f"{sorted(map(str, stray))} that are not mesh coordinates "
+                "— express it in mesh.X.")
+        fn = sympy.lambdify(list(mesh.X), comps, "numpy")
+        return lambda X: np.asarray(fn(*X), dtype=float).ravel()
+    const = np.asarray(spec, dtype=float).ravel()
+    if const.shape != (dim,):
+        raise ValueError(
+            f"constant normal for fault {boundary!r} must have shape "
+            f"({dim},); got {const.shape}.")
+    return lambda X: const
+
+
+def _compiled_normal_override(solver, boundary):
+    """The fault's registered analytic-normal override, compiled — or None."""
+    spec = getattr(solver, "_fault_normal_overrides", {}).get(boundary)
+    if spec is None:
+        return None
+    return _compile_normal_spec(spec, solver.mesh, boundary)
+
+
+def add_viscous_fault_bc(solver, conds, boundary, normal=None):
     r"""Register a viscous (linear dashpot) law on the split fault ``boundary``:
 
     .. math::  \hat t\cdot\sigma\cdot\hat n = \eta_f\, V,
@@ -95,7 +167,7 @@ def add_viscous_fault_bc(solver, conds, boundary):
     occupies with :math:`2\,(\partial\tau/\partial V)\,M` — so everything
     downstream of this hook is what friction will reuse.
     """
-    add_frictionless_fault_bc(solver, boundary)
+    add_frictionless_fault_bc(solver, boundary, normal=normal)
     eta_f = float(conds)
     if eta_f < 0.0:
         raise ValueError(f"interface viscosity must be >= 0 (got {eta_f}).")
@@ -201,7 +273,8 @@ def CoulombFaultLaw(mu, sigma_n, V0):
         strength * (2 / sympy.pi) * sympy.atan(slip_rate / float(V0)))
 
 
-def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5):
+def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5,
+                         normal=None):
     """Regularised Coulomb friction on the split fault ``boundary``
     (value-first: ``conds`` is the friction coefficient mu).
 
@@ -221,7 +294,7 @@ def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5):
     if mu <= 0.0 or float(V0) <= 0.0 or (
             sigma_n != "reaction" and float(sigma_n) <= 0.0):
         raise ValueError("mu, sigma_n and V0 must all be positive.")
-    add_frictionless_fault_bc(solver, boundary)
+    add_frictionless_fault_bc(solver, boundary, normal=normal)
     _register_law(solver, boundary, CoulombFaultLaw(mu, sigma_n, V0))
 
 
@@ -252,7 +325,7 @@ def RateStateFaultLaw(a, b, V0, f0, Dc, sigma_n="reaction"):
 
 
 def add_rate_state_fault_bc(solver, conds, boundary, *, a, b, V0, Dc,
-                            sigma_n="reaction", theta0=None):
+                            sigma_n="reaction", theta0=None, normal=None):
     """Rate-and-state friction on the split fault ``boundary``
     (value-first: ``conds`` is the reference friction coefficient f0).
 
@@ -262,7 +335,7 @@ def add_rate_state_fault_bc(solver, conds, boundary, *, a, b, V0, Dc,
     ``Dc/V0``, steady at the reference rate) and is advanced after each
     solve with :func:`update_fault_state`.
     """
-    add_frictionless_fault_bc(solver, boundary)
+    add_frictionless_fault_bc(solver, boundary, normal=normal)
     _register_law(solver, boundary,
                   RateStateFaultLaw(a, b, V0, conds, Dc, sigma_n=sigma_n))
     states = dict(getattr(solver, "_fault_state", {}))
@@ -345,6 +418,14 @@ def _fault_pair_nodes(solver, boundary):
     orientation well-defined — and accumulated to the facet closure points.
     The sign only flips the constrained row's sign, so either orientation
     imposes the same no-opening condition.
+
+    An analytic-normal override registered for this fault (the ``normal``
+    argument of the ``add_*_fault_bc`` family) replaces the accumulated
+    facet-average DIRECTION per node, sign-aligned to the Plus→Minus
+    orientation. This is the single authority for the pair normal: the
+    rotated pair blocks, the interface-law rows, and every diagnostic
+    (slip, leak, normal traction) all read the frame from here, so the
+    override is consistent everywhere by construction.
     """
     mesh = solver.mesh
     dm = solver.dm
@@ -378,6 +459,13 @@ def _fault_pair_nodes(solver, boundary):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
                 nacc[q] = nacc.get(q, np.zeros(dim)) + ne
 
+    override = _compiled_normal_override(solver, boundary)
+    if override is not None:
+        from underworld3.utilities.rotated_bc import _point_coord
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        v0, v1 = dm.getDepthStratum(0)
+
     out = []
     for q_minus, q_plus in pairs.items():
         if lsec.getFieldDof(int(q_plus), _VELOCITY_FIELD) <= 0:
@@ -389,8 +477,22 @@ def _fault_pair_nodes(solver, boundary):
             raise RuntimeError(
                 f"fault_contact: paired point {q_plus} carries velocity DOFs "
                 f"but is not in the {plus_name!r} facet closure.")
-        out.append((int(q_plus), int(q_minus),
-                    acc / (np.linalg.norm(acc) + 1e-30)))
+        nrm = acc / (np.linalg.norm(acc) + 1e-30)
+        if override is not None:
+            X = np.asarray(_point_coord(dm, dim, cvec, csec, v0, v1,
+                                        int(q_plus)), dtype=float)
+            ne = np.asarray(override(X), dtype=float).ravel()
+            norm = np.linalg.norm(ne)
+            if not norm > 0:
+                raise ValueError(
+                    f"analytic normal for fault {boundary!r} vanishes at "
+                    f"node {int(q_plus)} (coordinate {X}).")
+            ne = ne / norm
+            # keep the Plus→Minus orientation of the facet-derived normal
+            if np.dot(ne, nrm) < 0:
+                ne = -ne
+            nrm = ne
+        out.append((int(q_plus), int(q_minus), nrm))
     return out
 
 

@@ -219,23 +219,34 @@ Script: `figures/fault-examples/interacting_faults.py`.
 
 ### A schematic southern California
 
-The San Andreas (with its Big Bend) as the slipping trunk; the
-Garlock, three East California Shear Zone strands and a San
-Jacinto-like fault welded as probes — all inboard, in the continental
-crust. The drive is right-lateral simple shear parallel to the plate
-boundary (~N40W), which resolves dextral on the NW-striking faults and
-sinistral on the Garlock, exactly the real senses; the slip arrows on
-the map are drawn from the *measured* jump, not assumed:
+The San Andreas as ONE continuous dextral trace with a smooth tanh
+S-bend — the Big Bend, the smoothed version of a left-stepping
+stepover, restraining under right-lateral slip. The Garlock, three
+East California Shear Zone strands and a San Jacinto-like fault are
+welded as probes — all inboard, in the continental crust. The drive is
+right-lateral simple shear parallel to the plate boundary (~N40W),
+which resolves dextral on the NW-striking faults and sinistral on the
+Garlock, exactly the real senses; the slip arrows on the map are drawn
+from the *measured* jump, not assumed:
 
 ![Schematic southern California](figures/fault-examples/california.png)
 
-One trunk-spanning event, three verdicts: the parallel San Jacinto is
-deeply relaxed ($\Delta$CFF $-0.4$, its cloud retreating into the
-safe wedge); the conjugate Garlock is *loaded* ($+0.1$, pushed toward
-the envelope); the distant ECSZ strands are mildly loaded ($+0.08$)
-in the far-field lobe. The kinked trunk adds its own lesson — each bend
-carries a local stress pocket, with restraining-bend loading visible
-on the Big Bend's flank. (Schematic geometry, not to scale; same
+The curved trace is sampled as a polyline, and the fault carries the
+smooth curve's **analytic normal**
+(`add_fault_bc(..., normal=...)`). This matters: with the default
+facet-averaged normals a sampled curve develops slip notches and
+stress sawteeth at every sampling kink — roughness that *grows* under
+refinement, because the constraint direction itself zig-zags (see the
+practical notes in the split-node fault guide). With the analytic
+normal the trace slips smoothly through the bend.
+
+One trunk-spanning event, and the map teaches by geography: the
+restraining bend fills with strong compression — $\Delta$CFF deeply
+negative in a bowtie exactly where the Transverse Ranges belong. The
+neighbours give three verdicts: the parallel San Jacinto is deeply
+relaxed ($\Delta$CFF $-0.4$, its cloud retreating into the safe
+wedge); the conjugate Garlock and the distant ECSZ strands are mildly
+loaded ($+0.05$ to $+0.06$). (Schematic geometry, not to scale; same
 $P_0 = 1$, $C = 0.75$ envelope dressing.)
 
 Script: `figures/fault-examples/california.py`.
