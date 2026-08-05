@@ -145,6 +145,30 @@ law = fault_contact.SymbolicFaultLaw(
 
 Script: `figures/fault-examples/mohr_cohesion.py`.
 
+### The graded fault: depth-dependent stress along one surface
+
+Add a modest hydrostatic load (constant density, closed box — the flow
+is untouched, pressure absorbs gravity exactly) and the per-node
+character of the stress recovery becomes visible: every fault node sits
+at its own depth, so a single welded fault contributes a **streak** of
+probes, not a point. The streak is horizontal (only the pressure part
+of $\sigma$ varies along the fault), longest for the vertical fault,
+and collapses to a dot for the horizontal one:
+
+![The graded fault](figures/fault-examples/mohr-graded.png)
+
+Points are coloured by depth; the grey circles are the Mohr circles of
+the shallowest, central, and deepest fault points. Nothing here is
+averaged — $\sigma_n$ comes from the constraint reaction de-smeared
+node by node, $\tau$ from the weld's own law at each node — which is
+exactly the machinery that lets a friction law feel depth-dependent
+strength along a single fault (the locking-depth structure of a
+seismogenic zone). The closed-box pressure gauge is re-anchored in the
+plot so $p = 0$ at the top surface; the shift is the analytically known
+$\rho g H/2$.
+
+Script: `figures/fault-examples/mohr_graded.py`.
+
 ## Orientation and slip: the circle's other face
 
 The same orientation sweep with *frictionless* faults under pure shear.
