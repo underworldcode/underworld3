@@ -918,6 +918,33 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
         (face_verts, edge_faces, _rim_edges, interior_edges, rim_verts,
          interior_verts, problem) = _patch_faces_and_edges(dm, fault_faces)
 
+        # v1 seam rule, deliberately the most conservative one: the whole
+        # cell star of the patch must be rank-interior. A 3-D seam crossing
+        # is a CURVE of shared points, a genuinely new design, not the 2-D
+        # crossing-vertex rule applied pointwise.
+        #
+        # Diagnosed FIRST, before any check that interprets this rank's
+        # patch topology: a rank holding only a ghost FRAGMENT of the
+        # patch sees the fragment's edge as "rim", its faces as
+        # support-1, its interior as empty — every later check would
+        # mis-fire with a misleading message where the true verdict is
+        # the seam. (The union rim | interior used here is
+        # fragment-correct even though the classification is not.)
+        if problem is None and bool(shared.any()):
+            patch_verts = rim_verts | interior_verts
+            for i, tet in enumerate(cell_verts):
+                if not (set(int(t) for t in tet) & patch_verts):
+                    continue
+                closure, _ = dm.getTransitiveClosure(cS + i)
+                if shared[np.asarray(closure, dtype=np.int64)
+                          - pStart].any():
+                    problem = (RuntimeError,
+                               "fault_split: the fault patch's cell star "
+                               "touches the partition seam. 3-D faults must "
+                               "be rank-interior in this version — "
+                               "partition around the fault.")
+                    break
+
         if problem is None and any(
                 dm.getSupportSize(f) != 2 for f in fault_faces):
             problem = (ValueError,
@@ -946,25 +973,6 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
                        "so its two copies would carry the same vertex "
                        "triple. The patch is too coarse to split — refine "
                        "it until every face reaches inside the rim.")
-
-        # v1 seam rule, deliberately the most conservative one: the whole
-        # cell star of the patch must be rank-interior. A 3-D seam crossing
-        # is a CURVE of shared points, a genuinely new design, not the 2-D
-        # crossing-vertex rule applied pointwise.
-        if problem is None and bool(shared.any()):
-            patch_verts = rim_verts | interior_verts
-            for i, tet in enumerate(cell_verts):
-                if not (set(int(t) for t in tet) & patch_verts):
-                    continue
-                closure, _ = dm.getTransitiveClosure(cS + i)
-                if shared[np.asarray(closure, dtype=np.int64)
-                          - pStart].any():
-                    problem = (RuntimeError,
-                               "fault_split: the fault patch's cell star "
-                               "touches the partition seam. 3-D faults must "
-                               "be rank-interior in this version — "
-                               "partition around the fault.")
-                    break
 
         if problem is None:
             oriented, problem = _orient_patch(face_verts, edge_faces, X, vS,
