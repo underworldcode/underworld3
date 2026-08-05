@@ -23,25 +23,25 @@
   for (k, t) in tris.enumerate() {
     let fill = if data.side.at(k) < 0 { mesh-fill-minus } else { mesh-fill-plus }
     line(P(t.at(0)), P(t.at(1)), P(t.at(2)), close: true,
-         fill: fill, stroke: (paint: mesh-stroke, thickness: 0.5pt))
+         fill: fill, stroke: (paint: mesh-stroke, thickness: 0.3pt))
   }
   // fault facets: both copies carry the label
   if exploded {
     // Plus copy: original chain vertices
     for i in range(data.chain.len() - 1) {
       line(P(data.chain.at(i)), P(data.chain.at(i + 1)),
-           stroke: (paint: fault-col, thickness: 1.6pt))
+           stroke: (paint: fault-col, thickness: 1.0pt))
     }
     // Minus copy: replicas where they exist, tips where shared
     let lower(v) = if str(v) in data.replicas { data.replicas.at(str(v)) } else { v }
     for i in range(data.chain.len() - 1) {
       line(P(lower(data.chain.at(i))), P(lower(data.chain.at(i + 1))),
-           stroke: (paint: fault-col, thickness: 1.6pt, dash: "densely-dashed"))
+           stroke: (paint: fault-col, thickness: 1.0pt, dash: "densely-dashed"))
     }
   } else {
     for i in range(data.chain.len() - 1) {
       line(P(data.chain.at(i)), P(data.chain.at(i + 1)),
-           stroke: (paint: fault-col, thickness: 1.8pt))
+           stroke: (paint: fault-col, thickness: 0.9pt))
     }
   }
   // vertices: interior chain (filled red), replicas (open red), tips (black ring)
@@ -51,12 +51,12 @@
   if exploded {
     for (orig, rep) in data.replicas {
       circle(P(rep), radius: 0.045, fill: white,
-             stroke: (paint: replica-col, thickness: 1.1pt))
+             stroke: (paint: replica-col, thickness: 0.9pt))
     }
   }
   for v in data.tips {
     circle(P(v), radius: 0.055, fill: white,
-           stroke: (paint: tip-col, thickness: 1.4pt))
+           stroke: (paint: tip-col, thickness: 1.0pt))
     circle(P(v), radius: 0.02, fill: tip-col, stroke: none)
   }
 }
@@ -82,9 +82,9 @@
   content((3.42, 0.13), text(fill: fault-col, size: 9pt)[$Gamma^-$])
   // annotate one replica pair
   line((1.5, 0.44), (1.75, 0.85), stroke: (paint: rgb("#555555"),
-       thickness: 0.5pt))
+       thickness: 0.3pt))
   content((2.15, 0.95), text(size: 8pt)[$v^+$ (original)])
   line((1.5, 0.24), (1.78, -0.12), stroke: (paint: rgb("#555555"),
-       thickness: 0.5pt))
+       thickness: 0.3pt))
   content((2.2, -0.2), text(size: 8pt)[$v^-$ (replica)])
 })

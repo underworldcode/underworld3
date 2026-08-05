@@ -18,7 +18,7 @@
 
   let row(y, fill, label, role, name: none) = {
     rect((3.1, y - 0.3), (6.4, y + 0.3), fill: fill,
-         stroke: (paint: row-stroke, thickness: 0.6pt), radius: 3pt)
+         stroke: (paint: row-stroke, thickness: 0.5pt), radius: 3pt)
     content((4.75, y), label)
     content((8.55, y), align(left, role))
   }
@@ -26,19 +26,19 @@
   // ---- left: the coincident pair with the fault frame --------------------
   // fault trace through the pair
   line((-0.4, 0.6), (2.0, 1.4), stroke: (paint: fault-col,
-       thickness: 1.6pt))
+       thickness: 1.0pt))
   line((-0.4, 0.44), (2.0, 1.24), stroke: (paint: fault-col,
-       thickness: 1.6pt, dash: "densely-dashed"))
+       thickness: 1.0pt, dash: "densely-dashed"))
   // the pair (drawn slightly apart; coincident in reality)
   circle((0.8, 1.0), radius: 0.05, fill: fault-col, stroke: none)
   circle((0.8, 0.84), radius: 0.05, fill: white,
-         stroke: (paint: fault-col, thickness: 1.1pt))
+         stroke: (paint: fault-col, thickness: 0.9pt))
   content((0.28, 1.28), text(size: 9pt)[$v^+$])
   content((0.3, 0.52), text(size: 9pt)[$v^-$])
   // frame at the pair
-  line((0.8, 1.0), (0.42, 2.0), stroke: (thickness: 1.0pt), mark: (end: ">"))
+  line((0.8, 1.0), (0.42, 2.0), stroke: (thickness: 0.8pt), mark: (end: ">"))
   content((0.28, 2.2), $hat(n)$)
-  line((0.8, 1.0), (1.9, 1.44), stroke: (thickness: 1.0pt), mark: (end: ">"))
+  line((0.8, 1.0), (1.9, 1.44), stroke: (thickness: 0.8pt), mark: (end: ">"))
   content((2.14, 1.56), $hat(t)_1$)
   content((1.62, 0.92), text(size: 8.5pt, fill: rgb("#555555"))[($hat(t)_2$ in 3-D)])
 
@@ -46,7 +46,7 @@
     (2·dim DOFs), \ no shared unknowns]))
 
   // arrow to the rotated rows
-  line((2.25, 0.65), (2.95, 0.65), stroke: (thickness: 1.2pt),
+  line((2.25, 0.65), (2.95, 0.65), stroke: (thickness: 0.9pt),
        mark: (end: ">"))
   content((2.6, 1.0), text(size: 9pt)[$Q$])
 
