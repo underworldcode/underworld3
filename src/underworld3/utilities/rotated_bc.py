@@ -241,8 +241,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
     # that rank's diagonal portion — no off-rank columns. Each rank sets ONLY its
     # owned rows (ghost copies of a shared boundary node are skipped: their global
     # rows fall outside [rstart, rend)). A fault PAIR block spans two points, but
-    # both are rank-local (the split refuses seam-touching faults), so the
-    # diagonal-portion argument carries over unchanged.
+    # both are rank-local (a seam-touching fault is redistributed onto one rank
+    # before the split), so the diagonal-portion argument carries over unchanged.
     A = solver.snes.getJacobian()[0]
     rstart, rend = A.getOwnershipRange()
     nloc = rend - rstart
@@ -298,42 +298,61 @@ def build_rotation(solver, boundaries, datum_specs=None):
     if fault_names:
         from underworld3.utilities import fault_contact
         s2 = 1.0 / np.sqrt(2.0)
-        for fname in fault_names:
-            for q_plus, q_minus, nrm in fault_contact._fault_pair_nodes(
-                    solver, fname):
-                if q_plus in node_normals or q_minus in node_normals:
-                    raise ValueError(
-                        f"fault {fname!r} shares a node with a rotated "
-                        "free-slip boundary; a point cannot carry both a "
-                        "wall block and a pair block.")
-                # The tangent frame: one in-fault direction in 2-D, two in
-                # 3-D. Shared with the interface assembler's slip rows —
-                # _tangent_frame is the single authority. The specific
-                # in-plane directions carry no physics: both slip rows are
-                # free (frictionless) or enter through |V| (laws).
-                frame = [nrm] + fault_contact._tangent_frame(nrm)
-                gp, gm = [], []
-                for q, rows in ((q_plus, gp), (q_minus, gm)):
-                    lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-                    rows.extend(int(l2g.apply([lo + c])[0])
-                                for c in range(dim))
-                if any(g < 0 for g in gp + gm):
-                    continue
-                owned_p = rstart <= gp[0] < rend
-                owned_m = rstart <= gm[0] < rend
-                if owned_p != owned_m:
-                    raise RuntimeError(
-                        "fault_contact: a coincident pair straddles ranks — "
-                        "the split's seam refusal should make this "
-                        "impossible.")
-                if not owned_p:
-                    continue
-                for i, e in enumerate(frame):
-                    for row, sgn in ((gp[i], +1.0), (gm[i], -1.0)):
-                        for j in range(dim):
-                            Q.setValue(row, gp[j], s2 * float(e[j]))
-                            Q.setValue(row, gm[j], sgn * s2 * float(e[j]))
-                normal_rows.append(gm[0])          # [v]·n̂ = 0, datum 0
+        # Rank-local failures in this block (a pairing/label mismatch or a
+        # vanishing analytic normal inside _fault_pair_nodes, a fault node
+        # shared with a wall boundary, a pair straddling ranks) must not
+        # leave the peers blocked in the collective Q assembly below —
+        # collect the verdict and raise it identically on every rank.
+        # ``fault_names`` is registration state, identical across ranks, so
+        # every rank reaches the verdict exchange.
+        problem = None
+        try:
+            for fname in fault_names:
+                for q_plus, q_minus, nrm in fault_contact._fault_pair_nodes(
+                        solver, fname):
+                    if q_plus in node_normals or q_minus in node_normals:
+                        raise ValueError(
+                            f"fault {fname!r} shares a node with a rotated "
+                            "free-slip boundary; a point cannot carry both a "
+                            "wall block and a pair block.")
+                    # The tangent frame: one in-fault direction in 2-D, two
+                    # in 3-D. Shared with the interface assembler's slip
+                    # rows — _tangent_frame is the single authority. The
+                    # specific in-plane directions carry no physics: both
+                    # slip rows are free (frictionless) or enter through
+                    # |V| (laws).
+                    frame = [nrm] + fault_contact._tangent_frame(nrm)
+                    gp, gm = [], []
+                    for q, rows in ((q_plus, gp), (q_minus, gm)):
+                        lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+                        rows.extend(int(l2g.apply([lo + c])[0])
+                                    for c in range(dim))
+                    if any(g < 0 for g in gp + gm):
+                        continue
+                    owned_p = rstart <= gp[0] < rend
+                    owned_m = rstart <= gm[0] < rend
+                    if owned_p != owned_m:
+                        # Structurally impossible after the fault-aware
+                        # redistribution (the split runs rank-interior),
+                        # but "impossible by the seam rules" is exactly
+                        # where surprises have lived — keep the check,
+                        # and make its verdict collective like the rest.
+                        raise RuntimeError(
+                            "fault_contact: a coincident pair straddles "
+                            "ranks — the split's redistribution should "
+                            "make this impossible.")
+                    if not owned_p:
+                        continue
+                    for i, e in enumerate(frame):
+                        for row, sgn in ((gp[i], +1.0), (gm[i], -1.0)):
+                            for j in range(dim):
+                                Q.setValue(row, gp[j], s2 * float(e[j]))
+                                Q.setValue(row, gm[j],
+                                           sgn * s2 * float(e[j]))
+                    normal_rows.append(gm[0])      # [v]·n̂ = 0, datum 0
+        except (RuntimeError, ValueError) as err:
+            problem = str(err)
+        fault_contact._collective_raise(problem)
 
     Q.assemble()
     Qt = Q.transpose(PETSc.Mat())

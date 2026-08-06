@@ -53,6 +53,25 @@ from underworld3 import mpi
 _VELOCITY_FIELD = 0
 
 
+def _collective_raise(problem):
+    """One synchronisation point for rank-local failures in collective paths.
+
+    ``problem`` is ``None`` or an error message string. The verdicts are
+    allgathered and, if any rank failed, the SAME error is raised on EVERY
+    rank — the same contract as fault_split's refusals. Without this, a
+    rank-local raise inside the rotation build or the interface assembler
+    leaves the other ranks blocked in the next collective (Q assembly, the
+    trace-mass exchange, the Newton loop) instead of aborting: a deadlock
+    where an error was meant. COLLECTIVE — every rank must reach it.
+    """
+    if mpi.size > 1:
+        gathered = mpi.comm.allgather(problem)
+        problems = [p for p in gathered if p is not None]
+        problem = problems[0] if problems else None
+    if problem is not None:
+        raise RuntimeError(problem)
+
+
 def add_frictionless_fault_bc(solver, boundary, normal=None):
     """Register the frictionless contact on the split fault ``boundary``.
 
@@ -670,13 +689,21 @@ class _InterfaceAssembler:
             # returned A-union-B rows for fault A). The SOLVE path passes no
             # ``include`` and keeps every law-carrying fault, as it must.
             registered = {name: registered[name] for name in include}
+        problem = None
         for name, law in registered.items():
             current[0] = name
             pairs = solver.mesh._fault_point_pairs[name]
             minus_of = {qp: qm for qm, qp in pairs.items()}
-            normals = {q: n for q, _qm, n in
-                       ((q_plus, q_minus, nrm) for q_plus, q_minus, nrm in
-                        _fault_pair_nodes(solver, name))}
+            # A rank-local geometry failure (pairing/closure mismatch, a
+            # vanishing analytic normal) must not leave the peers blocked
+            # in the collective trace-mass exchange below — collect the
+            # verdict, raise collectively after the walk.
+            try:
+                pair_nodes = _fault_pair_nodes(solver, name)
+            except (RuntimeError, ValueError) as err:
+                problem = str(err)
+                break
+            normals = {q_plus: nrm for q_plus, _q_minus, nrm in pair_nodes}
 
             def node_index(q):
                 q = int(q)
@@ -736,6 +763,7 @@ class _InterfaceAssembler:
                             (verts[i], verts[j]))])
                         for i, j in ((0, 1), (1, 2), (2, 0)))
                     facets.append((idx, area, law_id))
+        _collective_raise(problem)
 
         # petsc4py refuses to narrow index arrays — Vec/Mat setValues need
         # PETSc's own integer type.
