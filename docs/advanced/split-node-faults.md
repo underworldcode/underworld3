@@ -271,25 +271,30 @@ from both sides and no special treatment is needed.
 - **Networks**: pass a list of faults to `add_fault`. Segments must not
   share vertices — represent a branch or crossing as offset segments
   separated by a ligament of one or two cell sizes.
-- **Parallel**: in 2-D a fault may cross a partition seam through a
-  pinned crossing vertex (handled automatically by `add_fault`); a
-  fault running *along* a seam is refused. In 3-D, `split_fault`
-  automatically REDISTRIBUTES first: the patch's cell star (plus one
-  growth layer — a thin skin, not the refined band) is gathered onto
-  the rank that already owns most of it, everything else stays with
-  the load-balanced partition, and the split then works at any rank
-  count. The cost is a bounded imbalance on the fault-owning rank
-  (measured ~1.8x at np = 8 on a graded box). One current exception:
-  several 3-D faults on one mesh in parallel are refused (the pairing
-  does not yet migrate through the redistribution) — split networks in
-  serial for now. All refusals are collective and name the actual
-  problem.
+- **Parallel**: `add_fault` / `split_fault` REDISTRIBUTE first, in
+  both 2-D and 3-D: the fault's cell star (plus one growth layer — a
+  thin skin, not the refined band) is gathered onto the rank that
+  already owns most of it, everything else stays with the
+  load-balanced partition, and the split then runs with serial
+  topology at any rank count. In 2-D the move happens only when the
+  cut chain actually touches the partition seam, and a network passed
+  to one `add_fault` call is redistributed ONCE, keyed on all its
+  faults together — which is also what keeps every fault's pairing
+  valid, since a pairing cannot yet migrate through a redistribution.
+  In 3-D the move is unconditional. The cost is a bounded imbalance on
+  the fault-owning rank (measured ~1.8x at np = 8 on a graded box).
+  One current exception follows from the pairing rule: adding several
+  faults ONE SPLIT AT A TIME in parallel is refused when a later fault
+  needs redistribution — pass the whole network to one `add_fault`
+  call (2-D), or split 3-D networks in serial. All refusals are
+  collective and name the actual problem.
 
 ## Current limitations
 
 Refused loudly rather than mishandled: closed-loop faults (rings,
 spheres); faults that reach the domain boundary (daylighting); junctions
-sharing vertices; 3-D faults touching a partition seam. The design
+sharing vertices; 3-D multi-fault networks in parallel (the pairing does
+not yet migrate through the redistribution). The design
 documents in `docs/developer/design/` (`SPLIT_NODE_FAULT_METHOD_2026-08`
 and `FAULT_CONTACT_DEPLOYMENT_2026-08`) record the method, the
 validation benchmarks, and the roadmap for these extensions.

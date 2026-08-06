@@ -131,6 +131,62 @@ def test_offset_network_in_one_call():
         assert np.abs(V).max() > 0.02, f"{name} does not slip"
 
 
+def test_multi_fault_diagnostics_are_per_fault():
+    """Per-fault diagnostics on a two-fault network stay per-fault.
+
+    The regression (measured): with LAWS registered on both faults, the
+    diagnostic assembler walked every registered fault, so
+    ``fault_normal_traction(solver, "FltA", info)`` returned the UNION of
+    both faults' nodes — fault B's nodes interleaved into A's traction
+    profile as bogus arc-length samples — and ``update_fault_state`` wrote
+    fault B's point keys into fault A's theta store and mixed both faults
+    in its convergence monitor. The oracle for the correct count is
+    ``_fault_pair_nodes``, which was always per-fault.
+    """
+    from underworld3.utilities.fault_contact import (_fault_pair_nodes,
+                                                     fault_normal_traction,
+                                                     update_fault_state)
+
+    A = ("FltA", np.array([[0.20, 0.42], [0.48, 0.49]]))
+    B = ("FltB", np.array([[0.55, 0.52], [0.82, 0.59]]))
+    split = _box().add_fault([A, B])
+
+    stokes = _shear_stokes(split, "D")
+    # viscous laws on BOTH faults: the contamination walked the LAW
+    # registry, so a law must be present on the other fault to catch it
+    stokes.add_fault_bc(1.0 / HALF, "FltA")
+    stokes.add_fault_bc(1.0 / HALF, "FltB")
+    stokes.solve()
+    info = stokes._rotated_freeslip_info
+    assert info["converged"]
+
+    n_a = len(_fault_pair_nodes(stokes, "FltA"))
+    n_b = len(_fault_pair_nodes(stokes, "FltB"))
+    assert n_a > 0 and n_b > 0
+
+    s_a, sig_a = fault_normal_traction(stokes, "FltA", info)
+    s_b, sig_b = fault_normal_traction(stokes, "FltB", info)
+    assert len(sig_a) == n_a, (
+        f"fault A's traction profile has {len(sig_a)} rows where A has "
+        f"{n_a} pair nodes — the other fault's nodes leaked in")
+    assert len(sig_b) == n_b
+    # the arc-length axis must span A's own length, not the network's
+    assert s_a.max() <= 1.05 * float(np.linalg.norm(A[1][1] - A[1][0]))
+
+    # theta bookkeeping: keys written by an update for fault A must all be
+    # fault A's own (plus-side) points
+    stokes._fault_state = {"FltA": {"theta0": 1.0, "Dc": 1.0,
+                                    "by_point": {}}}
+    monitor = update_fault_state(stokes, "FltA", 0.1, info)
+    assert np.isfinite(monitor)
+    keys = set(stokes._fault_state["FltA"]["by_point"])
+    plus_a = set(split._fault_point_pairs["FltA"].values())
+    plus_b = set(split._fault_point_pairs["FltB"].values())
+    assert len(keys) == n_a
+    assert keys <= plus_a, "foreign points in fault A's theta store"
+    assert not (keys & plus_b)
+
+
 def test_analytic_normal_smooths_a_sampled_curve():
     """``add_fault_bc(normal=...)`` on a polyline-sampled arc.
 

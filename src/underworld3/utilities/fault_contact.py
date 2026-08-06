@@ -26,9 +26,10 @@ the shear traction, and an unconstrained row carries none). Friction, later,
 is a nonlinear relation placed on that same slip row; prescribed jump-only
 slip is a datum on it.
 
-Both points of a pair are rank-local (the split refuses a fault whose fans
-touch the partition seam), so every pair block sits inside one rank's
-diagonal portion of ``Q``, exactly like the single-node wall blocks.
+Both points of a pair are rank-local (a seam-touching fault is
+redistributed onto one rank before the split; a direct low-level split of
+one is refused), so every pair block sits inside one rank's diagonal
+portion of ``Q``, exactly like the single-node wall blocks.
 
 Until the interface lands in the solver API proper, the entry points are
 module functions::
@@ -50,6 +51,25 @@ from underworld3 import mpi
 # PETSc section field id of the velocity unknown (solver field registration
 # order: velocity first) — the same convention as rotated_bc.
 _VELOCITY_FIELD = 0
+
+
+def _collective_raise(problem):
+    """One synchronisation point for rank-local failures in collective paths.
+
+    ``problem`` is ``None`` or an error message string. The verdicts are
+    allgathered and, if any rank failed, the SAME error is raised on EVERY
+    rank — the same contract as fault_split's refusals. Without this, a
+    rank-local raise inside the rotation build or the interface assembler
+    leaves the other ranks blocked in the next collective (Q assembly, the
+    trace-mass exchange, the Newton loop) instead of aborting: a deadlock
+    where an error was meant. COLLECTIVE — every rank must reach it.
+    """
+    if mpi.size > 1:
+        gathered = mpi.comm.allgather(problem)
+        problems = [p for p in gathered if p is not None]
+        problem = problems[0] if problems else None
+    if problem is not None:
+        raise RuntimeError(problem)
 
 
 def add_frictionless_fault_bc(solver, boundary, normal=None):
@@ -637,10 +657,9 @@ class _InterfaceAssembler:
     which is what makes the tangent consistent Newton rather than Picard.
 
     Tip nodes have no slip DOF (the jump space vanishes there): they enter
-    the quadrature with V = 0 and receive no row or column. A crossing
-    pair's row may be owned across the seam; both Vec and Mat additions go
-    through PETSc's off-process stash. All entry points are COLLECTIVE —
-    ranks holding no fault still participate in the assemblies.
+    the quadrature with V = 0 and receive no row or column. All entry
+    points are COLLECTIVE — ranks holding no fault still participate in
+    the assemblies.
     """
 
     def __init__(self, solver, include=()):
@@ -662,13 +681,29 @@ class _InterfaceAssembler:
         registered = dict(getattr(solver, "_fault_interface_laws", {}))
         for name in include:
             registered.setdefault(name, None)   # geometry only (diagnostics)
+        if include:
+            # A PER-FAULT view: the diagnostics (fault_normal_traction,
+            # update_fault_state) ask for one fault, and their rows, slip
+            # vectors and theta stores must not be interleaved with the
+            # other registered faults' nodes (measured: a two-fault network
+            # returned A-union-B rows for fault A). The SOLVE path passes no
+            # ``include`` and keeps every law-carrying fault, as it must.
+            registered = {name: registered[name] for name in include}
+        problem = None
         for name, law in registered.items():
             current[0] = name
             pairs = solver.mesh._fault_point_pairs[name]
             minus_of = {qp: qm for qm, qp in pairs.items()}
-            normals = {q: n for q, _qm, n in
-                       ((q_plus, q_minus, nrm) for q_plus, q_minus, nrm in
-                        _fault_pair_nodes(solver, name))}
+            # A rank-local geometry failure (pairing/closure mismatch, a
+            # vanishing analytic normal) must not leave the peers blocked
+            # in the collective trace-mass exchange below — collect the
+            # verdict, raise collectively after the walk.
+            try:
+                pair_nodes = _fault_pair_nodes(solver, name)
+            except (RuntimeError, ValueError) as err:
+                problem = str(err)
+                break
+            normals = {q_plus: nrm for q_plus, _q_minus, nrm in pair_nodes}
 
             def node_index(q):
                 q = int(q)
@@ -728,6 +763,7 @@ class _InterfaceAssembler:
                             (verts[i], verts[j]))])
                         for i, j in ((0, 1), (1, 2), (2, 0)))
                     facets.append((idx, area, law_id))
+        _collective_raise(problem)
 
         # petsc4py refuses to narrow index arrays — Vec/Mat setValues need
         # PETSc's own integer type.
@@ -752,9 +788,9 @@ class _InterfaceAssembler:
         # uses the P1 SUB-LUMPING instead — each straight P2 triangle is
         # four P1 sub-triangles of area A/4, whose lumped masses give every
         # node a positive weight (A/12 per vertex, A/4 per midpoint).
-        # At a 2-D seam crossing the two adjacent facets live on different
-        # ranks, so the mass is completed over the star-forest, keyed on
-        # the PLUS point of each pair.
+        # The star-forest completion below is defensive: after the
+        # redistribution that precedes every parallel split the fault is
+        # rank-interior and the exchange is a no-op on the fault rows.
         mass = np.zeros(len(rows))
         for idx, measure, _law_id in facets:
             if dim == 2:
