@@ -98,6 +98,17 @@ def test_surface_object_input():
     assert "FltMinus" in [b.name for b in split.boundaries]
     assert len(split._fault_point_pairs["Flt"]) > 0
 
+    # the object rides along, and normal="surface" spells the same
+    # frame in 2-D that a FaultSurface gives in 3-D: the smoothed
+    # normal of the object's own control polyline
+    assert split._fault_surfaces["Flt"] is surface
+    from underworld3.utilities.fault_contact import (_compile_normal_spec,
+                                                     _trace_normal_fn)
+    fn = _compile_normal_spec("surface", split, "Flt")
+    ref = _trace_normal_fn(np.vstack([TIP_A, TIP_B]))
+    mid = 0.5 * (TIP_A + TIP_B)
+    assert np.allclose(fn(mid), ref(mid))
+
 
 def test_offset_network_in_one_call():
     """The J0 junction pattern: two en-echelon segments, one add_fault."""

@@ -1337,9 +1337,16 @@ def add_fault(mesh, faults, verbose=False):
         out = split_fault(out, name, orientation=poly[-1] - poly[0],
                           verbose=verbose)
     # the traces themselves, for trace-smoothed fault normals
-    # (add_fault_bc(..., normal="trace")) and for rendering overlays
+    # (add_fault_bc(..., normal="trace")) and for rendering overlays;
+    # Surface OBJECTS ride along too, so normal="surface" spells the
+    # same thing in 2-D as it does for a 3-D FaultSurface
     out._fault_traces = {name: np.array(poly, dtype=float)
                          for name, poly in segments}
+    surfaces = {entry.name: entry for entry in faults
+                if hasattr(entry, "control_points")
+                and hasattr(entry, "name")}
+    if surfaces:
+        out._fault_surfaces = surfaces
     return out
 
 

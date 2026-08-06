@@ -149,10 +149,18 @@ def _compile_normal_spec(spec, mesh, boundary):
             fs = getattr(mesh, "_fault_surfaces", {}).get(boundary)
             if fs is None:
                 raise ValueError(
-                    f"mesh carries no stored FaultSurface for "
+                    f"mesh carries no stored surface object for "
                     f"{boundary!r} — normal=\"surface\" needs a mesh "
-                    "built from one (e.g. BoxInternalPatch(patch_points="
-                    "fault_surface)).")
+                    "built from one (Mesh.add_fault(Surface) in 2-D, "
+                    "BoxInternalPatch(patch_points=fault_surface) in "
+                    "3-D).")
+            if dim == 2:
+                # a 2-D Surface's on-fault normal IS the smoothed
+                # normal of its control polyline (its signed-distance
+                # gradient is discontinuous exactly ON the trace, so
+                # the director is the wrong object here)
+                return _trace_normal_fn(
+                    np.asarray(fs.control_points, dtype=float)[:, :2])
             return _compile_normal_spec(fs, mesh, boundary)
         raise ValueError(
             f"unknown normal spec {spec!r} for fault {boundary!r}: pass "
