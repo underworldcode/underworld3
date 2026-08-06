@@ -318,6 +318,16 @@ corner.** The energetically sensible decomposition (A) is admissible
 for the true junction and differs from it only in the splay's
 ligament-scale toe.
 
+The stress fields make the distinction physical. With the trunk
+continuous, the stress shadow runs straight through the junction and
+the branch point carries no feature at all — the junction is
+mechanically invisible. With continuity routed around the bend, the
+locked kink acts as a barrier: both arms' shadows terminate against it
+and load the corner, the classic signature of a rupture-arresting
+bend:
+
+![The branch point in stress](figures/fault-examples/true-branch-stress.png)
+
 Script: `figures/fault-examples/true_branch.py`.
 
 ## What these models are, and are not
