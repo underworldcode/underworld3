@@ -253,3 +253,102 @@ fig.tight_layout()
 out = os.path.join(D, "saf-loaded.png")
 fig.savefig(out, dpi=200)
 print("wrote", out)
+
+# --- the animation: wind the stress drop up from zero -----------------------
+#
+# Delta CFF is LINEAR in the stress the source drops (the mechanics are
+# linear and the slipping fault is completely weak during its event), so
+# a partial drop is exactly a scaled full drop. Every frame below is
+# therefore an exact solution, not an interpolation between two states --
+# and none of it costs another solve.
+from PIL import Image
+
+FRAC = np.linspace(0.0, 1.0, 21)
+frames = []
+for fi, f in enumerate(FRAC):
+    fig = plt.figure(figsize=(10.6, 7.6))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.0, 1.3])
+    for row, (key, lab, col) in enumerate(SOURCES):
+        axm = fig.add_subplot(gs[row, 0])
+        axm.add_patch(plt.Rectangle((0, 0), 1, 1, fill=False, lw=1.0,
+                                    edgecolor="0.85"))
+        for k2, pts in MINORS.items():
+            is_src = (k2 == key)
+            axm.plot(pts[:, 0], pts[:, 1], "-",
+                     color=col if is_src else "0.75",
+                     lw=3.4 if is_src else 1.6,
+                     zorder=4 if is_src else 2, solid_capstyle="round")
+        seg = np.stack([xy[:-1], xy[1:]], axis=1)
+        val = f * 0.5 * (DC[key][:-1] + DC[key][1:])
+        lc = LineCollection(seg, array=val, cmap="RdBu_r",
+                            clim=(-CLIM, CLIM), linewidths=5.0, zorder=3,
+                            capstyle="round")
+        axm.add_collection(lc)
+
+        v_med = float(data[f"slip_{key}"][0])
+        src_pts = MINORS[key]
+        tt = src_pts[1] - src_pts[0]
+        tt = tt / np.linalg.norm(tt)
+        nn = np.array([-tt[1], tt[0]])
+        mid = src_pts.mean(axis=0)
+        sgn = np.sign(v_med)
+        for pm in (+1.0, -1.0):          # arrows grow with the event
+            base = mid + pm * 0.028 * nn
+            tip = base + pm * sgn * (0.02 + 0.10 * f) * tt
+            axm.annotate("", xytext=base, xy=tip,
+                         arrowprops=dict(arrowstyle="-|>", lw=1.6,
+                                         color=col, alpha=0.35 + 0.65 * f),
+                         zorder=5)
+        axm.text(mid[0], mid[1] + 0.105, f"{lab} slips", fontsize=9.5,
+                 color=col, ha="center", va="center", zorder=6,
+                 bbox=dict(fc="white", ec="none", alpha=0.8, pad=1.5))
+        axm.set_xlim(-0.03, 1.03)
+        axm.set_ylim(-0.03, 1.03)
+        axm.set_aspect("equal")
+        axm.set_xticks([])
+        axm.set_yticks([])
+        for sp in axm.spines.values():
+            sp.set_visible(False)
+        cb = fig.colorbar(lc, ax=axm, fraction=0.046, pad=0.02)
+        cb.set_label(r"$\Delta$CFF", fontsize=8)
+        cb.ax.tick_params(labelsize=7)
+
+        axp = fig.add_subplot(gs[row, 1])
+        axp.axhline(0, color="0.6", lw=0.8)
+        axp.axvline(BEND_S, color="0.88", lw=6.0, zorder=0)
+        axp.text(BEND_S, 0.43, "Big Bend", fontsize=8, rotation=90,
+                 color="0.45", ha="right", va="top")
+        axp.plot(s, f * DC[key], "-", color=col, lw=2.2)
+        j = int(np.argmax(np.abs(DC[key])))
+        axp.plot([s[j]], [f * DC[key][j]], "o", ms=7, color=col, zorder=5)
+        axp.annotate(f"{f * DC[key][j]:+.2f}", xy=(s[j], f * DC[key][j]),
+                     xytext=(11, -4 if DC[key][j] < 0 else 4),
+                     textcoords="offset points", fontsize=9.5, color=col,
+                     va="top" if DC[key][j] < 0 else "bottom")
+        axp.set_ylim(-0.34, 0.44)       # fixed: both grow on one scale
+        axp.set_xlim(s.min(), s.max())
+        axp.set_ylabel(r"$\Delta$CFF", fontsize=9)
+        axp.tick_params(labelsize=8)
+        if row == 1:
+            axp.set_xlabel("distance along the San Andreas  "
+                           "(SE $\\rightarrow$ NW)", fontsize=9)
+        axp.set_title(f"{lab} slips", fontsize=9.5, color=col)
+
+    fig.suptitle("The neighbours load the San Andreas   —   "
+                 f"stress drop on the source: {100 * f:3.0f}%",
+                 fontsize=12)
+    fig.tight_layout()
+    frame = os.path.join(D, f"_safl_frame_{fi:03d}.png")
+    fig.savefig(frame, dpi=100)
+    plt.close(fig)
+    frames.append(frame)
+
+images = [Image.open(fp).convert("RGB") for fp in frames]
+pal = images[-1].quantize(colors=96, method=Image.MEDIANCUT)
+images = [im.quantize(palette=pal, dither=Image.NONE) for im in images]
+out = os.path.join(D, "saf-loaded.gif")
+images[0].save(out, save_all=True,
+               append_images=images[1:] + [images[-1]] * 10,
+               duration=160, loop=0, optimize=True)
+print(f"wrote {out} ({len(frames)} frames, "
+      f"{os.path.getsize(out) / 1024:.0f} KB)")
