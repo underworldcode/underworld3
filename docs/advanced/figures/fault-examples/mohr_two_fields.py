@@ -159,52 +159,40 @@ def draw_drive(ax, sigma, scale):
                                     color=DRIVE_C, alpha=0.85))
 
 
-def render(field, probes):
-    crossings = zero_crossings(probes)
-    print(f"field {field['key']}: principal orientations at "
-          + ", ".join(f"{c[0]:.1f}°" for c in crossings))
-
-    centre = float(np.mean(probes[:, 1]))
+def draw_field(axl, axr, field, probes, crossings, centre, k,
+               bottom=True):
+    """One field's pair of panels at frame `k`."""
     cg = -centre                      # geological convention: compression +
     scg = -probes[:, 1]
     R = field["R"]
     drive_scale = 0.22 / R_MAX
+    theta, sig_k, tau_k = probes[k]
 
-    frames = []
-    for k in range(len(probes)):
-        theta, sig_k, tau_k = probes[k]
-        fig, (axl, axr) = plt.subplots(
-            1, 2, figsize=(9.6, 4.6),
-            gridspec_kw=dict(width_ratios=[1.0, 1.25]))
-
+    if True:
         # ---- left: the probe turning inside the applied field ----------
         axl.add_patch(plt.Rectangle((0, 0), 1, 1, fill=False, lw=1.0,
                                     edgecolor="0.4"))
         draw_drive(axl, field["sigma"], drive_scale)
 
         c = common.CENTRE
-        # Principal axes, revealed as the sweep discovers them and kept.
-        # The FIRST crossing already fixes both directions (they are
-        # orthogonal), so both lines appear then; each carries its value
-        # only once its own crossing has measured it.
-        if crossings and theta + 1e-9 >= crossings[0][2]:
-            th0 = crossings[0][0]
-            t_s = np.array([np.cos(np.radians(th0)), np.sin(np.radians(th0))])
-            n_s = np.array([-t_s[1], t_s[0]])
-            for axis in (n_s, t_s):
-                axl.plot([c[0] - 0.44 * axis[0], c[0] + 0.44 * axis[0]],
-                         [c[1] - 0.44 * axis[1], c[1] + 0.44 * axis[1]],
-                         "--", color=AXIS_C, lw=1.4, alpha=0.85, zorder=1)
-            for (th_star, sig_star, reveal_at) in crossings:
-                if theta + 1e-9 < reveal_at:
-                    continue
-                ts = np.array([np.cos(np.radians(th_star)),
-                               np.sin(np.radians(th_star))])
-                ax_dir = np.array([-ts[1], ts[0]])
-                lab = c + 0.38 * ax_dir
-                axl.text(lab[0], lab[1], f"{-sig_star:+.2f}", fontsize=8.5,
-                         color=AXIS_C, ha="center", va="center", zorder=5,
-                         bbox=dict(fc="white", ec="none", alpha=0.8, pad=1.0))
+        # Principal axes appear ONE AT A TIME, each when the sweep
+        # actually reaches it. They are of course orthogonal, but a
+        # student who watches the second one arrive 90 degrees after the
+        # first has discovered that; a student shown both at once has
+        # been told it.
+        for (th_star, sig_star, reveal_at) in crossings:
+            if theta + 1e-9 < reveal_at:
+                continue
+            ts = np.array([np.cos(np.radians(th_star)),
+                           np.sin(np.radians(th_star))])
+            ax_dir = np.array([-ts[1], ts[0]])
+            axl.plot([c[0] - 0.44 * ax_dir[0], c[0] + 0.44 * ax_dir[0]],
+                     [c[1] - 0.44 * ax_dir[1], c[1] + 0.44 * ax_dir[1]],
+                     "--", color=AXIS_C, lw=1.4, alpha=0.85, zorder=1)
+            lab = c + 0.38 * ax_dir
+            axl.text(lab[0], lab[1], f"{-sig_star:+.2f}", fontsize=8.5,
+                     color=AXIS_C, ha="center", va="center", zorder=5,
+                     bbox=dict(fc="white", ec="none", alpha=0.8, pad=1.0))
 
         t = np.array([np.cos(np.radians(theta)), np.sin(np.radians(theta))])
         n = np.array([-t[1], t[0]])
@@ -261,13 +249,44 @@ def render(field, probes):
                  transform=axr.transAxes)
         axr.text(0.04, 0.88, field["subtitle"], fontsize=9, color=DRIVE_C,
                  transform=axr.transAxes)
-        axr.set_xlabel(r"normal stress $\sigma$ (compression positive)")
+        if bottom:
+            axr.set_xlabel(r"normal stress $\sigma$ (compression positive)")
         axr.set_ylabel(r"shear traction $\tau$")
         # identical limits for both fields: the circles must be comparable
         axr.set_xlim(cg - 1.35 * R_MAX, cg + 1.35 * R_MAX)
         axr.set_ylim(-1.35 * R_MAX, 1.35 * R_MAX)
         axr.set_aspect("equal")
 
+
+def save_gif(frames, out, colors=None):
+    images = [Image.open(f) for f in frames]
+    if colors:
+        # dithering OFF: it defeats GIF run-length compression
+        images = [im.convert("RGB") for im in images]
+        pal = images[len(images) // 2].quantize(colors=colors,
+                                                method=Image.MEDIANCUT)
+        images = [im.quantize(palette=pal, dither=Image.NONE)
+                  for im in images]
+    images[0].save(out, save_all=True,
+                   append_images=images[1:] + [images[-1]] * 6,
+                   duration=280, loop=0, optimize=True)
+    print(f"wrote {out} ({len(frames)} frames, "
+          f"{os.path.getsize(out) / 1024:.0f} KB)")
+
+
+def render(field, probes):
+    crossings = zero_crossings(probes)
+    print(f"field {field['key']}: principal orientations at "
+          + ", ".join(f"{c[0]:.1f}°" for c in crossings))
+    centre = float(np.mean(probes[:, 1]))
+
+    frames = []
+    for k in range(len(probes)):
+        fig, (axl, axr) = plt.subplots(
+            1, 2, figsize=(9.6, 4.6),
+            gridspec_kw=dict(width_ratios=[1.0, 1.25]))
+        draw_field(axl, axr, field, probes, crossings, centre, k)
+        axl.set_title(field["title"], fontsize=10)
         fig.suptitle("A rotating probe measures the stress field",
                      fontsize=11)
         fig.tight_layout()
@@ -276,29 +295,52 @@ def render(field, probes):
         plt.close(fig)
         frames.append(frame)
 
-    images = [Image.open(f) for f in frames]
-    out = os.path.join(D, field["gif"])
-    images[0].save(out, save_all=True,
-                   append_images=images[1:] + [images[-1]] * 6,
-                   duration=280, loop=0)
-    size_kb = os.path.getsize(out) / 1024
-    print(f"wrote {out} ({len(frames)} frames, {size_kb:.0f} KB)")
-    return centre
+    save_gif(frames, os.path.join(D, field["gif"]))
+    return centre, crossings
+
+
+def render_stacked(results):
+    """Both fields in ONE animation, stacked.
+
+    Two separate GIFs in a browser start whenever each finishes loading,
+    so the two sweeps drift apart and the comparison is lost. One file
+    cannot desynchronise with itself.
+    """
+    n = len(results[0][1])
+    frames = []
+    for k in range(n):
+        fig, axes = plt.subplots(
+            2, 2, figsize=(9.6, 9.0),
+            gridspec_kw=dict(width_ratios=[1.0, 1.25]))
+        for row, (field, probes, centre, crossings) in enumerate(results):
+            axl, axr = axes[row]
+            draw_field(axl, axr, field, probes, crossings, centre, k,
+                       bottom=(row == 1))
+            axl.set_title(field["title"], fontsize=10)
+        fig.suptitle("The same sweep, two stress states", fontsize=12)
+        fig.tight_layout()
+        frame = os.path.join(D, f"_m2AB_frame_{k:03d}.png")
+        fig.savefig(frame, dpi=100)
+        plt.close(fig)
+        frames.append(frame)
+    save_gif(frames, os.path.join(D, "mohr-circle-build-AB.gif"),
+             colors=128)
 
 
 # --- run --------------------------------------------------------------------
 results = []
 for field in FIELDS:
     probes = sweep(field)
-    centre = render(field, probes)
-    results.append((field, probes, centre))
+    centre, crossings = render(field, probes)
+    results.append((field, probes, centre, crossings))
+render_stacked(results)
 
 # --- the payoff: both circles on one plane ----------------------------------
 fig, ax = plt.subplots(figsize=(6.2, 5.6))
 tt = np.linspace(0, 2 * np.pi, 400)
-for (field, probes, centre), col, ls in zip(results,
-                                            ["#c62828", "#1565c0"],
-                                            ["-", "-"]):
+for (field, probes, centre, _cr), col, ls in zip(results,
+                                                 ["#c62828", "#1565c0"],
+                                                 ["-", "-"]):
     cg = -centre
     R = field["R"]
     ax.plot(cg + R * np.cos(tt), R * np.sin(tt), ls, color=col, lw=1.4,

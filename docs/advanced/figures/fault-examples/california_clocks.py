@@ -172,15 +172,87 @@ def sweep():
 data = sweep()
 
 # --- Delta CFF per site, from the measured circles --------------------------
+#
+# The slip-tendency direction is PER ORIENTATION. california.py can take
+# sign(median(tau_ambient)) because its probes sit on one fixed fault, so
+# that median is a real, well-signed quantity; across a full 180 degree
+# gauge sweep the ambient tau traces a whole circle and its median is
+# ~zero, so the same expression would pick its sign out of rounding
+# noise. Resolve each orientation in the direction that orientation is
+# already being sheared.
 DCFF = {}
 for name, _c, _col in SITES:
     s0, t0 = data[f"{name}_amb_sig"], data[f"{name}_amb_tau"]
     s1, t1 = data[f"{name}_slip_sig"], data[f"{name}_slip_tau"]
-    tau_dir = np.sign(np.median(t0))
+    tau_dir = np.sign(t0)
     DCFF[name] = tau_dir * (t1 - t0) + MU_P * (s1 - s0)
     print(f"{name:8s} median dCFF {np.median(DCFF[name]):+.3f}  "
           f"(max {np.max(DCFF[name]):+.3f} at "
           f"theta {ANGLES[np.argmax(DCFF[name])]:.1f}°)")
+
+
+# --- principal orientations, found by the sweep -----------------------------
+#
+# At tau = 0 the gauge plane is a principal plane, so its NORMAL is a
+# principal direction carrying the measured sigma_n. Reading them off the
+# measured sweep keeps the axes measured rather than assumed -- and the
+# ambient and post-slip crossings sit at DIFFERENT gauge angles, which is
+# how much the earthquake rotated the local stress.
+
+def crossings(sig, tau):
+    """[(theta*, sigma_n*, reveal_after)] where tau changes sign."""
+    out = []
+    for i in range(len(tau) - 1):
+        if tau[i] == 0.0 or tau[i] * tau[i + 1] < 0.0:
+            w = abs(tau[i]) / (abs(tau[i]) + abs(tau[i + 1]))
+            out.append((ANGLES[i] + w * (ANGLES[i + 1] - ANGLES[i]),
+                        sig[i] + w * (sig[i + 1] - sig[i]),
+                        ANGLES[i + 1]))
+    return out
+
+
+def sigma1_axis(cr):
+    """Unit vector along the most-COMPRESSIVE principal direction.
+
+    Of the two crossings, the one with the larger compression-positive
+    normal stress is sigma_1; its axis is the gauge NORMAL there.
+    """
+    if not cr:
+        return None, None, None
+    th, sig, _rev = max(cr, key=lambda c: -c[1])
+    t = np.array([np.cos(np.radians(th)), np.sin(np.radians(th))])
+    return np.array([-t[1], t[0]]), th, -sig
+
+
+PRINC = {}
+for name, _c, _col in SITES:
+    for state in ("amb", "slip"):
+        cr = crossings(data[f"{name}_{state}_sig"],
+                       data[f"{name}_{state}_tau"])
+        axis, th, s1 = sigma1_axis(cr)
+        PRINC[(name, state)] = dict(cross=cr, axis=axis, theta=th, s1=s1)
+    a, b = PRINC[(name, "amb")], PRINC[(name, "slip")]
+    if a["axis"] is not None and b["axis"] is not None:
+        rot = (b["theta"] - a["theta"] + 90) % 180 - 90
+        print(f"{name:8s} sigma1 axis {a['theta']:6.1f}° -> {b['theta']:6.1f}°"
+              f"  (rotated {rot:+.1f}°),  sigma1 {a['s1']:+.2f} -> "
+              f"{b['s1']:+.2f}")
+
+# --- each site's REAL fault, for context under the gauge --------------------
+# These traces are NOT in the solve (a gauge sitting on its own fault
+# could not clear it): they are drawn to show where the mapped fault
+# actually is, and at which single orientation it samples the sweep.
+REAL = {"Garlock": [MINORS["Garlock"]],
+        "ECSZ": [MINORS["E1"], MINORS["E2"], MINORS["E3"]],
+        "SJF": [MINORS["SJF"]]}
+STRIKE = {}
+for name, _c, _col in SITES:
+    seg0 = REAL[name][len(REAL[name]) // 2]
+    d = seg0[1] - seg0[0]
+    STRIKE[name] = np.degrees(np.arctan2(d[1], d[0])) % 180.0
+    at_strike = np.interp(STRIKE[name], ANGLES, DCFF[name])
+    print(f"{name:8s} mapped strike {STRIKE[name]:5.1f}°  ->  "
+          f"dCFF at that orientation {at_strike:+.3f}")
 
 # --- the animation ----------------------------------------------------------
 XLIM = (-0.1, P0 + 1.3)
@@ -216,16 +288,40 @@ for k in range(len(ANGLES)):
              color="#6d4c41")
 
     for name, c, col in SITES:
-        seg = _seg(c, angle)
+        # the MAPPED fault traces, underneath: where the real faults are,
+        # and the single orientation each of them actually samples
+        for tr in REAL[name]:
+            axm.plot(tr[:, 0], tr[:, 1], "-", color=col, lw=2.2, alpha=0.4,
+                     zorder=2, solid_capstyle="round")
+        # sigma_1 direction, revealed as the sweep discovers it and kept:
+        # grey before the earthquake, coloured after
+        for state, pc, ls, lw in (("amb", "0.45", "--", 1.2),
+                                  ("slip", col, "-", 1.6)):
+            pr = PRINC[(name, state)]
+            if pr["axis"] is None or angle + 1e-9 < min(x[2] for x in
+                                                        pr["cross"]):
+                continue
+            u = pr["axis"]
+            axm.plot([c[0] - 0.085 * u[0], c[0] + 0.085 * u[0]],
+                     [c[1] - 0.085 * u[1], c[1] + 0.085 * u[1]],
+                     ls, color=pc, lw=lw, alpha=0.9, zorder=3)
         circ = plt.Circle(c, L_GAUGE, fill=False, ec=col, ls=":", lw=0.8,
                           alpha=0.5)
         axm.add_patch(circ)
+        seg = _seg(c, angle)
         axm.plot(seg[:, 0], seg[:, 1], "-", color=col, lw=3.4, zorder=4,
                  solid_capstyle="butt")
         dx, dy, ha, va = LAB_OFF[name]
         axm.text(c[0] + dx, c[1] + dy, LABEL[name], fontsize=9,
                  color=col, ha=ha, va=va, zorder=5,
                  bbox=dict(fc="white", ec="none", alpha=0.75, pad=1.0))
+    axm.text(0.985, 0.955,
+             "pale lines: mapped faults\nheavy bar: the rotating gauge\n"
+             r"$\sigma_1$ found by the sweep — grey before" "\n"
+             "the earthquake, coloured after",
+             fontsize=7.5, color="0.3", transform=axm.transAxes,
+             ha="right", va="top", linespacing=1.5,
+             bbox=dict(fc="white", ec="none", alpha=0.8, pad=2.0), zorder=6)
     seg = _seg(REF_C, REF_ANG)
     axm.plot(seg[:, 0], seg[:, 1], "-", color="0.6", lw=2.0)
     axm.text(REF_C[0], REF_C[1] - 0.045, "pressure reference", fontsize=7,
@@ -265,6 +361,20 @@ for k in range(len(ANGLES)):
                 label="ambient")
         ax.plot(s1, t1, "o", ms=4.5, color="#c62828", alpha=0.85,
                 label="after slip")
+
+        # the persistent bar: once BOTH principal points have been found,
+        # the horizontal diameter joining them IS the principal pair, and
+        # it stays on the diagram for the rest of the sweep
+        for state, pc, dy in (("amb", "0.45", 0.0), ("slip", "#c62828", 0.0)):
+            cr = PRINC[(name, state)]["cross"]
+            found = [x for x in cr if angle + 1e-9 >= x[2]]
+            if not found:
+                continue
+            xs = [P0 - x[1] for x in found]
+            ax.plot(xs, [dy] * len(xs), "D", ms=5, color=pc, zorder=7)
+            if len(found) == 2:
+                ax.plot(xs, [dy, dy], "-", color=pc, lw=2.2, alpha=0.9,
+                        zorder=6)
         ax.annotate("", xytext=(s0[-1], t0[-1]), xy=(s1[-1], t1[-1]),
                     arrowprops=dict(arrowstyle="->", lw=1.1, color="0.3"))
         ax.plot([s0[-1]], [t0[-1]], "o", ms=7, mfc="none", mec="0.2",
@@ -282,8 +392,9 @@ for k in range(len(ANGLES)):
         # the RANGE over orientations, not a single number: whether the
         # event helps or hinders depends on which way the receiver faces
         lo, hi = DCFF[name].min(), DCFF[name].max()
+        at_strike = np.interp(STRIKE[name], ANGLES, DCFF[name])
         ax.set_title(f"{LABEL[name]}:  $\\Delta$CFF {lo:+.2f} to {hi:+.2f}"
-                     f"  (median {np.median(DCFF[name]):+.2f})",
+                     f"   —   at its own strike {at_strike:+.2f}",
                      fontsize=8.5, color=col)
         if row == 0:
             ax.legend(fontsize=6.5, loc="lower left", framealpha=0.9)
