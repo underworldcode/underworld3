@@ -251,6 +251,33 @@ $P_0 = 1$, $C = 0.75$ envelope dressing.)
 
 Script: `figures/fault-examples/california.py`.
 
+### A branching rupture on an intersecting network
+
+Real trace sets cross and branch, and the split-node pipeline refuses
+shared vertices — so intersecting geometry goes through
+`uw.meshing.prepare_fault_network` first, which converts every
+junction (X crossing, T abutment, near-miss) to the offset-junction
+form: the traces stop short of the intersection, leaving a ligament of
+intact material about a cell across, with angle-corrected pull-backs
+and a printed report of every action. Here the raw input genuinely
+intersects — a dextral trunk, a splay branching off its midpoint, and
+a conjugate crossing it — and the trunk + splay rupture together while
+the conjugate sits welded:
+
+![Branching rupture](figures/fault-examples/branching.png)
+
+The brightest features are the **junction plugs**: the intact
+ligaments take the concentrated load shed by their slipped neighbours
+on both sides, which is exactly where a through-going event would
+break next. The ligament approximation is measured, not asserted: at a
+T-junction the branch's slip profile is *identical* at two mesh
+resolutions for a fixed plug size, and its peak slip changes by only a
+few percent between ligaments of one and two cells (the study is
+recorded in the developer notes). Keep ligaments at one to two local
+cell sizes.
+
+Script: `figures/fault-examples/branching.py`.
+
 ## What these models are, and are not
 
 For the static problem, incompressible linear elasticity and Stokes
