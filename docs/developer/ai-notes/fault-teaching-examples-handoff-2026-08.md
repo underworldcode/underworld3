@@ -110,6 +110,55 @@ them render fine anywhere.
    false beading). Colour: linear RdBu_r at +-1 (dCFF per unit
    stress drop) — log scaling makes the far field "overflow".
 
+## Later additions (branch `feature/fault-teaching-animations`)
+
+Three animated examples added 2026-08-06 for the EMSC-3002 teaching
+decks, on a worktree branched from this one at `03055633`. They use the
+harness unchanged — no edits to `common.py`, so they merge cleanly.
+
+10. **`mohr_two_fields.py` → `mohr-circle-build-A/B.gif` +
+    `mohr-two-circles.png`** — the same rotating probe swept through TWO
+    stress states (`shear_plus_stretch(0.5, 1.0)`, R = sqrt(2); and
+    `pure_shear_drive(phi=60, tau0=0.8)`, R = 0.8), on identical Mohr
+    axes. Adds: the applied field drawn as wall tractions; the principal
+    axes struck through the model as LINES when the probe crosses
+    tau = 0, taken from the measured crossings (both sweeps recovered
+    their drive's axes exactly — 22.5/112.5 and 60/150 degrees); the
+    probe restyled as an instrument. Contains a general `probe_under
+    (drive, theta)` — `common.mohr_probe` is hardwired to
+    shear_plus_stretch. 2 x 25 solves, cached.
+11. **`california_clocks.py` → `california-clocks.gif`** — the
+    california.py geography with a rotating welded GAUGE at each of the
+    three neighbour sites (half-length 0.05; max safe 0.0617, asserted
+    against trace/wall/mutual clearance before solving). All gauges share
+    ONE solve per angle. Swept twice, trunk welded then free, so dCFF is
+    the motion of each circle. Result worth knowing: the ambient circles
+    are IDENTICAL at all three sites (the regional field is uniform and
+    matches `ambient_sigma_n_simple` exactly) — the whole signal is in
+    the post-slip pass. dCFF range over orientations: Garlock -0.64 to
+    +0.54, ECSZ -0.01 to +0.15, SJF -0.75 to +0.66; the medians are near
+    zero and say almost nothing. A fourth FIXED gauge in the quiet
+    corner is the pressure reference (the constant runs ~+1.97 welded but
+    ~+35.7 when the trunk slips — the drift the gauge discipline exists
+    for). 2 x 25 solves at h = 0.012, ~20 min; cache is 6 KB.
+12. **`mohr_failure_field.py` → `mohr-failure-field.gif`** — the
+    rotating fault with the FIELD beside the Mohr panel: colour is
+    d(tau_max), the change in the LOCAL Mohr radius, with ticks along the
+    most-compressive principal direction. Stuck orientations leave the
+    field perfectly uniform; sliding ones grow the tip lobes and swing
+    the axes. Uses the COHESIVE law of mohr_cohesion.py, not bare
+    friction — a purely deviatoric drive puts half the sweep in tension,
+    where bare friction is held-shut everywhere (measured: 12 of 25
+    orientations unphysical with bare friction, 7 with cohesion). Fields
+    are cached per angle (3.1 MB) and rendered in matplotlib
+    `PolyCollection` off the split-mesh triangles rather than pyvista.
+    25 solves at h = 0.025, 150 s.
+
+GIF sizing note: a continuous field render needs palette quantisation to
+stay near the docs budget, and **dithering must be off** — Floyd-Steinberg
+scatters pixel noise that defeats GIF run-length compression and made the
+file three times larger (1.5 MB dithered vs 0.65 MB not).
+
 ## The harness contracts (`common.py`)
 
 - `base_mesh(h)` + `mesh.add_fault([...])`: one static base, re-faulted
