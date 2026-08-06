@@ -136,17 +136,26 @@ them render fine anywhere.
   away), absolute probe pressures with `ambient_sigma_n` /
   `ambient_sigma_n_simple` (analytic ambient states). Every removed
   constant is printed, never silently absorbed.
-- Field rendering (the standing rules, measured not guessed): stress
-  fields are P0 (cell) projections rendered as CELL data on the split
-  mesh's TRUE connectivity via `split_mesh_cell_render` /
-  `split_mesh_cell_rows`. Never Delaunay the DOF point cloud of a
-  split mesh (coincident fault pairs + trace-crossing edges paint
-  false beading), and never project rough near-fault stress to
-  continuous P1 (node-scale ringing, residual rms 0.26 at
-  half-wavelength h/2). Colour: linear RdBu_r at +-1 — dCFF per unit
-  stress drop, pale far field. (`signed_log` remains in the harness
-  if a far-field-emphasis view is ever wanted, but the maintainer
-  rejected it for these figures: it makes the far field "overflow".)
+- Field rendering (the standing rules, measured not guessed — REVISED
+  2026-08-07): render on the split mesh's TRUE connectivity via
+  `split_mesh_cell_render`/`split_mesh_cell_rows` (P0 cells) or
+  `split_mesh_faces` (P1 nodes). Never Delaunay the DOF point cloud of
+  a split mesh (coincident fault pairs + trace-crossing edges paint
+  false beading). BOTH projections are now legitimate: the old "never
+  P1" rule was calibrated against the kinked-normal sawtooth fields we
+  later cured at the source, and the split mesh's P1 space is
+  naturally discontinuous across faults (doubled nodes), so the jump
+  is representable. Choose by physics: P1 nodal for smooth fields
+  (dCFF away from tips renders smoothly, no triangle facets); P0 cells
+  where the field carries genuine cell-scale structure (yield-zone
+  boundaries, material interfaces — P1 blurs them by a node spacing;
+  measured side by side in
+  ~/+Simulations/fault_junction_rheology/p1-vs-p0.png). Recover
+  COMPONENTS and form invariants in numpy, never project an invariant
+  directly. Colour: linear RdBu_r at +-1 for dCFF; one-sided Oranges
+  on white for strain rate (maintainer convention — no dark
+  backgrounds, keep the mesh edges visible). (`signed_log` remains in
+  the harness but the maintainer rejected it for these figures.)
 - Curved faults carry their ANALYTIC NORMAL
   (`add_fault_bc(..., normal=sympy 1×dim Matrix in mesh.X)`). The kink
   roughness of a sampled curve was diagnosed (2026-08-05,
