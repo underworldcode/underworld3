@@ -278,6 +278,23 @@ cell sizes.
 
 Script: `figures/fault-examples/branching.py`.
 
+And the question the offset form begs — what does interrupting a fault
+cost? — has a measured answer. The same network prepared two ways
+(`through=["Trunk"]` keeps the trunk continuous, so the conjugate
+yields on both sides of the crossing; the default cuts both):
+
+![Continuous vs interrupted](figures/fault-examples/branching-compare.png)
+
+The through-going trunk slips slightly *more* than it would alone (the
+slipping splay feeds it); cutting it at the crossing pins it locally
+and costs about a quarter of its peak slip — but the profiles converge
+away from the junction, so an interruption's reach is the segment
+scale, not the system scale. T abutments never cut the through-going
+trace; declare master faults with `through=` where a crossing must not
+either.
+
+Script: `figures/fault-examples/branching_compare.py`.
+
 ## What these models are, and are not
 
 For the static problem, incompressible linear elasticity and Stokes

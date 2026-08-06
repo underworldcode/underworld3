@@ -2741,7 +2741,8 @@ def _sub_polyline(pts, s0, s1):
                       _point_at_arc(pts, s1)])
 
 
-def prepare_fault_network(faults, spacing, ligament=1.5, verbose=True):
+def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
+                          verbose=True):
     """Make an imported set of 2-D fault traces splittable.
 
     The split-node pipeline refuses faults that cross or share vertices
@@ -2758,7 +2759,10 @@ def prepare_fault_network(faults, spacing, ligament=1.5, verbose=True):
     - X crossing (interiors intersect): BOTH traces are cut at the
       intersection, every cut end pulled back ``ligament * spacing``
       along its own trace; a trace cut into k pieces is renamed
-      ``<name>_1 .. <name>_k``.
+      ``<name>_1 .. <name>_k``. If exactly one of the two is listed in
+      ``through``, it stays CONTINUOUS and only the other is cut (the
+      through-going fault offsets the crossing one); two ``through``
+      faults crossing is a hard error.
     - T abutment (an endpoint of one trace on or near another's
       interior): the abutting END is pulled back; the through-going
       trace is untouched.
@@ -2780,8 +2784,13 @@ def prepare_fault_network(faults, spacing, ligament=1.5, verbose=True):
     ligament : float, optional
         Ligament size in multiples of ``spacing`` (default 1.5; the
         add_fault contract wants segments at least a cell or two apart).
+    through : iterable of str, optional
+        Names of MASTER faults: never cut at X crossings (the other
+        trace yields on both sides). T abutments never cut the
+        through-going trace regardless.
     """
     lig = float(ligament) * float(spacing)
+    through = set(through or ())
     traces = []
     for entry in faults:
         if isinstance(entry, tuple) and len(entry) == 2 \
@@ -2840,19 +2849,41 @@ def prepare_fault_network(faults, spacing, ligament=1.5, verbose=True):
                     end_i = min(arc_i, si[-1] - arc_i) < pull
                     end_j = min(arc_j, sj[-1] - arc_j) < pull
                     P = pi[a] + t * (pi[a + 1] - pi[a])
+                    # who yields: an abutting END always yields; a
+                    # through-going trace is only CUT at a genuine X
+                    # crossing, and never if it is a declared master
                     if end_i and end_j:
                         kind = "Y contact"
-                    elif end_i or end_j:
-                        kind = "T abutment"
+                        cut_i = cut_j = True
+                    elif end_i:
+                        kind = f"T abutment ({ni!r} onto {nj!r})"
+                        cut_i, cut_j = True, False
+                    elif end_j:
+                        kind = f"T abutment ({nj!r} onto {ni!r})"
+                        cut_i, cut_j = False, True
                     else:
                         kind = "X crossing"
-                    ci.append((arc_i, pull))
-                    cj.append((arc_j, pull))
+                        if ni in through and nj in through:
+                            raise ValueError(
+                                f"two through-going faults ({ni!r}, "
+                                f"{nj!r}) cross at ({P[0]:.4g}, "
+                                f"{P[1]:.4g}) — one of them must be "
+                                "allowed to yield.")
+                        cut_i = ni not in through
+                        cut_j = nj not in through
+                    if cut_i:
+                        ci.append((arc_i, pull))
+                    if cut_j:
+                        cj.append((arc_j, pull))
+                    kept_name = ni if not cut_i else (
+                        nj if not cut_j else None)
+                    kept = ("" if kept_name is None
+                            else f" {kept_name!r} kept continuous;")
                     report.append(
                         f"{kind} between {ni!r} and {nj!r} at "
-                        f"({P[0]:.4g}, {P[1]:.4g}): converted to an "
-                        f"offset junction (ligament {lig:.4g}, "
-                        f"pull-back {pull:.4g}).")
+                        f"({P[0]:.4g}, {P[1]:.4g}):{kept} offset "
+                        f"junction (ligament {lig:.4g}, pull-back "
+                        f"{pull:.4g}).")
 
     # pass 1b: NEAR-MISS abutments — an endpoint stopping just short of
     # another trace never intersects, so pass 1 cannot see it, but the

@@ -47,7 +47,9 @@ def test_junctions_become_offset_form_and_split():
     assert "T abutment" in kinds
     assert "near-miss" in kinds
     names = [n for n, _ in prepared]
-    assert sum(n.startswith("A") for n in names) == 3   # cut twice
+    # the X crossing cuts A; the T abutment does NOT (the through-going
+    # trace stays continuous, only the abutter is trimmed)
+    assert sum(n.startswith("A") for n in names) == 2
     assert sum(n.startswith("B") for n in names) == 2
 
     # the promised EUCLIDEAN clearance, everywhere (this is the check
@@ -64,6 +66,26 @@ def test_junctions_become_offset_form_and_split():
     child = uw.meshing.UnstructuredSimplexBox(cellSize=H).add_fault(
         prepared)
     assert sorted(child._fault_point_pairs) == sorted(names)
+
+
+def test_through_master_stays_continuous():
+    """A declared master is never cut at an X crossing — the other
+    trace yields on both sides; two crossing masters is a hard error."""
+    A, B = RAW[0], RAW[1]
+    prepared, _rep = prepare_fault_network(
+        [(n, p.copy()) for n, p in (A, B)], spacing=H, ligament=LIG_F,
+        through=["A"], verbose=False)
+    names = [n for n, _ in prepared]
+    assert names.count("A") == 1                 # continuous
+    assert sum(n.startswith("B") for n in names) == 2
+    d = min(_poly_clearance(p, dict(prepared)["A"])
+            for n, p in prepared if n.startswith("B"))
+    assert d >= 0.95 * LIG
+
+    with pytest.raises(ValueError, match="through-going"):
+        prepare_fault_network([(n, p.copy()) for n, p in (A, B)],
+                              spacing=H, ligament=LIG_F,
+                              through=["A", "B"], verbose=False)
 
 
 def test_disjoint_traces_pass_through_unchanged():
