@@ -143,6 +143,27 @@ def _fault_chain(dm, fault_edges, X, vS, shared, pStart, orientation=None):
             p = int(p)
             if eS <= p < eE and len(dm.getSupport(p)) != 2 \
                     and not shared[p - pStart]:
+                # distinguish the domain boundary from the slit of an
+                # ALREADY-SPLIT fault: a chain terminating on one is a
+                # touching junction, which the split cannot represent —
+                # and would not want to: a single shared vertex forces
+                # every arm's slip to zero there, STIFFER than the true
+                # sector junction. The offset form brackets the truth
+                # (see the true-branch teaching example).
+                on_slit = any(
+                    dm.getLabelValue(lname, p) >= 0
+                    for lname in (dm.getLabelName(i) for i in
+                                  range(dm.getNumLabels()))
+                    if lname.endswith("Plus") or lname.endswith("Minus"))
+                if on_slit:
+                    return (ValueError,
+                            "fault_split: the fault terminates on an "
+                            "already-split fault's slit (a touching "
+                            "junction). A shared point would clamp every "
+                            "arm's slip to zero there — stiffer than a "
+                            "true junction. Use the offset form "
+                            "(uw.meshing.prepare_fault_network), which "
+                            "brackets the true branch."), None
                 return (ValueError,
                         "fault_split: the fault touches the domain boundary. "
                         "Only strictly interior faults, with both tips inside "

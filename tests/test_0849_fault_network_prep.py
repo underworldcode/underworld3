@@ -97,3 +97,15 @@ def test_disjoint_traces_pass_through_unchanged():
     assert [n for n, _ in prepared] == ["P", "Q"]
     for (n0, p0), (_n1, p1) in zip(faults, prepared):
         assert np.array_equal(p0, p1)
+
+
+def test_touching_junction_refused_with_the_real_reason():
+    """Three chains terminating at ONE shared vertex: the second split
+    lands its tip on the first fault's slit. The refusal must name the
+    touching junction (and its physics), not 'the domain boundary'."""
+    J = np.array([0.50, 0.50])
+    faults = [("West", np.array([[0.15, 0.45], J])),
+              ("East", np.array([J, [0.85, 0.55]])),
+              ("Splay", np.array([J, [0.80, 0.76]]))]
+    with pytest.raises(ValueError, match="touching junction"):
+        uw.meshing.UnstructuredSimplexBox(cellSize=0.04).add_fault(faults)
