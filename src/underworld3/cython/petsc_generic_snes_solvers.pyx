@@ -5758,12 +5758,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._rotated_freeslip_datum = {}
         self._rotated_freeslip_info = None
         # Split-fault interface conditions (add_fault_bc): fault names whose
-        # coincident DOF pairs carry a contact, and the interface viscosity
-        # per fault (0 = frictionless). Non-empty => solve() takes the rotated
-        # path, where utilities/fault_contact.py supplies the pair blocks and
-        # the interface operator.
+        # coincident DOF pairs carry a contact (the laws themselves live in
+        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
+        # Non-empty => solve() takes the rotated path, where fault_contact
+        # supplies the pair blocks and the interface operator.
         self._fault_contact_faults = []
-        self._fault_interface_viscosity = {}
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
