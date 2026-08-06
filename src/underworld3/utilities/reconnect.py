@@ -756,7 +756,7 @@ def _install_point_sf(new, new_sf):
     new.getCoordinateDM().setPointSF(new_sf)
 
 
-def _rebuild_point_sf(new, dm, point_map, nroots, dup_new=None):
+def _rebuild_point_sf(new, dm, point_map, nroots):
     """Carry the point star-forest onto a renumbered chart, in one exchange.
 
     A leaf's remote entry names the *owner's* local index for the shared point,
@@ -764,24 +764,10 @@ def _rebuild_point_sf(new, dm, point_map, nroots, dup_new=None):
     new numbering root-to-leaf over the star-forest that is being replaced
     delivers exactly that, one value per leaf.
 
-    Without ``dup_new`` the leaf set is unchanged: :func:`remove_vertices`
-    never deletes a shared point, so every leaf still exists and only its
-    number has moved.
-
-    ``dup_new`` (chart-indexed: old point -> this rank's replica or
-    replacement in the new chart, ``-1`` for none) is the split-fault
-    extension: it rides a second broadcast so a leaf rank can associate ITS
-    copy of a duplicated shared point with the OWNER'S — the keyed exchange
-    of the seam-crossing rule. Three leaf cases follow:
-
-    * surviving point, no replica — renumbered as before;
-    * surviving point WITH a replica on both sides (a crossing vertex) — the
-      old leaf is kept and ONE new leaf is added for the replica pair;
-    * dropped point with a replacement on both sides (a re-homed seam
-      spoke) — the leaf moves to the replacement.
-
-    Any one-sided replica or unreplaced drop is a hard error: the two ranks
-    of a crossing must have made the same decisions, side by side.
+    The leaf set itself is unchanged: :func:`remove_vertices` never deletes a
+    shared point, and the split-fault rebuilds never duplicate one (a
+    seam-touching fault is redistributed onto one rank before splitting), so
+    every leaf still exists and only its number has moved.
     """
     pStart, pEnd = dm.getChart()
     sf = dm.getPointSF()
@@ -793,16 +779,9 @@ def _rebuild_point_sf(new, dm, point_map, nroots, dup_new=None):
     root_new = np.ascontiguousarray(point_map, dtype=np.int32)
     leaf_new = np.full(pEnd - pStart, -1, dtype=np.int32)
     # COLLECTIVE, and reached on every rank of a parallel run: a rank sharing
-    # nothing still has to participate or its peers block. The dup broadcast,
-    # when configured, must likewise run on EVERY rank of the split.
+    # nothing still has to participate or its peers block.
     sf.bcastBegin(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
     sf.bcastEnd(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
-    dup_remote = None
-    if dup_new is not None:
-        dup_root = np.ascontiguousarray(dup_new, dtype=np.int32)
-        dup_remote = np.full(pEnd - pStart, -1, dtype=np.int32)
-        sf.bcastBegin(MPI.INT32_T, dup_root, dup_remote, MPI.REPLACE)
-        sf.bcastEnd(MPI.INT32_T, dup_root, dup_remote, MPI.REPLACE)
 
     # petsc4py will not narrow an index array for us — the graph must arrive as
     # PETSc's own integer type or `setGraph` raises an unsafe-cast TypeError.
@@ -814,59 +793,17 @@ def _rebuild_point_sf(new, dm, point_map, nroots, dup_new=None):
         return
 
     leaves = np.asarray(ilocal, dtype=np.int64)
-    owner = np.asarray(iremote).reshape(-1, 2)[:, 0]
+    local = point_map[leaves - pStart]
+    remote_index = leaf_new[leaves - pStart]
+    if (local < 0).any() or (remote_index < 0).any():
+        raise RuntimeError(
+            "reconnect: a shared point was deleted. The removal pass must "
+            "freeze the seam; see remove_vertices.")
 
-    if dup_new is None:
-        local = point_map[leaves - pStart]
-        remote_index = leaf_new[leaves - pStart]
-        if (local < 0).any() or (remote_index < 0).any():
-            raise RuntimeError(
-                "reconnect: a shared point was deleted. The removal pass must "
-                "freeze the seam; see remove_vertices.")
-        remote = np.empty((len(leaves), 2), dtype=PETSc.IntType)
-        remote[:, 0] = owner
-        remote[:, 1] = remote_index
-        new_sf.setGraph(nroots, local.astype(PETSc.IntType),
-                        remote.reshape(-1))
-        _install_point_sf(new, new_sf)
-        return
-
-    out_local, out_owner, out_remote = [], [], []
-    for k, p in enumerate(leaves):
-        i = int(p) - pStart
-        lp, rp = int(point_map[i]), int(leaf_new[i])
-        lq, rq = int(dup_new[i]), int(dup_remote[i])
-        if lp >= 0:
-            if rp < 0:
-                raise RuntimeError(
-                    "fault_split: a shared point survived here but was "
-                    "dropped by its owner — the two ranks of a crossing "
-                    "disagreed.")
-            out_local.append(lp)
-            out_owner.append(int(owner[k]))
-            out_remote.append(rp)
-        if lq >= 0 or (lp < 0 and rq >= 0):
-            if lq < 0 or rq < 0:
-                raise RuntimeError(
-                    "fault_split: a replica of a shared point exists on only "
-                    "one side of the seam — the crossing rule requires both "
-                    "ranks to duplicate it.")
-            out_local.append(lq)
-            out_owner.append(int(owner[k]))
-            out_remote.append(rq)
-        if lp < 0 and lq < 0:
-            raise RuntimeError(
-                "fault_split: a shared point was dropped with no "
-                "replacement; see the seam rules in fault_split.")
-
-    order = np.argsort(np.asarray(out_local, dtype=np.int64))
-    remote = np.empty((len(out_local), 2), dtype=PETSc.IntType)
-    remote[:, 0] = np.asarray(out_owner, dtype=np.int64)[order]
-    remote[:, 1] = np.asarray(out_remote, dtype=np.int64)[order]
-    new_sf.setGraph(nroots,
-                    np.asarray(out_local, dtype=np.int64)[order]
-                    .astype(PETSc.IntType),
-                    remote.reshape(-1))
+    remote = np.empty((len(leaves), 2), dtype=PETSc.IntType)
+    remote[:, 0] = np.asarray(iremote).reshape(-1, 2)[:, 0]
+    remote[:, 1] = remote_index
+    new_sf.setGraph(nroots, local.astype(PETSc.IntType), remote.reshape(-1))
     _install_point_sf(new, new_sf)
 
 

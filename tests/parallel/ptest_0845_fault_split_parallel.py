@@ -1,11 +1,14 @@
-"""Split-node faults in parallel: rank-local replicas, collective refusals.
+"""Split-node faults in parallel: redistribute first, split rank-interior.
 
-Version-one contract: the split is legal only when the fault's cell fans stay
-off the partition seam — the replicas are then rank-local, the star-forest
-leaf set is unchanged, and the renumbering broadcast of
-``reconnect._rebuild_point_sf`` carries it over. A fault that touches the
-seam is REFUSED, with the same error on every rank; the failure mode being
-excluded is one rank raising while its peers block in the next collective.
+The contract: the LOW-LEVEL splitter (``split_along_label``) is legal only
+when the fault's cell fans stay off the partition seam — the replicas are
+then rank-local, the star-forest leaf set is unchanged, and the renumbering
+broadcast of ``reconnect._rebuild_point_sf`` carries it over. A
+seam-touching fault at that level is REFUSED, with the same error on every
+rank. The USER-facing path (``Mesh.add_fault`` / ``split_fault``) never hits
+the refusal: it REDISTRIBUTES the fault's cell star (plus one growth layer)
+onto the rank that already owns most of it first, so the split always runs
+with serial topology — the same strategy the 3-D splitter ships.
 
 What is asserted:
 
@@ -18,8 +21,11 @@ What is asserted:
 * globally, the split adds exactly its replicas: the owned-point Euler
   characteristic drops from 1 (disc) to 0 (slit disc) and the total area is
   unchanged;
-* a seam-crossing fault raises the seam refusal — not a chain-fragment
-  symptom — on EVERY rank.
+* a seam-straddling fault raises the seam refusal — not a chain-fragment
+  symptom — on EVERY rank at the low level, and ``add_fault`` splits the
+  SAME geometry cleanly via the redistribution;
+* a seam-crossing fault SPLITS AND SLIPS through ``add_fault`` at every
+  rank count — no skips, no tolerated refusals.
 
 Run with:
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/ptest_0845_fault_split_parallel.py
@@ -187,16 +193,19 @@ def test_a_fault_may_run_close_to_the_seam():
     assert len(set(outcomes)) == 1, f"outcomes {outcomes} disagree"
     if outcomes[0] == "seam":
         pytest.skip(f"a chain vertex landed on the np={uw.mpi.size} seam; "
-                    "the crossing milestone will lift this")
+                    "the low-level splitter refuses (add_fault would "
+                    "redistribute — asserted in the crossing test)")
     out, _pm, _cm = result
     assert _sf_coordinate_drift(out) == 0.0
     assert _owned_euler(out) == 0
 
 
-def test_an_organic_cut_across_the_seam_is_refused_on_every_rank():
-    """A cut made WITHOUT the crossing placement straddles the seam with a
-    shared facet — the configuration the split refuses (collectively) and
-    Mesh.add_fault exists to prevent."""
+def test_an_organic_cut_across_the_seam_is_refused_then_redistributed():
+    """A raw cut straddling the seam is the configuration the LOW-LEVEL
+    splitter refuses (collectively, with the seam verdict — never a
+    chain-fragment symptom); the SAME geometry through Mesh.add_fault
+    splits cleanly, because add_fault redistributes the fault's cell star
+    onto one rank before splitting."""
     dm = _cut(SPANNING)
     outcome, _result = _attempt(dm)
     outcomes = uw.mpi.comm.allgather(outcome)
@@ -207,33 +216,32 @@ def test_an_organic_cut_across_the_seam_is_refused_on_every_rank():
         "a fault spanning the box did not touch the seam; the refusal "
         "contract went untested")
 
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 16,
+        regular=False, qdegree=2)
+    split = base.add_fault(("Flt", np.vstack(SPANNING)))
+    assert _sf_coordinate_drift(split.dm) == 0.0
+    assert _owned_euler(split.dm) == 0, (
+        "add_fault did not open the slit on the redistributed mesh")
 
-def test_a_clean_crossing_splits_and_slips():
-    """The seam-crossing rule end to end: add_fault pulls a shared vertex
-    onto the fault x seam intersection, the split duplicates it with one
-    keyed star-forest entry per crossing, and a frictionless solve slips
-    across the ranks with machine-zero opening."""
+
+def test_a_seam_crossing_fault_redistributes_and_slips():
+    """The redistribute-first strategy end to end, on the geometry that
+    used to exercise the (now removed) crossing machinery: add_fault moves
+    the fault's cell star onto one rank, the split runs with serial
+    topology, and a frictionless solve slips with machine-zero opening —
+    asserted as SUCCESS at every rank count, no tolerated refusals."""
     from underworld3.utilities.fault_contact import fault_slip
 
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 16,
         regular=False, qdegree=2)
     pts = np.array([[0.15, 0.35], [0.85, 0.65]])
-    try:
-        split = base.add_fault(("Flt", pts))
-    except RuntimeError as err:
-        # Collective by construction; a partition can still produce a
-        # genuinely refused geometry — a three-rank corner on the line, or a
-        # crossing placement whose pull the cut's inverted-cell guard
-        # rejects. Both are honest collective refusals, not hangs.
-        if not any(k in str(err) for k in ("seam", "corner", "inverted")):
-            raise
-        pytest.skip(f"partition refused this crossing at np={uw.mpi.size}: "
-                    f"{err}")
+    split = base.add_fault(("Flt", pts))
 
     assert _sf_coordinate_drift(split.dm) == 0.0, (
-        "a replica leaf does not resolve to its own coordinates — the "
-        "crossing's star-forest association is wrong")
+        "a leaf does not resolve to its own coordinates — the redistributed "
+        "split's star-forest is wrong")
     assert _owned_euler(split.dm) == 0, "the slit did not open globally"
     fS, fE = split.dm.getHeightStratum(1)
     assert _global(sum(1 for f in range(fS, fE)
@@ -259,8 +267,8 @@ def test_a_clean_crossing_splits_and_slips():
     leak_max = _global(float(np.abs(leak).max()) if len(leak) else 0.0,
                        op=MPI.MAX)
     peak = _global(float(np.abs(V).max()) if len(V) else 0.0, op=MPI.MAX)
-    assert leak_max < 1e-12, "the crossing pair opened"
+    assert leak_max < 1e-12, "a coincident pair opened"
     half = 0.5 * float(np.linalg.norm(pts[1] - pts[0]))
-    assert peak > 0.15 * half, "the fault barely slips across the seam"
-    uw.pprint(f"[ptest_0845] np={uw.mpi.size}: crossing slipped, "
+    assert peak > 0.15 * half, "the redistributed fault barely slips"
+    uw.pprint(f"[ptest_0845] np={uw.mpi.size}: redistributed fault slipped, "
               f"peak {peak:.4f}, leak {leak_max:.1e}")
