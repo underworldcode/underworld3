@@ -6821,11 +6821,38 @@ class Mesh(Stateful, uw_object):
                          if vS <= p < vE])
             for c in range(cS, cE)]
 
+        def _sync_across_ranks(pinned_set):
+            """A vertex pinned on ANY rank is pinned on EVERY rank holding a copy.
+
+            The straddle test and the ring growth both walk rank-LOCAL cells, and
+            cells are partitioned disjointly — so a shared vertex whose cut (or
+            ring) cell lives on the neighbour rank is pinned there but not here.
+            If HERE is the owner, the mover moves it and the neighbour's pinned
+            copy follows through the SF: measured at np=4 (review of PR #488,
+            2026-08-06), two pinned leaves moved 4.2e-3 and 1.9e-3 while np=2/3
+            passed on partition luck. Matching by coordinate (the same rounded
+            key the parallel test uses) makes the set partition-independent.
+            """
+            if uw.mpi.size == 1:
+                return pinned_set
+            local_xy = (coords[[v - vS for v in pinned_set]]
+                        if pinned_set else numpy.empty((0, self.dim)))
+            global_keys = set()
+            for arr in uw.mpi.comm.allgather(local_xy):
+                for p in arr:
+                    global_keys.add(tuple(numpy.round(p, 12)))
+            out = set(pinned_set)
+            for i in range(vE - vS):
+                if tuple(numpy.round(coords[i], 12)) in global_keys:
+                    out.add(vS + i)
+            return out
+
         pinned = set()
         for verts in cell_vertices:
             d = distance[verts - vS]
             if d.min() < offset < d.max():
                 pinned.update(int(v) for v in verts)
+        pinned = _sync_across_ranks(pinned)
         for _ring in range(halo):
             grown = set()
             for verts in cell_vertices:
@@ -6833,6 +6860,7 @@ class Mesh(Stateful, uw_object):
                 if any(v in pinned for v in vv):
                     grown.update(vv)
             pinned |= grown
+            pinned = _sync_across_ranks(pinned)
 
         # COLLECTIVE emptiness test. A rank whose subdomain the surface never
         # enters legitimately has an empty local band — only a GLOBALLY empty
