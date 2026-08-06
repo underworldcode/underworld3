@@ -309,20 +309,3 @@ def petsc_vec_concatenate( inputVecs  ):
 def petsc_get_swarm_coord_name( sdm ):
 
     return
-
-
-def petsc_dm_insert_boundary_values(dm_, lvec_, time=0.0):
-    """Insert essential boundary values into a LOCAL vector of ``dm_``.
-
-    Constrained DOFs are absent from the global system, so a global-to-local
-    scatter alone leaves them at zero wherever the essential datum g != 0 —
-    the same gap the consistent-boundary-flux paths close internally (issues
-    #407/#411). A solve that bypasses SNES's own copy-back (the rotated
-    strong-BC path) calls this to complete its output fields. Wraps
-    ``DMPlexInsertBoundaryValues``, which petsc4py does not expose.
-    """
-    cdef DM dm = dm_
-    cdef Vec lv = lvec_
-    cdef PetscReal t = time
-    CHKERRQ(DMPlexInsertBoundaryValues(dm.dm, PETSC_TRUE, lv.vec, t,
-                                       NULL, NULL, NULL))

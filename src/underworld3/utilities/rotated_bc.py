@@ -386,31 +386,19 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
             q.destroy()
             removed = True
 
-    # scatter U → velocity/pressure fields. Constrained (essential-BC) DOFs
-    # are absent from the global vector, so the scatter leaves them at ZERO in
-    # the local field — silently wrong wherever the datum g != 0 (an
-    # inhomogeneous Dirichlet wall next to a rotated boundary). Complete each
-    # field with the DS's own essential values, exactly as the native SNES
-    # copy-back does (the #407/#411 insertion, via the cython shim).
-    from underworld3.cython.petsc_discretisation import \
-        petsc_dm_insert_boundary_values
-    for name, var in solver.fields.items():
-        sg = U.getSubVector(solver._subdict[name][0])
-        solver._subdict[name][1].globalToLocal(sg, var.vec)
-        U.restoreSubVector(solver._subdict[name][0], sg)
-        petsc_dm_insert_boundary_values(solver._subdict[name][1], var.vec)
-
-    # Parity with the normal solve's post-scatter sync (pyx: after the field copy-back):
-    # refresh the enhanced-variable gvec cache and drop the canonical-data cache so
-    # downstream consumers (var.data / var.array / checkpoint / stats) don't read a
-    # stale value; and mark the mesh local vector stale.
-    solver.mesh._stale_lvec = True
-    for name, var in solver.fields.items():
-        target_var = getattr(var, "_base_var", var)
-        if hasattr(target_var, "_sync_lvec_to_gvec"):
-            target_var._sync_lvec_to_gvec()
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+    # scatter U → velocity/pressure fields, completing each field's essential
+    # (Dirichlet) DOFs. Those are absent from the global vector, so a plain
+    # per-field scatter leaves them at ZERO — silently wrong wherever the datum
+    # g != 0 (an inhomogeneous Dirichlet wall next to a rotated boundary, #497).
+    # The insertion must run on the FULL dm, where the auxiliary vector lives:
+    # a sub-DM insertion segfaults when a BC datum references another
+    # MeshVariable. _scatter_global_to_fields does exactly that (boundary FEM on
+    # the parent local vector, then the per-field split) and carries the same
+    # cache-invalidation tail as the native post-solve copy-back.
+    # TODO(BUG): DMPlexSNESComputeBoundaryFEM inserts at time=PETSC_MIN_REAL, so
+    # a mesh.t-dependent essential datum is written as garbage — same defect on
+    # the native copy-back path. See issue #410.
+    solver._scatter_global_to_fields(U)
     return removed
 
 
