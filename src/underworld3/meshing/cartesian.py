@@ -1056,6 +1056,17 @@ def BoxInternalPatch(
     if len(minCoords) != 3:
         raise ValueError("BoxInternalPatch is 3-D; in 2-D a fault is a "
                          "polyline — use Mesh.add_fault on any box mesh.")
+    # a FaultSurface is the preferred input: it names itself, its rim
+    # polygon becomes the conforming patch, and it is stored on the mesh
+    # so add_fault_bc(..., normal="surface") can read the constraint
+    # frame from the surface's own face normals
+    fault_surface = None
+    if hasattr(patch_points, "rim_polygon") and \
+            hasattr(patch_points, "name"):
+        fault_surface = patch_points
+        if patch_name == "Fault":              # the default → its name
+            patch_name = fault_surface.name
+        patch_points = fault_surface.rim_polygon()
     patch = np.asarray(patch_points, dtype=float)
     if patch.ndim != 2 or patch.shape[0] < 3 or patch.shape[1] != 3:
         raise ValueError("patch_points must be an (N, 3) polygon, N >= 3.")
@@ -1180,6 +1191,9 @@ def BoxInternalPatch(
 
     from underworld3.meshing.bounding_surface import register_box_face_surfaces
     register_box_face_surfaces(new_mesh, minCoords, maxCoords)
+
+    if fault_surface is not None:
+        new_mesh._fault_surfaces = {patch_name: fault_surface}
 
     return new_mesh
 

@@ -94,9 +94,28 @@ the domain. `uw.meshing.BoxInternalPatch` embeds a planar polygon patch
 conformingly in a simplex box (a disc is a many-sided polygon), and
 `split_fault` does the rest:
 
+The preferred input is a `uw.meshing.FaultSurface` — the object names
+the patch, its rim polygon becomes the conforming embed, and it rides
+onto the split mesh so the constraint frame can come from the surface's
+own face normals:
+
 ```python
 from underworld3.utilities.fault_split import split_fault
 
+fault = uw.meshing.FaultSurface("Fault", points)     # or .from_vtk(...)
+fault.triangulate()
+mesh = uw.meshing.BoxInternalPatch(cellSize=0.05, patch_points=fault,
+                                   patch_cellSize=0.02)
+child = split_fault(mesh, "Fault")
+...
+stokes.add_fault_bc(0, boundary="Fault", normal="surface")
+```
+
+The surface must be planar for now (`rim_polygon` refuses otherwise —
+a genuinely curved sheet waits on the discrete-entity embed). A raw
+`(N, 3)` polygon via `patch_points=` still works for quick setups:
+
+```python
 patch = np.array([[0.5, 0.3, 0.3], [0.5, 0.7, 0.3],
                   [0.5, 0.7, 0.7], [0.5, 0.3, 0.7]])
 mesh = uw.meshing.BoxInternalPatch(cellSize=0.05, patch_points=patch,

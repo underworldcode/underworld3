@@ -133,21 +133,46 @@ def _compile_normal_spec(spec, mesh, boundary):
     """
     dim = mesh.dim
     if isinstance(spec, str):
-        if spec != "trace":
-            raise ValueError(
-                f"unknown normal spec {spec!r} for fault {boundary!r}: "
-                "pass \"trace\", a sympy 1×dim Matrix in mesh.X, or a "
-                "constant vector.")
-        if dim != 2:
+        if spec == "trace":
+            if dim != 2:
+                raise NotImplementedError(
+                    "normal=\"trace\" is 2-D; in 3-D pass the "
+                    "FaultSurface (or normal=\"surface\").")
+            poly = getattr(mesh, "_fault_traces", {}).get(boundary)
+            if poly is None:
+                raise ValueError(
+                    f"mesh carries no stored trace for {boundary!r} — "
+                    "normal=\"trace\" needs a mesh built by "
+                    "Mesh.add_fault.")
+            return _trace_normal_fn(poly)
+        if spec == "surface":
+            fs = getattr(mesh, "_fault_surfaces", {}).get(boundary)
+            if fs is None:
+                raise ValueError(
+                    f"mesh carries no stored FaultSurface for "
+                    f"{boundary!r} — normal=\"surface\" needs a mesh "
+                    "built from one (e.g. BoxInternalPatch(patch_points="
+                    "fault_surface)).")
+            return _compile_normal_spec(fs, mesh, boundary)
+        raise ValueError(
+            f"unknown normal spec {spec!r} for fault {boundary!r}: pass "
+            "\"trace\" (2-D), \"surface\"/a FaultSurface (3-D), a sympy "
+            "1×dim Matrix in mesh.X, or a constant vector.")
+    if hasattr(spec, "triangles") and hasattr(spec, "normals"):
+        # a FaultSurface: the frame comes from the surface's OWN
+        # geometry — nearest-face normal (exact for a planar patch,
+        # unchanged for future curved sheets)
+        if dim != 3:
             raise NotImplementedError(
-                "normal=\"trace\" is 2-D; a 3-D patch is planar and its "
-                "facet normals are already exact.")
-        poly = getattr(mesh, "_fault_traces", {}).get(boundary)
-        if poly is None:
-            raise ValueError(
-                f"mesh carries no stored trace for {boundary!r} — "
-                "normal=\"trace\" needs a mesh built by Mesh.add_fault.")
-        return _trace_normal_fn(poly)
+                "a FaultSurface normal source is 3-D; in 2-D use "
+                "normal=\"trace\".")
+        if spec.normals is None:
+            spec.compute_normals()
+        centres = np.asarray(spec.face_centers, dtype=float)
+        face_normals = np.asarray(spec.normals, dtype=float)
+        from scipy.spatial import cKDTree
+        tree = cKDTree(centres)
+        return lambda X: face_normals[int(tree.query(X)[1])]
     if isinstance(spec, sympy.MatrixBase):
         if len(spec) != dim:
             raise ValueError(

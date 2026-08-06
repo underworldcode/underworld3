@@ -276,3 +276,41 @@ def test_daylighting_patch_refused():
                          [0.5, 1.1, 0.7], [0.5, -0.1, 0.7]])
     with pytest.raises(ValueError, match="strictly inside"):
         uw.meshing.BoxInternalPatch(cellSize=0.2, patch_points=spanning)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_fault_surface_route():
+    """The FaultSurface interface end to end: the object names the
+    patch, its rim polygon is the conforming embed, it rides onto the
+    split mesh, and normal="surface" compiles the constraint frame from
+    the surface's OWN face normals (exactly +-y for this planar patch).
+    """
+    xs = np.linspace(0.30, 0.60, 5)
+    zs = np.linspace(0.35, 0.65, 5)
+    XX, ZZ = np.meshgrid(xs, zs)
+    pts = np.column_stack([XX.ravel(), np.full(XX.size, 0.5), ZZ.ravel()])
+    fs = uw.meshing.FaultSurface("Rupture", pts)
+    fs.triangulate()
+
+    rim = fs.rim_polygon()
+    assert len(rim) == 16                       # the 5x5 grid's boundary
+    assert np.allclose(rim[:, 1], 0.5)
+
+    mesh = uw.meshing.BoxInternalPatch(cellSize=0.15, patch_points=fs)
+    assert "Rupture" in [b.name for b in mesh.boundaries]
+    child = split_fault(mesh, "Rupture")
+    assert "Rupture" in child._fault_surfaces
+
+    from underworld3.utilities.fault_contact import _compile_normal_spec
+    fn = _compile_normal_spec("surface", child, "Rupture")
+    n = fn(np.array([0.45, 0.5, 0.5]))
+    assert abs(abs(n[1]) - 1.0) < 1e-12 and abs(n[0]) < 1e-12
+
+    # a non-planar surface refuses the rim extraction, loudly
+    warped = pts.copy()
+    warped[:, 1] += 0.05 * np.sin(6 * warped[:, 0])
+    fs2 = uw.meshing.FaultSurface("Warped", warped)
+    fs2.triangulate()
+    with pytest.raises(NotImplementedError, match="planar"):
+        fs2.rim_polygon()

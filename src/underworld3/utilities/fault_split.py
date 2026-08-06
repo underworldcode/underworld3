@@ -1557,6 +1557,12 @@ def split_fault(mesh, name, orientation=None, verbose=False):
     # based injection would read one side of the jump for both — the transfer
     # must stay geometric.
     child._refine_dofs_coincide = False
+    # geometry objects ride along so add_fault_bc can source the
+    # constraint frame from them (normal="trace" / normal="surface")
+    if getattr(mesh, "_fault_traces", None):
+        child._fault_traces = dict(mesh._fault_traces)
+    if getattr(mesh, "_fault_surfaces", None):
+        child._fault_surfaces = dict(mesh._fault_surfaces)
     child.regions = mesh.regions
     child._parent_mesh_version = mesh._mesh_version
     # The Minus->Plus point pairing in the SPLIT mesh's numbering, for every

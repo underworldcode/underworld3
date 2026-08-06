@@ -2718,6 +2718,213 @@ def _fault_collect_segments(faults):
     return [seg for poly in _fault_collect_polylines(faults) for seg in poly]
 
 
+def _polyline_arclengths(pts):
+    return np.concatenate(
+        [[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+
+
+def _point_at_arc(pts, s_arc):
+    s_ctrl = _polyline_arclengths(pts)
+    s_arc = float(np.clip(s_arc, 0.0, s_ctrl[-1]))
+    k = int(np.searchsorted(s_ctrl, s_arc, side="right") - 1)
+    k = min(k, len(pts) - 2)
+    f = (s_arc - s_ctrl[k]) / max(s_ctrl[k + 1] - s_ctrl[k], 1e-30)
+    return pts[k] + f * (pts[k + 1] - pts[k])
+
+
+def _sub_polyline(pts, s0, s1):
+    """The part of the polyline between arc lengths s0 < s1, with exact
+    endpoints (interior control points kept)."""
+    s_ctrl = _polyline_arclengths(pts)
+    keep = (s_ctrl > s0 + 1e-12) & (s_ctrl < s1 - 1e-12)
+    return np.vstack([_point_at_arc(pts, s0), pts[keep],
+                      _point_at_arc(pts, s1)])
+
+
+def prepare_fault_network(faults, spacing, ligament=1.5, verbose=True):
+    """Make an imported set of 2-D fault traces splittable.
+
+    The split-node pipeline refuses faults that cross or share vertices
+    — a junction vertex needs a non-binary DOF pairing, which is a
+    design of its own. The SUPPORTED representation of a junction is
+    the offset form: the traces stop short of the intersection, leaving
+    a ligament of intact material about a cell across. Stress transfers
+    across the ligament (the measured mechanism of the interaction
+    examples); slip does not transfer through the junction point.
+
+    This function detects the junctions in an imported set and applies
+    that conversion, loudly:
+
+    - X crossing (interiors intersect): BOTH traces are cut at the
+      intersection, every cut end pulled back ``ligament * spacing``
+      along its own trace; a trace cut into k pieces is renamed
+      ``<name>_1 .. <name>_k``.
+    - T abutment (an endpoint of one trace on or near another's
+      interior): the abutting END is pulled back; the through-going
+      trace is untouched.
+    - Y contact (endpoints of two traces closer than the ligament):
+      both endpoints pulled back.
+
+    Pieces left shorter than ``2 * ligament * spacing`` are dropped and
+    reported. Returns ``(prepared, report)`` where ``prepared`` is a
+    list of ``(name, points)`` ready for :meth:`Mesh.add_fault` and
+    ``report`` is the list of actions taken (printed when ``verbose``).
+
+    Parameters
+    ----------
+    faults : sequence of (name, points) and/or Surface
+        The imported traces (each an open polyline).
+    spacing : float
+        The local mesh size the network will be meshed at — sets the
+        ligament in mesh units.
+    ligament : float, optional
+        Ligament size in multiples of ``spacing`` (default 1.5; the
+        add_fault contract wants segments at least a cell or two apart).
+    """
+    lig = float(ligament) * float(spacing)
+    traces = []
+    for entry in faults:
+        if isinstance(entry, tuple) and len(entry) == 2 \
+                and isinstance(entry[0], str):
+            name, pts = entry
+            pts = np.asarray(pts, dtype=float)[:, :2]
+        else:
+            name = entry.name
+            cp = np.asarray(entry._control_points, dtype=float)[:, :2]
+            pts = cp
+        traces.append([name, pts, []])          # [name, points, cut arcs]
+
+    report = []
+
+    def seg_intersect(p0, p1, q0, q1):
+        d1, d2 = p1 - p0, q1 - q0
+        den = d1[0] * d2[1] - d1[1] * d2[0]
+        if abs(den) < 1e-30:
+            return None
+        w = q0 - p0
+        t = (w[0] * d2[1] - w[1] * d2[0]) / den
+        u = (w[0] * d1[1] - w[1] * d1[0]) / den
+        if -1e-12 <= t <= 1 + 1e-12 and -1e-12 <= u <= 1 + 1e-12:
+            return t, u
+        return None
+
+    # pass 1: X crossings and T abutments -> cut/trim events per trace.
+    # The pull-back must give EUCLIDEAN clearance >= the ligament, and
+    # it is measured along each trace, so an oblique junction (crossing
+    # angle theta) needs pullback = lig / sin(theta) — a perpendicular
+    # crossing pulls back by exactly lig, a grazing one by more (capped,
+    # and reported, at 5 lig).
+    for i in range(len(traces)):
+        for j in range(i + 1, len(traces)):
+            ni, pi, ci = traces[i]
+            nj, pj, cj = traces[j]
+            si, sj = _polyline_arclengths(pi), _polyline_arclengths(pj)
+            for a in range(len(pi) - 1):
+                for b in range(len(pj) - 1):
+                    hit = seg_intersect(pi[a], pi[a + 1], pj[b], pj[b + 1])
+                    if hit is None:
+                        continue
+                    t, u = hit
+                    d1 = pi[a + 1] - pi[a]
+                    d2 = pj[b + 1] - pj[b]
+                    sin_th = abs(d1[0] * d2[1] - d1[1] * d2[0]) / (
+                        np.linalg.norm(d1) * np.linalg.norm(d2) + 1e-30)
+                    pull = lig / max(sin_th, 0.2)
+                    if sin_th < 0.2:
+                        report.append(
+                            f"grazing junction between {ni!r} and "
+                            f"{nj!r} (angle {np.degrees(np.arcsin(max(sin_th, 0.0))):.1f} deg): "
+                            f"pull-back capped at {pull:.4g}.")
+                    arc_i = si[a] + t * (si[a + 1] - si[a])
+                    arc_j = sj[b] + u * (sj[b + 1] - sj[b])
+                    end_i = min(arc_i, si[-1] - arc_i) < pull
+                    end_j = min(arc_j, sj[-1] - arc_j) < pull
+                    P = pi[a] + t * (pi[a + 1] - pi[a])
+                    if end_i and end_j:
+                        kind = "Y contact"
+                    elif end_i or end_j:
+                        kind = "T abutment"
+                    else:
+                        kind = "X crossing"
+                    ci.append((arc_i, pull))
+                    cj.append((arc_j, pull))
+                    report.append(
+                        f"{kind} between {ni!r} and {nj!r} at "
+                        f"({P[0]:.4g}, {P[1]:.4g}): converted to an "
+                        f"offset junction (ligament {lig:.4g}, "
+                        f"pull-back {pull:.4g}).")
+
+    # pass 1b: NEAR-MISS abutments — an endpoint stopping just short of
+    # another trace never intersects, so pass 1 cannot see it, but the
+    # meshed ligament would be thinner than requested. Pull such an
+    # endpoint back until its Euclidean clearance reaches the ligament.
+    def dist_to(P, Q):
+        best = np.inf
+        for a, b in zip(Q[:-1], Q[1:]):
+            ab = b - a
+            t = float(np.clip(((P - a) @ ab) / max(ab @ ab, 1e-30),
+                              0.0, 1.0))
+            best = min(best, float(np.linalg.norm(P - (a + t * ab))))
+        return best
+
+    for i, (ni, pi, ci) in enumerate(traces):
+        s_i = _polyline_arclengths(pi)
+        for arc_end, P in ((0.0, pi[0]), (float(s_i[-1]), pi[-1])):
+            for j, (nj, pj, _cj) in enumerate(traces):
+                if j == i:
+                    continue
+                if dist_to(P, pj) >= lig:
+                    continue
+                if any(abs(arc - arc_end) < 4.0 * lig for arc, _ in ci):
+                    continue                    # already handled above
+                pull = lig
+                for _ in range(5):
+                    s_q = arc_end + pull if arc_end < 1e-12 \
+                        else arc_end - pull
+                    if dist_to(_point_at_arc(pi, s_q), pj) >= lig:
+                        break
+                    pull *= 1.6
+                ci.append((arc_end, pull))
+                report.append(
+                    f"near-miss abutment: the end of {ni!r} sits within "
+                    f"the ligament of {nj!r} — pulled back {pull:.4g}.")
+
+    # pass 2: apply the events trace by trace
+    prepared = []
+    for name, pts, cuts in traces:
+        total = _polyline_arclengths(pts)[-1]
+        if not cuts:
+            prepared.append((name, pts))
+            continue
+        pull_at = {}
+        for arc, pull in cuts:
+            pull_at[float(arc)] = max(pull_at.get(float(arc), 0.0), pull)
+        edges = sorted(set([0.0] + list(pull_at) + [total]))
+        pieces = []
+        for s0, s1 in zip(edges[:-1], edges[1:]):
+            a = s0 + pull_at.get(s0, 0.0)
+            b = s1 - pull_at.get(s1, 0.0)
+            if b - a < 2.0 * lig:
+                report.append(
+                    f"piece of {name!r} between arc {s0:.4g} and "
+                    f"{s1:.4g} is shorter than two ligaments — dropped.")
+                continue
+            pieces.append(_sub_polyline(pts, a, b))
+        if len(pieces) == 1:
+            prepared.append((name, pieces[0]))
+        else:
+            for k, piece in enumerate(pieces):
+                prepared.append((f"{name}_{k + 1}", piece))
+        if len(pieces) != 1:
+            report.append(
+                f"{name!r} became {len(pieces)} sub-fault(s).")
+
+    if verbose:
+        for line in report:
+            print(f"[prepare_fault_network] {line}")
+    return prepared, report
+
+
 def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     r"""Build the analytic, Eulerian **normal-aligned anisotropic metric
     tensor** ``M(x)`` for refining a thin band of cells **across** one or more
