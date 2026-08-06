@@ -991,6 +991,15 @@ def auto_inject_custom_mg(solver, field_id=None):
     if coarse is None:
         return                              # nothing to inject
 
+    # An EXPLICIT preconditioner choice beats the opportunistic pickup. Before
+    # this guard, `solver.preconditioner = "gamg"` on an adapt child was
+    # silently clobbered back to the custom-P PCMG at solve time (measured:
+    # both arms of test_0842's fmg-vs-gamg comparison ran pc_type=mg), so a
+    # user could not opt out and any FMG-vs-GAMG comparison was vacuous.
+    # "auto" (the default) still picks up the mesh-owned hierarchy.
+    if getattr(solver, "_preconditioner", "auto") == "gamg":
+        return
+
     builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
     # Retry with the RBF builder before abandoning geometric MG. The
     # barycentric builder has LOCAL support: it re-triangulates the coarse

@@ -105,11 +105,21 @@ def test_poisson_fmg_on_3d_child_matches_gamg():
         poisson.solve()
         its = poisson.snes.getKSP().getIterationNumber()
         # exact linear solution T = z: also proves the Dirichlet facet
-        # labels survived the parallel transform
+        # labels survived the parallel transform.
+        #
+        # The bound is SOLVER-TOLERANCE-limited, not discretisation-limited:
+        # ksp_rtol is enforced in the PRECONDITIONED norm, so the constant
+        # between the declared 1e-8 reduction and the nodal error depends on
+        # the preconditioner. The one-level-per-doubling hierarchy (2026-08)
+        # legitimately changed that constant — measured 6.9e-7 on the CI gmsh
+        # mesh vs 2.7e-10 on macOS gmsh 4.15.1 at the same rtol — so a 1e-8
+        # nodal bound was a calibration to the OLD hierarchy's margin, not a
+        # property of the method. 1e-6 still catches every failure this test
+        # exists for: a lost Dirichlet label or a wrong transfer is O(1).
         err = np.linalg.norm(
             poisson.Unknowns.u.data[:, 0] - poisson.Unknowns.u.coords[:, 2])
         nrm = np.linalg.norm(poisson.Unknowns.u.coords[:, 2]) + 1e-30
-        assert err / nrm < 1e-8
+        assert err / nrm < 1e-6
         return its
 
     fmg_its = solve("fmg")

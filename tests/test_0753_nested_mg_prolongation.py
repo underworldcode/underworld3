@@ -252,21 +252,27 @@ def test_reproduces_an_arbitrary_coarse_field(dim, cell_size, max_levels, ratio)
 
     TODO(BUG) ``nvb.nested_prolongation`` is wrong in 3-D for vertices a closure
     cascade places strictly INSIDE a coarse tet — worst error 1.19, measured per
-    generation with no composition involved, against 1.9e-15 in 2-D. The defect
-    is asserted POSITIVELY below rather than through ``xfail(strict=True)``: it
-    is carried by ONE row in 2336 of a gmsh mesh, so a strict xfail turns a gmsh
-    version bump into a hard failure, and it hides how narrow the breakage is.
-    When the bug is fixed this test fails and says so.
+    generation with no composition involved, against 1.9e-15 in 2-D (#449).
+    Whether any interior vertex lands in the defective configuration depends on
+    the gmsh-generated base mesh: gmsh 4.15.1/macOS produces exactly ONE bad row
+    in 842 interior rows, while the Linux CI wheel produces none — so a hard
+    assertion in EITHER direction is a gmsh-build lottery, which is precisely
+    how the previous positive ``assert wrong`` guard failed on CI (2026-08-04)
+    while passing locally. The 3-D branch therefore xfails (non-strict) when the
+    defect manifests and passes quietly when this particular mesh does not
+    exercise it; the pointer to the live bug is the TODO(BUG) at the source in
+    ``nvb.nested_prolongation``. When #449 is fixed, delete this branch and let
+    every dimension fall through to the exactness assertion below.
     """
     _on_support, interior = _embedding_report(dim, cell_size, max_levels, ratio)
     wrong = [(k, r) for k, r, exact in interior if not exact]
 
     if dim == 3:
-        assert wrong, (
-            "3-D interior-vertex rows are now exact — nvb.nested_prolongation "
-            "appears FIXED. Delete this branch and assert exactness for every "
-            "dimension.")
-        return
+        if wrong:
+            pytest.xfail(
+                f"known 3-D interior-vertex defect (#449): {len(wrong)} of "
+                f"{len(interior)} rows wrong, e.g. {wrong[:3]}")
+        return  # this gmsh build produced no defective configuration
 
     assert not wrong, (
         f"{len(wrong)} of {len(interior)} rows whose fine vertex lies strictly "
