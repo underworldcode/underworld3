@@ -2741,8 +2741,67 @@ def _sub_polyline(pts, s0, s1):
                       _point_at_arc(pts, s1)])
 
 
+def damage_zone_yield(mesh, junctions, tau_damage, radius,
+                      tau_far=1.0e3):
+    """A composite yield-stress expression: damage plugs at junctions.
+
+    The gap-and-let-it-link policy: declared master faults keep
+    geometric continuity, every other junction is left as an offset gap
+    (:func:`prepare_fault_network`), and the gaps carry DAMAGE-ZONE
+    material — a yield cap ``tau_damage`` inside a disc of ``radius``
+    about each junction point, ``tau_far`` (effectively unyielding)
+    elsewhere — so the stress lobes of the abutting tips decide how the
+    faults link up. Assign the result to a ViscoPlastic model::
+
+        prepared, report, junctions = prepare_fault_network(
+            faults, spacing=h, through=["Main"], return_junctions=True)
+        child = mesh.add_fault(prepared)
+        stokes.constitutive_model = ViscoPlasticFlowModel
+        stokes.constitutive_model.Parameters.yield_stress = \\
+            uw.meshing.damage_zone_yield(child, junctions,
+                                         tau_damage=0.5, radius=3 * h)
+
+    Regions are SHARP (Piecewise), deliberately: blending a huge far
+    yield through any smooth mask tail contaminates the plug
+    (measured — the plug shrinks to a fraction of a cell).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        Supplies the coordinate symbols.
+    junctions : sequence
+        Junction records from ``prepare_fault_network`` (anything with
+        a ``point`` key or a 2-vector as its second element), or bare
+        2-vectors.
+    tau_damage : float or sequence of float
+        The damage yield stress (one value, or one per junction).
+    radius : float or sequence of float
+        Plug radius (one value, or one per junction) — a couple of
+        ligaments is the measured sweet spot.
+    tau_far : float, optional
+        The unyielding far-field cap. Keep it finite and sane (1e3):
+        it only needs to exceed any stress the model can produce.
+    """
+    x, y = mesh.X[0], mesh.X[1]
+    pts = []
+    for j in junctions:
+        if isinstance(j, dict):
+            pts.append(np.asarray(j["point"], dtype=float))
+        else:
+            pts.append(np.asarray(j, dtype=float))
+    n = len(pts)
+    taus = (list(tau_damage) if np.ndim(tau_damage) else [tau_damage] * n)
+    radii = (list(radius) if np.ndim(radius) else [radius] * n)
+    expr = sympy.sympify(tau_far)
+    for P, tau, R in zip(pts, taus, radii):
+        r2 = (x - float(P[0])) ** 2 + (y - float(P[1])) ** 2
+        expr = sympy.Min(expr, sympy.Piecewise(
+            (float(tau), r2 < float(R) ** 2), (tau_far, True)))
+    return expr
+
+
 def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
-                          verbose=True):
+                          verbose=True, return_junctions=False):
     """Make an imported set of 2-D fault traces splittable.
 
     The split-node pipeline refuses faults that cross or share vertices
@@ -2791,6 +2850,7 @@ def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
     """
     lig = float(ligament) * float(spacing)
     through = set(through or ())
+    junctions = []
     traces = []
     for entry in faults:
         if isinstance(entry, tuple) and len(entry) == 2 \
@@ -2879,6 +2939,8 @@ def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
                         nj if not cut_j else None)
                     kept = ("" if kept_name is None
                             else f" {kept_name!r} kept continuous;")
+                    junctions.append(dict(kind=kind, point=P.copy(),
+                                          pull=pull, faults=(ni, nj)))
                     report.append(
                         f"{kind} between {ni!r} and {nj!r} at "
                         f"({P[0]:.4g}, {P[1]:.4g}):{kept} offset "
@@ -2916,6 +2978,8 @@ def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
                         break
                     pull *= 1.6
                 ci.append((arc_end, pull))
+                junctions.append(dict(kind="near-miss", point=P.copy(),
+                                      pull=pull, faults=(ni, nj)))
                 report.append(
                     f"near-miss abutment: the end of {ni!r} sits within "
                     f"the ligament of {nj!r} — pulled back {pull:.4g}.")
@@ -2953,6 +3017,8 @@ def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
     if verbose:
         for line in report:
             print(f"[prepare_fault_network] {line}")
+    if return_junctions:
+        return prepared, report, junctions
     return prepared, report
 
 
