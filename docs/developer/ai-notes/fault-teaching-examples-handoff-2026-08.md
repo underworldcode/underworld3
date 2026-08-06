@@ -100,15 +100,11 @@ them render fine anywhere.
    continuous trace slips more than the two offset segments did).
    ~50 s of compute at h = 0.012. The capstone.
 
-   RENDERING RULES the interaction fields obey (hard-won, measured):
-   stress fields are P0 (cell) projections — continuous-P1 projection
-   of rough near-fault stress rings at node scale (residual rms 0.26
-   at half-wavelength h/2) — rendered as CELL data on the split
-   mesh's TRUE connectivity (common.split_mesh_cell_render /
-   split_mesh_cell_rows); never Delaunay the DOF point cloud of a
-   split mesh (coincident fault pairs + trace-crossing edges paint
-   false beading). Colour: linear RdBu_r at +-1 (dCFF per unit
-   stress drop) — log scaling makes the far field "overflow".
+   RENDERING RULES the interaction fields obey: see the revised
+   field-rendering entry in the harness contracts below (P0 and P1
+   are both legitimate now — choose by physics; never Delaunay a
+   split-mesh DOF cloud; RdBu_r +-1 for dCFF, Oranges for strain
+   rate).
 
 ## The harness contracts (`common.py`)
 
