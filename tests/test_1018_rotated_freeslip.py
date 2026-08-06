@@ -279,9 +279,27 @@ def test_rotated_freeslip_geometric_fmg_velocity_block():
     s.solve()
 
     # geometric MG on the velocity block converged, and matches essential
-    assert s._rotated_freeslip_info["ksp_reason"] > 0
+    info = s._rotated_freeslip_info
+    assert info["ksp_reason"] > 0
     rel = np.linalg.norm(v.data - vE.data) / np.linalg.norm(vE.data)
     assert rel < 5e-3, f"FMG rotated free-slip differs from essential by {rel:.2e}"
+
+    # The velocity block really IS multigrid (PETSc's own view of the sub-PC, not our
+    # bookkeeping), preconditioned by the 1/mu pressure mass.
+    assert info["velocity_pc"] == "custom-FMG"
+    assert info["schur_pre"] == "1/mu-mass"
+    assert info["velocity_pc_type"] == "mg", (
+        f"velocity sub-PC is {info['velocity_pc_type']!r}, not multigrid — the custom "
+        f"FMG install did not take")
+
+    # PCFieldSplit applies the Schur complement through the velocity sub-KSP, so that
+    # KSP must converge to a tolerance. A `preonly` single multigrid cycle hands the
+    # pressure Krylov a different system, which stagnates above its tolerance and
+    # leaves the outer Krylov to make up the difference. Measured on this
+    # configuration: FGMRES-wrapped FMG = 1 outer iteration, `preonly` = 6.
+    assert max(info["ksp_its"]) <= 3, (
+        f"rotated FMG outer iteration blow-out: {info['ksp_its']} "
+        f"(inexact Schur application — is the velocity sub-KSP `preonly` again?)")
 
 
 def test_rotated_freeslip_boundary_normal_traction_solcx():

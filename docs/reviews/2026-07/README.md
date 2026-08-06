@@ -36,6 +36,17 @@ Cross-dimension synthesis and the ranked remediation worklist: `REMEDIATION-WORK
 Follow-ons: swarm modernization refactor (design doc from dimension 5);
 guardrails — UW3 Style Charter + mechanical CI gates.
 
+## Standalone audits and reviews
+
+Not part of the six-dimension audit; each stands alone and was written against a named
+baseline commit.
+
+| document | subject |
+|---|---|
+| `solver-configuration-reachability-audit.md` | Which solver options actually reach PETSc, and where the code silently substitutes its own choice |
+| `nonlinear-solver-homotopy-adversarial-review.md` | Warm-start / yield-homotopy layers |
+| `solver-wall-clock-guard-adversarial-review.md` | Wall-clock guard and sub-solve work gauge |
+
 ## Ground rules
 
 - Every finding carries `file:line` evidence and is adversarially verified before

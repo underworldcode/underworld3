@@ -41,10 +41,89 @@ There is a single driver, `solve_rotated_freeslip`: a manual outer
 Newton/Picard loop that rotates the residual and tangent every iteration
 (`F̂ = Q F`, `Ĵ = Q J Qᵀ`), imposes the constraint on the rotated normal rows,
 and solves each increment with a self-contained fieldsplit-Schur KSP (geometric
-FMG on the custom prolongation when a hierarchy is registered, else GAMG; the
+FMG on the custom prolongation when the solver has a hierarchy, else GAMG; the
 native 1/μ pressure mass as the Schur preconditioner). There is no separate
 linear path and no up-front nonlinearity probe: a linear model converges after
 its first increment and the loop self-terminates.
+
+### Where the multigrid hierarchy comes from
+
+Native geometric FMG cannot serve a rotated solve at all — the DM-coupled
+hierarchy has no way to express the per-node rotation — so custom-P multigrid is
+not an optimisation here, it is the only geometric option. The hierarchy is
+resolved by `custom_mg.build_transfers`, which is the **same rule the standard
+path uses**:
+
+1. an explicit `set_custom_fmg` registration on the solver wins; otherwise
+2. a **mesh-owned** coarse tail (`mesh._custom_mg_coarse_meshes`, what
+   `mesh.adapt()` leaves on a refinement child) is picked up opportunistically,
+   with the barycentric→RBF builder fallback, so a failed build degrades to GAMG
+   rather than crashing the solve.
+
+Step 2 used to be unreachable from here. The standard path's injection hook runs
+*after* the rotated dispatch has already returned, and the rotated builder
+consulted only `solver._custom_mg` — so an `adapt()` child under rotated
+free-slip reported `velocity_pc == "GAMG"`, indistinguishable from having no
+hierarchy at all, and lost its multigrid silently (#467). That is the
+`adapt-on-top-faults` workflow's own configuration: a fault resolved by local
+refinement on an adapt child, with rotated free-slip chosen over Nitsche because
+it composes with transverse isotropy.
+
+The option bundle for both the FMG and the GAMG velocity block comes from
+`utilities/multigrid_options.py`, shared with the native and standard custom-P
+routes, so the rotated block cannot be configured differently by accident. The
+single deliberate difference is the coarse solve: `coarse="svd"`, because the
+Galerkin-coarsened rotated block inherits the rigid-rotation null space where
+`redundant`/LU hits a zero pivot. See
+[the solvers subsystem doc](solvers.md) for the bundle itself.
+
+### The velocity sub-KSP must converge, not just apply
+
+The velocity block is preconditioned by multigrid, but the KSP *around* that
+multigrid is FGMRES to `0.1 × tolerance` — never `preonly`. This is not a
+tuning preference. `PCFieldSplit` forms the Schur complement
+`S = A₁₁ − A₁₀ A₀₀⁻¹ A₀₁` and applies `A₀₀⁻¹` through this same velocity KSP,
+so `preonly` replaces `A₀₀⁻¹` with a single multigrid cycle and hands the
+pressure Krylov a *different* system `S̃ ≠ S`, preconditioned by a 1/μ mass
+matrix built for `S`.
+
+Measured on an annulus with a weak plane reaching the constrained boundary
+(`η₁/η₀ = 1e-3`, transversely isotropic): under `preonly` the pressure residual
+falls by 4.4e4 in about 16 iterations and then **stagnates at a floor ≈ 3.1e-7**,
+spending the remaining 184 iterations of its cap for nothing — on every outer
+iteration, 9 outer iterations in total. Under FGMRES it converges by 1.1e8
+monotonically in 17 pressure iterations, and the outer solve takes 1. The
+isotropic control moves the same way (5 → 1), so this is a property of the Schur
+application rather than of the anisotropy.
+
+Note the Schur application is bitwise reproducible under both settings, so the
+floor is *not* "the operator changes between applications" — `S̃` is a fixed
+linear operator, just the wrong one. The precise origin of the floor (most
+plausibly a range/null-space inconsistency between `S̃` and the constant-pressure
+null space attached to `S`) has not been isolated.
+
+The native (non-rotated) Stokes path and the GAMG fallback have always wrapped
+their multigrid this way; the rotated custom-FMG branch was the sole exception.
+`max_it` matches both (200); `rtol` matches the GAMG fallback (0.1 × tol), where
+the native path asks for 0.033 × tol.
+
+Two things make this easy to miss, and both are now instrumented. The outer
+iteration count does not reveal it — a full Schur factorisation with a good
+pressure mass still reports ~1 outer iteration while the inner solve grinds
+underneath. And a velocity FGMRES that exhausts its cap returns
+`KSP_DIVERGED_ITS`, which `KSPCheckSolve` deliberately does not escalate, so it
+would degrade silently where `preonly` simply could not fail; the rotated path
+now warns on it.
+
+`solver._rotated_freeslip_info` therefore reports `velocity_pc`, `schur_pre` and
+`velocity_pc_type` (PETSc's own view of the sub-PC), plus `vel_its_last` and
+`pres_its_last`. The last two are **last-application samples, not work**:
+`KSPGetIterationNumber` reports only the most recent solve, and the velocity KSP
+is applied once per Schur `MatMult`. They are named `_last` so they are not
+confused with the summed counts `solver_health` uses as its work axis; wiring
+the rotated path into `SolverInstrumentation.sub_reports()` is the proper fix and
+has not been done. On the opt-in `solver._rotated_use_lu` path there are no
+sub-KSPs at all and both fields record `None`.
 
 The manual loop exists because the rotated operator `Q A Qᵀ` carries no DM
 field information, so PETSc's DM-coupled fieldsplit cannot precondition it;

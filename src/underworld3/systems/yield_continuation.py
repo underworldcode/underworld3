@@ -40,17 +40,26 @@ class YieldHomotopyControl:
         yield, the frozen/Picard tangent for the elastic (VEP) models.
     delta
         The δ ``constants[]`` atom itself, for diagnostics.
+    delta0
+        The entry δ this family should START from. Model-owned because δ does NOT mean
+        the same thing in the two soft-min families: for the power mean the sharpness is
+        ``s = 1/(δ + 0.001)``, so δ ≤ 1 and δ = 1 IS the harmonic mean, while for the
+        sqrt family δ is a percentage stress deviation and a generous entry is O(10).
+        Carrying one number across both families is a category error.
     """
 
     set_delta: Callable[[float], None]
     tangent: Any
     delta: Optional[Any] = None
+    delta0: float = 1.0
 
 
 def yield_continuation(
     solver,
     control=None,
-    delta0=1.0,
+    smoother=None,
+    anchor=None,
+    delta0=None,
     down=0.5,
     dmin=1.0e-3,
     entry_maxit=30,
@@ -74,10 +83,9 @@ def yield_continuation(
     of its iteration budget means the march is close to the feasible edge, so the next
     step is gentler.
 
-    Starting δ is deliberately **large**, where the power-mean soft-min is the harmonic
-    mean and is bounded by the background viscosity even as :math:`\dot\varepsilon \to
-    0`. That is what makes the first (cold) solve well posed, and why no separate
-    viscous pre-solve is needed.
+    Starting δ is deliberately **large**, where the power-mean soft-min stays bounded by
+    the background viscosity even as :math:`\dot\varepsilon \to 0`. That is what makes
+    the first (cold) solve well posed, and why no separate viscous pre-solve is needed.
 
     Parameters
     ----------
@@ -86,8 +94,26 @@ def yield_continuation(
     control : YieldHomotopyControl, optional
         How to set δ and which tangent to use. Defaults to
         ``solver.constitutive_model._yield_homotopy_control()``.
-    delta0 : float
-        Starting (smooth) δ. Large δ is about as cheap to solve as small, so be generous.
+    smoother : {"powermean", "sqrt"}, optional
+        Which soft-min FAMILY to march. Default (``None``) leaves the model's own
+        choice, which is the power mean. The families differ in how much room δ gives
+        them: the sqrt law's smoothing saturates at a factor :math:`2f/(f+2)` in the
+        overstress ratio :math:`f = \eta_{ve}/\eta_{pl}`, so where f is O(1) it can
+        barely build an easier problem however large δ is, while the power mean does not
+        saturate. Where f is large the position reverses. f is cheap to measure on the
+        viscous seed, so choose the family from it rather than by reputation.
+    anchor : {"onset", "yield"}, optional
+        Which point of the smoothed law is pinned to the exact one — see
+        ``ViscousFlowModel.yield_anchor``. Applies to BOTH families. Default (``None``)
+        leaves the model's own choice. ``"yield"`` keeps the stress exact at the yield
+        point for every δ and puts the law on or above the exact one throughout;
+        ``"onset"`` (the historical default) is exact on the unyielded branch but sits
+        BELOW the exact law at and above the yield point, which makes the entry problem
+        WEAKER than the sharp problem it is supposed to lead to.
+    delta0 : float, optional
+        Starting (smooth) δ. Defaults to the family's own entry (``control.delta0``),
+        because δ is NOT the same parameter in the two families — see
+        :class:`YieldHomotopyControl`. Do not carry one number across both.
     down : float
         Nominal multiplicative step, :math:`0 < down < 1` (δ ← δ·down per success).
         Adapted during the march as described above.
@@ -118,8 +144,6 @@ def yield_continuation(
     """
     if not (0.0 < down < 1.0):
         raise ValueError(f"down must satisfy 0 < down < 1, got {down}")
-    if not delta0 > 0.0:
-        raise ValueError(f"delta0 must be positive, got {delta0}")
 
     if control is None:
         cm = getattr(solver, "constitutive_model", None)
@@ -129,7 +153,19 @@ def yield_continuation(
                 "homotopy (supports_yield_homotopy). Got "
                 f"{type(cm).__name__ if cm is not None else None}."
             )
-        control = cm._yield_homotopy_control()
+        control = cm._yield_homotopy_control(smoother=smoother, anchor=anchor)
+    elif smoother is not None or anchor is not None:
+        raise ValueError(
+            "smoother=/anchor= configure the soft-min when this driver builds the "
+            "control; they cannot override a control that was passed in ready-made. "
+            "Set them on the model before building the control instead."
+        )
+
+    # Each family has its own natural entry, and they are not interchangeable numbers.
+    if delta0 is None:
+        delta0 = control.delta0
+    if not delta0 > 0.0:
+        raise ValueError(f"delta0 must be positive, got {delta0}")
 
     # A march is a SEQUENCE of solves, so a solver that integrates history in time
     # would advance that history once per delta-step rather than once per timestep.

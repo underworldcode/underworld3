@@ -166,7 +166,8 @@ def _spherical3d_diagnostics():
 
     L2 = float(np.sqrt(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate()))
     info = s._rotated_freeslip_info
-    return L2, int(info["ksp_its"]), int(info["ksp_reason"])
+    # the unified rotated loop reports one KSP count per Newton increment
+    return L2, max(info["ksp_its"]), int(info["ksp_reason"])
 
 
 def _spherical3d_topography_diagnostics(cell_size=0.25):
@@ -235,16 +236,23 @@ def _spherical3d_topography_diagnostics(cell_size=0.25):
     )
 
 
-def _annulus_fmg_diagnostics():
+def _annulus_fmg_diagnostics(mesh_owned=False):
     """Annulus radial free-slip whose velocity block is CUSTOM GEOMETRIC FMG on a
-    nested hierarchy (coarse annulus -> refine -> refine), via set_custom_fmg — no
-    GAMG, no direct solve. Returns (velocity L2, leakage L2 on Lower, on Upper)."""
+    nested hierarchy (coarse annulus -> refine -> refine) — no GAMG, no direct
+    solve. Returns (velocity L2, leakage L2 on Lower, on Upper).
+
+    ``mesh_owned`` selects how the hierarchy reaches the solver: ``False`` is an
+    explicit ``set_custom_fmg`` registration, ``True`` is the MESH-owned coarse
+    tail an ``adapt()`` child carries. Both must produce the same solve (#467)."""
     RI, RO = 0.5, 1.0
     m0 = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.2, qdegree=3)
     dm1 = m0.dm.refine()
     dm2 = dm1.refine()
     coarse = [m0, _wrap(dm1, m0)]
     fine = _wrap(dm2, m0)
+    if mesh_owned:
+        fine._custom_mg_coarse_meshes = coarse
+        fine._custom_mg_builder = "barycentric"
 
     x, y = fine.X
     r = sympy.sqrt(x**2 + y**2)
@@ -263,10 +271,14 @@ def _annulus_fmg_diagnostics():
     s.saddle_preconditioner = 1.0
     s.petsc_use_pressure_nullspace = True
     s.petsc_options["snes_type"] = "ksponly"
-    custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
+    if not mesh_owned:
+        custom_mg.set_custom_fmg(s, coarse, builder="barycentric", field_id=0)
     s.solve()
 
     assert s._rotated_freeslip_info["ksp_reason"] > 0, "custom-FMG rotated solve did not converge"
+    assert s._rotated_freeslip_info["velocity_pc"] == "custom-FMG", (
+        "rotated velocity block fell back to "
+        f"{s._rotated_freeslip_info['velocity_pc']} instead of geometric MG")
     L2 = float(np.sqrt(uw.maths.Integral(fine, v.sym.dot(v.sym)).evaluate()))
     vr = v.sym[0] * x / r + v.sym[1] * y / r
     leak_lo = float(np.sqrt(uw.maths.BdIntegral(
@@ -421,6 +433,25 @@ def test_rotated_freeslip_annulus_fmg_partition_independent():
     assert np.isclose(leak_up, leak_up_ref, rtol=1e-4, atol=0), (
         f"FMG annulus Upper leakage differs serial vs np={uw.mpi.size}: "
         f"{leak_up_ref} vs {leak_up}")
+
+
+def test_rotated_freeslip_mesh_owned_fmg_pickup():
+    """#467, in parallel: a coarse tail owned by the MESH — what ``adapt()``
+    leaves on a refinement child — must drive geometric MG under rotated
+    free-slip, on every partition. The rotated path used to consult only an
+    explicit ``set_custom_fmg`` registration and fell back to GAMG silently.
+
+    The transfers are built cross-partition, so this is not implied by the serial
+    pickup test (``tests/test_1021_mg_option_bundle.py``); the tail is attached by
+    hand because what is under test is whether the rotated dispatch consults it,
+    not how ``adapt()`` produces it."""
+    L2, leak_lo, leak_up = _annulus_fmg_diagnostics(mesh_owned=True)
+    L2_ref, leak_lo_ref, leak_up_ref = GOLDEN_ANNULUS_FMG
+    assert np.isclose(L2, L2_ref, rtol=1e-6, atol=0), (
+        f"mesh-owned FMG annulus velocity L2 differs serial vs np={uw.mpi.size}: "
+        f"{L2_ref} vs {L2}")
+    assert np.isclose(leak_lo, leak_lo_ref, rtol=1e-4, atol=0)
+    assert np.isclose(leak_up, leak_up_ref, rtol=1e-4, atol=0)
 
 
 def test_rotated_freeslip_spherical3d_partition_independent():
