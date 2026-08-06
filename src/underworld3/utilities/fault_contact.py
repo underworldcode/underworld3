@@ -88,17 +88,66 @@ def add_frictionless_fault_bc(solver, boundary, normal=None):
         solver._fault_normal_overrides = overrides
 
 
+def _trace_normal_fn(poly):
+    """The smoothed normal field of a sampled 2-D trace, from the trace.
+
+    Tangent ANGLE at each control point by central difference (one-sided
+    at the tips), interpolated linearly along each segment — the smooth
+    reconstruction of the curve the polyline sampled, with error
+    O(kink angle squared) and no dependence on an analytic formula. Fault
+    nodes lie ON the polyline (every control point is pulled onto a mesh
+    vertex before the cut), so the nearest-segment projection is exact.
+    """
+    pts = np.asarray(poly, dtype=float)
+    d = np.diff(pts, axis=0)
+    seg2 = np.einsum("ij,ij->i", d, d)
+    seg_ang = np.unwrap(np.arctan2(d[:, 1], d[:, 0]))
+    ang = np.empty(len(pts))
+    ang[0], ang[-1] = seg_ang[0], seg_ang[-1]
+    ang[1:-1] = 0.5 * (seg_ang[:-1] + seg_ang[1:])
+
+    def fn(X):
+        t = np.clip(np.einsum("ij,ij->i", X[None, :2] - pts[:-1], d)
+                    / seg2, 0.0, 1.0)
+        proj = pts[:-1] + t[:, None] * d
+        i = int(np.argmin(np.einsum("ij,ij->i", X[None, :2] - proj,
+                                    X[None, :2] - proj)))
+        th = (1.0 - t[i]) * ang[i] + t[i] * ang[i + 1]
+        return np.array([-np.sin(th), np.cos(th)])
+
+    return fn
+
+
 def _compile_normal_spec(spec, mesh, boundary):
     """Compile an analytic-normal spec into ``callable(X) -> n``.
 
     Mirrors the rotated-free-slip normal conventions
     (:func:`rotated_bc._boundary_velocity_nodes`): a sympy ``1×dim`` Matrix
     in ``mesh.X`` is unwrapped and lambdified ONCE into a numpy callable
-    (per-node ``.subs()`` is orders of magnitude slower); anything else is
-    a constant ``(dim,)`` vector. The result need not be unit length — the
-    caller normalises — but must be nonzero at every fault node.
+    (per-node ``.subs()`` is orders of magnitude slower); the string
+    ``"trace"`` builds the smoothed normal from the fault's own stored
+    polyline (:func:`_trace_normal_fn` — for digitized traces with no
+    analytic form); anything else is a constant ``(dim,)`` vector. The
+    result need not be unit length — the caller normalises — but must be
+    nonzero at every fault node.
     """
     dim = mesh.dim
+    if isinstance(spec, str):
+        if spec != "trace":
+            raise ValueError(
+                f"unknown normal spec {spec!r} for fault {boundary!r}: "
+                "pass \"trace\", a sympy 1×dim Matrix in mesh.X, or a "
+                "constant vector.")
+        if dim != 2:
+            raise NotImplementedError(
+                "normal=\"trace\" is 2-D; a 3-D patch is planar and its "
+                "facet normals are already exact.")
+        poly = getattr(mesh, "_fault_traces", {}).get(boundary)
+        if poly is None:
+            raise ValueError(
+                f"mesh carries no stored trace for {boundary!r} — "
+                "normal=\"trace\" needs a mesh built by Mesh.add_fault.")
+        return _trace_normal_fn(poly)
     if isinstance(spec, sympy.MatrixBase):
         if len(spec) != dim:
             raise ValueError(

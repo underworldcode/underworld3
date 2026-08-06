@@ -143,13 +143,17 @@ def test_analytic_normal_smooths_a_sampled_curve():
     pts = centre + R * np.column_stack([np.cos(ang), np.sin(ang)])
 
     rough = {}
-    for tag, use_exact in (("avg", False), ("exact", True)):
+    for tag in ("avg", "exact", "trace"):
         split = _box(0.02).add_fault(("Arc", pts))
         stokes = _shear_stokes(split, f"an_{tag}")
-        if use_exact:
+        if tag == "exact":
             x, y = split.X
             stokes.add_fault_bc(0, boundary="Arc", normal=sympy.Matrix(
                 [[x - centre[0], y - centre[1]]]))
+        elif tag == "trace":
+            # the smoothed normal built from the polyline itself — the
+            # analytic-formula-free route for digitized traces
+            stokes.add_fault_bc(0, boundary="Arc", normal="trace")
         else:
             stokes.add_fault_bc(0, boundary="Arc")
         stokes.solve()
@@ -163,6 +167,9 @@ def test_analytic_normal_smooths_a_sampled_curve():
     assert rough["avg"] > 3.0 * rough["exact"], (
         f"analytic normal did not smooth the sampled curve: "
         f"avg {rough['avg']:.4f} vs exact {rough['exact']:.4f}")
+    assert rough["avg"] > 3.0 * rough["trace"], (
+        f"trace-smoothed normal did not smooth the sampled curve: "
+        f"avg {rough['avg']:.4f} vs trace {rough['trace']:.4f}")
 
     # a genuinely foreign symbol is still refused, and refusal must not
     # corrupt the already-registered override

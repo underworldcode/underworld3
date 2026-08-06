@@ -234,12 +234,18 @@ from both sides and no special treatment is needed.
   Same conventions as `add_rotated_freeslip_bc`: a sympy `1×dim` matrix
   in `mesh.X` (need not be unit length; it is normalised per node and
   sign-aligned to the split's Plus→Minus orientation), or a constant
-  array. Every fault-law variant (`add_coulomb_fault_bc`,
-  `add_rate_state_fault_bc`, ...) accepts the same `normal=` argument,
-  and the slip/traction diagnostics read the same frame automatically.
-  Measured on a sampled circular arc: the analytic normal reduces the
-  kink sawtooth by an order of magnitude and restores convergence under
-  refinement. On straight faults it changes nothing — omit it.
+  array. For a **digitized trace with no analytic formula** — real
+  mapped faults — pass `normal="trace"`: the smoothed normal is built
+  from the fault's own control polyline (central-difference tangents at
+  the control points, tangent angle interpolated along each segment),
+  which `add_fault` stores on the mesh. Every fault-law variant
+  (`add_coulomb_fault_bc`, `add_rate_state_fault_bc`, ...) accepts the
+  same `normal=` argument, and the slip/traction diagnostics read the
+  same frame automatically. Measured on a sampled circular arc: the
+  smooth normal reduces the kink sawtooth by an order of magnitude and
+  restores convergence under refinement. On straight faults it changes
+  nothing — omit it. And a deliberately *kinked* fault should not be
+  smoothed: there the kink response is the physics.
 - **Moving faults**: re-derive, don't update. Cut and split again from
   the static base mesh at the new fault position; transfer fields with
   the standard re-adaptation machinery.

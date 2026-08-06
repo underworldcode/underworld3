@@ -976,6 +976,8 @@ def BoxInternalPatch(
     maxCoords: Optional[Tuple[float, float, float]] = (1, 1, 1),
     patch_points=None,
     patch_name: str = "Fault",
+    patch_cellSize: Optional[float] = None,
+    grading_distance: Optional[float] = None,
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
@@ -1009,6 +1011,17 @@ def BoxInternalPatch(
     patch_name : str
         Physical name for the patch — the fault name ``split_fault`` and
         ``add_fault_bc`` will use.
+    patch_cellSize : float, optional
+        Target element size AT the patch. When set, the mesh grades from
+        ``patch_cellSize`` on the fault to ``cellSize`` in the far field
+        (gmsh Distance/Threshold size field from the patch surface) —
+        resolution belongs at the fault, exactly as the 2-D practice
+        refines on the cuts. Without it the box is uniform at
+        ``cellSize``.
+    grading_distance : float, optional
+        Distance from the patch at which the size reaches ``cellSize``
+        (default ``8 * patch_cellSize``). Only used with
+        ``patch_cellSize``.
 
     Example
     -------
@@ -1056,11 +1069,20 @@ def BoxInternalPatch(
     members[patch_name] = patch_tag
     boundaries = Enum("boundaries", members)
 
+    if patch_cellSize is not None:
+        patch_cellSize = uw.scaling.non_dimensionalise(patch_cellSize)
+        if not 0 < patch_cellSize <= cellSize:
+            raise ValueError("patch_cellSize must be in (0, cellSize].")
+    if grading_distance is None and patch_cellSize is not None:
+        grading_distance = 8.0 * patch_cellSize
+
     if filename is None:
         if uw.mpi.rank == 0:
             os.makedirs(".meshes", exist_ok=True)
+        grade = ("" if patch_cellSize is None
+                 else f"_pcs{patch_cellSize}_gd{grading_distance}")
         uw_filename = (f".meshes/uw_boxpatch_minC{minCoords}_"
-                       f"maxC{maxCoords}_csize{cellSize}_"
+                       f"maxC{maxCoords}_csize{cellSize}{grade}_"
                        f"{patch_name}{len(patch)}.msh")
     else:
         uw_filename = filename
@@ -1077,7 +1099,9 @@ def BoxInternalPatch(
             maxCoords[0] - minCoords[0], maxCoords[1] - minCoords[1],
             maxCoords[2] - minCoords[2])
 
-        corner_tags = [gmsh.model.occ.addPoint(*p, cellSize) for p in patch]
+        corner_tags = [gmsh.model.occ.addPoint(
+            *p, patch_cellSize if patch_cellSize is not None else cellSize)
+            for p in patch]
         line_tags = [gmsh.model.occ.addLine(corner_tags[i],
                                             corner_tags[(i + 1) % len(patch)])
                      for i in range(len(patch))]
@@ -1116,6 +1140,24 @@ def BoxInternalPatch(
         gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
+        if patch_cellSize is not None:
+            # grade from the fault outward: Distance field measured from
+            # the patch surface, thresholded to [patch_cellSize, cellSize]
+            df = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(df, "SurfacesList",
+                                             [patch_surface])
+            gmsh.model.mesh.field.setNumber(df, "Sampling", 100)
+            tf = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(tf, "InField", df)
+            gmsh.model.mesh.field.setNumber(tf, "SizeMin", patch_cellSize)
+            gmsh.model.mesh.field.setNumber(tf, "SizeMax", cellSize)
+            gmsh.model.mesh.field.setNumber(tf, "DistMin", patch_cellSize)
+            gmsh.model.mesh.field.setNumber(tf, "DistMax",
+                                            grading_distance)
+            gmsh.model.mesh.field.setAsBackgroundMesh(tf)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.model.mesh.generate(3)
         gmsh.write(uw_filename)
         gmsh.finalize()

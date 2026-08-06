@@ -1336,6 +1336,10 @@ def add_fault(mesh, faults, verbose=False):
     for name, poly in segments:
         out = split_fault(out, name, orientation=poly[-1] - poly[0],
                           verbose=verbose)
+    # the traces themselves, for trace-smoothed fault normals
+    # (add_fault_bc(..., normal="trace")) and for rendering overlays
+    out._fault_traces = {name: np.array(poly, dtype=float)
+                         for name, poly in segments}
     return out
 
 

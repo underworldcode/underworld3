@@ -5934,17 +5934,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
           removes the fault (only the JUMP is penalised — nothing becomes
           rigid).
 
-        ``normal`` optionally supplies the fault's ANALYTIC unit normal —
-        a sympy ``1×dim`` Matrix in ``mesh.X``, or a constant ``(dim,)``
-        array — with the same conventions as
-        :meth:`add_rotated_freeslip_bc`. Use it whenever the fault trace is
+        ``normal`` optionally supplies the fault's smooth unit normal —
+        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
+        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
+        smoothed normal is built from the fault's own stored polyline —
+        the right choice for digitized traces with no analytic formula),
+        or a constant ``(dim,)`` array. Use it whenever the fault trace is
         a SAMPLED SMOOTH CURVE: the default per-node normal averages the
         adjacent facet normals, which zig-zags at the sampling kinks, and
         the no-opening constraint then forbids smooth slip past each kink —
         slip notches and normal-traction sawteeth that GROW under mesh
-        refinement. The analytic normal restores the smooth curve's
+        refinement. The smooth normal restores the smooth curve's
         mechanics on the same polyline mesh. On a straight fault the
-        default is already exact.
+        default is already exact, and a deliberately KINKED fault should
+        NOT be smoothed — there the kink response is the physics.
 
         The solve then takes the rotated strong-constraint path
         (``utilities/rotated_bc.py`` with the pair blocks of
