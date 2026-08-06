@@ -295,6 +295,31 @@ either.
 
 Script: `figures/fault-examples/branching_compare.py`.
 
+### A true Y-branch, and which continuity to declare
+
+A genuine three-arm branch can be decomposed two ways: trunk
+continuous with the splay abutting (A), or the *bent* west-arm-plus-
+splay fault continuous with the east arm abutting (B). Running both,
+with the gap swept in A:
+
+![The true branch, bracketed](figures/fault-examples/true-branch.png)
+
+Two conclusions. The **gap is second-order**: A at 1h, 2h and 4h
+ligaments overlays on every arm except the splay's near-junction toe,
+which simply moves with the trimmed tip. The **decomposition is
+first-order**: B is a different mechanical system, because the
+continuous bent fault LOCKS at its 33-degree kink — slip through a
+kink is geometrically incompatible with the no-opening constraint
+(the same mechanism that makes sampled curves rough, here as genuine
+physics) — so both trunk arms lose a third of their slip and pinch to
+zero at the branch point. The rule for real networks: **declare the
+straightest path continuous; never route continuity around a
+corner.** The energetically sensible decomposition (A) is admissible
+for the true junction and differs from it only in the splay's
+ligament-scale toe.
+
+Script: `figures/fault-examples/true_branch.py`.
+
 ## What these models are, and are not
 
 For the static problem, incompressible linear elasticity and Stokes
