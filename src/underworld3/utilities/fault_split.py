@@ -1372,6 +1372,111 @@ def _boundaries_with_sides(mesh, name):
     return Enum("boundaries", members)
 
 
+def _redistribute_fault_interior(dm, name, value, verbose=False):
+    """Redistribute a cut 3-D mesh so the patch's cell star is rank-interior.
+
+    The default partition's balance cuts are ATTRACTED to the locally
+    refined patch region, so at any np >= 2 a graded fault mesh
+    essentially always violates the 3-D split's rank-interior
+    requirement. This reassigns ONLY the patch-star cells (cells
+    incident to any patch vertex — a layer about two cells thick) to
+    the single rank that already owns most of them; every other cell
+    stays where the load-balanced partition put it, and the move is
+    applied with a shell partitioner. The star is thin, so the
+    imbalance cost is bounded by its size — NOT by the refined band —
+    and the split's seam rule then holds by construction. The
+    coincident pair blocks of the contact solve are rank-local for the
+    same reason. Returns a NEW dm; the input is untouched.
+    """
+    from mpi4py import MPI
+    from petsc4py import PETSc
+
+    comm = dm.getComm().tompi4py()
+    if comm.size == 1:
+        return dm
+
+    work = dm.clone()
+    cS, cE = work.getHeightStratum(0)
+    fS, fE = work.getHeightStratum(1)
+    vS, vE = work.getDepthStratum(0)
+    _pS, pEnd = work.getChart()
+    sf = work.getPointSF()
+
+    def propagate(mark):
+        # global OR of a chart-length mark across the point SF: remote
+        # copies fold into the owner, the owner's verdict returns to
+        # every copy — after this, every rank agrees on every point it
+        # can see. (A cell can touch a patch vertex without holding any
+        # labelled face in its own closure, so purely local label
+        # reading under-marks near the current seam.)
+        tmp = mark.copy()
+        sf.reduceBegin(MPI.INT32_T, tmp, mark, MPI.MAX)
+        sf.reduceEnd(MPI.INT32_T, tmp, mark, MPI.MAX)
+        out = mark.copy()
+        sf.bcastBegin(MPI.INT32_T, mark, out, MPI.REPLACE)
+        sf.bcastEnd(MPI.INT32_T, mark, out, MPI.REPLACE)
+        return np.maximum(mark, out)
+
+    def star_of_marked(mark):
+        cells = set()
+        for v in range(vS, vE):
+            if mark[v]:
+                for q in work.getTransitiveClosure(v, useCone=False)[0]:
+                    if cS <= int(q) < cE:
+                        cells.add(int(q))
+        return cells
+
+    # patch vertices, marked globally
+    mark = np.zeros(pEnd, dtype=np.int32)
+    if work.hasLabel(name) and \
+            work.getLabel(name).getStratumSize(value) > 0:
+        for f in work.getLabel(name).getStratumIS(value).getIndices():
+            if fS <= int(f) < fE:
+                for q in work.getTransitiveClosure(int(f))[0]:
+                    if vS <= int(q) < vE:
+                        mark[int(q)] = 1
+    mark = propagate(mark)
+    star = star_of_marked(mark)
+
+    # one growth layer: the split's seam rule needs every point in the
+    # CLOSURE of a patch-vertex-star cell unshared, and a point is
+    # unshared exactly when all its incident cells are co-resident —
+    # so gather every cell touching any vertex of the star cells'
+    # closures. One layer is exactly sufficient (each such point's
+    # incident cells all touch a marked-closure vertex).
+    mark2 = np.zeros(pEnd, dtype=np.int32)
+    for c in star:
+        for q in work.getTransitiveClosure(c)[0]:
+            if vS <= int(q) < vE:
+                mark2[int(q)] = 1
+    mark2 = propagate(mark2)
+    star |= star_of_marked(mark2)
+
+    counts = np.asarray(comm.allgather(len(star)))
+    if counts.sum() == 0:
+        raise RuntimeError(
+            f"fault_split: no faces labelled {name!r} found on any rank.")
+    target = int(np.argmax(counts))
+
+    n_local = cE - cS
+    assign = np.full(n_local, comm.rank, dtype=np.int32)
+    for c in star:
+        assign[c - cS] = target
+    order = np.argsort(assign, kind="stable").astype(np.int32)
+    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
+
+    part = work.getPartitioner()
+    part.setType(PETSc.Partitioner.Type.SHELL)
+    part.setShellPartition(comm.size, sizes=sizes, points=order)
+    work.distribute()
+    if verbose:
+        uw.pprint(f"[fault_split] {name!r}: star of "
+                  f"{int(counts.sum())} cells gathered onto rank "
+                  f"{target}; local cells now "
+                  f"{work.getHeightStratum(0)[1]}")
+    return work
+
+
 def split_fault(mesh, name, orientation=None, verbose=False):
     """Split the nodes along the conforming surface ``name``; return the mesh.
 
@@ -1412,11 +1517,28 @@ def split_fault(mesh, name, orientation=None, verbose=False):
 
     boundaries = _boundaries_with_sides(mesh, name)
     plus_name, minus_name = f"{name}Plus", f"{name}Minus"
-    pStart, _pEnd = mesh.dm.getChart()
-    splitter = (split_along_label if mesh.dm.getDimension() == 2
+    source_dm = mesh.dm
+    if source_dm.getDimension() == 3 and uw.mpi.size > 1:
+        if getattr(mesh, "_fault_point_pairs", {}):
+            # a prior fault's pairing holds point ids of the CURRENT
+            # distribution; redistribution renumbers every point, so
+            # carrying it through needs pairing migration along the
+            # migration SF — not built yet. Refuse loudly.
+            raise NotImplementedError(
+                "fault_split: 3-D multi-fault networks in parallel need "
+                "pairing migration through the redistribution — split "
+                "the network in serial, or one fault per mesh.")
+        # the 3-D split requires the patch's cell star rank-interior,
+        # and balance cuts are attracted to the refined patch region —
+        # gather the (thin) star onto one rank first
+        source_dm = _redistribute_fault_interior(
+            source_dm, name, int(mesh.boundaries[name].value),
+            verbose=verbose)
+    pStart, _pEnd = source_dm.getChart()
+    splitter = (split_along_label if source_dm.getDimension() == 2
                 else split_along_label_3d)
     new_dm, point_map, clone_map = splitter(
-        mesh.dm, name, int(mesh.boundaries[name].value),
+        source_dm, name, int(mesh.boundaries[name].value),
         plus_name, int(boundaries[plus_name].value),
         minus_name, int(boundaries[minus_name].value),
         orientation=orientation, verbose=verbose)

@@ -254,9 +254,17 @@ from both sides and no special treatment is needed.
   separated by a ligament of one or two cell sizes.
 - **Parallel**: in 2-D a fault may cross a partition seam through a
   pinned crossing vertex (handled automatically by `add_fault`); a
-  fault running *along* a seam is refused. In 3-D the fault must
-  currently be interior to a single rank — partition around it. All
-  refusals are collective and name the actual problem.
+  fault running *along* a seam is refused. In 3-D, `split_fault`
+  automatically REDISTRIBUTES first: the patch's cell star (plus one
+  growth layer — a thin skin, not the refined band) is gathered onto
+  the rank that already owns most of it, everything else stays with
+  the load-balanced partition, and the split then works at any rank
+  count. The cost is a bounded imbalance on the fault-owning rank
+  (measured ~1.8x at np = 8 on a graded box). One current exception:
+  several 3-D faults on one mesh in parallel are refused (the pairing
+  does not yet migrate through the redistribution) — split networks in
+  serial for now. All refusals are collective and name the actual
+  problem.
 
 ## Current limitations
 

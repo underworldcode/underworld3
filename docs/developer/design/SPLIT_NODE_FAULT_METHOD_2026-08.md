@@ -260,8 +260,25 @@ rank-local. Everything else near a seam is refused, collectively (an
 seam verdict outranks the chain-fragment symptoms other ranks see).
 Swept at np = 3, 4, 5: 17/27 crossing configurations split cleanly; every
 refusal is collective and categorised (three-rank corners; fault running
-along a seam). 3-D v1 requires the patch's whole cell star rank-interior
-(a 3-D seam crossing is a *curve* — a design of its own, deferred).
+along a seam).
+
+The 3-D split requires the patch's whole cell star rank-interior (a 3-D
+seam crossing is a *curve* — a design of its own, deferred), but this is
+now satisfied **by construction** rather than demanded of the user:
+`split_fault` first REDISTRIBUTES the cut mesh with a shell partition
+that gathers the patch's cell star, plus one growth layer, onto the rank
+already owning most of it (SF-propagated marking, so cells touching a
+patch vertex without holding a labelled face are found; one growth layer
+is exactly sufficient because a point is shared iff its incident cells
+span ranks). Everything outside that thin skin keeps the load-balanced
+partition, so the imbalance is bounded by the star — measured $1.8\times$
+at np = 8 on a graded box, where the naive alternative (whole refined
+band on one rank) would be $\sim 3\times$. The default partitioner's
+balance cuts are otherwise ATTRACTED to the refined patch region, which
+made graded fault meshes refuse at every np before this. Split at
+np = 2–8 with identical pair topology to serial. Open: several 3-D
+faults on one parallel mesh (the pairing does not yet migrate through
+the redistribution; refused loudly).
 
 ## 4. Trace assembly
 
@@ -366,7 +383,9 @@ than the infinite medium.
   branches via offset segments.
 - No daylighting: the fault cannot reach the domain boundary.
 - No closed loops (ring/spherical slippery surfaces).
-- 3-D parallel: fault must be rank-interior.
+- 3-D parallel: one fault per mesh (the star-gathering redistribution
+  does not yet migrate a prior fault's pairing); a fault larger than
+  one rank's memory needs the seam-curve design.
 - Split meshes carry no geometric-multigrid tail (coarse levels do not
   carry the fault); GAMG is the velocity default.
 - Fault motion = re-cut + re-split from the base (fields transfer via

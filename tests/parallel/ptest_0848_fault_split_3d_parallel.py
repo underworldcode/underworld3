@@ -1,5 +1,5 @@
-"""3-D split-node faults in parallel: rank-interior faults work, seam
-contact refuses collectively.
+"""3-D split-node faults in parallel: fault-aware redistribution makes
+the split work at ANY rank count.
 
 Run with:  mpirun -np 2 python ptest_0848_fault_split_3d_parallel.py
 
@@ -74,14 +74,11 @@ mesh1 = uw.meshing.BoxInternalPatch(cellSize=0.15, minCoords=(0, 0, 0),
                                     maxCoords=(2, 1, 1),
                                     patch_points=PATCH_IN,
                                     patch_name="FltA")
-try:
-    child = split_fault(mesh1, "FltA")
-    check("interior patch splits", True)
-except RuntimeError as exc:
-    # the layout is only guaranteed at np = 2; elsewhere a seam through
-    # the patch is a legal partition, not a defect
-    check(f"interior patch splits (refused: {exc})", size != 2)
-    child = None
+# split_fault gathers the patch's cell star (plus one growth layer)
+# onto one rank before splitting, so this succeeds at ANY np — the
+# elongated box is kept only so the far field stays distributed.
+child = split_fault(mesh1, "FltA")
+check("interior patch splits", True)
 
 if child is not None:
     n_plus_local = 0
@@ -123,7 +120,7 @@ if child is not None:
     check("minus DOFs decoupled from the plus datum",
           comm.allreduce(decoupled, MPI.SUM) > 0)
 
-# ---- case 2: seam-straddling patch refuses collectively --------------------
+# ---- case 2: a seam-straddling patch is redistributed and splits -----------
 PATCH_SEAM = np.array([[1.0, 0.35, 0.35], [1.0, 0.65, 0.35],
                        [1.0, 0.65, 0.65], [1.0, 0.35, 0.65]])
 # (the middle of the long axis, where the balance cut runs)
@@ -131,20 +128,20 @@ mesh2 = uw.meshing.BoxInternalPatch(cellSize=0.15, minCoords=(0, 0, 0),
                                     maxCoords=(2, 1, 1),
                                     patch_points=PATCH_SEAM,
                                     patch_name="FltB")
-raised = 0
-try:
-    split_fault(mesh2, "FltB")
-except RuntimeError:
-    raised = 1
-except ValueError:
-    # a partition seam that misses x=0.5 entirely would make this patch
-    # rank-interior and the split legal; only count the seam refusal
-    raised = 1
-n_raised = comm.allreduce(raised, MPI.SUM)
-check("seam patch verdict is collective (all ranks agree)",
-      n_raised in (0, size))
-if size > 1:
-    check("seam patch refused", n_raised == size)
+# this patch sits exactly where the balance cut runs — the case that
+# used to refuse. The fault-aware redistribution must make it split,
+# single-owner, with a clean SF.
+child2 = split_fault(mesh2, "FltB")
+value2 = int(child2.boundaries["FltBPlus"].value)
+n2_local = 0
+if child2.dm.hasLabel("FltBPlus") and \
+        child2.dm.getLabel("FltBPlus").getStratumSize(value2) > 0:
+    n2_local = child2.dm.getLabel("FltBPlus").getStratumSize(value2)
+check("seam patch splits after redistribution",
+      comm.allreduce(n2_local, MPI.SUM) > 0)
+check("seam patch is single-owner",
+      comm.allreduce(1 if n2_local else 0, MPI.SUM) == 1)
+check("seam patch sf drift is zero", sf_coordinate_drift(child2) == 0.0)
 
 # ---- report ----------------------------------------------------------------
 n_fail = comm.allreduce(len(FAIL), MPI.SUM)
