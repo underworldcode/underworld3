@@ -630,6 +630,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     dm = solver.dm
     snes = solver.snes
     snes.setUp()
+    # Attach the auxiliary vector before ANY assembly. Callers that enter this
+    # loop directly (fault_contact.solve_with_fault) bypass the native solve()
+    # preamble that normally does this, so a form referencing an auxiliary
+    # MeshVariable would read a NULL aux array in the first kernel (segfault),
+    # and a repeat solve would read STALE auxiliary values after the fields
+    # change between calls. Redundant (and cheap) when the native dispatch
+    # already attached it.
+    solver.mesh.update_lvec()
+    solver.dm.setAuxiliaryVec(solver.mesh.lvec, None)
+    solver._update_constants()
     if rtol is None:
         rtol = float(solver.tolerance)
 

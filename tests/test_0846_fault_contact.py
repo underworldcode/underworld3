@@ -325,6 +325,52 @@ def test_rate_state_fault_evolves_to_steady_state():
         f"state did not reach Dc/V: monitors {monitors}")
 
 
+def test_auxiliary_field_in_rheology_survives_direct_entry():
+    # Regression: solve_with_fault enters solve_rotated_freeslip directly,
+    # bypassing the native solve() preamble that attaches the mesh auxiliary
+    # vector. A rheology referencing an auxiliary MeshVariable then read a
+    # NULL aux array in the first kernel and SEGFAULTED (2026-08, damage-
+    # gated junction study). The rotated loop now attaches/refreshes the
+    # aux vec itself at entry, which also keeps repeat solves fresh after
+    # the auxiliary field changes.
+    mesh = _split_box(name="FltAux")
+    x, y = mesh.X
+
+    v = uw.discretisation.MeshVariable("vAX", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("pAX", mesh, 1, degree=0,
+                                       continuous=False)
+    Dv = uw.discretisation.MeshVariable("dAX", mesh, 1, degree=0,
+                                        continuous=False)
+    Dv.data[:, 0] = (Dv.coords[:, 1] > 0.5).astype(float)
+
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = \
+        1.0 + 4.0 * Dv.sym[0]
+    stokes.tolerance = 1e-6
+    stokes.petsc_use_pressure_nullspace = True
+    for side in ("Top", "Bottom", "Left", "Right"):
+        stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
+    add_frictionless_fault_bc(stokes, "FltAux")
+
+    info = solve_with_fault(stokes)
+    assert info["converged"]
+    v_contrast = np.asarray(v.data).copy()
+    assert np.isfinite(v_contrast).all()
+
+    # Repeat-solve freshness: homogenise the auxiliary field and re-solve —
+    # the flow must actually change (a stale aux vec would reproduce the
+    # contrast solution bit-for-bit).
+    Dv.data[:, 0] = 0.0
+    info = solve_with_fault(stokes)
+    assert info["converged"]
+    v_uniform = np.asarray(v.data)
+    rel = (np.abs(v_uniform - v_contrast).max()
+           / (np.abs(v_contrast).max() + 1e-30))
+    assert rel > 1e-2, (
+        f"auxiliary-field update did not reach the solve (rel change {rel:.2e})")
+
+
 def test_registration_refuses_an_unsplit_mesh():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 8,
