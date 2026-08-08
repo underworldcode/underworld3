@@ -581,7 +581,7 @@ def rebuild_with_cones(dm, new_cells, new_edges):
     # The star-forest transfers verbatim: every rank preserves its numbering, so
     # the remote point numbers it carries are still the right ones.
     if uw.mpi.size > 1:
-        new.setPointSF(dm.getPointSF())
+        _install_point_sf(new, dm.getPointSF())
     return new
 
 
@@ -771,6 +771,22 @@ def rebuild_cavities(dm, victims, drop_cells, new_cells, placed_coords=()):
     return new, point_map, placed_points
 
 
+def _install_point_sf(new, new_sf):
+    """Install a rebuilt star-forest on the plex AND its coordinate DM.
+
+    The coordinate DM is created when the rebuilt chart's coordinates
+    are written — BEFORE any point SF exists — so it snapshots an empty
+    one. The solve never notices (field sections are created later,
+    from the plex SF), but a parallel HDF5 save then writes every
+    shared vertex as owned on every rank, and the serial reload of such
+    a checkpoint dies in ``coordinatesLoad`` (measured: a split mesh
+    written at np = 4 carried owned+shared = 7121 vertex rows where the
+    true owned count is 6334).
+    """
+    new.setPointSF(new_sf)
+    new.getCoordinateDM().setPointSF(new_sf)
+
+
 def _rebuild_point_sf(new, dm, point_map, nroots):
     """Carry the point star-forest onto a renumbered chart, in one exchange.
 
@@ -780,7 +796,9 @@ def _rebuild_point_sf(new, dm, point_map, nroots):
     delivers exactly that, one value per leaf.
 
     The leaf set itself is unchanged: :func:`remove_vertices` never deletes a
-    shared point, so every leaf still exists and only its number has moved.
+    shared point, and the split-fault rebuilds never duplicate one (a
+    seam-touching fault is redistributed onto one rank before splitting), so
+    every leaf still exists and only its number has moved.
     """
     pStart, pEnd = dm.getChart()
     sf = dm.getPointSF()
@@ -802,7 +820,7 @@ def _rebuild_point_sf(new, dm, point_map, nroots):
     if ilocal is None or not len(ilocal):
         new_sf.setGraph(nroots, np.zeros(0, dtype=PETSc.IntType),
                         np.zeros(0, dtype=PETSc.IntType))
-        new.setPointSF(new_sf)
+        _install_point_sf(new, new_sf)
         return
 
     leaves = np.asarray(ilocal, dtype=np.int64)
@@ -817,7 +835,7 @@ def _rebuild_point_sf(new, dm, point_map, nroots):
     remote[:, 0] = np.asarray(iremote).reshape(-1, 2)[:, 0]
     remote[:, 1] = remote_index
     new_sf.setGraph(nroots, local.astype(PETSc.IntType), remote.reshape(-1))
-    new.setPointSF(new_sf)
+    _install_point_sf(new, new_sf)
 
 
 # ---------------------------------------------------------------- the flip pass
