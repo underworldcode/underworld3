@@ -82,10 +82,38 @@ is **state**: wear-in and healing with a slip-rate memory, which only
 changes the *instantaneous* mechanics once elasticity (stored stress)
 enters. Judge any refinement of the glue against that control.
 
+## 3-D networks: planar patches
+
+Pass triangulated `FaultSurface` objects instead of 2-D traces and the
+same object runs the 3-D pipeline:
+
+```python
+fsA = uw.meshing.FaultSurface("Main", main_pts);  fsA.triangulate()
+fsB = uw.meshing.FaultSurface("Cross", cross_pts); fsB.triangulate()
+net = uw.meshing.FaultNetwork([fsA, fsB], hierarchy=["Main", "Cross"])
+mesh = net.prepare(h=0.06).build()      # trim -> embed -> split each
+```
+
+In 3-D two planar patches meet along a **segment** (the plane–plane
+line clipped to both rims). The junior patch is cut into two pieces by
+removing a ligament band about that line — *in its own plane* — so the
+mesher (`BoxInternalPatch`, which now embeds a list of disjoint
+patches with gmsh grading from every patch) never sees intersecting
+surfaces: prepare-first, exactly as in 2-D. The junction glue becomes
+a **tube** (distance to the segment) instead of a disc; `damage_yield`
+handles both automatically. Pieces that fall below a minimum area
+after trimming are dropped and reported — small patches with large
+ligaments can disappear entirely, so watch the report.
+
+v1 scope, refused loudly outside it: planar patches (the
+`rim_polygon` contract), convex rims, genuine X crossings (a
+near-miss — close but not crossing — is refused rather than guessed
+at), serial (the 3-D pairing does not yet migrate through parallel
+redistribution).
+
 ## Limitations
 
-- 2-D traces; the 3-D network (FaultSurface junction preparation) is
-  not yet wired into this class.
+- 3-D: planar convex patches, X crossings only, serial (above).
 - One damage dial per network in `damage_yield` (per-junction values:
   build the expression with `uw.meshing.damage_zone_yield` directly).
 - Time-dependent damage (wear-in/healing) is study-level for now: see

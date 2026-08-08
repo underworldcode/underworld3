@@ -48,25 +48,43 @@ import numpy as np
 import sympy
 
 from .surfaces import Surface, prepare_fault_network
+from .faults import FaultSurface
 
 
 class FaultNetwork:
-    """A hierarchy of 2-D fault traces meshed, split, and glued.
+    """A hierarchy of fault traces (2-D) or planar patches (3-D)
+    meshed, split, and glued.
 
     Parameters
     ----------
-    faults : sequence of (name, points)
-        The RAW traces (open polylines, ``(N, 2)`` or ``(N, 3)``),
-        exactly as imported — crossings and abutments included; the
-        toolkit converts them.
+    faults : sequence
+        2-D: ``(name, points)`` open polylines (``(N, 2)`` or
+        ``(N, 3)``), exactly as imported — crossings and abutments
+        included; the toolkit converts them.
+        3-D: triangulated :class:`FaultSurface` objects (planar,
+        convex rims) — crossing patches are trimmed to the offset
+        form by the 3-D preparer.
     hierarchy : sequence of str, optional
         Names in seniority order (most major first). Junior traces are
         severed by senior ones at crossings. Default: the input order.
     """
 
     def __init__(self, faults, hierarchy=None):
-        self.faults = [(str(n), np.asarray(p, dtype=float)[:, :2])
-                       for n, p in faults]
+        faults = list(faults)
+        self.dim = 3 if any(isinstance(f, FaultSurface)
+                            for f in faults) else 2
+        if self.dim == 3:
+            if not all(isinstance(f, FaultSurface) for f in faults):
+                raise ValueError("mixing FaultSurface and 2-D traces "
+                                 "in one network is not supported")
+            self.surfaces = list(faults)
+            self.faults = [(s.name, np.asarray(s.rim_polygon(),
+                                               dtype=float))
+                           for s in faults]
+        else:
+            self.surfaces = None
+            self.faults = [(str(n), np.asarray(p, dtype=float)[:, :2])
+                           for n, p in faults]
         names = [n for n, _ in self.faults]
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate fault names: {names}")
@@ -94,11 +112,22 @@ class FaultNetwork:
         cut anywhere); the hierarchy handles everything else pairwise.
         """
         self.h_near = float(h)
-        self.prepared, self.report, self.junctions = \
-            prepare_fault_network(
-                self.faults, spacing=self.h_near, ligament=ligament,
-                through=through, hierarchy=self.hierarchy,
-                verbose=verbose, return_junctions=True)
+        if self.dim == 3:
+            from .fault_network_3d import prepare_fault_surfaces
+            if through:
+                raise NotImplementedError(
+                    "3-D preparation ranks by hierarchy only")
+            self.prepared, self.report, self.junctions = \
+                prepare_fault_surfaces(
+                    self.surfaces, spacing=self.h_near,
+                    ligament=ligament, hierarchy=self.hierarchy,
+                    verbose=verbose)
+        else:
+            self.prepared, self.report, self.junctions = \
+                prepare_fault_network(
+                    self.faults, spacing=self.h_near, ligament=ligament,
+                    through=through, hierarchy=self.hierarchy,
+                    verbose=verbose, return_junctions=True)
         return self
 
     # ------------------------------------------------------------------
@@ -114,6 +143,8 @@ class FaultNetwork:
         """
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
+        if self.dim == 3:
+            return self._build_3d(h_far=h_far, qdegree=qdegree)
         from .cartesian import UnstructuredSimplexBox
 
         h = self.h_near
@@ -138,6 +169,24 @@ class FaultNetwork:
         child = base.adapt(metric, max_levels=max_levels)
         self.mesh = child.add_fault(
             [(n, p.copy()) for n, p in self.prepared])
+        return self.mesh
+
+    def _build_3d(self, h_far=None, qdegree=2,
+                  minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0)):
+        """3-D path: multi-patch conforming embed (gmsh grading from
+        the patches), then sequential split of every prepared piece."""
+        from .cartesian import BoxInternalPatch
+        from underworld3.utilities.fault_split import split_fault
+
+        h = self.h_near
+        h_far = 4.0 * h if h_far is None else float(h_far)
+        mesh = BoxInternalPatch(
+            cellSize=h_far, minCoords=minCoords, maxCoords=maxCoords,
+            patch_points=[(n, p) for n, p in self.prepared],
+            patch_cellSize=h, qdegree=qdegree)
+        for name, _p in self.prepared:
+            mesh = split_fault(mesh, name)
+        self.mesh = mesh
         return self.mesh
 
     # ------------------------------------------------------------------
@@ -172,18 +221,34 @@ class FaultNetwork:
             raise RuntimeError("call build() first")
         if self.junctions is None or len(self.junctions) == 0:
             return sympy.sympify(tau_far)
-        x, y = self.mesh.X[0], self.mesh.X[1]
-        exx = velocity.sym[0].diff(x)
-        eyy = velocity.sym[1].diff(y)
-        exy = (velocity.sym[0].diff(y) + velocity.sym[1].diff(x)) / 2
-        einv2 = sympy.sqrt(exx ** 2 / 2 + eyy ** 2 / 2 + exy ** 2)
+        dim = self.mesh.dim
+        X = [self.mesh.X[k] for k in range(dim)]
+        # full strain-rate second invariant, any dimension
+        e2 = 0
+        for i in range(dim):
+            for k in range(dim):
+                eik = (velocity.sym[i].diff(X[k])
+                       + velocity.sym[k].diff(X[i])) / 2
+                e2 += eik ** 2 / 2
+        einv2 = sympy.sqrt(e2)
         tau_plug = float(dial) * (1 + 2 * einv2)
         expr = sympy.sympify(float(tau_far))
         for j in self.junctions:
-            P = np.asarray(j["point"], dtype=float)
             R = (float(radius) if radius is not None
                  else max(2.5 * self.h_near, 1.2 * float(j["pull"])))
-            r2 = (x - float(P[0])) ** 2 + (y - float(P[1])) ** 2
+            if "segment" in j:                  # 3-D: a TUBE about the
+                P0 = np.asarray(j["segment"][0], dtype=float)  # junction
+                P1 = np.asarray(j["segment"][1], dtype=float)  # curve
+                d = P1 - P0
+                L2 = float(d @ d)
+                t = sum((X[k] - float(P0[k])) * float(d[k])
+                        for k in range(dim)) / L2
+                tc = sympy.Min(1, sympy.Max(0, t))
+                r2 = sum((X[k] - (float(P0[k]) + tc * float(d[k]))) ** 2
+                         for k in range(dim))
+            else:                               # 2-D: a disc about the
+                P = np.asarray(j["point"], dtype=float)   # junction point
+                r2 = sum((X[k] - float(P[k])) ** 2 for k in range(dim))
             expr = sympy.Min(expr, sympy.Piecewise(
                 (tau_plug, r2 < R ** 2), (float(tau_far), True)))
         return expr
@@ -205,9 +270,13 @@ class FaultNetwork:
         out = {}
         for name, _p in self.prepared:
             coords, jumps, normals = fault_pair_jumps(solver, name, info)
-            tang = np.column_stack([-normals[:, 1], normals[:, 0]])
-            out[name] = float(np.abs(
-                np.einsum("ij,ij->i", jumps, tang)).max())
+            if len(jumps) == 0:
+                out[name] = 0.0
+                continue
+            # tangential slip magnitude = |jump - (jump.n) n|, any dim
+            jn = np.einsum("ij,ij->i", jumps, normals)
+            tangential = jumps - jn[:, None] * normals
+            out[name] = float(np.linalg.norm(tangential, axis=1).max())
         return out
 
     # ------------------------------------------------------------------

@@ -1059,26 +1059,69 @@ def BoxInternalPatch(
     # a FaultSurface is the preferred input: it names itself, its rim
     # polygon becomes the conforming patch, and it is stored on the mesh
     # so add_fault_bc(..., normal="surface") can read the constraint
-    # frame from the surface's own face normals
-    fault_surface = None
-    if hasattr(patch_points, "rim_polygon") and \
-            hasattr(patch_points, "name"):
-        fault_surface = patch_points
-        if patch_name == "Fault":              # the default → its name
-            patch_name = fault_surface.name
-        patch_points = fault_surface.rim_polygon()
-    patch = np.asarray(patch_points, dtype=float)
-    if patch.ndim != 2 or patch.shape[0] < 3 or patch.shape[1] != 3:
-        raise ValueError("patch_points must be an (N, 3) polygon, N >= 3.")
+    # frame from the surface's own face normals. A LIST of patches
+    # (FaultSurfaces and/or (name, polygon) pairs) embeds a NETWORK of
+    # DISJOINT patches — run prepare_fault_surfaces first; crossing
+    # patches are refused here.
+    def _one_patch(entry, default_name):
+        if hasattr(entry, "rim_polygon") and hasattr(entry, "name"):
+            return str(entry.name), np.asarray(entry.rim_polygon(),
+                                               dtype=float), entry
+        if isinstance(entry, tuple) and len(entry) == 2 \
+                and isinstance(entry[0], str):
+            return str(entry[0]), np.asarray(entry[1],
+                                             dtype=float)[:, :3], None
+        return default_name, np.asarray(entry, dtype=float), None
+
+    if isinstance(patch_points, (list,)) and len(patch_points) > 0 \
+            and not np.isscalar(patch_points[0]) \
+            and (hasattr(patch_points[0], "rim_polygon")
+                 or isinstance(patch_points[0], tuple)):
+        raw_entries = list(patch_points)
+    else:
+        raw_entries = [patch_points]
+    patches = []
+    for k, entry in enumerate(raw_entries):
+        nm = patch_name if len(raw_entries) == 1 else f"{patch_name}{k}"
+        patches.append(_one_patch(entry, nm))
+    if len({nm for nm, _p, _f in patches}) != len(patches):
+        raise ValueError(
+            f"duplicate patch names: {[nm for nm, _p, _f in patches]}")
+
     lo, hi = np.asarray(minCoords), np.asarray(maxCoords)
-    if not ((patch > lo).all() and (patch < hi).all()):
-        raise ValueError("the patch must sit strictly inside the box — a "
-                         "fault that daylights is not yet supported.")
+    for nm, patch, _fs in patches:
+        if patch.ndim != 2 or patch.shape[0] < 3 or patch.shape[1] != 3:
+            raise ValueError(f"patch {nm!r} must be an (N, 3) polygon, "
+                             "N >= 3.")
+        if not ((patch > lo).all() and (patch < hi).all()):
+            raise ValueError(
+                f"patch {nm!r} must sit strictly inside the box — a "
+                "fault that daylights is not yet supported.")
+    if len(patches) > 1:
+        from .fault_network_3d import crossing_segment
+        for i in range(len(patches)):
+            for j in range(i + 1, len(patches)):
+                if crossing_segment(patches[i][1], patches[j][1]) \
+                        is not None:
+                    raise ValueError(
+                        f"patches {patches[i][0]!r} and "
+                        f"{patches[j][0]!r} cross — the embed takes "
+                        "DISJOINT patches; run prepare_fault_surfaces "
+                        "(or FaultNetwork.prepare) first.")
+
+    # single-patch variables kept for the legacy filename/store paths
+    patch_name = patches[0][0]
+    patch = patches[0][1]
+    fault_surface = patches[0][2]
 
     members = {b.name: b.value for b in boundaries_3D}
-    patch_tag = max(members.values()) + 4
-    members[patch_name] = patch_tag
+    patch_tags = {}
+    for nm, _p, _fs in patches:
+        tag = max(members.values()) + 4
+        members[nm] = tag
+        patch_tags[nm] = tag
     boundaries = Enum("boundaries", members)
+    patch_tag = patch_tags[patch_name]
 
     if patch_cellSize is not None:
         patch_cellSize = uw.scaling.non_dimensionalise(patch_cellSize)
@@ -1092,9 +1135,10 @@ def BoxInternalPatch(
             os.makedirs(".meshes", exist_ok=True)
         grade = ("" if patch_cellSize is None
                  else f"_pcs{patch_cellSize}_gd{grading_distance}")
+        tagline = "_".join(f"{nm}{len(p)}" for nm, p, _f in patches)
         uw_filename = (f".meshes/uw_boxpatch_minC{minCoords}_"
                        f"maxC{maxCoords}_csize{cellSize}{grade}_"
-                       f"{patch_name}{len(patch)}.msh")
+                       f"{tagline}.msh")
     else:
         uw_filename = filename
 
@@ -1110,19 +1154,21 @@ def BoxInternalPatch(
             maxCoords[0] - minCoords[0], maxCoords[1] - minCoords[1],
             maxCoords[2] - minCoords[2])
 
-        corner_tags = [gmsh.model.occ.addPoint(
-            *p, patch_cellSize if patch_cellSize is not None else cellSize)
-            for p in patch]
-        line_tags = [gmsh.model.occ.addLine(corner_tags[i],
-                                            corner_tags[(i + 1) % len(patch)])
-                     for i in range(len(patch))]
-        loop = gmsh.model.occ.addCurveLoop(line_tags)
-        patch_surface = gmsh.model.occ.addPlaneSurface([loop])
+        patch_surfaces = {}
+        for nm, ppoly, _fs in patches:
+            corner_tags = [gmsh.model.occ.addPoint(
+                *p, patch_cellSize if patch_cellSize is not None
+                else cellSize) for p in ppoly]
+            line_tags = [gmsh.model.occ.addLine(
+                corner_tags[i], corner_tags[(i + 1) % len(ppoly)])
+                for i in range(len(ppoly))]
+            loop = gmsh.model.occ.addCurveLoop(line_tags)
+            patch_surfaces[nm] = gmsh.model.occ.addPlaneSurface([loop])
         gmsh.model.occ.synchronize()
 
-        # The embed makes the volume mesh conform to the patch: its faces
-        # become tet faces, shared by one cell on each side.
-        gmsh.model.mesh.embed(2, [patch_surface], 3, box)
+        # The embed makes the volume mesh conform to the patches: their
+        # faces become tet faces, shared by one cell on each side.
+        gmsh.model.mesh.embed(2, list(patch_surfaces.values()), 3, box)
 
         # OCC numbers the box walls itself; identify them by centre of mass.
         centre = {
@@ -1133,8 +1179,9 @@ def BoxInternalPatch(
             "Front": (None, minCoords[1], None),
             "Back": (None, maxCoords[1], None),
         }
+        patch_surface_tags = set(patch_surfaces.values())
         for dim2, tag in gmsh.model.getEntities(2):
-            if tag == patch_surface:
+            if tag in patch_surface_tags:
                 continue
             com = gmsh.model.occ.getCenterOfMass(dim2, tag)
             for wall, probe in centre.items():
@@ -1145,18 +1192,19 @@ def BoxInternalPatch(
                     gmsh.model.setPhysicalName(2, value, wall)
                     break
 
-        gmsh.model.addPhysicalGroup(2, [patch_surface], patch_tag)
-        gmsh.model.setPhysicalName(2, patch_tag, patch_name)
+        for nm, stag in patch_surfaces.items():
+            gmsh.model.addPhysicalGroup(2, [stag], patch_tags[nm])
+            gmsh.model.setPhysicalName(2, patch_tags[nm], nm)
         gmsh.model.addPhysicalGroup(3, [box], 99999)
         gmsh.model.setPhysicalName(3, 99999, "Elements")
 
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
         if patch_cellSize is not None:
             # grade from the fault outward: Distance field measured from
-            # the patch surface, thresholded to [patch_cellSize, cellSize]
+            # the patch surfaces, thresholded to [patch_cellSize, cellSize]
             df = gmsh.model.mesh.field.add("Distance")
-            gmsh.model.mesh.field.setNumbers(df, "SurfacesList",
-                                             [patch_surface])
+            gmsh.model.mesh.field.setNumbers(
+                df, "SurfacesList", list(patch_surfaces.values()))
             gmsh.model.mesh.field.setNumber(df, "Sampling", 100)
             tf = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(tf, "InField", df)
@@ -1192,8 +1240,9 @@ def BoxInternalPatch(
     from underworld3.meshing.bounding_surface import register_box_face_surfaces
     register_box_face_surfaces(new_mesh, minCoords, maxCoords)
 
-    if fault_surface is not None:
-        new_mesh._fault_surfaces = {patch_name: fault_surface}
+    stored = {nm: fs for nm, _p, fs in patches if fs is not None}
+    if stored:
+        new_mesh._fault_surfaces = stored
 
     return new_mesh
 
