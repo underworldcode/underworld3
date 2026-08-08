@@ -37,7 +37,8 @@ The full documentation including tutorials, API reference, and developer guides 
 Try Underworld3 in your browser — no installation required:
 
  - [![Launch v0.99 on Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/v0.99?urlpath=git-pull%3Frepo%3Dhttps%25253A%25252F%25252Fgithub.com%25252Funderworldcode%25252Funderworld3%26branch%3Dmain%26urlpath%3Dlab%25252Ftree%25252Funderworld3) **v0.99** — JOSS publication release (stable)
- - [![Launch v3.0.0 on Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/v3.0.0?urlpath=git-pull%3Frepo%3Dhttps%25253A%25252F%25252Fgithub.com%25252Funderworldcode%25252Funderworld3%26branch%3Dmain%26urlpath%3Dlab%25252Ftree%25252Funderworld3) **v3.0.0** — current release
+ - [![Launch v3.0.0 on Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/v3.0.0?urlpath=git-pull%3Frepo%3Dhttps%25253A%25252F%25252Fgithub.com%25252Funderworldcode%25252Funderworld3%26branch%3Dmain%26urlpath%3Dlab%25252Ftree%25252Funderworld3) **v3.0.0** — previous release
+ - [![Launch v3.1.0 on Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/v3.1.0?urlpath=git-pull%3Frepo%3Dhttps%25253A%25252F%25252Fgithub.com%25252Funderworldcode%25252Funderworld3%26branch%3Dmain%26urlpath%3Dlab%25252Ftree%25252Funderworld3) **v3.1.0** — current release
  - [![Launch development on Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworldcode/uw3-binder-launcher/development?urlpath=git-pull%3Frepo%3Dhttps%25253A%25252F%25252Fgithub.com%25252Funderworldcode%25252Funderworld3%26branch%3Ddevelopment%26urlpath%3Dlab%25252Ftree%25252Funderworld3) **development** — bleeding edge
 
 Use `scripts/binder_wizard.py` to generate launch URLs for your own repositories using the Underworld3 environment.
