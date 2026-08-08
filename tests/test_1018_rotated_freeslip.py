@@ -279,9 +279,27 @@ def test_rotated_freeslip_geometric_fmg_velocity_block():
     s.solve()
 
     # geometric MG on the velocity block converged, and matches essential
-    assert s._rotated_freeslip_info["ksp_reason"] > 0
+    info = s._rotated_freeslip_info
+    assert info["ksp_reason"] > 0
     rel = np.linalg.norm(v.data - vE.data) / np.linalg.norm(vE.data)
     assert rel < 5e-3, f"FMG rotated free-slip differs from essential by {rel:.2e}"
+
+    # The velocity block really IS multigrid (PETSc's own view of the sub-PC, not our
+    # bookkeeping), preconditioned by the 1/mu pressure mass.
+    assert info["velocity_pc"] == "custom-FMG"
+    assert info["schur_pre"] == "1/mu-mass"
+    assert info["velocity_pc_type"] == "mg", (
+        f"velocity sub-PC is {info['velocity_pc_type']!r}, not multigrid — the custom "
+        f"FMG install did not take")
+
+    # PCFieldSplit applies the Schur complement through the velocity sub-KSP, so that
+    # KSP must converge to a tolerance. A `preonly` single multigrid cycle hands the
+    # pressure Krylov a different system, which stagnates above its tolerance and
+    # leaves the outer Krylov to make up the difference. Measured on this
+    # configuration: FGMRES-wrapped FMG = 1 outer iteration, `preonly` = 6.
+    assert max(info["ksp_its"]) <= 3, (
+        f"rotated FMG outer iteration blow-out: {info['ksp_its']} "
+        f"(inexact Schur application — is the velocity sub-KSP `preonly` again?)")
 
 
 def test_rotated_freeslip_boundary_normal_traction_solcx():
@@ -708,3 +726,44 @@ def test_rotated_freeslip_nonlinear_prescribed_normal_datum():
     err = np.abs(vn - target).max()
     assert err < 1e-8, f"nonlinear u.n=cos(theta) not imposed: max nodal error {err:.2e}"
     assert vn.max() > 0.9 and vn.min() < -0.9, "prescribed normal velocity magnitude wrong"
+
+
+def test_rotated_solve_fields_carry_inhomogeneous_dirichlet_walls():
+    """The copy-back gap: essential DOFs are absent from the global vector, so
+    the rotated path's field scatter left them at ZERO wherever the Dirichlet
+    datum g != 0 — the solve was right, every field-based diagnostic
+    (projection, integral, evaluate) read a garbage boundary strip. Caught by
+    the split-fault work (far-field stress off by 20%); fixed by the
+    DMPlexInsertBoundaryValues shim in the copy-back. Homogeneous walls hid
+    this from every earlier rotated test — zero happens to be their datum.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    x, y = mesh.X
+    v = uw.discretisation.MeshVariable("vIB", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("pIB", mesh, 1, degree=1,
+                                       continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    s.tolerance = 1e-8
+    s.petsc_use_pressure_nullspace = True
+    # Inhomogeneous Dirichlet lid and floor, rotated free-slip sides: the
+    # combination that exposes the gap.
+    s.add_dirichlet_bc((y - 0.5, 0.0), "Top")
+    s.add_dirichlet_bc((y - 0.5, 0.0), "Bottom")
+    s.add_rotated_freeslip_bc(0, "Left")
+    s.add_rotated_freeslip_bc(0, "Right")
+    s.solve()
+
+    vc = np.asarray(v.coords)
+    vd = np.asarray(v.data)
+    for name, mask, target in (
+            ("Top", vc[:, 1] > 1 - 1e-9, +0.5),
+            ("Bottom", vc[:, 1] < 1e-9, -0.5)):
+        assert mask.sum() > 0
+        err = np.abs(vd[mask, 0] - target).max()
+        assert err < 1e-10, (
+            f"{name} wall u_x in the FIELD is off by {err:.2e}; the rotated "
+            "copy-back dropped the inhomogeneous essential values")
+        assert np.abs(vd[mask, 1]).max() < 1e-10

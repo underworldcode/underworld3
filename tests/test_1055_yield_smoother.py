@@ -78,8 +78,12 @@ def test_delta0_is_exact_min():
 @pytest.mark.level_1
 @pytest.mark.tier_a
 def test_powermean_smoother_undershoots_min():
-    """Power-mean smooth-min: ≤ Min everywhere (no over-yield), overflow-safe on
-    geodynamic ranges, and → Min as δ→0 (s=1/δ→∞)."""
+    """Power-mean smooth-min UNDER THE ONSET ANCHOR: ≤ Min everywhere (no over-yield),
+    overflow-safe on geodynamic ranges, and → Min as δ→0 (s=1/δ→∞).
+
+    Which side of Min the law sits on belongs to ``yield_anchor``, not to the family, so
+    the anchor is set explicitly here: under ``"yield"`` this same family is ≥ Min by
+    construction and every assertion below would (correctly) invert."""
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
     v = uw.discretisation.MeshVariable("Upm", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("Ppm", mesh, 1, degree=1)
@@ -88,6 +92,7 @@ def test_powermean_smoother_undershoots_min():
     s.constitutive_model = cm
 
     cm.yield_mode = "softmin"              # dev: soft-min family lives under "softmin"
+    cm.yield_anchor = "onset"              # the law under test; not left to the default
     cm.yield_softness = 0.0                # start from δ=0 so the powermean select bumps it
     cm.yield_smoother = "powermean"        # bumps δ 0 → 1 (s=1, harmonic mean)
     assert cm.yield_smoother == "powermean"
@@ -169,8 +174,9 @@ def test_dp_model_smoother_optin():
         val = float(unwrap_expression(comb, mode="nondimensional"))
         assert abs(val - min(eta_ve, eta_pl)) < 1.0e-12
 
-    # opt into the power-mean homotopy: undershoots Min
+    # opt into the power-mean homotopy: undershoots Min under the onset anchor
     cm.yield_mode = "softmin"
+    cm.yield_anchor = "onset"                 # the side under test; not the default
     cm.yield_smoother = "powermean"           # bumps δ→1
     assert cm.yield_softness == 1.0
     for eta_ve, eta_pl in [(1.0, 2.0), (5.0, 0.3), (1e25, 1e21)]:

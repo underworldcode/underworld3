@@ -165,8 +165,9 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
-    if mass not in ("auto", "lumped", "consistent"):
-        raise ValueError("mass must be 'auto', 'lumped', or 'consistent'.")
+    if mass not in ("auto", "lumped", "consistent", "p1"):
+        raise ValueError("mass must be 'auto', 'lumped', 'consistent', or 'p1' "
+                         "(P1-projected recovery on a 3D P2 trace).")
     if dim == 3:
         lsec = dm.getLocalSection()
         ncomp = lsec.getFieldComponents(0)
@@ -260,8 +261,44 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
         if order == 2 and mass == "lumped":
             raise ValueError(
                 "A 3D P2 triangular trace has zero row-sum mass at its vertices; "
-                "use mass='consistent' for pointwise boundary-flux recovery."
+                "use mass='consistent' (pointwise, carries the vertex-integral "
+                "checkerboard risk) or mass='p1' (P1-projected, monotone — the "
+                "choice for driving a P1 surface field) for boundary-flux recovery."
             )
+        mid_owners = {}
+        if mass == "p1":
+            if order != 2:
+                mass = "lumped"                    # P1 trace: p1 IS lumped
+            else:
+                # P1-PROJECTED recovery on a P2 trace: the consistent P2 path has
+                # the ∫φ_vertex = 0 vertex checkerboard (#404 hold), while the P1
+                # trace is sound — and a P1 surface field only consumes vertex
+                # values anyway. Fold each edge-midpoint load onto its two edge
+                # vertices (φ^{P1}(edge-mid) = 1/2 exactly, P1 ⊂ P2 — the load
+                # transfer is the interpolation transpose, so the total load is
+                # conserved), then de-smear with the P1 lumped triangle mass.
+                # Midpoint outputs are read back as the P1 interpolant (vertex
+                # average).
+                new_elements = {}
+                for _order, nodes, area in elements.values():
+                    vk = nodes[:3]
+                    m01, m12, m20 = nodes[3:]
+                    mid_owners[m01] = (vk[0], vk[1])
+                    mid_owners[m12] = (vk[1], vk[2])
+                    mid_owners[m20] = (vk[2], vk[0])
+                    new_elements[(1, tuple(sorted(vk)))] = (1, vk, area)
+                folded = {}
+                for key, value in R_by.items():
+                    if key in mid_owners:
+                        va, vb = mid_owners[key]
+                        folded[va] = folded.get(va, 0.0) + 0.5 * value
+                        folded[vb] = folded.get(vb, 0.0) + 0.5 * value
+                    else:
+                        folded[key] = folded.get(key, 0.0) + value
+                R_by = folded
+                elements = new_elements
+                order = 1
+                mass = "lumped"
 
         keys = sorted(R_by)
         global_index = {key: i for i, key in enumerate(keys)}
@@ -311,14 +348,23 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
         if remove_mean:
             mean = float(np.dot(flux, boundary_mass) / np.sum(boundary_mass))
             flux -= mean
-        return np.array([flux[global_index[_key(x, dim)]] for x in xs])
+
+        def value_at(x):
+            key = _key(x, dim)
+            if key in global_index:
+                return flux[global_index[key]]
+            # P1-projected mode: a P2 edge midpoint reads the P1 interpolant
+            va, vb = mid_owners[key]
+            return 0.5 * (flux[global_index[va]] + flux[global_index[vb]])
+
+        return np.array([value_at(x) for x in xs])
 
     if dim != 2:
         raise NotImplementedError(
             f"Boundary-flux recovery is not implemented for mesh dimension {dim}."
         )
-    if mass == "auto":
-        mass = "lumped"
+    if mass in ("auto", "p1"):
+        mass = "lumped"                    # 2D: the lumped line mass is sound
 
     e0, e1 = dm.getDepthStratum(1)
     def vcoord(q): return cvec[csec.getOffset(q) // dim]

@@ -359,6 +359,22 @@ def RegionalSphericalBox(
 
         return
 
+    def sphere_return_coords_to_bounds(coords):
+        Rsq = coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2
+
+        outside = Rsq > radiusOuter**2
+        inside = Rsq < radiusInner**2
+
+        coords[outside, :] *= (
+            0.99 * radiusOuter / np.sqrt(Rsq[outside].reshape(-1, 1))
+        )
+        coords[inside, :] *= (
+            1.01 * radiusInner / np.sqrt(Rsq[inside].reshape(-1, 1))
+        )
+
+        return coords
+
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,

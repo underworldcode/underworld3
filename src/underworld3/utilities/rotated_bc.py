@@ -9,9 +9,12 @@ A linear model is simply the loop converging after its first increment — there
 no separate linear path and no up-front nonlinearity probe.
 
 Each increment is solved by a self-contained fieldsplit-Schur KSP by default: the
-velocity block is geometric FMG on the custom prolongation (``set_custom_fmg``) when a
-hierarchy is registered (the PREFERRED route), else GAMG tuned to the native path's
-settings; the Schur complement is preconditioned by the native 1/mu pressure mass
+velocity block is geometric FMG on the custom prolongation whenever this solver has a
+hierarchy — registered by ``set_custom_fmg`` or owned by an ``adapt()`` child mesh —
+which is the PREFERRED route, else GAMG; the option bundle for both is the shared one
+in ``underworld3.utilities.multigrid_options``, so the rotated velocity block is
+configured identically to the native and standard custom-P routes.
+The Schur complement is preconditioned by the native 1/mu pressure mass
 (the Pmat p-p block, exactly the standard path's ``schur_precondition=a11``), with a
 constant-pressure nullspace on the inner Schur solve for enclosed domains; direct
 MUMPS LU is opt-in via ``solver._rotated_use_lu``.
@@ -31,6 +34,11 @@ from underworld3 import mpi
 # boundary-mass de-smear, and the scalar-field hand-off all live in `boundary_flux`.
 from underworld3.utilities.boundary_flux import (
     _boundary_stratum_is, _desmear, write_boundary_scalar_field)
+
+# The multigrid option bundles are owned in ONE place and shared with the native
+# and standard custom-P routes, so the rotated velocity block cannot be
+# configured differently from the others (#468).
+from underworld3.utilities import multigrid_options
 
 # Monotonic counter so each rotated solve gets a UNIQUE PETSc options prefix. With a
 # fixed prefix, sequential rotated solves (e.g. two solvers in one script, or one
@@ -378,23 +386,19 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
             q.destroy()
             removed = True
 
-    # scatter U → velocity/pressure fields
-    for name, var in solver.fields.items():
-        sg = U.getSubVector(solver._subdict[name][0])
-        solver._subdict[name][1].globalToLocal(sg, var.vec)
-        U.restoreSubVector(solver._subdict[name][0], sg)
-
-    # Parity with the normal solve's post-scatter sync (pyx: after the field copy-back):
-    # refresh the enhanced-variable gvec cache and drop the canonical-data cache so
-    # downstream consumers (var.data / var.array / checkpoint / stats) don't read a
-    # stale value; and mark the mesh local vector stale.
-    solver.mesh._stale_lvec = True
-    for name, var in solver.fields.items():
-        target_var = getattr(var, "_base_var", var)
-        if hasattr(target_var, "_sync_lvec_to_gvec"):
-            target_var._sync_lvec_to_gvec()
-        if hasattr(target_var, "_canonical_data"):
-            target_var._canonical_data = None
+    # scatter U → velocity/pressure fields, completing each field's essential
+    # (Dirichlet) DOFs. Those are absent from the global vector, so a plain
+    # per-field scatter leaves them at ZERO — silently wrong wherever the datum
+    # g != 0 (an inhomogeneous Dirichlet wall next to a rotated boundary, #497).
+    # The insertion must run on the FULL dm, where the auxiliary vector lives:
+    # a sub-DM insertion segfaults when a BC datum references another
+    # MeshVariable. _scatter_global_to_fields does exactly that (boundary FEM on
+    # the parent local vector, then the per-field split) and carries the same
+    # cache-invalidation tail as the native post-solve copy-back.
+    # TODO(BUG): DMPlexSNESComputeBoundaryFEM inserts at time=PETSC_MIN_REAL, so
+    # a mesh.t-dependent essential datum is written as garbage — same defect on
+    # the native copy-back path. See issue #410.
+    solver._scatter_global_to_fields(U)
     return removed
 
 
@@ -644,6 +648,27 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ctx = None
     diag_scale = None
     lin_its = []
+    # velocity / pressure sub-KSP LAST-APPLICATION counts, one per Newton increment
+    # (iterative path only — the direct-LU path has no sub-KSPs and records None)
+    vel_its_last = []
+    pres_its_last = []
+
+    # With the constant-pressure nullspace active, the outer residual is measured
+    # in the pressure-gauge QUOTIENT space: the inner KSP projects the constant
+    # mode out of every increment (it is the gauge of an enclosed incompressible
+    # domain), so the loop cannot reduce that component and must not measure it.
+    # On a DEFORMED faceted boundary the component is not exactly zero — free
+    # tangential DOFs carry a small net flux through the node-vs-facet normal
+    # mismatch, an irreducible discrete incompatibility (measured: an unprojected
+    # outer norm floors at rel ~2e-3, 100% pressure rows, and the line search
+    # stalls against the constant offset). This mirrors PETSc's own projected
+    # residual for singular systems. The Cartesian reaction stash is UNPROJECTED
+    # (σ_nn reads velocity rows only).
+    use_pnull = bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
+    # L2 norm of the LAST projected-out gauge component (|mean|·√N over the
+    # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
+    # behind the projection (see the guard after the Newton loop).
+    pnull_gauge = [0.0]
 
     def rotated_residual(uvec, keep_cartesian=False):
         snes.computeFunction(uvec, Fc)
@@ -652,6 +677,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         Fh = Fc.duplicate()
         Q.mult(Fc, Fh)
         _zero_rows_local(Fh, normal_rows)
+        if use_pnull:
+            sp = Fh.getSubVector(pres_is)
+            n_p = sp.getSize()
+            mean = sp.sum() / max(n_p, 1)
+            sp.shift(-mean)                  # project out the pressure-gauge mode
+            Fh.restoreSubVector(pres_is, sp)
+            pnull_gauge[0] = abs(mean) * (max(n_p, 1) ** 0.5)
         return Fh
 
     # Convergence reference: max(initial residual, REST-STATE residual ‖F̂(0)‖).
@@ -752,6 +784,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 solver, Ahat, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
         lin_its.append(ctx["ksp"].getIterationNumber())
+        vel_its_last.append(ctx.get("vel_its_last"))
+        pres_its_last.append(ctx.get("pres_its_last"))
         d = dm.createGlobalVec()
         Qt.mult(dhat, d)
         # step-norm convergence (SNES_CONVERGED_SNORM): a tiny Newton step means we
@@ -817,6 +851,25 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                    f"in {newton_its} iterations (rel |F̂| = {rel:.2e} of the reference "
                    f"residual); the fields hold the last (unconverged) iterate.")
 
+    # The quotient projection makes the outer test blind to the pressure-gauge
+    # component. A COMPATIBLE datum leaves that component at discretisation
+    # level; an INCOMPATIBLE one (net wall-normal flux into an enclosed
+    # incompressible domain) parks an O(forcing) constant there — and the loop
+    # above would report convergence while mass conservation is violated.
+    # Surface the component: readable state always, loud when it dominates.
+    if use_pnull:
+        solver._rotated_pressure_gauge_residual = pnull_gauge[0]
+        if converged and pnull_gauge[0] > 10.0 * max(rnorm, atol):
+            mpi.pprint(f"[rotated_bc] WARNING: converged in the pressure-gauge "
+                       f"QUOTIENT space, but the projected-out gauge component "
+                       f"(|F̂_p·1|/√N = {pnull_gauge[0]:.2e}) dominates the "
+                       f"converged residual ({rnorm:.2e}). The wall-normal datum "
+                       f"carries a net boundary flux this enclosed incompressible "
+                       f"domain cannot absorb — the velocity field violates mass "
+                       f"conservation at that level. Check the datum's surface "
+                       f"integral (solver._rotated_pressure_gauge_residual holds "
+                       f"this number).")
+
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
     _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
     if Ahat is not None:
@@ -830,24 +883,44 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "rotation_gauge_removed": removed, "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
+            "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
+            # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
+            # with ctx unset when a warm start is already converged at increment 0.
+            "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
+            "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
+            "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
             "continuation_switched": continuation and phase == "newton"}
 
 
 def _build_rotated_custom_Pl(solver, Q, normal_rows):
     """The rotated custom-FMG prolongation list [*coarse, Q_v·P_fine] for the
-    velocity block, or None if no hierarchy is registered. Depends only on Q and
+    velocity block, or None if this solver has no hierarchy. Depends only on Q and
     the mesh (NOT the solution), so the rotated Newton loop builds it ONCE and reuses
-    it across Newton iterations (the prolongation build is the expensive part)."""
-    if getattr(solver, "_custom_mg", None) is None:
+    it across Newton iterations (the prolongation build is the expensive part).
+
+    The hierarchy is resolved by ``custom_mg.build_transfers``, which is the same
+    rule the standard path uses: an explicit ``set_custom_fmg`` registration wins,
+    otherwise a MESH-OWNED coarse tail (what ``mesh.adapt()`` leaves on a
+    refinement child) is picked up opportunistically. That mesh-owned pickup used
+    to be unreachable from here — the standard path's injection hook runs after
+    the rotated dispatch has already returned — so an adapt child under rotated
+    free-slip silently lost its multigrid and solved on GAMG (#467). This is the
+    ``adapt-on-top-faults`` workflow's own configuration."""
+    from underworld3.utilities import custom_mg
+    h, Ps = custom_mg.build_transfers(solver, field_id=0)
+    if h is None:
         return None
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
     g2blk = {int(g): k for k, g in enumerate(vis)}
     Qv = Q.createSubMatrix(vel_is, vel_is)
     nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
-    Ps = solver._custom_mg["hierarchy"].build(solver)
     Pfine = Qv.matMult(Ps[-1])
     Pfine.zeroRows(nrows_blk, diag=0.0)
+    # Remember an opportunistic mesh-owned pickup, so a later solve on this solver
+    # (rotated or not) reuses the hierarchy instead of re-resolving it.
+    if getattr(solver, "_custom_mg", None) is None:
+        solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
     return list(Ps[:-1]) + [Pfine]
 
 
@@ -897,8 +970,9 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                              custom_Pl=None, nsp=None, Mp=None, ctx=None):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
-    (PR#290, rotated) when a hierarchy is registered (``set_custom_fmg``), else GAMG
-    (tuned to the native path's settings).
+    (PR#290, rotated) whenever the solver has a hierarchy — ``set_custom_fmg`` or a
+    mesh-owned ``adapt()`` tail — else GAMG. Both bundles come from
+    ``utilities.multigrid_options``, shared with the native and standard routes.
 
     A plain rotated Mat has no DM field info, so UW3's DM-coupled fieldsplit cannot
     split it — we build the split from EXPLICIT velocity/pressure index sets. For the
@@ -951,10 +1025,23 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             "ksp_type": "fgmres", "ksp_rtol": str(tol), "ksp_max_it": "300",
             "pc_type": "fieldsplit", "pc_fieldsplit_type": "schur",
             "pc_fieldsplit_schur_fact_type": "full",
-            # native-parity pressure sub-solve (pyx Stokes defaults): FGMRES at the
-            # solver tolerance; GASM on the 1/mu mass, jacobi if only selfp exists.
+            # Pressure sub-solve at native-path parity (pyx Stokes defaults):
+            # FGMRES at 0.1 x tol, GASM on the 1/mu mass (jacobi if only selfp
+            # exists).
+            #
+            # The 0.1 is the MARGIN, and it is the point. The Citcom design this
+            # configuration descends from (Moresi & Solomatov 1995) makes the inner
+            # solves deliberately inexact, which is why the outer/Schur Krylov must
+            # be flexible (fgmres, above) — inexact inner solves perturb the search
+            # directions. But inexact is bounded: an inner solve must still converge
+            # WELL BELOW the tolerance demanded of the outer solve. This path used to
+            # ask for `tol` while the outer KSP also asks for `tol` — no margin at
+            # all, the inner solve permitted to be no better than the answer it
+            # feeds. Restoring the margin costs ~17% wall clock with identical outer
+            # iteration counts (measured, both velocity-block routes, isotropic and
+            # TI); a too-loose inner solve fails by silent stagnation, not loudly.
             "fieldsplit_pres_ksp_type": "fgmres",
-            "fieldsplit_pres_ksp_rtol": str(tol),
+            "fieldsplit_pres_ksp_rtol": str(tol * 0.1),
             "fieldsplit_pres_ksp_max_it": "200",
         }
         if Mp is not None:
@@ -963,24 +1050,50 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             cfg["pc_fieldsplit_schur_precondition"] = "selfp"
             cfg["fieldsplit_pres_pc_type"] = "jacobi"
         if custom_Pl is None:
-            # GAMG fallback velocity block, tuned to native parity (pyx Stokes
-            # defaults). NOTE: the custom-FMG route is the preferred velocity
-            # block — this applies only when no hierarchy is registered.
+            # GAMG fallback velocity block. The bundle is the SHARED one (see
+            # utilities.multigrid_options), so it cannot drift from what the
+            # standard path applies. NOTE: the custom-FMG route is the preferred
+            # velocity block — this applies only when no hierarchy is available.
+            # No stale keys to clear: `pfx` is unique per rotated solve.
             cfg.update({
                 "fieldsplit_vel_ksp_type": "fgmres",
-                "fieldsplit_vel_ksp_rtol": str(tol * 0.1),
+                "fieldsplit_vel_ksp_rtol": str(tol * 0.033),
                 "fieldsplit_vel_ksp_max_it": "200",
-                "fieldsplit_vel_pc_type": "gamg",
-                "fieldsplit_vel_pc_gamg_type": "agg",
-                "fieldsplit_vel_pc_gamg_repartition": "true",
-                "fieldsplit_vel_pc_mg_type": "additive",
-                "fieldsplit_vel_pc_gamg_agg_nsmooths": "2",
-                "fieldsplit_vel_mg_levels_ksp_max_it": "3",
-                "fieldsplit_vel_mg_levels_ksp_converged_maxits": "true",
             })
+            cfg.update({f"fieldsplit_vel_{key}": value for key, value
+                        in multigrid_options.gamg_bundle().settings.items()})
         else:
-            # full-MG cycle per Schur application, by design
-            cfg["fieldsplit_vel_ksp_type"] = "preonly"
+            # Custom-FMG velocity block, wrapped in a short FGMRES — NOT `preonly`.
+            # PCFieldSplit applies the Schur complement S = A11 - A10 A00^-1 A01
+            # through THIS velocity KSP, so `preonly` replaces A00^-1 with a single
+            # multigrid cycle and the pressure Krylov is handed a different system
+            # S~ != S, preconditioned by a 1/mu mass built for S.
+            #
+            # Measured (annulus, weak plane reaching the constrained boundary,
+            # eta_1/eta_0 = 1e-3, transversely isotropic): under `preonly` the
+            # pressure residual falls 4.4e4 in ~16 iterations and then STAGNATES at
+            # a floor ~3.1e-7, burning the remaining 184 iterations of its cap for
+            # nothing, every outer iteration — 9 outer iterations total. Under
+            # FGMRES it converges 1.1e8 monotonically in 17 pressure iterations — 1
+            # outer. The isotropic control moves the same way (5 -> 1), so this is
+            # the Schur application and not the anisotropy.
+            #
+            # NB the Schur application is bitwise reproducible under both settings
+            # (measured), so the floor is NOT "the operator changes between
+            # applications" — it is S~ being the wrong system. The precise origin of
+            # the floor (most likely a range/nullspace inconsistency between S~ and
+            # the constant-pressure null space attached to S below) is not isolated.
+            #
+            # rtol and max_it are the native path's (0.033 x tol, 200), as is the
+            # GAMG fallback above. The FMG cycle reaches 0.1 x tol in ~11 iterations
+            # and would be cheaper there, but a sub-solve tolerance is a guardrail:
+            # the conservative value is the default and loosening it is the caller's
+            # risk to take.
+            cfg.update({
+                "fieldsplit_vel_ksp_type": "fgmres",
+                "fieldsplit_vel_ksp_rtol": str(tol * 0.033),
+                "fieldsplit_vel_ksp_max_it": "200",
+            })
         for k, v in cfg.items():
             opts[pfx + k] = v
         try:
@@ -1000,20 +1113,26 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 A_vv, P_vv = vel_pc.getOperators()
                 vel_pc.reset()
                 vel_pc.setOperators(A_vv, P_vv)
-                custom_mg._configure_pcmg(vel_pc, custom_Pl)
-                # The Galerkin-coarsened ROTATED velocity block inherits every
-                # rigid-rotation nullspace mode of the constrained problem (a
-                # closed circle: one; a spherical shell: three) — the default
-                # redundant/LU coarse solve hits a zero pivot (SUBPC_ERROR,
-                # outer reason -11). SVD is nullspace-robust and the coarse
-                # level is small; same choice as the native spherical FMG setups.
+                # coarse="svd": the Galerkin-coarsened ROTATED velocity block
+                # inherits every rigid-rotation nullspace mode of the constrained
+                # problem (a closed circle: one; a spherical shell: three), and
+                # the default redundant/LU coarse solve hits a zero pivot there
+                # (SUBPC_ERROR, outer reason -11). Everything else in the bundle
+                # is identical to the native and standard custom-P routes.
+                custom_mg._configure_pcmg(
+                    vel_pc, custom_Pl, coarse="svd",
+                    smoother=solver._mg_smoother_variant)
+                vel_pc.setUp()
+                # The bundle went into the GLOBAL options DB under the velocity
+                # sub-PC's prefix, which is derived from `pfx` and so is unique to
+                # this solve — drop it again now it is consumed, as the `finally`
+                # below does for the KSP's own keys.
                 vopts = PETSc.Options()
                 vpfx = vel_pc.getOptionsPrefix() or ""
-                vopts.setValue(vpfx + "mg_coarse_pc_type", "svd")
-                vopts.delValue(vpfx + "mg_coarse_redundant_pc_type")
-                vel_pc.setFromOptions()
-                vel_pc.setUp()
-                vopts.delValue(vpfx + "mg_coarse_pc_type")
+                for key in multigrid_options.geometric_mg_bundle(
+                        coarse="svd",
+                        smoother=solver._mg_smoother_variant).settings:
+                    vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
             # nullspace to the inner Schur solve, which is otherwise singular
@@ -1032,7 +1151,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 except Exception:
                     pass
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
-               "custom_Pl": custom_Pl, "pfx": pfx}
+               "custom_Pl": custom_Pl, "pfx": pfx,
+               # which preconditioner this solve actually got — reported so a model
+               # (or a test) can assert on it instead of inferring it from timings
+               "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
+               "schur_pre": "1/mu-mass" if Mp is not None else "selfp"}
     else:
         ksp = ctx["ksp"]
         nsp = ctx["nsp"]
@@ -1053,12 +1176,30 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     # equation → setting them to exactly 0 here makes the strong v_n=0 BC exact
     # independent of the iterative tolerance, without perturbing the rest.
     _zero_rows_local(Uhat, normal_rows)
+    # Sub-KSP diagnostics: the OUTER count alone hides a degraded inner solve — a
+    # full Schur factorisation with a good pressure mass converges in ~1 outer
+    # iteration while the pressure sub-solve grinds against its cap underneath.
+    #
+    # These are LAST-APPLICATION samples, not work: KSPGetIterationNumber reports
+    # the most recent solve, and the velocity KSP is applied once per Schur MatMult
+    # (i.e. once per pressure Krylov iteration). They are named `_last` so they are
+    # not mistaken for the summed counts the solver_health report uses as its work
+    # axis — wiring the rotated path into SolverInstrumentation.sub_reports() is the
+    # proper fix and is not done here.
+    vel_ksp, pres_ksp = ctx["pc"].getFieldSplitSubKSP()
+    ctx["vel_its_last"] = vel_ksp.getIterationNumber()
+    ctx["pres_its_last"] = pres_ksp.getIterationNumber()
+    ctx["velocity_pc_type"] = vel_ksp.getPC().getType()
+    # A velocity FGMRES that exhausts its cap returns KSP_DIVERGED_ITS, which
+    # KSPCheckSolve deliberately does NOT escalate — so without this it degrades
+    # silently. (`preonly` could never fail, which is why the check is new.)
+    _warn_if_ksp_diverged(vel_ksp, kind="rotated fieldsplit velocity sub-solve")
     if verbose:
-        kind = "custom-FMG" if ctx["custom_Pl"] is not None else "GAMG"
-        schur = "1/mu-mass" if ctx["Mp"] is not None else "selfp"
-        mpi.pprint(f"[rotated_bc] velocity block = {kind}; Schur pre = {schur}; "
+        mpi.pprint(f"[rotated_bc] velocity block = {ctx['velocity_pc']} "
+                   f"(PC {ctx['velocity_pc_type']}); Schur pre = {ctx['schur_pre']}; "
                    f"outer KSP {ksp.getConvergedReason()} in "
-                   f"{ksp.getIterationNumber()} its")
+                   f"{ksp.getIterationNumber()} its (last apply: vel "
+                   f"{ctx['vel_its_last']}, pres {ctx['pres_its_last']})")
     return Uhat, ksp.getConvergedReason(), ctx
 
 
@@ -1192,7 +1333,12 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
         3D P2 triangles.
       * ``"lumped"`` — the diagonal row-sum mass. It is monotone for supported traces,
         but invalid for 3D P2 triangles because their vertex row sums are exactly zero.
-      * ``"consistent"`` — the full trace mass. Required for pointwise 3D P2 recovery.
+      * ``"consistent"`` — the full trace mass. Pointwise-exact 3D P2 recovery, but
+        carries the vertex-integral checkerboard on P2 triangles (#404 hold).
+      * ``"p1"`` — P1-PROJECTED recovery on a 3D P2 trace (edge-midpoint loads folded
+        onto vertices, lumped P1 triangle mass). Sound where the consistent P2 path
+        checkerboards; the FreeSurface default in 3D. On a P1 trace, identical to
+        ``"lumped"``.
 
     Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
     section offset; the boundary mass is assembled globally by a coordinate-keyed
