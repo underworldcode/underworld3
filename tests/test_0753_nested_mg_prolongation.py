@@ -262,10 +262,20 @@ def test_reproduces_an_arbitrary_coarse_field(dim, cell_size, max_levels, ratio)
     wrong = [(k, r) for k, r, exact in interior if not exact]
 
     if dim == 3:
-        assert wrong, (
-            "3-D interior-vertex rows are now exact — nvb.nested_prolongation "
-            "appears FIXED. Delete this branch and assert exactness for every "
-            "dimension.")
+        if not wrong:
+            # The defect is carried by the handful of vertices a closure
+            # cascade places strictly inside a coarse tet, and WHETHER any
+            # arise depends on the gmsh mesh: the linux CI mesh presents
+            # none while the macOS reference mesh does, so a hard assert
+            # here fires falsely on one platform or the other (measured,
+            # PR #510 CI). Skipping keeps the tripwire's message without
+            # the flake; when #449 is truly fixed, the skip goes with it
+            # and every dimension asserts exactness below.
+            pytest.skip(
+                "no 3-D interior-vertex row is wrong on this mesh — the #449 "
+                "cascade parentage did not occur here (mesh-dependent), or "
+                "the defect is fixed. Verify against the reference-toolchain "
+                "mesh before deleting this branch.")
         return
 
     assert not wrong, (
