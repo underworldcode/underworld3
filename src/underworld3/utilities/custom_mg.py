@@ -633,6 +633,40 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
     pc.setFromOptions()
 
 
+def _ensure_flexible_outer(solver, ksp):
+    """Pair a Krylov-smoothed PCMG with a FLEXIBLE outer Krylov method.
+
+    The geometric bundle's default smoother is gmres/4 (the "robust" variant),
+    which makes each V-cycle application a slightly different linear operator.
+    Plain left-preconditioned GMRES assumes a fixed preconditioner: its recurrence
+    norm keeps contracting while the TRUE residual stalls on the inconsistency.
+    Measured on test_0842's graded 3-D adapt child (scalar Poisson, exact linear
+    solution): preconditioned norm 1.4e-11 with the true residual stalled at
+    2.4e-6, insensitive to ksp_rtol; with fgmres the same PCMG reaches a true
+    relative residual of 1e-12 in the same 4 iterations. The Stokes velocity
+    block already pairs this bundle with fgmres for exactly this reason (see
+    ``multigrid_options``); the top-level scalar/vector route must do the same.
+
+    Only the framework's own default outer (``gmres``) is upgraded; any other
+    ``ksp_type`` is a user's choice and is left alone. A stationary smoother
+    (``richardson``, the "fast" variant) keeps the left-preconditioned norm
+    honest, so nothing is changed there.
+    """
+    opts = PETSc.Options()
+    prefix = ksp.getOptionsPrefix() or ""
+    smoother = opts.getString(prefix + "mg_levels_ksp_type")
+    if smoother in ("", "richardson"):
+        return                              # stationary smoother: outer is honest
+    if ksp.getType() != "gmres":
+        return                              # not the framework default: user's call
+    push = getattr(solver, "_push_managed_option", None)
+    if push is not None:
+        push("ksp_type", "fgmres")          # recorded as UW3's own write
+    else:
+        opts.setValue(prefix + "ksp_type", "fgmres")
+    ksp.setType("fgmres")
+
+
 def _install_transfers(solver, Ps, verbose=False):
     """Configure the managed PCMG block to use the supplied prolongations.
 
@@ -660,6 +694,7 @@ def _install_transfers(solver, Ps, verbose=False):
         _configure_pcmg(ksp.getPC(), Ps,
                         smoother=solver._mg_smoother_variant,
                         owned=solver._managed_pc_options)
+        _ensure_flexible_outer(solver, ksp)
         if verbose:
             from underworld3 import mpi
             mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
