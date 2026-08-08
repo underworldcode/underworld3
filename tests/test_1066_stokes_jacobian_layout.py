@@ -20,6 +20,14 @@ symmetry) exposed them:
    through them.
 
 See docs/developer/subsystems/petsc-jacobian-layout.md.
+
+Issue #239 (Nitsche x anisotropy) was the SAME layout defect on the natural-BC
+boundary blocks: the Nitsche consistency term injects the constitutive traction
+sigma(u).n into the boundary f0, so its uu_G1 = d f0/dL is the first boundary
+block with a non-trivial fc/gc structure — and the old permutedims form
+assembled its fc/gc transpose (7% snes_test_jacobian defect, invisible for
+isotropic stress where the block is fc/gc-symmetric). Test 4 pins the
+post-#493 behaviour with the same FD-oracle pattern, TI + isotropic control.
 """
 
 import numpy as np
@@ -280,4 +288,112 @@ def test_ti_vep_c_tensor_coefficients_are_frozen():
     assert revealed, (
         "Newton unwrap of the TI-VEP c-tensor reveals no strain-rate "
         "dependence — the yield law has been lost from the tangent chain"
+    )
+
+
+def _nitsche_annulus_stokes(anisotropic):
+    """Annulus + Nitsche free-slip on the outer wall — the issue #239 setup.
+
+    The normal is passed analytically (X/|X|) and local_h=False so the
+    boundary residual is a closed-form sympy expression the FD oracle can
+    lambdify (the default boundary-normal / cell-size MeshVariables would
+    survive unwrap as unresolved field symbols)."""
+    mesh = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.3)
+    v = uw.discretisation.MeshVariable("V_nb", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_nb", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+
+    if anisotropic:
+        stokes.constitutive_model = (
+            uw.constitutive_models.TransverseIsotropicFlowModel
+        )
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.constitutive_model.Parameters.shear_viscosity_1 = 0.1
+        th = sympy.pi / 6  # tilted director: no accidental alignment with n
+        stokes.constitutive_model.Parameters.director = sympy.Matrix(
+            [[sympy.cos(th), sympy.sin(th)]]
+        )
+    else:
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+
+    x, y = mesh.X
+    rr = sympy.sqrt(x**2 + y**2)
+    stokes.add_nitsche_bc(
+        0.0, "Upper", gamma=10,
+        normal=sympy.Matrix([x / rr, y / rr]), local_h=False,
+    )
+    stokes._setup_pointwise_functions()
+    return stokes, v, p, mesh
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+@pytest.mark.parametrize("anisotropic", [True, False], ids=["ti", "iso"])
+def test_nitsche_boundary_uu_g1_matches_fd_oracle(anisotropic):
+    """Issue #239: the Nitsche boundary uu_G1 (= d bd_f0 / dL, carrying the
+    consistency-term traction sigma(u).n) must match a central-difference
+    derivative of the boundary residual, read through PETSc's
+    [fc*Nc + gc, dg] convention. For anisotropic (TI) stress this block has
+    no fc/gc symmetry, so the old transposed (permutedims) assembly fails at
+    O(1e-1) — the 7% snes_test_jacobian defect reported in #239. The
+    isotropic case is the unchanged-behaviour control."""
+    d = 2
+    stokes, v, p, mesh = _nitsche_annulus_stokes(anisotropic)
+    bc = stokes.natural_bcs[0]
+    assert bc.type == "nitsche"
+
+    Lsyms = [[sympy.Symbol(f"l{k}{l}") for l in range(2)] for k in range(2)]
+    Lval = np.array([[0.31, -1.17], [0.73, 0.11]])
+    flat_val = Lval.flatten()
+
+    # FD ground truth from the boundary residual (what -snes_test_jacobian
+    # FDs on the boundary integral).
+    f0_list = [bc.fns["u_f0"][fc] for fc in range(d)]
+    res_fns = _numeric_fns(f0_list, stokes, v, p, mesh, Lsyms)
+    FD = np.zeros((d, d, d))  # [fc, gc, dg] = d f0[fc] / dL[gc, dg]
+    h = 1.0e-6
+    for gc in range(d):
+        for dg in range(d):
+            up = flat_val.copy()
+            dn = flat_val.copy()
+            up[gc * d + dg] += h
+            dn[gc * d + dg] -= h
+            for fc in range(d):
+                FD[fc, gc, dg] = (res_fns[fc](*up) - res_fns[fc](*dn)) / (2 * h)
+
+    scale = np.abs(FD).max()
+    assert scale > 0.0, "boundary residual has no gradient dependence at all"
+
+    # Guard against a true-by-construction pass: for TI the oracle block must
+    # be genuinely fc/gc-asymmetric, else a transposed assembly is invisible.
+    fcgc_asym = max(
+        abs(FD[a, b, dg] - FD[b, a, dg])
+        for a in range(d) for b in range(d) for dg in range(d)
+    )
+    if anisotropic:
+        assert fcgc_asym / scale > 1.0e-2, (
+            "oracle boundary tangent is (near-)fc/gc-symmetric — test cannot "
+            "detect a transposed uu_G1; strengthen the anisotropy in the setup"
+        )
+
+    # The solver's assembled boundary uu_G1, read exactly as PETSc reads it.
+    G1M = bc.fns["uu_G1"]
+    entries = []
+    order = []
+    for fc in range(d):
+        for gc in range(d):
+            for dg in range(d):
+                entries.append(G1M[fc * d + gc, dg])
+                order.append((fc, gc, dg))
+    fns = _numeric_fns(entries, stokes, v, p, mesh, Lsyms)
+    G1 = np.zeros((d, d, d))
+    for (fc, gc, dg), f in zip(order, fns):
+        G1[fc, gc, dg] = f(*flat_val)
+
+    rel = np.abs(G1 - FD).max() / scale
+    assert rel < 1.0e-5, (
+        f"assembled Nitsche boundary uu_G1 differs from the FD tangent by "
+        f"{rel:.3e} rel — boundary layout transposition or missing "
+        "consistency-term tangent (issue #239)"
     )
