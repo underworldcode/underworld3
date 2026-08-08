@@ -58,6 +58,10 @@ from .faults import (
     FaultCollection,
 )
 
+from .fault_network import (
+    FaultNetwork,
+)
+
 from .smoothing import (
     smooth_mesh_interior,
     smooth_surface_field,
@@ -108,6 +112,7 @@ __all__ = [
     "SurfaceCollection",
     "fault_metric_tensor",
     "prepare_fault_network",
+    "FaultNetwork",
     "damage_zone_yield",
     "fault_comb_metric",
     "fault_metric",

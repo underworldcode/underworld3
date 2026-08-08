@@ -2801,7 +2801,8 @@ def damage_zone_yield(mesh, junctions, tau_damage, radius,
 
 
 def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
-                          verbose=True, return_junctions=False):
+                          hierarchy=None, verbose=True,
+                          return_junctions=False):
     """Make an imported set of 2-D fault traces splittable.
 
     The split-node pipeline refuses faults that cross or share vertices
@@ -2847,9 +2848,16 @@ def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
         Names of MASTER faults: never cut at X crossings (the other
         trace yields on both sides). T abutments never cut the
         through-going trace regardless.
+    hierarchy : sequence of str, optional
+        Fault names in SENIORITY order (most major first). At an X
+        crossing between two ranked faults, the senior one runs
+        through and only the junior is cut — a pairwise version of
+        ``through`` (which remains absolute and wins over rank).
+        Unranked names always yield to ranked ones.
     """
     lig = float(ligament) * float(spacing)
     through = set(through or ())
+    ranks = {n: k for k, n in enumerate(hierarchy)} if hierarchy else {}
     junctions = []
     traces = []
     for entry in faults:
@@ -2931,6 +2939,16 @@ def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
                                 "allowed to yield.")
                         cut_i = ni not in through
                         cut_j = nj not in through
+                        if cut_i and cut_j and ranks:
+                            # pairwise seniority: the senior trace runs
+                            # through this crossing; unranked yields to
+                            # ranked. Equal/absent ranks: both cut.
+                            ri = ranks.get(ni, len(ranks))
+                            rj = ranks.get(nj, len(ranks))
+                            if ri < rj:
+                                cut_i = False
+                            elif rj < ri:
+                                cut_j = False
                     if cut_i:
                         ci.append((arc_i, pull))
                     if cut_j:

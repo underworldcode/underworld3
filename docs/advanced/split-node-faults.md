@@ -293,7 +293,10 @@ from both sides and no special treatment is needed.
 
 Refused loudly rather than mishandled: closed-loop faults (rings,
 spheres); faults that reach the domain boundary (daylighting); junctions
-sharing vertices; 3-D multi-fault networks in parallel (the pairing does
+sharing vertices (use the offset form — [Fault
+networks](fault-networks.md) prepares crossings and abutments
+automatically and supplies the damage-zone glue); 3-D multi-fault
+networks in parallel (the pairing does
 not yet migrate through the redistribution). The design
 documents in `docs/developer/design/` (`SPLIT_NODE_FAULT_METHOD_2026-08`
 and `FAULT_CONTACT_DEPLOYMENT_2026-08`) record the method, the
