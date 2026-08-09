@@ -152,7 +152,7 @@ and are exactly the ones that may not be touched.
 Deletion freezes the same seam, for a stronger reason: it compacts the point
 chart, so unlike a flip it cannot hand the star-forest across verbatim. Every
 point after a deleted one shifts, and each leaf's *remote* index is a number only
-its owner holds. :func:`rebuild_without_vertices` renumbers locally and
+its owner holds. :func:`rebuild_cavities` renumbers locally and
 broadcasts the new numbering root-to-leaf **once** to close that gap. One
 exchange of bookkeeping over the existing partition — no cell changes rank and
 nothing is redistributed, which is the property an external remesher costs us.
@@ -446,16 +446,16 @@ def _cell_vertices_and_seam(dm, X, shared):
 
 # ------------------------------------------------------------------- the rebuild
 
-def _write_coordinates(new, dm, vertex_range, source):
-    """Give ``new`` a local vertex coordinate section holding ``source``'s rows.
+def _write_coordinates(new, cdim, vertex_range, values):
+    """Give ``new`` a local vertex coordinate section holding ``values``.
 
-    ``vertex_range`` is the new mesh's vertex stratum and ``source`` indexes the
-    source mesh's coordinate rows, one per new vertex — the identity for a
-    rebuild that preserves the numbering, and the survivor list for one that
-    compacts the chart. Written through a section rather than ``setCoordinates``
-    because this is purely local data and the latter wants a global vector.
+    ``vertex_range`` is the new mesh's vertex stratum and ``values`` is one row
+    per vertex of it, in point order — the source's own rows for a rebuild that
+    preserves the numbering, the survivors' rows for one that compacts the
+    chart, and the survivors followed by the newly placed points for one that
+    grows it. Written through a section rather than ``setCoordinates`` because
+    this is purely local data and the latter wants a global vector.
     """
-    cdim = dm.getCoordinateDim()
     vS, vE = vertex_range
     new.setCoordinateDim(cdim)
     section = new.getCoordinateSection()
@@ -468,8 +468,7 @@ def _write_coordinates(new, dm, vertex_range, source):
     section.setUp()
     coords = PETSc.Vec().createSeq(section.getStorageSize(),
                                    comm=PETSc.COMM_SELF)
-    X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
-    coords.array[:] = X[source].reshape(-1)
+    coords.array[:] = np.asarray(values, dtype=float).reshape(-1)
     new.setCoordinatesLocal(coords)
 
 
@@ -576,18 +575,23 @@ def rebuild_with_cones(dm, new_cells, new_edges):
 
     # Coordinates verbatim: the vertex points are unchanged, so this is the same
     # section over the same chart holding the same values.
-    _write_coordinates(new, dm, (vS, vE), np.arange(vE - vS))
+    _write_coordinates(new, dm.getCoordinateDim(), (vS, vE), _coords(dm)[:vE - vS])
     _copy_labels(new, dm)
 
     # The star-forest transfers verbatim: every rank preserves its numbering, so
     # the remote point numbers it carries are still the right ones.
     if uw.mpi.size > 1:
-        new.setPointSF(dm.getPointSF())
+        _install_point_sf(new, dm.getPointSF())
     return new
 
 
-def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
-    """Build a fresh plex with vertices deleted and their links retriangulated.
+def rebuild_cavities(dm, victims, drop_cells, new_cells, placed_coords=()):
+    """Build a fresh plex with cells replaced by a retriangulation of their cavity.
+
+    The one rebuild that changes the point chart, in both directions: vertices
+    may be **deleted** (a repair pass dissolving a bad point) and vertices may be
+    **placed** (an embedded surface asserting its own points). A caller doing
+    only one of the two passes an empty list for the other.
 
     Parameters
     ----------
@@ -596,32 +600,39 @@ def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
     victims : sequence of int
         Vertex points to delete.
     drop_cells : sequence of int
-        Cell points to delete — the union of the victims' stars.
+        Cell points to delete — every cell of the cavity being retriangulated.
     new_cells : sequence of tuple
-        Replacement cells as anticlockwise vertex triples, in the **source**
-        point numbering.
+        Replacement cells as vertex triples. A **non-negative** entry is a point
+        number in the source mesh; a **negative** entry ``-(k + 1)`` is row ``k``
+        of ``placed_coords``, a vertex this call creates. Winding is fixed here,
+        so the caller need not order the triples.
+    placed_coords : array_like
+        ``(n, cdim)`` coordinates of the vertices being added, or empty.
 
     Returns
     -------
     new : PETSc.DMPlex
-        The rebuilt mesh, on a compacted chart.
+        The rebuilt mesh, on a re-numbered chart.
     point_map : numpy.ndarray
         Chart-indexed source point -> new point, ``-1`` for a deleted point.
+    placed_points : numpy.ndarray
+        New point number of each row of ``placed_coords``.
 
     Notes
     -----
     This is :func:`rebuild_with_cones` with its one restriction lifted. A flip
     adds and removes no points, so that function can preserve the numbering and
-    hand the star-forest across verbatim. A deletion cannot: the chart shrinks,
-    and every point after a deleted one shifts. So the numbering is rebuilt, and
-    with it the edges — which are not given, but **derived from the new cells**,
-    since an edge of the retriangulated cavity may be an old edge that survived
-    or a chord the ear-clip invented and there is no way to tell them apart
-    except by looking.
+    hand the star-forest across verbatim. A change of chart cannot: every point
+    after a deleted one shifts, and a placed one has no source number at all. So
+    the numbering is rebuilt, and with it the edges — which are not given, but
+    **derived from the new cells**, since an edge of the retriangulated cavity
+    may be an old edge that survived or a chord the retriangulation invented and
+    there is no way to tell them apart except by looking.
 
-    Ordering is by source point number for everything that survives and by
-    vertex tuple for everything new, so the result is a function of the input
-    topology and not of the order the caller happened to accumulate it in.
+    Ordering is by source point number for everything that survives, then by
+    caller order for the placed vertices, and by vertex tuple for the new cells,
+    so the result is a function of the input topology and not of the order the
+    caller happened to accumulate it in.
 
     The parallel cost is one exchange. Renumbering the star-forest's *local*
     indices is local knowledge, but the *remote* index of each leaf is the
@@ -629,6 +640,15 @@ def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
     numbering is broadcast root-to-leaf once and read back off the leaves. That
     is bookkeeping over the existing partition; no cell moves rank, and nothing
     is redistributed.
+
+    .. warning::
+
+       A **placed** vertex has no remote number anywhere, so the one-exchange
+       renumbering does not cover it: placing points across a partition seam
+       needs the leaf set itself extended, which is the chart-EXPANSION rebuild
+       and is not this function. Deleting is safe in parallel because
+       :func:`remove_vertices` never offers a shared point; placing is currently
+       refused before it gets here.
 
     The caller is responsible for never deleting a point that the star-forest
     touches (see :func:`remove_vertices`), which is what lets the leaf set carry
@@ -638,6 +658,7 @@ def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
     cS, cE = dm.getHeightStratum(0)
     vS, vE = dm.getDepthStratum(0)
     eS, eE = dm.getDepthStratum(1)
+    cdim = dm.getCoordinateDim()
 
     dead_v = np.zeros(vE - vS, dtype=bool)
     dead_v[np.asarray(victims, dtype=np.int64) - vS] = True
@@ -646,6 +667,7 @@ def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
 
     surv_v = np.flatnonzero(~dead_v) + vS
     surv_c = np.flatnonzero(~dead_c) + cS
+    placed = np.asarray(placed_coords, dtype=float).reshape(-1, cdim)
 
     # Cells, in the source numbering, as vertex triples: survivors keep their
     # relative order, the replacements follow sorted by vertex tuple. Every
@@ -654,9 +676,13 @@ def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
     # negative volume without raising.
     X = _coords(dm)
 
+    def at(v):
+        """Coordinates of a mixed index: a source point, or a placed row."""
+        return placed[-int(v) - 1] if v < 0 else X[int(v) - vS]
+
     def anticlockwise(tri):
         a, b, c = (int(v) for v in tri)
-        if _orient2d(X[a - vS], X[b - vS], X[c - vS]) < 0:
+        if _orient2d(at(a), at(b), at(c)) < 0:
             return (a, c, b)
         return (a, b, c)
 
@@ -687,25 +713,30 @@ def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
                                                   - {pair_of[e]
                                                      for e in surv_e})
 
-    # Strata keep the source's relative order; only their sizes change.
-    sizes = {"c": len(cells), "v": len(surv_v), "e": len(edges)}
-    offset, at = {}, pStart
+    # Strata keep the source's relative order; only their sizes change. The
+    # placed vertices sit at the END of the vertex stratum, after the survivors,
+    # so a source vertex's new number depends only on how many vertices before
+    # it died and not on how many were placed.
+    sizes = {"c": len(cells), "v": len(surv_v) + len(placed), "e": len(edges)}
+    offset, next_point = {}, pStart
     for _start, key in sorted(((cS, "c"), (vS, "v"), (eS, "e"))):
-        offset[key] = at
-        at += sizes[key]
+        offset[key] = next_point
+        next_point += sizes[key]
 
     point_map = np.full(pEnd - pStart, -1, dtype=np.int64)
     point_map[surv_c - pStart] = offset["c"] + np.arange(len(surv_c))
     point_map[surv_v - pStart] = offset["v"] + np.arange(len(surv_v))
     point_map[np.asarray(surv_e, dtype=np.int64) - pStart] = (
         offset["e"] + np.arange(len(surv_e)))
+    placed_points = offset["v"] + len(surv_v) + np.arange(len(placed))
 
     def v_new(v):
-        return int(point_map[v - pStart])
+        return (int(placed_points[-int(v) - 1]) if v < 0
+                else int(point_map[int(v) - pStart]))
 
     new = PETSc.DMPlex().create(comm=dm.comm)
     new.setDimension(dm.getDimension())
-    new.setChart(pStart, at)
+    new.setChart(pStart, next_point)
     for i in range(len(cells)):
         new.setConeSize(offset["c"] + i, 3)
     for i in range(len(edges)):
@@ -731,13 +762,29 @@ def rebuild_without_vertices(dm, victims, drop_cells, new_cells):
     new.symmetrize()
     new.stratify()
 
-    _write_coordinates(new, dm, (offset["v"], offset["v"] + len(surv_v)),
-                       surv_v - vS)
+    _write_coordinates(new, cdim, (offset["v"], offset["v"] + sizes["v"]),
+                       np.vstack([X[surv_v - vS], placed.reshape(-1, cdim)]))
     _copy_labels(new, dm, point_map)
 
     if uw.mpi.size > 1:
-        _rebuild_point_sf(new, dm, point_map, at - pStart)
-    return new, point_map
+        _rebuild_point_sf(new, dm, point_map, next_point - pStart)
+    return new, point_map, placed_points
+
+
+def _install_point_sf(new, new_sf):
+    """Install a rebuilt star-forest on the plex AND its coordinate DM.
+
+    The coordinate DM is created when the rebuilt chart's coordinates
+    are written — BEFORE any point SF exists — so it snapshots an empty
+    one. The solve never notices (field sections are created later,
+    from the plex SF), but a parallel HDF5 save then writes every
+    shared vertex as owned on every rank, and the serial reload of such
+    a checkpoint dies in ``coordinatesLoad`` (measured: a split mesh
+    written at np = 4 carried owned+shared = 7121 vertex rows where the
+    true owned count is 6334).
+    """
+    new.setPointSF(new_sf)
+    new.getCoordinateDM().setPointSF(new_sf)
 
 
 def _install_point_sf(new, new_sf):
@@ -1190,7 +1237,7 @@ def remove_vertices(dm, candidates, max_passes=3, gate="both"):
         n = uw.mpi.comm.allreduce(len(victims), op=MPI.SUM)
         if n == 0:
             break
-        dm, point_map = rebuild_without_vertices(dm, victims, drop, made)
+        dm, point_map, _placed = rebuild_cavities(dm, victims, drop, made)
         cand = point_map[cand - pStart]
         cand = cand[cand >= 0]
         total += n

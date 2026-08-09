@@ -302,15 +302,20 @@ def test_a_varying_bookkeeping_label_is_not_a_material_region():
 def test_a_vertex_blanket_label_is_not_an_interface():
     """Negative control for the third instance of the labelling trap.
 
-    ``Null_Boundary`` marks every vertex of every UW3 mesh with the reserved
-    value 666, and ``UW_Boundaries`` re-packs every per-boundary stratum —
-    sentinel included — into one stacked label. Reading labelled *points* as
-    interfaces therefore locks the entire vertex stratum. That costs the flip
-    pass nothing, which asks only about edges, and it refused 1114 of 1114
-    candidates the first time the removal pass was offered a cut mesh.
+    A label marking every VERTEX must not be read as an interface: in 2-D an
+    interface is a curve and is identified by its edges, so a vertex-level
+    test locks the entire vertex stratum and the removal pass refuses every
+    candidate it is ever offered — measured as 1114 of 1114 on a cut mesh,
+    before a single one reached a shape test.
 
-    The first assertion is the control: it fails if the fixture stops blanketing
-    the vertices, at which point the rest of this test proves nothing.
+    The blanket is built HERE, not harvested from the mesh. ``Null_Boundary``
+    used to ship exactly this blanket on every UW3 mesh (reserved value 666)
+    and this test originally read it — until #503 removed the label and the
+    read segfaulted every CI run through the getLabel NULL-wrapper trap
+    (petsc4py hands back a non-None wrapper for a missing name that crashes
+    on first use). The trap CLASS outlives the label that shipped it: any
+    bookkeeping or user label can blanket the vertices, so the guard is
+    asserted against a fixture this test owns.
     """
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.3,
@@ -320,19 +325,12 @@ def test_a_vertex_blanket_label_is_not_an_interface():
     vS, vE = dm.getDepthStratum(0)
     eS, eE = dm.getDepthStratum(1)
 
-    blanket = set()
-    for name in ("Null_Boundary", "UW_Boundaries"):
-        label = dm.getLabel(name)
-        values = label.getValueIS()
-        if values is None:
-            continue
-        for val in values.getIndices():
-            points = label.getStratumIS(int(val))
-            if points is not None:
-                blanket.update(int(p) for p in points.getIndices()
-                               if vS <= p < vE)
-    assert len(blanket) == vE - vS, (
-        "the fixture no longer labels every vertex, so this test cannot show "
+    dm.createLabel("test_vertex_blanket")
+    blanket_label = dm.getLabel("test_vertex_blanket")
+    for v in range(vS, vE):
+        blanket_label.setValue(v, 666)
+    assert blanket_label.getStratumSize(666) == vE - vS, (
+        "the fixture failed to label every vertex, so this test cannot show "
         "that reading vertex labels as interfaces is fatal")
 
     locked = reconnect._interface_edges(dm)

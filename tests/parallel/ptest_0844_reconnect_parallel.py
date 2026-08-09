@@ -182,7 +182,7 @@ def _sf_coordinate_drift(dm):
     Deletion compacts the point chart, so the star-forest cannot be reused
     verbatim the way a flip's can: every point after a deleted one shifts, and a
     leaf's *remote* index is a number only its owner holds.
-    ``rebuild_without_vertices`` renumbers locally and broadcasts the new
+    ``rebuild_cavities`` renumbers locally and broadcasts the new
     numbering once to close that gap.
 
     This is the check a mis-renumbering cannot pass and nothing else catches.
@@ -233,7 +233,7 @@ def test_removal_renumbers_the_star_forest():
 def test_removal_leaves_the_seam_alone():
     """No shared point may be deleted, which is what keeps the leaf set intact.
 
-    ``rebuild_without_vertices`` renumbers the star-forest but does not rebuild
+    ``rebuild_cavities`` renumbers the star-forest but does not rebuild
     it, so a deleted shared point would leave a leaf pointing at nothing. The
     pass freezes any cavity touching the seam; this is that rule as a
     postcondition, checked by coordinates because the numbering has moved.
