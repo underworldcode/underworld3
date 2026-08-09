@@ -79,10 +79,22 @@ of a plateau on which the walk has nothing left to order by.
 
 Scope
 -----
-Two dimensions, serial. Placement ADDS points, and the chart-expansion rebuild a
-shared point would need does not exist yet, so a parallel call is refused rather
-than silently returning a mesh whose star-forest is wrong. See
+Serial. Placement ADDS points, and the chart-expansion rebuild a shared point
+would need does not exist yet, so a parallel call is refused rather than
+silently returning a mesh whose star-forest is wrong. The parallel route is
+gather-first — redistribute so the fault's star is rank-interior, operate
+locally, renumber — at which point no placed point is ever shared. See
 :func:`~underworld3.utilities.reconnect.rebuild_cavities`.
+
+Both dimensions, by different fills. The 2-D curve (:func:`place_along_lines`)
+fills its cavity with the arc-length walk. The 3-D sheet (:func:`place_sheet`)
+delegates the fill to gmsh — a cavity shell is a 2-D surface with no total
+order to walk, and constrained tetrahedralisation with Steiner insertion is
+exactly what a mesh generator is for. The delegation is GATED, not trusted:
+both constraint surfaces are checked bit-identical, the sheet's triangles are
+checked present as interior faces, and conformity / Euler / volume are checked
+on every call (measured basis:
+``~/+Simulations/mesh_reconnection_study/sheet_cavity_spike.py``, 6/6).
 
 Several surfaces are placed **one at a time**, each against the result of the
 last. The already-placed segments carry an edge label, and a labelled edge is an
@@ -90,6 +102,7 @@ interface, so a later placement will not delete a vertex out of an earlier one.
 """
 
 import numpy as np
+from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.utilities import reconnect
@@ -1154,3 +1167,566 @@ def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
                   f"{info['n_surface_facets']} surface facets, min angle "
                   f"{info['min_angle']:.2f} deg")
     return out, info
+
+
+# ===========================================================================
+# The 3-D placed sheet
+# ===========================================================================
+
+def _tet_vertices(dm):
+    """(n_cells, 4) local vertex indices of every tetrahedron."""
+    vS, vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    return np.array([[int(p) - vS for p in dm.getTransitiveClosure(c)[0]
+                      if vS <= p < vE] for c in range(cS, cE)],
+                    dtype=np.int64).reshape(cE - cS, 4)
+
+
+def _face_vertex_triple(dm, f, vS):
+    return tuple(sorted(int(p) - vS for p in dm.getTransitiveClosure(f)[0]
+                        if int(p) >= vS and dm.getPointDepth(int(p)) == 0))
+
+
+def _interface_faces_3d(dm):
+    """Interior faces carrying a non-topology label — an embedded surface.
+
+    The 3-D analogue of :func:`reconnect._interface_edges`: in 3-D an
+    interface is a surface and is identified by its FACES. Cell labels are
+    volumes, not interfaces, and are skipped for the same reason as in 2-D;
+    exterior faces are the domain's own walls and are handled separately.
+    """
+    fS, fE = dm.getHeightStratum(1)
+    cS, cE = dm.getHeightStratum(0)
+    out = set()
+    for i in range(dm.getNumLabels()):
+        name = dm.getLabelName(i)
+        if name in reconnect._TOPOLOGY_LABELS:
+            continue
+        label = dm.getLabel(name)
+        values = label.getValueIS()
+        if values is None:
+            continue
+        for val in values.getIndices():
+            if label.getStratumSize(int(val)) == 0:
+                continue
+            idx = np.asarray(label.getStratumIS(int(val)).getIndices(),
+                             dtype=np.int64)
+            if ((idx >= cS) & (idx < cE)).any():
+                continue                  # a volume label, not an interface
+            for p in idx[(idx >= fS) & (idx < fE)]:
+                if len(dm.getSupport(int(p))) == 2:
+                    out.add(int(p))
+    return out
+
+
+def _interior_face_counts_3d(dm):
+    """{(label, value): count of interior faces} — the breach detector."""
+    interface = _interface_faces_3d(dm)
+    fS, fE = dm.getHeightStratum(1)
+    counts = {}
+    for i in range(dm.getNumLabels()):
+        name = dm.getLabelName(i)
+        if name in reconnect._TOPOLOGY_LABELS:
+            continue
+        label = dm.getLabel(name)
+        values = label.getValueIS()
+        if values is None:
+            continue
+        for val in values.getIndices():
+            if label.getStratumSize(int(val)) == 0:
+                continue
+            held = [p for p in label.getStratumIS(int(val)).getIndices()
+                    if int(p) in interface]
+            if held:
+                counts[(name, int(val))] = len(held)
+    return counts
+
+
+def _sheet_distance(X, pts, tris):
+    """Distance from each point of ``X`` to a triangulated sheet.
+
+    Exact point-to-triangle distance, looped over the sheet's triangles and
+    vectorised over the query points — the sheet is small (hundreds of
+    triangles) and the mesh is what is large.
+    """
+    best = np.full(len(X), np.inf)
+    for t in tris:
+        A, B, C = pts[t[0]], pts[t[1]], pts[t[2]]
+        ab, ac = B - A, C - A
+        n = np.cross(ab, ac)
+        nn = float(n @ n)
+        rel = X - A
+        # Barycentric coordinates of the plane projection.
+        d00, d01, d11 = float(ab @ ab), float(ab @ ac), float(ac @ ac)
+        d20, d21 = rel @ ab, rel @ ac
+        denom = d00 * d11 - d01 * d01
+        v = (d11 * d20 - d01 * d21) / denom
+        w = (d00 * d21 - d01 * d20) / denom
+        inside = (v >= 0.0) & (w >= 0.0) & (v + w <= 1.0)
+        d_plane = np.abs(rel @ n) / np.sqrt(nn)
+        # Outside the triangle: distance to the nearest of its three edges.
+        d_edge = np.full(len(X), np.inf)
+        for P, Q in ((A, B), (B, C), (C, A)):
+            e = Q - P
+            u = np.clip(((X - P) @ e) / float(e @ e), 0.0, 1.0)
+            d_edge = np.minimum(
+                d_edge, np.linalg.norm(X - (P + u[:, None] * e), axis=1))
+        best = np.minimum(best, np.where(inside, d_plane, d_edge))
+    return best
+
+
+def _boundary_faces_3d(dm):
+    """Faces of the domain boundary, and the mask of their vertices."""
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    faces, on = [], np.zeros(vE - vS, dtype=bool)
+    for f in range(fS, fE):
+        if len(dm.getSupport(f)) == 1:
+            faces.append(int(f))
+            for p in dm.getTransitiveClosure(f)[0]:
+                if vS <= int(p) < vE:
+                    on[int(p) - vS] = True
+    return faces, on
+
+
+def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
+                     held_cells):
+    """Victims, dropped tets and the closed cavity shell around the sheet.
+
+    The same two-part rule as 2-D — vertices within the clearance go, and any
+    tet the sheet passes through goes (all four corners can sit outside the
+    clearance while the sheet crosses the interior) — with the same guards:
+    wall vertices are never victims, cells of an embedded surface are held,
+    a victim's whole star must be dropped, and the shell must be a closed
+    manifold that never touches the domain wall.
+    """
+    from underworld3.utilities.edge_split import cell_diameters
+
+    h_cell = cell_diameters(dm)
+    _wall_faces, on_wall = _boundary_faces_3d(dm)
+
+    h_vertex = np.full(len(X), h_cell.mean())
+    for c, tet in enumerate(cells):
+        h_vertex[tet] = np.minimum(h_vertex[tet], h_cell[c])
+    d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
+
+    held_vertex = np.zeros(len(X), dtype=bool)
+    if held_cells:
+        for c in held_cells:
+            held_vertex[cells[c]] = True
+    victim = (d_sheet < clearance * h_vertex) & ~on_wall & ~held_vertex
+
+    # Tets the sheet passes through: per sheet triangle, candidate tets whose
+    # vertices straddle its plane with a footpoint inside the triangle.
+    drop = victim[cells].any(axis=1)
+    cen = X[cells].mean(axis=1)
+    for t in sheet_tris:
+        A, B, C = sheet_pts[t[0]], sheet_pts[t[1]], sheet_pts[t[2]]
+        n = np.cross(B - A, C - A)
+        n = n / np.linalg.norm(n)
+        diam = max(np.linalg.norm(B - A), np.linalg.norm(C - A),
+                   np.linalg.norm(C - B))
+        near = np.linalg.norm(cen - (A + B + C) / 3.0, axis=1) < diam + h_cell
+        if not near.any():
+            continue
+        s = (X[cells[near]] - A) @ n
+        straddle = (s.max(axis=1) > 1e-12) & (s.min(axis=1) < -1e-12)
+        sub = np.flatnonzero(near)[straddle]
+        if not len(sub):
+            continue
+        rel = cen[sub] - A
+        d00 = float((B - A) @ (B - A)); d01 = float((B - A) @ (C - A))
+        d11 = float((C - A) @ (C - A))
+        d20, d21 = rel @ (B - A), rel @ (C - A)
+        denom = d00 * d11 - d01 * d01
+        v = (d11 * d20 - d01 * d21) / denom
+        w = (d00 * d21 - d01 * d20) / denom
+        inside = (v > -0.2) & (w > -0.2) & (v + w < 1.2)   # conservative
+        drop[sub[inside]] = True
+    if held_cells:
+        drop[list(held_cells)] = False
+
+    # A victim vertex with a surviving cell would sit ON the shell it is
+    # supposed to vanish from: extend the drop to every victim's whole star.
+    for c in np.flatnonzero(~drop):
+        if victim[cells[c]].any():
+            drop[c] = True
+    if held_cells and drop[list(held_cells)].any():
+        raise RuntimeError(
+            "the sheet's cavity needs a cell that belongs to a surface "
+            "already embedded. Surfaces must be separated by at least a "
+            "cell; place close pairs as one thin volume instead.")
+
+    drop_ids = np.flatnonzero(drop)
+    if not len(drop_ids):
+        raise ValueError("the sheet meets no cell of this mesh")
+
+    cS, _cE = dm.getHeightStratum(0)
+    vS, _vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    dropped = set(int(c) + cS for c in drop_ids)
+    shell = []
+    for f in range(fS, fE):
+        support = [int(c) for c in dm.getSupport(f)]
+        n_in = sum(1 for c in support if c in dropped)
+        if n_in == 0:
+            continue
+        if len(support) == 1:
+            raise RuntimeError(
+                "the sheet's cavity reached the domain wall; the sheet must "
+                "be interior, with clearance to spare")
+        if n_in == 1:
+            shell.append((f, [int(p) - vS
+                              for p in dm.getTransitiveClosure(f)[0]
+                              if vS <= int(p) < vS + len(X)]))
+    shell_verts = sorted({v for _f, verts in shell for v in verts})
+    if victim[shell_verts].any():
+        raise RuntimeError("a deleted vertex is on the cavity shell")
+
+    from collections import Counter
+    edge_count = Counter()
+    for _f, verts in shell:
+        a, b, c = sorted(verts)
+        for e in ((a, b), (a, c), (b, c)):
+            edge_count[e] += 1
+    if any(k != 2 for k in edge_count.values()):
+        raise RuntimeError(
+            "the cavity shell is not a closed manifold; raise `clearance` so "
+            "the cavity is wider than the shapes pinching it")
+
+    return np.flatnonzero(victim), drop_ids, shell
+
+
+def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
+    """Tetrahedralise inside the shell with the sheet embedded, via gmsh.
+
+    Gated, not trusted: the caller checks that no constrained node moved and
+    that every sheet triangle survives; here the fill only has to exist.
+    """
+    import gmsh
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    try:
+        gmsh.model.add("uw_sheet_cavity")
+        shell_tag = gmsh.model.addDiscreteEntity(2)
+        n_shell = len(shell_xyz)
+        gmsh.model.mesh.addNodes(2, shell_tag, list(range(1, n_shell + 1)),
+                                 shell_xyz.reshape(-1).tolist())
+        gmsh.model.mesh.addElementsByType(
+            shell_tag, 2, [], (shell_tris + 1).reshape(-1).tolist())
+
+        sheet_tag = gmsh.model.addDiscreteEntity(2)
+        n_sheet = len(sheet_pts)
+        gmsh.model.mesh.addNodes(2, sheet_tag,
+                                 list(range(n_shell + 1,
+                                            n_shell + n_sheet + 1)),
+                                 sheet_pts.reshape(-1).tolist())
+        gmsh.model.mesh.addElementsByType(
+            sheet_tag, 2, [], (sheet_tris + n_shell + 1).reshape(-1).tolist())
+
+        loop = gmsh.model.geo.addSurfaceLoop([shell_tag])
+        vol = gmsh.model.geo.addVolume([loop])
+        gmsh.model.geo.synchronize()
+        gmsh.model.mesh.embed(2, [sheet_tag], 3, vol)
+
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.3 * h)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 1.2 * h)
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+        gmsh.model.mesh.generate(3)
+
+        tags, xyz, _ = gmsh.model.mesh.getNodes()
+        xyz = np.asarray(xyz).reshape(-1, 3)
+        row_of = {int(t): i for i, t in enumerate(np.asarray(tags))}
+        ordered = sorted(row_of)
+        points = xyz[[row_of[t] for t in ordered]]
+        renum = {t: i for i, t in enumerate(ordered)}
+
+        etypes, _eids, enodes = gmsh.model.mesh.getElements(3, vol)
+        tets = None
+        for et, nodes in zip(etypes, enodes):
+            if et == 4:
+                tets = np.array([renum[int(t)] for t in nodes],
+                                dtype=np.int64).reshape(-1, 4)
+        if tets is None:
+            raise RuntimeError("gmsh produced no tetrahedra for the cavity")
+
+        moved = sum(1 for t in range(1, n_shell + 1)
+                    if not np.array_equal(points[renum[t]], shell_xyz[t - 1]))
+        moved += sum(1 for t in range(n_shell + 1, n_shell + n_sheet + 1)
+                     if not np.array_equal(points[renum[t]],
+                                           sheet_pts[t - n_shell - 1]))
+
+        setypes, _sids, senodes = gmsh.model.mesh.getElements(2, sheet_tag)
+        sheet_out = None
+        for et, nodes in zip(setypes, senodes):
+            if et == 2:
+                sheet_out = np.array([renum[int(t)] for t in nodes],
+                                     dtype=np.int64).reshape(-1, 3)
+        return points, tets, sheet_out, moved, n_shell
+    finally:
+        gmsh.finalize()
+
+
+def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
+                clearance=0.6, verbose=False):
+    """Embed a triangulated sheet in a 3-D mesh by placing its points.
+
+    The 3-D form of :func:`place_along_lines`: the sheet's points become mesh
+    vertices, the vertices in the way are deleted, and the cavity is
+    tetrahedralised around the sheet so every sheet triangle is a face of the
+    result, carrying ``label``. The sheet's RIM may lie inside the mesh — a
+    fault edge — exactly as a 2-D tip may.
+
+    The cavity fill is delegated to gmsh (constrained Delaunay with boundary
+    recovery; Steiner points inserted where a constrained tetrahedralisation
+    demands them) and GATED here: the cavity shell and the sheet must come
+    through bit-identical, every sheet triangle must be an interior face, and
+    the result must be conforming, un-inverted, and volume-conserving.
+
+    Parameters
+    ----------
+    dm : PETSc.DMPlex
+        A 3-D simplex mesh. **Not modified** — the result is a new mesh.
+    points, triangles : array_like
+        The sheet: ``(N, 3)`` vertices and ``(M, 3)`` triangle indices —
+        the form :class:`~underworld3.meshing.FaultSurface` carries. The
+        sheet must be strictly interior to the mesh, must not cross itself,
+        and must keep at least a cell's separation from any surface already
+        embedded (close pairs are one thin volume, not two sheets).
+    label, label_value : str, int
+        Label put on the sheet's faces in the result.
+    clearance : float
+        Delete a mesh vertex within this multiple of its local ``h`` of the
+        sheet.
+    verbose : bool
+        Report the counts.
+
+    Returns
+    -------
+    placed : PETSc.DMPlex
+        A new mesh in which every sheet triangle is a face carrying
+        ``label``.
+    info : dict
+        ``n_placed`` (sheet vertices + Steiner points created),
+        ``n_on_surface`` (always 0 in 3-D — the sheet never reuses a mesh
+        vertex), ``n_removed``, ``n_surface_facets``, ``min_volume``.
+
+    Raises
+    ------
+    NotImplementedError
+        In 2-D (use :func:`place_along_lines`), or in parallel — the
+        parallel route is gather-first, after which this serial operation is
+        the rank-local step.
+    RuntimeError
+        If the cavity reaches the wall, is not a closed manifold, needs a
+        cell of an embedded surface, or the gated fill fails any check.
+    """
+    if dm.getDimension() != 3:
+        raise NotImplementedError(
+            f"place_sheet is 3-D; this mesh is {dm.getDimension()}-D. Use "
+            "place_along_lines for a curve in 2-D.")
+    if uw.mpi.size > 1:
+        raise NotImplementedError(
+            "place_sheet is serial. The parallel route is gather-first: "
+            "redistribute so the sheet's cell star is rank-interior, place "
+            "locally, renumber — at which point no placed point is shared.")
+
+    sheet_pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    sheet_tris = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    X = _coords(dm)
+    vS, vE = dm.getDepthStratum(0)
+    X = X[: vE - vS]
+    cells = _tet_vertices(dm)
+    cS, _cE = dm.getHeightStratum(0)
+
+    interface = _interface_faces_3d(dm)
+    held_cells = set()
+    for f in interface:
+        for c in dm.getSupport(f):
+            held_cells.add(int(c) - cS)
+    held_counts = _interior_face_counts_3d(dm)
+
+    from underworld3.utilities.edge_split import cell_diameters
+    h = float(cell_diameters(dm).mean())
+
+    victims, drop_ids, shell = _carve_cavity_3d(
+        dm, X, cells, sheet_pts, sheet_tris, clearance, held_cells)
+
+    shell_vert_ids = sorted({v for _f, verts in shell for v in verts})
+    local = {v: i for i, v in enumerate(shell_vert_ids)}
+    shell_xyz = X[shell_vert_ids]
+    shell_tris = np.array([[local[v] for v in verts] for _f, verts in shell],
+                          dtype=np.int64)
+
+    fill_pts, fill_tets, sheet_out, moved, n_shell = _gmsh_fill_3d(
+        shell_xyz, shell_tris, sheet_pts, sheet_tris, h)
+    if moved:
+        raise RuntimeError(
+            f"the fill moved {moved} constrained node(s); the cavity cannot "
+            "be sewn back. This is a defect, not a tolerance.")
+    if sheet_out is None or len(sheet_out) != len(sheet_tris):
+        raise RuntimeError(
+            "the fill remeshed the sheet "
+            f"({0 if sheet_out is None else len(sheet_out)} triangles for "
+            f"{len(sheet_tris)} given); the placed surface would not be the "
+            "surface asked for.")
+
+    # Sew, on a compacted vertex set: survivors keep their relative order,
+    # then the sheet's points, then whatever the fill invented.
+    keep_cell = np.ones(len(cells), dtype=bool)
+    keep_cell[drop_ids] = False
+    keep_vertex = np.ones(len(X), dtype=bool)
+    keep_vertex[victims] = False
+    old_to_new = -np.ones(len(X), dtype=np.int64)
+    old_to_new[keep_vertex] = np.arange(int(keep_vertex.sum()))
+    n_survivors = int(keep_vertex.sum())
+
+    fill_to_new = np.empty(len(fill_pts), dtype=np.int64)
+    fill_to_new[:n_shell] = old_to_new[shell_vert_ids]
+    fill_to_new[n_shell:] = n_survivors + np.arange(len(fill_pts) - n_shell)
+
+    all_pts = np.vstack([X[keep_vertex], fill_pts[n_shell:]])
+    all_tets = np.vstack([old_to_new[cells[keep_cell]],
+                          fill_to_new[fill_tets]])
+    P = all_pts[all_tets]
+    v6 = np.einsum("ij,ij->i",
+                   np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                   P[:, 3] - P[:, 0])
+    flip = v6 < 0
+    all_tets[flip] = all_tets[flip][:, [0, 1, 3, 2]]
+    if (np.abs(v6) <= 0).any():
+        raise RuntimeError("the sewn mesh contains a degenerate cell")
+
+    new = PETSc.DMPlex().createFromCellList(
+        3, np.ascontiguousarray(all_tets.astype(np.int32)),
+        np.ascontiguousarray(all_pts), interpolate=True,
+        comm=PETSc.COMM_SELF)
+
+    _transfer_labels_3d(new, dm, old_to_new, keep_cell)
+    n_facets = _label_sheet_faces(new, fill_to_new, sheet_out,
+                                  label, label_value)
+
+    # Every surface already embedded must come through whole — same breach
+    # detector as 2-D, on faces.
+    after = _interior_face_counts_3d(new)
+    for key, before in held_counts.items():
+        now = after.get(key, 0)
+        if now < before or (now != before
+                            and key != (label, int(label_value))):
+            raise RuntimeError(
+                f"placing {label!r} would leave the surface {key[0]!r} with "
+                f"{now} interior faces instead of {before}.")
+
+    nv = new.getDepthStratum(0)[1] - new.getDepthStratum(0)[0]
+    ne = new.getDepthStratum(1)[1] - new.getDepthStratum(1)[0]
+    nf = new.getHeightStratum(1)[1] - new.getHeightStratum(1)[0]
+    nc = new.getHeightStratum(0)[1] - new.getHeightStratum(0)[0]
+    if nv - ne + nf - nc != 1:
+        raise RuntimeError(
+            f"the sewn mesh has Euler number {nv - ne + nf - nc}, not 1")
+
+    info = {"n_placed": len(fill_pts) - n_shell, "n_on_surface": 0,
+            "n_removed": int(len(victims)),
+            "n_surface_facets": int(n_facets),
+            "min_volume": float(np.abs(v6).min() / 6.0)}
+    if verbose:
+        uw.pprint(f"[place_sheet {label!r}] placed {info['n_placed']} "
+                  f"vertices, removed {info['n_removed']}; "
+                  f"{info['n_surface_facets']} sheet faces")
+    return new, info
+
+
+def _transfer_labels_3d(new, dm, old_to_new, keep_cell):
+    """Carry every non-topology label onto the rebuilt mesh, topologically.
+
+    Vertex numbering through the rebuild is DEFINED (survivors in order, then
+    new points), so a labelled point is identified by its surviving-vertex
+    tuple: vertices map directly, faces and edges by tuple lookup, cells by
+    their order among survivors. This is topological matching — coordinates
+    are never consulted. A label on a deleted point goes with it.
+    """
+    vS_o, vE_o = dm.getDepthStratum(0)
+    eS_o, eE_o = dm.getDepthStratum(1)
+    fS_o, fE_o = dm.getHeightStratum(1)
+    cS_o, cE_o = dm.getHeightStratum(0)
+
+    vS_n, _vE_n = new.getDepthStratum(0)
+    new_face_of = {}
+    for f in range(*new.getHeightStratum(1)):
+        new_face_of[tuple(sorted(
+            int(p) - vS_n for p in new.getTransitiveClosure(f)[0]
+            if new.getPointDepth(int(p)) == 0))] = int(f)
+    new_edge_of = {}
+    for e in range(*new.getDepthStratum(1)):
+        a, b = (int(p) - vS_n for p in new.getCone(e))
+        new_edge_of[(a, b) if a < b else (b, a)] = int(e)
+
+    surv_cells = np.flatnonzero(keep_cell)
+    cell_new_of = {int(surv_cells[i]) + cS_o:
+                   int(new.getHeightStratum(0)[0] + i)
+                   for i in range(len(surv_cells))}
+
+    for i in range(dm.getNumLabels()):
+        name = dm.getLabelName(i)
+        if name in reconnect._TOPOLOGY_LABELS:
+            continue
+        label = dm.getLabel(name)
+        values = label.getValueIS()
+        if values is None:
+            continue
+        if not new.hasLabel(name):
+            new.createLabel(name)
+        target = new.getLabel(name)
+        for val in values.getIndices():
+            if label.getStratumSize(int(val)) == 0:
+                continue
+            for p in label.getStratumIS(int(val)).getIndices():
+                p = int(p)
+                q = None
+                if vS_o <= p < vE_o:
+                    m = old_to_new[p - vS_o]
+                    q = int(vS_n + m) if m >= 0 else None
+                elif eS_o <= p < eE_o:
+                    a, b = (int(x) - vS_o for x in dm.getCone(p))
+                    ma, mb = old_to_new[a], old_to_new[b]
+                    if ma >= 0 and mb >= 0:
+                        q = new_edge_of.get((int(ma), int(mb))
+                                            if ma < mb else (int(mb), int(ma)))
+                elif fS_o <= p < fE_o:
+                    verts = [int(x) - vS_o
+                             for x in dm.getTransitiveClosure(p)[0]
+                             if dm.getPointDepth(int(x)) == 0]
+                    ms = [old_to_new[v] for v in verts]
+                    if all(m >= 0 for m in ms):
+                        q = new_face_of.get(tuple(sorted(int(m) for m in ms)))
+                elif cS_o <= p < cE_o:
+                    q = cell_new_of.get(p)
+                if q is not None:
+                    target.setValue(q, int(val))
+
+
+def _label_sheet_faces(new, fill_to_new, sheet_tris, label, label_value):
+    """Mark the sheet's faces in the result, by vertex tuple; return count."""
+    vS_n, _vE_n = new.getDepthStratum(0)
+    face_of = {}
+    for f in range(*new.getHeightStratum(1)):
+        face_of[tuple(sorted(
+            int(p) - vS_n for p in new.getTransitiveClosure(f)[0]
+            if new.getPointDepth(int(p)) == 0))] = int(f)
+
+    if not new.hasLabel(label):
+        new.createLabel(label)
+    out = new.getLabel(label)
+    out.setDefaultValue(0)
+    n = 0
+    for t in sheet_tris:
+        key = tuple(sorted(int(fill_to_new[v]) for v in t))
+        f = face_of.get(key)
+        if f is None:
+            raise RuntimeError(
+                "a sheet triangle is not a face of the sewn mesh; the fill "
+                "was not sewn where it was cut.")
+        out.setValue(f, int(label_value))
+        n += 1
+    return n
