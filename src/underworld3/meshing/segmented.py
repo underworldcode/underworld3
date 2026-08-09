@@ -775,7 +775,6 @@ def SegmentedSphericalBall(
         UpperPlus = 31
         Centre = 1
         Slices = 40
-        Null_Boundary = 666
 
     meshRes = cellSize
     num_segments = numSegments

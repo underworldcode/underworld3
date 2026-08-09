@@ -6,6 +6,82 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### The Free Surface Reaches the Spherical Shell (July 2026)
+
+**`uw.systems.FreeSurface` now runs in 3D on a spherical shell** — the same
+exponential three-number integrator, held-lid σ_nn recovery and strong
+material-boundary datum, with the surface machinery made dimension-general
+rather than ported piecewise:
+
+- The datum gauge (mean removal) is an FE trace-mass reduction over
+  owned boundary facets — no ordered ring, no gather; the same code is the
+  2D line gauge and the 3D area gauge. On the way it resolved a real 2D
+  defect: the deforming-ring strong-datum solves used to stall at a ~2e-3
+  residual floor, which turned out to be three stacked causes (arc-length vs
+  FE trace weights; the datum's *directed* mean flux through the deformed
+  facet normals, now stripped with the same FE surface integral the residual
+  uses; and the constant-pressure gauge mode, which the inner solver projects
+  and the outer loop therefore now measures in the quotient space). With all
+  three closed, every step of the power-law acceptance run converges.
+- σ_nn on a 3D P2 boundary is recovered by **P1 projection** (edge-midpoint
+  loads folded exactly onto vertices, sound P1 lumped triangle mass) — chosen
+  over the consistent P2 mass because its vertex-integral checkerboard sits
+  exactly at the vertices the P1 topography field consumes.
+- The two genuinely 2D features (ring Taubin filter, tangential transport)
+  are refused explicitly in 3D; everything else is shared code.
+
+First 3D evidence (spherical Y20 topographic relaxation, constant-density
+shell): exponential decay at an O(1) shell correction below the half-space
+Cathles rate, in the physically correct direction, with the equilibrium
+modal bias falling 16% → 2% of the initial amplitude over one resolution
+step (the known discrete recovery defect, resolution-convergent). The
+detailed benchmarking — analytic shell-rate comparison, convergence study,
+low-Ra spherical convection, 3D parallel — is deliberately left to the
+review pass.
+
+### One Owner for the Geometric-Multigrid Option Bundle (July 2026)
+
+**The PETSc option bundle that configures a Stokes velocity block's multigrid
+now lives in exactly one module, and all three routes that reach that block read
+it from there** (#468), **and rotated free-slip now picks up a mesh-owned
+multigrid hierarchy instead of silently discarding it** (#467).
+
+Three routes reach a multigrid velocity block: native (PETSc interpolation
+between refined DMPlex levels), custom-P on the standard solve path, and custom-P
+through the rotated free-slip path. They are the same preconditioner reached
+three ways, not alternatives — custom-P is *mandatory* wherever native cannot go,
+namely rotated boundary conditions and `adapt()` children. The bundle was
+written in two places and had drifted: the native path had been moved to a
+`gmres`+`sor` smoother on a recorded measurement, and the custom-P routes had
+not. Worse, the custom-P writer never *set* the smoother iteration count at all,
+so it inherited whatever had last written that options prefix — 3 left behind by
+the GAMG bundle on the standard path, PETSc's own default of 2 on the rotated
+path. The same function smoothed differently depending on what had run before
+it.
+
+Unifying the bundle recovers, on the same operator, right-hand side and coarse
+solve: rotated custom-P velocity-block iterations 11 → 5 (0.68 s → 0.39 s of
+linear solve, timed in isolation), standard custom-P 5 → 4, on a *two-level*
+hierarchy — the depth at which the native measurement says the gmres margin is
+smallest. The bundle also now derives which stale keys it must clear rather than
+carrying a hand-maintained list, which is what let the iteration count go unset
+in the first place.
+
+Separately, `mesh.adapt()` leaves a coarse tail on its refinement child so that
+every solver on an adapted mesh gets geometric multigrid with no per-solver call.
+The rotated path never consulted it — the standard path's injection hook runs
+after the rotated dispatch has already returned — so an adapt child under rotated
+free-slip fell back to algebraic multigrid, indistinguishable from having no
+hierarchy at all. That is the `adapt-on-top-faults` workflow's own configuration
+(a fault resolved by local refinement, with rotated free-slip chosen because it
+composes with transverse isotropy). Both paths now resolve the hierarchy through
+one shared rule, with the same opportunistic degrade-to-GAMG behaviour.
+
+The regression test reads the smoother configuration back off the **live PETSc
+objects** for all three routes and asserts they agree. An options-database
+assertion would not have caught the original drift, because the drift was
+precisely a key nobody wrote.
+
 ### One Rotated Free-Slip Path, Now With a Prescribed Wall-Normal Velocity (July 2026)
 
 **Rotated strong free-slip now takes a prescribed wall-normal velocity datum
