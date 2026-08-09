@@ -376,6 +376,15 @@ def nested_prolongation_from_dms(coarse_dm, fine_dm):
 
 def nested_prolongation(engine, coarse_map, fine_map, n_coarse, vS_fine,
                         n_fine):
+    # TODO(BUG): in 3-D this is NOT the coarse P1 embedding for vertices a
+    # closure cascade places strictly INSIDE a coarse tet. Measured 2026-08-02:
+    # transfer against a barycentric reference, worst |P.u - P1(x)| = 1.19 on a
+    # cellSize=0.4 unit cube, per GENERATION (no composition involved). 2-D is
+    # exact (1.9e-15). It went unnoticed because the test's reference was
+    # edge-based — a single bisection puts vertices on coarse EDGES, and the
+    # interior ones were skipped by its coverage rule rather than checked. The
+    # 3-D case of test_0753::test_reproduces_an_arbitrary_coarse_field is
+    # xfailed against this.
     """Exact P1 prolongation for ONE bisection generation, in DM numbering.
 
     A bisection generation adds exactly one kind of vertex: the midpoint of a

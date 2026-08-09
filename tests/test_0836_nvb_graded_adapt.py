@@ -26,6 +26,7 @@ import pytest
 import sympy
 import underworld3 as uw
 from underworld3.function import analytic as A
+from _mg_ladder import assert_coarsening_ladder
 from underworld3.utilities.nvb import NVBMesh
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
@@ -35,6 +36,18 @@ BOUNDS = [("Bottom", 11), ("Top", 12), ("Right", 13), ("Left", 14)]
 
 def _ev(fn, coords):
     return np.asarray(uw.function.evaluate(fn, np.asarray(coords))).reshape(-1)
+
+
+BAND_CENTRE, BAND_WIDTH = 0.5, 0.08
+
+
+def _in_band(pts):
+    """The region `_band_metric` asks to be refined."""
+    return np.abs(np.asarray(pts)[:, 0] - BAND_CENTRE) < BAND_WIDTH
+
+
+def _assert_coarsening_ladder(child, ratio=2.0):
+    return assert_coarsening_ladder(child, _in_band, ratio=ratio)
 
 
 def _ncell(mesh):
@@ -187,8 +200,10 @@ def test_adapt_nvb_returns_graded_child():
     assert child._adapt_engine == "nvb"
     assert _ncell(child) > n0
     assert _ncell(base) == n0                         # base untouched
-    # 2·max_levels NVB generations -> base levels + (generations-1) intermediate
-    assert len(child._custom_mg_coarse_meshes) + 1 == len(base.dm_hierarchy) + 2
+    # Multigrid levels are one per DOUBLING of h, not one per NVB generation, so
+    # the count follows from mg_coarsening_ratio rather than from max_levels.
+    assert len(child._custom_mg_coarse_meshes) >= len(base.dm_hierarchy)
+    _assert_coarsening_ladder(child)
 
 
 def test_nvb_child_fewer_dofs_than_sbr_patch():
@@ -230,7 +245,8 @@ def test_poisson_fmg_on_nvb_child_matches_gamg():
     s = _poisson(child)
     s.solve()                                         # NO set_custom_fmg
     assert s.snes.getKSP().getPC().getType() == "mg"
-    assert s.snes.getKSP().getPC().getMGLevels() == len(base.dm_hierarchy) + 2
+    assert (s.snes.getKSP().getPC().getMGLevels()
+            == len(child._custom_mg_coarse_meshes) + 1)
     assert s.snes.getConvergedReason() > 0
 
     g = _poisson(child)
@@ -382,3 +398,51 @@ def test_internal_interface_snaps_under_adapt_stays_pinned_under_mover():
     after = np.asarray(mesh.X.coords)
     assert np.array_equal(after[m0], before[m0]), "interface nodes moved"
     assert not np.allclose(after, before)      # the rest of the mesh did
+
+
+@pytest.mark.parametrize("ratio", [1.5, 2.0, 3.0])
+def test_mg_coarsening_ratio_sets_the_level_count(ratio):
+    """`mg_coarsening_ratio` is the user's handle on the grid sequence.
+
+    A larger ratio means fewer, more widely spaced levels. Measured on cut SolCx
+    at contrast 1e6, wall time fell monotonically from ratio 1.5 to 3.0 (12.2 ->
+    7.3 -> 4.8 s on NVB) for +1 velocity iteration and an unchanged solution, so
+    this is a knob worth having rather than a constant worth hiding.
+    """
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2,
+        refinement=1, qdegree=2)
+    child = base.adapt(_band_metric(base), max_levels=2, engine="nvb",
+                       mg_coarsening_ratio=ratio)
+
+    _assert_coarsening_ladder(child, ratio=ratio)
+    # One transfer per level, or custom_mg lines them up against the wrong levels.
+    assert len(child._adapt_prolongation) == len(
+        child._custom_mg_coarse_meshes) + 1 - len(base.dm_hierarchy)
+
+
+def test_a_larger_ratio_gives_strictly_fewer_levels():
+    """The knob has to change the hierarchy, not merely fail to grow it.
+
+    Non-increasing is satisfied by a CONSTANT: hard-code the ratio to 2.0 and the
+    counts become ``[3, 3, 3]``, still non-increasing, so the old assertion
+    passed with the knob stubbed out. Strict decrease across the range is what
+    demonstrates it is connected to anything.
+
+    Measured, and worth recording rather than hiding: ratios 1.5 and 2.0 produce
+    IDENTICAL hierarchies on this case (3 levels, the same steps to the last
+    digit). The knob is real but coarse-grained — it selects levels from the
+    generations an engine happens to produce, so it cannot resolve a difference
+    finer than one generation.
+    """
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2,
+        refinement=1, qdegree=2)
+    counts = [len(base.adapt(_band_metric(base), max_levels=2, engine="nvb",
+                             mg_coarsening_ratio=r)._custom_mg_coarse_meshes)
+              for r in (1.5, 2.0, 3.0)]
+    assert counts == sorted(counts, reverse=True), (
+        f"level counts {counts} are not non-increasing in the coarsening ratio")
+    assert counts[0] > counts[-1], (
+        f"level counts {counts} do not fall between ratio 1.5 and 3.0, so the "
+        f"knob is doing nothing over the range this test covers")

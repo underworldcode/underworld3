@@ -187,6 +187,78 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         return pv_mesh
 
 
+def labelled_facets_to_pv_mesh(mesh, name):
+    """The facets carrying a boundary label, as a PyVista object of their own.
+
+    An embedded surface — a conforming fault, a material interface — is a set of
+    facets *inside* the mesh, so drawing it with the mesh hides it: in 2-D it is
+    a few lines among thousands, and in 3-D the surrounding elements occlude it
+    entirely. Returned separately it can be drawn as a wireframe over a
+    transparent or clipped mesh, and saved to ``.vtp`` for interactive viewing.
+
+    The result is dimension-general because a labelled facet's closure gives its
+    vertices whatever the dimension: two in 2-D (a line segment), three in 3-D
+    (a triangle).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The mesh carrying the label.
+    name : str
+        A boundary name, normally one added by
+        :meth:`~underworld3.discretisation.Mesh.add_conforming_surface`.
+
+    Returns
+    -------
+    pyvista.PolyData
+        Lines in 2-D, triangles in 3-D. Empty if this rank owns no part of the
+        surface, which is normal in parallel.
+
+    Examples
+    --------
+    >>> fault = vis.labelled_facets_to_pv_mesh(cut, "Fault")
+    >>> pl.add_mesh(vis.mesh_to_pv_mesh(cut), style="wireframe",
+    ...             color="lightgrey", opacity=0.3)
+    >>> pl.add_mesh(fault, color="red", line_width=3)
+    >>> fault.save("fault.vtp")            # open in ParaView or pv.read()
+    """
+    import numpy as np
+    import pyvista as pv
+
+    if name not in [b.name for b in mesh.boundaries]:
+        raise ValueError(
+            f"{name!r} is not a boundary of this mesh; have "
+            f"{[b.name for b in mesh.boundaries]}")
+
+    dm = mesh.dm
+    vS, vE = dm.getDepthStratum(0)
+    X = np.asarray(dm.getCoordinatesLocal().array).reshape(
+        -1, dm.getCoordinateDim())
+
+    value = mesh.boundaries[name].value
+    label = dm.getLabel(name)
+    # An empty stratum yields a null IS that segfaults in getIndices(), and a
+    # rank owning no part of the surface is the normal case in parallel.
+    if label is None or label.getStratumSize(value) == 0:
+        return pv.PolyData()
+
+    facets = [
+        [int(p) - vS for p in dm.getTransitiveClosure(int(f))[0] if vS <= p < vE]
+        for f in label.getStratumIS(value).getIndices()
+    ]
+    used = sorted({v for facet in facets for v in facet})
+    remap = {v: i for i, v in enumerate(used)}
+    points = _vector_to_pv_vector(X[used])
+
+    cells = np.hstack([[len(f)] + [remap[v] for v in f] for f in facets])
+    out = pv.PolyData(points)
+    if all(len(f) == 2 for f in facets):
+        out.lines = cells
+    else:
+        out.faces = cells
+    return out
+
+
 def coords_to_pv_coords(coords):
     """Convert coordinate array to PyVista-compatible 3D coordinates.
 
@@ -289,12 +361,86 @@ def meshVariable_to_pv_cloud(meshVar):
     return point_cloud
 
 
-def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
-    """Convert mesh variable to Delaunay-triangulated PyVista mesh.
+def meshVariable_to_native_pv_mesh(meshVar):
+    """The mesh's OWN cells, renumbered so point ``i`` is the variable's DOF ``i``.
 
-    Creates a mesh by triangulating the mesh variable's nodal points.
-    Useful for higher-order elements where the base mesh doesn't
-    capture all data points.
+    Returns ``None`` when the variable's degrees of freedom are not the mesh
+    vertices — a higher-order or discontinuous field — in which case there is no
+    native triangulation carrying it and the caller must fall back.
+
+    Why this exists
+    ---------------
+    A **continuous P1** field has exactly one degree of freedom per vertex, so
+    the triangulation that carries it already exists in the DM. Re-deriving it
+    with ``delaunay_2d`` is not merely redundant, it is lossy on a graded mesh:
+    Delaunay is a property of the point set alone, so it neither knows nor
+    respects which triangles the mesh actually has, and the ``alpha`` filter —
+    one length for the whole domain — **deletes** cells whose circumradius
+    exceeds it. On an adapted mesh those are precisely the coarse cells. Measured
+    on a fault mesh graded 8:1, 361 of 11610 cells were dropped, and they render
+    as blank holes in the middle of the field.
+
+    The points are returned in the VARIABLE's DOF order rather than the DM's
+    vertex order, so the documented pattern
+
+    >>> pvm = vis.meshVariable_to_pv_mesh_object(T)
+    >>> pvm.point_data["T"] = np.asarray(T.data[:, 0])
+
+    keeps working unchanged. Getting that backwards would draw the right mesh
+    with the values shuffled, which looks like noise rather than like an error.
+    """
+    import numpy as np
+    import pyvista as pv
+    from scipy.spatial import cKDTree
+
+    mesh = meshVar.mesh
+    dim = mesh.dim
+    pvm = mesh_to_pv_mesh(mesh)
+
+    coords = np.asarray(meshVar.coords, dtype=np.float64)
+    if coords.shape[0] != pvm.n_points:
+        return None                      # not one DOF per vertex
+
+    pts = np.asarray(pvm.points, dtype=np.float64)[:, :dim]
+    dist, dof_of_point = cKDTree(coords[:, :dim]).query(pts)
+    extent = float(np.ptp(pts)) or 1.0
+    if dist.max() > 1.0e-8 * extent:
+        return None                      # coincident in count but not in place
+
+    # Renumber the connectivity into DOF order, and hand back the variable's own
+    # coordinates as the points so the two are aligned by construction.
+    try:
+        conn = np.asarray(pvm.cell_connectivity)
+        offsets = np.asarray(pvm.offset)
+    except AttributeError:               # older pyvista
+        return None
+    sizes = np.diff(offsets)
+    if not len(sizes) or (sizes != sizes[0]).any():
+        return None                      # mixed cell types: not worth the risk
+    cells = np.column_stack(
+        [np.full(len(sizes), sizes[0]),
+         dof_of_point[conn].reshape(len(sizes), sizes[0])]).ravel()
+
+    points = np.zeros((coords.shape[0], 3))
+    points[:, :dim] = coords[:, :dim]
+    native = pv.UnstructuredGrid(cells, np.asarray(pvm.celltypes), points)
+    for attr in ("_units", "_coord_array"):
+        if hasattr(pvm, attr):
+            setattr(native, attr, getattr(pvm, attr))
+    native._coord_array = meshVar.coords
+    return native
+
+
+def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
+    """Convert a mesh variable to a PyVista mesh carrying its nodal points.
+
+    Uses the mesh's **own** triangulation when the variable's degrees of freedom
+    are the mesh vertices (a continuous P1 field) — see
+    :func:`meshVariable_to_native_pv_mesh`, which also explains why the Delaunay
+    route silently drops coarse cells on an adapted mesh.
+
+    Otherwise the points are Delaunay-triangulated, which is what higher-order
+    and discontinuous variables need: the base mesh does not carry their DOFs.
 
     Parameters
     ----------
@@ -302,17 +448,22 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
         Underworld mesh variable.
     alpha : float, optional
         Alpha parameter for Delaunay triangulation. If None, computed
-        automatically from coordinate range.
+        automatically from coordinate range. Ignored on the native path.
 
     Returns
     -------
     pyvista.UnstructuredGrid
-        Triangulated mesh through the variable's nodal points.
+        Mesh through the variable's nodal points, in the variable's DOF order.
     """
     import numpy as np
 
     mesh = meshVar.mesh
     dim = mesh.dim
+
+    if alpha is None:
+        native = meshVariable_to_native_pv_mesh(meshVar)
+        if native is not None:
+            return native
 
     point_cloud = meshVariable_to_pv_cloud(meshVar)
 
@@ -498,6 +649,246 @@ def clip_mesh(pvmesh, clip_angle):
     clip2 = pvmesh.clip(origin=(0.0, 0.0, 0.0), normal=clip2_normal, invert=False, crinkle=False)
 
     return [clip1, clip2]
+
+
+
+#: Wireframe colours for a multigrid tail, coarsest first. Blues and greys, so
+#: that the fault colour has the warm half of the wheel to itself — the whole
+#: point of the figure is that the fault is findable at a glance.
+MG_LEVEL_COLOURS = ("#9aa5ad", "#6fa8c7", "#3d86b4", "#1f5f96", "#123f6b",
+                    "#0a2748")
+
+#: The fault. Deliberately the loudest thing on the page.
+FAULT_COLOUR = "#ff1408"
+
+
+def plot_mesh_hierarchy(mesh, faults=(), clip=None, plotter=None,
+                        window_size=(1400, 1400), background="white",
+                        colours=None, fault_colour=FAULT_COLOUR,
+                        line_width=None, fault_style="facets",
+                        fault_line_width=3.0, opacity=1.0,
+                        nodes=True, node_scale=0.30, legend=True):
+    """Wireframe of a mesh, its multigrid tail, and its faults, in one figure.
+
+    The standard way to look at a stacked-on mesh: one colour per level, coarsest
+    palest, and the fault cells filled in a contrasting red. It answers the three
+    questions that actually come up — did the hierarchy come out with the levels
+    expected, is the refinement where the fault is, and did the fault survive the
+    repair passes — without needing a separate figure for each.
+
+    Written to carry to 3-D. Nothing here reads the dimension except the defaults:
+    in 3-D the wireframes are taken from each level's SURFACE rather than every
+    interior edge, because a full edge extraction of a tetrahedral hierarchy is
+    an unreadable haze, and ``clip`` cuts the model open so the interior levels
+    and the fault can be seen at all.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The finest mesh. Its ``_custom_mg_coarse_meshes`` tail is drawn beneath
+        it, coarsest first; a mesh without one is simply drawn alone.
+    faults : sequence of str
+        Boundary label names to pick out in ``fault_colour``.
+    fault_style : {"facets", "cells"}
+        What "the fault" means in the picture, and the two are not the same
+        thing.
+
+        ``"facets"`` (the default) draws the LABELLED FACETS themselves, via
+        :func:`labelled_facets_to_pv_mesh` — the segments in 2-D, the triangles
+        in 3-D. This is the fault as the mesh actually represents it, and it is
+        the honest choice: a fault one element wide is one chain of facets, and
+        drawing it as such shows its width to be exactly what it is.
+
+        ``"cells"`` fills the fault ZONE instead, via
+        :meth:`~underworld3.discretisation.Mesh.cells_supporting` — every cell
+        with a labelled facet, which is one element on EACH side. That is the
+        right set for assigning a material property, but as a picture it makes a
+        one-element fault look two or three elements thick, so it is not the
+        default. Ask for it when the question is "which cells carry the weak
+        viscosity", not "where is the fault".
+    fault_line_width : float
+        Width of the facet lines under ``fault_style="facets"``.
+    nodes : bool
+        Mark the vertices, with a different glyph for each kind: **circles** for
+        the base level, **squares** for the levels stacked on top of it, and
+        **triangles** for the fault's own nodes. Shape carries the distinction
+        as well as colour, so the figure survives being printed in grey and does
+        not rely on telling four blues apart.
+
+        In 3-D the same three roles become sphere, cube and cone.
+    legend : bool
+        Build the key, with the RIGHT SHAPE against each entry. PyVista's
+        default legend face is a triangle for everything, so a hand-rolled
+        ``add_legend`` shows triangles beside wireframes and beside square
+        nodes — a key that contradicts the figure it is keying. Since this
+        routine chose the shapes, it is the thing that can label them.
+    node_scale : float
+        Glyph size as a fraction of the finest level's SMALL cells (its 5th
+        percentile) — one size for every level, so shape and colour carry the
+        distinction and size carries none.
+
+        Two ways to get this wrong, both tried. Scaling each level by its own
+        cell size draws a coarse level's marks at the coarse spacing, burying
+        the fine mesh at exactly the zoom the figure exists for. And using the
+        MEAN cell size of a graded mesh sizes the glyphs by the far field —
+        measured, mean h = 0.017 against h = 0.002 at the fault, so every mark
+        came out bigger than the cell it stood on.
+    clip : tuple, optional
+        ``(normal, origin)`` passed to PyVista's ``clip``. Mostly for 3-D, where
+        an unclipped hierarchy shows only its outer skin.
+    plotter : pyvista.Plotter, optional
+        Draw into an existing plotter instead of making one. The plotter is
+        RETURNED either way, unrendered, so the caller sets the camera and
+        decides between ``show`` and ``screenshot``.
+    colours : sequence of str, optional
+        One per level, coarsest first; :data:`MG_LEVEL_COLOURS` by default,
+        cycled if the hierarchy is deeper than the palette.
+    line_width : sequence of float, optional
+        One per level. By default coarse levels are drawn thicker so they read
+        through the fine ones rather than being buried by them.
+
+    Returns
+    -------
+    pyvista.Plotter
+
+    Examples
+    --------
+    >>> pl = vis.plot_mesh_hierarchy(mesh, faults=["FaultA", "FaultB"])
+    >>> pl.camera.parallel_projection = True
+    >>> pl.screenshot("hierarchy.png")
+
+    The cells carrying the weak viscosity, rather than the fault itself:
+
+    >>> pl = vis.plot_mesh_hierarchy(mesh, faults=["FaultA"],
+    ...                              fault_style="cells")
+    """
+    import numpy as np
+    import pyvista as pv
+
+    initialise(None)
+
+    levels = list(getattr(mesh, "_custom_mg_coarse_meshes", None) or []) + [mesh]
+    palette = list(colours) if colours else list(MG_LEVEL_COLOURS)
+    widths = list(line_width) if line_width is not None else None
+
+    if plotter is None:
+        plotter = pv.Plotter(off_screen=pv.OFF_SCREEN, window_size=window_size)
+    plotter.set_background(background)
+
+    def wire(pvm):
+        if clip is not None:
+            pvm = pvm.clip(normal=clip[0], origin=clip[1])
+        if mesh.dim == 3:
+            pvm = pvm.extract_surface()
+        return pvm.extract_all_edges()
+
+    def marks(points, n_sides, size, colour, label):
+        """Glyph a point set. Shape distinguishes the role, size the level."""
+        pts = np.asarray(points, dtype=float)
+        if not len(pts):
+            return
+        cloud = pv.PolyData(pts if pts.shape[1] == 3
+                            else np.column_stack([pts, np.zeros(len(pts))]))
+        if mesh.dim == 3:
+            geom = {24: pv.Sphere(radius=0.5 * size),
+                    4: pv.Cube(x_length=size, y_length=size, z_length=size),
+                    3: pv.Cone(radius=0.5 * size, height=size)}[n_sides]
+        else:
+            geom = pv.Polygon(center=(0.0, 0.0, 0.0), radius=0.5 * size,
+                              normal=(0.0, 0.0, 1.0), n_sides=n_sides)
+        kw = {} if label is None else {"label": label}
+        plotter.add_mesh(cloud.glyph(geom=geom, scale=False, orient=False),
+                         color=colour, lighting=False, **kw)
+
+    def fine_cell_size(level):
+        """A LOW PERCENTILE of the cell size, never the mean.
+
+        On a graded mesh the mean is set by the far field: on the fault meshes
+        here the finest level averages h = 0.017 while h at the fault is 0.002,
+        so glyphs sized on the mean come out several times larger than the cells
+        they are meant to mark and bury the refined region completely. Same trap
+        as judging a multigrid level by its mean h.
+        """
+        from underworld3.utilities.edge_split import cell_diameters
+        d = cell_diameters(level.dm)
+        return float(np.percentile(d, 5)) if len(d) else 0.0
+
+    node_size = node_scale * fine_cell_size(levels[-1])
+
+    # PyVista's named legend faces are only triangle / circle / rectangle /
+    # none, so a WIREFRAME entry has to supply its own geometry — otherwise the
+    # mesh levels and the square nodes would both key as rectangles and the
+    # figure's own distinction would be lost in its key.
+    line_face = pv.Line((-0.5, 0.0, 0.0), (0.5, 0.0, 0.0))
+
+    key = []
+    n = len(levels)
+    for i, level in enumerate(levels):
+        colour = palette[i % len(palette)]
+        # Coarse thick, fine thin: without the taper the finest level's edges
+        # cover every level under it and the hierarchy cannot be read.
+        w = widths[i] if widths else max(0.4, 2.6 - 2.0 * i / max(n - 1, 1))
+        plotter.add_mesh(wire(mesh_to_pv_mesh(level)), color=colour,
+                         line_width=w, lighting=False, opacity=opacity,
+                         label=f"level {i}"
+                               f"{' (finest)' if i == n - 1 else ''}")
+        key.append([f"level {i}{' (finest)' if i == n - 1 else ''}",
+                    colour, line_face])
+        if nodes:
+            # Circles for the base, squares for everything stacked on it.
+            # Unlabelled: the SHAPE is the key (circle = base, square = stacked
+            # on, triangle = fault), and a legend line per level per glyph
+            # doubles its length to say nothing the shapes do not.
+            marks(np.asarray(level.X.coords), 24 if i == 0 else 4,
+                  node_size, colour, None)
+
+    for name in faults:
+        if fault_style == "facets":
+            pvf = labelled_facets_to_pv_mesh(mesh, name)
+            if pvf.n_points == 0:
+                continue                 # this rank owns none of it; normal
+            if clip is not None:
+                pvf = pvf.clip(normal=clip[0], origin=clip[1])
+            plotter.add_mesh(pvf, color=fault_colour, lighting=False,
+                             line_width=fault_line_width, label=name)
+            key.append([name, fault_colour, line_face])
+            if nodes:
+                marks(pvf.points, 3, node_size, fault_colour, None)
+        elif fault_style == "cells":
+            zone = np.asarray(mesh.cells_supporting(name))
+            if not zone.any():
+                continue
+            cells = mesh_to_pv_mesh(mesh).extract_cells(np.flatnonzero(zone))
+            if clip is not None:
+                cells = cells.clip(normal=clip[0], origin=clip[1])
+            plotter.add_mesh(cells, color=fault_colour, lighting=False,
+                             show_edges=True, edge_color=fault_colour,
+                             line_width=1.0, label=name)
+            key.append([f"{name} zone", fault_colour, "rectangle"])
+        else:
+            raise ValueError(
+                f"fault_style must be 'facets' or 'cells', not {fault_style!r}")
+
+    if nodes:
+        # One entry per ROLE, not per level: the shape says which role, the
+        # level colours are already keyed by the wireframe entries above.
+        key.append(["base nodes", palette[0], "circle"])
+        if n > 1:
+            key.append(["stacked-on nodes", palette[min(n - 1,
+                                                        len(palette) - 1)],
+                        "rectangle"])
+        if faults and fault_style == "facets":
+            key.append(["fault nodes", fault_colour, "triangle"])
+
+    # Exposed so the key can be INSPECTED rather than eyeballed: the failure
+    # this guards against is a legend that disagrees with the figure, and that
+    # is invisible in any check that only counts actors.
+    plotter._uw_legend_key = key
+    if legend and key:
+        plotter.add_legend(key, bcolor="white", border=True,
+                           size=(0.24, 0.030 * len(key) + 0.02),
+                           loc="lower right")
+    return plotter
 
 
 def plot_mesh(
