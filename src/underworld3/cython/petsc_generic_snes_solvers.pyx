@@ -3076,7 +3076,7 @@ class SNES_Scalar(SolverBaseClass):
         self._pc_option_prefix = ""
 
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)
@@ -3989,7 +3989,7 @@ class SNES_Vector(SolverBaseClass):
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)
@@ -5001,7 +5001,7 @@ class SNES_MultiComponent(SolverBaseClass):
         # PETSc options — mirror SNES_Vector defaults
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)

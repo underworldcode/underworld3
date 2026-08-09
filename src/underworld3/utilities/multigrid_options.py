@@ -186,6 +186,21 @@ def _geometric_mg_settings(coarse, smoother="robust"):
     Both variants set the SAME keys — only values differ — so the derived stale-key
     sets are variant-independent."""
     settings = {
+        # The KSP this preconditioner serves must be FLEXIBLE, for both
+        # variants. The "robust" smoother is a Krylov solve, so the
+        # preconditioner VARIES between applications and a plain gmres outer's
+        # recurrence has no guarantee: measured on a 3-D adapt child (#514),
+        # the preconditioned residual dropped nine orders and the KSP reported
+        # CONVERGED_RTOL at 3 iterations while the TRUE residual stalled at
+        # 1.3e-6. The same failure was found and fixed locally twice before —
+        # the Stokes velocity sub-KSP (see the smoother note below) and the
+        # free-surface solver (systems/solvers.py, "false-converges ... TRUE
+        # residual blew up") — which is exactly the drift-by-parallel-fixes
+        # this module exists to end. "fast" (richardson) is stationary and
+        # does not need flexibility, but fgmres is sound there too, and both
+        # variants setting the SAME keys is what keeps the stale-key
+        # derivation variant-independent.
+        "ksp_type": "fgmres",
         "pc_type": "mg",
         "pc_mg_type": "full",              # FMG (F-cycle)
         # Galerkin (RAP) coarse operators are REQUIRED: UW3 installs no
