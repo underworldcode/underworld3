@@ -266,8 +266,8 @@ def _clone_labels(new, dm, clone_map):
     :func:`reconnect._copy_labels` maps one source point to at most one new
     point; a split maps the duplicated ones to TWO. The replica's values are
     applied as a second pass over the same strata, filtered by nothing:
-    ``Null_Boundary`` and ``UW_Boundaries`` are rebuilt from scratch when a
-    ``Mesh`` is constructed on the result, so cloning them costs nothing, and
+    ``UW_Boundaries`` is rebuilt from scratch when a
+    ``Mesh`` is constructed on the result, so cloning it costs nothing, and
     every other label on a duplicated point (the fault's own name above all)
     is exactly what the replica must carry.
     """
@@ -499,8 +499,9 @@ def split_along_label(dm, name, value, plus_name, plus_value,
         np.arange(vE - vS, dtype=np.int64),
         np.asarray(sorted(interior), dtype=np.int64) - vS]) \
         if interior else np.arange(vE - vS, dtype=np.int64)
-    _write_coordinates(new, dm, (offset["v"], offset["v"] + sizes["v"]),
-                       source_rows)
+    _write_coordinates(new, dm.getCoordinateDim(),
+                       (offset["v"], offset["v"] + sizes["v"]),
+                       _coords(dm)[source_rows])
 
     clone_map = {replica_new[t]: original_of[t] for t in original_of}
     minus_copies = []
@@ -945,7 +946,8 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
         np.arange(nv, dtype=np.int64),
         np.asarray(interior_sorted, dtype=np.int64) - vS]) \
         if k else np.arange(nv, dtype=np.int64)
-    _write_coordinates(new, dm, (vS2, vE2), source_rows)
+    _write_coordinates(new, dm.getCoordinateDim(), (vS2, vE2),
+                       _coords(dm)[source_rows])
 
     point_map = np.full(pEnd - pStart, -1, dtype=np.int64)
     point_map[np.arange(cS, cE) - pStart] = np.arange(nc)
