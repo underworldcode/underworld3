@@ -125,8 +125,10 @@ def test_poisson_fmg_on_3d_child_matches_gamg():
         # ksp_rtol — the gmres-smoothed geometric bundle (a non-stationary
         # preconditioner) under a plain left-preconditioned gmres outer, whose
         # recurrence norm fell to 1e-11 while the true residual stalled
-        # (custom_mg._ensure_flexible_outer now pairs that bundle with fgmres,
-        # so the fmg arm's ksp_rtol is enforced in the true residual norm;
+        # (the geometric bundle now owns the pairing — multigrid_options puts
+        # ksp_type=fgmres in the bundle and _configure_pcmg applies it to the
+        # live KSP, #514/#515 — so the fmg arm's ksp_rtol is enforced in the
+        # true residual norm;
         # measured err/nrm ~1e-12). The gamg arm still converges in the
         # preconditioned norm, with a declared-reduction -> nodal-error
         # constant of ~10 on this child, so the declared reduction is one

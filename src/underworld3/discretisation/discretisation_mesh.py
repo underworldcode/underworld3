@@ -928,13 +928,24 @@ class Mesh(Stateful, uw_object):
     ):
         """Extend the boundary enum and rebuild the DM's boundary labels.
 
-        Patches the user-supplied boundary enum with the members every UW
-        mesh needs (``Null_Boundary`` — every vertex, value 666 — and
-        ``All_Boundaries``, value 1001), records the boundary / region
-        metadata attributes on the mesh, rebuilds named boundary labels for
-        wrapped DMPlex imports that only expose stacked Gmsh label sets,
-        and builds the ``Null_Boundary`` and stacked ``UW_Boundaries``
-        labels used by the boundary-condition machinery.
+        Patches the user-supplied boundary enum with ``All_Boundaries``
+        (value 1001, every exterior facet, populated by ``markBoundaryFaces``),
+        records the boundary / region metadata attributes on the mesh, rebuilds
+        named boundary labels for wrapped DMPlex imports that only expose
+        stacked Gmsh label sets, and builds the stacked ``UW_Boundaries`` label
+        used by the boundary-condition machinery.
+
+        ``Null_Boundary`` (value 666, every VERTEX of the mesh) used to be
+        added here as well. Nothing needs it: it marks no facet, so it
+        integrates nothing, and its one functional consumer — a fake natural BC
+        the solver manufactured to guarantee "a surface integral term on every
+        process" — has been removed and measured to change no answer at any
+        rank count. What it did do was mislead: any pass that reads *labelled
+        points* to find material interfaces saw every vertex of the mesh
+        labelled, which silently refused 1114 of 1114 mesh-repair candidates.
+        A boundaries enum supplied by a caller may still declare it, and old
+        checkpoints still carry the value, so the sentinel skips downstream
+        remain.
         """
         ## Patch up the boundaries to include the additional
         ## definitions that we do / might need. Note: the
@@ -944,7 +955,6 @@ class Mesh(Stateful, uw_object):
         if boundaries is None:
 
             class replacement_boundaries(Enum):
-                Null_Boundary = 666
                 All_Boundaries = 1001
 
             boundaries = replacement_boundaries
@@ -952,7 +962,6 @@ class Mesh(Stateful, uw_object):
 
             @extend_enum([boundaries])
             class replacement_boundaries(Enum):
-                Null_Boundary = 666
                 All_Boundaries = 1001
 
             boundaries = replacement_boundaries
@@ -991,20 +1000,6 @@ class Mesh(Stateful, uw_object):
                     if self.dm.getLabel(stacked_label_name):
                         uw.adaptivity._dm_unstack_bcs(self.dm, self.boundaries, stacked_label_name)
                         break
-
-        # Null_Boundary marks EVERY vertex with the reserved value 666 —
-        # the catch-all stratum used when a condition applies mesh-wide.
-        # Note: getStratumIS(0) on the "depth" label fetches the depth-0
-        # points, i.e. VERTICES (the old name "all_edges" was wrong).
-        depth_label = self.dm.getLabel("depth")
-        self.dm.createLabel("Null_Boundary")
-        null_boundary_label = self.dm.getLabel("Null_Boundary")
-        if depth_label and null_boundary_label:
-            vertex_stratum_is = depth_label.getStratumIS(0)
-            if vertex_stratum_is:
-                null_boundary_label.setStratumIS(
-                    boundaries.Null_Boundary.value, vertex_stratum_is
-                )
 
         ## --- UW_Boundaries label
         if self.boundaries is not None:

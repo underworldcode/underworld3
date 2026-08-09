@@ -302,12 +302,14 @@ def test_a_varying_bookkeeping_label_is_not_a_material_region():
 def test_a_vertex_blanket_label_is_not_an_interface():
     """Negative control for the third instance of the labelling trap.
 
-    ``Null_Boundary`` marks every vertex of every UW3 mesh with the reserved
-    value 666, and ``UW_Boundaries`` re-packs every per-boundary stratum —
-    sentinel included — into one stacked label. Reading labelled *points* as
-    interfaces therefore locks the entire vertex stratum. That costs the flip
-    pass nothing, which asks only about edges, and it refused 1114 of 1114
-    candidates the first time the removal pass was offered a cut mesh.
+    ``Null_Boundary`` used to mark every vertex of every UW3 mesh with the
+    reserved value 666 — the blanket that made reading labelled *points* as
+    interfaces lock the entire vertex stratum, refusing 1114 of 1114 removal
+    candidates the first time the pass was offered a cut mesh. #503 removed
+    that label, so the blanket is BUILT HERE explicitly: the hazard is *any*
+    label covering the vertex stratum (a caller-declared enum or an old
+    checkpoint can still supply one), not that one spelling of it, and building
+    it keeps the fixture self-contained.
 
     The first assertion is the control: it fails if the fixture stops blanketing
     the vertices, at which point the rest of this test proves nothing.
@@ -320,18 +322,13 @@ def test_a_vertex_blanket_label_is_not_an_interface():
     vS, vE = dm.getDepthStratum(0)
     eS, eE = dm.getDepthStratum(1)
 
-    blanket = set()
-    for name in ("Null_Boundary", "UW_Boundaries"):
-        label = dm.getLabel(name)
-        values = label.getValueIS()
-        if values is None:
-            continue
-        for val in values.getIndices():
-            points = label.getStratumIS(int(val))
-            if points is not None:
-                blanket.update(int(p) for p in points.getIndices()
-                               if vS <= p < vE)
-    assert len(blanket) == vE - vS, (
+    # The blanket #503 stopped manufacturing, rebuilt by hand: every vertex,
+    # one reserved value, marking no edge and no facet.
+    dm.createLabel("test_vertex_blanket")
+    blanket_label = dm.getLabel("test_vertex_blanket")
+    blanket_label.setStratumIS(666, dm.getLabel("depth").getStratumIS(0))
+
+    assert blanket_label.getStratumSize(666) == vE - vS, (
         "the fixture no longer labels every vertex, so this test cannot show "
         "that reading vertex labels as interfaces is fatal")
 

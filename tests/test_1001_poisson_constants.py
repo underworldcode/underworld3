@@ -260,9 +260,13 @@ def test_poisson_constant_in_essential_bc():
 def test_stokes_natural_bc_constant_no_recompile():
     """Stokes natural BC with constant traction — change without recompile.
 
-    Also verifies the Null_Boundary bug fix: _build() must not re-add
-    Null_Boundary on every call, which would reset is_setup and force
-    recompilation.
+    This test used to guard a bug in which ``_build()`` re-added a fake natural
+    BC on ``Null_Boundary`` on every call, resetting ``is_setup`` and forcing a
+    recompile. That fake BC has since been removed altogether — it was a
+    workaround for a PETSc problem that no longer exists, and it integrated
+    nothing (value 666 marks vertices, never a facet). So the assertion is now
+    that no such condition is manufactured at all: a solver's ``natural_bcs``
+    holds exactly what the user asked for.
     """
 
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25)
@@ -291,9 +295,10 @@ def test_stokes_natural_bc_constant_no_recompile():
         f"tau_nbc not found in constants manifest: {const_names}"
     )
 
-    # Null_Boundary should appear exactly once
+    # No fake condition is manufactured: the user asked for one natural BC.
     null_count = sum(1 for bc in stokes.natural_bcs if bc.boundary == "Null_Boundary")
-    assert null_count == 1, f"Null_Boundary appears {null_count} times (expected 1)"
+    assert null_count == 0, f"Null_Boundary appears {null_count} times (expected 0)"
+    assert [bc.boundary for bc in stokes.natural_bcs] == ["Top"]
 
     # Change traction and re-solve — no recompilation
     n_before = len(_ext_dict)
@@ -307,8 +312,8 @@ def test_stokes_natural_bc_constant_no_recompile():
         f"Null_Boundary count: {sum(1 for bc in stokes.natural_bcs if bc.boundary == 'Null_Boundary')}"
     )
 
-    # Null_Boundary should still be exactly one
+    # ... and a second solve still does not manufacture one.
     null_count_2 = sum(1 for bc in stokes.natural_bcs if bc.boundary == "Null_Boundary")
-    assert null_count_2 == 1, f"Null_Boundary duplicated to {null_count_2} after second solve"
+    assert null_count_2 == 0, f"Null_Boundary appeared ({null_count_2}) on re-solve"
 
     del stokes

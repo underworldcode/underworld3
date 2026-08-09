@@ -1961,17 +1961,6 @@ class SolverBaseClass(uw_object):
             if hasattr(self, "_constant_nullspace_obj"):
                 self._constant_nullspace_obj = None
 
-        # This is a workaround for some problem in the PETSc machinery
-        # where we need a surface integral term somewhere on every process
-        # if we have a contribution from anywhere. We add a fake one here
-        # which just integrates nothing over a bunch of points. It's enough
-        # to let the rest of the machinery work.
-
-        if len(self.natural_bcs) > 0:
-            if not any(bc.boundary == "Null_Boundary" for bc in self.natural_bcs):
-                bc = (0,)*self.Unknowns.u.shape[1]
-                self.add_natural_bc(bc, "Null_Boundary")
-
         if verbose:
             uw.pprint("Build pointwise functions")
         self._setup_pointwise_functions(verbose, debug=debug, debug_name=debug_name)
@@ -3076,7 +3065,7 @@ class SNES_Scalar(SolverBaseClass):
         self._pc_option_prefix = ""
 
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)
@@ -3989,7 +3978,7 @@ class SNES_Vector(SolverBaseClass):
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)
@@ -5001,7 +4990,7 @@ class SNES_MultiComponent(SolverBaseClass):
         # PETSc options — mirror SNES_Vector defaults
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)

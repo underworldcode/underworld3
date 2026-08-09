@@ -342,15 +342,16 @@ def _interface_edges(dm):
 
     **Vertices** are ignored because in 2-D an interface is a *curve*, so it is
     identified by the edges that make it up; a vertex on one always carries
-    interface edges too, and reading the vertices adds nothing but noise. It adds
-    a great deal of noise: ``Null_Boundary`` marks **every vertex of every UW3
-    mesh** with the reserved value 666 — the sentinel a natural boundary
-    condition attaches to when it applies to no boundary — and ``UW_Boundaries``
-    re-packs every per-boundary stratum, sentinel included, into one stacked
-    label. Between them every vertex in the chart is labelled. That costs the
-    flip pass nothing, since it asks only about edges, but a vertex-level test
-    built on it refuses every candidate it is ever offered. Measured: 1114 of
-    1114 on a cut mesh, before a single one reached a shape test.
+    interface edges too, and reading the vertices adds nothing but noise. It
+    once added a great deal of noise: ``Null_Boundary`` marked **every vertex of
+    every UW3 mesh** with the reserved value 666, and ``UW_Boundaries`` re-packed
+    every per-boundary stratum, sentinel included, into one stacked label —
+    between them every vertex in the chart was labelled, and a vertex-level test
+    built on that refused every candidate it was ever offered (measured: 1114 of
+    1114 on a cut mesh, before a single one reached a shape test). #503 removed
+    the manufactured label, in part because of exactly this trap, but a
+    caller-declared boundaries enum or a mesh reloaded from an older checkpoint
+    can still carry it, so the exclusion stays load-bearing.
 
     Over-locking is safe in the sense that it cannot corrupt a mesh, but not in
     the sense that matters: it disables the feature silently. Third instance of

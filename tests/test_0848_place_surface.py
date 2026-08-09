@@ -282,9 +282,9 @@ def test_splitting_a_wall_facet_keeps_the_wall_labelled():
     is asserted rather than the mesh merely being looked at.
     """
     base = _box(1 / 12)
-    # The four named walls only. ``Null_Boundary`` is the sentinel a natural
-    # condition attaches to when it applies to no boundary, and it marks every
-    # VERTEX of every UW3 mesh — so its stratum shrinks by however many vertices
+    # The four named walls only. A blanket vertex label (the old
+    # ``Null_Boundary`` sentinel, removed in #503 but still possible from a
+    # caller's enum or an old checkpoint) would shrink by however many vertices
     # the cavity swallowed, which says nothing about the wall.
     walls = {name: base.dm.getLabel(name).getStratumSize(
         base.boundaries[name].value)

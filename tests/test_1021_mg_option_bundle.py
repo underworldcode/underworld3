@@ -48,6 +48,77 @@ def test_every_bundle_sets_the_smoother_iteration_count():
         assert "pc_type" in bundle.settings
 
 
+def test_the_geometric_bundle_pairs_krylov_smoothing_with_a_flexible_outer():
+    """#514: a Krylov smoother makes the preconditioner VARY between
+    applications, and a plain-gmres outer's recurrence then has no guarantee.
+    Measured on a 3-D adapt child: the KSP reported CONVERGED_RTOL at 3
+    iterations while the TRUE residual stalled 100x above the tolerance.
+
+    The pairing lives in the bundle so it cannot be fixed piecemeal a THIRD
+    time — the Stokes velocity sub-KSP and the free-surface solver each
+    already fixed exactly this failure locally, which is the drift this
+    module exists to end. Both smoother variants set the key, because the
+    stale-key derivation requires every variant to own the same key set.
+    """
+    for smoother in multigrid_options.GEOMETRIC_MG_SMOOTHERS:
+        bundle = multigrid_options.geometric_mg_bundle(smoother=smoother)
+        assert bundle.settings["ksp_type"] == "fgmres", (
+            f"{smoother!r}: a geometric-MG solve must judge convergence "
+            f"flexibly; got {bundle.settings.get('ksp_type')}")
+    # ... and falling back to GAMG must not leave the flexible outer behind
+    # as an unexplained leftover on the prefix.
+    assert "ksp_type" in multigrid_options.gamg_bundle().stale
+
+
+def test_an_adapt_child_scalar_solve_converges_truly():
+    """The live form of the pairing test, on the route that caught #514.
+
+    A scalar solve on an adapt child auto-injects the geometric hierarchy, so
+    its outer KSP must come out flexible ON THE LIVE OBJECT — the database
+    write alone is provably not enough, because the top-level KSP consumes its
+    options long before the injection runs (that inert write was the first
+    form of the fix, and this assert is what caught it).
+
+    The KSP-type assert is the regression guard; the error bound is sanity
+    only. Measured on this fixture the two pairings are indistinguishable
+    (3.3e-8 either way, one FMG application) because the cycle converges
+    before the recurrence can drift — the hierarchy shape that separates them
+    is the 3-D subsampled one, guarded by test_0842's 1e-8 gate.
+    """
+    import numpy as np
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2,
+        regular=False, qdegree=2, refinement=1)
+
+    def metric(points):
+        r = np.linalg.norm(np.asarray(points) - 0.5, axis=1)
+        return 1.0 / np.where(r < 0.25, 0.05, 0.2) ** 2
+
+    child = mesh.adapt(metric, max_levels=1)
+
+    u = uw.discretisation.MeshVariable("u_flex", child, 1, degree=1)
+    poisson = uw.systems.Poisson(child, u_Field=u)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(0.0, "Bottom")
+    poisson.add_dirichlet_bc(1.0, "Top")
+    poisson.petsc_options["ksp_rtol"] = 1e-8
+    poisson.solve()
+
+    ksp = poisson.snes.getKSP()
+    assert ksp.getPC().getType() == "mg", "the hierarchy was not injected"
+    assert ksp.getType() == "fgmres", (
+        "a Krylov-smoothed geometric-MG solve is running under a plain gmres "
+        "outer; #514 has regressed")
+    err = np.linalg.norm(poisson.Unknowns.u.data[:, 0]
+                         - poisson.Unknowns.u.coords[:, 1])
+    nrm = np.linalg.norm(poisson.Unknowns.u.coords[:, 1]) + 1e-30
+    assert err / nrm < 1e-6, (
+        f"true relative error {err / nrm:.3e} on an exactly-linear solution")
+
+
 def test_bundles_clear_each_others_keys():
     """Bundles share an options prefix, so switching between them must leave no
     key behind — every key a bundle does not set, a sibling does, and it must

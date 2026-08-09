@@ -595,7 +595,8 @@ def _assert_no_zero_columns_serial(P_csr, level):
             f"operator would be singular.")
 
 
-def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
+def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
+                    ksp=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
@@ -623,48 +624,25 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
     fixed)."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
+    opts = PETSc.Options()
     multigrid_options.geometric_mg_bundle(coarse=coarse, smoother=smoother).apply(
-        PETSc.Options(), prefix, owned=owned)
+        opts, prefix, owned=owned)
+    # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
+    # between applications, so its KSP must judge convergence flexibly), but on
+    # the top-level path the KSP consumed its options long before this
+    # injection runs, so a database write alone never takes effect. Apply the
+    # RESOLVED value — the bundle's, or the user's own where the ownership
+    # latch left it alone — to the live object. The fieldsplit velocity
+    # sub-KSP does not need this: its ``setFromOptions`` runs at the parent's
+    # ``PCSetUp``, after the write.
+    if ksp is not None:
+        ksp.setType(opts.getString(prefix + "ksp_type", ksp.getType()))
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
     for l in range(1, nlev):
         pc.setMGInterpolation(l, Ps[l - 1])
     pc.setFromOptions()
-
-
-def _ensure_flexible_outer(solver, ksp):
-    """Pair a Krylov-smoothed PCMG with a FLEXIBLE outer Krylov method.
-
-    The geometric bundle's default smoother is gmres/4 (the "robust" variant),
-    which makes each V-cycle application a slightly different linear operator.
-    Plain left-preconditioned GMRES assumes a fixed preconditioner: its recurrence
-    norm keeps contracting while the TRUE residual stalls on the inconsistency.
-    Measured on test_0842's graded 3-D adapt child (scalar Poisson, exact linear
-    solution): preconditioned norm 1.4e-11 with the true residual stalled at
-    2.4e-6, insensitive to ksp_rtol; with fgmres the same PCMG reaches a true
-    relative residual of 1e-12 in the same 4 iterations. The Stokes velocity
-    block already pairs this bundle with fgmres for exactly this reason (see
-    ``multigrid_options``); the top-level scalar/vector route must do the same.
-
-    Only the framework's own default outer (``gmres``) is upgraded; any other
-    ``ksp_type`` is a user's choice and is left alone. A stationary smoother
-    (``richardson``, the "fast" variant) keeps the left-preconditioned norm
-    honest, so nothing is changed there.
-    """
-    opts = PETSc.Options()
-    prefix = ksp.getOptionsPrefix() or ""
-    smoother = opts.getString(prefix + "mg_levels_ksp_type")
-    if smoother in ("", "richardson"):
-        return                              # stationary smoother: outer is honest
-    if ksp.getType() != "gmres":
-        return                              # not the framework default: user's call
-    push = getattr(solver, "_push_managed_option", None)
-    if push is not None:
-        push("ksp_type", "fgmres")          # recorded as UW3's own write
-    else:
-        opts.setValue(prefix + "ksp_type", "fgmres")
-    ksp.setType("fgmres")
 
 
 def _install_transfers(solver, Ps, verbose=False):
@@ -693,8 +671,7 @@ def _install_transfers(solver, Ps, verbose=False):
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
         _configure_pcmg(ksp.getPC(), Ps,
                         smoother=solver._mg_smoother_variant,
-                        owned=solver._managed_pc_options)
-        _ensure_flexible_outer(solver, ksp)
+                        owned=solver._managed_pc_options, ksp=ksp)
         if verbose:
             from underworld3 import mpi
             mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
