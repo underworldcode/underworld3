@@ -1040,6 +1040,24 @@ def build_transfers(solver, field_id=None):
     if coarse is None:
         return None, None                   # nothing to inject
 
+    # An EXPLICIT preconditioner choice beats the opportunistic pickup. Before
+    # this guard, `solver.preconditioner = "gamg"` on an adapt child was
+    # silently clobbered back to the custom-P PCMG at solve time (measured:
+    # both arms of test_0842's fmg-vs-gamg comparison ran pc_type=mg), so a
+    # user could not opt out and any FMG-vs-GAMG comparison was vacuous.
+    # `_pc_user_override` is the same statement in the other spelling: the
+    # solver's option manager has latched "the user owns this block's pc_type"
+    # (they wrote a pc_type of their own into petsc_options), and an
+    # opportunistic pickup must stand down for exactly the same reason.
+    # "auto" (the default) still picks up the mesh-owned hierarchy.
+    # NOTE the arity: this function returns a 2-tuple, never bare None — a bare
+    # `return` here is what turned the gate into a TypeError at the call site
+    # when this hunk migrated from auto_inject_custom_mg (which returns nothing)
+    # during the #488 x #471 merge.
+    if (getattr(solver, "_preconditioner", "auto") == "gamg"
+            or getattr(solver, "_pc_user_override", False)):
+        return None, None
+
     builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
     # Retry with the RBF builder before abandoning geometric MG. The
     # barycentric builder has LOCAL support: it re-triangulates the coarse
@@ -1098,8 +1116,13 @@ def auto_inject_custom_mg(solver, field_id=None):
         inject_custom_mg(solver)
         return
 
-    h, Ps = build_transfers(solver, field_id=field_id)
-    if h is None:
+    # build_transfers' contract is a 2-tuple, but a "no hierarchy" answer has
+    # been written as a bare `return` before (the #488 x #471 merge shipped
+    # exactly that inside the explicit-gamg gate): a None here must mean
+    # "nothing to inject", never a TypeError mid-solve.
+    resolved = build_transfers(solver, field_id=field_id)
+    h, Ps = resolved if resolved is not None else (None, None)
+    if h is None or Ps is None:
         return
 
     # Dimensional guard (checkable for the monolithic operator, field_id is None):
