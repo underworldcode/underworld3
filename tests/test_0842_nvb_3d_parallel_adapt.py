@@ -90,8 +90,15 @@ def test_poisson_fmg_on_3d_child_matches_gamg():
     mesh = _base3()
     child = mesh.adapt(_ball_metric, max_levels=1)
 
+    # Deliberate ordering: create BOTH variables before any solver runs —
+    # creating a MeshVariable after a solve rebuilds mesh.dm and detonates
+    # issue #492 (the old DM is destroyed under the custom-MG coarse/fine
+    # links; that dangling reference is what segfaulted Linux CI downstream).
+    fields = {pc: uw.discretisation.MeshVariable(f"u_{pc}", child, 1, degree=1)
+              for pc in ("fmg", "gamg")}
+
     def solve(pc):
-        u = uw.discretisation.MeshVariable(f"u_{pc}", child, 1, degree=1)
+        u = fields[pc]
         poisson = uw.systems.Poisson(child, u_Field=u)
         poisson.constitutive_model = uw.constitutive_models.DiffusionModel
         poisson.constitutive_model.Parameters.diffusivity = 1.0
