@@ -595,7 +595,8 @@ def _assert_no_zero_columns_serial(P_csr, level):
             f"operator would be singular.")
 
 
-def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
+def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
+                    ksp=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
@@ -623,8 +624,19 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
     fixed)."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
+    opts = PETSc.Options()
     multigrid_options.geometric_mg_bundle(coarse=coarse, smoother=smoother).apply(
-        PETSc.Options(), prefix, owned=owned)
+        opts, prefix, owned=owned)
+    # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
+    # between applications, so its KSP must judge convergence flexibly), but on
+    # the top-level path the KSP consumed its options long before this
+    # injection runs, so a database write alone never takes effect. Apply the
+    # RESOLVED value — the bundle's, or the user's own where the ownership
+    # latch left it alone — to the live object. The fieldsplit velocity
+    # sub-KSP does not need this: its ``setFromOptions`` runs at the parent's
+    # ``PCSetUp``, after the write.
+    if ksp is not None:
+        ksp.setType(opts.getString(prefix + "ksp_type", ksp.getType()))
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
@@ -659,7 +671,7 @@ def _install_transfers(solver, Ps, verbose=False):
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
         _configure_pcmg(ksp.getPC(), Ps,
                         smoother=solver._mg_smoother_variant,
-                        owned=solver._managed_pc_options)
+                        owned=solver._managed_pc_options, ksp=ksp)
         if verbose:
             from underworld3 import mpi
             mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
