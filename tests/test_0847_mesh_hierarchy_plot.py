@@ -15,6 +15,24 @@ import underworld3.visualisation as vis
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
+# Never let a Plotter reach a display, and never leave one to the garbage
+# collector. VTK tears its objects down in whatever order Python's GC visits
+# them, and out-of-order destruction of live render pipelines is an
+# INTERMITTENT segfault — measured on the CI runners, where this file's
+# unclosed plotters killed the whole test_08* pytest invocation in two of
+# three runs (PR #510), with the identical tree passing the third time.
+# Deterministic close beats destructor order; a crash this shape cannot be
+# reproduced by rerunning locally, so it is prevented rather than chased.
+import pyvista
+
+pyvista.OFF_SCREEN = True
+
+
+@pytest.fixture(autouse=True)
+def _close_every_plotter():
+    yield
+    pyvista.close_all()
+
 
 def _actors(pl):
     return len(pl.renderer.actors)
