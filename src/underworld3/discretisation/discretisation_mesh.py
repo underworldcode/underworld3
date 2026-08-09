@@ -6829,9 +6829,15 @@ class Mesh(Stateful, uw_object):
                     grown.update(vv)
             pinned |= grown
 
-        if not pinned:
-            # An empty DMLabel is not merely useless: querying its strata is a
-            # hard crash, not an exception, so refuse rather than hand one back.
+        # COLLECTIVE emptiness test. A rank whose subdomain the surface never
+        # enters legitimately has an empty local band — only a GLOBALLY empty
+        # band is a user error. The previous rank-local raise here deadlocked
+        # np=4 (measured 2026-08-06, review of PR #488: a corner-confined
+        # surface left three ranks raising while the fourth entered the
+        # collective mover and hung to the 300 s timeout).
+        n_global = uw.mpi.comm.allreduce(len(pinned))
+        if n_global == 0:
+            # Raised on EVERY rank, after the collective reduction.
             raise ValueError(
                 f"no cell is cut by distance == {offset} on surface "
                 f"{getattr(surface, 'name', surface)!r}, so there is no band to "
@@ -6839,6 +6845,11 @@ class Mesh(Stateful, uw_object):
                 f"interface you meant (for a weak zone it is the HALF-WIDTH, not "
                 f"zero).")
 
+        # Every rank creates the label, including ranks whose local band is
+        # empty: the downstream consumer (smoothing.graph._pinned_mask) is
+        # documented to tolerate a present-but-empty label, and a label that
+        # exists on some ranks only is the kind of asymmetry this method is
+        # not allowed to produce.
         name = name or f"PinnedBand_{getattr(surface, 'name', 'surface')}"
         if not dm.hasLabel(name):
             dm.createLabel(name)
