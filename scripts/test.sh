@@ -64,11 +64,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # $PYTEST tests/test_06*py || status=1  # DISABLED - regression tests need validation
 
   # Units system tests (0800-0899: unit-aware functions, arrays, and conversions)
-  # TODO(DIAGNOSTIC): unbuffered + per-test lines while PR #510 hunts a CI-only
-  # segfault in this segment. pytest's stdout is BLOCK-buffered on CI, so with
-  # the plain invocation the crash site is hidden behind up to 8 KB of unflushed
-  # dots. Revert to `$PYTEST tests/test_08*py` once the crash is identified.
-  PYTHONUNBUFFERED=1 $PYTEST -v tests/test_08*py || status=1
+  $PYTEST tests/test_08*py || status=1
 
   # Poisson solvers (including Darcy flow)
   $PYTEST tests/test_100[0-9]*py || status=1
