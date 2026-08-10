@@ -1381,6 +1381,20 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
             "the cavity shell is not a closed manifold; raise `clearance` so "
             "the cavity is wider than the shapes pinching it")
 
+    # The straddle rule can drop the whole star of a vertex that is NOT a
+    # victim; such a vertex is on no shell face and would come through the
+    # rebuild as an ISOLATED point (global Euler 2, not 1 — the thin-volume
+    # carve's measured defect, same mechanism). Every surviving vertex must
+    # have a surviving cell.
+    referenced = np.zeros(len(X), dtype=bool)
+    if (~drop).any():
+        referenced[cells[~drop].ravel()] = True
+    orphan = ~referenced & ~victim
+    if orphan[on_wall].any():
+        raise RuntimeError(
+            "the sheet's cavity would strand a domain-wall vertex; the sheet "
+            "must be interior, with clearance to spare")
+    victim |= orphan
     return np.flatnonzero(victim), drop_ids, shell
 
 
@@ -2057,6 +2071,22 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     shell_verts = sorted({v for _f, verts in shell for v in verts})
     if victim[shell_verts].any():
         raise RuntimeError("a deleted vertex is on the cavity shell")
+
+    # The growth can swallow the whole star of a vertex that is NOT itself a
+    # victim. Such a vertex is on no shell face — a shell face keeps a
+    # surviving cell — so it would come through the rebuild as an ISOLATED
+    # point and the global Euler gate reads 2, not 1 (caught by CI: the
+    # growth pattern follows the assembly mesh and is gmsh-version-
+    # dependent). Every surviving vertex must have a surviving cell.
+    referenced = np.zeros(len(X), dtype=bool)
+    if (~drop).any():
+        referenced[cells[~drop].ravel()] = True
+    orphan = ~referenced & ~victim
+    if orphan[on_wall].any():
+        raise RuntimeError(
+            "the cavity would strand a domain-wall vertex; the volume must "
+            "be interior, with clearance to spare")
+    victim |= orphan
     return np.flatnonzero(victim), np.flatnonzero(drop), shell
 
 
@@ -2381,6 +2411,20 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             "be interior, with clearance to spare")
     if victim[np.asarray(ring)].any():
         raise RuntimeError("a deleted vertex is on the cavity boundary")
+
+    # The growth can swallow the whole star of a non-victim vertex; a vertex
+    # with no surviving cell is on no ring edge and would come through the
+    # rebuild ISOLATED (the 3-D Euler-2 defect, same mechanism). Every
+    # surviving vertex must have a surviving cell.
+    referenced = np.zeros(len(X), dtype=bool)
+    if (~drop).any():
+        referenced[cells[~drop].ravel()] = True
+    orphan = ~referenced & ~victim
+    if orphan[on_boundary].any():
+        raise RuntimeError(
+            "the cavity would strand a domain-wall vertex; the volume must "
+            "be interior, with clearance to spare")
+    victim |= orphan
 
     Xall = np.vstack([X, asm_pts])
     holes = [[len(X) + int(v) for v in loop] for loop in loops_asm]

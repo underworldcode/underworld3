@@ -78,6 +78,13 @@ def test_a_crossing_pair_embeds_with_the_junction_in_the_volume():
     # Skin faces are interior: two cells each.
     assert all(len(new.getSupport(int(p))) == 2 for p in skin)
 
+    # No isolated vertex: the carve's growth can swallow the whole star of a
+    # non-victim vertex, which then rides through the rebuild referenced by
+    # nothing (global Euler 2 — caught by CI, gmsh-version-dependent). The
+    # carve promotes such orphans to victims; this is the direct probe.
+    vS, vE = new.getDepthStratum(0)
+    assert all(len(new.getSupport(int(v))) > 0 for v in range(vS, vE))
+
 
 def test_sub_h_width_is_supported():
     """Width below the background h is the whole point (V = 2 edot w)."""
