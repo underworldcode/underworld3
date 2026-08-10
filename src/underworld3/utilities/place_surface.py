@@ -1470,6 +1470,68 @@ def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
         gmsh.finalize()
 
 
+def _attach_uninterp_vertex_sf(new, dm, v_old_to_compact, nc_new, nroots):
+    """Give the uninterpolated plex its vertex star-forest, BEFORE interpolate.
+
+    This ordering is the whole fix for issue #520. Interpolating first and
+    attaching a star-forest afterwards leaves each rank's faces and edges
+    with whatever cone order its own local interpolation chose — nothing
+    ever reconciles a leaf's cone against its root's, ``DMPlexCheckFaces``
+    fails at the seam, and P2 cross-seam assembly builds a wrong operator
+    (measured: plain Stokes 13 s -> 3594 s at np=2). With the vertex SF in
+    place, ``DMPlexInterpolate`` runs its distributed path: it creates the
+    faces and edges, ORIENTS the interface cones consistently across ranks,
+    and extends the star-forest to the new points itself.
+
+    Cells are never shared under gather-first, so the old SF's vertex leaves
+    are the whole graph; face/edge leaves of the old mesh are skipped —
+    interpolate recreates them. The owner's new index for each leaf arrives
+    by the one-broadcast renumbering trick (the leaf set is unchanged, only
+    numbers move).
+    """
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    sf = dm.getPointSF()
+    try:
+        _nroots, ilocal, iremote = sf.getGraph()
+    except (ValueError, TypeError):
+        return                            # unpopulated: nothing is shared
+
+    root_new = np.full(pEnd - pStart, -1, dtype=np.int32)
+    owned_vertices = np.flatnonzero(v_old_to_compact >= 0)
+    root_new[owned_vertices + vS - pStart] = (
+        nc_new + v_old_to_compact[owned_vertices]).astype(np.int32)
+    leaf_new = np.full(pEnd - pStart, -1, dtype=np.int32)
+    # COLLECTIVE: a rank sharing nothing still participates.
+    sf.bcastBegin(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
+    sf.bcastEnd(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
+
+    new_sf = PETSc.SF().create(comm=dm.comm)
+    if ilocal is None or not len(ilocal):
+        new_sf.setGraph(nroots, np.zeros(0, dtype=PETSc.IntType),
+                        np.zeros(0, dtype=PETSc.IntType))
+        new.setPointSF(new_sf)
+        return
+
+    leaves = np.asarray(ilocal, dtype=np.int64)
+    is_vertex = (leaves >= vS) & (leaves < vE)
+    vleaves = leaves[is_vertex]
+    local = np.full(len(vleaves), -1, dtype=np.int64)
+    keep = v_old_to_compact[vleaves - vS]
+    local[keep >= 0] = nc_new + keep[keep >= 0]
+    remote_index = leaf_new[vleaves - pStart]
+    if (local < 0).any() or (remote_index < 0).any():
+        raise RuntimeError(
+            "place_sheet internal: a shared vertex was deleted by the "
+            "surgery; the gather mask under-reached.")
+
+    remote = np.empty((len(vleaves), 2), dtype=PETSc.IntType)
+    remote[:, 0] = np.asarray(iremote).reshape(-1, 2)[is_vertex, 0]
+    remote[:, 1] = remote_index
+    new_sf.setGraph(nroots, local.astype(PETSc.IntType), remote.reshape(-1))
+    new.setPointSF(new_sf)
+
+
 def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     """Rebuild the local chart with cells replaced; every rank, collectively.
 
@@ -1479,7 +1541,10 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     orientation-free — and PETSc derives the faces, edges and every cone
     orientation. A rank with no surgery rebuilds its chart unchanged, because
     ``interpolate`` is collective and the star-forest of the interpolated
-    mesh must be built by every rank together.
+    mesh must be built by every rank together. The vertex star-forest is
+    attached BEFORE the interpolate (:func:`_attach_uninterp_vertex_sf`) so
+    the interface cones come out consistently ordered across ranks — the
+    issue #520 fix.
 
     ``made_cells`` entries are mixed: a non-negative value is an OLD vertex
     point; ``-(k+1)`` is row ``k`` of ``placed``. Returns the interpolated
@@ -1507,6 +1572,35 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     nc_new = int(keep_cell.sum()) + len(made_cells)
     nv_new = n_surv + len(placed)
 
+    # Orient every made cell to the KEPT cells' handedness before wiring.
+    # DMPlexInterpolate derives face cones and orientations from the
+    # cell-vertex cones but does NOT normalise the cells' own vertex
+    # order; the fill's tets arrive in gmsh's convention, which is
+    # opposite to the plex closure convention the kept cells carry, and
+    # a mixed-handedness mesh assembles negative Jacobians (measured:
+    # the first Stokes solve on the sewn mesh never converged, while
+    # every abs()-based volume gate stayed green). The serial rewrite
+    # dropped the old explicit flip; this restores it, against the kept
+    # cells' own sign so the convention is read off the mesh, not assumed.
+    made_cells = np.asarray(made_cells, dtype=np.int64).reshape(-1, 4)
+    if len(made_cells) and len(kept):
+        X_old = _coords(dm)[:nv_old]
+
+        def signed6(P):
+            return float(np.dot(np.cross(P[1] - P[0], P[2] - P[0]),
+                                P[3] - P[0]))
+
+        ref_sign = np.sign(signed6(X_old[kept[0]]))
+
+        def xyz_of(x):
+            return placed[-int(x) - 1] if x < 0 else X_old[int(x)]
+
+        made_cells = made_cells.copy()
+        for j, tet in enumerate(made_cells):
+            P = np.array([xyz_of(v) for v in tet])
+            if np.sign(signed6(P)) != ref_sign:
+                made_cells[j] = tet[[0, 1, 3, 2]]
+
     def v_uninterp(x):
         if x < 0:
             return nc_new + n_surv + (-int(x) - 1)
@@ -1525,6 +1619,9 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
                     [v_uninterp(v) for v in tet])
     new.symmetrize()
     new.stratify()
+    if uw.mpi.size > 1:
+        _attach_uninterp_vertex_sf(new, dm, v_old_to_compact, nc_new,
+                                   nc_new + nv_new)
     new.interpolate()
 
     vS2, vE2 = new.getDepthStratum(0)
@@ -1564,9 +1661,14 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
                 point_map[q - pStart] = int(joined[0])
 
     reconnect._copy_labels(new, dm, point_map)
+    # The point SF was attached before the interpolate and extended by it to
+    # the faces and edges (with consistently oriented interface cones — the
+    # issue #520 property). Do NOT rebuild it from the old chart here: that
+    # was the defect. Mirror it onto the coordinate DM, which snapshots
+    # whatever SF existed when it was created (the parallel-checkpoint fix
+    # reconnect._install_point_sf documents).
     if uw.mpi.size > 1:
-        reconnect._rebuild_point_sf(new, dm, point_map,
-                                    int(new.getChart()[1]))
+        new.getCoordinateDM().setPointSF(new.getPointSF())
     return new, point_map, placed_new
 
 
@@ -1595,6 +1697,58 @@ def _owned_stratum_counts(dm):
         out.append(int(hi - lo) - int(shared_leaf[lo - pStart:
                                                   hi - pStart].sum()))
     return out
+
+
+def _validity_and_orientation_gates(new, comm):
+    """PETSc's DMPlex validity battery + the handedness census, as one gate.
+
+    The battery (maintainer ruling, 2026-08-10) runs via the options route —
+    petsc4py 3.25 exposes no check methods. ``check_faces`` runs at EVERY
+    rank count: it is issue #520's oracle (leaf/root cone agreement), the
+    plain distributed box passes it cleanly, and the rebuilt mesh passes it
+    once the vertex SF is attached before the interpolate. ``check_geometry``
+    stays serial-only — measured false-positives on every rank of a plain
+    distributed UnstructuredSimplexBox on this stack. Failures are reduced
+    before anyone raises; a rank-local raise in parallel is a hang.
+
+    The handedness census is the finding-1 gate from the #518 review:
+    abs()-based volume checks are structurally blind to inversion — a
+    mixed-handedness mesh passed every other gate here while assembling an
+    indefinite operator.
+    """
+    _checks = ["check_symmetry", "check_skeleton", "check_pointsf",
+               "check_faces"]
+    if comm.size == 1:
+        _checks.append("check_geometry")
+    chk = new.clone()
+    chk.setOptionsPrefix("uw_place_gate_")
+    _opts = PETSc.Options()
+    for _k in _checks:
+        _opts[f"uw_place_gate_dm_plex_{_k}"] = ""
+    _gate_fail = None
+    try:
+        chk.setFromOptions()
+    except PETSc.Error as exc:
+        _gate_fail = f"DMPlex validity check failed: {exc}"
+    finally:
+        for _k in _checks:
+            del _opts[f"uw_place_gate_dm_plex_{_k}"]
+    _fails = comm.allgather(_gate_fail)
+    _real = [f for f in _fails if f]
+    if _real:
+        raise RuntimeError(f"the sewn mesh fails PETSc's checks: "
+                           f"{_real[0]}")
+
+    v6 = _cell_volumes_signed6(new)
+    signs = np.array([float((v6 > 0).sum()), float((v6 < 0).sum()),
+                      float((v6 == 0).sum())])
+    comm.Allreduce(MPI.IN_PLACE, signs, op=MPI.SUM)
+    if signs[2] or (signs[0] and signs[1]):
+        raise RuntimeError(
+            f"the sewn mesh has mixed cell orientation "
+            f"({int(signs[0])} positive, {int(signs[1])} negative, "
+            f"{int(signs[2])} degenerate) — the fill's cells were not "
+            "oriented to the kept convention.")
 
 
 def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
@@ -1849,6 +2003,8 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
             raise RuntimeError(
                 f"placing {label!r} would leave the surface {key[0]!r} with "
                 f"{now} interior faces instead of {before}.")
+
+    _validity_and_orientation_gates(new, comm)
 
     min_vol = np.array([_owned_min_cell_volume(new)], dtype=float)
     comm.Allreduce(MPI.IN_PLACE, min_vol, op=MPI.MIN)
@@ -2810,6 +2966,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
             raise RuntimeError(
                 f"placing {label!r} would leave the surface {key[0]!r} with "
                 f"{now} interior faces instead of {before}.")
+
+    _validity_and_orientation_gates(new, comm)
 
     min_vol = np.array([_owned_min_cell_volume(new)], dtype=float)
     comm.Allreduce(MPI.IN_PLACE, min_vol, op=MPI.MIN)
