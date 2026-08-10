@@ -118,7 +118,7 @@ T.data[...] = np.asarray(
 X0 = np.asarray(m.X.coords).copy()
 X0_Tx = np.asarray(T.coords).copy()
 
-stokes.solve(zero_init_guess=True)
+stokes.solve(zero_init_guess=False)
 check_snes(stokes, "initial Stokes solve")
 
 # Warm a few steps so the field is representative.
@@ -127,7 +127,7 @@ for _ in range(8):
     adv.solve(timestep=dt, zero_init_guess=False)
     check_snes(adv, "warmup AdvDiffusion solve")
 
-    stokes.solve(zero_init_guess=True)
+    stokes.solve(zero_init_guess=False)
     check_snes(stokes, "warmup Stokes solve")
 
 # Time plain adv+stokes steps.
@@ -139,7 +139,7 @@ for _ in range(N):
     adv.solve(timestep=dt, zero_init_guess=False)
     check_snes(adv, "timing AdvDiffusion solve")
 
-    stokes.solve(zero_init_guess=True)
+    stokes.solve(zero_init_guess=False)
     check_snes(stokes, "timing Stokes solve")
 
 t_step = (time.perf_counter() - t0) / N
@@ -177,7 +177,7 @@ T.data[:, 0] = valsN
 t_remap_out = time.perf_counter() - td
 
 te = time.perf_counter()
-stokes.solve(zero_init_guess=True)
+stokes.solve(zero_init_guess=False)
 check_snes(stokes, "post-adaptation Stokes solve")
 t_restokes = time.perf_counter() - te
 
