@@ -35,47 +35,27 @@ delete, retriangulate — which is the other reason to prefer it: cutting
 tetrahedra along a surface is an unsolved pattern problem, while filling a
 cavity is standard meshing practice. Only the 2-D half exists here.
 
-The three shapes of the cavity
-------------------------------
-Deleting the vertices in the way leaves one hole. What has to be triangulated
-inside it depends only on how many ends of the surface reach the domain
-boundary, and all three cases are the **same walk** between two chains:
+The fill is delegated to gmsh, and gated
+----------------------------------------
+Deleting the vertices in the way leaves one hole, bounded by the cavity ring.
+The ring goes to gmsh as a discrete curve carrying its existing segmentation;
+the surface's chain goes as a second discrete curve **embedded** in the fill,
+its end nodes shared with the ring where the surface meets the cavity
+boundary — a crossing, or an end at the wall — and free otherwise, which is a
+tip. gmsh's constrained boundary recovery must return both curves VERBATIM,
+and the call is gated, not trusted: zero moved nodes, every input segment an
+edge of the triangulation, nothing inverted — refused rather than accepted
+degraded. (Measured basis:
+``~/+Simulations/mesh_reconnection_study/gmsh_2d_fill_spike.py`` — boundary,
+sub-h hole and free-end embed at once — and ``gmsh_2d_ends_spike.py`` — the
+crossing and mixed end-on-boundary cases.)
 
-====================  =========================================================
-ends on the boundary  the region to fill
-====================  =========================================================
-none (a fault)        an annulus — the cavity ring outside, the surface
-                      traversed out and back inside. Opened at one rung so that
-                      it, too, is a pair of chains.
-one (one tip inside)  a disc, its boundary the cavity ring and the out-and-back
-                      traverse, the two meeting at the boundary end.
-two (a crossing)      two discs, one per flank, each bounded by half the cavity
-                      ring and by the surface.
-====================  =========================================================
-
-The surface is traversed **out and back**, and the two passes name the SAME
-vertices. That is what makes a placed segment one edge with a cell on each side
-rather than two edges with a gap between them, and it is the whole of "zero
-thickness": the finite-width ribbon this construction was prototyped on is the
-same walk with the two passes held apart.
-
-Ordering the walk: the parameter
---------------------------------
-The two chains have to be marched in step, which needs one parameter that orders
-*both* — a point of the surface and a point of the cavity ring alike. Two
-cheaper choices fail, for instructive reasons. Arc length along each chain
-measures the cavity ring's wiggle rather than its progress, and the two rings
-drift apart. Position along strike is discontinuous at the tips, which is
-exactly where the difficulty lives.
-
-:func:`_traverse_parameter` uses arc length around the surface's own boundary —
-down one flank, **around the tip**, back up the other. It has neither problem,
-because it goes round the tip for the same reason the surface does. At a
-zero-thickness tip the two flanks meet at a point, so the turn through 180
-degrees is given a window of its own (``cap``, one point spacing wide) and the
-parameter is interpolated across it by ANGLE about the tip. That window is what
-turns the tip into a **fan** — one placed vertex, many cavity vertices — instead
-of a plateau on which the walk has nothing left to order by.
+A hand-rolled walk filled this cavity for one development generation — an
+arc-length parameter around the surface's boundary, an angle-interpolated fan
+at each tip, an ear-clipping third move. It worked, and it was retired the day
+the 3-D sheet proved the fill could be delegated: one fill mechanism for every
+dimension beats two, and the tip fan, the walk's hardest case, is gmsh's
+ordinary free-end embed.
 
 Scope
 -----
@@ -86,15 +66,14 @@ gather-first — redistribute so the fault's star is rank-interior, operate
 locally, renumber — at which point no placed point is ever shared. See
 :func:`~underworld3.utilities.reconnect.rebuild_cavities`.
 
-Both dimensions, by different fills. The 2-D curve (:func:`place_along_lines`)
-fills its cavity with the arc-length walk. The 3-D sheet (:func:`place_sheet`)
-delegates the fill to gmsh — a cavity shell is a 2-D surface with no total
-order to walk, and constrained tetrahedralisation with Steiner insertion is
-exactly what a mesh generator is for. The delegation is GATED, not trusted:
-both constraint surfaces are checked bit-identical, the sheet's triangles are
-checked present as interior faces, and conformity / Euler / volume are checked
-on every call (measured basis:
-``~/+Simulations/mesh_reconnection_study/sheet_cavity_spike.py``, 6/6).
+Both dimensions, one fill. The 2-D curve (:func:`place_along_lines`) and the
+3-D sheet (:func:`place_sheet`) both delegate their cavity fill to gmsh —
+constrained triangulation with Steiner insertion is exactly what a mesh
+generator is for — and both gate the delegation rather than trust it: every
+constraint checked bit-identical, every constraint segment or triangle checked
+present in the fill, conformity and orientation checked on every call
+(measured basis: ``sheet_cavity_spike.py`` 6/6 and the 2-D fill spikes, in
+``~/+Simulations/mesh_reconnection_study/``).
 
 Several surfaces are placed **one at a time**, each against the result of the
 last. The already-placed segments carry an edge label, and a labelled edge is an
@@ -242,30 +221,6 @@ def _point_at(pts, a):
     return pts[k] + u * (pts[k + 1] - pts[k])
 
 
-def _nearest_foot(pts, X):
-    """Arc length of, and signed distance to, the nearest point of the polyline.
-
-    The sign is taken from the nearest SEGMENT's normal. Where a polyline turns
-    sharply the two segments meeting at the corner disagree about the sign in
-    the reflex wedge; a fault trace turns gently, and the cavity keeps its ring
-    a clear element away from the corner.
-    """
-    seg, seglen, cum = _arc_length(pts)
-    best = np.full(len(X), np.inf)
-    a = np.zeros(len(X))
-    d = np.zeros(len(X))
-    for k in range(len(seg)):
-        u = np.clip(((X - pts[k]) @ seg[k]) / (seg[k] @ seg[k]), 0.0, 1.0)
-        foot = pts[k] + u[:, None] * seg[k]
-        dist = np.linalg.norm(X - foot, axis=1)
-        closer = dist < best
-        normal = np.array([-seg[k][1], seg[k][0]]) / seglen[k]
-        best[closer] = dist[closer]
-        a[closer] = (cum[k] + u * seglen[k])[closer]
-        d[closer] = ((X - pts[k]) @ normal)[closer]
-    return a, d
-
-
 def _resample(pts, spacing):
     """The polyline with every segment cut into pieces no longer than ``spacing``.
 
@@ -277,9 +232,9 @@ def _resample(pts, spacing):
     out = [pts[0]]
     for A, B in zip(pts[:-1], pts[1:]):
         span = float(np.linalg.norm(B - A))
-        # A repeated control point contributes no segment, and a segment of zero
-        # length has no direction: it would give the tip cap a normal of 0/0 and
-        # the whole walk a parameter of NaN, silently.
+        # A repeated control point contributes no segment, and a segment of
+        # zero length would put two coincident chain nodes into the fill —
+        # a degenerate constraint edge gmsh has no valid way to honour.
         if span == 0.0:
             continue
         n = max(int(np.ceil(span / spacing)), 1)
@@ -375,8 +330,9 @@ def _cavity_ring(cells, drop):
 
     Each dropped cell contributes its directed edges; an edge whose reverse also
     belongs to a dropped cell is interior to the cavity and cancels. What is left
-    traverses the hole with the cavity on its left — the orientation the walk
-    needs, obtained without a single geometric test.
+    traverses the hole with the cavity on its left — anticlockwise, the loop
+    orientation the fill hands to gmsh, obtained without a single geometric
+    test.
 
     ``None`` when the survivors do not leave one simple hole: a vertex appearing
     twice on the ring, or two disconnected cavities. Either means the caller has
@@ -431,249 +387,152 @@ def _cells_meeting(X, cells, pts, candidates):
     return np.asarray(candidates)[hit]
 
 
-# ---------------------------------------------------------------- the parameter
+# --------------------------------------------------------------------- the fill
 
-def _traverse_parameter(pts, X, cap, cap_near, cap_far):
-    """Arc length around the surface's boundary, for points off the surface.
+def _inside_polygon(P, q):
+    """Whether ``q`` is STRICTLY inside the polygon ``P`` (on an edge is not).
 
-    The surface's boundary is its two flanks and, where an end terminates inside
-    the mesh, a cap joining them. The parameter runs from 0 along the flank on
-    the NEGATIVE side, through the far cap, back along the positive side, and
-    through the near cap. Its two properties are the ones the walk needs and
-    nothing cheaper has: it is continuous across a tip, and it orders a cavity
-    vertex and a surface vertex on the same scale.
-
-    ``cap`` is the arc length allotted to a tip. Any positive value orders the
-    walk correctly; one point spacing gives the tip the same share of the
-    parameter as an ordinary segment, so the fan around it comes out with about
-    as many triangles as a segment gets.
-
-    Returns the parameter and the raw arc length of each foot, the latter
-    because a caller that knows a point's flank from the TOPOLOGY has a better
-    source for the side than the sign of a distance.
+    Ray crossing, with the strictness the fill's precondition needs: a chain
+    point exactly on the cavity boundary is as unplaceable as one beyond it.
     """
-    seg, seglen, cum = _arc_length(pts)
-    length = cum[-1]
-
-    a, d = _nearest_foot(pts, X)
-    s = np.where(d < 0.0, a, 2.0 * length + cap * cap_far - a)
-
-    # Beyond a tip every point has the SAME foot — the tip — so arc length says
-    # nothing about where it sits around the turn. The angle about the tip does,
-    # and it agrees with the flank formula at both ends of the window.
-    if cap_far:
-        t = seg[-1] / seglen[-1]
-        n = np.array([-t[1], t[0]])
-        r = X - pts[-1]
-        phi = np.arctan2(r @ n, r @ t)
-        s = np.where(r @ t > 0.0, length + cap * (phi + 0.5 * np.pi) / np.pi, s)
-    if cap_near:
-        t = seg[0] / seglen[0]
-        n = np.array([-t[1], t[0]])
-        r = X - pts[0]
-        psi = np.arctan2(r @ n, -(r @ t))
-        s = np.where(r @ t < 0.0,
-                     2.0 * length + cap * cap_far
-                     + cap * (0.5 * np.pi - psi) / np.pi, s)
-    return s, a
+    x, y = float(q[0]), float(q[1])
+    inside = False
+    for (x0, y0), (x1, y1) in zip(P, np.vstack([P[1:], P[:1]])):
+        # On-edge: collinear and within the segment's span.
+        cross = (x1 - x0) * (y - y0) - (y1 - y0) * (x - x0)
+        if (abs(cross) < 1e-14 * max(abs(x1 - x0) + abs(y1 - y0), 1e-300)
+                and min(x0, x1) - 1e-14 <= x <= max(x0, x1) + 1e-14
+                and min(y0, y1) - 1e-14 <= y <= max(y0, y1) + 1e-14):
+            return False
+        if (y0 > y) != (y1 > y):
+            xi = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+            if x < xi:
+                inside = not inside
+    return inside
 
 
-def _traverse(index, pts, cap, cap_near, cap_far):
-    """The surface out along one flank and back, as ``(vertex, parameter)``.
+def _gmsh_fill_2d(Xall, ring, chain):
+    """Triangulate the cavity with gmsh: the ring verbatim, the chain embedded.
 
-    ``index`` gives the vertex carrying each point of the polyline. A point in
-    the middle of the surface appears TWICE — once per flank — as the same
-    vertex; a tip inside the mesh appears once, and an end on the domain
-    boundary opens the chain there.
+    The ring — the cavity boundary, anticlockwise — goes in as a discrete
+    curve carrying its existing segmentation; the surface's chain as a second
+    discrete curve embedded in the plane surface. A chain end that IS a ring
+    vertex (a crossing, or an end on the wall) is expressed by having the
+    chain's elements reference the ring's own node tag — no duplicate node, no
+    snapping — and a free end is a tip, gmsh's ordinary free-end embed.
+
+    Everything is gated, because a fill that looks plausible and is not
+    conforming is worse than a refusal: zero moved nodes, every input segment
+    an edge of the triangulation, triangles present and returned anticlockwise.
+
+    Returns ``(tris, extra)``: triangles indexing ``Xall`` first and then the
+    ``extra`` interior points gmsh inserted (rare at cavity sizes, legal
+    always — they become ordinary mesh vertices).
     """
-    _seg, _seglen, cum = _arc_length(pts)
-    length = cum[-1]
-    last = len(pts) - 1
-    shift = 2.0 * length + cap * cap_far
+    import gmsh
 
-    out = [] if cap_near else [(int(index[0]), 0.0)]
-    out += [(int(index[k]), cum[k]) for k in range(1, last)]
-    out.append((int(index[last]), length + 0.5 * cap if cap_far else length))
-    out += [(int(index[k]), shift - cum[k]) for k in range(last - 1, 0, -1)]
-    out.append((int(index[0]), shift + 0.5 * cap if cap_near else shift))
-    return out
+    ring = [int(v) for v in ring]
+    chain = [int(v) for v in chain]
+    if len(set(chain)) != len(chain):
+        raise RuntimeError("the surface's chain repeats a vertex")
+    tag_of = {v: i + 1 for i, v in enumerate(ring)}
+    interior = [v for v in chain if v not in tag_of]
+    first = len(ring) + 1
+    for i, v in enumerate(interior):
+        tag_of[v] = first + i
+    n_known = len(ring) + len(interior)
 
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    try:
+        gmsh.model.add("cavity2d")
 
-# --------------------------------------------------------------------- the walk
+        ring_tag = gmsh.model.addDiscreteEntity(1)
+        gmsh.model.mesh.addNodes(
+            1, ring_tag, list(range(1, len(ring) + 1)),
+            np.column_stack([Xall[ring], np.zeros(len(ring))])
+            .reshape(-1).tolist())
+        tags = np.arange(1, len(ring) + 1)
+        gmsh.model.mesh.addElementsByType(
+            ring_tag, 1, [],
+            np.column_stack([tags, np.roll(tags, -1)]).reshape(-1).tolist())
 
-#: A triangle the walk may close has to have some shape to it, not merely a
-#: resolvable sign. The case that forces this is a cavity reaching the domain
-#: wall: the ring then runs ALONG the wall, and any triangle made of two wall
-#: vertices and the surface's end on that same wall is three collinear points.
-#: The orientation predicate declines an exactly-collinear triple, but a wall
-#: whose vertices differ in the last bit gives a resolvable sign and an area of
-#: 1e-15 — which passes every positivity test and is a cell with a zero angle.
-#: Refusing it makes the walk advance along the SURFACE instead, which is the
-#: triangulation that was wanted. Well below anything a real cell reaches: a
-#: cell of a fifth of a degree measures 9e-3 on this scale.
-_MIN_QUALITY = 1.0e-6
+        line_tag = gmsh.model.addDiscreteEntity(1)
+        if interior:
+            gmsh.model.mesh.addNodes(
+                1, line_tag, list(range(first, first + len(interior))),
+                np.column_stack([Xall[interior], np.zeros(len(interior))])
+                .reshape(-1).tolist())
+        cseg = np.array([[tag_of[a], tag_of[b]]
+                         for a, b in zip(chain[:-1], chain[1:])],
+                        dtype=np.int64)
+        gmsh.model.mesh.addElementsByType(line_tag, 1, [],
+                                          cseg.reshape(-1).tolist())
 
+        loop = gmsh.model.geo.addCurveLoop([ring_tag])
+        surf = gmsh.model.geo.addPlaneSurface([loop])
+        gmsh.model.geo.synchronize()
+        gmsh.model.mesh.embed(1, [line_tag], 2, surf)
 
-def _quality(P):
-    """Scale-free triangle quality: 1 equilateral, 0 degenerate, <0 inverted."""
-    e = np.array([P[2] - P[1], P[0] - P[2], P[1] - P[0]])
-    twice_area = ((P[1, 0] - P[0, 0]) * (P[2, 1] - P[0, 1])
-                  - (P[1, 1] - P[0, 1]) * (P[2, 0] - P[0, 0]))
-    return float(2.0 * np.sqrt(3.0) * twice_area
-                 / max(float((e ** 2).sum()), np.finfo(float).tiny))
+        # Sizes bracketing what is already there: fine enough to accept the
+        # chain's own spacing, coarse enough not to refine the cavity beyond
+        # the surviving mesh around it.
+        lengths = np.concatenate([
+            np.linalg.norm(np.diff(Xall[ring + ring[:1]], axis=0), axis=1),
+            np.linalg.norm(np.diff(Xall[chain], axis=0), axis=1)])
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.5 * float(lengths.min()))
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 2.0 * float(lengths.max()))
+        gmsh.model.mesh.generate(2)
 
+        out_tags, xyz, _ = gmsh.model.mesh.getNodes()
+        xyz = np.asarray(xyz).reshape(-1, 3)
+        row = {int(t): i for i, t in enumerate(out_tags)}
 
-def _usable(tri, X):
-    """Whether the walk may close this triangle: right way round, and not flat."""
-    return (reconnect._orient2d(X[tri[0]], X[tri[1]], X[tri[2]]) > 0
-            and _quality(X[list(tri)]) > _MIN_QUALITY)
+        moved = sum(1 for v, t in tag_of.items()
+                    if not np.array_equal(xyz[row[t], :2], Xall[v]))
+        if moved:
+            raise RuntimeError(
+                f"gmsh moved {moved} constrained node(s) of the cavity fill; "
+                "the fill cannot be sewn back and is refused.")
 
+        back = {t: v for v, t in tag_of.items()}
+        extra_tags = sorted(int(t) for t in out_tags if int(t) > n_known)
+        for j, t in enumerate(extra_tags):
+            back[t] = len(Xall) + j
+        extra = (xyz[[row[t] for t in extra_tags]][:, :2]
+                 if extra_tags else np.empty((0, 2)))
 
-def _encloses(tri, X, points):
-    """Whether any of ``points`` lies strictly inside the triangle."""
-    A, B, C = X[tri[0]], X[tri[1]], X[tri[2]]
-    v0, v1 = B - A, C - A
-    det = v0[0] * v1[1] - v0[1] * v1[0]
-    for p in points:
-        if p in tri:
-            continue
-        w = X[p] - A
-        s = (w[0] * v1[1] - w[1] * v1[0]) / det
-        t = (v0[0] * w[1] - v0[1] * w[0]) / det
-        if s > 0.0 and t > 0.0 and s + t < 1.0:
-            return True
-    return False
+        tris = None
+        for et, nodes in zip(*[gmsh.model.mesh.getElements(2, surf)[i]
+                               for i in (0, 2)]):
+            if et == 2:
+                tris = np.array([back[int(x)] for x in nodes],
+                                dtype=np.int64).reshape(-1, 3)
+        if tris is None or not len(tris):
+            raise RuntimeError("gmsh produced no triangles for the cavity")
 
+        edges = set()
+        for a, b, c in tris:
+            for e in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+                edges.add((min(e), max(e)))
+        missing = [
+            (a, b) for a, b in
+            list(zip(ring, ring[1:] + ring[:1])) + list(zip(chain, chain[1:]))
+            if (min(a, b), max(a, b)) not in edges]
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} constraint segment(s) are not edges of the "
+                "fill: gmsh did not honour the cavity's boundary or the "
+                "surface.")
 
-def _zip(outer, inner, s_out, s_in, X):
-    """Triangulate the region between two chains, advancing one side at a time.
-
-    Both chains run in increasing parameter and bound the same region, which
-    lies on the left of each. Every step closes one triangle on the chain that
-    is further behind, so the two are consumed in step; the other side is tried
-    when the preferred one would invert. The chains may SHARE an end vertex —
-    where the surface meets the domain boundary — and the triangle that would
-    close there is degenerate, so it is skipped rather than emitted.
-
-    Choosing the side by parameter rather than by shape is not a detail. With
-    the choice made on shape alone one chain runs away from the other: measured
-    on the ribbon prototype, the inner advanced 23 points against the outer's 10
-    before the correspondence was 14 surface widths out and every triangle
-    inverted.
-
-    There is a third move, and without it the walk wedges more often. A cavity
-    ring is not convex — it follows whatever cells were cleared — so a corner of
-    it can protrude into the region, and neither cross-triangle at such a corner
-    turns the right way. Clipping that corner off the ring as an EAR consumes
-    both of its ring edges and lets the walk carry on. It is a last resort
-    rather than a preference, because it advances the ring without advancing the
-    surface, and doing that by choice would let the two run out of step. The ear
-    is refused if it would swallow another vertex of either chain, which would
-    overlap the triangles that vertex still has to be given.
-
-    Only the ring may be clipped this way. An ear on the surface's own chain
-    would drop one of its points, which is the whole thing being placed.
-
-    Returns ``(triangles, None)``, or ``(None, vertex)`` naming the ring vertex
-    the walk could not get past. That vertex is a SPIKE of surviving mesh poking
-    into the cavity: the cavity wraps more than half way round it, so the only
-    triangle that could fill the notch uses a vertex the walk has already
-    consumed, and no forward walk can reach it. The caller's answer is to
-    sacrifice the vertex — it is one the cavity should have swallowed in the
-    first place — rather than to make the walk able to go backwards.
-    """
-    outer, s_out = list(outer), list(s_out)
-    inner, s_in = list(inner), list(s_in)
-    tris = []
-    i = j = 0
-    while i < len(outer) - 1 or j < len(inner) - 1:
-        m, n = len(outer) - 1, len(inner) - 1
-        prefer_outer = i < m and (j >= n or s_out[i + 1] <= s_in[j + 1])
-        taken = None
-        for side in (("o", "i") if prefer_outer else ("i", "o")):
-            if side == "o" and i < m:
-                tri = (outer[i], outer[i + 1], inner[j])
-            elif side == "i" and j < n:
-                tri = (outer[i], inner[j + 1], inner[j])
-            else:
-                continue
-            if len(set(tri)) < 3:
-                taken = (side, None)      # the chains meet: nothing to close
-                break
-            if _usable(tri, X):
-                taken = (side, tri)
-                break
-
-        if taken is None:
-            ear = (outer[i], outer[i + 1], outer[i + 2]) if i + 2 <= m else None
-            if ear is None or not _usable(ear, X) or _encloses(
-                    ear, X, outer[i:] + inner[j:]):
-                return None, outer[min(i + 1, m)]
-            tris.append(ear)
-            del outer[i + 1], s_out[i + 1]
-            continue
-
-        side, tri = taken
-        if tri is not None:
-            tris.append(tri)
-        if side == "o":
-            i += 1
-        else:
-            j += 1
-    return tris, None
-
-
-def _opened(chain, s):
-    """A closed chain cut open at its lowest parameter, ready for :func:`_zip`.
-
-    The cut is a bridge the walk crosses twice, once at each end, so the edge it
-    introduces is an ordinary interior edge with a cell on either side and not a
-    seam in the result.
-    """
-    start = int(np.argmin(s))
-    rolled = list(chain[start:]) + list(chain[:start])
-    t = np.roll(np.asarray(s, dtype=float), -start) - float(np.min(s))
-    return rolled + [rolled[0]], np.concatenate([t, [1.0]])
-
-
-def _walk_cavity(ring, s_ring, traverse, s_in, X, corners):
-    """Fill the cavity, in the one or two pieces the surface leaves of it.
-
-    ``corners`` are the ring vertices where the surface meets the domain
-    boundary, in polyline order: none for a fault, one for a fault with one tip
-    inside, two for a surface crossing the domain. Returns what :func:`_zip`
-    returns — the triangles, or the ring vertex the walk could not get past.
-    """
-    if not corners:
-        outer, s_out = _opened(ring, s_ring)
-        inner, t_in = _opened(traverse, s_in)
-        return _zip(outer, inner, s_out, t_in, X)
-
-    start = ring.index(corners[0])
-    ring = ring[start:] + ring[:start]
-    s_ring = np.concatenate([s_ring[start:], s_ring[:start]])
-    # A corner sits ON the surface, where the flank test that gives every other
-    # ring vertex its parameter has no side to report. Its value is known
-    # exactly from the traverse instead.
-    s_ring[0] = s_in[0]
-
-    if len(corners) == 1:
-        return _zip(ring + [ring[0]], traverse,
-                    np.concatenate([s_ring, [s_in[-1]]]), s_in, X)
-
-    q = ring.index(corners[1])
-    j = traverse.index(corners[1])
-    s_ring[q] = s_in[j]
-    out = []
-    for chain, s_chain, sub, t_sub in (
-            (ring[:q + 1], s_ring[:q + 1], traverse[:j + 1], s_in[:j + 1]),
-            (ring[q:] + [ring[0]], np.concatenate([s_ring[q:], [s_in[-1]]]),
-             traverse[j:], s_in[j:])):
-        piece, stuck = _zip(chain, sub, s_chain, t_sub, X)
-        if piece is None:
-            return None, stuck
-        out += piece
-    return out, None
+        Xext = np.vstack([Xall, extra])
+        P = Xext[tris]
+        cw = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+              - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0])) < 0.0
+        tris[cw] = tris[cw][:, [0, 2, 1]]
+        return [tuple(int(v) for v in t) for t in tris], extra
+    finally:
+        gmsh.finalize()
 
 
 # ------------------------------------------------------------- labels and edges
@@ -773,8 +632,8 @@ def _place_one(dm, pts, label, label_value, clearance, spacing, end_snap):
     held_counts = _interface_facet_counts(dm)
     # A vertex may only be deleted if every cell of its star may be cleared.
     # Held cells stay, so a vertex beside a surface already embedded would end
-    # up deleted while still on the cavity's boundary — a cavity that is not the
-    # union of its victims' stars, which the walk cannot fill.
+    # up deleted while still on the cavity's boundary — a cavity that is not
+    # the union of its victims' stars, whose ring would name a deleted vertex.
     beside_held = np.zeros(len(X), dtype=bool)
     beside_held[cells[held_c].ravel()] = True
     protected = on_boundary | held_v | beside_held
@@ -793,82 +652,66 @@ def _place_one(dm, pts, label, label_value, clearance, spacing, end_snap):
     placed = np.array(placed_rows).reshape(-1, 2)
     Xall = np.vstack([X, placed])
 
-    cap = spacing
-    tip_near, tip_far = 0 not in corner, (len(pts) - 1) not in corner
-    length = _arc_length(pts)[2][-1]
-    total = 2.0 * length + cap * (tip_near + tip_far)
-    traverse = _traverse(index, pts, cap, tip_near, tip_far)
-    corners = [int(index[k]) for k in sorted(corner)]
-
     edge = np.linalg.norm(X[cells[:, 0]] - X[cells[:, 1]], axis=1)
     reachable = np.flatnonzero(
         _distance_to_lines(X[cells].mean(axis=1), [pts]) < edge + spacing)
     crossed = _cells_meeting(X, cells, pts, reachable)
 
-    # The cavity is CLEARED and filled in one loop, because whether it is big
-    # enough is not knowable in advance: the walk can only fail at a spike of
-    # surviving mesh poking into it, and the answer to a spike is to swallow the
-    # vertex at its point. Each round strictly grows the victim set, so this
-    # terminates; the cap is against a spike the mesh will not give up — one on
-    # the domain wall, or on a surface already embedded.
-    for _attempt in range(8):
-        drop = np.union1d(np.flatnonzero(victim[cells].any(axis=1)), crossed)
-        # A cell owning a facet of a surface already embedded is never cleared.
-        # Clearing BOTH cells of such a facet destroys it — the facet's support
-        # is gone, so the refill has no reason to recreate that edge — and the
-        # earlier surface loses a facet out of the middle of its chain without
-        # anything raising. Holding the cells instead stops the cavity at the
-        # earlier surface, which is also what makes the ligament of an offset
-        # junction survive.
-        drop = drop[~held_c[drop]]
-        if not len(drop):
-            raise ValueError(
-                "the surface meets no cell of this mesh: there is nothing to "
-                "place it in.")
-        ring = _cavity_ring(cells, drop)
-        if ring is None:
-            raise RuntimeError(
-                "the cells cleared for the surface do not leave one simple "
-                "hole. Raise `clearance` so the cavity is wider than the shapes "
-                "pinching it.")
-        if victim[ring].any():
-            raise RuntimeError(
-                "a deleted vertex is on the cavity boundary; the cavity is not "
-                "the union of the victims' stars.")
-
-        # An end placed part-way along a boundary facet splits it, so it belongs
-        # on the cavity ring between that facet's two vertices.
-        for k, (_e, a, b) in split_at.items():
-            ring = _insert_on_ring(ring, a, b, int(index[k]))
-
-        s_ring, foot = _traverse_parameter(pts, Xall[ring], cap, tip_near,
-                                           tip_far)
-        # With both ends on the boundary the ring is cut in two and each piece
-        # belongs to a known flank, so the side comes from the TOPOLOGY rather
-        # than from the sign of a distance — which a ring vertex sitting a hair
-        # on the wrong side of the trace would otherwise get wrong, and with it
-        # its whole position in the walk.
-        if len(corners) == 2:
-            s_ring = _flank_parameter(ring, foot, length, corners)
-
-        tris, stuck = _walk_cavity(list(ring), s_ring / total,
-                                   [v for v, _s in traverse],
-                                   np.array([s for _v, s in traverse]) / total,
-                                   Xall, corners)
-        if tris is not None:
-            break
-        if stuck is None or stuck >= len(X) or protected[stuck]:
-            raise RuntimeError(
-                "the cavity could not be triangulated around the surface, and "
-                "the vertex it wedged on may not be deleted — it is on the "
-                "domain boundary, on a surface already embedded, or a point of "
-                "this one. Move the surface off it, or raise `clearance`.")
-        victim[stuck] = True
-    else:
+    drop = np.union1d(np.flatnonzero(victim[cells].any(axis=1)), crossed)
+    # A cell owning a facet of a surface already embedded is never cleared.
+    # Clearing BOTH cells of such a facet destroys it — the facet's support
+    # is gone, so the refill has no reason to recreate that edge — and the
+    # earlier surface loses a facet out of the middle of its chain without
+    # anything raising. Holding the cells instead stops the cavity at the
+    # earlier surface, which is also what makes the ligament of an offset
+    # junction survive.
+    drop = drop[~held_c[drop]]
+    if not len(drop):
+        raise ValueError(
+            "the surface meets no cell of this mesh: there is nothing to "
+            "place it in.")
+    ring = _cavity_ring(cells, drop)
+    if ring is None:
         raise RuntimeError(
-            "the cavity could not be triangulated around the surface after "
-            "growing it 8 times. Raise `clearance`, or place the surface's "
-            "points further apart.")
+            "the cells cleared for the surface do not leave one simple "
+            "hole. Raise `clearance` so the cavity is wider than the shapes "
+            "pinching it.")
+    if victim[ring].any():
+        raise RuntimeError(
+            "a deleted vertex is on the cavity boundary; the cavity is not "
+            "the union of the victims' stars.")
+
+    # An end placed part-way along a boundary facet splits it, so it belongs
+    # on the cavity ring between that facet's two vertices.
+    for k, (_e, a, b) in split_at.items():
+        ring = _insert_on_ring(ring, a, b, int(index[k]))
+
+    # Every chain point that is not itself a ring node must lie strictly
+    # inside the cavity. One on or beyond the ring means the cavity was
+    # stopped short of the surface — cells held for a surface already
+    # embedded, or a clearance too small — and gmsh would be handed a
+    # constraint it can only satisfy by moving nodes, which the fill gate
+    # refuses without saying why. Refuse here, with the cause.
+    ring_set = set(int(v) for v in ring)
+    outside = [k for k in range(len(pts))
+               if int(index[k]) not in ring_set
+               and not _inside_polygon(Xall[ring], Xall[int(index[k])])]
+    if outside:
+        raise RuntimeError(
+            f"{len(outside)} point(s) of the surface fall outside the cavity "
+            "cleared for it: the cavity was stopped by cells held for a "
+            "surface already embedded, or the clearance is too small. "
+            "Surfaces must be separated by at least a cell when placed one "
+            "at a time.")
+
+    tris, extra = _gmsh_fill_2d(Xall, ring, [int(v) for v in index])
+    # Interior points the fill inserted become ordinary mesh vertices; they are
+    # counted apart from the surface's own so the chain identity
+    # (facets == points - 1) stays readable in the result.
+    n_chain_placed = len(placed)
+    if len(extra):
+        placed = np.vstack([placed, extra])
+        Xall = np.vstack([Xall, extra])
 
     def mixed(v):
         return int(v) + vS if v < len(X) else -(int(v) - len(X) + 1)
@@ -907,9 +750,10 @@ def _place_one(dm, pts, label, label_value, clearance, spacing, end_snap):
                 "than that have to be placed together, into one cavity, which "
                 "is not yet implemented.")
 
-    return new_dm, {"n_placed": len(placed),
-                    "n_on_surface": len(pts) - len(placed),
+    return new_dm, {"n_placed": n_chain_placed,
+                    "n_on_surface": len(pts) - n_chain_placed,
                     "n_removed": int(victim.sum()),
+                    "n_fill_points": len(extra),
                     "n_surface_facets": n_facets}
 
 
@@ -1015,26 +859,6 @@ def _insert_on_ring(ring, a, b, v):
         "the cell holding it was not cleared. Raise `clearance`.")
 
 
-def _flank_parameter(ring, foot, length, corners):
-    """Re-derive the ring's parameter from which flank each piece of it is on.
-
-    Only for a surface crossing the domain, where the ring genuinely divides:
-    the two corners cut it in two, so every vertex of a piece is on one flank
-    whatever the sign of its distance to the trace happens to say. Reading the
-    side off the topology instead is what stops a ring vertex sitting a hair on
-    the wrong side of the trace from being given the far flank's parameter, and
-    with it the wrong place in the walk entirely.
-    """
-    first = np.zeros(len(ring), dtype=bool)
-    i, stop = ring.index(corners[0]), ring.index(corners[1])
-    while True:
-        first[i] = True
-        if i == stop:
-            break
-        i = (i + 1) % len(ring)
-    return np.where(first, foot, 2.0 * length - foot)
-
-
 def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
                       clearance=0.55, spacing=None, end_snap=0.25,
                       verbose=False):
@@ -1091,8 +915,9 @@ def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
     info : dict
         ``n_placed`` vertices this created on the surfaces, ``n_on_surface``
         existing vertices it reused, ``n_removed`` vertices it deleted,
-        ``n_surface_facets`` edges labelled, and ``min_area`` and ``min_angle``
-        of the result.
+        ``n_fill_points`` interior vertices the fill inserted (not on any
+        surface), ``n_surface_facets`` edges labelled, and ``min_area`` and
+        ``min_angle`` of the result.
 
         One surface is one chain, so its facets number one fewer than the
         vertices along it — the same identity the cut reports, with the placed
@@ -1106,9 +931,10 @@ def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
         If a surface does not overlap the mesh, or leaves the domain and
         re-enters it.
     RuntimeError
-        If the cleared cells do not leave one simple hole, or the cavity cannot
-        be triangulated around the surface without inverting a cell. Both mean
-        ``clearance`` is too small for the surface asked for.
+        If the cleared cells do not leave one simple hole, or the gated gmsh
+        fill is refused — a constrained node moved, or an input segment did
+        not survive as an edge. Both mean ``clearance`` is too small for the
+        surface asked for.
     NotImplementedError
         In 3-D, or in parallel.
 
@@ -1126,13 +952,13 @@ def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
     underworld3.utilities.line_cut.cut_along_lines : the same job by splitting
         the edges the surface crosses.
     underworld3.utilities.reconnect.remove_vertices : the repair pass that
-        cleans up what the walk leaves, and which will not touch a labelled edge.
+        cleans up after a placement, and which will not touch a labelled edge.
     """
     if dm.getDimension() != 2:
         raise NotImplementedError(
-            f"place_along_lines is 2-D; this mesh is {dm.getDimension()}-D. The "
-            "cavity of a placed sheet is a polyhedron, and filling one can need "
-            "Steiner points that the 2-D walk never has to invent.")
+            f"place_along_lines takes polylines in a 2-D mesh; this mesh is "
+            f"{dm.getDimension()}-D. A surface in a 3-D mesh is a sheet: use "
+            "place_sheet.")
     if uw.mpi.size > 1:
         raise NotImplementedError(
             "place_along_lines is serial. Placement ADDS points, so a surface "
@@ -1142,7 +968,7 @@ def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
 
     out = dm
     totals = {"n_placed": 0, "n_on_surface": 0, "n_removed": 0,
-              "n_surface_facets": 0}
+              "n_fill_points": 0, "n_surface_facets": 0}
     for pts in lines:
         out, one = _place_one(out, np.asarray(pts, dtype=float)[:, :2],
                               label, label_value, clearance, spacing, end_snap)

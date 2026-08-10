@@ -150,5 +150,5 @@ def test_dimension_dispatch_is_refused_both_ways():
     pts, tris = _sheet((0.5, 0.5, 0.5))
     with pytest.raises(NotImplementedError, match="place_along_lines"):
         place_sheet(mesh2.dm, pts, tris)
-    with pytest.raises(NotImplementedError, match="cavity of a placed sheet"):
+    with pytest.raises(NotImplementedError, match="place_sheet"):
         place_along_lines(mesh3.dm, [np.array([[0.2, 0.5], [0.8, 0.5]])])
