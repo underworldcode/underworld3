@@ -48,7 +48,6 @@ def scalar_dt(value):
         raise ValueError(f"Bad timestep from estimate_dt(): {value!r}")
 
     return DT_SAFETY * dt
-from underworld3.meshing import smooth_mesh_interior
 from underworld3.meshing.smoothing import _tri_cells, _signed_areas
 
 RES, N_STEPS, RA = 16, 20, 1.0e5
@@ -85,7 +84,7 @@ def run_convection(mesh, r, th, v, P, t_soln, cellsize):
     stokes.penalty = 0.0
     unit_r = mesh.CoordinateSystem.unit_e_0
     stokes.add_essential_bc((0.0, 0.0), mesh.boundaries.Lower.name)
-    stokes.add_essential_bc((0.0, 0.0), mesh.boundaries.Upper.name)
+    stokes.add_rotated_freeslip_bc(0, "Upper")
     T_cond = (r_o - r) / (r_o - r_inner)
     stokes.bodyforce = RA * (t_soln.sym[0] - T_cond) * unit_r
 
@@ -103,13 +102,13 @@ def run_convection(mesh, r, th, v, P, t_soln, cellsize):
               + (r_o - r) / (r_o - r_inner))
     t_soln.data[...] = np.asarray(uw.function.evaluate(
         init_t, t_soln.coords)).reshape(-1, 1)
-    stokes.solve(zero_init_guess=True)
+    stokes.solve()
 
     t_sim = 0.0
     for s in range(N_STEPS):
         dt = scalar_dt(adv_diff.estimate_dt())
         adv_diff.solve(timestep=dt, zero_init_guess=False)
-        stokes.solve(zero_init_guess=True)
+        stokes.solve()
         t_sim += dt
         tt = t_soln.data[:, 0]
         print(f"  step {s+1:2d}: t={t_sim:.4f} Δt={dt:.2e} "
