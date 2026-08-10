@@ -1699,6 +1699,58 @@ def _owned_stratum_counts(dm):
     return out
 
 
+def _validity_and_orientation_gates(new, comm):
+    """PETSc's DMPlex validity battery + the handedness census, as one gate.
+
+    The battery (maintainer ruling, 2026-08-10) runs via the options route —
+    petsc4py 3.25 exposes no check methods. ``check_faces`` runs at EVERY
+    rank count: it is issue #520's oracle (leaf/root cone agreement), the
+    plain distributed box passes it cleanly, and the rebuilt mesh passes it
+    once the vertex SF is attached before the interpolate. ``check_geometry``
+    stays serial-only — measured false-positives on every rank of a plain
+    distributed UnstructuredSimplexBox on this stack. Failures are reduced
+    before anyone raises; a rank-local raise in parallel is a hang.
+
+    The handedness census is the finding-1 gate from the #518 review:
+    abs()-based volume checks are structurally blind to inversion — a
+    mixed-handedness mesh passed every other gate here while assembling an
+    indefinite operator.
+    """
+    _checks = ["check_symmetry", "check_skeleton", "check_pointsf",
+               "check_faces"]
+    if comm.size == 1:
+        _checks.append("check_geometry")
+    chk = new.clone()
+    chk.setOptionsPrefix("uw_place_gate_")
+    _opts = PETSc.Options()
+    for _k in _checks:
+        _opts[f"uw_place_gate_dm_plex_{_k}"] = ""
+    _gate_fail = None
+    try:
+        chk.setFromOptions()
+    except PETSc.Error as exc:
+        _gate_fail = f"DMPlex validity check failed: {exc}"
+    finally:
+        for _k in _checks:
+            del _opts[f"uw_place_gate_dm_plex_{_k}"]
+    _fails = comm.allgather(_gate_fail)
+    _real = [f for f in _fails if f]
+    if _real:
+        raise RuntimeError(f"the sewn mesh fails PETSc's checks: "
+                           f"{_real[0]}")
+
+    v6 = _cell_volumes_signed6(new)
+    signs = np.array([float((v6 > 0).sum()), float((v6 < 0).sum()),
+                      float((v6 == 0).sum())])
+    comm.Allreduce(MPI.IN_PLACE, signs, op=MPI.SUM)
+    if signs[2] or (signs[0] and signs[1]):
+        raise RuntimeError(
+            f"the sewn mesh has mixed cell orientation "
+            f"({int(signs[0])} positive, {int(signs[1])} negative, "
+            f"{int(signs[2])} degenerate) — the fill's cells were not "
+            "oriented to the kept convention.")
+
+
 def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                 clearance=0.6, verbose=False):
     """Embed a triangulated sheet in a 3-D mesh by placing its points.
@@ -1952,50 +2004,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                 f"placing {label!r} would leave the surface {key[0]!r} with "
                 f"{now} interior faces instead of {before}.")
 
-    # PETSc's own validity battery as the final pass (maintainer ruling,
-    # 2026-08-10), via the options route — petsc4py 3.25 exposes no
-    # check methods. check_geometry and check_faces are SERIAL-ONLY
-    # here: measured on this stack, check_geometry false-positives on
-    # every rank of a plain distributed UnstructuredSimplexBox (a mesh
-    # the whole production suite solves on), so in parallel we run the
-    # partition-safe subset. Failure is reduced before anyone raises —
-    # a rank-local raise in parallel is a hang.
-    _serial_only = ("check_faces", "check_geometry")
-    _checks = ["check_symmetry", "check_skeleton", "check_pointsf"]
-    if comm.size == 1:
-        _checks += list(_serial_only)
-    chk = new.clone()
-    chk.setOptionsPrefix("uw_place_gate_")
-    _opts = PETSc.Options()
-    for _k in _checks:
-        _opts[f"uw_place_gate_dm_plex_{_k}"] = ""
-    _gate_fail = None
-    try:
-        chk.setFromOptions()
-    except PETSc.Error as exc:
-        _gate_fail = f"DMPlex validity check failed: {exc}"
-    finally:
-        for _k in _checks:
-            del _opts[f"uw_place_gate_dm_plex_{_k}"]
-    _fails = comm.allgather(_gate_fail)
-    _real = [f for f in _fails if f]
-    if _real:
-        raise RuntimeError(f"the sewn mesh fails PETSc's checks: "
-                           f"{_real[0]}")
-
-    # Orientation gate: every cell the same handedness. abs() volume
-    # gates are BLIND to inversion — a mixed-handedness mesh passed
-    # every previous check and assembled an indefinite operator.
-    v6 = _cell_volumes_signed6(new)
-    signs = np.array([float((v6 > 0).sum()), float((v6 < 0).sum()),
-                      float((v6 == 0).sum())])
-    comm.Allreduce(MPI.IN_PLACE, signs, op=MPI.SUM)
-    if signs[2] or (signs[0] and signs[1]):
-        raise RuntimeError(
-            f"the sewn mesh has mixed cell orientation "
-            f"({int(signs[0])} positive, {int(signs[1])} negative, "
-            f"{int(signs[2])} degenerate) — the fill's cells were not "
-            "oriented to the kept convention.")
+    _validity_and_orientation_gates(new, comm)
 
     min_vol = np.array([_owned_min_cell_volume(new)], dtype=float)
     comm.Allreduce(MPI.IN_PLACE, min_vol, op=MPI.MIN)
@@ -2957,6 +2966,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
             raise RuntimeError(
                 f"placing {label!r} would leave the surface {key[0]!r} with "
                 f"{now} interior faces instead of {before}.")
+
+    _validity_and_orientation_gates(new, comm)
 
     min_vol = np.array([_owned_min_cell_volume(new)], dtype=float)
     comm.Allreduce(MPI.IN_PLACE, min_vol, op=MPI.MIN)

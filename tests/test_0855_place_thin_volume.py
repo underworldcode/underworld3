@@ -198,3 +198,41 @@ def test_zero_width_is_refused():
     with pytest.raises(ValueError, match="width"):
         place_thin_volume(mesh.dm, [np.array([[0.3, 0.5], [0.7, 0.5]])],
                           width=0.0)
+
+
+def test_finite_elements_are_exact_on_the_embedded_mesh():
+    """P2 Poisson reproduces a quadratic through the embedded zone exactly.
+
+    The same oracle as the sheet's (test_0854): the embed shares the sewing
+    skeleton whose mixed-handedness and seam-cone defects (#518 review
+    finding 1, issue #520) were invisible to every topological gate. The
+    layer's diffusivity is 1 like the background, so the exact solution
+    crosses the zone untouched and any assembly disorder shows as error.
+    """
+    import sympy
+
+    base = _box3(0.11)
+    bounds = base._boundaries_with("Zone")
+    new, _ = place_thin_volume(base.dm, CROSS_3D, width=0.045,
+                               label="Zone",
+                               label_value=bounds["Zone"].value)
+    mesh = uw.discretisation.Mesh(
+        new, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y, z = mesh.X
+    exact = x**2 + y**2 + z**2
+    t = uw.discretisation.MeshVariable("T_fe_zone", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -6.0
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0])
+                 - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
+    assert float(err.max()) < 1e-8, (
+        f"the embedded mesh assembles a wrong operator: max |u - exact| = "
+        f"{float(err.max()):.3e}")

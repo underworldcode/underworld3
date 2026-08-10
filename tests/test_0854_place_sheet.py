@@ -152,3 +152,43 @@ def test_dimension_dispatch_is_refused_both_ways():
         place_sheet(mesh2.dm, pts, tris)
     with pytest.raises(NotImplementedError, match="place_sheet"):
         place_along_lines(mesh3.dm, [np.array([[0.2, 0.5], [0.8, 0.5]])])
+
+
+def test_finite_elements_are_exact_on_the_placed_mesh():
+    """P2 Poisson reproduces a quadratic on the sewn mesh to solver precision.
+
+    The oracle that was missing when issue #520's parent defect shipped: a
+    mesh can pass conformity, Euler, exact volume and every abs()-based gate
+    while assembling a WRONG operator — mixed cell handedness did exactly
+    that (4131 cells one way, 443 the other; a linear solution came back with
+    errors of 27 under exact LU). P2 contains x^2+y^2+z^2, so a correct
+    assembly returns it to solver precision; any orientation or DOF-numbering
+    disorder cannot.
+    """
+    import sympy
+
+    base = _box(0.11)
+    bounds = base._boundaries_with("Rupture")
+    pts, tris = _sheet((0.5, 0.5, 0.5))
+    dm, _ = place_sheet(base.dm, pts, tris, label="Rupture",
+                        label_value=bounds["Rupture"].value)
+    mesh = uw.discretisation.Mesh(
+        dm, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y, z = mesh.X
+    exact = x**2 + y**2 + z**2
+    t = uw.discretisation.MeshVariable("T_fe_sheet", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -6.0
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0])
+                 - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
+    assert float(err.max()) < 1e-8, (
+        f"the placed mesh assembles a wrong operator: max |u - exact| = "
+        f"{float(err.max()):.3e}")
