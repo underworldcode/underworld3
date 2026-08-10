@@ -102,6 +102,7 @@ interface, so a later placement will not delete a vertex out of an earlier one.
 """
 
 import numpy as np
+from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
@@ -1275,22 +1276,151 @@ def _sheet_distance(X, pts, tris):
     return best
 
 
-def _boundary_faces_3d(dm):
-    """Faces of the domain boundary, and the mask of their vertices."""
-    vS, vE = dm.getDepthStratum(0)
-    fS, fE = dm.getHeightStratum(1)
-    faces, on = [], np.zeros(vE - vS, dtype=bool)
-    for f in range(fS, fE):
-        if len(dm.getSupport(f)) == 1:
-            faces.append(int(f))
-            for p in dm.getTransitiveClosure(f)[0]:
-                if vS <= int(p) < vE:
-                    on[int(p) - vS] = True
-    return faces, on
+def _propagate_vertex(dm, chart_values, mpi_op, np_combine):
+    """Reconcile a chart-length per-point array over the point star-forest.
+
+    Reduce leaf-to-root with ``mpi_op``, broadcast root-to-leaf, combine with
+    ``np_combine`` — after which every rank holds the same value for every
+    point it can see. The pattern is the contact stream's ``propagate`` (taken
+    from feature/fault-split-node c8693579, recorded in the ledger); it is
+    what makes marking a pure function of the GLOBAL mesh rather than of the
+    partition. COLLECTIVE; a rank sharing nothing still participates.
+    """
+    if uw.mpi.size == 1:
+        return chart_values
+    sf = dm.getPointSF()
+    try:
+        _n, ilocal, _ir = sf.getGraph()
+    except (ValueError, TypeError):
+        return chart_values
+    tmp = chart_values.copy()
+    sf.reduceBegin(MPI._typedict[chart_values.dtype.char], tmp,
+                   chart_values, mpi_op)
+    sf.reduceEnd(MPI._typedict[chart_values.dtype.char], tmp,
+                 chart_values, mpi_op)
+    out = chart_values.copy()
+    sf.bcastBegin(MPI._typedict[chart_values.dtype.char], chart_values, out,
+                  MPI.REPLACE)
+    sf.bcastEnd(MPI._typedict[chart_values.dtype.char], chart_values, out,
+                MPI.REPLACE)
+    return np_combine(chart_values, out)
+
+
+def _shared_point_flags(dm):
+    """Chart-length 0/1 flags for points held by more than one rank."""
+    return reconnect._shared_points(dm)
+
+
+def _vertex_h_3d(dm, cells, n_vertices):
+    """Per-vertex local h — the min incident cell diameter — SF-reconciled.
+
+    A seam vertex sees only its local cells, so without the reconciliation two
+    ranks disagree about its h, and with it about which vertices are victims:
+    the marking must be a function of the mesh, not of the partition.
+    """
+    from underworld3.utilities.edge_split import cell_diameters
+
+    # The gather can leave a rank with NO cells, and `cell_diameters` raises
+    # on one (empty `ends` is 1-D). An empty rank contributes the identity of
+    # every reduction, never a raise — the 2-D module's parallel discipline.
+    h_cell = cell_diameters(dm) if len(cells) else np.zeros(0)
+    vS, _vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    work = np.full(pEnd - pStart, np.inf)
+    for c, tet in enumerate(cells):
+        idx = tet + vS - pStart
+        work[idx] = np.minimum(work[idx], h_cell[c])
+    work = _propagate_vertex(dm, work, MPI.MIN, np.minimum)
+    return work[vS - pStart: vS - pStart + n_vertices], h_cell
+
+
+def _true_wall_vertex_mask(dm, n_vertices):
+    """Vertices of the DOMAIN boundary — not of a partition seam.
+
+    On a distributed mesh a seam face also has local support 1, so "support
+    == 1" alone misclassifies the seam as wall and would protect (and worse,
+    trust) the wrong vertices. A wall face is support 1 AND unshared; the
+    vertex mask is then OR-reconciled, because a wall vertex can be shared
+    with a rank that owns no wall face touching it.
+    """
+    vS, _vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    shared = _shared_point_flags(dm)
+    mark = np.zeros(pEnd - pStart, dtype=np.int32)
+    for f in range(*dm.getHeightStratum(1)):
+        if len(dm.getSupport(f)) == 1 and not shared[f - pStart]:
+            for q in dm.getTransitiveClosure(f)[0]:
+                if dm.getPointDepth(int(q)) == 0:
+                    mark[int(q) - pStart] = 1
+    mark = _propagate_vertex(dm, mark, MPI.MAX, np.maximum)
+    return mark[vS - pStart: vS - pStart + n_vertices] == 1
+
+
+def _gather_region(dm, vertex_mark_chart, verbose=False):
+    """Redistribute so every marked vertex's cell star (+1 layer) is one rank's.
+
+    A mask-driven port of the contact stream's ``_redistribute_fault_interior``
+    (feature/fault-split-node c8693579 / 1d487319; the label-driven original
+    is measured at np=2..8 with serial-identical topology). Only the marked
+    star moves — everything else keeps its load-balanced home — via a shell
+    partitioner. Returns ``(new_dm, moved)``; the input is untouched.
+    """
+    comm = dm.getComm().tompi4py()
+    if comm.size == 1:
+        return dm, False
+
+    work = dm.clone()
+    cS, cE = work.getHeightStratum(0)
+    vS, vE = work.getDepthStratum(0)
+    pStart, pEnd = work.getChart()
+
+    mark = vertex_mark_chart.astype(np.int32).copy()
+    mark = _propagate_vertex(work, mark, MPI.MAX, np.maximum)
+
+    def star_of_marked(m):
+        out = set()
+        for v in range(vS, vE):
+            if m[v - pStart]:
+                for q in work.getTransitiveClosure(v, useCone=False)[0]:
+                    if cS <= int(q) < cE:
+                        out.add(int(q))
+        return out
+
+    star = star_of_marked(mark)
+    # One growth layer: the surgery needs every point in the closure of a
+    # region cell unshared, and a point is unshared exactly when all its
+    # incident cells are co-resident.
+    mark2 = np.zeros(pEnd - pStart, dtype=np.int32)
+    for c in star:
+        for q in work.getTransitiveClosure(c)[0]:
+            if vS <= int(q) < vE:
+                mark2[int(q) - pStart] = 1
+    mark2 = _propagate_vertex(work, mark2, MPI.MAX, np.maximum)
+    star |= star_of_marked(mark2)
+
+    counts = np.asarray(comm.allgather(len(star)))
+    if counts.sum() == 0:
+        raise ValueError("place_sheet: the sheet meets no cell on any rank")
+    target = int(np.argmax(counts))
+
+    assign = np.full(cE - cS, comm.rank, dtype=np.int32)
+    for c in star:
+        assign[c - cS] = target
+    order = np.argsort(assign, kind="stable").astype(np.int32)
+    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
+
+    part = work.getPartitioner()
+    part.setType(PETSc.Partitioner.Type.SHELL)
+    part.setShellPartition(comm.size, sizes=sizes, points=order)
+    work.distribute()
+    if verbose:
+        uw.pprint(f"[place_sheet] gathered a {int(counts.sum())}-cell region "
+                  f"onto rank {target}")
+    return work, True
 
 
 def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
-                     held_cells):
+                     held_cells, h_vertex, on_wall, shared_chart):
     """Victims, dropped tets and the closed cavity shell around the sheet.
 
     The same two-part rule as 2-D — vertices within the clearance go, and any
@@ -1298,16 +1428,13 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     clearance while the sheet crosses the interior) — with the same guards:
     wall vertices are never victims, cells of an embedded surface are held,
     a victim's whole star must be dropped, and the shell must be a closed
-    manifold that never touches the domain wall.
+    manifold that never touches the domain wall. Rank-local: the caller
+    guarantees (and this function asserts) that the whole region is interior
+    to this rank — the gather's contract.
     """
     from underworld3.utilities.edge_split import cell_diameters
 
     h_cell = cell_diameters(dm)
-    _wall_faces, on_wall = _boundary_faces_3d(dm)
-
-    h_vertex = np.full(len(X), h_cell.mean())
-    for c, tet in enumerate(cells):
-        h_vertex[tet] = np.minimum(h_vertex[tet], h_cell[c])
     d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
 
     held_vertex = np.zeros(len(X), dtype=bool)
@@ -1316,8 +1443,6 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
             held_vertex[cells[c]] = True
     victim = (d_sheet < clearance * h_vertex) & ~on_wall & ~held_vertex
 
-    # Tets the sheet passes through: per sheet triangle, candidate tets whose
-    # vertices straddle its plane with a footpoint inside the triangle.
     drop = victim[cells].any(axis=1)
     cen = X[cells].mean(axis=1)
     for t in sheet_tris:
@@ -1346,8 +1471,6 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     if held_cells:
         drop[list(held_cells)] = False
 
-    # A victim vertex with a surviving cell would sit ON the shell it is
-    # supposed to vanish from: extend the drop to every victim's whole star.
     for c in np.flatnonzero(~drop):
         if victim[cells[c]].any():
             drop[c] = True
@@ -1364,6 +1487,7 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     cS, _cE = dm.getHeightStratum(0)
     vS, _vE = dm.getDepthStratum(0)
     fS, fE = dm.getHeightStratum(1)
+    pStart, _pEnd = dm.getChart()
     dropped = set(int(c) + cS for c in drop_ids)
     shell = []
     for f in range(fS, fE):
@@ -1372,6 +1496,12 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
         if n_in == 0:
             continue
         if len(support) == 1:
+            if shared_chart[f - pStart]:
+                raise RuntimeError(
+                    "the sheet's cavity touches a partition seam after the "
+                    "gather; the region marking under-reached. Raise "
+                    "`clearance` margin in the gather mask — this is a "
+                    "defect, not a configuration error.")
             raise RuntimeError(
                 "the sheet's cavity reached the domain wall; the sheet must "
                 "be interior, with clearance to spare")
@@ -1402,6 +1532,7 @@ def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
 
     Gated, not trusted: the caller checks that no constrained node moved and
     that every sheet triangle survives; here the fill only has to exist.
+    Runs as a serial library call on the rank that owns the gathered region.
     """
     import gmsh
 
@@ -1468,32 +1599,167 @@ def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
         gmsh.finalize()
 
 
+def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
+    """Rebuild the local chart with cells replaced; every rank, collectively.
+
+    The uninterpolated-cells + ``DMPlexInterpolate`` pattern (taken from
+    fault_split.split_along_label_3d on feature/fault-split-node, recorded in
+    the ledger): only cell-to-vertex cones are wired by hand — trivially
+    orientation-free — and PETSc derives the faces, edges and every cone
+    orientation. A rank with no surgery rebuilds its chart unchanged, because
+    ``interpolate`` is collective and the star-forest of the interpolated
+    mesh must be built by every rank together.
+
+    ``made_cells`` entries are mixed: a non-negative value is an OLD vertex
+    point; ``-(k+1)`` is row ``k`` of ``placed``. Returns the interpolated
+    mesh, the chart point map (old -> new, -1 for deleted), and the new
+    vertex ids of the placed rows.
+    """
+    pStart, pEnd = dm.getChart()
+    cS, cE = dm.getHeightStratum(0)
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    eS, eE = dm.getDepthStratum(1)
+    nv_old = vE - vS
+
+    keep_cell = np.ones(cE - cS, dtype=bool)
+    keep_cell[np.asarray(drop_cell_ids, dtype=np.int64)] = False
+    keep_vertex = np.ones(nv_old, dtype=bool)
+    keep_vertex[np.asarray(victim_ids, dtype=np.int64)] = False
+    v_old_to_compact = -np.ones(nv_old, dtype=np.int64)
+    v_old_to_compact[keep_vertex] = np.arange(int(keep_vertex.sum()))
+    n_surv = int(keep_vertex.sum())
+    placed = np.asarray(placed, dtype=float).reshape(-1, 3)
+
+    cell_verts = _tet_vertices(dm)
+    kept = cell_verts[keep_cell]
+    nc_new = int(keep_cell.sum()) + len(made_cells)
+    nv_new = n_surv + len(placed)
+
+    def v_uninterp(x):
+        if x < 0:
+            return nc_new + n_surv + (-int(x) - 1)
+        return nc_new + int(v_old_to_compact[int(x)])
+
+    new = PETSc.DMPlex().create(comm=dm.comm)
+    new.setDimension(3)
+    new.setChart(0, nc_new + nv_new)
+    for i in range(nc_new):
+        new.setConeSize(i, 4)
+    new.setUp()
+    for i, tet in enumerate(kept):
+        new.setCone(i, [nc_new + int(v_old_to_compact[v]) for v in tet])
+    for j, tet in enumerate(made_cells):
+        new.setCone(int(keep_cell.sum()) + j,
+                    [v_uninterp(v) for v in tet])
+    new.symmetrize()
+    new.stratify()
+    new.interpolate()
+
+    vS2, vE2 = new.getDepthStratum(0)
+    if (new.getHeightStratum(0) != (0, nc_new)
+            or (vS2, vE2) != (nc_new, nc_new + nv_new)):
+        raise RuntimeError(
+            "place_sheet internal: DMPlexInterpolate moved the cell or "
+            "vertex numbering the point-map arithmetic relies on.")
+
+    X = _coords(dm)[:nv_old]
+    coords_new = np.vstack([X[keep_vertex], placed]) if len(placed) \
+        else X[keep_vertex]
+    reconnect._write_coordinates(new, dm.getCoordinateDim(), (vS2, vE2),
+                                 coords_new)
+
+    point_map = np.full(pEnd - pStart, -1, dtype=np.int64)
+    surv_cells = np.flatnonzero(keep_cell)
+    point_map[surv_cells + cS - pStart] = np.arange(len(surv_cells))
+    surv_verts = np.flatnonzero(keep_vertex)
+    point_map[surv_verts + vS - pStart] = vS2 + np.arange(n_surv)
+    placed_new = vS2 + n_surv + np.arange(len(placed))
+
+    # Old faces and edges are recovered by JOINING their surviving vertex
+    # tuples in the new chart (the contact stream's recovery move). One that
+    # does not join back was interior to the cavity and is legitimately gone;
+    # the breach detector downstream is what confirms nothing LABELLED went
+    # with it.
+    for lo, hi in ((fS, fE), (eS, eE)):
+        for q in range(lo, hi):
+            verts = [int(x) - vS for x in dm.getTransitiveClosure(q)[0]
+                     if dm.getPointDepth(int(x)) == 0]
+            ms = [v_old_to_compact[v] for v in verts]
+            if any(m < 0 for m in ms):
+                continue
+            joined = new.getFullJoin([int(vS2 + m) for m in ms])
+            if len(joined) == 1:
+                point_map[q - pStart] = int(joined[0])
+
+    reconnect._copy_labels(new, dm, point_map)
+    if uw.mpi.size > 1:
+        reconnect._rebuild_point_sf(new, dm, point_map,
+                                    int(new.getChart()[1]))
+    return new, point_map, placed_new
+
+
+def _owned_stratum_counts(dm):
+    """Owned (root) point counts per stratum: (vertices, edges, faces, cells).
+
+    A shared point is counted by its owner alone, so the sums allreduce to
+    the global stratum sizes and the global Euler number is computable.
+    """
+    pStart, _pEnd = dm.getChart()
+    shared_leaf = np.zeros(dm.getChart()[1] - pStart, dtype=bool)
+    if uw.mpi.size > 1:
+        try:
+            _n, ilocal, _ir = dm.getPointSF().getGraph()
+            if ilocal is not None and len(ilocal):
+                shared_leaf[np.asarray(ilocal, dtype=np.int64) - pStart] = True
+        except (ValueError, TypeError):
+            # An unpopulated star-forest reports a root count petsc4py cannot
+            # shape an array from (the same sanctioned mode reconnect's
+            # _shared_points documents). Nothing is shared, so every local
+            # point is owned and the zero mask is already right.
+            pass
+    out = []
+    for lo, hi in (dm.getDepthStratum(0), dm.getDepthStratum(1),
+                   dm.getHeightStratum(1), dm.getHeightStratum(0)):
+        out.append(int(hi - lo) - int(shared_leaf[lo - pStart:
+                                                  hi - pStart].sum()))
+    return out
+
+
 def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                 clearance=0.6, verbose=False):
     """Embed a triangulated sheet in a 3-D mesh by placing its points.
 
     The 3-D form of :func:`place_along_lines`: the sheet's points become mesh
-    vertices, the vertices in the way are deleted, and the cavity is
-    tetrahedralised around the sheet so every sheet triangle is a face of the
-    result, carrying ``label``. The sheet's RIM may lie inside the mesh — a
-    fault edge — exactly as a 2-D tip may.
+    vertices and every sheet triangle a labelled interior face, with the RIM
+    free inside the mesh, on a mesh that already exists — so the fault's
+    position is a design variable, not a property of mesh generation.
 
-    The cavity fill is delegated to gmsh (constrained Delaunay with boundary
-    recovery; Steiner points inserted where a constrained tetrahedralisation
-    demands them) and GATED here: the cavity shell and the sheet must come
-    through bit-identical, every sheet triangle must be an interior face, and
-    the result must be conforming, un-inverted, and volume-conserving.
+    Works in serial and in parallel, through ONE mechanism. In parallel the
+    sheet's region is gathered onto a single rank first (the contact stream's
+    measured policy — the star is thin, so the imbalance is bounded by the
+    fault region, not the refined band), the serial carve-and-fill runs there
+    as the rank-local step, and every rank rebuilds its chart collectively
+    through the uninterpolate-then-``DMPlexInterpolate`` pattern. Because the
+    gathered region is rank-interior, every point the surgery deletes or adds
+    is unshared: the star-forest's leaf set is provably unchanged and only
+    renumbers. The result is partition-independent by construction — the fill
+    sees the identical cavity whatever the incoming partition was.
+
+    The cavity fill is delegated to gmsh and GATED per call: both constraint
+    surfaces bit-identical, every sheet triangle an interior face, conformity,
+    global Euler number, volume conservation, and every previously embedded
+    surface's interior-face count re-read off the result.
 
     Parameters
     ----------
     dm : PETSc.DMPlex
-        A 3-D simplex mesh. **Not modified** — the result is a new mesh.
+        A 3-D simplex mesh, serial or distributed. **Not modified.**
     points, triangles : array_like
-        The sheet: ``(N, 3)`` vertices and ``(M, 3)`` triangle indices —
-        the form :class:`~underworld3.meshing.FaultSurface` carries. The
-        sheet must be strictly interior to the mesh, must not cross itself,
-        and must keep at least a cell's separation from any surface already
-        embedded (close pairs are one thin volume, not two sheets).
+        The sheet: ``(N, 3)`` vertices and ``(M, 3)`` triangle indices — the
+        form :class:`~underworld3.meshing.FaultSurface` carries. Interior to
+        the domain, non-self-intersecting, at least a cell from any embedded
+        surface.
     label, label_value : str, int
         Label put on the sheet's faces in the result.
     clearance : float
@@ -1505,110 +1771,205 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     Returns
     -------
     placed : PETSc.DMPlex
-        A new mesh in which every sheet triangle is a face carrying
-        ``label``.
+        A new mesh (distributed as the input was, with the sheet's region
+        resident on one rank) in which every sheet triangle is a face
+        carrying ``label``.
     info : dict
-        ``n_placed`` (sheet vertices + Steiner points created),
-        ``n_on_surface`` (always 0 in 3-D — the sheet never reuses a mesh
-        vertex), ``n_removed``, ``n_surface_facets``, ``min_volume``.
+        Global counts: ``n_placed``, ``n_on_surface`` (always 0 in 3-D),
+        ``n_removed``, ``n_surface_facets``, ``min_volume``.
 
     Raises
     ------
     NotImplementedError
-        In 2-D (use :func:`place_along_lines`), or in parallel — the
-        parallel route is gather-first, after which this serial operation is
-        the rank-local step.
-    RuntimeError
-        If the cavity reaches the wall, is not a closed manifold, needs a
-        cell of an embedded surface, or the gated fill fails any check.
+        In 2-D — use :func:`place_along_lines`.
+    RuntimeError, ValueError
+        The carve/fill refusals; ALWAYS raised collectively — every rank
+        raises the same error, or none does (the parallel discipline the
+        2-D cut established).
     """
     if dm.getDimension() != 3:
         raise NotImplementedError(
             f"place_sheet is 3-D; this mesh is {dm.getDimension()}-D. Use "
             "place_along_lines for a curve in 2-D.")
-    if uw.mpi.size > 1:
-        raise NotImplementedError(
-            "place_sheet is serial. The parallel route is gather-first: "
-            "redistribute so the sheet's cell star is rank-interior, place "
-            "locally, renumber — at which point no placed point is shared.")
 
+    comm = uw.mpi.comm
     sheet_pts = np.asarray(points, dtype=float).reshape(-1, 3)
     sheet_tris = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
-    X = _coords(dm)
-    vS, vE = dm.getDepthStratum(0)
-    X = X[: vE - vS]
-    cells = _tet_vertices(dm)
-    cS, _cE = dm.getHeightStratum(0)
 
-    interface = _interface_faces_3d(dm)
+    # -------------------------------------------------- mark, then gather
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    X = _coords(dm)[: vE - vS]
+    cells = _tet_vertices(dm)
+    h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
+    d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
+    # The gather mask is a SUPERSET of everything the carve may touch: the
+    # victims (clearance) plus the crossed cells' vertices, which sit within
+    # a cell diameter of the sheet. The +2 margin covers grading between
+    # neighbouring cells; the carve asserts nothing shared afterwards, so an
+    # under-reach is loud, never silent.
+    mark = np.zeros(pEnd - pStart, dtype=np.int32)
+    mark[np.flatnonzero(d_sheet < (clearance + 2.0) * h_vertex)
+         + vS - pStart] = 1
+
+    volume_before = np.array(
+        [_owned_cell_volume(dm)], dtype=float)
+    comm.Allreduce(MPI.IN_PLACE, volume_before, op=MPI.SUM)
+
+    dm_work, moved = _gather_region(dm, mark, verbose=verbose)
+    if moved:
+        vS, vE = dm_work.getDepthStratum(0)
+        pStart, pEnd = dm_work.getChart()
+        X = _coords(dm_work)[: vE - vS]
+        cells = _tet_vertices(dm_work)
+        h_vertex, _h_cell = _vertex_h_3d(dm_work, cells, len(X))
+        d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
+
+    on_wall = _true_wall_vertex_mask(dm_work, len(X))
+    shared = _shared_point_flags(dm_work).astype(bool)
+
+    cS, _cE = dm_work.getHeightStratum(0)
+    interface = _interface_faces_3d(dm_work)
     held_cells = set()
     for f in interface:
-        for c in dm.getSupport(f):
+        for c in dm_work.getSupport(f):
             held_cells.add(int(c) - cS)
-    held_counts = _interior_face_counts_3d(dm)
+    held_counts = _interior_face_counts_3d(dm_work)
 
     from underworld3.utilities.edge_split import cell_diameters
-    h = float(cell_diameters(dm).mean())
+    h_mean = np.array([float(cell_diameters(dm_work).sum()) if len(cells)
+                       else 0.0, float(len(cells))])
+    comm.Allreduce(MPI.IN_PLACE, h_mean, op=MPI.SUM)
+    h = float(h_mean[0] / h_mean[1])
 
-    victims, drop_ids, shell = _carve_cavity_3d(
-        dm, X, cells, sheet_pts, sheet_tris, clearance, held_cells)
+    # The surgery rank: the one holding the region. Every carve refusal is
+    # REDUCED before anyone raises — a rank-local raise in parallel is a hang.
+    n_region = int((d_sheet < clearance * h_vertex).sum())
+    owners = np.asarray(comm.allgather(n_region))
+    if owners.sum() == 0:
+        raise ValueError("the sheet meets no cell of this mesh")
+    target = int(np.argmax(owners))
 
-    shell_vert_ids = sorted({v for _f, verts in shell for v in verts})
-    local = {v: i for i, v in enumerate(shell_vert_ids)}
-    shell_xyz = X[shell_vert_ids]
-    shell_tris = np.array([[local[v] for v in verts] for _f, verts in shell],
-                          dtype=np.int64)
+    failure = None
+    victims = drop_ids = None
+    fill = None
+    if comm.rank == target:
+        try:
+            victims, drop_ids, shell = _carve_cavity_3d(
+                dm_work, X, cells, sheet_pts, sheet_tris, clearance,
+                held_cells, h_vertex, on_wall, shared)
+            # The gather's contract, asserted: nothing the surgery touches is
+            # shared. A violation is a marking defect and must be loud.
+            touched = set()
+            for c in drop_ids:
+                for q in dm_work.getTransitiveClosure(int(c) + cS)[0]:
+                    touched.add(int(q))
+            if any(shared[q - pStart] for q in touched):
+                raise RuntimeError(
+                    "place_sheet internal: the gathered region touches a "
+                    "shared point; the gather mask under-reached.")
 
-    fill_pts, fill_tets, sheet_out, moved, n_shell = _gmsh_fill_3d(
-        shell_xyz, shell_tris, sheet_pts, sheet_tris, h)
-    if moved:
+            shell_vert_ids = sorted({v for _f, verts in shell
+                                     for v in verts})
+            local = {v: i for i, v in enumerate(shell_vert_ids)}
+            shell_xyz = X[shell_vert_ids]
+            shell_tris = np.array([[local[v] for v in verts]
+                                   for _f, verts in shell], dtype=np.int64)
+            fill = _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts,
+                                 sheet_tris, h)
+            fill_pts, fill_tets, sheet_out, moved_nodes, n_shell = fill
+            if moved_nodes:
+                raise RuntimeError(
+                    f"the fill moved {moved_nodes} constrained node(s); the "
+                    "cavity cannot be sewn back. A defect, not a tolerance.")
+            if sheet_out is None or len(sheet_out) != len(sheet_tris):
+                raise RuntimeError(
+                    "the fill remeshed the sheet "
+                    f"({0 if sheet_out is None else len(sheet_out)} "
+                    f"triangles for {len(sheet_tris)} given).")
+        except (RuntimeError, ValueError) as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(f"place_sheet failed on the surgery rank: "
+                           f"{real[0]}")
+
+    # ------------------------------------------------ rebuild, every rank
+    if comm.rank == target:
+        fill_pts, fill_tets, sheet_out, _moved, n_shell = fill
+        made = np.where(
+            fill_tets < n_shell,
+            np.asarray(shell_vert_ids, dtype=np.int64)[
+                np.clip(fill_tets, 0, n_shell - 1)],
+            -(fill_tets - n_shell) - 1)
+        placed = fill_pts[n_shell:]
+        victims_arr = np.asarray(victims, dtype=np.int64)
+        drop_arr = np.asarray(drop_ids, dtype=np.int64)
+    else:
+        made = np.empty((0, 4), dtype=np.int64)
+        placed = np.empty((0, 3), dtype=float)
+        victims_arr = np.empty(0, dtype=np.int64)
+        drop_arr = np.empty(0, dtype=np.int64)
+
+    new, point_map, placed_new = _rebuild_sewn_3d(
+        dm_work, drop_arr, victims_arr, made, placed)
+
+    # The sheet's faces, labelled by joining the fill's vertex tuples. The
+    # label object must exist on every rank even though only the surgery rank
+    # holds faces to mark.
+    if not new.hasLabel(label):
+        new.createLabel(label)
+    n_facets_local = 0
+    if comm.rank == target:
+        out_label = new.getLabel(label)
+        n_shell_ids = np.asarray(shell_vert_ids, dtype=np.int64)
+        for t in sheet_out:
+            ids = []
+            for v in t:
+                if v < n_shell:
+                    old_pt = int(n_shell_ids[v]) + dm_work.getDepthStratum(0)[0]
+                    ids.append(int(point_map[old_pt - pStart]))
+                else:
+                    ids.append(int(placed_new[v - n_shell]))
+            joined = new.getFullJoin(ids)
+            if len(joined) != 1:
+                failure = ("a sheet triangle is not a face of the sewn mesh; "
+                           "the fill was not sewn where it was cut.")
+                break
+            out_label.setValue(int(joined[0]), int(label_value))
+            n_facets_local += 1
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(real[0])
+
+    # ------------------------------------------------------- global gates
+    counts = np.array([n_facets_local, len(victims_arr),
+                       len(placed)], dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, counts, op=MPI.SUM)
+    n_facets, n_removed, n_placed = (int(x) for x in counts)
+    if n_facets != len(sheet_tris):
         raise RuntimeError(
-            f"the fill moved {moved} constrained node(s); the cavity cannot "
-            "be sewn back. This is a defect, not a tolerance.")
-    if sheet_out is None or len(sheet_out) != len(sheet_tris):
+            f"{n_facets} sheet faces labelled for {len(sheet_tris)} "
+            "triangles given.")
+
+    volume_after = np.array([_owned_cell_volume(new)], dtype=float)
+    comm.Allreduce(MPI.IN_PLACE, volume_after, op=MPI.SUM)
+    if abs(volume_after[0] - volume_before[0]) > 1e-9 * volume_before[0]:
         raise RuntimeError(
-            "the fill remeshed the sheet "
-            f"({0 if sheet_out is None else len(sheet_out)} triangles for "
-            f"{len(sheet_tris)} given); the placed surface would not be the "
-            "surface asked for.")
+            f"the placement changed the domain volume: "
+            f"{volume_before[0]:.12f} -> {volume_after[0]:.12f}")
 
-    # Sew, on a compacted vertex set: survivors keep their relative order,
-    # then the sheet's points, then whatever the fill invented.
-    keep_cell = np.ones(len(cells), dtype=bool)
-    keep_cell[drop_ids] = False
-    keep_vertex = np.ones(len(X), dtype=bool)
-    keep_vertex[victims] = False
-    old_to_new = -np.ones(len(X), dtype=np.int64)
-    old_to_new[keep_vertex] = np.arange(int(keep_vertex.sum()))
-    n_survivors = int(keep_vertex.sum())
+    owned = np.asarray(_owned_stratum_counts(new), dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
+    nv_g, ne_g, nf_g, nc_g = (int(x) for x in owned)
+    if nv_g - ne_g + nf_g - nc_g != 1:
+        raise RuntimeError(
+            f"the sewn mesh has global Euler number "
+            f"{nv_g - ne_g + nf_g - nc_g}, not 1")
 
-    fill_to_new = np.empty(len(fill_pts), dtype=np.int64)
-    fill_to_new[:n_shell] = old_to_new[shell_vert_ids]
-    fill_to_new[n_shell:] = n_survivors + np.arange(len(fill_pts) - n_shell)
-
-    all_pts = np.vstack([X[keep_vertex], fill_pts[n_shell:]])
-    all_tets = np.vstack([old_to_new[cells[keep_cell]],
-                          fill_to_new[fill_tets]])
-    P = all_pts[all_tets]
-    v6 = np.einsum("ij,ij->i",
-                   np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
-                   P[:, 3] - P[:, 0])
-    flip = v6 < 0
-    all_tets[flip] = all_tets[flip][:, [0, 1, 3, 2]]
-    if (np.abs(v6) <= 0).any():
-        raise RuntimeError("the sewn mesh contains a degenerate cell")
-
-    new = PETSc.DMPlex().createFromCellList(
-        3, np.ascontiguousarray(all_tets.astype(np.int32)),
-        np.ascontiguousarray(all_pts), interpolate=True,
-        comm=PETSc.COMM_SELF)
-
-    _transfer_labels_3d(new, dm, old_to_new, keep_cell)
-    n_facets = _label_sheet_faces(new, fill_to_new, sheet_out,
-                                  label, label_value)
-
-    # Every surface already embedded must come through whole — same breach
-    # detector as 2-D, on faces.
     after = _interior_face_counts_3d(new)
     for key, before in held_counts.items():
         now = after.get(key, 0)
@@ -1618,18 +1979,12 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                 f"placing {label!r} would leave the surface {key[0]!r} with "
                 f"{now} interior faces instead of {before}.")
 
-    nv = new.getDepthStratum(0)[1] - new.getDepthStratum(0)[0]
-    ne = new.getDepthStratum(1)[1] - new.getDepthStratum(1)[0]
-    nf = new.getHeightStratum(1)[1] - new.getHeightStratum(1)[0]
-    nc = new.getHeightStratum(0)[1] - new.getHeightStratum(0)[0]
-    if nv - ne + nf - nc != 1:
-        raise RuntimeError(
-            f"the sewn mesh has Euler number {nv - ne + nf - nc}, not 1")
+    min_vol = np.array([_owned_min_cell_volume(new)], dtype=float)
+    comm.Allreduce(MPI.IN_PLACE, min_vol, op=MPI.MIN)
 
-    info = {"n_placed": len(fill_pts) - n_shell, "n_on_surface": 0,
-            "n_removed": int(len(victims)),
-            "n_surface_facets": int(n_facets),
-            "min_volume": float(np.abs(v6).min() / 6.0)}
+    info = {"n_placed": n_placed, "n_on_surface": 0,
+            "n_removed": n_removed, "n_surface_facets": n_facets,
+            "min_volume": float(min_vol[0])}
     if verbose:
         uw.pprint(f"[place_sheet {label!r}] placed {info['n_placed']} "
                   f"vertices, removed {info['n_removed']}; "
@@ -1637,96 +1992,22 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     return new, info
 
 
-def _transfer_labels_3d(new, dm, old_to_new, keep_cell):
-    """Carry every non-topology label onto the rebuilt mesh, topologically.
-
-    Vertex numbering through the rebuild is DEFINED (survivors in order, then
-    new points), so a labelled point is identified by its surviving-vertex
-    tuple: vertices map directly, faces and edges by tuple lookup, cells by
-    their order among survivors. This is topological matching — coordinates
-    are never consulted. A label on a deleted point goes with it.
-    """
-    vS_o, vE_o = dm.getDepthStratum(0)
-    eS_o, eE_o = dm.getDepthStratum(1)
-    fS_o, fE_o = dm.getHeightStratum(1)
-    cS_o, cE_o = dm.getHeightStratum(0)
-
-    vS_n, _vE_n = new.getDepthStratum(0)
-    new_face_of = {}
-    for f in range(*new.getHeightStratum(1)):
-        new_face_of[tuple(sorted(
-            int(p) - vS_n for p in new.getTransitiveClosure(f)[0]
-            if new.getPointDepth(int(p)) == 0))] = int(f)
-    new_edge_of = {}
-    for e in range(*new.getDepthStratum(1)):
-        a, b = (int(p) - vS_n for p in new.getCone(e))
-        new_edge_of[(a, b) if a < b else (b, a)] = int(e)
-
-    surv_cells = np.flatnonzero(keep_cell)
-    cell_new_of = {int(surv_cells[i]) + cS_o:
-                   int(new.getHeightStratum(0)[0] + i)
-                   for i in range(len(surv_cells))}
-
-    for i in range(dm.getNumLabels()):
-        name = dm.getLabelName(i)
-        if name in reconnect._TOPOLOGY_LABELS:
-            continue
-        label = dm.getLabel(name)
-        values = label.getValueIS()
-        if values is None:
-            continue
-        if not new.hasLabel(name):
-            new.createLabel(name)
-        target = new.getLabel(name)
-        for val in values.getIndices():
-            if label.getStratumSize(int(val)) == 0:
-                continue
-            for p in label.getStratumIS(int(val)).getIndices():
-                p = int(p)
-                q = None
-                if vS_o <= p < vE_o:
-                    m = old_to_new[p - vS_o]
-                    q = int(vS_n + m) if m >= 0 else None
-                elif eS_o <= p < eE_o:
-                    a, b = (int(x) - vS_o for x in dm.getCone(p))
-                    ma, mb = old_to_new[a], old_to_new[b]
-                    if ma >= 0 and mb >= 0:
-                        q = new_edge_of.get((int(ma), int(mb))
-                                            if ma < mb else (int(mb), int(ma)))
-                elif fS_o <= p < fE_o:
-                    verts = [int(x) - vS_o
-                             for x in dm.getTransitiveClosure(p)[0]
-                             if dm.getPointDepth(int(x)) == 0]
-                    ms = [old_to_new[v] for v in verts]
-                    if all(m >= 0 for m in ms):
-                        q = new_face_of.get(tuple(sorted(int(m) for m in ms)))
-                elif cS_o <= p < cE_o:
-                    q = cell_new_of.get(p)
-                if q is not None:
-                    target.setValue(q, int(val))
+def _cell_volumes_signed6(dm):
+    X = _coords(dm)
+    vS, _vE = dm.getDepthStratum(0)
+    cells = _tet_vertices(dm)
+    P = X[cells + 0]
+    return np.einsum("ij,ij->i",
+                     np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                     P[:, 3] - P[:, 0])
 
 
-def _label_sheet_faces(new, fill_to_new, sheet_tris, label, label_value):
-    """Mark the sheet's faces in the result, by vertex tuple; return count."""
-    vS_n, _vE_n = new.getDepthStratum(0)
-    face_of = {}
-    for f in range(*new.getHeightStratum(1)):
-        face_of[tuple(sorted(
-            int(p) - vS_n for p in new.getTransitiveClosure(f)[0]
-            if new.getPointDepth(int(p)) == 0))] = int(f)
+def _owned_cell_volume(dm):
+    """Total volume of this rank's cells. Cells are never shared, so the
+    allreduced sum is the domain volume."""
+    return float(np.abs(_cell_volumes_signed6(dm)).sum() / 6.0)
 
-    if not new.hasLabel(label):
-        new.createLabel(label)
-    out = new.getLabel(label)
-    out.setDefaultValue(0)
-    n = 0
-    for t in sheet_tris:
-        key = tuple(sorted(int(fill_to_new[v]) for v in t))
-        f = face_of.get(key)
-        if f is None:
-            raise RuntimeError(
-                "a sheet triangle is not a face of the sewn mesh; the fill "
-                "was not sewn where it was cut.")
-        out.setValue(f, int(label_value))
-        n += 1
-    return n
+
+def _owned_min_cell_volume(dm):
+    v = np.abs(_cell_volumes_signed6(dm)) / 6.0
+    return float(v.min()) if len(v) else np.inf
