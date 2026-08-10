@@ -54,7 +54,7 @@ def build(res):
     st.penalty = 0.0
     ur = m.CoordinateSystem.unit_e_0
     st.add_essential_bc((0.0, 0.0), m.boundaries.Lower.name)
-    st.add_essential_bc((0.0, 0.0), m.boundaries.Upper.name)
+    st.add_rotated_freeslip_bc(0, "Upper")
     st.bodyforce = RA * (T.sym[0]
                          - (r_o - r) / (r_o - r_inner)) * ur
     ad = uw.systems.AdvDiffusionSLCN(m, u_Field=T, V_fn=v.sym,
@@ -73,20 +73,20 @@ def build(res):
 
 def time_steps(res, n=4):
     m, v, P, T, st, ad = build(res)
-    st.solve(zero_init_guess=True)
+    st.solve(zero_init_guess=False)
     check_snes(st, f"res-{res} initial Stokes solve")
     for _ in range(4):                       # warm (grow plumes)
         ad.solve(timestep=scalar_dt(ad.estimate_dt()), zero_init_guess=False)
         check_snes(ad, f"res-{res} AdvDiffusion solve")
 
-        st.solve(zero_init_guess=True)
+        st.solve(zero_init_guess=False)
         check_snes(st, f"res-{res} Stokes solve")
     t0 = time.perf_counter()
     for _ in range(n):
         ad.solve(timestep=scalar_dt(ad.estimate_dt()), zero_init_guess=False)
         check_snes(ad, f"res-{res} AdvDiffusion solve")
 
-        st.solve(zero_init_guess=True)
+        st.solve(zero_init_guess=False)
         check_snes(st, f"res-{res} Stokes solve")
     ts = (time.perf_counter() - t0) / n
     return ts, m, v, P, T, st, ad
@@ -103,6 +103,8 @@ X0 = np.asarray(m.X.coords).copy()
 X0_Tx = np.asarray(T.coords).copy()
 ta = time.perf_counter()
 vals0 = np.asarray(uw.function.evaluate(T.sym[0], X0_Tx)).reshape(-1)
+# Note: Mesh.deform() includes remesh_with_field_transfer internally,
+# so this timing includes that transfer cost before the script overwrites fields.
 m.deform(X0); T.data[:, 0] = vals0
 rho = metric_density_from_gradient(m, T, amp=16.0, name="mb")
 X0c = np.asarray(m.X.coords).copy(); T0 = np.asarray(T.data).copy()
