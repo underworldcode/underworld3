@@ -1470,6 +1470,68 @@ def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
         gmsh.finalize()
 
 
+def _attach_uninterp_vertex_sf(new, dm, v_old_to_compact, nc_new, nroots):
+    """Give the uninterpolated plex its vertex star-forest, BEFORE interpolate.
+
+    This ordering is the whole fix for issue #520. Interpolating first and
+    attaching a star-forest afterwards leaves each rank's faces and edges
+    with whatever cone order its own local interpolation chose — nothing
+    ever reconciles a leaf's cone against its root's, ``DMPlexCheckFaces``
+    fails at the seam, and P2 cross-seam assembly builds a wrong operator
+    (measured: plain Stokes 13 s -> 3594 s at np=2). With the vertex SF in
+    place, ``DMPlexInterpolate`` runs its distributed path: it creates the
+    faces and edges, ORIENTS the interface cones consistently across ranks,
+    and extends the star-forest to the new points itself.
+
+    Cells are never shared under gather-first, so the old SF's vertex leaves
+    are the whole graph; face/edge leaves of the old mesh are skipped —
+    interpolate recreates them. The owner's new index for each leaf arrives
+    by the one-broadcast renumbering trick (the leaf set is unchanged, only
+    numbers move).
+    """
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    sf = dm.getPointSF()
+    try:
+        _nroots, ilocal, iremote = sf.getGraph()
+    except (ValueError, TypeError):
+        return                            # unpopulated: nothing is shared
+
+    root_new = np.full(pEnd - pStart, -1, dtype=np.int32)
+    owned_vertices = np.flatnonzero(v_old_to_compact >= 0)
+    root_new[owned_vertices + vS - pStart] = (
+        nc_new + v_old_to_compact[owned_vertices]).astype(np.int32)
+    leaf_new = np.full(pEnd - pStart, -1, dtype=np.int32)
+    # COLLECTIVE: a rank sharing nothing still participates.
+    sf.bcastBegin(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
+    sf.bcastEnd(MPI.INT32_T, root_new, leaf_new, MPI.REPLACE)
+
+    new_sf = PETSc.SF().create(comm=dm.comm)
+    if ilocal is None or not len(ilocal):
+        new_sf.setGraph(nroots, np.zeros(0, dtype=PETSc.IntType),
+                        np.zeros(0, dtype=PETSc.IntType))
+        new.setPointSF(new_sf)
+        return
+
+    leaves = np.asarray(ilocal, dtype=np.int64)
+    is_vertex = (leaves >= vS) & (leaves < vE)
+    vleaves = leaves[is_vertex]
+    local = np.full(len(vleaves), -1, dtype=np.int64)
+    keep = v_old_to_compact[vleaves - vS]
+    local[keep >= 0] = nc_new + keep[keep >= 0]
+    remote_index = leaf_new[vleaves - pStart]
+    if (local < 0).any() or (remote_index < 0).any():
+        raise RuntimeError(
+            "place_sheet internal: a shared vertex was deleted by the "
+            "surgery; the gather mask under-reached.")
+
+    remote = np.empty((len(vleaves), 2), dtype=PETSc.IntType)
+    remote[:, 0] = np.asarray(iremote).reshape(-1, 2)[is_vertex, 0]
+    remote[:, 1] = remote_index
+    new_sf.setGraph(nroots, local.astype(PETSc.IntType), remote.reshape(-1))
+    new.setPointSF(new_sf)
+
+
 def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     """Rebuild the local chart with cells replaced; every rank, collectively.
 
@@ -1479,7 +1541,10 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     orientation-free — and PETSc derives the faces, edges and every cone
     orientation. A rank with no surgery rebuilds its chart unchanged, because
     ``interpolate`` is collective and the star-forest of the interpolated
-    mesh must be built by every rank together.
+    mesh must be built by every rank together. The vertex star-forest is
+    attached BEFORE the interpolate (:func:`_attach_uninterp_vertex_sf`) so
+    the interface cones come out consistently ordered across ranks — the
+    issue #520 fix.
 
     ``made_cells`` entries are mixed: a non-negative value is an OLD vertex
     point; ``-(k+1)`` is row ``k`` of ``placed``. Returns the interpolated
@@ -1525,6 +1590,9 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
                     [v_uninterp(v) for v in tet])
     new.symmetrize()
     new.stratify()
+    if uw.mpi.size > 1:
+        _attach_uninterp_vertex_sf(new, dm, v_old_to_compact, nc_new,
+                                   nc_new + nv_new)
     new.interpolate()
 
     vS2, vE2 = new.getDepthStratum(0)
@@ -1564,9 +1632,14 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
                 point_map[q - pStart] = int(joined[0])
 
     reconnect._copy_labels(new, dm, point_map)
+    # The point SF was attached before the interpolate and extended by it to
+    # the faces and edges (with consistently oriented interface cones — the
+    # issue #520 property). Do NOT rebuild it from the old chart here: that
+    # was the defect. Mirror it onto the coordinate DM, which snapshots
+    # whatever SF existed when it was created (the parallel-checkpoint fix
+    # reconnect._install_point_sf documents).
     if uw.mpi.size > 1:
-        reconnect._rebuild_point_sf(new, dm, point_map,
-                                    int(new.getChart()[1]))
+        new.getCoordinateDM().setPointSF(new.getPointSF())
     return new, point_map, placed_new
 
 
