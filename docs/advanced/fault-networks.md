@@ -105,11 +105,26 @@ handles both automatically. Pieces that fall below a minimum area
 after trimming are dropped and reported — small patches with large
 ligaments can disappear entirely, so watch the report.
 
+Two meshers share the contract (`build(mesher=...)`):
+`"embed"` (default) is the gmsh conforming multi-patch embed — fast
+and proven for networks; `"place"` is the native placed-sheet route
+(`place_surface.place_sheet`), non-cumulative from a static base (the
+fault position is a design variable) and parallel-capable end to end
+— the composed chain place -> split -> contact converges at np=2 at
+serial speed with the serial answer (ptest_0852). Placement needs
+sheet triangulations with no all-rim triangles; the toolkit
+triangulates prepared rims itself (interior grid, centreline points
+for narrow strips, edge flips) so users never meet that contract
+directly. Place is currently OPT-IN for networks: on graded
+(edge_split) bases the composed mesh builds and converges but the
+solve is pathological — an open operator-health work item; on uniform
+bases it is healthy.
+
 v1 scope, refused loudly outside it: planar patches (the
 `rim_polygon` contract), convex rims, genuine X crossings (a
 near-miss — close but not crossing — is refused rather than guessed
-at), serial (the 3-D pairing does not yet migrate through parallel
-redistribution).
+at); parallel MULTI-fault splitting (the pairing does not yet migrate
+through redistribution — single faults are parallel-validated).
 
 ## Limitations
 

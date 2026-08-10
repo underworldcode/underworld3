@@ -132,7 +132,7 @@ class FaultNetwork:
 
     # ------------------------------------------------------------------
     def build(self, base=None, h_far=None, band=0.03, ramp=0.08,
-              max_levels=2, qdegree=2):
+              max_levels=2, qdegree=2, mesher="embed"):
         """Mesh the network: graded refinement along every RAW trace,
         then split-node faults along the PREPARED pieces.
 
@@ -144,7 +144,8 @@ class FaultNetwork:
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
         if self.dim == 3:
-            return self._build_3d(h_far=h_far, qdegree=qdegree)
+            return self._build_3d(h_far=h_far, qdegree=qdegree,
+                                  mesher=mesher)
         from .cartesian import UnstructuredSimplexBox
 
         h = self.h_near
@@ -171,23 +172,223 @@ class FaultNetwork:
             [(n, p.copy()) for n, p in self.prepared])
         return self.mesh
 
-    def _build_3d(self, h_far=None, qdegree=2,
-                  minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0)):
-        """3-D path: multi-patch conforming embed (gmsh grading from
-        the patches), then sequential split of every prepared piece."""
-        from .cartesian import BoxInternalPatch
+    def _build_3d(self, h_far=None, qdegree=2, mesher="embed",
+                  minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
+                  band=None, ramp=None, max_levels=2, clearance=0.8):
+        """3-D path, two meshers sharing one contract.
+
+        ``mesher="embed"`` (default): the gmsh conforming multi-patch
+        embed — fast and proven for NETWORKS (the whole junction study).
+
+        ``mesher="place"`` (EXPERIMENTAL for networks): the native route
+        box (``refinement=1``), metric-graded 3-D adaptation along the
+        network, each prepared patch triangulated at ``h`` (interior
+        grid + rim, no all-rim triangles by construction) and PLACED
+        (:func:`place_surface.place_sheet`), then split. Non-cumulative:
+        the fault position is a design variable, and moving the network
+        re-places from the same base. Parallel-capable end to end
+        (#521; ptest_0852 is the chain's gate).
+
+        The place route on a UNIFORM base is healthy and
+        parallel-validated (ptest_0852: place -> split -> contact,
+        22 s including the solve). On edge_split ADAPT CHILDREN the
+        composed mesh builds and converges but the solve is
+        pathological (measured 3850 s vs 125 s embed) — an
+        operator-health interaction between the graded transitions,
+        the placement cavity, and the split, recorded as an open work
+        item. Until that is resolved, place is opt-in here.
+        """
         from underworld3.utilities.fault_split import split_fault
 
         h = self.h_near
         h_far = 4.0 * h if h_far is None else float(h_far)
-        mesh = BoxInternalPatch(
+
+        if mesher == "embed":
+            from .cartesian import BoxInternalPatch
+            mesh = BoxInternalPatch(
+                cellSize=h_far, minCoords=minCoords, maxCoords=maxCoords,
+                patch_points=[(n, p) for n, p in self.prepared],
+                patch_cellSize=h, qdegree=qdegree)
+            for name, _p in self.prepared:
+                mesh = split_fault(mesh, name)
+            self.mesh = mesh
+            return self.mesh
+        if mesher != "place":
+            raise ValueError(f"mesher must be 'place' or 'embed', "
+                             f"got {mesher!r}")
+
+        from enum import Enum
+        from .cartesian import UnstructuredSimplexBox
+        from underworld3.utilities.place_surface import (place_sheet,
+                                                         _sheet_distance)
+        import underworld3 as uw
+        from underworld3 import discretisation
+
+        sheets = [(n, *self._triangulate_rim(p, h))
+                  for n, p in self.prepared]
+
+        base = UnstructuredSimplexBox(
             cellSize=h_far, minCoords=minCoords, maxCoords=maxCoords,
-            patch_points=[(n, p) for n, p in self.prepared],
-            patch_cellSize=h, qdegree=qdegree)
-        for name, _p in self.prepared:
-            mesh = split_fault(mesh, name)
+            refinement=1, qdegree=qdegree)
+        b = float(band) if band is not None else 3.0 * h
+        r = float(ramp) if ramp is not None else 10.0 * h
+
+        def metric(pts_, _sheets=sheets, _h=h, _hf=h_far, _b=b, _r=r):
+            d = np.min([_sheet_distance(pts_[:, :3], sp, st)
+                        for _n, sp, st in _sheets], axis=0)
+            hh = np.where(d < _b, _h,
+                          np.minimum(_h + (_hf - _h) * (d - _b) / _r,
+                                     _hf))
+            return 1.0 / hh ** 2
+
+        child = base.adapt(metric, max_levels=max_levels,
+                           engine="edge_split")
+
+        members = {bd.name: bd.value for bd in child.boundaries}
+        for k, (n, _sp, _st) in enumerate(sheets):
+            members[n] = max(members.values()) + 4
+        boundaries = Enum("boundaries", members)
+
+        dm = child.dm
+        for n, sp, st in sheets:
+            # clearance 0.8 measured as the working window on
+            # edge_split children (0.6 under-reaches the graded
+            # transition shell and pinches; >=1.0 over-swallows).
+            dm, _info = place_sheet(dm, sp, st, label=n,
+                                    label_value=boundaries[n].value,
+                                    clearance=clearance)
+        mesh = discretisation.Mesh(
+            dm, simplex=True,
+            coordinate_system_type=child.CoordinateSystem.coordinate_type,
+            qdegree=qdegree, boundaries=boundaries, verbose=False)
+        for n, _sp, _st in sheets:
+            mesh = split_fault(mesh, n)
         self.mesh = mesh
         return self.mesh
+
+    @staticmethod
+    def _triangulate_rim(poly, h):
+        """Triangulate a convex planar rim polygon at spacing ``h``:
+        boundary resampled at ``h``, an interior grid at ``h``, in-plane
+        Delaunay. No all-rim triangles by construction (asserted) —
+        the split's precondition, and interior points guarantee it
+        everywhere a patch is wider than a cell."""
+        from scipy.spatial import Delaunay
+        from .fault_network_3d import _plane_basis, _to_2d, _to_3d
+
+        o, nh, uh, vh = _plane_basis(np.asarray(poly, dtype=float))
+        p2 = _to_2d(poly, o, uh, vh)
+        # rim resampled at h
+        rim_pts = []
+        for i in range(len(p2)):
+            a, b = p2[i], p2[(i + 1) % len(p2)]
+            seg = np.linalg.norm(b - a)
+            m = max(1, int(np.ceil(seg / h)))
+            for t in np.arange(m) / m:
+                rim_pts.append(a + t * (b - a))
+        rim_pts = np.array(rim_pts)
+        # interior grid at h, kept clear of the rim by 0.4 h
+        lo, hi = p2.min(axis=0), p2.max(axis=0)
+        gx = np.arange(lo[0] + 0.5 * h, hi[0], h)
+        gy = np.arange(lo[1] + 0.5 * h, hi[1], h)
+        GX, GY = np.meshgrid(gx, gy)
+        grid = np.column_stack([GX.ravel(), GY.ravel()])
+
+        def inside(pts, margin):
+            keep = np.ones(len(pts), dtype=bool)
+            n_ = len(p2)
+            area2 = float(np.dot(p2[:, 0], np.roll(p2[:, 1], -1))
+                          - np.dot(p2[:, 1], np.roll(p2[:, 0], -1)))
+            sgn = 1.0 if area2 > 0 else -1.0
+            for i in range(n_):
+                a, b = p2[i], p2[(i + 1) % n_]
+                e = b - a
+                nrm = sgn * np.array([-e[1], e[0]])
+                nrm = nrm / max(np.linalg.norm(nrm), 1e-30)
+                keep &= ((pts - a) @ nrm) > margin
+            return keep
+
+        grid = grid[inside(grid, 0.4 * h)]
+
+        def centreline():
+            # NARROW pieces (a ligament-trimmed strip ~1 cell wide is a
+            # NORMAL product of the preparer) get interior points along
+            # the principal axis instead of a grid — every triangle of
+            # a strip then touches an interior point.
+            c0 = p2.mean(axis=0)
+            _u2, _s2, vt2 = np.linalg.svd(p2 - c0, full_matrices=False)
+            ax = vt2[0]
+            t = (p2 - c0) @ ax
+            ts = np.arange(t.min() + 0.5 * h, t.max(), h)
+            pts_ = c0[None, :] + ts[:, None] * ax[None, :]
+            for margin in (0.35 * h, 0.15 * h, 0.05 * h):
+                keep = inside(pts_, margin)
+                if keep.any():
+                    return pts_[keep]
+            return np.zeros((0, 2))
+
+        n_rim = len(rim_pts)
+
+        def flip_all_rim(all2, tris):
+            """Edge-flip every all-rim triangle against a neighbour
+            holding an interior vertex (the corner-quad diagonal flip,
+            generalised to Delaunay output). Returns tris or None."""
+            tris = [tuple(int(v) for v in t) for t in tris]
+            for _round in range(4):
+                edge_of = {}
+                for i, t in enumerate(tris):
+                    for e in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+                        edge_of.setdefault(tuple(sorted(e)), []).append(i)
+                bad = [i for i, t in enumerate(tris)
+                       if all(v < n_rim for v in t)]
+                if not bad:
+                    return np.asarray(tris, dtype=np.int64)
+                changed = False
+                for i in bad:
+                    t = tris[i]
+                    if not all(v < n_rim for v in t):
+                        continue                    # fixed by an earlier flip
+                    for e in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+                        key = tuple(sorted(e))
+                        nbrs = [j for j in edge_of.get(key, []) if j != i]
+                        if not nbrs:
+                            continue
+                        j = nbrs[0]
+                        opp_j = [v for v in tris[j] if v not in key][0]
+                        if opp_j < n_rim:
+                            continue                # neighbour is no help
+                        opp_i = [v for v in t if v not in key][0]
+                        a, b = key
+                        # the flip: (a,b,opp_i)+(a,b,opp_j) ->
+                        #           (a,opp_i,opp_j)+(b,opp_i,opp_j)
+                        def area(p, q, r):
+                            return abs(np.cross(all2[q] - all2[p],
+                                                all2[r] - all2[p]))
+                        if (area(a, opp_i, opp_j) < 1e-14
+                                or area(b, opp_i, opp_j) < 1e-14):
+                            continue                # degenerate flip
+                        tris[i] = (a, opp_i, opp_j)
+                        tris[j] = (b, opp_i, opp_j)
+                        changed = True
+                        break
+                if not changed:
+                    return None
+            return None
+
+        for interior in (grid, np.vstack([grid, centreline()])
+                         if len(grid) else centreline()):
+            all2 = np.vstack([rim_pts, interior]) if len(interior) \
+                else rim_pts
+            tri = Delaunay(all2)
+            cen = all2[tri.simplices].mean(axis=1)
+            tris = tri.simplices[inside(cen, 0.0)]
+            fixed = flip_all_rim(all2, tris)
+            if fixed is not None:
+                return _to_3d(all2, o, uh, vh), fixed
+        raise NotImplementedError(
+            "patch triangulation could not avoid all-rim triangles even "
+            "with centreline points and edge flips — the piece is "
+            "degenerate; drop it or refine h.")
 
     # ------------------------------------------------------------------
     def apply_contact(self, solver, conds=0):
