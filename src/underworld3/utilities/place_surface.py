@@ -1572,6 +1572,35 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     nc_new = int(keep_cell.sum()) + len(made_cells)
     nv_new = n_surv + len(placed)
 
+    # Orient every made cell to the KEPT cells' handedness before wiring.
+    # DMPlexInterpolate derives face cones and orientations from the
+    # cell-vertex cones but does NOT normalise the cells' own vertex
+    # order; the fill's tets arrive in gmsh's convention, which is
+    # opposite to the plex closure convention the kept cells carry, and
+    # a mixed-handedness mesh assembles negative Jacobians (measured:
+    # the first Stokes solve on the sewn mesh never converged, while
+    # every abs()-based volume gate stayed green). The serial rewrite
+    # dropped the old explicit flip; this restores it, against the kept
+    # cells' own sign so the convention is read off the mesh, not assumed.
+    made_cells = np.asarray(made_cells, dtype=np.int64).reshape(-1, 4)
+    if len(made_cells) and len(kept):
+        X_old = _coords(dm)[:nv_old]
+
+        def signed6(P):
+            return float(np.dot(np.cross(P[1] - P[0], P[2] - P[0]),
+                                P[3] - P[0]))
+
+        ref_sign = np.sign(signed6(X_old[kept[0]]))
+
+        def xyz_of(x):
+            return placed[-int(x) - 1] if x < 0 else X_old[int(x)]
+
+        made_cells = made_cells.copy()
+        for j, tet in enumerate(made_cells):
+            P = np.array([xyz_of(v) for v in tet])
+            if np.sign(signed6(P)) != ref_sign:
+                made_cells[j] = tet[[0, 1, 3, 2]]
+
     def v_uninterp(x):
         if x < 0:
             return nc_new + n_surv + (-int(x) - 1)
@@ -1922,6 +1951,51 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
             raise RuntimeError(
                 f"placing {label!r} would leave the surface {key[0]!r} with "
                 f"{now} interior faces instead of {before}.")
+
+    # PETSc's own validity battery as the final pass (maintainer ruling,
+    # 2026-08-10), via the options route — petsc4py 3.25 exposes no
+    # check methods. check_geometry and check_faces are SERIAL-ONLY
+    # here: measured on this stack, check_geometry false-positives on
+    # every rank of a plain distributed UnstructuredSimplexBox (a mesh
+    # the whole production suite solves on), so in parallel we run the
+    # partition-safe subset. Failure is reduced before anyone raises —
+    # a rank-local raise in parallel is a hang.
+    _serial_only = ("check_faces", "check_geometry")
+    _checks = ["check_symmetry", "check_skeleton", "check_pointsf"]
+    if comm.size == 1:
+        _checks += list(_serial_only)
+    chk = new.clone()
+    chk.setOptionsPrefix("uw_place_gate_")
+    _opts = PETSc.Options()
+    for _k in _checks:
+        _opts[f"uw_place_gate_dm_plex_{_k}"] = ""
+    _gate_fail = None
+    try:
+        chk.setFromOptions()
+    except PETSc.Error as exc:
+        _gate_fail = f"DMPlex validity check failed: {exc}"
+    finally:
+        for _k in _checks:
+            del _opts[f"uw_place_gate_dm_plex_{_k}"]
+    _fails = comm.allgather(_gate_fail)
+    _real = [f for f in _fails if f]
+    if _real:
+        raise RuntimeError(f"the sewn mesh fails PETSc's checks: "
+                           f"{_real[0]}")
+
+    # Orientation gate: every cell the same handedness. abs() volume
+    # gates are BLIND to inversion — a mixed-handedness mesh passed
+    # every previous check and assembled an indefinite operator.
+    v6 = _cell_volumes_signed6(new)
+    signs = np.array([float((v6 > 0).sum()), float((v6 < 0).sum()),
+                      float((v6 == 0).sum())])
+    comm.Allreduce(MPI.IN_PLACE, signs, op=MPI.SUM)
+    if signs[2] or (signs[0] and signs[1]):
+        raise RuntimeError(
+            f"the sewn mesh has mixed cell orientation "
+            f"({int(signs[0])} positive, {int(signs[1])} negative, "
+            f"{int(signs[2])} degenerate) — the fill's cells were not "
+            "oriented to the kept convention.")
 
     min_vol = np.array([_owned_min_cell_volume(new)], dtype=float)
     comm.Allreduce(MPI.IN_PLACE, min_vol, op=MPI.MIN)
