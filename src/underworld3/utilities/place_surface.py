@@ -1045,16 +1045,20 @@ def _face_vertex_triple(dm, f, vS):
                         if int(p) >= vS and dm.getPointDepth(int(p)) == 0))
 
 
-def _interface_faces_3d(dm):
+def _interface_faces_3d(dm, exclude=()):
     """Interior faces carrying a non-topology label — an embedded surface.
 
     The 3-D analogue of :func:`reconnect._interface_edges`: in 3-D an
     interface is a surface and is identified by its FACES. Cell labels are
     volumes, not interfaces, and are skipped for the same reason as in 2-D;
     exterior faces are the domain's own walls and are handled separately.
+
+    ``exclude`` names ``(label, value)`` pairs to leave out — a removal must
+    not hold its own object's cells against itself.
     """
     fS, fE = dm.getHeightStratum(1)
     cS, cE = dm.getHeightStratum(0)
+    exclude = set(exclude)
     out = set()
     for i in range(dm.getNumLabels()):
         name = dm.getLabelName(i)
@@ -1065,6 +1069,8 @@ def _interface_faces_3d(dm):
         if values is None:
             continue
         for val in values.getIndices():
+            if (name, int(val)) in exclude:
+                continue
             if label.getStratumSize(int(val)) == 0:
                 continue
             idx = np.asarray(label.getStratumIS(int(val)).getIndices(),
@@ -1077,9 +1083,9 @@ def _interface_faces_3d(dm):
     return out
 
 
-def _interior_face_counts_3d(dm):
+def _interior_face_counts_3d(dm, exclude=()):
     """{(label, value): count of interior faces} — the breach detector."""
-    interface = _interface_faces_3d(dm)
+    interface = _interface_faces_3d(dm, exclude=exclude)
     fS, fE = dm.getHeightStratum(1)
     counts = {}
     for i in range(dm.getNumLabels()):
@@ -1325,6 +1331,14 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
         w = (d00 * d21 - d01 * d20) / denom
         inside = (v > -0.2) & (w > -0.2) & (v + w < 1.2)   # conservative
         drop[sub[inside]] = True
+
+    # The plane-straddle test covers triangle INTERIORS; a cell crossed by a
+    # rim EDGE can slip it when the cell is smaller than the sheet spacing —
+    # which the refill after a removal produces (measured: gmsh "a segment
+    # and a facet intersect" on a sheet re-placed into a cleared region).
+    # The centroid rule from the volume carve closes the gap: any cell whose
+    # centre is within reach of the BOUNDED sheet is dropped.
+    drop |= _sheet_distance(cen, sheet_pts, sheet_tris) < 0.6 * h_cell
     if held_cells:
         drop[list(held_cells)] = False
 
@@ -1337,55 +1351,17 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
             "already embedded. Surfaces must be separated by at least a "
             "cell; place close pairs as one thin volume instead.")
 
-    drop_ids = np.flatnonzero(drop)
-    if not len(drop_ids):
+    if not drop.any():
         raise ValueError("the sheet meets no cell of this mesh")
 
-    cS, _cE = dm.getHeightStratum(0)
-    vS, _vE = dm.getDepthStratum(0)
-    fS, fE = dm.getHeightStratum(1)
-    pStart, _pEnd = dm.getChart()
-    dropped = set(int(c) + cS for c in drop_ids)
-    shell = []
-    for f in range(fS, fE):
-        support = [int(c) for c in dm.getSupport(f)]
-        n_in = sum(1 for c in support if c in dropped)
-        if n_in == 0:
-            continue
-        if len(support) == 1:
-            if shared_chart[f - pStart]:
-                raise RuntimeError(
-                    "the sheet's cavity touches a partition seam after the "
-                    "gather; the region marking under-reached. Raise "
-                    "`clearance` margin in the gather mask — this is a "
-                    "defect, not a configuration error.")
-            raise RuntimeError(
-                "the sheet's cavity reached the domain wall; the sheet must "
-                "be interior, with clearance to spare")
-        if n_in == 1:
-            shell.append((f, [int(p) - vS
-                              for p in dm.getTransitiveClosure(f)[0]
-                              if vS <= int(p) < vS + len(X)]))
-    shell_verts = sorted({v for _f, verts in shell for v in verts})
-    if victim[shell_verts].any():
-        raise RuntimeError("a deleted vertex is on the cavity shell")
+    shell, drop = _closed_shell_3d(dm, X, cells, drop, victim, held_cells,
+                                   shared_chart, "sheet")
 
-    from collections import Counter
-    edge_count = Counter()
-    for _f, verts in shell:
-        a, b, c = sorted(verts)
-        for e in ((a, b), (a, c), (b, c)):
-            edge_count[e] += 1
-    if any(k != 2 for k in edge_count.values()):
-        raise RuntimeError(
-            "the cavity shell is not a closed manifold; raise `clearance` so "
-            "the cavity is wider than the shapes pinching it")
-
-    # The straddle rule can drop the whole star of a vertex that is NOT a
-    # victim; such a vertex is on no shell face and would come through the
-    # rebuild as an ISOLATED point (global Euler 2, not 1 — the thin-volume
-    # carve's measured defect, same mechanism). Every surviving vertex must
-    # have a surviving cell.
+    # The straddle rule — or the shell growth — can drop the whole star of
+    # a vertex that is NOT a victim; such a vertex is on no shell face and
+    # would come through the rebuild as an ISOLATED point (global Euler 2,
+    # not 1 — the measured defect class). Every surviving vertex must have
+    # a surviving cell.
     referenced = np.zeros(len(X), dtype=bool)
     if (~drop).any():
         referenced[cells[~drop].ravel()] = True
@@ -1395,7 +1371,86 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
             "the sheet's cavity would strand a domain-wall vertex; the sheet "
             "must be interior, with clearance to spare")
     victim |= orphan
-    return np.flatnonzero(victim), drop_ids, shell
+    return np.flatnonzero(victim), np.flatnonzero(drop), shell
+
+
+def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
+                     noun):
+    """The cavity shell over ``drop``, GROWN at pinch edges until manifold.
+
+    Shared by every 3-D carve. The union of victim stars around any object
+    can PINCH — a shell edge whose surrounding cells are part-dropped in two
+    wedges — and after a removal has refilled a region, even a thin sheet's
+    cavity can pinch against the new connectivity (measured: a sheet placed
+    into a cleared region wedged where the same sheet placed into the
+    original mesh did not). Growing the drop at every non-manifold edge
+    merges the wedges; dropping more cells only enlarges the fill.
+
+    Refusals stay per-object worded via ``noun``; a wall or seam contact and
+    a growth that would need a held cell are refusals, not growth. Returns
+    ``(shell, drop)`` with ``drop`` possibly grown.
+    """
+    from collections import Counter
+
+    cS, _cE = dm.getHeightStratum(0)
+    vS, _vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    pStart, _pEnd = dm.getChart()
+
+    face_verts = {}
+    face_support = {}
+    for f in range(fS, fE):
+        face_support[f] = [int(c) - cS for c in dm.getSupport(f)]
+        face_verts[f] = [int(p) - vS for p in dm.getTransitiveClosure(f)[0]
+                         if vS <= int(p) < vS + len(X)]
+
+    held = np.zeros(len(cells), dtype=bool)
+    if held_cells:
+        held[list(held_cells)] = True
+
+    for _round in range(20):
+        shell = []
+        for f in range(fS, fE):
+            support = face_support[f]
+            n_in = sum(1 for c in support if drop[c])
+            if n_in == 0:
+                continue
+            if len(support) == 1:
+                if shared_chart[f - pStart]:
+                    raise RuntimeError(
+                        f"the {noun}'s cavity touches a partition seam "
+                        "after the gather; the region marking under-reached. "
+                        "A defect, not a configuration error.")
+                raise RuntimeError(
+                    f"the {noun}'s cavity reached the domain wall; the "
+                    f"{noun} must be interior, with clearance to spare")
+            if n_in == 1:
+                shell.append((f, face_verts[f]))
+        edge_count = Counter()
+        for _f, verts in shell:
+            a, b, c = sorted(verts)
+            for e in ((a, b), (a, c), (b, c)):
+                edge_count[e] += 1
+        bad = [e for e, k in edge_count.items() if k != 2]
+        if not bad:
+            break
+        for a, b in bad:
+            grow = (cells == a).any(axis=1) & (cells == b).any(axis=1)
+            if (grow & held).any():
+                raise RuntimeError(
+                    f"closing the {noun}'s cavity shell needs a cell held "
+                    "for a surface already embedded; move the object away "
+                    "or raise `clearance`.")
+            drop |= grow
+    else:
+        raise RuntimeError(
+            f"the {noun}'s cavity shell did not close in 20 growth rounds; "
+            "raise `clearance`.")
+
+    shell_verts = sorted({v for _f, verts in shell for v in verts})
+    if victim[shell_verts].any():
+        raise RuntimeError("a deleted vertex is on the cavity shell")
+    return shell, drop
 
 
 def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
@@ -1912,7 +1967,11 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                     "the fill remeshed the sheet "
                     f"({0 if sheet_out is None else len(sheet_out)} "
                     f"triangles for {len(sheet_tris)} given).")
-        except (RuntimeError, ValueError) as exc:
+        # Exception, not just RuntimeError/ValueError: a raw gmsh error
+        # (e.g. a PLC intersection) is a plain Exception, and an
+        # uncaught raise on the surgery rank is a HANG for its peers —
+        # every failure must become a collective refusal.
+        except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
 
     failures = comm.allgather(failure)
@@ -2131,7 +2190,8 @@ def _assembly_skin(points, cells):
 
 
 def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
-                            reach_cell, held_cells, on_wall, shared_chart):
+                            reach_cell, held_cells, on_wall, shared_chart,
+                            seed_drop=None):
     """Victims, dropped tets and the closed shell around a FAT object.
 
     Differs from the sheet's carve in two measured ways. The reach is a
@@ -2156,6 +2216,10 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     # outside the reach; its centroid cannot be far from the skin.
     cen_d = _sheet_distance(X[cells].mean(axis=1), skin_pts, skin_tris)
     drop |= cen_d < reach_cell
+    # A removal seeds the drop with the object's OWN cells — a fat zone's
+    # interior can be further from its skin than any reach computes.
+    if seed_drop is not None:
+        drop |= seed_drop
     if held_cells:
         drop[list(held_cells)] = False
     for c in np.flatnonzero(~drop):
@@ -2169,64 +2233,8 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     if not drop.any():
         raise ValueError("the thin volume meets no cell of this mesh")
 
-    cS, _cE = dm.getHeightStratum(0)
-    vS, _vE = dm.getDepthStratum(0)
-    fS, fE = dm.getHeightStratum(1)
-    pStart, _pEnd = dm.getChart()
-
-    face_verts = {}
-    face_support = {}
-    for f in range(fS, fE):
-        face_support[f] = [int(c) - cS for c in dm.getSupport(f)]
-        face_verts[f] = [int(p) - vS for p in dm.getTransitiveClosure(f)[0]
-                         if vS <= int(p) < vS + len(X)]
-
-    from collections import Counter
-    for _round in range(20):
-        shell = []
-        for f in range(fS, fE):
-            support = face_support[f]
-            n_in = sum(1 for c in support if drop[c])
-            if n_in == 0:
-                continue
-            if len(support) == 1:
-                if shared_chart[f - pStart]:
-                    raise RuntimeError(
-                        "the thin volume's cavity touches a partition seam "
-                        "after the gather; the region marking under-reached. "
-                        "A defect, not a configuration error.")
-                raise RuntimeError(
-                    "the thin volume's cavity reached the domain wall; the "
-                    "volume must be interior, with clearance to spare")
-            if n_in == 1:
-                shell.append((f, face_verts[f]))
-        edge_count = Counter()
-        for _f, verts in shell:
-            a, b, c = sorted(verts)
-            for e in ((a, b), (a, c), (b, c)):
-                edge_count[e] += 1
-        bad = [e for e, k in edge_count.items() if k != 2]
-        if not bad:
-            break
-        for a, b in bad:
-            grow = (cells == a).any(axis=1) & (cells == b).any(axis=1)
-            if held_cells:
-                held = np.zeros(len(cells), dtype=bool)
-                held[list(held_cells)] = True
-                if (grow & held).any():
-                    raise RuntimeError(
-                        "closing the cavity shell needs a cell held for a "
-                        "surface already embedded; move the zone away or "
-                        "raise `clearance`.")
-            drop |= grow
-    else:
-        raise RuntimeError(
-            "the cavity shell did not close in 20 growth rounds; raise "
-            "`clearance`.")
-
-    shell_verts = sorted({v for _f, verts in shell for v in verts})
-    if victim[shell_verts].any():
-        raise RuntimeError("a deleted vertex is on the cavity shell")
+    shell, drop = _closed_shell_3d(dm, X, cells, drop, victim, held_cells,
+                                   shared_chart, "thin volume")
 
     # The growth can swallow the whole star of a vertex that is NOT itself a
     # victim. Such a vertex is on no shell face — a shell face keeps a
@@ -2494,6 +2502,340 @@ def _ring_growing(cells, drop, held_mask):
         "`clearance`.")
 
 
+def _gmsh_fill_plain_3d(shell_xyz, shell_tris, h):
+    """Tetrahedralise inside the shell with NOTHING embedded — the removal
+    fill. The shell is a discrete surface carrying its triangulation
+    verbatim; the interior comes back at the background scale ``h``, which
+    is what returns a removed object's region to the surrounding mesh.
+
+    Returns ``(points, tets, moved, n_shell)``, nodes shell-first.
+    """
+    import gmsh
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    try:
+        gmsh.model.add("uw_removal_fill")
+        n_shell = len(shell_xyz)
+        shell_tag = gmsh.model.addDiscreteEntity(2)
+        gmsh.model.mesh.addNodes(2, shell_tag, list(range(1, n_shell + 1)),
+                                 shell_xyz.reshape(-1).tolist())
+        gmsh.model.mesh.addElementsByType(
+            shell_tag, 2, [], (shell_tris + 1).reshape(-1).tolist())
+        loop = gmsh.model.geo.addSurfaceLoop([shell_tag])
+        vol = gmsh.model.geo.addVolume([loop])
+        gmsh.model.geo.synchronize()
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.3 * h)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 1.2 * h)
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+        gmsh.model.mesh.generate(3)
+
+        tags, xyz, _ = gmsh.model.mesh.getNodes()
+        xyz = np.asarray(xyz).reshape(-1, 3)
+        row_of = {int(t): i for i, t in enumerate(np.asarray(tags))}
+        ordered = sorted(row_of)
+        points = xyz[[row_of[t] for t in ordered]]
+        renum = {t: i for i, t in enumerate(ordered)}
+        et, _ei, en = gmsh.model.mesh.getElements(3, vol)
+        tets = None
+        for t, nodes in zip(et, en):
+            if t == 4:
+                tets = np.array([renum[int(x)] for x in nodes],
+                                dtype=np.int64).reshape(-1, 4)
+        if tets is None:
+            raise RuntimeError("gmsh produced no tetrahedra for the removal")
+        moved = sum(1 for t in range(1, n_shell + 1)
+                    if not np.array_equal(points[renum[t]],
+                                          shell_xyz[t - 1]))
+        return points, tets, moved, n_shell
+    finally:
+        gmsh.finalize()
+
+
+def _labelled_face_soup(dm, names_values):
+    """The (points, triangles) soup of every labelled face, ALLGATHERED.
+
+    A removal must mark against the object's global geometry whatever the
+    current distribution — the object was embedded rank-locally, but a
+    checkpoint reload or a later redistribution may have scattered it. The
+    soup is small (an object's skin) and duplicates across strata are
+    harmless to a distance query.
+    """
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    X = _coords(dm)[: vE - vS]
+    local = []
+    for name, value in names_values:
+        if not dm.hasLabel(name):
+            continue
+        label = dm.getLabel(name)
+        if label.getStratumSize(int(value)) == 0:
+            continue
+        for p in label.getStratumIS(int(value)).getIndices():
+            p = int(p)
+            if not (fS <= p < fE):
+                continue
+            verts = [int(q) - vS for q in dm.getTransitiveClosure(p)[0]
+                     if vS <= int(q) < vE]
+            local.append(X[verts])
+    comm = uw.mpi.comm
+    gathered = comm.allgather(np.array(local).reshape(-1, 3, 3))
+    tris_xyz = np.vstack([g for g in gathered if len(g)]) \
+        if any(len(g) for g in gathered) else np.empty((0, 3, 3))
+    pts = tris_xyz.reshape(-1, 3)
+    tris = np.arange(len(pts), dtype=np.int64).reshape(-1, 3)
+    return pts, tris
+
+
+def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
+    """Delete an embedded surface or zone; refill its region at background h.
+
+    The inverse of the placements, and the other half of the lifecycle: a
+    fault that has done its work is carved out — the labelled CELLS of a
+    thin volume, or the region around the labelled FACES of a placed sheet —
+    and the cavity is refilled with a plain gmsh fill at the surrounding
+    mesh's own scale, so the region returns to background resolution. The
+    object's labels vanish with their points (asserted, globally); every
+    OTHER embedded surface must come through intact, gated exactly as a
+    placement gates it. Nothing is redistributed: the same gather-first
+    surgery as the placements, so the rest of the mesh never moves.
+
+    A zone placed as ``(label, value)`` also removes its companion
+    ``(label + "_skin", value)``.
+
+    Parameters
+    ----------
+    dm : PETSc.DMPlex
+        A 3-D simplex mesh, serial or distributed. **Not modified.**
+    label, label_value : str, int
+        The embedded object's label. Cells under it mean a thin volume;
+        faces alone mean a placed sheet.
+    clearance : float
+        The collar around the object's skin also cleared, as a multiple of
+        local ``h`` — what lets the fill erase the layer-scale grading.
+    verbose : bool
+        Report the counts.
+
+    Returns
+    -------
+    cleared : PETSc.DMPlex
+        A new mesh with the object gone and the region refilled.
+    info : dict
+        ``n_removed_cells``, ``n_removed_vertices``, ``n_filled_cells``,
+        ``min_volume``.
+
+    Raises
+    ------
+    ValueError
+        If the label holds nothing, collectively.
+    NotImplementedError
+        In 2-D (arrives with the 2-D parallel work).
+    RuntimeError
+        Carve/fill refusals, always collective — including a cavity that
+        would need cells held for a DIFFERENT embedded surface.
+    """
+    if dm.getDimension() != 3:
+        raise NotImplementedError(
+            "remove_embedded is 3-D for now; the 2-D form arrives with the "
+            "2-D parallel work.")
+
+    comm = uw.mpi.comm
+    skin_label = label + "_skin"
+    removed_pairs = ((label, int(label_value)),
+                     (skin_label, int(label_value)))
+
+    # The object's global geometry, and which cells are its own.
+    soup_pts, soup_tris = _labelled_face_soup(dm, removed_pairs)
+    n_soup = int(comm.allreduce(len(soup_tris), op=MPI.MAX))
+    if n_soup == 0:
+        raise ValueError(
+            f"nothing is embedded under ({label!r}, {label_value}); "
+            "there is nothing to remove.")
+
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    X = _coords(dm)[: vE - vS]
+    cells = _tet_vertices(dm)
+    h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
+    d_skin = _sheet_distance(X, soup_pts, soup_tris)
+    reach_v = clearance * h_vertex
+    mark = np.zeros(pEnd - pStart, dtype=np.int32)
+    mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
+         + vS - pStart] = 1
+    # The object's own vertices must gather with it, however fat the zone.
+    cS0, _cE0 = dm.getHeightStratum(0)
+    if dm.hasLabel(label):
+        lab = dm.getLabel(label)
+        if lab.getStratumSize(int(label_value)) > 0:
+            for p in lab.getStratumIS(int(label_value)).getIndices():
+                p = int(p)
+                if cS0 <= p < _cE0:
+                    for q in dm.getTransitiveClosure(p)[0]:
+                        if vS <= int(q) < vE:
+                            mark[int(q) - pStart] = 1
+
+    volume_before = np.array([_owned_cell_volume(dm)], dtype=float)
+    comm.Allreduce(MPI.IN_PLACE, volume_before, op=MPI.SUM)
+
+    dm_work, moved = _gather_region(dm, mark, verbose=verbose)
+    if moved:
+        vS, vE = dm_work.getDepthStratum(0)
+        pStart, pEnd = dm_work.getChart()
+        X = _coords(dm_work)[: vE - vS]
+        cells = _tet_vertices(dm_work)
+        h_vertex, _h_cell = _vertex_h_3d(dm_work, cells, len(X))
+        d_skin = _sheet_distance(X, soup_pts, soup_tris)
+        reach_v = clearance * h_vertex
+
+    on_wall = _true_wall_vertex_mask(dm_work, len(X))
+    shared = _shared_point_flags(dm_work).astype(bool)
+
+    cS, _cE = dm_work.getHeightStratum(0)
+    interface = _interface_faces_3d(dm_work, exclude=removed_pairs)
+    held_cells = set()
+    for f in interface:
+        for c in dm_work.getSupport(f):
+            held_cells.add(int(c) - cS)
+    held_counts = _interior_face_counts_3d(dm_work, exclude=removed_pairs)
+
+    seed = np.zeros(len(cells), dtype=bool)
+    if dm_work.hasLabel(label):
+        lab = dm_work.getLabel(label)
+        if lab.getStratumSize(int(label_value)) > 0:
+            for p in lab.getStratumIS(int(label_value)).getIndices():
+                p = int(p)
+                if cS <= p < cS + len(cells):
+                    seed[p - cS] = True
+
+    from underworld3.utilities.edge_split import cell_diameters
+    h_cell_local = cell_diameters(dm_work) if len(cells) else np.zeros(0)
+    h_mean = np.array([float(h_cell_local.sum()), float(len(cells))])
+    comm.Allreduce(MPI.IN_PLACE, h_mean, op=MPI.SUM)
+    h = float(h_mean[0] / h_mean[1])
+    # The centroid-drop rule exists to catch cells STRADDLING an object
+    # about to be embedded; a removal embeds nothing, so the rule would
+    # only widen the cavity for no purpose — measured: it pushed a sheet
+    # removal at z = 0.3 into the domain wall that the sheet's own
+    # placement cleared comfortably.
+    reach_c = np.zeros(len(cells))
+
+    n_region = int((d_skin < reach_v).sum() + seed.sum())
+    owners = np.asarray(comm.allgather(n_region))
+    target = int(np.argmax(owners))
+
+    failure = None
+    victims = drop_ids = None
+    fill = shell_vert_ids = None
+    if comm.rank == target:
+        try:
+            victims, drop_ids, shell = _carve_around_volume_3d(
+                dm_work, X, cells, soup_pts, soup_tris, reach_v, reach_c,
+                held_cells, on_wall, shared, seed_drop=seed)
+            touched = set()
+            for c in drop_ids:
+                for q in dm_work.getTransitiveClosure(int(c) + cS)[0]:
+                    touched.add(int(q))
+            if any(shared[q - pStart] for q in touched):
+                raise RuntimeError(
+                    "remove_embedded internal: the gathered region touches "
+                    "a shared point; the gather mask under-reached.")
+            shell_vert_ids = sorted({v for _f, verts in shell
+                                     for v in verts})
+            local = {v: i for i, v in enumerate(shell_vert_ids)}
+            shell_xyz = X[shell_vert_ids]
+            shell_tris = np.array([[local[v] for v in verts]
+                                   for _f, verts in shell], dtype=np.int64)
+            fill = _gmsh_fill_plain_3d(shell_xyz, shell_tris, h)
+            _p, _t, moved_nodes, _n = fill
+            if moved_nodes:
+                raise RuntimeError(
+                    f"the removal fill moved {moved_nodes} constrained "
+                    "node(s); the cavity cannot be sewn back.")
+        # Exception, not just RuntimeError/ValueError: a raw gmsh error
+        # (e.g. a PLC intersection) is a plain Exception, and an
+        # uncaught raise on the surgery rank is a HANG for its peers —
+        # every failure must become a collective refusal.
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(
+            f"remove_embedded failed on the surgery rank: {real[0]}")
+
+    if comm.rank == target:
+        fill_pts, fill_tets, _m, n_shell = fill
+        made = np.where(
+            fill_tets < n_shell,
+            np.asarray(shell_vert_ids, dtype=np.int64)[
+                np.clip(fill_tets, 0, n_shell - 1)],
+            -(fill_tets - n_shell) - 1)
+        placed = fill_pts[n_shell:]
+        victims_arr = np.asarray(victims, dtype=np.int64)
+        drop_arr = np.asarray(drop_ids, dtype=np.int64)
+    else:
+        made = np.empty((0, 4), dtype=np.int64)
+        placed = np.empty((0, 3), dtype=float)
+        victims_arr = np.empty(0, dtype=np.int64)
+        drop_arr = np.empty(0, dtype=np.int64)
+
+    new, point_map, _placed_new = _rebuild_sewn_3d(
+        dm_work, drop_arr, victims_arr, made, placed)
+
+    # ------------------------------------------------------- global gates
+    for name, value in removed_pairs:
+        left = 0
+        if new.hasLabel(name):
+            left = new.getLabel(name).getStratumSize(int(value))
+        left = int(comm.allreduce(left, op=MPI.SUM))
+        if left:
+            raise RuntimeError(
+                f"{left} point(s) still carry ({name!r}, {value}) after the "
+                "removal; the carve missed part of the object.")
+
+    volume_after = np.array([_owned_cell_volume(new)], dtype=float)
+    comm.Allreduce(MPI.IN_PLACE, volume_after, op=MPI.SUM)
+    if abs(volume_after[0] - volume_before[0]) > 1e-9 * volume_before[0]:
+        raise RuntimeError(
+            f"the removal changed the domain volume: "
+            f"{volume_before[0]:.12f} -> {volume_after[0]:.12f}")
+
+    owned = np.asarray(_owned_stratum_counts(new), dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
+    nv_g, ne_g, nf_g, nc_g = (int(x) for x in owned)
+    if nv_g - ne_g + nf_g - nc_g != 1:
+        raise RuntimeError(
+            f"the cleared mesh has global Euler number "
+            f"{nv_g - ne_g + nf_g - nc_g}, not 1")
+
+    after = _interior_face_counts_3d(new, exclude=removed_pairs)
+    for key, before in held_counts.items():
+        now = after.get(key, 0)
+        if now != before:
+            raise RuntimeError(
+                f"removing {label!r} would leave the surface {key[0]!r} "
+                f"with {now} interior faces instead of {before}.")
+
+    _validity_and_orientation_gates(new, comm)
+
+    min_vol = np.array([_owned_min_cell_volume(new)], dtype=float)
+    comm.Allreduce(MPI.IN_PLACE, min_vol, op=MPI.MIN)
+
+    counts = np.array([len(drop_arr), len(victims_arr), len(made)],
+                      dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, counts, op=MPI.SUM)
+    info = {"n_removed_cells": int(counts[0]),
+            "n_removed_vertices": int(counts[1]),
+            "n_filled_cells": int(counts[2]),
+            "min_volume": float(min_vol[0])}
+    if verbose:
+        uw.pprint(f"[remove_embedded {label!r}] removed "
+                  f"{info['n_removed_cells']} cells / "
+                  f"{info['n_removed_vertices']} vertices, refilled with "
+                  f"{info['n_filled_cells']}")
+    return new, info
+
+
 ZONE_LABEL = "uw_zone"
 
 
@@ -2757,7 +3099,11 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                     f"CAD {cad_vol:.12e}; the layer mesh does not fill its "
                     "own solids.")
             payload = (asm_pts, asm_tets)
-        except (RuntimeError, ValueError) as exc:
+        # Exception, not just RuntimeError/ValueError: a raw gmsh error
+        # (e.g. a PLC intersection) is a plain Exception, and an
+        # uncaught raise on the surgery rank is a HANG for its peers —
+        # every failure must become a collective refusal.
+        except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
     failures = comm.allgather(failure)
     real = [f for f in failures if f]
@@ -2850,7 +3196,11 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                 raise RuntimeError(
                     f"the gap fill remeshed the skin ({skin_out} triangles "
                     f"for {len(skin_tris)} given).")
-        except (RuntimeError, ValueError) as exc:
+        # Exception, not just RuntimeError/ValueError: a raw gmsh error
+        # (e.g. a PLC intersection) is a plain Exception, and an
+        # uncaught raise on the surgery rank is a HANG for its peers —
+        # every failure must become a collective refusal.
+        except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
     failures = comm.allgather(failure)
     real = [f for f in failures if f]
