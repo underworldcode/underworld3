@@ -59,12 +59,13 @@ ordinary free-end embed.
 
 Scope
 -----
-Serial. Placement ADDS points, and the chart-expansion rebuild a shared point
-would need does not exist yet, so a parallel call is refused rather than
-silently returning a mesh whose star-forest is wrong. The parallel route is
-gather-first — redistribute so the fault's star is rank-interior, operate
-locally, renumber — at which point no placed point is ever shared. See
-:func:`~underworld3.utilities.reconnect.rebuild_cavities`.
+Serial and parallel, gather-first (the fault's star is redistributed onto
+one rank, the surgery runs there, every rank rebuilds collectively; no
+placed point is ever shared). One parallel restriction in 2-D: a surface
+whose END reaches the domain wall carries the end-settling machinery
+(wall-vertex slides, facet splits) whose collective form is not built —
+refused with the reason; interior surfaces, the fault case, run at any
+rank count.
 
 Both dimensions, one fill. The 2-D curve (:func:`place_along_lines`) and the
 3-D sheet (:func:`place_sheet`) both delegate their cavity fill to gmsh —
@@ -744,16 +745,18 @@ def _place_one(dm, pts, label, label_value, clearance, spacing, end_snap):
         placed = np.vstack([placed, extra])
         Xall = np.vstack([Xall, extra])
 
-    def mixed(v):
-        return int(v) + vS if v < len(X) else -(int(v) - len(X) + 1)
-
-    new_dm, point_map, placed_points = reconnect.rebuild_cavities(
-        dm, np.flatnonzero(victim) + vS, drop + cS,
-        [tuple(mixed(v) for v in t) for t in tris], placed)
+    # The one rebuild for every dimension and rank count (the vertex SF is
+    # attached before the interpolate — issue #520's property — and the
+    # made cells are re-oriented to the kept convention at wiring).
+    made = [tuple(int(v) if v < len(X) else -(int(v) - len(X) + 1)
+                  for v in t) for t in tris]
+    new_dm, point_map, placed_points = _rebuild_sewn(
+        dm, drop, np.flatnonzero(victim), made, placed)
+    pStart0 = dm.getChart()[0]
 
     def new_point(v):
         return (int(placed_points[v - len(X)]) if v >= len(X)
-                else int(point_map[v + vS]))
+                else int(point_map[v + vS - pStart0]))
 
     n_facets = _label_placed_edges(new_dm, [new_point(int(v)) for v in index],
                                    label, label_value)
@@ -890,6 +893,238 @@ def _insert_on_ring(ring, a, b, v):
         "the cell holding it was not cleared. Raise `clearance`.")
 
 
+def _true_wall_segments_2d(dm, X):
+    """The DOMAIN wall's edges as coordinate segments: support 1 AND unshared.
+
+    A partition seam's edges also have local support 1; the shared test is
+    what separates the wall from the seam (the 3-D lesson, one dimension
+    down).
+    """
+    shared = _shared_point_flags(dm).astype(bool)
+    pStart, _pEnd = dm.getChart()
+    vS, _vE = dm.getDepthStratum(0)
+    segs = []
+    for f in range(*dm.getHeightStratum(1)):
+        if len(dm.getSupport(f)) == 1 and not shared[f - pStart]:
+            a, b = (int(p) for p in dm.getCone(f))
+            segs.append((X[a - vS], X[b - vS]))
+    return segs
+
+
+def _place_one_parallel(dm, pts, label, label_value, clearance, spacing):
+    """One INTERIOR polyline into a distributed mesh: gather-first.
+
+    The parallel form of :func:`_place_one`, scoped to surfaces whose ends
+    terminate inside the mesh — the fault case the lifecycle ruling needs.
+    A surface reaching the domain wall carries the end-settling machinery
+    (wall-vertex slides, facet splits) whose collective form is not built;
+    it is refused here with the reason, and the serial path keeps it.
+
+    The mechanism is the 3-D one verbatim: mark by distance, gather the
+    region onto one rank, carve and fill there, rebuild collectively through
+    the SF-first interpolate, label by the chain's new ids, gate globally.
+    """
+    comm = uw.mpi.comm
+    pts = np.asarray(pts, dtype=float)[:, :2]
+
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    X = _coords(dm)[: vE - vS]
+    cells = _cells_anticlockwise(dm, X)
+    h_vertex, _hc = _vertex_h_3d(dm, cells, len(X))
+    d_line = _distance_to_lines(X, [pts])
+
+    h_stats = np.array([float(h_vertex.sum()), float(len(h_vertex))])
+    comm.Allreduce(MPI.IN_PLACE, h_stats, op=MPI.SUM)
+    h_glob = h_stats[0] / max(h_stats[1], 1.0)
+    wall_segs = _true_wall_segments_2d(dm, X)
+    end_wall = min(
+        (float(np.linalg.norm(
+            end - (A + np.clip(((end - A) @ (B - A))
+                               / float((B - A) @ (B - A)), 0, 1) * (B - A))))
+         for end in (pts[0], pts[-1]) for A, B in wall_segs),
+        default=np.inf)
+    end_wall = comm.allreduce(end_wall, op=MPI.MIN)
+    if end_wall < 2.0 * h_glob:
+        raise NotImplementedError(
+            "parallel placement supports INTERIOR surfaces; an end this "
+            "close to the domain wall needs the end-settling machinery, "
+            "which is serial. Place wall-crossing surfaces before "
+            "distributing, or in a serial pass.")
+
+    area_before = np.array([float(cell_areas(dm).sum())
+                            if len(cells) else 0.0])
+    comm.Allreduce(MPI.IN_PLACE, area_before, op=MPI.SUM)
+
+    mark = np.zeros(pEnd - pStart, dtype=np.int32)
+    mark[np.flatnonzero(d_line < (clearance + 2.0) * h_vertex)
+         + vS - pStart] = 1
+    dm_work, moved = _gather_region(dm, mark)
+    if moved:
+        vS, vE = dm_work.getDepthStratum(0)
+        pStart, pEnd = dm_work.getChart()
+        X = _coords(dm_work)[: vE - vS]
+        cells = _cells_anticlockwise(dm_work, X)
+        h_vertex, _hc = _vertex_h_3d(dm_work, cells, len(X))
+        d_line = _distance_to_lines(X, [pts])
+
+    shared = _shared_point_flags(dm_work).astype(bool)
+    on_wall = _true_wall_vertex_mask(dm_work, len(X))
+    held_v, held_c = _interface_vertices_and_cells(dm_work, len(X),
+                                                   len(cells))
+    held_counts = _interface_facet_counts(dm_work)
+
+    n_region = int((d_line < clearance * h_vertex).sum())
+    owners = np.asarray(comm.allgather(n_region))
+    if owners.sum() == 0:
+        raise ValueError(
+            "the surface meets no cell of this mesh: there is nothing to "
+            "place it in.")
+    target = int(np.argmax(owners))
+
+    failure = None
+    surgery = None
+    if comm.rank == target:
+        try:
+            space = spacing if spacing is not None \
+                else _spacing_near(dm_work, X, cells, pts)
+            pts_r = _resample(pts, space)
+            if not _inside_mesh(X, cells, pts_r).all():
+                raise ValueError(
+                    "the surface leaves the mesh; parallel placement takes "
+                    "interior surfaces only.")
+
+            beside_held = np.zeros(len(X), dtype=bool)
+            beside_held[cells[held_c].ravel()] = True
+            protected = on_wall | held_v | beside_held
+            victim = ((_distance_to_lines(X, [pts_r])
+                       < clearance * h_vertex) & ~protected)
+
+            edge = np.linalg.norm(X[cells[:, 0]] - X[cells[:, 1]], axis=1)
+            reachable = np.flatnonzero(
+                _distance_to_lines(X[cells].mean(axis=1), [pts_r])
+                < edge + space)
+            crossed = _cells_meeting(X, cells, pts_r, reachable)
+            drop = np.union1d(np.flatnonzero(victim[cells].any(axis=1)),
+                              crossed)
+            drop = drop[~held_c[drop]]
+            if not len(drop):
+                raise ValueError("the surface meets no cell of this mesh")
+            need = victim[cells].any(axis=1)
+            if (need & held_c).any():
+                raise RuntimeError(
+                    "the surface's cavity needs a cell that belongs to a "
+                    "surface already embedded.")
+            ring = _cavity_ring(cells, drop)
+            if ring is None:
+                raise RuntimeError(
+                    "the cells cleared for the surface do not leave one "
+                    "simple hole. Raise `clearance`.")
+            if victim[np.asarray(ring)].any():
+                raise RuntimeError(
+                    "a deleted vertex is on the cavity boundary")
+            ring_set = set(int(v) for v in ring)
+            Xall = np.vstack([X, pts_r])
+            chain = [len(X) + k for k in range(len(pts_r))]
+            outside = [k for k in range(len(pts_r))
+                       if not _inside_polygon(Xall[ring], pts_r[k])]
+            if outside:
+                raise RuntimeError(
+                    f"{len(outside)} point(s) of the surface fall outside "
+                    "the cavity cleared for it; raise `clearance`.")
+
+            tris, extra = _gmsh_fill_2d(Xall, ring, chain)
+            placed = np.vstack([pts_r, extra]) if len(extra) else pts_r
+
+            # No surviving vertex without a surviving cell, and nothing the
+            # surgery touches may be shared (the gather's contract).
+            keep = np.ones(len(cells), dtype=bool)
+            keep[drop] = False
+            referenced = np.zeros(len(X), dtype=bool)
+            if keep.any():
+                referenced[cells[keep].ravel()] = True
+            victim |= ~referenced & ~on_wall
+            touched = set()
+            cS0, _ = dm_work.getHeightStratum(0)
+            for c in drop:
+                for q in dm_work.getTransitiveClosure(int(c) + cS0)[0]:
+                    touched.add(int(q))
+            if any(shared[q - pStart] for q in touched):
+                raise RuntimeError(
+                    "place internal: the gathered region touches a shared "
+                    "point; the gather mask under-reached.")
+
+            made = [tuple(int(v) if v < len(X)
+                          else -(int(v) - len(X) + 1) for v in t)
+                    for t in tris]
+            surgery = (np.flatnonzero(victim), drop, made, placed,
+                       len(pts_r), len(extra))
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(f"place_along_lines failed on the surgery "
+                           f"rank: {real[0]}")
+
+    if comm.rank == target:
+        victims_arr, drop_arr, made, placed, n_chain, n_extra = surgery
+    else:
+        victims_arr = np.empty(0, dtype=np.int64)
+        drop_arr = np.empty(0, dtype=np.int64)
+        made = []
+        placed = np.empty((0, 2), dtype=float)
+        n_chain = n_extra = 0
+
+    new_dm, point_map, placed_new = _rebuild_sewn(
+        dm_work, drop_arr, victims_arr, made, placed)
+
+    if not new_dm.hasLabel(label):
+        new_dm.createLabel(label)
+    n_facets_local = 0
+    if comm.rank == target:
+        chain_new = [int(placed_new[k]) for k in range(n_chain)]
+        n_facets_local = _label_placed_edges(new_dm, chain_new, label,
+                                             label_value)
+
+    # The held gate, per rank: the mesh outside the gathered region is
+    # untouched, so every rank's own interface counts must come through
+    # unchanged (growing only for the label being written).
+    after = _interface_facet_counts(new_dm)
+    breach = None
+    for key, before in held_counts.items():
+        now = after.get(key, 0)
+        if now < before or (now != before
+                            and key != (label, int(label_value))):
+            breach = (f"placing {label!r} would leave the surface "
+                      f"{key[0]!r} with {now} facets instead of {before}.")
+    breaches = comm.allgather(breach)
+    real = [b for b in breaches if b]
+    if real:
+        raise RuntimeError(real[0])
+
+    areas = cell_areas(new_dm)
+    stats = np.array([float(areas.sum()) if len(areas) else 0.0,
+                      float((areas <= 0.0).sum()) if len(areas) else 0.0,
+                      float(n_facets_local), float(len(victims_arr)),
+                      float(n_chain), float(n_extra)])
+    comm.Allreduce(MPI.IN_PLACE, stats, op=MPI.SUM)
+    if stats[1]:
+        raise RuntimeError(f"{int(stats[1])} cell(s) of the result are "
+                           "inverted")
+    if abs(stats[0] - area_before[0]) > 1e-9 * area_before[0]:
+        raise RuntimeError(
+            f"the placement changed the domain area: {area_before[0]:.12f} "
+            f"-> {stats[0]:.12f}")
+    _validity_and_orientation_gates(new_dm, comm)
+
+    return new_dm, {"n_placed": int(stats[4]),
+                    "n_on_surface": 0,
+                    "n_removed": int(stats[3]),
+                    "n_fill_points": int(stats[5]),
+                    "n_surface_facets": int(stats[2])}
+
+
 def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
                       clearance=0.55, spacing=None, end_snap=0.25,
                       verbose=False):
@@ -990,35 +1225,45 @@ def place_along_lines(dm, lines, label=CUT_LABEL, label_value=1,
             f"place_along_lines takes polylines in a 2-D mesh; this mesh is "
             f"{dm.getDimension()}-D. A surface in a 3-D mesh is a sheet: use "
             "place_sheet.")
-    if uw.mpi.size > 1:
-        raise NotImplementedError(
-            "place_along_lines is serial. Placement ADDS points, so a surface "
-            "crossing a partition seam needs the star-forest's leaf set "
-            "extended — the chart-expansion rebuild, which does not exist yet. "
-            "Refusing beats returning a mesh whose star-forest is wrong.")
-
     out = dm
     totals = {"n_placed": 0, "n_on_surface": 0, "n_removed": 0,
               "n_fill_points": 0, "n_surface_facets": 0}
     for pts in lines:
-        out, one = _place_one(out, np.asarray(pts, dtype=float)[:, :2],
-                              label, label_value, clearance, spacing, end_snap)
+        if uw.mpi.size > 1:
+            # Gather-first, interior surfaces only; self-gating (area,
+            # inversion, validity battery — all collective).
+            out, one = _place_one_parallel(
+                out, np.asarray(pts, dtype=float)[:, :2],
+                label, label_value, clearance, spacing)
+        else:
+            out, one = _place_one(out, np.asarray(pts, dtype=float)[:, :2],
+                                  label, label_value, clearance, spacing,
+                                  end_snap)
         for key in totals:
             totals[key] += one[key]
 
-    areas = cell_areas(out)
-    over = sum(1 for f in range(*out.getHeightStratum(1))
-               if len(out.getSupport(f)) > 2)
-    if over:
-        raise RuntimeError(
-            f"{over} facet(s) of the result have more than two cells: the "
-            "retriangulated cavity is not conforming.")
-    if (areas <= 0.0).any():
-        raise RuntimeError(
-            f"{int((areas <= 0.0).sum())} cell(s) of the result are inverted.")
-
-    info = dict(totals, min_area=float(areas.min()),
-                min_angle=float(min_angles(out).min()))
+    if uw.mpi.size == 1:
+        areas = cell_areas(out)
+        over = sum(1 for f in range(*out.getHeightStratum(1))
+                   if len(out.getSupport(f)) > 2)
+        if over:
+            raise RuntimeError(
+                f"{over} facet(s) of the result have more than two cells: "
+                "the retriangulated cavity is not conforming.")
+        if (areas <= 0.0).any():
+            raise RuntimeError(
+                f"{int((areas <= 0.0).sum())} cell(s) of the result are "
+                "inverted.")
+        info = dict(totals, min_area=float(areas.min()),
+                    min_angle=float(min_angles(out).min()))
+    else:
+        areas = cell_areas(out)
+        local = np.array([float(areas.min()) if len(areas) else np.inf,
+                          float(min_angles(out).min())
+                          if len(areas) else np.inf])
+        uw.mpi.comm.Allreduce(MPI.IN_PLACE, local, op=MPI.MIN)
+        info = dict(totals, min_area=float(local[0]),
+                    min_angle=float(local[1]))
     if verbose:
         uw.pprint(f"[place {label!r}] placed {info['n_placed']} vertices, "
                   f"reused {info['n_on_surface']}, removed {info['n_removed']}; "
@@ -1587,7 +1832,7 @@ def _attach_uninterp_vertex_sf(new, dm, v_old_to_compact, nc_new, nroots):
     new.setPointSF(new_sf)
 
 
-def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
+def _rebuild_sewn(dm, drop_cell_ids, victim_ids, made_cells, placed):
     """Rebuild the local chart with cells replaced; every rank, collectively.
 
     The uninterpolated-cells + ``DMPlexInterpolate`` pattern (taken from
@@ -1606,10 +1851,11 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     mesh, the chart point map (old -> new, -1 for deleted), and the new
     vertex ids of the placed rows.
     """
+    dim = dm.getDimension()
+    nvc = dim + 1
     pStart, pEnd = dm.getChart()
     cS, cE = dm.getHeightStratum(0)
     vS, vE = dm.getDepthStratum(0)
-    fS, fE = dm.getHeightStratum(1)
     eS, eE = dm.getDepthStratum(1)
     nv_old = vE - vS
 
@@ -1620,9 +1866,12 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     v_old_to_compact = -np.ones(nv_old, dtype=np.int64)
     v_old_to_compact[keep_vertex] = np.arange(int(keep_vertex.sum()))
     n_surv = int(keep_vertex.sum())
-    placed = np.asarray(placed, dtype=float).reshape(-1, 3)
+    placed = np.asarray(placed, dtype=float).reshape(-1, dim)
 
-    cell_verts = _tet_vertices(dm)
+    cell_verts = np.array(
+        [[int(p) - vS for p in dm.getTransitiveClosure(c)[0]
+          if vS <= p < vE] for c in range(cS, cE)],
+        dtype=np.int64).reshape(cE - cS, nvc)
     kept = cell_verts[keep_cell]
     nc_new = int(keep_cell.sum()) + len(made_cells)
     nv_new = n_surv + len(placed)
@@ -1630,31 +1879,37 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     # Orient every made cell to the KEPT cells' handedness before wiring.
     # DMPlexInterpolate derives face cones and orientations from the
     # cell-vertex cones but does NOT normalise the cells' own vertex
-    # order; the fill's tets arrive in gmsh's convention, which is
+    # order; the fill's cells arrive in gmsh's convention, which is
     # opposite to the plex closure convention the kept cells carry, and
     # a mixed-handedness mesh assembles negative Jacobians (measured:
     # the first Stokes solve on the sewn mesh never converged, while
-    # every abs()-based volume gate stayed green). The serial rewrite
-    # dropped the old explicit flip; this restores it, against the kept
-    # cells' own sign so the convention is read off the mesh, not assumed.
-    made_cells = np.asarray(made_cells, dtype=np.int64).reshape(-1, 4)
+    # every abs()-based volume gate stayed green). Read the convention off
+    # the mesh's own cells, never assume it.
+    made_cells = np.asarray(made_cells, dtype=np.int64).reshape(-1, nvc)
     if len(made_cells) and len(kept):
         X_old = _coords(dm)[:nv_old]
 
-        def signed6(P):
-            return float(np.dot(np.cross(P[1] - P[0], P[2] - P[0]),
-                                P[3] - P[0]))
+        if dim == 3:
+            def signed(P):
+                return float(np.dot(np.cross(P[1] - P[0], P[2] - P[0]),
+                                    P[3] - P[0]))
+            flip = np.array([0, 1, 3, 2])
+        else:
+            def signed(P):
+                return float((P[1][0] - P[0][0]) * (P[2][1] - P[0][1])
+                             - (P[1][1] - P[0][1]) * (P[2][0] - P[0][0]))
+            flip = np.array([0, 2, 1])
 
-        ref_sign = np.sign(signed6(X_old[kept[0]]))
+        ref_sign = np.sign(signed(X_old[kept[0]]))
 
         def xyz_of(x):
             return placed[-int(x) - 1] if x < 0 else X_old[int(x)]
 
         made_cells = made_cells.copy()
-        for j, tet in enumerate(made_cells):
-            P = np.array([xyz_of(v) for v in tet])
-            if np.sign(signed6(P)) != ref_sign:
-                made_cells[j] = tet[[0, 1, 3, 2]]
+        for j, cell in enumerate(made_cells):
+            P = np.array([xyz_of(v) for v in cell])
+            if np.sign(signed(P)) != ref_sign:
+                made_cells[j] = cell[flip]
 
     def v_uninterp(x):
         if x < 0:
@@ -1662,16 +1917,16 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
         return nc_new + int(v_old_to_compact[int(x)])
 
     new = PETSc.DMPlex().create(comm=dm.comm)
-    new.setDimension(3)
+    new.setDimension(dim)
     new.setChart(0, nc_new + nv_new)
     for i in range(nc_new):
-        new.setConeSize(i, 4)
+        new.setConeSize(i, nvc)
     new.setUp()
-    for i, tet in enumerate(kept):
-        new.setCone(i, [nc_new + int(v_old_to_compact[v]) for v in tet])
-    for j, tet in enumerate(made_cells):
+    for i, cell in enumerate(kept):
+        new.setCone(i, [nc_new + int(v_old_to_compact[v]) for v in cell])
+    for j, cell in enumerate(made_cells):
         new.setCone(int(keep_cell.sum()) + j,
-                    [v_uninterp(v) for v in tet])
+                    [v_uninterp(v) for v in cell])
     new.symmetrize()
     new.stratify()
     if uw.mpi.size > 1:
@@ -1683,7 +1938,7 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     if (new.getHeightStratum(0) != (0, nc_new)
             or (vS2, vE2) != (nc_new, nc_new + nv_new)):
         raise RuntimeError(
-            "place_sheet internal: DMPlexInterpolate moved the cell or "
+            "rebuild internal: DMPlexInterpolate moved the cell or "
             "vertex numbering the point-map arithmetic relies on.")
 
     X = _coords(dm)[:nv_old]
@@ -1699,12 +1954,16 @@ def _rebuild_sewn_3d(dm, drop_cell_ids, victim_ids, made_cells, placed):
     point_map[surv_verts + vS - pStart] = vS2 + np.arange(n_surv)
     placed_new = vS2 + n_surv + np.arange(len(placed))
 
-    # Old faces and edges are recovered by JOINING their surviving vertex
-    # tuples in the new chart (the contact stream's recovery move). One that
-    # does not join back was interior to the cavity and is legitimately gone;
-    # the breach detector downstream is what confirms nothing LABELLED went
-    # with it.
-    for lo, hi in ((fS, fE), (eS, eE)):
+    # Old faces and edges (3-D) or edges (2-D) are recovered by JOINING
+    # their surviving vertex tuples in the new chart (the contact stream's
+    # recovery move). One that does not join back was interior to the cavity
+    # and is legitimately gone; the breach detector downstream is what
+    # confirms nothing LABELLED went with it.
+    if dim == 3:
+        strata = (dm.getHeightStratum(1), (eS, eE))
+    else:
+        strata = ((eS, eE),)
+    for lo, hi in strata:
         for q in range(lo, hi):
             verts = [int(x) - vS for x in dm.getTransitiveClosure(q)[0]
                      if dm.getPointDepth(int(x)) == 0]
@@ -1997,7 +2256,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         victims_arr = np.empty(0, dtype=np.int64)
         drop_arr = np.empty(0, dtype=np.int64)
 
-    new, point_map, placed_new = _rebuild_sewn_3d(
+    new, point_map, placed_new = _rebuild_sewn(
         dm_work, drop_arr, victims_arr, made, placed)
 
     # The sheet's faces, labelled by joining the fill's vertex tuples. The
@@ -2779,7 +3038,7 @@ def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
         victims_arr = np.empty(0, dtype=np.int64)
         drop_arr = np.empty(0, dtype=np.int64)
 
-    new, point_map, _placed_new = _rebuild_sewn_3d(
+    new, point_map, _placed_new = _rebuild_sewn(
         dm_work, drop_arr, victims_arr, made, placed)
 
     # ------------------------------------------------------- global gates
@@ -2930,14 +3189,13 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     placed = np.vstack([asm_pts, extra]) if len(extra) else asm_pts
 
     def mixed(v):
-        return int(v) + vS if v < len(X) else -(int(v) - len(X) + 1)
+        return int(v) if v < len(X) else -(int(v) - len(X) + 1)
 
     made = [tuple(mixed(v) for v in t) for t in gap_tris]
     made += [tuple(-(int(v) + 1) for v in t) for t in asm_tris]
 
-    new_dm, _point_map, placed_points = reconnect.rebuild_cavities(
-        dm, np.flatnonzero(victim) + vS, np.flatnonzero(drop) + cS,
-        made, placed)
+    new_dm, _point_map, placed_points = _rebuild_sewn(
+        dm, np.flatnonzero(drop), np.flatnonzero(victim), made, placed)
 
     skin_label = label + "_skin"
     for name in (label, skin_label):
@@ -3238,7 +3496,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         victims_arr = np.empty(0, dtype=np.int64)
         drop_arr = np.empty(0, dtype=np.int64)
 
-    new, point_map, placed_new = _rebuild_sewn_3d(
+    new, point_map, placed_new = _rebuild_sewn(
         dm_work, drop_arr, victims_arr, made, placed)
 
     # Label the zone's cells and the skin's faces, by joining vertex tuples.
@@ -3334,13 +3592,22 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
 
 
 def _cell_volumes_signed6(dm):
+    """Signed 6*volume (3-D) or signed 2*area (2-D) per cell — the sign is
+    the point: abs()-based measures are structurally blind to inversion."""
     X = _coords(dm)
-    vS, _vE = dm.getDepthStratum(0)
-    cells = _tet_vertices(dm)
-    P = X[cells + 0]
-    return np.einsum("ij,ij->i",
-                     np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
-                     P[:, 3] - P[:, 0])
+    vS, vE = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    dim = dm.getDimension()
+    cells = np.array([[int(p) - vS for p in dm.getTransitiveClosure(c)[0]
+                       if vS <= p < vE] for c in range(cS, cE)],
+                     dtype=np.int64).reshape(cE - cS, dim + 1)
+    P = X[cells]
+    if dim == 3:
+        return np.einsum("ij,ij->i",
+                         np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                         P[:, 3] - P[:, 0])
+    return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+            - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
 
 
 def _owned_cell_volume(dm):
