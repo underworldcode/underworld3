@@ -161,3 +161,54 @@ def test_add_remove_add_composes():
     assert info["n_surface_facets"] == len(tris)
     assert _volume_of(again) == pytest.approx(v0, rel=1e-12)
     assert _fe_exact(again, base, bounds, "again") < 1e-8
+
+
+def test_the_two_dimensional_lifecycle_composes():
+    """Zone -> remove -> line -> remove, FE-exact at every stage (2-D)."""
+    from underworld3.utilities.place_surface import place_along_lines
+    from underworld3.utilities.line_cut import cell_areas
+
+    base2 = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.05,
+        regular=False, qdegree=2)
+    bounds = base2._boundaries_with("Zone")
+
+    def fe2(dm, tag):
+        mesh = uw.discretisation.Mesh(
+            dm.clone(), simplex=True, qdegree=3, boundaries=bounds,
+            coordinate_system_type=base2.CoordinateSystem.coordinate_type)
+        x, y = mesh.X
+        exact = x**2 + y**2
+        t = uw.discretisation.MeshVariable(f"T2d_{tag}", mesh, 1, degree=2)
+        poisson = uw.systems.Poisson(mesh, u_Field=t)
+        poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+        poisson.constitutive_model.Parameters.diffusivity = 1.0
+        poisson.f = -4.0
+        for wall in ("Bottom", "Top", "Left", "Right"):
+            poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+        poisson.tolerance = 1e-11
+        poisson.solve()
+        X = np.asarray(t.coords)
+        return float(np.abs(np.asarray(t.data[:, 0])
+                            - (X[:, 0]**2 + X[:, 1]**2)).max())
+
+    a0 = float(cell_areas(base2.dm).sum())
+    l1 = np.array([[0.3, 0.35], [0.7, 0.65]])
+    l2 = np.array([[0.3, 0.65], [0.7, 0.35]])
+    zoned, _ = place_thin_volume(base2.dm, [l1, l2], width=0.02,
+                                 label="Zone",
+                                 label_value=bounds["Zone"].value)
+    assert fe2(zoned, "a") < 1e-8
+    cleared, _ = remove_embedded(zoned, "Zone",
+                                 label_value=bounds["Zone"].value)
+    assert cleared.getLabel("Zone").getStratumSize(
+        bounds["Zone"].value) == 0
+    assert fe2(cleared, "b") < 1e-8
+    line = np.array([[0.35, 0.45], [0.65, 0.55]])
+    again, _ = place_along_lines(cleared, [line], label="Zone",
+                                 label_value=bounds["Zone"].value)
+    assert fe2(again, "c") < 1e-8
+    gone, _ = remove_embedded(again, "Zone",
+                              label_value=bounds["Zone"].value)
+    assert fe2(gone, "d") < 1e-8
+    assert float(cell_areas(gone).sum()) == pytest.approx(a0, rel=1e-12)
