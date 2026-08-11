@@ -1528,7 +1528,8 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
 
 
 def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
-                     held_cells, h_vertex, on_wall, shared_chart):
+                     held_cells, h_vertex, on_wall, shared_chart,
+                     open_wall=None):
     """Victims, dropped tets and the closed cavity shell around the sheet.
 
     The same two-part rule as 2-D — vertices within the clearance go, and any
@@ -1539,17 +1540,27 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     manifold that never touches the domain wall. Rank-local: the caller
     guarantees (and this function asserts) that the whole region is interior
     to this rank — the gather's contract.
+
+    ``open_wall = (axis, value)`` is the OUTCROP bowl: wall vertices lying
+    in that plane may be victims (the cap over the cavity is remeshed), and
+    the shell may open there — the wall faces of dropped cells come back as
+    ``cap_faces`` for the caller to pre-mesh. Returns
+    ``(victims, drop_ids, shell, cap_faces)``.
     """
     from underworld3.utilities.edge_split import cell_diameters
 
     h_cell = cell_diameters(dm)
     d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
+    on_open = np.zeros(len(X), dtype=bool)
+    if open_wall is not None:
+        on_open = X[:, open_wall[0]] == open_wall[1]
 
     held_vertex = np.zeros(len(X), dtype=bool)
     if held_cells:
         for c in held_cells:
             held_vertex[cells[c]] = True
-    victim = (d_sheet < clearance * h_vertex) & ~on_wall & ~held_vertex
+    victim = ((d_sheet < clearance * h_vertex)
+              & (~on_wall | on_open) & ~held_vertex)
 
     drop = victim[cells].any(axis=1)
     cen = X[cells].mean(axis=1)
@@ -1599,8 +1610,9 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     if not drop.any():
         raise ValueError("the sheet meets no cell of this mesh")
 
-    shell, drop = _closed_shell_3d(dm, X, cells, drop, victim, held_cells,
-                                   shared_chart, "sheet")
+    shell, cap_faces, drop = _closed_shell_3d(
+        dm, X, cells, drop, victim, held_cells, shared_chart, "sheet",
+        open_wall=open_wall)
 
     # The straddle rule — or the shell growth — can drop the whole star of
     # a vertex that is NOT a victim; such a vertex is on no shell face and
@@ -1611,16 +1623,134 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     if (~drop).any():
         referenced[cells[~drop].ravel()] = True
     orphan = ~referenced & ~victim
-    if orphan[on_wall].any():
+    if orphan[on_wall & ~on_open].any():
         raise RuntimeError(
             "the sheet's cavity would strand a domain-wall vertex; the sheet "
             "must be interior, with clearance to spare")
     victim |= orphan
-    return np.flatnonzero(victim), np.flatnonzero(drop), shell
+    return np.flatnonzero(victim), np.flatnonzero(drop), shell, cap_faces
+
+
+def _clip_sheet_to_box(pts, tris, lo, hi):
+    """Clip a triangulated sheet to the axis-aligned box ``[lo, hi]``.
+
+    The specify-long contract (ruling, 2026-08-11): fault surfaces are
+    defined generously PAST the domain and prep trims them. Each triangle is
+    Sutherland–Hodgman-clipped against the six half-spaces; cut points snap
+    exactly onto the plane, and a cut point is computed from its edge's
+    endpoints in a canonical order so the two triangles sharing the edge
+    produce the bitwise-identical point (the dedup relies on it). Returns
+    ``(pts, tris, on_plane)`` with ``on_plane[k] = 2*axis + side`` for a
+    point lying exactly on a wall plane, else ``-1``.
+    """
+    lo = np.asarray(lo, dtype=float)
+    hi = np.asarray(hi, dtype=float)
+    pts = np.asarray(pts, dtype=float)
+    key_of = {}
+    out_pts = []
+    corner_ids = {}
+
+    def intern(p):
+        k = tuple(float(x) for x in p)
+        if k not in key_of:
+            key_of[k] = len(out_pts)
+            out_pts.append(np.asarray(p, dtype=float))
+        return key_of[k]
+
+    def cut(a_id, b_id, A, B, axis, value):
+        # Canonical order so both triangles sharing the edge agree bitwise.
+        if (a_id, tuple(A)) > (b_id, tuple(B)):
+            a_id, b_id, A, B = b_id, a_id, B, A
+        t = (value - A[axis]) / (B[axis] - A[axis])
+        p = A + t * (B - A)
+        p[axis] = value                       # exactly on the plane
+        return p
+
+    out_tris = []
+    for tri in tris:
+        # The polygon starts as the triangle, with vertex identity carried
+        # so shared cut edges intern to the same point.
+        poly = [(int(v), pts[int(v)].copy()) for v in tri]
+        for axis in range(3):
+            for side, value, keep in ((0, lo[axis], 1.0), (1, hi[axis], -1.0)):
+                if not poly:
+                    break
+                nxt = []
+                for i in range(len(poly)):
+                    (ai, A), (bi, B) = poly[i], poly[(i + 1) % len(poly)]
+                    a_in = keep * (A[axis] - value) >= 0.0
+                    b_in = keep * (B[axis] - value) >= 0.0
+                    if a_in:
+                        nxt.append((ai, A))
+                    if a_in != b_in:
+                        p = cut(ai, bi, A, B, axis, value)
+                        nxt.append((("cut", min(ai, bi), max(ai, bi),
+                                     axis, side), p))
+                poly = nxt
+        if len(poly) < 3:
+            continue
+        ids = [intern(p) for _tag, p in poly]
+        for k in range(1, len(ids) - 1):
+            if len({ids[0], ids[k], ids[k + 1]}) == 3:
+                out_tris.append((ids[0], ids[k], ids[k + 1]))
+
+    if not out_tris:
+        raise ValueError("the sheet lies entirely outside the domain")
+    out_pts = np.array(out_pts)
+    on_plane = np.full(len(out_pts), -1, dtype=np.int64)
+    for axis in range(3):
+        on_plane[out_pts[:, axis] == lo[axis]] = 2 * axis
+        on_plane[out_pts[:, axis] == hi[axis]] = 2 * axis + 1
+    return out_pts, np.array(out_tris, dtype=np.int64), on_plane
+
+
+def _outcrop_chain(pts, tris, on_plane):
+    """The sheet's boundary polyline on ONE wall plane, ordered.
+
+    Boundary edges of the clipped sheet whose BOTH ends lie on the same
+    plane form the outcrop. One open chain on one wall is the supported
+    case; anything else (two walls, a closed loop, several chains) is
+    refused with the reason — box-edge outcrops are a later phase.
+    Returns ``(chain_point_ids, wall_code)`` or ``(None, None)``.
+    """
+    from collections import Counter
+
+    edge_count = Counter()
+    for a, b, c in tris:
+        for e in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+            edge_count[tuple(sorted(e))] += 1
+    walls = set(int(w) for w in on_plane[on_plane >= 0])
+    if not walls:
+        return None, None
+    if len(walls) > 1:
+        raise NotImplementedError(
+            "the sheet meets more than one domain wall; box-edge outcrops "
+            "are not built. Clip the sheet to a single wall.")
+    wall = walls.pop()
+    chain_edges = [e for e, k in edge_count.items() if k == 1
+                   and on_plane[e[0]] == wall and on_plane[e[1]] == wall]
+    if not chain_edges:
+        return None, None
+    adj = {}
+    for a, b in chain_edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    ends = [v for v, ns in adj.items() if len(ns) == 1]
+    if len(ends) != 2 or any(len(ns) > 2 for ns in adj.values()):
+        raise NotImplementedError(
+            "the sheet's trace on the wall is not one open chain; multiple "
+            "or closed outcrops are not built.")
+    chain, prev, cur = [ends[0]], None, ends[0]
+    while cur != ends[1]:
+        ns = adj[cur]
+        nxt = ns[0] if ns[0] != prev else ns[1]
+        chain.append(nxt)
+        prev, cur = cur, nxt
+    return chain, wall
 
 
 def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
-                     noun):
+                     noun, open_wall=None):
     """The cavity shell over ``drop``, GROWN at pinch edges until manifold.
 
     Shared by every 3-D carve. The union of victim stars around any object
@@ -1631,9 +1761,16 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
     original mesh did not). Growing the drop at every non-manifold edge
     merges the wedges; dropping more cells only enlarges the fill.
 
+    ``open_wall = (axis, value)`` lets the cavity OPEN onto one flat wall —
+    the outcrop bowl. A dropped cell's wall face lying in that plane becomes
+    a CAP face (returned separately; the caller pre-meshes the cap); any
+    other wall contact still refuses. The manifold check runs on shell
+    ∪ cap, which together must close.
+
     Refusals stay per-object worded via ``noun``; a wall or seam contact and
     a growth that would need a held cell are refusals, not growth. Returns
-    ``(shell, drop)`` with ``drop`` possibly grown.
+    ``(shell, cap_faces, drop)`` with ``drop`` possibly grown; ``cap_faces``
+    is empty when ``open_wall`` is None.
     """
     from collections import Counter
 
@@ -1655,6 +1792,7 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
 
     for _round in range(20):
         shell = []
+        cap_faces = []
         for f in range(fS, fE):
             support = face_support[f]
             n_in = sum(1 for c in support if drop[c])
@@ -1666,13 +1804,18 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
                         f"the {noun}'s cavity touches a partition seam "
                         "after the gather; the region marking under-reached. "
                         "A defect, not a configuration error.")
+                verts = face_verts[f]
+                if open_wall is not None and all(
+                        X[v][open_wall[0]] == open_wall[1] for v in verts):
+                    cap_faces.append((f, verts))
+                    continue
                 raise RuntimeError(
-                    f"the {noun}'s cavity reached the domain wall; the "
-                    f"{noun} must be interior, with clearance to spare")
+                    f"the {noun}'s cavity reached the domain wall away from "
+                    f"the outcrop; the {noun} must clear the other walls")
             if n_in == 1:
                 shell.append((f, face_verts[f]))
         edge_count = Counter()
-        for _f, verts in shell:
+        for _f, verts in shell + cap_faces:
             a, b, c = sorted(verts)
             for e in ((a, b), (a, c), (b, c)):
                 edge_count[e] += 1
@@ -1695,10 +1838,10 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
     shell_verts = sorted({v for _f, verts in shell for v in verts})
     if victim[shell_verts].any():
         raise RuntimeError("a deleted vertex is on the cavity shell")
-    return shell, drop
+    return shell, cap_faces, drop
 
 
-def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
+def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h, cap=None):
     """Tetrahedralise inside the shell with the sheet embedded, via gmsh.
 
     Gated, not trusted: the caller checks that no constrained node moved and
@@ -1727,7 +1870,39 @@ def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
         gmsh.model.mesh.addElementsByType(
             sheet_tag, 2, [], (sheet_tris + n_shell + 1).reshape(-1).tolist())
 
-        loop = gmsh.model.geo.addSurfaceLoop([shell_tag])
+        cap_tag = None
+        if cap is not None:
+            # The OUTCROP cap, PRE-MESHED (a geo surface bounded by the
+            # discrete rim RESAMPLES the rim — measured — so the cap arrives
+            # discrete). Node references: rim -> shell tags, outcrop chain
+            # -> sheet tags, interior extras -> new tags after everything.
+            cap_tag = gmsh.model.addDiscreteEntity(2)
+            extra_first = n_shell + n_sheet + 1
+            if len(cap["extra_xyz"]):
+                gmsh.model.mesh.addNodes(
+                    2, cap_tag,
+                    list(range(extra_first,
+                               extra_first + len(cap["extra_xyz"]))),
+                    np.asarray(cap["extra_xyz"], dtype=float)
+                    .reshape(-1).tolist())
+
+            n_rim = len(cap["rim_shell_local"])
+            n_chain = len(cap["chain_sheet_local"])
+
+            def cap_tag_of(k):
+                if k < n_rim:
+                    return int(cap["rim_shell_local"][k]) + 1
+                if k < n_rim + n_chain:
+                    return (n_shell
+                            + int(cap["chain_sheet_local"][k - n_rim]) + 1)
+                return extra_first + (k - n_rim - n_chain)
+
+            gmsh.model.mesh.addElementsByType(
+                cap_tag, 2, [],
+                [cap_tag_of(int(v)) for t in cap["tris"] for v in t])
+
+        loop = gmsh.model.geo.addSurfaceLoop(
+            [shell_tag] + ([cap_tag] if cap_tag is not None else []))
         vol = gmsh.model.geo.addVolume([loop])
         gmsh.model.geo.synchronize()
         gmsh.model.mesh.embed(2, [sheet_tag], 3, vol)
@@ -1765,7 +1940,14 @@ def _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts, sheet_tris, h):
             if et == 2:
                 sheet_out = np.array([renum[int(t)] for t in nodes],
                                      dtype=np.int64).reshape(-1, 3)
-        return points, tets, sheet_out, moved, n_shell
+        cap_out = None
+        if cap_tag is not None:
+            cet, _cei, cen_ = gmsh.model.mesh.getElements(2, cap_tag)
+            for et, nodes in zip(cet, cen_):
+                if et == 2:
+                    cap_out = np.array([renum[int(t)] for t in nodes],
+                                       dtype=np.int64).reshape(-1, 3)
+        return points, tets, sheet_out, moved, n_shell, cap_out
     finally:
         gmsh.finalize()
 
@@ -2135,6 +2317,26 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     sheet_pts = np.asarray(points, dtype=float).reshape(-1, 3)
     sheet_tris = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
 
+    # The specify-long contract (ruling 2026-08-11): the sheet may extend
+    # PAST the domain; it is clipped to the (axis-aligned) bounds here, and
+    # a trace left on ONE wall plane becomes the OUTCROP — the cavity opens
+    # onto that wall and the cap over it is remeshed to conform. The clip
+    # is deterministic from the input, so every rank computes the same
+    # sheet; the bounds are global.
+    Xb = _coords(dm)
+    lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(3, np.inf),
+                      -(Xb.max(axis=0)) if len(Xb) else np.full(3, np.inf)])
+    comm.Allreduce(MPI.IN_PLACE, lo_hi, op=MPI.MIN)
+    box_lo, box_hi = lo_hi[0], -lo_hi[1]
+    sheet_pts, sheet_tris, on_plane = _clip_sheet_to_box(
+        sheet_pts, sheet_tris, box_lo, box_hi)
+    chain, wall_code = _outcrop_chain(sheet_pts, sheet_tris, on_plane)
+    open_wall = None
+    if chain is not None:
+        axis, side = wall_code // 2, wall_code % 2
+        open_wall = (int(axis),
+                     float(box_hi[axis] if side else box_lo[axis]))
+
     # -------------------------------------------------- mark, then gather
     vS, vE = dm.getDepthStratum(0)
     pStart, pEnd = dm.getChart()
@@ -2194,9 +2396,10 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     fill = None
     if comm.rank == target:
         try:
-            victims, drop_ids, shell = _carve_cavity_3d(
+            victims, drop_ids, shell, cap_faces = _carve_cavity_3d(
                 dm_work, X, cells, sheet_pts, sheet_tris, clearance,
-                held_cells, h_vertex, on_wall, shared)
+                held_cells, h_vertex, on_wall, shared,
+                open_wall=open_wall)
             # The gather's contract, asserted: nothing the surgery touches is
             # shared. A violation is a marking defect and must be loud.
             touched = set()
@@ -2208,15 +2411,83 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                     "place_sheet internal: the gathered region touches a "
                     "shared point; the gather mask under-reached.")
 
-            shell_vert_ids = sorted({v for _f, verts in shell
-                                     for v in verts})
+            shell_vert_ids = sorted(
+                {v for _f, verts in shell for v in verts}
+                | {v for _f, verts in cap_faces for v in verts})
             local = {v: i for i, v in enumerate(shell_vert_ids)}
             shell_xyz = X[shell_vert_ids]
             shell_tris = np.array([[local[v] for v in verts]
                                    for _f, verts in shell], dtype=np.int64)
+
+            cap_payload = None
+            wall_pairs = []
+            if cap_faces:
+                from collections import Counter
+                # The cap's rim (one closed loop of surviving wall
+                # vertices), the labels the REPLACED wall faces carried
+                # (written back onto the new cap explicitly — joins cannot
+                # recover new points), and the cap PRE-MESH: the 2-D fill
+                # in the wall plane's own coordinates, rim ring verbatim,
+                # outcrop chain embedded.
+                cap_edge = Counter()
+                for _f, verts in cap_faces:
+                    a, b, c = sorted(verts)
+                    for e in ((a, b), (a, c), (b, c)):
+                        cap_edge[e] += 1
+                rim_adj = {}
+                for (a, b), k in cap_edge.items():
+                    if k == 1:
+                        rim_adj.setdefault(a, []).append(b)
+                        rim_adj.setdefault(b, []).append(a)
+                if any(len(v) != 2 for v in rim_adj.values()):
+                    raise RuntimeError(
+                        "the outcrop cap's rim is not a single loop; the "
+                        "cavity may touch a box edge, which is not built")
+                start = min(rim_adj)
+                rim, prev, cur = [start], None, start
+                while True:
+                    a, b = rim_adj[cur]
+                    nxt = b if a == prev else a
+                    if nxt == start:
+                        break
+                    rim.append(nxt)
+                    prev, cur = cur, nxt
+
+                cap_face_pts = [int(f) for f, _v in cap_faces]
+                for i in range(dm_work.getNumLabels()):
+                    name = dm_work.getLabelName(i)
+                    if name in reconnect._TOPOLOGY_LABELS:
+                        continue
+                    lab = dm_work.getLabel(name)
+                    values = lab.getValueIS()
+                    if values is None:
+                        continue
+                    for val in values.getIndices():
+                        if all(lab.getValue(p) == int(val)
+                               for p in cap_face_pts):
+                            wall_pairs.append((name, int(val)))
+
+                axis = open_wall[0]
+                uv = [a for a in range(3) if a != axis]
+                cap_X2 = np.vstack([X[rim][:, uv],
+                                    sheet_pts[chain][:, uv]])
+                cap_tris_local, cap_extra2 = _gmsh_fill_2d(
+                    cap_X2, list(range(len(rim))),
+                    list(range(len(rim), len(rim) + len(chain))))
+                extra_xyz = np.zeros((len(cap_extra2), 3))
+                extra_xyz[:, uv] = cap_extra2
+                extra_xyz[:, axis] = open_wall[1]
+                cap_payload = {
+                    "rim_shell_local": [local[v] for v in rim],
+                    "chain_sheet_local": list(chain),
+                    "tris": cap_tris_local,
+                    "extra_xyz": extra_xyz,
+                }
+
             fill = _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts,
-                                 sheet_tris, h)
-            fill_pts, fill_tets, sheet_out, moved_nodes, n_shell = fill
+                                 sheet_tris, h, cap=cap_payload)
+            (fill_pts, fill_tets, sheet_out, moved_nodes, n_shell,
+             cap_out) = fill
             if moved_nodes:
                 raise RuntimeError(
                     f"the fill moved {moved_nodes} constrained node(s); the "
@@ -2226,6 +2497,13 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                     "the fill remeshed the sheet "
                     f"({0 if sheet_out is None else len(sheet_out)} "
                     f"triangles for {len(sheet_tris)} given).")
+            if cap_payload is not None and (
+                    cap_out is None
+                    or len(cap_out) != len(cap_payload["tris"])):
+                raise RuntimeError(
+                    "the fill remeshed the outcrop cap "
+                    f"({0 if cap_out is None else len(cap_out)} triangles "
+                    f"for {len(cap_payload['tris'])} given).")
         # Exception, not just RuntimeError/ValueError: a raw gmsh error
         # (e.g. a PLC intersection) is a plain Exception, and an
         # uncaught raise on the surgery rank is a HANG for its peers —
@@ -2241,7 +2519,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
 
     # ------------------------------------------------ rebuild, every rank
     if comm.rank == target:
-        fill_pts, fill_tets, sheet_out, _moved, n_shell = fill
+        fill_pts, fill_tets, sheet_out, _moved, n_shell, cap_out = fill
         made = np.where(
             fill_tets < n_shell,
             np.asarray(shell_vert_ids, dtype=np.int64)[
@@ -2287,6 +2565,51 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     real = [f for f in failures if f]
     if real:
         raise RuntimeError(real[0])
+
+    # The outcrop cap's new wall faces, relabelled EXPLICITLY with whatever
+    # the replaced faces carried ("Top" and friends): joins cannot recover
+    # new points, and an unlabelled patch of boundary silently loses its
+    # Dirichlet conditions. The whole face closure is labelled, matching
+    # the completeness the box labels ship with.
+    pairs = comm.bcast(wall_pairs if comm.rank == target else None,
+                       root=target)
+    n_cap_expect = comm.bcast(
+        (len(cap_out) if (comm.rank == target and cap_out is not None)
+         else 0), root=target)
+    for name, val in (pairs or []):
+        if not new.hasLabel(name):
+            new.createLabel(name)
+    n_cap_local = 0
+    if comm.rank == target and cap_out is not None:
+        n_shell_ids = np.asarray(shell_vert_ids, dtype=np.int64)
+        for t in cap_out:
+            ids = []
+            for v in t:
+                if v < n_shell:
+                    old_pt = (int(n_shell_ids[v])
+                              + dm_work.getDepthStratum(0)[0])
+                    ids.append(int(point_map[old_pt - pStart]))
+                else:
+                    ids.append(int(placed_new[v - n_shell]))
+            joined = new.getFullJoin(ids)
+            if len(joined) != 1:
+                failure = ("an outcrop cap triangle is not a face of the "
+                           "sewn mesh; the cap was not sewn onto the wall.")
+                break
+            for name, val in pairs:
+                lab = new.getLabel(name)
+                for q in new.getTransitiveClosure(int(joined[0]))[0]:
+                    lab.setValue(int(q), int(val))
+            n_cap_local += 1
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(real[0])
+    n_cap = int(comm.allreduce(n_cap_local, op=MPI.SUM))
+    if n_cap != n_cap_expect:
+        raise RuntimeError(
+            f"{n_cap} outcrop cap faces relabelled for {n_cap_expect} "
+            "given.")
 
     # ------------------------------------------------------- global gates
     counts = np.array([n_facets_local, len(victims_arr),
@@ -2492,8 +2815,9 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     if not drop.any():
         raise ValueError("the thin volume meets no cell of this mesh")
 
-    shell, drop = _closed_shell_3d(dm, X, cells, drop, victim, held_cells,
-                                   shared_chart, "thin volume")
+    shell, _cap, drop = _closed_shell_3d(dm, X, cells, drop, victim,
+                                         held_cells, shared_chart,
+                                         "thin volume")
 
     # The growth can swallow the whole star of a vertex that is NOT itself a
     # victim. Such a vertex is on no shell face — a shell face keeps a

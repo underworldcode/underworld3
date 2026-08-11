@@ -192,3 +192,78 @@ def test_finite_elements_are_exact_on_the_placed_mesh():
     assert float(err.max()) < 1e-8, (
         f"the placed mesh assembles a wrong operator: max |u - exact| = "
         f"{float(err.max()):.3e}")
+
+
+def test_an_outcropping_sheet_meets_the_top_surface():
+    """The science case: the fault intersects the upper surface.
+
+    Specify-long contract (ruling 2026-08-11): the sheet extends PAST the
+    box and is clipped; its trace becomes the outcrop, the cavity opens
+    onto the top wall, and the cap over it is remeshed — pre-meshed by the
+    2-D fill so the rim stays verbatim (a geo surface RESAMPLES a discrete
+    rim, measured). The cap's new faces are relabelled explicitly with what
+    the replaced faces carried, so a Dirichlet condition on "Top" still
+    grips — asserted through the P2 quadratic oracle, which no missing
+    boundary condition or seam disorder can pass.
+    """
+    import sympy
+
+    base = _box(0.12)
+    bounds = base._boundaries_with("Rupture")
+    strike = np.array([1.0, 0.15, 0.0])
+    strike /= np.linalg.norm(strike)
+    dip = np.array([0.15, 0.0, -1.0])
+    dip /= np.linalg.norm(dip)
+    top = np.array([0.5, 0.5, 1.1])          # 0.1 ABOVE the box
+    s = np.linspace(-0.22, 0.22, 5)
+    d = np.linspace(0.0, 0.45, 5)
+    pts = np.array([top + a * strike + b * dip for b in d for a in s])
+    tris, n = [], 5
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a, b = i * n + j, i * n + j + 1
+            c, e = (i + 1) * n + j, (i + 1) * n + j + 1
+            tris += [(a, b, e), (a, e, c)]
+
+    new, info = place_sheet(base.dm, pts, np.array(tris, dtype=np.int64),
+                            label="Rupture",
+                            label_value=bounds["Rupture"].value)
+    assert info["n_surface_facets"] > 0
+    assert new.getLabel("Rupture").getStratumSize(
+        bounds["Rupture"].value) == info["n_surface_facets"]
+
+    # Every boundary face on the top plane carries the Top label — the cap
+    # was relabelled, not silently stripped.
+    fS, fE = new.getHeightStratum(1)
+    vS, vE = new.getDepthStratum(0)
+    Xn = np.asarray(new.getCoordinatesLocal().array
+                    ).reshape(-1, 3)[: vE - vS]
+    top_label = new.getLabel("Top")
+    tv = bounds["Top"].value
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        verts = [int(q) - vS for q in new.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        if all(Xn[v][2] == 1.0 for v in verts):
+            assert top_label.getValue(f) == tv, \
+                "an unlabelled boundary face on the remeshed top"
+
+    mesh = uw.discretisation.Mesh(
+        new, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y, z = mesh.X
+    exact = x**2 + y**2 + z**2
+    t = uw.discretisation.MeshVariable("T_outcrop", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -6.0
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0])
+                 - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
+    assert float(err.max()) < 1e-8
