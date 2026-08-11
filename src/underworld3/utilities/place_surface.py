@@ -2812,14 +2812,17 @@ def _gmsh_fill_plain_3d(shell_xyz, shell_tris, h):
 
 
 def _labelled_face_soup(dm, names_values):
-    """The (points, triangles) soup of every labelled face, ALLGATHERED.
+    """The (points, facets) soup of every labelled facet, ALLGATHERED.
 
     A removal must mark against the object's global geometry whatever the
     current distribution — the object was embedded rank-locally, but a
     checkpoint reload or a later redistribution may have scattered it. The
     soup is small (an object's skin) and duplicates across strata are
-    harmless to a distance query.
+    harmless to a distance query. Facets are triangles in 3-D and edges in
+    2-D; the soup's connectivity is trivial (one facet per row).
     """
+    dim = dm.getDimension()
+    nvf = dim                       # vertices per facet
     vS, vE = dm.getDepthStratum(0)
     fS, fE = dm.getHeightStratum(1)
     X = _coords(dm)[: vE - vS]
@@ -2838,12 +2841,276 @@ def _labelled_face_soup(dm, names_values):
                      if vS <= int(q) < vE]
             local.append(X[verts])
     comm = uw.mpi.comm
-    gathered = comm.allgather(np.array(local).reshape(-1, 3, 3))
-    tris_xyz = np.vstack([g for g in gathered if len(g)]) \
-        if any(len(g) for g in gathered) else np.empty((0, 3, 3))
-    pts = tris_xyz.reshape(-1, 3)
-    tris = np.arange(len(pts), dtype=np.int64).reshape(-1, 3)
-    return pts, tris
+    gathered = comm.allgather(np.array(local).reshape(-1, nvf, dim))
+    soup = np.vstack([g for g in gathered if len(g)]) \
+        if any(len(g) for g in gathered) else np.empty((0, nvf, dim))
+    pts = soup.reshape(-1, dim)
+    facets = np.arange(len(pts), dtype=np.int64).reshape(-1, nvf)
+    return pts, facets
+
+
+def _locked_edges_excluding(dm, exclude):
+    """The 2-D interface-edge flags, with named (label, value) pairs unset.
+
+    A removal must not hold its own object's edges against itself — the
+    2-D form of the 3-D readers' ``exclude=``. An edge carried by BOTH an
+    excluded pair and another interface label is unlocked here; the removal
+    gate on that other label's counts is what catches a genuine overlap.
+    """
+    locked = reconnect._interface_edges(dm).copy()
+    pStart, _pEnd = dm.getChart()
+    eS, eE = dm.getDepthStratum(1)
+    for name, value in exclude:
+        if not dm.hasLabel(name):
+            continue
+        lab = dm.getLabel(name)
+        if lab.getStratumSize(int(value)) == 0:
+            continue
+        for p in lab.getStratumIS(int(value)).getIndices():
+            p = int(p)
+            if eS <= p < eE:
+                locked[p - pStart] = False
+    return locked
+
+
+def _interface_vertices_and_cells_excluding(dm, n_vertices, n_cells,
+                                            exclude):
+    """:func:`_interface_vertices_and_cells`, minus the excluded labels."""
+    pStart, _pEnd = dm.getChart()
+    vS, _vE = dm.getDepthStratum(0)
+    cS, _cE = dm.getHeightStratum(0)
+    locked = _locked_edges_excluding(dm, exclude)
+    vertices = np.zeros(n_vertices, dtype=bool)
+    cells = np.zeros(n_cells, dtype=bool)
+    for e in _interior_interface_facets(dm, locked, pStart):
+        for v in dm.getCone(e):
+            vertices[int(v) - vS] = True
+        for c in dm.getSupport(e):
+            cells[int(c) - cS] = True
+    return vertices, cells
+
+
+def _interface_facet_counts_excluding(dm, exclude):
+    """:func:`_interface_facet_counts`, minus the excluded labels."""
+    pStart, _pEnd = dm.getChart()
+    exclude = set((n, int(v)) for n, v in exclude)
+    locked = _locked_edges_excluding(dm, exclude)
+    interior = set(_interior_interface_facets(dm, locked, pStart))
+    counts = {}
+    for i in range(dm.getNumLabels()):
+        name = dm.getLabelName(i)
+        if name in reconnect._TOPOLOGY_LABELS:
+            continue
+        label = dm.getLabel(name)
+        values = label.getValueIS()
+        if values is None:
+            continue
+        for val in values.getIndices():
+            if (name, int(val)) in exclude:
+                continue
+            if label.getStratumSize(int(val)) == 0:
+                continue
+            held = [p for p in label.getStratumIS(int(val)).getIndices()
+                    if int(p) in interior]
+            if held:
+                counts[(name, int(val))] = len(held)
+    return counts
+
+
+def _remove_embedded_2d(dm, label, label_value, clearance, verbose):
+    """The removal one dimension down: seed from the labels, ring carve,
+    PLAIN 2-D fill at background scale, same gates. Serial and parallel
+    through the same gather-first mechanism."""
+    comm = uw.mpi.comm
+    skin_label = label + "_skin"
+    removed_pairs = ((label, int(label_value)),
+                     (skin_label, int(label_value)))
+
+    soup_pts, soup_segs = _labelled_face_soup(dm, removed_pairs)
+    n_soup = int(comm.allreduce(len(soup_segs), op=MPI.MAX))
+    if n_soup == 0:
+        raise ValueError(
+            f"nothing is embedded under ({label!r}, {label_value}); "
+            "there is nothing to remove.")
+    seg_pairs = [(int(a), int(b)) for a, b in soup_segs]
+
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    X = _coords(dm)[: vE - vS]
+    cells = _cells_anticlockwise(dm, X)
+    h_vertex, _hc = _vertex_h_3d(dm, cells, len(X))
+    d_skin = _segments_distance(X, soup_pts, seg_pairs)
+    reach_v = clearance * h_vertex
+
+    mark = np.zeros(pEnd - pStart, dtype=np.int32)
+    mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
+         + vS - pStart] = 1
+    cS0, cE0 = dm.getHeightStratum(0)
+    if dm.hasLabel(label):
+        lab = dm.getLabel(label)
+        if lab.getStratumSize(int(label_value)) > 0:
+            for p in lab.getStratumIS(int(label_value)).getIndices():
+                p = int(p)
+                if cS0 <= p < cE0:
+                    for q in dm.getTransitiveClosure(p)[0]:
+                        if vS <= int(q) < vE:
+                            mark[int(q) - pStart] = 1
+
+    area_before = np.array([float(cell_areas(dm).sum())
+                            if len(cells) else 0.0])
+    comm.Allreduce(MPI.IN_PLACE, area_before, op=MPI.SUM)
+
+    dm_work, moved = _gather_region(dm, mark, verbose=verbose)
+    if moved:
+        vS, vE = dm_work.getDepthStratum(0)
+        pStart, pEnd = dm_work.getChart()
+        X = _coords(dm_work)[: vE - vS]
+        cells = _cells_anticlockwise(dm_work, X)
+        h_vertex, _hc = _vertex_h_3d(dm_work, cells, len(X))
+        d_skin = _segments_distance(X, soup_pts, seg_pairs)
+        reach_v = clearance * h_vertex
+
+    shared = _shared_point_flags(dm_work).astype(bool)
+    on_wall = _true_wall_vertex_mask(dm_work, len(X))
+    held_v, held_c = _interface_vertices_and_cells_excluding(
+        dm_work, len(X), len(cells), removed_pairs)
+    held_counts = _interface_facet_counts_excluding(dm_work, removed_pairs)
+
+    cS, _cE = dm_work.getHeightStratum(0)
+    seed = np.zeros(len(cells), dtype=bool)
+    if dm_work.hasLabel(label):
+        lab = dm_work.getLabel(label)
+        if lab.getStratumSize(int(label_value)) > 0:
+            for p in lab.getStratumIS(int(label_value)).getIndices():
+                p = int(p)
+                if cS <= p < cS + len(cells):
+                    seed[p - cS] = True
+
+    n_region = int((d_skin < reach_v).sum() + seed.sum())
+    owners = np.asarray(comm.allgather(n_region))
+    target = int(np.argmax(owners))
+
+    failure = None
+    surgery = None
+    if comm.rank == target:
+        try:
+            beside_held = np.zeros(len(X), dtype=bool)
+            beside_held[cells[held_c].ravel()] = True
+            protected = on_wall | held_v | beside_held
+            victim = (d_skin < reach_v) & ~protected
+            drop = victim[cells].any(axis=1) | seed
+            drop &= ~held_c
+            need = victim[cells].any(axis=1) | seed
+            if (need & held_c).any():
+                raise RuntimeError(
+                    "the removal's cavity needs a cell that belongs to a "
+                    "DIFFERENT embedded surface; remove that one first or "
+                    "lower `clearance`.")
+            drop |= need
+            if not drop.any():
+                raise ValueError("nothing to remove meets this rank's cells")
+
+            ring, drop = _ring_growing(cells, drop, held_c)
+            if on_wall[np.asarray(ring)].any():
+                raise RuntimeError(
+                    "the removal's cavity reached the domain wall; raise "
+                    "`clearance` margins or remove serially.")
+            if victim[np.asarray(ring)].any():
+                raise RuntimeError(
+                    "a deleted vertex is on the cavity boundary")
+
+            referenced = np.zeros(len(X), dtype=bool)
+            if (~drop).any():
+                referenced[cells[~drop].ravel()] = True
+            orphan = ~referenced & ~victim
+            if orphan[on_wall].any():
+                raise RuntimeError(
+                    "the removal would strand a domain-wall vertex")
+            victim |= orphan
+
+            gap_tris, extra = _gmsh_fill_2d(X, ring, None)
+            placed = np.asarray(extra, dtype=float).reshape(-1, 2)
+
+            def mixed(v):
+                return int(v) if v < len(X) else -(int(v) - len(X) + 1)
+
+            made = [tuple(mixed(v) for v in t) for t in gap_tris]
+
+            touched = set()
+            for c in np.flatnonzero(drop):
+                for q in dm_work.getTransitiveClosure(int(c) + cS)[0]:
+                    touched.add(int(q))
+            if any(shared[q - pStart] for q in touched):
+                raise RuntimeError(
+                    "remove_embedded internal: the gathered region touches "
+                    "a shared point; the gather mask under-reached.")
+            surgery = (np.flatnonzero(victim), np.flatnonzero(drop), made,
+                       placed)
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(
+            f"remove_embedded failed on the surgery rank: {real[0]}")
+
+    if comm.rank == target:
+        victims_arr, drop_arr, made, placed = surgery
+    else:
+        victims_arr = np.empty(0, dtype=np.int64)
+        drop_arr = np.empty(0, dtype=np.int64)
+        made = []
+        placed = np.empty((0, 2), dtype=float)
+
+    new_dm, _pm, _pp = _rebuild_sewn(dm_work, drop_arr, victims_arr, made,
+                                     placed)
+
+    for name, value in removed_pairs:
+        left = 0
+        if new_dm.hasLabel(name):
+            left = new_dm.getLabel(name).getStratumSize(int(value))
+        left = int(comm.allreduce(left, op=MPI.SUM))
+        if left:
+            raise RuntimeError(
+                f"{left} point(s) still carry ({name!r}, {value}) after "
+                "the removal; the carve missed part of the object.")
+
+    areas = cell_areas(new_dm)
+    stats = np.array([float(areas.sum()) if len(areas) else 0.0,
+                      float((areas <= 0.0).sum()) if len(areas) else 0.0,
+                      float(len(victims_arr)), float(len(drop_arr)),
+                      float(len(made))])
+    comm.Allreduce(MPI.IN_PLACE, stats, op=MPI.SUM)
+    if stats[1]:
+        raise RuntimeError(
+            f"{int(stats[1])} cell(s) of the result are inverted")
+    if abs(stats[0] - area_before[0]) > 1e-9 * area_before[0]:
+        raise RuntimeError(
+            f"the removal changed the domain area: {area_before[0]:.12f} "
+            f"-> {stats[0]:.12f}")
+
+    after = _interface_facet_counts_excluding(new_dm, removed_pairs)
+    breach = None
+    for key, before in held_counts.items():
+        if after.get(key, 0) != before:
+            breach = (f"removing {label!r} would leave the surface "
+                      f"{key[0]!r} with {after.get(key, 0)} facets instead "
+                      f"of {before}.")
+    breaches = comm.allgather(breach)
+    real = [b for b in breaches if b]
+    if real:
+        raise RuntimeError(real[0])
+
+    _validity_and_orientation_gates(new_dm, comm)
+
+    info = {"n_removed_cells": int(stats[3]),
+            "n_removed_vertices": int(stats[2]),
+            "n_filled_cells": int(stats[4])}
+    if verbose:
+        uw.pprint(f"[remove_embedded {label!r}] removed "
+                  f"{info['n_removed_cells']} cells, refilled with "
+                  f"{info['n_filled_cells']}")
+    return new_dm, info
 
 
 def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
@@ -2893,10 +3160,13 @@ def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
         Carve/fill refusals, always collective — including a cavity that
         would need cells held for a DIFFERENT embedded surface.
     """
+    if dm.getDimension() == 2:
+        return _remove_embedded_2d(dm, label, label_value, clearance,
+                                   verbose)
     if dm.getDimension() != 3:
         raise NotImplementedError(
-            "remove_embedded is 3-D for now; the 2-D form arrives with the "
-            "2-D parallel work.")
+            f"remove_embedded takes a 2-D or 3-D simplex mesh; this mesh "
+            f"is {dm.getDimension()}-D.")
 
     comm = uw.mpi.comm
     skin_label = label + "_skin"
@@ -3102,160 +3372,250 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                           clearance, size, verbose):
     """The ribbon: the identical construction one dimension down.
 
-    Serial, sharing :func:`place_along_lines`' refusal — the 2-D placement
-    family adds points without the chart-expansion rebuild, and the 3-D form
-    is the parallel one.
+    Serial AND parallel through the same gather-first mechanism as the 3-D
+    volume: the assembly is meshed once (rank 0) and broadcast, the region
+    gathers to one rank, the carve and the holes fill run there, every rank
+    rebuilds collectively. Ribbons are interior by construction, so the 2-D
+    line path's wall-end restriction does not arise.
     """
-    if uw.mpi.size > 1:
-        raise NotImplementedError(
-            "place_thin_volume in 2-D is serial, like place_along_lines. "
-            "The 3-D form is parallel (gather-first).")
+    comm = uw.mpi.comm
 
-    asm_pts, asm_tris, cad_area = _occ_assembly_2d(polylines, width, size)
-    P = asm_pts[asm_tris]
-    twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
-             - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
-    mesh_area = float(np.abs(twice).sum() / 2.0)
-    if abs(mesh_area - cad_area) > 1e-9 * cad_area:
-        raise RuntimeError(
-            f"the ribbon assembly meshed to area {mesh_area:.12e} against "
-            f"CAD {cad_area:.12e}; the layer mesh does not fill its own "
-            "quads.")
+    failure = None
+    payload = None
+    if comm.rank == 0:
+        try:
+            asm_pts, asm_tris, cad_area = _occ_assembly_2d(polylines, width,
+                                                           size)
+            P = asm_pts[asm_tris]
+            twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+                     - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+            mesh_area = float(np.abs(twice).sum() / 2.0)
+            if abs(mesh_area - cad_area) > 1e-9 * cad_area:
+                raise RuntimeError(
+                    f"the ribbon assembly meshed to area {mesh_area:.12e} "
+                    f"against CAD {cad_area:.12e}; the layer mesh does not "
+                    "fill its own outlines.")
+            payload = (asm_pts, asm_tris)
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(f"place_thin_volume assembly failed: {real[0]}")
+    asm_pts, asm_tris = comm.bcast(payload, root=0)
 
     _skin_xyz, skin_local, skin_node_ids = _assembly_skin(asm_pts, asm_tris)
     skin_edges = [(int(skin_node_ids[a]), int(skin_node_ids[b]))
                   for a, b in skin_local]
     loops_asm = _skin_loops(skin_edges)
 
-    X = _coords(dm)
     vS, vE = dm.getDepthStratum(0)
-    cS, _cE = dm.getHeightStratum(0)
-    X = X[: vE - vS]
+    pStart, pEnd = dm.getChart()
+    X = _coords(dm)[: vE - vS]
     cells = _cells_anticlockwise(dm, X)
-    on_boundary = _boundary_vertices(dm, len(X))
-    held_v, held_c = _interface_vertices_and_cells(dm, len(X), len(cells))
-    held_counts = _interface_facet_counts(dm)
-    beside_held = np.zeros(len(X), dtype=bool)
-    beside_held[cells[held_c].ravel()] = True
-    protected = on_boundary | held_v | beside_held
+    h_vertex, _hc = _vertex_h_3d(dm, cells, len(X))
+    d_skin = _segments_distance(X, asm_pts, skin_edges)
+    reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
 
-    area_before = float(cell_areas(dm).sum())
+    area_before = np.array([float(cell_areas(dm).sum())
+                            if len(cells) else 0.0])
+    comm.Allreduce(MPI.IN_PLACE, area_before, op=MPI.SUM)
 
-    h_v = _vertex_h(X, _edge_vertices(dm))
-    d = _segments_distance(X, asm_pts, skin_edges)
-    reach_v = np.maximum(clearance * h_v, 0.6 * width)
-    victim = (d < reach_v) & ~protected
+    mark = np.zeros(pEnd - pStart, dtype=np.int32)
+    mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
+         + vS - pStart] = 1
+    dm_work, moved = _gather_region(dm, mark, verbose=verbose)
+    if moved:
+        vS, vE = dm_work.getDepthStratum(0)
+        pStart, pEnd = dm_work.getChart()
+        X = _coords(dm_work)[: vE - vS]
+        cells = _cells_anticlockwise(dm_work, X)
+        h_vertex, _hc = _vertex_h_3d(dm_work, cells, len(X))
+        d_skin = _segments_distance(X, asm_pts, skin_edges)
+        reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
 
-    drop = victim[cells].any(axis=1)
-    cen = X[cells].mean(axis=1)
-    reach_c = np.maximum(clearance * h_v[cells].min(axis=1), 0.6 * width)
-    drop |= _segments_distance(cen, asm_pts, skin_edges) < reach_c
-    drop &= ~held_c
-    need = victim[cells].any(axis=1)
-    if (need & held_c).any():
-        raise RuntimeError(
-            "the ribbon's cavity needs a cell that belongs to a surface "
-            "already embedded. Zones and surfaces must be separated by at "
-            "least a cell.")
-    drop |= need
-    if not drop.any():
+    shared = _shared_point_flags(dm_work).astype(bool)
+    on_wall = _true_wall_vertex_mask(dm_work, len(X))
+    held_v, held_c = _interface_vertices_and_cells(dm_work, len(X),
+                                                   len(cells))
+    held_counts = _interface_facet_counts(dm_work)
+
+    n_region = int((d_skin < reach_v).sum())
+    owners = np.asarray(comm.allgather(n_region))
+    if owners.sum() == 0:
         raise ValueError("the thin volume meets no cell of this mesh")
+    target = int(np.argmax(owners))
 
-    ring, drop = _ring_growing(cells, drop, held_c)
-    if on_boundary[np.asarray(ring)].any():
+    failure = None
+    surgery = None
+    if comm.rank == target:
+        try:
+            beside_held = np.zeros(len(X), dtype=bool)
+            beside_held[cells[held_c].ravel()] = True
+            protected = on_wall | held_v | beside_held
+            victim = (d_skin < reach_v) & ~protected
+
+            drop = victim[cells].any(axis=1)
+            cen = X[cells].mean(axis=1)
+            reach_c = np.maximum(clearance * h_vertex[cells].min(axis=1),
+                                 0.6 * width)
+            drop |= _segments_distance(cen, asm_pts, skin_edges) < reach_c
+            drop &= ~held_c
+            need = victim[cells].any(axis=1)
+            if (need & held_c).any():
+                raise RuntimeError(
+                    "the ribbon's cavity needs a cell that belongs to a "
+                    "surface already embedded. Zones and surfaces must be "
+                    "separated by at least a cell.")
+            drop |= need
+            if not drop.any():
+                raise ValueError("the thin volume meets no cell of this mesh")
+
+            ring, drop = _ring_growing(cells, drop, held_c)
+            if on_wall[np.asarray(ring)].any():
+                raise RuntimeError(
+                    "the ribbon's cavity reached the domain wall; the "
+                    "volume must be interior, with clearance to spare")
+            if victim[np.asarray(ring)].any():
+                raise RuntimeError(
+                    "a deleted vertex is on the cavity boundary")
+
+            referenced = np.zeros(len(X), dtype=bool)
+            if (~drop).any():
+                referenced[cells[~drop].ravel()] = True
+            orphan = ~referenced & ~victim
+            if orphan[on_wall].any():
+                raise RuntimeError(
+                    "the cavity would strand a domain-wall vertex; the "
+                    "volume must be interior, with clearance to spare")
+            victim |= orphan
+
+            Xall = np.vstack([X, asm_pts])
+            holes = [[len(X) + int(v) for v in loop] for loop in loops_asm]
+            gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes)
+            placed = np.vstack([asm_pts, extra]) if len(extra) else asm_pts
+
+            def mixed(v):
+                return int(v) if v < len(X) else -(int(v) - len(X) + 1)
+
+            made = [tuple(mixed(v) for v in t) for t in gap_tris]
+            made += [tuple(-(int(v) + 1) for v in t) for t in asm_tris]
+
+            touched = set()
+            cS0, _ = dm_work.getHeightStratum(0)
+            for c in np.flatnonzero(drop):
+                for q in dm_work.getTransitiveClosure(int(c) + cS0)[0]:
+                    touched.add(int(q))
+            if any(shared[q - pStart] for q in touched):
+                raise RuntimeError(
+                    "place_thin_volume internal: the gathered region "
+                    "touches a shared point; the gather mask under-reached.")
+            surgery = (np.flatnonzero(victim), np.flatnonzero(drop), made,
+                       placed)
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
         raise RuntimeError(
-            "the ribbon's cavity reached the domain wall; the volume must "
-            "be interior, with clearance to spare")
-    if victim[np.asarray(ring)].any():
-        raise RuntimeError("a deleted vertex is on the cavity boundary")
+            f"place_thin_volume failed on the surgery rank: {real[0]}")
 
-    # The growth can swallow the whole star of a non-victim vertex; a vertex
-    # with no surviving cell is on no ring edge and would come through the
-    # rebuild ISOLATED (the 3-D Euler-2 defect, same mechanism). Every
-    # surviving vertex must have a surviving cell.
-    referenced = np.zeros(len(X), dtype=bool)
-    if (~drop).any():
-        referenced[cells[~drop].ravel()] = True
-    orphan = ~referenced & ~victim
-    if orphan[on_boundary].any():
-        raise RuntimeError(
-            "the cavity would strand a domain-wall vertex; the volume must "
-            "be interior, with clearance to spare")
-    victim |= orphan
-
-    Xall = np.vstack([X, asm_pts])
-    holes = [[len(X) + int(v) for v in loop] for loop in loops_asm]
-    gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes)
-    placed = np.vstack([asm_pts, extra]) if len(extra) else asm_pts
-
-    def mixed(v):
-        return int(v) if v < len(X) else -(int(v) - len(X) + 1)
-
-    made = [tuple(mixed(v) for v in t) for t in gap_tris]
-    made += [tuple(-(int(v) + 1) for v in t) for t in asm_tris]
+    if comm.rank == target:
+        victims_arr, drop_arr, made, placed = surgery
+    else:
+        victims_arr = np.empty(0, dtype=np.int64)
+        drop_arr = np.empty(0, dtype=np.int64)
+        made = []
+        placed = np.empty((0, 2), dtype=float)
 
     new_dm, _point_map, placed_points = _rebuild_sewn(
-        dm, np.flatnonzero(drop), np.flatnonzero(victim), made, placed)
+        dm_work, drop_arr, victims_arr, made, placed)
 
     skin_label = label + "_skin"
     for name in (label, skin_label):
         if not new_dm.hasLabel(name):
             new_dm.createLabel(name)
-    out_label = new_dm.getLabel(label)
-    out_skin = new_dm.getLabel(skin_label)
-    n_zone = 0
-    for t in asm_tris:
-        joined = new_dm.getFullJoin([int(placed_points[int(v)]) for v in t])
-        if len(joined) != 1:
-            raise RuntimeError(
-                "an assembly cell is not a cell of the sewn mesh; the embed "
-                "lost the layer.")
-        out_label.setValue(int(joined[0]), int(label_value))
-        n_zone += 1
-    n_skin = 0
-    for a, b in skin_edges:
-        joined = new_dm.getFullJoin([int(placed_points[a]),
-                                     int(placed_points[b])])
-        if len(joined) != 1:
-            raise RuntimeError(
-                "a skin edge is not an edge of the sewn mesh; the gap was "
-                "not sewn onto the layer.")
-        out_skin.setValue(int(joined[0]), int(label_value))
-        n_skin += 1
+    n_zone_local = 0
+    n_skin_local = 0
+    if comm.rank == target:
+        out_label = new_dm.getLabel(label)
+        out_skin = new_dm.getLabel(skin_label)
+        for t in asm_tris:
+            joined = new_dm.getFullJoin(
+                [int(placed_points[int(v)]) for v in t])
+            if len(joined) != 1:
+                failure = ("an assembly cell is not a cell of the sewn "
+                           "mesh; the embed lost the layer.")
+                break
+            out_label.setValue(int(joined[0]), int(label_value))
+            n_zone_local += 1
+        else:
+            for a, b in skin_edges:
+                joined = new_dm.getFullJoin([int(placed_points[a]),
+                                             int(placed_points[b])])
+                if len(joined) != 1:
+                    failure = ("a skin edge is not an edge of the sewn "
+                               "mesh; the gap was not sewn onto the layer.")
+                    break
+                out_skin.setValue(int(joined[0]), int(label_value))
+                n_skin_local += 1
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(real[0])
+
+    counts = np.array([n_zone_local, n_skin_local, len(victims_arr),
+                       len(placed)], dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, counts, op=MPI.SUM)
+    n_zone, n_skin, n_removed, n_placed = (int(x) for x in counts)
+    if n_zone != len(asm_tris):
+        raise RuntimeError(f"{n_zone} zone cells labelled for "
+                           f"{len(asm_tris)} assembly cells given.")
+    if n_skin != len(skin_edges):
+        raise RuntimeError(f"{n_skin} skin edges labelled for "
+                           f"{len(skin_edges)} given.")
 
     areas = cell_areas(new_dm)
-    over = sum(1 for f in range(*new_dm.getHeightStratum(1))
-               if len(new_dm.getSupport(f)) > 2)
-    if over:
+    stats = np.array([float(areas.sum()) if len(areas) else 0.0,
+                      float((areas <= 0.0).sum()) if len(areas) else 0.0])
+    comm.Allreduce(MPI.IN_PLACE, stats, op=MPI.SUM)
+    if stats[1]:
         raise RuntimeError(
-            f"{over} facet(s) of the result have more than two cells")
-    if (areas <= 0.0).any():
+            f"{int(stats[1])} cell(s) of the result are inverted")
+    if abs(stats[0] - area_before[0]) > 1e-9 * area_before[0]:
         raise RuntimeError(
-            f"{int((areas <= 0.0).sum())} cell(s) of the result are inverted")
-    if abs(float(areas.sum()) - area_before) > 1e-9 * area_before:
-        raise RuntimeError(
-            f"the placement changed the domain area: {area_before:.12f} -> "
-            f"{float(areas.sum()):.12f}")
+            f"the placement changed the domain area: "
+            f"{area_before[0]:.12f} -> {stats[0]:.12f}")
 
     after = _interface_facet_counts(new_dm)
+    breach = None
     for key, before in held_counts.items():
         now = after.get(key, 0)
         if now < before or (now != before
                             and key != (skin_label, int(label_value))):
-            raise RuntimeError(
-                f"placing {label!r} would leave the surface {key[0]!r} with "
-                f"{now} facets instead of {before}.")
+            breach = (f"placing {label!r} would leave the surface "
+                      f"{key[0]!r} with {now} facets instead of {before}.")
+    breaches = comm.allgather(breach)
+    real = [b for b in breaches if b]
+    if real:
+        raise RuntimeError(real[0])
 
+    _validity_and_orientation_gates(new_dm, comm)
+
+    mins = np.array([float(areas.min()) if len(areas) else np.inf,
+                     float(min_angles(new_dm).min())
+                     if len(areas) else np.inf])
+    comm.Allreduce(MPI.IN_PLACE, mins, op=MPI.MIN)
     info = {"n_zone_cells": n_zone, "n_skin_faces": n_skin,
-            "n_placed": len(placed), "n_removed": int(victim.sum()),
-            "min_area": float(areas.min()),
-            "min_angle": float(min_angles(new_dm).min())}
+            "n_placed": n_placed, "n_removed": n_removed,
+            "min_area": float(mins[0]), "min_angle": float(mins[1])}
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {n_zone} zone cells, "
-                  f"{n_skin} skin edges; placed {info['n_placed']} vertices, "
-                  f"removed {info['n_removed']}; min angle "
+                  f"{n_skin} skin edges; placed {n_placed} vertices, "
+                  f"removed {n_removed}; min angle "
                   f"{info['min_angle']:.2f} deg")
     return new_dm, info
+
 
 
 def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
