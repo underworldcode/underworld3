@@ -236,3 +236,66 @@ def test_finite_elements_are_exact_on_the_embedded_mesh():
     assert float(err.max()) < 1e-8, (
         f"the embedded mesh assembles a wrong operator: max |u - exact| = "
         f"{float(err.max()):.3e}")
+
+
+def test_an_outcropping_zone_leaves_a_band_on_the_surface():
+    """The zone form of the outcrop: a fault ZONE meeting the top surface.
+
+    Specify-long: the patch protrudes past the box and the assembly is
+    clipped in OCC; its clipped face is the BAND — boundary faces carrying
+    BOTH the zone's skin label and the wall's labels — and the cap over the
+    bowl is an annulus (2-D fill with the band outline as its hole). The
+    P2 oracle with Dirichlet on the remeshed Top is the whole-chain check.
+    """
+    import sympy
+
+    base = _box3(0.12)
+    bounds = base._boundaries_with("Zone")
+    patch = np.array([[0.3, 0.45, 1.1], [0.7, 0.45, 1.1],
+                      [0.72, 0.55, 0.55], [0.32, 0.55, 0.55]])
+    new, info = place_thin_volume(base.dm, [patch], width=0.05,
+                                  label="Zone",
+                                  label_value=bounds["Zone"].value)
+    assert info["n_zone_cells"] > 0
+    zv = bounds["Zone"].value
+
+    # Band faces: boundary (support 1), on the top plane, carrying BOTH the
+    # skin label and the Top label. And every top-plane boundary face is
+    # labelled Top — the cap was relabelled, not stripped.
+    fS, fE = new.getHeightStratum(1)
+    vS, vE = new.getDepthStratum(0)
+    Xn = np.asarray(new.getCoordinatesLocal().array
+                    ).reshape(-1, 3)[: vE - vS]
+    top_label = new.getLabel("Top")
+    skin_label = new.getLabel("Zone_skin")
+    tv = bounds["Top"].value
+    n_band = 0
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        verts = [int(q) - vS for q in new.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        if all(Xn[v][2] == 1.0 for v in verts):
+            assert top_label.getValue(f) == tv
+            if skin_label.getValue(f) == zv:
+                n_band += 1
+    assert n_band > 0, "the zone left no band on the surface"
+
+    mesh = uw.discretisation.Mesh(
+        new, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y, z = mesh.X
+    exact = x**2 + y**2 + z**2
+    t = uw.discretisation.MeshVariable("T_band", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -6.0
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0])
+                 - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
+    assert float(err.max()) < 1e-8

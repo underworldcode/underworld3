@@ -2693,11 +2693,16 @@ def _patch_frame(patch):
     return n
 
 
-def _occ_assembly_3d(patches, width, size):
+def _occ_assembly_3d(patches, width, size, box=None):
     """Thicken each planar patch by ±width/2, fragment together, mesh.
 
+    ``box = (lo, hi)`` applies the specify-long contract: the thickened
+    solids are INTERSECTED with the domain box, so patches may protrude —
+    an assembly reaching the top surface leaves its clipped face exactly in
+    the wall plane (snapped to the plane value after meshing, defensively).
+
     Returns ``(points, tets, cad_volume)`` — the assembly mesh in its own
-    numbering, and the CAD volume of the fragment pieces, against which the
+    numbering, and the CAD volume of the (clipped) pieces, against which the
     meshed volume is gated (planar-faced solids mesh to their exact volume).
     """
     import gmsh
@@ -2721,6 +2726,12 @@ def _occ_assembly_3d(patches, width, size):
             solids += [t for d, t in out if d == 3]
         if len(solids) > 1:
             occ.fragment([(3, solids[0])], [(3, t) for t in solids[1:]])
+        if box is not None:
+            lo, hi = (np.asarray(b, dtype=float) for b in box)
+            occ.synchronize()
+            solids = [t for _d, t in gmsh.model.getEntities(3)]
+            tool = occ.addBox(*lo, *(hi - lo))
+            occ.intersect([(3, t) for t in solids], [(3, tool)])
         occ.synchronize()
 
         vols = gmsh.model.getEntities(3)
@@ -2743,6 +2754,15 @@ def _occ_assembly_3d(patches, width, size):
                                          dtype=np.int64).reshape(-1, 4))
         if not tets:
             raise RuntimeError("the assembly meshed to no tetrahedra")
+        if box is not None:
+            # OCC's clipped faces sit within rounding of the plane; the
+            # band logic and the cap's node sharing need EXACT plane
+            # values, so snap defensively.
+            lo, hi = (np.asarray(b, dtype=float) for b in box)
+            for axis in range(3):
+                for value in (lo[axis], hi[axis]):
+                    near = np.abs(xyz[:, axis] - value) < 1e-9
+                    xyz[near, axis] = value
         return xyz, np.vstack(tets), float(cad_volume)
     finally:
         gmsh.finalize()
@@ -2771,9 +2791,54 @@ def _assembly_skin(points, cells):
     return points[node_ids], skin_local, node_ids
 
 
+def _split_skin_band(skin_xyz, skin_tris, box_lo, box_hi):
+    """Split a skin into its interior part and the wall BAND — the strip of
+    the assembly's clipped face lying exactly in a wall plane (the zone's
+    outcrop). One wall only; more refuses (box-edge bands are not built).
+    Returns ``(interior_idx, band_idx, wall_code)`` with wall_code None
+    when nothing touches a wall.
+    """
+    codes = np.full(len(skin_tris), -1, dtype=np.int64)
+    for axis in range(3):
+        for side, value in ((0, box_lo[axis]), (1, box_hi[axis])):
+            on = (skin_xyz[skin_tris][:, :, axis] == value).all(axis=1)
+            codes[on] = 2 * axis + side
+    walls = set(int(c) for c in codes[codes >= 0])
+    if not walls:
+        return np.arange(len(skin_tris)), np.empty(0, dtype=np.int64), None
+    if len(walls) > 1:
+        raise NotImplementedError(
+            "the zone meets more than one domain wall; box-edge outcrop "
+            "bands are not built.")
+    band = np.flatnonzero(codes >= 0)
+    return np.flatnonzero(codes < 0), band, walls.pop()
+
+
+def _single_loop(edges, what):
+    """Order undirected edges into ONE closed loop of vertices, or refuse."""
+    adj = {}
+    for a, b in edges:
+        adj.setdefault(int(a), []).append(int(b))
+        adj.setdefault(int(b), []).append(int(a))
+    if any(len(v) != 2 for v in adj.values()):
+        raise RuntimeError(f"the {what} is not a single closed loop")
+    start = min(adj)
+    loop, prev, cur = [start], None, start
+    while True:
+        a, b = adj[cur]
+        nxt = b if a == prev else a
+        if nxt == start:
+            break
+        loop.append(nxt)
+        prev, cur = cur, nxt
+    if len(loop) != len(adj):
+        raise RuntimeError(f"the {what} is not a single closed loop")
+    return loop
+
+
 def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
                             reach_cell, held_cells, on_wall, shared_chart,
-                            seed_drop=None):
+                            seed_drop=None, open_wall=None):
     """Victims, dropped tets and the closed shell around a FAT object.
 
     Differs from the sheet's carve in two measured ways. The reach is a
@@ -2791,7 +2856,11 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     if held_cells:
         for c in held_cells:
             held_vertex[cells[c]] = True
-    victim = (d_skin < reach_vertex) & ~on_wall & ~held_vertex
+    on_open = np.zeros(len(X), dtype=bool)
+    if open_wall is not None:
+        on_open = X[:, open_wall[0]] == open_wall[1]
+    victim = ((d_skin < reach_vertex)
+              & (~on_wall | on_open) & ~held_vertex)
 
     drop = victim[cells].any(axis=1)
     # A background cell can straddle the layer's rim with every corner
@@ -2815,9 +2884,10 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     if not drop.any():
         raise ValueError("the thin volume meets no cell of this mesh")
 
-    shell, _cap, drop = _closed_shell_3d(dm, X, cells, drop, victim,
-                                         held_cells, shared_chart,
-                                         "thin volume")
+    shell, cap_faces, drop = _closed_shell_3d(dm, X, cells, drop, victim,
+                                              held_cells, shared_chart,
+                                              "thin volume",
+                                              open_wall=open_wall)
 
     # The growth can swallow the whole star of a vertex that is NOT itself a
     # victim. Such a vertex is on no shell face — a shell face keeps a
@@ -2829,25 +2899,33 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     if (~drop).any():
         referenced[cells[~drop].ravel()] = True
     orphan = ~referenced & ~victim
-    if orphan[on_wall].any():
+    if orphan[on_wall & ~on_open].any():
         raise RuntimeError(
             "the cavity would strand a domain-wall vertex; the volume must "
             "be interior, with clearance to spare")
     victim |= orphan
-    return np.flatnonzero(victim), np.flatnonzero(drop), shell
+    return np.flatnonzero(victim), np.flatnonzero(drop), shell, cap_faces
 
 
 def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
-                          size_out, size_in):
+                          size_out, size_in, cap=None):
     """Tetrahedralise BETWEEN the cavity shell and the assembly skin.
 
-    The skin is a HOLE in the fill volume: outer surface loop the shell,
-    inner surface loop the skin, both discrete entities carrying their
-    triangulations verbatim (the mechanism thin_volume_spike measured; the
-    embedded-sheet fill cannot express an interior boundary).
+    INTERIOR zone: the skin is a HOLE in the fill volume — outer surface
+    loop the shell, inner loop the skin, both discrete and verbatim (the
+    mechanism thin_volume_spike measured).
 
-    Returns ``(points, tets, moved, skin_out, n_shell)`` with the fill's
-    nodes ordered shell first, skin second, new points after.
+    OUTCROPPING zone (``cap`` given): the gap's boundary is ONE closed
+    surface of three discrete pieces — the shell, the pre-meshed CAP over
+    the bowl (an annulus in the wall plane whose outer ring is the shell's
+    wall rim and whose HOLE is the zone's band outline), and the INTERIOR
+    part of the skin, which is open and rim-matched to the cap's hole. The
+    band itself is not part of the gap's boundary — the zone touches the
+    wall directly there.
+
+    Returns ``(points, tets, moved, skin_out, n_shell, cap_out)`` with the
+    fill's nodes ordered shell first, skin second, cap extras third, new
+    points after.
     """
     import gmsh
 
@@ -2871,9 +2949,38 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.model.mesh.addElementsByType(
             skin_tag, 2, [], (skin_tris + n_shell + 1).reshape(-1).tolist())
 
-        outer = gmsh.model.geo.addSurfaceLoop([shell_tag])
-        inner = gmsh.model.geo.addSurfaceLoop([skin_tag])
-        vol = gmsh.model.geo.addVolume([outer, inner])
+        cap_tag = None
+        if cap is None:
+            outer = gmsh.model.geo.addSurfaceLoop([shell_tag])
+            inner = gmsh.model.geo.addSurfaceLoop([skin_tag])
+            vol = gmsh.model.geo.addVolume([outer, inner])
+        else:
+            cap_tag = gmsh.model.addDiscreteEntity(2)
+            extra_first = n_shell + n_skin + 1
+            if len(cap["extra_xyz"]):
+                gmsh.model.mesh.addNodes(
+                    2, cap_tag,
+                    list(range(extra_first,
+                               extra_first + len(cap["extra_xyz"]))),
+                    np.asarray(cap["extra_xyz"], dtype=float)
+                    .reshape(-1).tolist())
+            n_rim = len(cap["rim_shell_local"])
+            n_hole = len(cap["hole_skin_local"])
+
+            def cap_tag_of(k):
+                if k < n_rim:
+                    return int(cap["rim_shell_local"][k]) + 1
+                if k < n_rim + n_hole:
+                    return (n_shell
+                            + int(cap["hole_skin_local"][k - n_rim]) + 1)
+                return extra_first + (k - n_rim - n_hole)
+
+            gmsh.model.mesh.addElementsByType(
+                cap_tag, 2, [],
+                [cap_tag_of(int(v)) for t in cap["tris"] for v in t])
+            loop = gmsh.model.geo.addSurfaceLoop(
+                [shell_tag, cap_tag, skin_tag])
+            vol = gmsh.model.geo.addVolume([loop])
         gmsh.model.geo.synchronize()
 
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.7 * size_in)
@@ -2909,7 +3016,14 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         for t, nodes in zip(set_, sen):
             if t == 2:
                 skin_out = len(nodes) // 3
-        return points, tets, moved, skin_out, n_shell
+        cap_out = None
+        if cap_tag is not None:
+            cet, _cei, cen_ = gmsh.model.mesh.getElements(2, cap_tag)
+            for t, nodes in zip(cet, cen_):
+                if t == 2:
+                    cap_out = np.array([renum[int(x)] for x in nodes],
+                                       dtype=np.int64).reshape(-1, 3)
+        return points, tets, moved, skin_out, n_shell, cap_out
     finally:
         gmsh.finalize()
 
@@ -3581,7 +3695,7 @@ def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
     fill = shell_vert_ids = None
     if comm.rank == target:
         try:
-            victims, drop_ids, shell = _carve_around_volume_3d(
+            victims, drop_ids, shell, _cap = _carve_around_volume_3d(
                 dm_work, X, cells, soup_pts, soup_tris, reach_v, reach_c,
                 held_cells, on_wall, shared, seed_drop=seed)
             touched = set()
@@ -4022,13 +4136,22 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
 
     comm = uw.mpi.comm
 
+    # The specify-long contract: patches may extend PAST the domain; the
+    # assembly is clipped against the (axis-aligned) box, and a clipped
+    # face left in a wall plane becomes the zone's OUTCROP BAND.
+    Xb = _coords(dm)
+    lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(3, np.inf),
+                      -(Xb.max(axis=0)) if len(Xb) else np.full(3, np.inf)])
+    comm.Allreduce(MPI.IN_PLACE, lo_hi, op=MPI.MIN)
+    box_lo, box_hi = lo_hi[0], -lo_hi[1]
+
     # ------------------------------------------ the assembly, once, shared
     failure = None
     payload = None
     if comm.rank == 0:
         try:
             asm_pts, asm_tets, cad_vol = _occ_assembly_3d(
-                patches, width, size)
+                patches, width, size, box=(box_lo, box_hi))
             v6 = np.einsum(
                 "ij,ij->i",
                 np.cross(asm_pts[asm_tets][:, 1] - asm_pts[asm_tets][:, 0],
@@ -4053,6 +4176,27 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         raise RuntimeError(f"place_thin_volume assembly failed: {real[0]}")
     asm_pts, asm_tets = comm.bcast(payload, root=0)
     skin_xyz, skin_tris, skin_node_ids = _assembly_skin(asm_pts, asm_tets)
+
+    # The outcrop band: skin triangles lying exactly in ONE wall plane.
+    interior_idx, band_idx, wall_code = _split_skin_band(
+        skin_xyz, skin_tris, box_lo, box_hi)
+    open_wall = None
+    band_outline = None
+    if wall_code is not None:
+        axis, side = wall_code // 2, wall_code % 2
+        open_wall = (int(axis),
+                     float(box_hi[axis] if side else box_lo[axis]))
+        from collections import Counter as _Counter
+        band_edge = _Counter()
+        for t in skin_tris[band_idx]:
+            a, b, c = sorted(int(v) for v in t)
+            for e in ((a, b), (a, c), (b, c)):
+                band_edge[e] += 1
+        band_outline = _single_loop(
+            [e for e, k in band_edge.items() if k == 1],
+            "zone's outcrop band outline")
+    skin_tris_fill = (skin_tris[interior_idx] if open_wall is not None
+                      else skin_tris)
 
     # -------------------------------------------------- mark, then gather
     vS, vE = dm.getDepthStratum(0)
@@ -4109,9 +4253,9 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     fill = shell_vert_ids = None
     if comm.rank == target:
         try:
-            victims, drop_ids, shell = _carve_around_volume_3d(
+            victims, drop_ids, shell, cap_faces = _carve_around_volume_3d(
                 dm_work, X, cells, skin_xyz, skin_tris, reach_v, reach_c,
-                held_cells, on_wall, shared)
+                held_cells, on_wall, shared, open_wall=open_wall)
             touched = set()
             for c in drop_ids:
                 for q in dm_work.getTransitiveClosure(int(c) + cS)[0]:
@@ -4121,23 +4265,75 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                     "place_thin_volume internal: the gathered region touches "
                     "a shared point; the gather mask under-reached.")
 
-            shell_vert_ids = sorted({v for _f, verts in shell
-                                     for v in verts})
+            shell_vert_ids = sorted(
+                {v for _f, verts in shell for v in verts}
+                | {v for _f, verts in cap_faces for v in verts})
             local = {v: i for i, v in enumerate(shell_vert_ids)}
             shell_xyz = X[shell_vert_ids]
             shell_tris = np.array([[local[v] for v in verts]
                                    for _f, verts in shell], dtype=np.int64)
+
+            cap_payload = None
+            wall_pairs = []
+            if cap_faces:
+                from collections import Counter
+                cap_edge = Counter()
+                for _f, verts in cap_faces:
+                    a, b, c = sorted(verts)
+                    for e in ((a, b), (a, c), (b, c)):
+                        cap_edge[e] += 1
+                rim = _single_loop(
+                    [e for e, k in cap_edge.items() if k == 1],
+                    "zone outcrop cap rim")
+                cap_face_pts = [int(f) for f, _v in cap_faces]
+                for i in range(dm_work.getNumLabels()):
+                    name = dm_work.getLabelName(i)
+                    if name in reconnect._TOPOLOGY_LABELS:
+                        continue
+                    lab = dm_work.getLabel(name)
+                    values = lab.getValueIS()
+                    if values is None:
+                        continue
+                    for val in values.getIndices():
+                        if all(lab.getValue(p) == int(val)
+                               for p in cap_face_pts):
+                            wall_pairs.append((name, int(val)))
+                axis = open_wall[0]
+                uv = [a for a in range(3) if a != axis]
+                cap_X2 = np.vstack([X[rim][:, uv],
+                                    skin_xyz[band_outline][:, uv]])
+                cap_tris_local, cap_extra2 = _gmsh_fill_2d(
+                    cap_X2, list(range(len(rim))), None,
+                    holes=[list(range(len(rim),
+                                      len(rim) + len(band_outline)))])
+                extra_xyz = np.zeros((len(cap_extra2), 3))
+                extra_xyz[:, uv] = cap_extra2
+                extra_xyz[:, axis] = open_wall[1]
+                cap_payload = {
+                    "rim_shell_local": [local[v] for v in rim],
+                    "hole_skin_local": list(band_outline),
+                    "tris": cap_tris_local,
+                    "extra_xyz": extra_xyz,
+                }
+
             fill = _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz,
-                                         skin_tris, size_out=h, size_in=size)
-            _pts, _tets, moved_nodes, skin_out, _n_shell = fill
+                                         skin_tris_fill, size_out=h,
+                                         size_in=size, cap=cap_payload)
+            (_pts, _tets, moved_nodes, skin_out, _n_shell,
+             cap_out) = fill
             if moved_nodes:
                 raise RuntimeError(
                     f"the gap fill moved {moved_nodes} constrained node(s); "
                     "the cavity cannot be sewn back.")
-            if skin_out != len(skin_tris):
+            if skin_out != len(skin_tris_fill):
                 raise RuntimeError(
                     f"the gap fill remeshed the skin ({skin_out} triangles "
-                    f"for {len(skin_tris)} given).")
+                    f"for {len(skin_tris_fill)} given).")
+            if cap_payload is not None and (
+                    cap_out is None
+                    or len(cap_out) != len(cap_payload["tris"])):
+                raise RuntimeError(
+                    "the gap fill remeshed the outcrop cap.")
         # Exception, not just RuntimeError/ValueError: a raw gmsh error
         # (e.g. a PLC intersection) is a plain Exception, and an
         # uncaught raise on the surgery rank is a HANG for its peers —
@@ -4155,7 +4351,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     # after. A gap-fill node is a shell node (an OLD vertex), a skin node
     # (assembly row) or new; assembly tets reference assembly rows only.
     if comm.rank == target:
-        fill_pts, fill_tets, _m, _s, n_shell = fill
+        fill_pts, fill_tets, _m, _s, n_shell, cap_out = fill
         n_skin = len(skin_xyz)
         skin_row = np.asarray(skin_node_ids, dtype=np.int64)
         gap_new = fill_pts[n_shell + n_skin:]
@@ -4218,6 +4414,56 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     real = [f for f in failures if f]
     if real:
         raise RuntimeError(real[0])
+
+    # An outcropping zone's new wall coverage — the cap's annulus AND the
+    # band (the zone's own face on the wall) — is relabelled EXPLICITLY
+    # with what the replaced wall faces carried, full closures included.
+    pairs = comm.bcast(wall_pairs if comm.rank == target else None,
+                       root=target)
+    n_wall_expect = comm.bcast(
+        ((len(cap_out) if cap_out is not None else 0) + len(band_idx))
+        if comm.rank == target else 0, root=target)
+    for name, val in (pairs or []):
+        if not new.hasLabel(name):
+            new.createLabel(name)
+    n_wall_local = 0
+    if comm.rank == target and open_wall is not None:
+        n_shell_ids = np.asarray(shell_vert_ids, dtype=np.int64)
+        n_skin = len(skin_xyz)
+
+        def new_id(v):
+            if v < n_shell:
+                old_pt = (int(n_shell_ids[v])
+                          + dm_work.getDepthStratum(0)[0])
+                return int(point_map[old_pt - pStart])
+            if v < n_shell + n_skin:
+                return int(placed_new[int(skin_row[v - n_shell])])
+            return int(placed_new[len(asm_pts) + (v - n_shell - n_skin)])
+
+        wall_tris = ([[new_id(int(v)) for v in t] for t in cap_out]
+                     if cap_out is not None else [])
+        wall_tris += [[int(placed_new[int(skin_row[int(v)])]) for v in t]
+                      for t in skin_tris[band_idx]]
+        for ids in wall_tris:
+            joined = new.getFullJoin(ids)
+            if len(joined) != 1:
+                failure = ("an outcrop wall triangle is not a face of the "
+                           "sewn mesh; the cap or band was not sewn.")
+                break
+            for name, val in pairs:
+                lab = new.getLabel(name)
+                for q in new.getTransitiveClosure(int(joined[0]))[0]:
+                    lab.setValue(int(q), int(val))
+            n_wall_local += 1
+    failures = comm.allgather(failure)
+    real = [f for f in failures if f]
+    if real:
+        raise RuntimeError(real[0])
+    n_wall = int(comm.allreduce(n_wall_local, op=MPI.SUM))
+    if n_wall != n_wall_expect:
+        raise RuntimeError(
+            f"{n_wall} outcrop wall faces relabelled for {n_wall_expect} "
+            "given.")
 
     # ------------------------------------------------------- global gates
     counts = np.array([n_cells_local, n_skin_local, len(victims_arr),
