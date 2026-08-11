@@ -331,6 +331,30 @@ object can **pinch** — the drop set is grown at every non-manifold shell
 edge or pinch vertex until the boundary is simple, which only enlarges the
 fill.
 
+## Outcropping faults: meeting the free surface
+
+Plate-boundary faults intersect the upper surface — the science case this
+machinery serves — and both representations support it under the
+**specify-long contract**: define the fault generously PAST the domain, and
+prep clips it. A sheet is clipped triangle-by-triangle (cut points exactly
+on the plane); a zone's assembly is intersected with the box in OCC. The
+trace left on the wall becomes the **outcrop** (a sheet's chain, a zone's
+band), the cavity opens onto that wall as a bowl, and the patch of wall
+over the cavity — the **cap** — is remeshed to conform: pre-meshed by the
+2-D fill (rim verbatim; the outcrop chain embedded, or the band outline as
+a hole) and handed to the 3-D fill as a *discrete* surface. Two measured
+rules make this sound: a geo surface bounded by a discrete rim RESAMPLES
+the rim (so caps must arrive discrete), and the cap's new wall faces are
+relabelled *explicitly* with whatever the replaced faces carried, full
+closures included — joins cannot recover new points, and an unlabelled
+boundary patch silently loses its Dirichlet conditions. Once placed,
+conformity is topological: the outcrop's nodes ARE surface nodes and ride a
+deforming surface; precision matters only at (re)placement.
+
+Refusals, stated: one flat wall per object (box-edge outcrops and
+multi-wall contact refuse); curved or deformed tops refuse (the cap's
+manifold-prep slot); removal of an outcropping object is not yet wired.
+
 ## Limitations
 * **An essential boundary condition on the surface is not sound** under the
   geometric multigrid hierarchy. The coarse levels do not carry the surface, so
