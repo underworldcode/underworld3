@@ -82,7 +82,7 @@ stokes.penalty = 0.0
 ur = m.CoordinateSystem.unit_e_0
 
 stokes.add_essential_bc((0.0, 0.0), m.boundaries.Lower.name)
-stokes.add_essential_bc((0.0, 0.0), m.boundaries.Upper.name)
+stokes.add_rotated_freeslip_bc(0, m.boundaries.Upper.name)
 
 stokes.bodyforce = RA * (
     T.sym[0] - (r_o - r) / (r_o - r_inner)
@@ -148,6 +148,8 @@ print(f"plain (adv+stokes) step      : {t_step:6.3f} s  (mean of {N})")
 # Time ONE pristine adaptation, broken down.
 ta = time.perf_counter()
 vals0 = np.asarray(uw.function.evaluate(T.sym[0], X0_Tx)).reshape(-1)
+# Note: Mesh.deform() includes remesh_with_field_transfer internally,
+# so this timing includes that transfer cost before the script overwrites fields.
 m.deform(X0)
 T.data[:, 0] = vals0
 t_remap_in = time.perf_counter() - ta
