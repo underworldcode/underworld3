@@ -1217,9 +1217,20 @@ def BoxInternalPatch(
             gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
             gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
-        gmsh.finalize()
+        # TODO(BUG): patch sets the crossing pre-check cannot classify
+        # (coplanar overlaps, patches touching along an edge) can still
+        # make the 3-D mesher fail with a raw "PLC Error" from tetgen;
+        # the embed should catch that and re-raise with its own
+        # message. Fault-session follow-up.
+        try:
+            gmsh.model.mesh.generate(3)
+            gmsh.write(uw_filename)
+        finally:
+            # A mesher failure must not leave the gmsh session
+            # initialized: a poisoned session makes the NEXT mesh
+            # constructor in the same process write an invalid .msh,
+            # which PETSc rejects with error 79 ("expecting $Nodes").
+            gmsh.finalize()
 
     new_mesh = Mesh(
         uw_filename,
