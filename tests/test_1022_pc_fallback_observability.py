@@ -146,7 +146,7 @@ def test_total_transfer_failure_records_and_solves_on_default_pc(
     monkeypatch.setitem(custom_mg._BUILDERS, "barycentric", broken)
     monkeypatch.setitem(custom_mg._BUILDERS, "rbf", broken)
     p = _poisson_on(adapt_child, degree=2, name="Tfail")
-    with pytest.warns(UserWarning, match="mesh-owned FMG build failed"):
+    with pytest.warns(UserWarning, match="custom-P FMG build failed"):
         p.solve()
     # stability oracle: the degrade path must still converge
     assert p.snes.getConvergedReason() > 0

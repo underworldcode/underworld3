@@ -210,6 +210,13 @@ class SolverBaseClass(uw_object):
         # helper below is a no-op.
         self._preconditioner = "auto"
         self._pc_option_prefix = None
+        # An explicit `preconditioner="fmg"` on a single-field solver cannot
+        # take the native route (#276), so it is honoured via custom-P
+        # transfers over the mesh's own dm_hierarchy instead (#478). This flag
+        # carries the request from _apply_preconditioner_options (build time)
+        # to custom_mg.build_transfers (first solve); it is re-derived on
+        # every resolution, same staleness rule as _pc_resolved.
+        self._pc_single_field_geo_requested = False
         # The pc_type value this helper last managed. Subclasses that opt in set
         # their __init__ default ("gamg"); used in "auto" mode to tell an
         # untouched framework default (eligible for FMG upgrade) apart from an
@@ -718,9 +725,19 @@ class SolverBaseClass(uw_object):
         - ``"auto"`` (default) — use geometric Full Multigrid (FMG) when the
           mesh carries a genuine refinement hierarchy
           (``len(mesh.dm_hierarchy) > 1``, i.e. built with ``refinement >= 1``),
-          otherwise fall back to algebraic multigrid (GAMG).
-        - ``"fmg"`` (alias ``"mg"``) — force geometric multigrid. Requires a
+          otherwise fall back to algebraic multigrid (GAMG). On a single-field
+          (scalar/vector) solver ``"auto"`` keeps GAMG even with a hierarchy —
+          the decline is recorded in :attr:`pc_fallbacks`.
+        - ``"fmg"`` (alias ``"mg"``) — geometric multigrid. Requires a
           refinement hierarchy; warns and falls back to GAMG if none exists.
+          On a single-field solver the native FMG path is unreliable (#276),
+          so the request is honoured via custom-P transfers built over the
+          same hierarchy (``utilities.custom_mg``) — installed on the live PC
+          at the first solve. If that build fails (e.g. a deformed mesh whose
+          coarse levels kept reference coordinates), the solve degrades to
+          GAMG with a readable :attr:`pc_fallbacks` record. This is a
+          *preference*; ``custom_mg.set_custom_fmg`` is the *demand* form and
+          raises on failure instead.
         - ``"gamg"`` — force algebraic multigrid (the historical default).
 
         Geometric multigrid is inherently robust to mesh anisotropy (it is built
@@ -763,8 +780,11 @@ class SolverBaseClass(uw_object):
         # these options, leave them alone".
         self._pc_resolved = True
         # Fresh resolution => fresh fallback record (same staleness rule as
-        # _pc_resolved). Solve-time sites re-record after this.
+        # _pc_resolved). Solve-time sites re-record after this. The custom-P
+        # reroute request is re-derived below for the same reason (a remesh
+        # can collapse the hierarchy it depends on).
         self._pc_fallbacks.clear()
+        self._pc_single_field_geo_requested = False
 
         opts = self.petsc_options
 
@@ -811,32 +831,33 @@ class SolverBaseClass(uw_object):
         # on the common curved-shell cases (issue #276) as well as some flat
         # high-degree ones. The Stokes velocity sub-block (prefix
         # "fieldsplit_velocity_") is the validated, robust native-FMG path and is
-        # unaffected. So never auto-route a single-field solver to native FMG —
-        # fall back to GAMG. Geometric MG on a scalar/vector solver is available,
-        # robustly, via ``underworld3.utilities.custom_mg.set_custom_fmg`` (own
-        # barycentric/RBF prolongation + Galerkin coarse operators; no injection).
+        # unaffected. So a single-field solver never routes to NATIVE FMG. Two
+        # routes instead (#478):
+        #  * explicit `preconditioner="fmg"` is honoured via custom-P transfers
+        #    over the mesh's own dm_hierarchy (no DMCreateInjection anywhere, so
+        #    the err62 failure mode cannot arise). The options DB deliberately
+        #    keeps GAMG as the safe base configuration — the custom-P PCMG is
+        #    installed on the LIVE PC at the first solve (auto_inject_custom_mg
+        #    -> custom_mg.build_transfers, requested-native source), the same
+        #    shape the adapt-child pickup uses. If the transfer build fails, the
+        #    solve degrades to that GAMG base, recorded in `pc_fallbacks`.
+        #  * "auto" keeps GAMG (a default change needs its own validation
+        #    campaign, per #478) — the decline is recorded, never warned.
+        # `set_custom_fmg` remains the DEMAND form (raises on failure);
+        # `preconditioner="fmg"` is a PREFERENCE (degrades, loudly and readably).
         if want_fmg and prefix == "":
             if self._preconditioner == "fmg":
+                self._pc_single_field_geo_requested = True
                 self._record_pc_fallback(
                     "single_field_gate",
                     requested="native geometric FMG (preconditioner='fmg')",
-                    installed="gamg",
+                    installed="custom-P geometric MG (resolved at first solve)",
                     reason="declined",
                     detail="native single-field FMG needs DMCreateInjection, "
                            "which PETSc cannot reliably build on a refined "
-                           "DMPlex (#276); use custom_mg.set_custom_fmg() for "
-                           "geometric MG on this solver")
-                if uw.mpi.rank == 0:
-                    import warnings
-                    warnings.warn(
-                        f"[{self.name}] preconditioner='fmg' is not supported on a "
-                        f"single-field (scalar/vector) solver: native geometric FMG "
-                        f"needs DMCreateInjection, which PETSc cannot reliably build "
-                        f"on a refined DMPlex (issue #276). Falling back to GAMG. For "
-                        f"geometric MG on this solver use "
-                        f"underworld3.utilities.custom_mg.set_custom_fmg().",
-                        stacklevel=2,
-                    )
+                           "DMPlex (#276); the request is honoured via custom-P "
+                           "transfers over the mesh hierarchy instead, degrading "
+                           "to GAMG (recorded) if the transfer build fails")
             else:
                 # "auto" declines silently by design (never a new warning) —
                 # but the decline is the direction that matters (#484), so it
