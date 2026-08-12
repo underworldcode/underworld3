@@ -115,7 +115,15 @@ def _line_clip_interval(poly2, p0, d):
         den = float(nrm @ d)
         num = float(nrm @ (A - p0))
         if abs(den) < 1e-30:
-            if num < 0:
+            # parallel edge: the line is inside this half-plane iff
+            # nrm . (p0 - A) >= 0, i.e. num <= 0.  (num > 0 means p0
+            # sits OUTSIDE the edge's half-plane.)  The sign here was
+            # inverted; on LAPACK builds that return exact zeros for
+            # axis-aligned plane bases (den == 0.0 exactly) that made
+            # crossing_segment miss genuine crossings, while builds
+            # with ~1e-17 jitter in den took the (correct) division
+            # branch and passed by luck.
+            if num > 0:
                 return None                        # parallel, outside
             continue
         t = num / den
