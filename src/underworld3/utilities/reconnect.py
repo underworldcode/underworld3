@@ -787,6 +787,22 @@ def _install_point_sf(new, new_sf):
     new.getCoordinateDM().setPointSF(new_sf)
 
 
+def _install_point_sf(new, new_sf):
+    """Install a rebuilt star-forest on the plex AND its coordinate DM.
+
+    The coordinate DM is created when the rebuilt chart's coordinates
+    are written — BEFORE any point SF exists — so it snapshots an empty
+    one. The solve never notices (field sections are created later,
+    from the plex SF), but a parallel HDF5 save then writes every
+    shared vertex as owned on every rank, and the serial reload of such
+    a checkpoint dies in ``coordinatesLoad`` (measured: a split mesh
+    written at np = 4 carried owned+shared = 7121 vertex rows where the
+    true owned count is 6334).
+    """
+    new.setPointSF(new_sf)
+    new.getCoordinateDM().setPointSF(new_sf)
+
+
 def _rebuild_point_sf(new, dm, point_map, nroots):
     """Carry the point star-forest onto a renumbered chart, in one exchange.
 
