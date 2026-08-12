@@ -1727,6 +1727,18 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._bdf_c2 = expression(r"{c_2^{\mathrm{BDF}}}", sympy.Integer(0), "BDF history coefficient 2")
         self._bdf_c3 = expression(r"{c_3^{\mathrm{BDF}}}", sympy.Integer(0), "BDF history coefficient 3")
 
+        # Persistent container for the yield-limited VEP effective viscosity
+        # (the ViscoPlasticFlowModel._plastic_eff_viscosity pattern): the
+        # combined coefficient is stored INSIDE this atom so the c-tensor
+        # bakes a wrapped atom and the default (Picard) tangent stays frozen;
+        # only _jacobian_unwrap (Newton) sees the strain-rate dependence of
+        # the yield law. Same freezing contract as the TI classes (#457/#493).
+        self._vep_eff_viscosity = expression(
+            R"{\eta_{\textrm{eff}}}",
+            1,
+            "Yield-limited visco-elastic effective viscosity",
+        )
+
         self._reset()
 
         super().__init__(unknowns, material_name=material_name)
@@ -2190,20 +2202,28 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 # An explicit rounding scale makes the cutoff differentiable, which is
                 # what the skip below existed to avoid needing: there is no outer Max to
                 # nest, so the floor can be honoured in the smooth yield modes too.
-                return self._apply_floor(
+                effective_viscosity = self._apply_floor(
                     effective_viscosity, inner_self.shear_viscosity_min,
                     rounding=rounding,
                 )
-            if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
-                return effective_viscosity
+            elif self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
+                # Already smooth and bounded; a hard outer Max would nest
+                # Min/Max and break the BDF-2 Jacobian — skip the floor.
+                pass
             else:
-                return sympy.Max(
+                effective_viscosity = sympy.Max(
                     effective_viscosity,
                     inner_self.shear_viscosity_min,
                 )
 
-        else:
-            return effective_viscosity
+        # Store the combined coefficient INSIDE the persistent container (the
+        # ViscoPlasticFlowModel._plastic_eff_viscosity pattern) so the
+        # c-tensor bakes ONE wrapped atom: sympy.diff treats it as a constant
+        # and the default (Picard) tangent stays frozen; only the Newton path
+        # (_jacobian_unwrap) sees the yield law's strain-rate dependence.
+        # (Same freezing contract as the TI classes — issue #457 / PR #493.)
+        self._vep_eff_viscosity._sym = effective_viscosity
+        return self._vep_eff_viscosity
 
     # NOTE: a hard-Min smooth-tangent override (flux_jacobian = harmonic) was
     # prototyped here but deferred to the yield-law / δ-homotopy follow-up. The
@@ -2273,42 +2293,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return correction
         # return sympy.Min(1, correction)
 
-    ## Is this really different from the original ?
-
-    def _build_c_tensor(self):
-        """For this constitutive law, we expect just a viscosity function"""
-
-        if self._is_setup:
-            print("Using cached value of c matrix", flush=True)
-            return
-
-        print("Building c matrix", flush=True)
-
-        d = self.dim
-        # inner_self = self.Parameters
-        viscosity = self.viscosity
-
-        try:
-            # CRITICAL: Use .sym property to avoid UWexpression array corruption issues
-            # See ViscousFlowModel._build_c_tensor() for detailed explanation
-            viscosity_sym = viscosity.sym if hasattr(viscosity, "sym") else viscosity
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity_sym
-        except:
-            d = self.dim
-            dv = uw.maths.tensor.idxmap[d][0]
-            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-                self._c = 2 * viscosity
-            else:
-                raise RuntimeError(
-                    "Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor"
-                )
-
-        self._is_setup = True
-        self._solver_is_setup = False
-
-        return
+    # NOTE: no _build_c_tensor override — the base ViscousFlowModel build is
+    # used, which bakes the WRAPPED self.viscosity atom (the persistent
+    # _vep_eff_viscosity container) element-wise into the rank-4 tensor.
+    # The previous override here baked the UNWRAPPED `.sym` contents (the
+    # tidy deferred on PR #493); values are identical, but the wrapped atom
+    # is the freezing contract every other yielding model follows.
 
     # Modify flux to use the stress history term
     # This may be preferable to using strain rate which can be discontinuous
@@ -3713,27 +3703,25 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         r"""Effective viscosity for the fault-plane shear component.
 
         Applies the yield mode (softmin/min/harmonic) to η₁, leaving
-        η₀ (bulk) unchanged. The anisotropic tensor handles the
-        directional dependence.
+        η₀ (bulk) unchanged — the anisotropic tensor handles the
+        directional dependence, and the bulk/stiffness scale stays
+        ``Parameters.shear_viscosity_0`` (reported by :attr:`K`).
+
+        Delegates to :meth:`_eta_for_tensor` with the ACTIVE integrator
+        mode, so this reports exactly the coefficient the stress tensor
+        is built from — under yield that is the persistent
+        ``_eta1_yield_eff`` container (a wrapped atom, so the Picard
+        freezing contract holds for anything that bakes this property).
+        For the hybrid integrator this reports the BDF (yield-clipped)
+        branch, matching the default ``self._c``.
+
+        Issue #463: this property previously computed the yield-limited
+        η₁_eff and then returned the un-yielded bulk η₀, so diagnostics,
+        renders and projections saw no yielding at all.
         """
-        inner_self = self.Parameters
-
-        if inner_self.yield_stress.sym == sympy.oo:
-            return inner_self.shear_viscosity_0
-
-        # η₁ is the fault-plane viscosity that gets yield-limited
-        eta_1_eff = inner_self.ve_effective_viscosity
-
-        if self.is_viscoplastic:
-            vp_eff = self._plastic_effective_viscosity
-            # Same yield envelope as the isotropic models: _combine_yield owns the
-            # harmonic / soft-min / hard-Min choice, reads delta from the
-            # constants[] atom (so a homotopy can ramp it without a recompile) and
-            # honours yield_smoother. Previously inlined here, which pinned this
-            # model to the sqrt family and to a baked float delta.
-            eta_1_eff = self._combine_yield(eta_1_eff, vp_eff)
-
-        return inner_self.shear_viscosity_0
+        mode = "etd" if self._integrator == "etd" else "bdf"
+        _, eta_1_eff = self._eta_for_tensor(mode, apply_yield=True)
+        return eta_1_eff
 
     @property
     def K(self):
@@ -4064,12 +4052,18 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
     @property
     def plastic_fraction(self):
-        """Fraction of strain rate that is plastic."""
-        eta_1_ve = self.Parameters.ve_effective_viscosity
-        eta_1_eff = self.viscosity
-        # viscosity property returns η₀, need to compare η₁ effective vs η₁ ve
-        # This is approximate for the anisotropic case
-        return sympy.Max(0, 1 - eta_1_eff / eta_1_ve.sym if hasattr(eta_1_ve, 'sym') else 0)
+        r"""Fraction of the fault-plane response that is plastic:
+        ``1 - η₁_eff / η₁_ve`` (zero when the yield limit is inactive).
+
+        Only the weak-plane channel is compared — the bulk η₀ is
+        structurally non-yieldable. Pre-#463 this was identically zero
+        for a yielding fault because ``.viscosity`` returned the bulk
+        η₀ (and a misplaced ternary made the ratio unconditional)."""
+        if not self.is_viscoplastic:
+            return sympy.sympify(0)
+        mode = "etd" if self._integrator == "etd" else "bdf"
+        _, eta_1_ve = self._eta_for_tensor(mode, apply_yield=False)
+        return sympy.Max(0, 1 - self.viscosity / eta_1_ve)
 
 
 class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowModel):
