@@ -10,7 +10,7 @@
 # Cluster-specific differences:
 #
 #   Aspect        local                    kaiju             gadi
-#   PETSC_ARCH    petsc-4-uw-{mpich,       petsc-4-uw-       petsc-4-uw-
+#   PETSC_ARCH    petsc-<ver>-uw-{mpich,   petsc-<ver>-uw-   petsc-<ver>-uw-
 #                   openmpi}               openmpi           openmpi
 #   MPI           pixi env                 spack (PATH)      module (PATH)
 #   HDF5          pixi env                 download          module ($HDF5_DIR)
@@ -77,6 +77,42 @@ detect_cluster() {
 
 CLUSTER="$(detect_cluster)"
 
+require_hpc_pixi_env() {
+    local expected_root
+    local active_root
+    local active_python
+
+    if [ "${PIXI_ENVIRONMENT_NAME:-}" != "hpc" ] || [ -z "${CONDA_PREFIX:-}" ]; then
+        echo "Error: must be run inside the Pixi hpc environment"
+        echo "Source the cluster activation script before building PETSc."
+        exit 1
+    fi
+    if [ ! -x "${CONDA_PREFIX}/bin/python3" ]; then
+        echo "Error: active Pixi hpc environment is incomplete: ${CONDA_PREFIX}"
+        exit 1
+    fi
+
+    expected_root="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+    active_root="$(cd "${PIXI_PROJECT_ROOT:-/nonexistent}" 2>/dev/null && pwd -P || true)"
+    if [ "${active_root}" != "${expected_root}" ]; then
+        echo "Error: active Pixi environment belongs to a different project"
+        echo "  expected: ${expected_root}"
+        echo "  active:   ${active_root:-<unknown>}"
+        exit 1
+    fi
+
+    active_python="$(command -v python3)"
+    case "${active_python}" in
+        "${CONDA_PREFIX}"/bin/python3) ;;
+        *)
+            echo "Error: python3 does not come from the active Pixi hpc environment"
+            echo "  expected: ${CONDA_PREFIX}/bin/python3"
+            echo "  active:   ${active_python}"
+            exit 1
+            ;;
+    esac
+}
+
 # ── Cluster-specific configuration ───────────────────────────────────────────
 # Sets PETSC_ARCH, MPI_IMPL, and cluster-specific variables (PIXI_ENV, MPI_DIR,
 # HDF5_DIR). Also validates that the required environment is active.
@@ -123,12 +159,9 @@ EOF
             echo "  spack load openmpi@4.1.6"
             exit 1
         fi
-        if ! echo "${PATH}" | tr ':' '\n' | grep -q "\.pixi/envs/hpc/bin"; then
-            echo "Error: must be run inside the pixi hpc environment"
-            echo "  source kaiju_install_user.sh   (activates env via pixi shell-hook)"
-            exit 1
-        fi
-        MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
+        # shellcheck disable=SC2218
+        require_hpc_pixi_env
+        MPI_DIR="$(dirname "$(dirname "$(command -v mpicc)")")"
         MPI_IMPL="openmpi"
         PETSC_ARCH="petsc-${PETSC_VER}-uw-openmpi"
         ;;
@@ -144,14 +177,16 @@ EOF
             echo "  module load hdf5/1.12.2p"
             exit 1
         fi
-        if ! echo "${PATH}" | tr ':' '\n' | grep -q "\.pixi/envs/hpc/bin"; then
-            echo "Error: must be run inside the pixi hpc environment"
-            echo "  source gadi_install_shared.sh   (activates env via pixi shell-hook)"
-            exit 1
-        fi
-        MPI_DIR="$(dirname "$(dirname "$(which mpicc)")")"
+        # shellcheck disable=SC2218
+        require_hpc_pixi_env
+        MPI_DIR="$(dirname "$(dirname "$(command -v mpicc)")")"
         MPI_IMPL="openmpi"
         PETSC_ARCH="petsc-${PETSC_VER}-uw-openmpi"
+        GADI_MAKE_NP="${PBS_NCPUS:-1}"
+        if ! [[ "${GADI_MAKE_NP}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Error: invalid PBS_NCPUS value: ${GADI_MAKE_NP}"
+            exit 1
+        fi
         ;;
 
     *)
@@ -174,6 +209,7 @@ else
     echo "MPI_DIR:    ${MPI_DIR}"
 fi
 [ "${CLUSTER}" = "gadi" ] && echo "HDF5_DIR:   ${HDF5_DIR}"
+[ "${CLUSTER}" = "gadi" ] && echo "MAKE_NP:    ${GADI_MAKE_NP}"
 echo "=========================================="
 
 # ── Gadi-specific: build environment setup ───────────────────────────────────
@@ -181,7 +217,7 @@ echo "=========================================="
 # Must be called before any compile/link step on Gadi.
 setup_gadi_build_env() {
     if [ -z "${MPI_DIR}" ]; then
-        echo "Error: MPI_DIR is not set. Source gadi_install_shared.sh first."
+        echo "Error: MPI_DIR is not set. Source the Gadi activation script first."
         exit 1
     fi
 
@@ -197,7 +233,9 @@ setup_gadi_build_env() {
 
     # LD_LIBRARY_PATH = runtime search path (dynamic loader)
     # LIBRARY_PATH    = link-time search path (ld resolves -lmpi_usempif08 etc.)
-    export LD_LIBRARY_PATH="${_mpi_gnu_dir}:${MPI_DIR}/lib:/apps/ucc/1.3.0/lib:/usr/lib64:${LD_LIBRARY_PATH}"
+    # NumPy 2 requires the newer C++ runtime from the Pixi environment. Keep it
+    # ahead of Gadi's older /usr/lib64 copy during configure and petsc4py build.
+    export LD_LIBRARY_PATH="${_mpi_gnu_dir}:${MPI_DIR}/lib:/apps/ucc/1.3.0/lib:${CONDA_PREFIX}/lib:/usr/lib64:${LD_LIBRARY_PATH}"
     export LIBRARY_PATH="${_mpi_gnu_dir}:${LIBRARY_PATH}"
 
     # Unset conda/pixi compiler vars that interfere with OpenMPI wrappers.
@@ -329,7 +367,7 @@ configure_petsc() {
     # Capture pixi's python3 BEFORE setup_gadi_build_env reorders PATH.
     local _python="python3"
     if [ "${CLUSTER}" = "gadi" ]; then
-        _python="$(which python3)"
+        _python="$(command -v python3)"
         setup_gadi_build_env
     elif [ "${CLUSTER}" = "local" ] && [ "${MPI_IMPL}" = "openmpi" ]; then
         setup_local_macos_openmpi_build_env
@@ -397,8 +435,8 @@ configure_petsc() {
                 --with-hdf5-dir="${HDF5_DIR}" \
                 --download-fblaslapack=1 \
                 --with-petsc4py=1 \
-		--with-slepc4py=1 \
-                --with-make-np=40 \
+                --with-slepc4py=1 \
+                --with-make-np="${GADI_MAKE_NP}" \
                 --with-shared-libraries=1 \
                 --with-cxx-dialect=C++11 \
                 "--COPTFLAGS=-g -O3" "--CXXOPTFLAGS=-g -O3" "--FOPTFLAGS=-g -O3" \
@@ -543,14 +581,16 @@ list_versions() {
     active_ver=$(petsc_version_short)
     for arch_dir in "${PETSC_DIR}"/petsc-*-uw-*/; do
         [ -d "${arch_dir}" ] || continue
-        local arch_name=$(basename "${arch_dir}")
+        local arch_name
         local marker=""
         local style=""
+        arch_name=$(basename "${arch_dir}")
 
         # Classify: versioned (petsc-324-uw-*) vs legacy (petsc-4-uw-*)
         if echo "${arch_name}" | grep -qE '^petsc-[0-9]{3,}-uw-'; then
             # Versioned arch: petsc-324-uw-openmpi → 324
-            local arch_ver=$(echo "${arch_name}" | sed -E 's/^petsc-([0-9]+)-uw-.*/\1/')
+            local arch_ver
+            arch_ver=$(echo "${arch_name}" | sed -E 's/^petsc-([0-9]+)-uw-.*/\1/')
             if [ "${arch_ver}" = "${active_ver}" ]; then
                 marker=" (active)"
             fi
