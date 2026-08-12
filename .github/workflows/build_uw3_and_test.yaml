@@ -19,6 +19,15 @@ on:
 
   workflow_dispatch:
 
+env:
+  # Some Azure runners carry a MANA NIC whose InfiniBand verbs device UCX
+  # advertises but cannot open: uct_iface_open(ud_verbs/mana_0) fails inside
+  # MPI_Init, so `import underworld3` dies before any UW3 code runs (issues
+  # #461/#528 — four hits in the first week of 2026-08, each costing a manual
+  # re-roll). A single-node CI runner needs only shared memory and TCP, so pin
+  # the UCX transports and retire the whole flake class.
+  UCX_TLS: tcp,sm,self
+
 jobs:
   test:
     runs-on: ubuntu-latest
