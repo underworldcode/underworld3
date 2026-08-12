@@ -35,7 +35,7 @@ def _box(cellSize=0.3, **kwargs):
         regular=False, qdegree=2, **kwargs)
 
 
-def _solve_poisson(mesh, u):
+def _solve_poisson(mesh, u, preconditioner=None):
     poisson = uw.systems.Poisson(mesh, u_Field=u)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson.constitutive_model.Parameters.diffusivity = 1.0
@@ -43,6 +43,8 @@ def _solve_poisson(mesh, u):
     poisson.add_dirichlet_bc(0.0, "Bottom")
     poisson.add_dirichlet_bc(1.0, "Top")
     poisson.petsc_options["ksp_rtol"] = 1e-8
+    if preconditioner is not None:
+        poisson.preconditioner = preconditioner
     poisson.solve()
     return poisson
 
@@ -116,7 +118,12 @@ def test_data_views_are_refreshed_after_rebuild():
     uw.discretisation.MeshVariable("u2", mesh, 1, degree=1)
 
     fresh = u1.data
-    assert not np.shares_memory(stale_view, fresh)
+    # Object identity only — never np.shares_memory here: the released buffer
+    # is freed before the replacement allocates, so the allocator may recycle
+    # the same block and make an address comparison fail spuriously on
+    # exactly the platform this guards (#536 review). Dereferencing
+    # stale_view is likewise out: it dangles by the documented contract.
+    assert fresh is not stale_view
     assert np.all(np.asarray(fresh)[:, 0] == 42.0)  # data preserved across rebuild
     # round-trip on the new buffer
     u1.data[:, 0] = 7.0
@@ -145,7 +152,11 @@ def test_adapt_child_second_variable_after_solve():
     child = mesh.adapt(metric, max_levels=1)
 
     u1 = uw.discretisation.MeshVariable("u1", child, 1, degree=1)
-    _solve_poisson(child, u1)
+    # fmg builds the custom-P coarse chain — the original detonation had the
+    # FMG hierarchy live on the child when the rebuild fired (#536 review:
+    # under "auto" a single-field solver declines to GAMG and the chain this
+    # test exists to exercise is never constructed).
+    _solve_poisson(child, u1, preconditioner="fmg")
 
     held = child.dm  # captured post-solve, pre-rebuild (the arming step)
     u2 = uw.discretisation.MeshVariable("u2", child, 1, degree=1)
