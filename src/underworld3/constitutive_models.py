@@ -1727,6 +1727,18 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         self._bdf_c2 = expression(r"{c_2^{\mathrm{BDF}}}", sympy.Integer(0), "BDF history coefficient 2")
         self._bdf_c3 = expression(r"{c_3^{\mathrm{BDF}}}", sympy.Integer(0), "BDF history coefficient 3")
 
+        # Persistent container for the yield-limited VEP effective viscosity
+        # (the ViscoPlasticFlowModel._plastic_eff_viscosity pattern): the
+        # combined coefficient is stored INSIDE this atom so the c-tensor
+        # bakes a wrapped atom and the default (Picard) tangent stays frozen;
+        # only _jacobian_unwrap (Newton) sees the strain-rate dependence of
+        # the yield law. Same freezing contract as the TI classes (#457/#493).
+        self._vep_eff_viscosity = expression(
+            R"{\eta_{\textrm{eff}}}",
+            1,
+            "Yield-limited visco-elastic effective viscosity",
+        )
+
         self._reset()
 
         super().__init__(unknowns, material_name=material_name)
@@ -2190,20 +2202,28 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
                 # An explicit rounding scale makes the cutoff differentiable, which is
                 # what the skip below existed to avoid needing: there is no outer Max to
                 # nest, so the floor can be honoured in the smooth yield modes too.
-                return self._apply_floor(
+                effective_viscosity = self._apply_floor(
                     effective_viscosity, inner_self.shear_viscosity_min,
                     rounding=rounding,
                 )
-            if self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
-                return effective_viscosity
+            elif self.is_viscoplastic and self._yield_mode in ("harmonic", "softmin"):
+                # Already smooth and bounded; a hard outer Max would nest
+                # Min/Max and break the BDF-2 Jacobian — skip the floor.
+                pass
             else:
-                return sympy.Max(
+                effective_viscosity = sympy.Max(
                     effective_viscosity,
                     inner_self.shear_viscosity_min,
                 )
 
-        else:
-            return effective_viscosity
+        # Store the combined coefficient INSIDE the persistent container (the
+        # ViscoPlasticFlowModel._plastic_eff_viscosity pattern) so the
+        # c-tensor bakes ONE wrapped atom: sympy.diff treats it as a constant
+        # and the default (Picard) tangent stays frozen; only the Newton path
+        # (_jacobian_unwrap) sees the yield law's strain-rate dependence.
+        # (Same freezing contract as the TI classes — issue #457 / PR #493.)
+        self._vep_eff_viscosity._sym = effective_viscosity
+        return self._vep_eff_viscosity
 
     # NOTE: a hard-Min smooth-tangent override (flux_jacobian = harmonic) was
     # prototyped here but deferred to the yield-law / δ-homotopy follow-up. The
@@ -2273,42 +2293,12 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
         return correction
         # return sympy.Min(1, correction)
 
-    ## Is this really different from the original ?
-
-    def _build_c_tensor(self):
-        """For this constitutive law, we expect just a viscosity function"""
-
-        if self._is_setup:
-            print("Using cached value of c matrix", flush=True)
-            return
-
-        print("Building c matrix", flush=True)
-
-        d = self.dim
-        # inner_self = self.Parameters
-        viscosity = self.viscosity
-
-        try:
-            # CRITICAL: Use .sym property to avoid UWexpression array corruption issues
-            # See ViscousFlowModel._build_c_tensor() for detailed explanation
-            viscosity_sym = viscosity.sym if hasattr(viscosity, "sym") else viscosity
-            self._c = 2 * uw.maths.tensor.rank4_identity(d) * viscosity_sym
-        except:
-            d = self.dim
-            dv = uw.maths.tensor.idxmap[d][0]
-            if isinstance(viscosity, sympy.Matrix) and viscosity.shape == (dv, dv):
-                self._c = 2 * uw.maths.tensor.mandel_to_rank4(viscosity, d)
-            elif isinstance(viscosity, sympy.Array) and viscosity.shape == (d, d, d, d):
-                self._c = 2 * viscosity
-            else:
-                raise RuntimeError(
-                    "Viscosity is not a known type (scalar, Mandel matrix, or rank 4 tensor"
-                )
-
-        self._is_setup = True
-        self._solver_is_setup = False
-
-        return
+    # NOTE: no _build_c_tensor override — the base ViscousFlowModel build is
+    # used, which bakes the WRAPPED self.viscosity atom (the persistent
+    # _vep_eff_viscosity container) element-wise into the rank-4 tensor.
+    # The previous override here baked the UNWRAPPED `.sym` contents (the
+    # tidy deferred on PR #493); values are identical, but the wrapped atom
+    # is the freezing contract every other yielding model follows.
 
     # Modify flux to use the stress history term
     # This may be preferable to using strain rate which can be discontinuous

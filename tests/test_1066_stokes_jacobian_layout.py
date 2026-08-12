@@ -366,6 +366,63 @@ def test_ti_vep_viscosity_property_reports_yield_limited_eta1():
     assert visc_off is cm.Parameters.ve_effective_viscosity
 
 
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_vep_c_tensor_coefficients_are_frozen():
+    """Isotropic VEP with yield active: same freezing contract as the TI
+    classes (the .sym tidy deferred on PR #493) — the c-tensor coefficients
+    must live inside UWexpression atoms so the default (Picard) tangent stays
+    frozen; only the Newton unwrap sees the yield law's strain-rate
+    dependence."""
+    import itertools
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("V_vf", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_vf", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    cm = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns)
+    stokes.constitutive_model = cm
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 100.0
+    cm.Parameters.dt_elastic = 0.1
+    cm.Parameters.yield_stress = 0.5
+    cm.Parameters.strainrate_inv_II_min = 1.0e-6
+    assert cm.is_viscoplastic
+
+    cm._build_c_tensor()
+
+    L = stokes.Unknowns.L
+    d = mesh.dim
+    c = sympy.Array(cm.c)
+    live = [
+        (idx, k, l)
+        for idx in itertools.product(range(d), repeat=4)
+        for k in range(d)
+        for l in range(d)
+        if sympy.diff(sympy.sympify(c[idx]), L[k, l]) != 0
+    ]
+    assert not live, (
+        "isotropic VEP c-tensor depends on the velocity gradient (yield-"
+        "limited viscosity baked unwrapped) — Picard tangent un-frozen: "
+        f"first hits {live[:4]}"
+    )
+
+    # Positive control: the dependence must exist INSIDE the atoms.
+    from underworld3.cython.generic_solvers import _jacobian_unwrap
+
+    c_unwrapped = _jacobian_unwrap(c)
+    revealed = any(
+        sympy.diff(sympy.sympify(c_unwrapped[idx]), L[k, l]) != 0
+        for idx in itertools.product(range(d), repeat=4)
+        for k in range(d)
+        for l in range(d)
+    )
+    assert revealed, (
+        "Newton unwrap of the VEP c-tensor reveals no strain-rate "
+        "dependence — the yield law has been lost from the tangent chain"
+    )
+
+
 def _nitsche_annulus_stokes(anisotropic):
     """Annulus + Nitsche free-slip on the outer wall — the issue #239 setup.
 
