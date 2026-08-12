@@ -705,6 +705,13 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
         snes.computeJacobian(x0, J, Pmat)
     except PETSc.Error:
         # fallback: throwaway max_it=0 solve assembles + splits the operator
+        solver._record_pc_fallback(
+            "custom_mg.velocity_block_assembly",
+            requested="direct Jacobian assembly (computeFunction/computeJacobian)",
+            installed="throwaway max_it=0 assembly route; same PC installed",
+            reason="build_failed",
+            detail="snes.computeJacobian raised; the operator is assembled by "
+                   "a zero-iteration solve instead")
         saved = (solver.petsc_options.getString("snes_max_it")
                  if solver.petsc_options.hasName("snes_max_it") else None)
         solver.petsc_options["snes_max_it"] = 0
@@ -855,8 +862,14 @@ class CustomMGHierarchy:
         except Exception:
             # Sanctioned swallow: setUp can fail on a not-yet-fully-configured
             # SNES (pre-solve injection). The install paths call setUp again;
-            # the finest map then reads the DM's current global section.
-            pass
+            # the finest map then reads the DM's current global section. The
+            # skip is recorded so "the section was finalized" is checkable.
+            solver._record_pc_fallback(
+                "custom_mg.presolve_setup",
+                requested="pre-build snes.setUp() (finalize the DM section)",
+                installed="deferred to install-time setUp",
+                reason="check_skipped",
+                detail="setUp raised on the not-yet-fully-configured SNES")
 
         coords, maps, ncomp = [], [], []
         for k, mesh in enumerate(self.level_meshes):
@@ -935,7 +948,15 @@ class CustomMGHierarchy:
         try:
             op_n = int(solver.snes.getJacobian()[0].getSize()[0])
         except Exception:
-            return                                   # can't read operator -> skip
+            # Sanctioned: no readable operator to check against — record the
+            # skipped guard rather than silently waiving it (#484).
+            solver._record_pc_fallback(
+                "custom_mg.finest_operator_check",
+                requested="finest reduced-map vs operator span check",
+                installed="unchecked",
+                reason="check_skipped",
+                detail="could not read the assembled operator")
+            return
         if op_n <= 0:
             return
         if parallel:
@@ -1082,6 +1103,13 @@ def build_transfers(solver, field_id=None):
         except Exception as exc:            # pragma: no cover - defensive
             import warnings
             if _i + 1 < len(_attempts):
+                solver._record_pc_fallback(
+                    "custom_mg.transfer_builder",
+                    requested=_b,
+                    installed=f"{_attempts[_i + 1]} (DENSE transfer)",
+                    reason="build_failed",
+                    detail=f"{exc}; the RBF rescue is a performance cliff — "
+                           f"its transfer is dense (nnz/row == n_coarse), see #424")
                 warnings.warn(
                     f"custom_mg: {_b} transfer build failed ({exc}); "
                     f"retrying with the '{_attempts[_i + 1]}' builder, which "
@@ -1093,6 +1121,12 @@ def build_transfers(solver, field_id=None):
                     f"it as a performance cliff and fix the cause, not the "
                     f"symptom (#424).")
                 continue
+            solver._record_pc_fallback(
+                "custom_mg.build",
+                requested=f"custom-P geometric MG ({' -> '.join(_attempts)})",
+                installed="default preconditioner",
+                reason="build_failed",
+                detail=str(exc))
             warnings.warn(
                 f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
                 "solver's default preconditioner.")
@@ -1142,6 +1176,14 @@ def auto_inject_custom_mg(solver, field_id=None):
             # default preconditioner (round-3b annulus finding, 2026-07).
             if op_n > 0 and pr != op_n:
                 import warnings
+                solver._record_pc_fallback(
+                    "custom_mg.dimensional_guard",
+                    requested="custom-P geometric MG hierarchy",
+                    installed="default preconditioner",
+                    reason="unavailable",
+                    detail=f"finest transfer {pr}x{pc} is incompatible with the "
+                           f"operator (size {op_n}); set_custom_fmg() an explicit "
+                           f"hierarchy to override")
                 warnings.warn(
                     "custom_mg: mesh-owned adapt-mesh FMG transfer is incompatible "
                     f"with this solver's operator (transfer {pr}x{pc}, operator {op_n}); "
@@ -1149,7 +1191,15 @@ def auto_inject_custom_mg(solver, field_id=None):
                     "set_custom_fmg() an explicit hierarchy to override.")
                 return
         except Exception:
-            pass                            # can't check -> don't block working cases
+            # Sanctioned: an unreadable operator must not block working cases —
+            # but the skipped guard is on the record.
+            solver._record_pc_fallback(
+                "custom_mg.dimensional_guard",
+                requested="finest-transfer vs operator size check",
+                installed="unchecked (hierarchy installed anyway)",
+                reason="check_skipped",
+                detail="could not read the assembled operator to check the "
+                       "finest transfer against it")
 
     h.install(solver, verbose=False)
     solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}

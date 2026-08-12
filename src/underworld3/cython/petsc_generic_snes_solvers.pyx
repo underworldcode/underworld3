@@ -238,6 +238,22 @@ class SolverBaseClass(uw_object):
         # resolved would be exactly the stale-but-authoritative-looking summary this
         # reporting exists to prevent.
         self._pc_resolved = False
+        # Readable record of every preconditioner fallback / degrade / guard-skip
+        # decision taken for this solver, keyed by site name — see the public
+        # `pc_fallbacks` property. Written ONLY through _record_pc_fallback (the
+        # record is WRITTEN, never inferred — same doctrine as
+        # _push_managed_option). Reset rule: cleared each time
+        # _apply_preconditioner_options re-resolves (the same staleness rule as
+        # _pc_resolved); solve-time sites (custom_mg, rotated_bc) record after
+        # that, so the record always describes the CURRENT resolution.
+        # Reason vocabulary (fixed; tests assert on it):
+        #   "unavailable"   — the requested configuration could not be built here
+        #   "declined"      — available in principle, but a policy chose otherwise
+        #   "build_failed"  — an attempted build raised and a fallback was used
+        #   "check_skipped" — a correctness guard did not run (its failure mode
+        #                     is sanctioned, but the skip is now on the record)
+        #   "forced"        — a required key overrode a user/unset value
+        self._pc_fallbacks = {}
 
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
@@ -269,6 +285,48 @@ class SolverBaseClass(uw_object):
             if self.petsc_options.hasName(name):
                 out[key] = self.petsc_options.getString(name)
         return out
+
+    def _record_pc_fallback(self, site, *, requested, installed, reason, detail=""):
+        """Record one preconditioner fallback / degrade / guard-skip decision.
+
+        The single write path into ``pc_fallbacks`` (records are WRITTEN, never
+        inferred). ``reason`` must come from the fixed vocabulary documented at
+        ``_pc_fallbacks`` in ``__init__``. Runs on every rank — the record is
+        state, not output, so it must not be rank-gated the way warnings are.
+        """
+        self._pc_fallbacks[site] = dict(requested=requested, installed=installed,
+                                        reason=reason, detail=detail)
+
+    @property
+    def pc_fallbacks(self):
+        """Every preconditioner fallback the current resolution took, by site.
+
+        A dict keyed by site name (e.g. ``"single_field_gate"``,
+        ``"no_hierarchy"``, ``"custom_mg.build"``); each value is a dict with
+        ``requested`` (what was asked for), ``installed`` (what actually runs),
+        ``reason`` (one of ``"unavailable"``, ``"declined"``, ``"build_failed"``,
+        ``"check_skipped"``, ``"forced"``) and ``detail``. Empty means the
+        resolved preconditioner is exactly what was requested and every guard
+        ran — the clean-solve state a test can assert on.
+
+        The record is reset whenever the preconditioner options re-resolve (a
+        rebuild/remesh), and solve-time sites (``utilities.custom_mg``,
+        ``utilities.rotated_bc``) re-record each solve, so it always describes
+        the current resolution. Solvers that manage their own PC options
+        (``_pc_option_prefix is None``) never clear at rebuild; their sites are
+        custom_mg-only, which re-record per solve.
+
+        Returns
+        -------
+        dict
+            A copy — mutating it does not affect the solver.
+
+        See Also
+        --------
+        preconditioner_settings : the option values the managed block resolved to.
+        strategy : a readable summary of the same resolution.
+        """
+        return {site: dict(rec) for site, rec in self._pc_fallbacks.items()}
 
     @property
     def _user_overridden_pc_options(self):
@@ -704,6 +762,9 @@ class SolverBaseClass(uw_object):
         # Every path from here is a resolution decision, including "the user owns
         # these options, leave them alone".
         self._pc_resolved = True
+        # Fresh resolution => fresh fallback record (same staleness rule as
+        # _pc_resolved). Solve-time sites re-record after this.
+        self._pc_fallbacks.clear()
 
         opts = self.petsc_options
 
@@ -755,17 +816,38 @@ class SolverBaseClass(uw_object):
         # robustly, via ``underworld3.utilities.custom_mg.set_custom_fmg`` (own
         # barycentric/RBF prolongation + Galerkin coarse operators; no injection).
         if want_fmg and prefix == "":
-            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
-                import warnings
-                warnings.warn(
-                    f"[{self.name}] preconditioner='fmg' is not supported on a "
-                    f"single-field (scalar/vector) solver: native geometric FMG "
-                    f"needs DMCreateInjection, which PETSc cannot reliably build "
-                    f"on a refined DMPlex (issue #276). Falling back to GAMG. For "
-                    f"geometric MG on this solver use "
-                    f"underworld3.utilities.custom_mg.set_custom_fmg().",
-                    stacklevel=2,
-                )
+            if self._preconditioner == "fmg":
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="native geometric FMG (preconditioner='fmg')",
+                    installed="gamg",
+                    reason="declined",
+                    detail="native single-field FMG needs DMCreateInjection, "
+                           "which PETSc cannot reliably build on a refined "
+                           "DMPlex (#276); use custom_mg.set_custom_fmg() for "
+                           "geometric MG on this solver")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] preconditioner='fmg' is not supported on a "
+                        f"single-field (scalar/vector) solver: native geometric FMG "
+                        f"needs DMCreateInjection, which PETSc cannot reliably build "
+                        f"on a refined DMPlex (issue #276). Falling back to GAMG. For "
+                        f"geometric MG on this solver use "
+                        f"underworld3.utilities.custom_mg.set_custom_fmg().",
+                        stacklevel=2,
+                    )
+            else:
+                # "auto" declines silently by design (never a new warning) —
+                # but the decline is the direction that matters (#484), so it
+                # is on the record.
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="geometric FMG (preconditioner='auto', hierarchy present)",
+                    installed="gamg",
+                    reason="declined",
+                    detail="single-field native FMG is fragile (#276); "
+                           "auto never routes there")
             want_fmg = False
 
         # The option VALUES live in utilities.multigrid_options, which is the
@@ -789,14 +871,22 @@ class SolverBaseClass(uw_object):
                     owned=self._managed_pc_options)
             self._pc_managed_value = "mg"
         else:
-            if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
-                import warnings
-                warnings.warn(
-                    f"[{self.name}] preconditioner='fmg' requested but the mesh "
-                    f"has no refinement hierarchy; falling back to GAMG. Build the "
-                    f"mesh with refinement >= 1 to enable geometric multigrid.",
-                    stacklevel=2,
-                )
+            if self._preconditioner == "fmg" and n_levels <= 1:
+                self._record_pc_fallback(
+                    "no_hierarchy",
+                    requested="geometric FMG (preconditioner='fmg')",
+                    installed="gamg",
+                    reason="unavailable",
+                    detail="the mesh has no refinement hierarchy; build it with "
+                           "refinement >= 1 to enable geometric multigrid")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] preconditioner='fmg' requested but the mesh "
+                        f"has no refinement hierarchy; falling back to GAMG. Build the "
+                        f"mesh with refinement >= 1 to enable geometric multigrid.",
+                        stacklevel=2,
+                    )
             multigrid_options.gamg_bundle().apply(
                 PETSc.Options(), self.petsc_options_prefix + prefix,
                 owned=self._managed_pc_options)
@@ -829,6 +919,13 @@ class SolverBaseClass(uw_object):
             return
         gkey = f"{prefix}pc_mg_galerkin"
         if (not opts.hasName(gkey)) or opts.getString(gkey) == "none":
+            self._record_pc_fallback(
+                "galerkin_forced",
+                requested=f"{gkey} unset (or 'none')",
+                installed="both",
+                reason="forced",
+                detail="UW3 installs no coarse-DM operator callbacks, so "
+                       "geometric MG requires Galerkin RAP coarse operators")
             if uw.mpi.rank == 0:
                 import warnings
                 warnings.warn(
