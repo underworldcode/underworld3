@@ -90,8 +90,15 @@ def test_poisson_fmg_on_3d_child_matches_gamg():
     mesh = _base3()
     child = mesh.adapt(_ball_metric, max_levels=1)
 
+    # Deliberate ordering: create BOTH variables before any solver runs —
+    # creating a MeshVariable after a solve rebuilds mesh.dm and detonates
+    # issue #492 (the old DM is destroyed under the custom-MG coarse/fine
+    # links; that dangling reference is what segfaulted Linux CI downstream).
+    fields = {pc: uw.discretisation.MeshVariable(f"u_{pc}", child, 1, degree=1)
+              for pc in ("fmg", "gamg")}
+
     def solve(pc):
-        u = uw.discretisation.MeshVariable(f"u_{pc}", child, 1, degree=1)
+        u = fields[pc]
         poisson = uw.systems.Poisson(child, u_Field=u)
         poisson.constitutive_model = uw.constitutive_models.DiffusionModel
         poisson.constitutive_model.Parameters.diffusivity = 1.0
@@ -101,15 +108,37 @@ def test_poisson_fmg_on_3d_child_matches_gamg():
         if pc == "gamg":
             poisson.preconditioner = "gamg"
             poisson.petsc_options["pc_type"] = "gamg"
-        poisson.petsc_options["ksp_rtol"] = 1e-8
+        poisson.petsc_options["ksp_rtol"] = 1e-9
         poisson.solve()
-        its = poisson.snes.getKSP().getIterationNumber()
+        ksp = poisson.snes.getKSP()
+        its = ksp.getIterationNumber()
+        # The comparison must be REAL. The explicit-gamg arm was once silently
+        # clobbered by the mesh-owned custom-P pickup, so both arms ran
+        # pc_type=mg and the fmg-vs-gamg comparison compared FMG to itself.
+        # Pin each arm's PC so that vacuous comparison can never return.
+        assert ksp.getPC().getType() == ("gamg" if pc == "gamg" else "mg")
         # exact linear solution T = z: also proves the Dirichlet facet
-        # labels survived the parallel transform
+        # labels survived the parallel transform.
+        #
+        # The bound is tight ON PURPOSE: it must catch a once-shipped defect
+        # whose signature was a TRUE-error stall at 1e-6, INSENSITIVE to
+        # ksp_rtol — the gmres-smoothed geometric bundle (a non-stationary
+        # preconditioner) under a plain left-preconditioned gmres outer, whose
+        # recurrence norm fell to 1e-11 while the true residual stalled
+        # (the geometric bundle now owns the pairing — multigrid_options puts
+        # ksp_type=fgmres in the bundle and _configure_pcmg applies it to the
+        # live KSP, #514/#515 — so the fmg arm's ksp_rtol is enforced in the
+        # true residual norm;
+        # measured err/nrm ~1e-12). The gamg arm still converges in the
+        # preconditioned norm, with a declared-reduction -> nodal-error
+        # constant of ~10 on this child, so the declared reduction is one
+        # order tighter than the bound: neither arm rides on its PC constant,
+        # and the O(1) failures this test exists for (a lost Dirichlet label,
+        # a wrong transfer) stay unmissable.
         err = np.linalg.norm(
             poisson.Unknowns.u.data[:, 0] - poisson.Unknowns.u.coords[:, 2])
         nrm = np.linalg.norm(poisson.Unknowns.u.coords[:, 2]) + 1e-30
-        assert err / nrm < 1e-8
+        assert err / nrm < 1e-7
         return its
 
     fmg_its = solve("fmg")
