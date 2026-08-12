@@ -140,3 +140,23 @@ def test_toggling_after_a_solve_forces_ds_reregistration(solves):
     assert not s_off.is_setup, (
         "toggling multiplier_schur_pc must force the DS term to re-register")
     s_off.multiplier_schur_pc = False   # restore for any later use
+
+
+def test_probe_reads_the_flag_value_not_its_presence():
+    """diag_use_amat set to FALSE under selfp means the Pmat (h,h) block IS
+    read — the opt-in is live and the inertness warning must stay silent.
+    The #534 review measured the Schur pre differing by rel-Frobenius 0.30
+    flag-on/off in this regime while the probe (reading hasName, not the
+    value) still recorded 'declined'."""
+    import warnings as _warnings
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(6, 6))
+    s = _constrained(mesh, "valrd", None, True)
+    s.petsc_options["pc_fieldsplit_diag_use_amat"] = False
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        s.solve()
+    assert "multiplier_schur_pc" not in s.pc_fallbacks, (
+        "probe read the key's presence, not its value: flag=False makes the "
+        "opt-in live, not inert")
+    assert not [w for w in caught if "multiplier_schur_pc" in str(w.message)]

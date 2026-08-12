@@ -1276,7 +1276,11 @@ def auto_inject_custom_mg(solver, field_id=None):
                        "finest transfer against it")
 
     h.install(solver, verbose=False)
-    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
+    # auto_cached marks this as a RESOLUTION product (auto/fmg install), not a
+    # user registration: the preconditioner setter drops it so a later explicit
+    # choice re-resolves instead of re-injecting this hierarchy unconditionally.
+    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False,
+                         "auto_cached": True}
 
 
 def inject_custom_mg(solver):

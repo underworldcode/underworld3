@@ -142,3 +142,23 @@ def test_options_db_and_record_stay_honest_between_build_and_solve(annulus_hiera
     p.solve()
     assert p.preconditioner_settings["pc_type"] == "mg"        # bundle written
     assert p.snes.getKSP().getPC().getType() == "mg"
+
+
+def test_switch_to_gamg_after_fmg_is_honoured(annulus_hierarchy):
+    """Setting preconditioner='gamg' AFTER an fmg solve must install a real
+    GAMG. The #534 review measured the failure this pins: the fmg install
+    cached solver._custom_mg, auto_inject re-installed it unconditionally, and
+    the explicit gamg choice was silently unreachable — with pc_fallbacks
+    EMPTY, a false-clean record (the recorder's own contract violated)."""
+    p = _poisson(annulus_hierarchy, name="Tsw")
+    p.preconditioner = "fmg"
+    p.solve()
+    assert p.snes.getKSP().getPC().getType() == "mg"
+    p.preconditioner = "gamg"
+    p.solve()
+    pc = p.snes.getKSP().getPC()
+    assert pc.getType() == "gamg", (
+        "explicit gamg after an fmg solve was overridden by the cached "
+        "custom-P hierarchy")
+    # honoured explicitly => no fallback story to tell
+    assert "single_field_gate" not in p.pc_fallbacks

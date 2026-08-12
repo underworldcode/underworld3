@@ -762,6 +762,13 @@ class SolverBaseClass(uw_object):
                 f"preconditioner must be 'auto', 'fmg', or 'gamg' (got {value!r})"
             )
         self._preconditioner = choice
+        # A hierarchy cached by an earlier RESOLUTION (the auto/"fmg" install)
+        # must not outlive a new explicit choice: auto_inject_custom_mg
+        # re-installs solver._custom_mg unconditionally, which would leave a
+        # later preconditioner="gamg" unreachable with a clean pc_fallbacks
+        # record. A user registration (set_custom_fmg) is a demand and is kept.
+        if isinstance(self._custom_mg, dict) and self._custom_mg.get("auto_cached"):
+            self._custom_mg = None
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
 
@@ -8422,7 +8429,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                           else "")
             _pc_type = (_opts.getString("pc_type")
                         if _opts.hasName("pc_type") else "")
-            _diag_amat = _opts.hasName("pc_fieldsplit_diag_use_amat")
+            # Read the VALUE, not the key's presence: diag_use_amat set to
+            # "false" means the Pmat block IS read and the opt-in is live
+            # (measured: Schur pre differs by rel-Frobenius 0.30 flag-on/off).
+            _diag_amat = _opts.getBool("pc_fieldsplit_diag_use_amat", False)
             if (_schur_pre != "a11" and _diag_amat
                     and _pc_type not in ("lu", "cholesky")):
                 self._record_pc_fallback(
