@@ -210,6 +210,13 @@ class SolverBaseClass(uw_object):
         # helper below is a no-op.
         self._preconditioner = "auto"
         self._pc_option_prefix = None
+        # An explicit `preconditioner="fmg"` on a single-field solver cannot
+        # take the native route (#276), so it is honoured via custom-P
+        # transfers over the mesh's own dm_hierarchy instead (#478). This flag
+        # carries the request from _apply_preconditioner_options (build time)
+        # to custom_mg.build_transfers (first solve); it is re-derived on
+        # every resolution, same staleness rule as _pc_resolved.
+        self._pc_single_field_geo_requested = False
         # The pc_type value this helper last managed. Subclasses that opt in set
         # their __init__ default ("gamg"); used in "auto" mode to tell an
         # untouched framework default (eligible for FMG upgrade) apart from an
@@ -238,6 +245,22 @@ class SolverBaseClass(uw_object):
         # resolved would be exactly the stale-but-authoritative-looking summary this
         # reporting exists to prevent.
         self._pc_resolved = False
+        # Readable record of every preconditioner fallback / degrade / guard-skip
+        # decision taken for this solver, keyed by site name — see the public
+        # `pc_fallbacks` property. Written ONLY through _record_pc_fallback (the
+        # record is WRITTEN, never inferred — same doctrine as
+        # _push_managed_option). Reset rule: cleared each time
+        # _apply_preconditioner_options re-resolves (the same staleness rule as
+        # _pc_resolved); solve-time sites (custom_mg, rotated_bc) record after
+        # that, so the record always describes the CURRENT resolution.
+        # Reason vocabulary (fixed; tests assert on it):
+        #   "unavailable"   — the requested configuration could not be built here
+        #   "declined"      — available in principle, but a policy chose otherwise
+        #   "build_failed"  — an attempted build raised and a fallback was used
+        #   "check_skipped" — a correctness guard did not run (its failure mode
+        #                     is sanctioned, but the skip is now on the record)
+        #   "forced"        — a required key overrode a user/unset value
+        self._pc_fallbacks = {}
 
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
@@ -269,6 +292,48 @@ class SolverBaseClass(uw_object):
             if self.petsc_options.hasName(name):
                 out[key] = self.petsc_options.getString(name)
         return out
+
+    def _record_pc_fallback(self, site, *, requested, installed, reason, detail=""):
+        """Record one preconditioner fallback / degrade / guard-skip decision.
+
+        The single write path into ``pc_fallbacks`` (records are WRITTEN, never
+        inferred). ``reason`` must come from the fixed vocabulary documented at
+        ``_pc_fallbacks`` in ``__init__``. Runs on every rank — the record is
+        state, not output, so it must not be rank-gated the way warnings are.
+        """
+        self._pc_fallbacks[site] = dict(requested=requested, installed=installed,
+                                        reason=reason, detail=detail)
+
+    @property
+    def pc_fallbacks(self):
+        """Every preconditioner fallback the current resolution took, by site.
+
+        A dict keyed by site name (e.g. ``"single_field_gate"``,
+        ``"no_hierarchy"``, ``"custom_mg.build"``); each value is a dict with
+        ``requested`` (what was asked for), ``installed`` (what actually runs),
+        ``reason`` (one of ``"unavailable"``, ``"declined"``, ``"build_failed"``,
+        ``"check_skipped"``, ``"forced"``) and ``detail``. Empty means the
+        resolved preconditioner is exactly what was requested and every guard
+        ran — the clean-solve state a test can assert on.
+
+        The record is reset whenever the preconditioner options re-resolve (a
+        rebuild/remesh), and solve-time sites (``utilities.custom_mg``,
+        ``utilities.rotated_bc``) re-record each solve, so it always describes
+        the current resolution. Solvers that manage their own PC options
+        (``_pc_option_prefix is None``) never clear at rebuild; their sites are
+        custom_mg-only, which re-record per solve.
+
+        Returns
+        -------
+        dict
+            A copy — mutating it does not affect the solver.
+
+        See Also
+        --------
+        preconditioner_settings : the option values the managed block resolved to.
+        strategy : a readable summary of the same resolution.
+        """
+        return {site: dict(rec) for site, rec in self._pc_fallbacks.items()}
 
     @property
     def _user_overridden_pc_options(self):
@@ -660,9 +725,19 @@ class SolverBaseClass(uw_object):
         - ``"auto"`` (default) — use geometric Full Multigrid (FMG) when the
           mesh carries a genuine refinement hierarchy
           (``len(mesh.dm_hierarchy) > 1``, i.e. built with ``refinement >= 1``),
-          otherwise fall back to algebraic multigrid (GAMG).
-        - ``"fmg"`` (alias ``"mg"``) — force geometric multigrid. Requires a
+          otherwise fall back to algebraic multigrid (GAMG). On a single-field
+          (scalar/vector) solver ``"auto"`` keeps GAMG even with a hierarchy —
+          the decline is recorded in :attr:`pc_fallbacks`.
+        - ``"fmg"`` (alias ``"mg"``) — geometric multigrid. Requires a
           refinement hierarchy; warns and falls back to GAMG if none exists.
+          On a single-field solver the native FMG path is unreliable (#276),
+          so the request is honoured via custom-P transfers built over the
+          same hierarchy (``utilities.custom_mg``) — installed on the live PC
+          at the first solve. If that build fails (e.g. a deformed mesh whose
+          coarse levels kept reference coordinates), the solve degrades to
+          GAMG with a readable :attr:`pc_fallbacks` record. This is a
+          *preference*; ``custom_mg.set_custom_fmg`` is the *demand* form and
+          raises on failure instead.
         - ``"gamg"`` — force algebraic multigrid (the historical default).
 
         Geometric multigrid is inherently robust to mesh anisotropy (it is built
@@ -687,6 +762,13 @@ class SolverBaseClass(uw_object):
                 f"preconditioner must be 'auto', 'fmg', or 'gamg' (got {value!r})"
             )
         self._preconditioner = choice
+        # A hierarchy cached by an earlier RESOLUTION (the auto/"fmg" install)
+        # must not outlive a new explicit choice: auto_inject_custom_mg
+        # re-installs solver._custom_mg unconditionally, which would leave a
+        # later preconditioner="gamg" unreachable with a clean pc_fallbacks
+        # record. A user registration (set_custom_fmg) is a demand and is kept.
+        if isinstance(self._custom_mg, dict) and self._custom_mg.get("auto_cached"):
+            self._custom_mg = None
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
 
@@ -704,6 +786,12 @@ class SolverBaseClass(uw_object):
         # Every path from here is a resolution decision, including "the user owns
         # these options, leave them alone".
         self._pc_resolved = True
+        # Fresh resolution => fresh fallback record (same staleness rule as
+        # _pc_resolved). Solve-time sites re-record after this. The custom-P
+        # reroute request is re-derived below for the same reason (a remesh
+        # can collapse the hierarchy it depends on).
+        self._pc_fallbacks.clear()
+        self._pc_single_field_geo_requested = False
 
         opts = self.petsc_options
 
@@ -750,22 +838,44 @@ class SolverBaseClass(uw_object):
         # on the common curved-shell cases (issue #276) as well as some flat
         # high-degree ones. The Stokes velocity sub-block (prefix
         # "fieldsplit_velocity_") is the validated, robust native-FMG path and is
-        # unaffected. So never auto-route a single-field solver to native FMG —
-        # fall back to GAMG. Geometric MG on a scalar/vector solver is available,
-        # robustly, via ``underworld3.utilities.custom_mg.set_custom_fmg`` (own
-        # barycentric/RBF prolongation + Galerkin coarse operators; no injection).
+        # unaffected. So a single-field solver never routes to NATIVE FMG. Two
+        # routes instead (#478):
+        #  * explicit `preconditioner="fmg"` is honoured via custom-P transfers
+        #    over the mesh's own dm_hierarchy (no DMCreateInjection anywhere, so
+        #    the err62 failure mode cannot arise). The options DB deliberately
+        #    keeps GAMG as the safe base configuration — the custom-P PCMG is
+        #    installed on the LIVE PC at the first solve (auto_inject_custom_mg
+        #    -> custom_mg.build_transfers, requested-native source), the same
+        #    shape the adapt-child pickup uses. If the transfer build fails, the
+        #    solve degrades to that GAMG base, recorded in `pc_fallbacks`.
+        #  * "auto" keeps GAMG (a default change needs its own validation
+        #    campaign, per #478) — the decline is recorded, never warned.
+        # `set_custom_fmg` remains the DEMAND form (raises on failure);
+        # `preconditioner="fmg"` is a PREFERENCE (degrades, loudly and readably).
         if want_fmg and prefix == "":
-            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
-                import warnings
-                warnings.warn(
-                    f"[{self.name}] preconditioner='fmg' is not supported on a "
-                    f"single-field (scalar/vector) solver: native geometric FMG "
-                    f"needs DMCreateInjection, which PETSc cannot reliably build "
-                    f"on a refined DMPlex (issue #276). Falling back to GAMG. For "
-                    f"geometric MG on this solver use "
-                    f"underworld3.utilities.custom_mg.set_custom_fmg().",
-                    stacklevel=2,
-                )
+            if self._preconditioner == "fmg":
+                self._pc_single_field_geo_requested = True
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="native geometric FMG (preconditioner='fmg')",
+                    installed="custom-P geometric MG (resolved at first solve)",
+                    reason="declined",
+                    detail="native single-field FMG needs DMCreateInjection, "
+                           "which PETSc cannot reliably build on a refined "
+                           "DMPlex (#276); the request is honoured via custom-P "
+                           "transfers over the mesh hierarchy instead, degrading "
+                           "to GAMG (recorded) if the transfer build fails")
+            else:
+                # "auto" declines silently by design (never a new warning) —
+                # but the decline is the direction that matters (#484), so it
+                # is on the record.
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="geometric FMG (preconditioner='auto', hierarchy present)",
+                    installed="gamg",
+                    reason="declined",
+                    detail="single-field native FMG is fragile (#276); "
+                           "auto never routes there")
             want_fmg = False
 
         # The option VALUES live in utilities.multigrid_options, which is the
@@ -789,14 +899,22 @@ class SolverBaseClass(uw_object):
                     owned=self._managed_pc_options)
             self._pc_managed_value = "mg"
         else:
-            if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
-                import warnings
-                warnings.warn(
-                    f"[{self.name}] preconditioner='fmg' requested but the mesh "
-                    f"has no refinement hierarchy; falling back to GAMG. Build the "
-                    f"mesh with refinement >= 1 to enable geometric multigrid.",
-                    stacklevel=2,
-                )
+            if self._preconditioner == "fmg" and n_levels <= 1:
+                self._record_pc_fallback(
+                    "no_hierarchy",
+                    requested="geometric FMG (preconditioner='fmg')",
+                    installed="gamg",
+                    reason="unavailable",
+                    detail="the mesh has no refinement hierarchy; build it with "
+                           "refinement >= 1 to enable geometric multigrid")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] preconditioner='fmg' requested but the mesh "
+                        f"has no refinement hierarchy; falling back to GAMG. Build the "
+                        f"mesh with refinement >= 1 to enable geometric multigrid.",
+                        stacklevel=2,
+                    )
             multigrid_options.gamg_bundle().apply(
                 PETSc.Options(), self.petsc_options_prefix + prefix,
                 owned=self._managed_pc_options)
@@ -829,6 +947,13 @@ class SolverBaseClass(uw_object):
             return
         gkey = f"{prefix}pc_mg_galerkin"
         if (not opts.hasName(gkey)) or opts.getString(gkey) == "none":
+            self._record_pc_fallback(
+                "galerkin_forced",
+                requested=f"{gkey} unset (or 'none')",
+                installed="both",
+                reason="forced",
+                detail="UW3 installs no coarse-DM operator callbacks, so "
+                       "geometric MG requires Galerkin RAP coarse operators")
             if uw.mpi.rank == 0:
                 import warnings
                 warnings.warn(
@@ -5844,6 +5969,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._tolerance = 1.0e-4
         self._strategy = "default"
 
+        # Owned-option latch state (see _resolve_owned_option): the value THIS
+        # solver last pushed per key, and any user value latched per key.
+        # Ownership is RECORDED, never inferred — the same doctrine as
+        # _managed_pc_options.
+        self._owned_option_pushes = {}
+        self._owned_option_user = {}
+
         # Participate in the auto FMG/GAMG switch on the velocity fieldsplit
         # block (see the `preconditioner` property). The velocity pc/mg keys
         # set below are the GAMG default; _apply_preconditioner_options()
@@ -6456,14 +6588,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         Solver convergence tolerance for the Stokes saddle-point system.
 
-        Setting this value automatically configures PETSc tolerances for the
-        coupled velocity-pressure solve using Schur complement fieldsplit:
-        - ``snes_rtol``: Set to ``tolerance``
-        - ``ksp_atol``: Set to ``tolerance * 1e-6``
-        - ``fieldsplit_pressure_ksp_rtol``: Set to ``tolerance * 0.1``
-        - ``fieldsplit_velocity_ksp_rtol``: Set to ``tolerance * 0.033``
+        Setting it configures the PETSc tolerances of the coupled
+        velocity-pressure Schur-fieldsplit solve. The keys fall into two
+        ownership classes (#483):
 
-        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``).
+        **OWNED** — re-asserted before every solve, *unless you set the key
+        explicitly, after which your value is honoured* (the same latch that
+        makes ``snes_max_it`` reachable):
+
+        - ``snes_rtol`` = ``tolerance``
+        - ``ksp_atol``  = ``tolerance * 1e-6``
+
+        **DERIVED at set time** — written once when you assign ``tolerance``
+        (the class table ``_TOLERANCE_DERIVED_KEYS``), then yours to override:
+
+        - ``fieldsplit_pressure_ksp_rtol`` = ``tolerance * 0.1``
+        - ``fieldsplit_velocity_ksp_rtol`` = ``tolerance * 0.033``
+
+        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``),
+        which re-picks the outer ``ksp_rtol`` every Newton step — so to steer
+        the linear solve via ``ksp_rtol`` you must first switch
+        ``snes_ksp_ew`` off.
 
         Returns
         -------
@@ -6483,8 +6628,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #: BELOW the tolerance demanded of the outer solve. These factors are that margin.
     #: Their existence is principled; their size is inherited convention, so they are
     #: DEFAULTS a user may override rather than values this property owns outright.
-    _INNER_RTOL_MARGIN = {"fieldsplit_pressure_ksp_rtol": 0.1,
-                          "fieldsplit_velocity_ksp_rtol": 0.033}
+    #: Subclasses declare their own table (Stokes_Constrained derives the outer
+    #: ksp_rtol and the Eisenstat-Walker pins instead — a real design difference:
+    #: EW pinning owns its outer accuracy). `_INNER_RTOL_MARGIN` is the
+    #: historical name for this class's table, kept as an alias.
+    _TOLERANCE_DERIVED_KEYS = {"fieldsplit_pressure_ksp_rtol": 0.1,
+                               "fieldsplit_velocity_ksp_rtol": 0.033}
+    _INNER_RTOL_MARGIN = _TOLERANCE_DERIVED_KEYS
 
     @tolerance.setter
     def tolerance(self, value):
@@ -6495,57 +6645,82 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
-        # Setting the tolerance re-derives the inner margins from it — that is this
+        # Setting the tolerance re-derives the margins from it — that is this
         # property's job, and a user who changes the tolerance expects it. What must NOT
         # happen is `solve()` re-deriving them on every call: it did (pyx `solve()`
         # round-trips `self.tolerance` immediately before `setFromOptions()`), which
         # overwrote any user value between it being set and PETSc reading it and made
         # both documented options silently unreachable (#477). `solve()` now re-asserts
         # only the outer keys, via `_reassert_outer_tolerances`.
-        for key, margin in self._INNER_RTOL_MARGIN.items():
+        self._derive_tolerance_margins()
+
+    def _derive_tolerance_margins(self):
+        """Write this class's DERIVED tolerance keys from the current tolerance.
+
+        One mechanism, two tables: each saddle-point class declares
+        ``_TOLERANCE_DERIVED_KEYS`` ({option key: margin factor}) and this
+        method applies it. Derivation happens at SET time only — a user who
+        overrides a derived key afterwards keeps it (#477/#483); `solve()`
+        never re-derives these.
+        """
+        for key, margin in self._TOLERANCE_DERIVED_KEYS.items():
             self.petsc_options[key] = self._tolerance * margin
 
-    def _resolve_snes_max_it(self, default):
-        """The nonlinear iteration cap for this solve, honouring a user-set
-        ``snes_max_it``.
+    def _resolve_owned_option(self, key, default):
+        """The value this solve should push for an option the solver OWNS,
+        honouring a user-set value.
 
-        ``solve()`` pushes this option before every solve, so it has to be able to tell
-        its OWN previous push from a value the user set — otherwise the first solve makes
-        the option permanently unreachable. Call once, before this solve pushes anything.
+        ``solve()`` re-pushes the owned keys before every solve, so the
+        resolver has to tell its OWN previous push from a value the user set —
+        otherwise the first solve makes the option permanently unreachable
+        (the #477 failure shape; ruling D18, generalised for #483). Call once
+        per key, before this solve pushes anything.
         """
-        pushed = getattr(self, "_snes_max_it_pushed", None)
-        user = getattr(self, "_snes_max_it_user", None)
-        if self.petsc_options.hasName("snes_max_it"):
+        pushed = self._owned_option_pushes.get(key)
+        user = self._owned_option_user.get(key)
+        if self.petsc_options.hasName(key):
             try:
-                current = int(self.petsc_options.getInt("snes_max_it"))
+                current = type(default)(self.petsc_options.getString(key))
             except Exception:
                 return default
             if pushed is None or current != pushed:
                 # Never pushed by us, or the user has moved it since. Latch: from here on
                 # the option is theirs, because the next solve will read back OUR push of
                 # THEIR value and would otherwise mistake it for our own default.
-                self._snes_max_it_user = current
+                self._owned_option_user[key] = current
                 return current
             if user is not None:
                 return user
         return default
 
+    def _push_owned_option(self, key, value):
+        """Push an owned option and remember what was pushed, so a later solve
+        can tell this solver's own value apart from a user override."""
+        self.petsc_options.setValue(key, value)
+        self._owned_option_pushes[key] = value
+
+    def _resolve_snes_max_it(self, default):
+        """The nonlinear iteration cap for this solve, honouring a user-set
+        ``snes_max_it`` (see ``_resolve_owned_option`` for the mechanism)."""
+        return self._resolve_owned_option("snes_max_it", int(default))
+
     def _push_snes_max_it(self, value):
-        """Push ``snes_max_it`` and remember what was pushed, so a later solve can tell
-        this solver's own value apart from a user override."""
-        value = int(value)
-        self.petsc_options.setValue("snes_max_it", value)
-        self._snes_max_it_pushed = value
+        self._push_owned_option("snes_max_it", int(value))
 
     def _reassert_outer_tolerances(self):
         """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.
 
         `solve()` may have changed `snes_max_it` and the SNES type for a Picard warm-up,
-        so the outer settings are re-asserted before the real solve. The sub-block rtols
-        are deliberately excluded: they belong to whoever set them last, which may be the
+        so the outer settings are re-asserted before the real solve. The keys are OWNED
+        (re-pushed each solve) but ownership is polite: a user who explicitly sets
+        `snes_rtol` or `ksp_atol` is honoured from then on — before #483 both were
+        silently discarded here every solve, the worst of the reachability middle
+        grounds (documented as settable, actually owned). The sub-block rtols are
+        deliberately excluded: they belong to whoever set them last, which may be the
         user (#477). Overwriting them here is what made them unsettable."""
-        self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["ksp_atol"] = self._tolerance * 1.0e-6
+        for key, derived in (("snes_rtol", float(self._tolerance)),
+                             ("ksp_atol", float(self._tolerance) * 1.0e-6)):
+            self._push_owned_option(key, self._resolve_owned_option(key, derived))
         # The Eisenstat-Walker flags are NOT re-asserted here. solve() never changes
         # them, so they stay in the options DB from the `tolerance` setter and
         # setFromOptions picks them up regardless — while re-asserting would make
@@ -6851,10 +7026,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         the block solver's default ``newtonls`` defect-corrects a linear system in
         many steps when the Schur approximation is stiff.
 
-        Default ``False`` (opt-in). On the fieldsplit/iterative path it is
-        bit-identical on uniform ``mu`` and cracks the moderate-contrast wall;
-        but a monolithic ``lu`` solve factorizes the Pmat (``pc_use_amat`` is a
-        no-op there), so this term is not inert for direct solves — hence opt-in.
+        Default ``False`` (opt-in). **Reachability** (#486, from the PETSc
+        fieldsplit source): the flag swaps only the *Pmat* (h,h) block, so it
+        is live in exactly two regimes —
+
+        - ``pc_fieldsplit_schur_precondition = "a11"``: the Schur
+          preconditioner is the grouped ``[p,h]`` Pmat block, which carries
+          the swap;
+        - a monolithic direct factorisation (``pc_type = lu``/``cholesky``)
+          of the Pmat.
+
+        Under ``Stokes_Constrained``'s own defaults (``selfp`` +
+        ``diag_use_amat``) the Pmat (h,h) block is never read by the Schur
+        preconditioner and the flag is INERT — setting it there records a
+        ``multiplier_schur_pc`` entry in :attr:`pc_fallbacks` and warns.
         """
         return self._multiplier_schur_pc
 
@@ -8225,6 +8410,55 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
         # for ordinary Stokes. Register the interior screening residual and the
         # diagonal mass Jacobian/preconditioner on each multiplier's field.
+        #
+        # multiplier_schur_pc reachability (#486, resolved by tracing PETSc
+        # fieldsplit.c): the flag swaps only the Pmat (h,h) block below. With
+        # schur_precondition=selfp the Schur preconditioner Sp is assembled by
+        # MatSchurComplementGetPmat from sub-matrices split out of the AMAT
+        # whenever pc_fieldsplit_diag_use_amat is set (jac->mat[1], not
+        # jac->pmat[1]) — so under this class's defaults (selfp +
+        # diag_use_amat) the swapped block is provably never read. It IS read
+        # under schur_precondition=a11 (Sp = the grouped [p,h] Pmat block) and
+        # under a monolithic direct factorisation of the Pmat. An explicit
+        # opt-in silently doing nothing is exactly the #477 class -> record
+        # AND warn (unlike the auto declines, this one earns the warning).
+        if self._multipliers and self._multiplier_schur_pc:
+            _opts = self.petsc_options
+            _schur_pre = (_opts.getString("pc_fieldsplit_schur_precondition")
+                          if _opts.hasName("pc_fieldsplit_schur_precondition")
+                          else "")
+            _pc_type = (_opts.getString("pc_type")
+                        if _opts.hasName("pc_type") else "")
+            # Read the VALUE, not the key's presence: diag_use_amat set to
+            # "false" means the Pmat block IS read and the opt-in is live
+            # (measured: Schur pre differs by rel-Frobenius 0.30 flag-on/off).
+            _diag_amat = _opts.getBool("pc_fieldsplit_diag_use_amat", False)
+            if (_schur_pre != "a11" and _diag_amat
+                    and _pc_type not in ("lu", "cholesky")):
+                self._record_pc_fallback(
+                    "multiplier_schur_pc",
+                    requested="1/mu multiplier Schur mass (Pmat h,h block)",
+                    installed="unread — selfp builds Sp from the Amat A11 block",
+                    reason="declined",
+                    detail=f"pc_fieldsplit_schur_precondition="
+                           f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                           f"Pmat (h,h) block never reaches the Schur "
+                           f"preconditioner; set schur_precondition='a11' (or "
+                           f"factorise the Pmat directly) to make the opt-in "
+                           f"live")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] multiplier_schur_pc=True has no effect "
+                        f"under pc_fieldsplit_schur_precondition="
+                        f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                        f"1/mu multiplier Schur mass is written into the Pmat "
+                        f"(h,h) block, which selfp never reads (Sp is built "
+                        f"from the Amat). Use "
+                        f"petsc_options['pc_fieldsplit_schur_precondition'] = "
+                        f"'a11' to make it live. See solver.pc_fallbacks.",
+                        stacklevel=2,
+                    )
         for k, mvar in enumerate(self._multipliers):
             fid = mvar._solver_field_id
             # Operator (Amat) (lambda,lambda) block is ALWAYS the true screening eps so

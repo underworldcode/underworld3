@@ -1294,6 +1294,27 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                # (or a test) can assert on it instead of inferring it from timings
                "velocity_pc": "custom-FMG" if custom_Pl is not None else "GAMG",
                "schur_pre": "1/mu-mass" if Mp is not None else "selfp"}
+        # Mirror the degraded arms into the solver-wide fallback record (#484):
+        # the ctx keys above stay authoritative for this path's own tests, but
+        # "was anything substituted?" must be answerable in ONE place for any
+        # solver. Recorded only when a substitution actually happened.
+        if custom_Pl is None:
+            solver._record_pc_fallback(
+                "rotated.velocity_pc",
+                requested="custom-P geometric MG on the rotated velocity block",
+                installed="GAMG",
+                reason="unavailable",
+                detail="no multigrid hierarchy (set_custom_fmg or a mesh-owned "
+                       "adapt tail) is available to the rotated path")
+        if Mp is None:
+            solver._record_pc_fallback(
+                "rotated.schur_pre",
+                requested="1/mu pressure-mass Schur preconditioner",
+                installed="selfp + jacobi",
+                reason="unavailable",
+                detail="the native pressure-mass Pmat block could not be built; "
+                       "selfp degrades on curved/deformed boundaries and "
+                       "variable viscosity")
     else:
         ksp = ctx["ksp"]
         nsp = ctx["nsp"]
