@@ -2401,21 +2401,40 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # preconditioner partition-dependent, which only cancels once the TRUE
         # residual is driven down). Pinning EW's initial = max rtol to the solver
         # tolerance makes the outer fgmres iterate until genuinely converged, so
-        # the velocity is partition-independent to round-off. Kept in sync by the
-        # `tolerance` setter below.
-        self.petsc_options["snes_ksp_ew_rtol0"] = self._tolerance * 1.0e-1
-        self.petsc_options["snes_ksp_ew_rtolmax"] = self._tolerance * 1.0e-1
+        # the velocity is partition-independent to round-off. Applied through the
+        # class derived-key table (kept in sync by the `tolerance` setter below);
+        # the table also writes ksp_rtol = tolerance * 0.1, which at the class
+        # default tolerance equals PETSc's own ksp_rtol default (and EW re-picks
+        # ksp_rtol per step regardless).
+        self._derive_tolerance_margins()
         return
+
+    #: Constrained derives DIFFERENT keys from the tolerance than the base
+    #: Stokes table: the outer ``ksp_rtol`` and the Eisenstat-Walker pins,
+    #: NOT the inner fieldsplit margins. That is a real design difference —
+    #: EW pinning owns this class's outer accuracy (see ``__init__``) — made
+    #: explicit here rather than hand-rolled in a second code path (#483).
+    _TOLERANCE_DERIVED_KEYS = {"ksp_rtol": 0.1,
+                               "snes_ksp_ew_rtol0": 0.1,
+                               "snes_ksp_ew_rtolmax": 0.1}
 
     @property
     def tolerance(self):
         """Solver tolerance (see :class:`SNES_Stokes_SaddlePt.tolerance`).
 
-        Overridden so that, in addition to ``snes_rtol`` / ``ksp_rtol`` /
-        ``ksp_atol``, the Eisenstat-Walker initial and max relative tolerances are
-        pinned to ``tolerance * 0.1`` — otherwise EW's default (0.3) under-solves
-        the ill-conditioned augmented constrained system on a linear solve and the
-        velocity becomes partition-dependent (see ``__init__``).
+        Same two ownership classes as the base property (#483):
+
+        **OWNED** (re-asserted each solve unless you set the key explicitly,
+        after which your value is honoured): ``snes_rtol`` = ``tolerance``,
+        ``ksp_atol`` = ``tolerance * 1e-6``.
+
+        **DERIVED at set time** (the class table ``_TOLERANCE_DERIVED_KEYS``;
+        yours to override afterwards): ``ksp_rtol``, ``snes_ksp_ew_rtol0``
+        and ``snes_ksp_ew_rtolmax``, all ``tolerance * 0.1`` — the EW pins
+        replace the base class's inner fieldsplit margins because EW's
+        default (0.3) under-solves the ill-conditioned augmented constrained
+        system on a linear solve and the velocity becomes
+        partition-dependent (see ``__init__``).
         """
         return self._tolerance
 
@@ -2423,10 +2442,8 @@ class SNES_Stokes_Constrained(SNES_Stokes):
     def tolerance(self, value):
         self._tolerance = value
         self.petsc_options["snes_rtol"] = value
-        self.petsc_options["ksp_rtol"] = value * 1.0e-1
         self.petsc_options["ksp_atol"] = value * 1.0e-6
-        self.petsc_options["snes_ksp_ew_rtol0"] = value * 1.0e-1
-        self.petsc_options["snes_ksp_ew_rtolmax"] = value * 1.0e-1
+        self._derive_tolerance_margins()
 
     def solve(self, *args, **kwargs):
         """Solve the constrained Stokes system (see :meth:`SNES_Stokes.solve`).

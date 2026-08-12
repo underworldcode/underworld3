@@ -5941,6 +5941,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._tolerance = 1.0e-4
         self._strategy = "default"
 
+        # Owned-option latch state (see _resolve_owned_option): the value THIS
+        # solver last pushed per key, and any user value latched per key.
+        # Ownership is RECORDED, never inferred — the same doctrine as
+        # _managed_pc_options.
+        self._owned_option_pushes = {}
+        self._owned_option_user = {}
+
         # Participate in the auto FMG/GAMG switch on the velocity fieldsplit
         # block (see the `preconditioner` property). The velocity pc/mg keys
         # set below are the GAMG default; _apply_preconditioner_options()
@@ -6553,14 +6560,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         Solver convergence tolerance for the Stokes saddle-point system.
 
-        Setting this value automatically configures PETSc tolerances for the
-        coupled velocity-pressure solve using Schur complement fieldsplit:
-        - ``snes_rtol``: Set to ``tolerance``
-        - ``ksp_atol``: Set to ``tolerance * 1e-6``
-        - ``fieldsplit_pressure_ksp_rtol``: Set to ``tolerance * 0.1``
-        - ``fieldsplit_velocity_ksp_rtol``: Set to ``tolerance * 0.033``
+        Setting it configures the PETSc tolerances of the coupled
+        velocity-pressure Schur-fieldsplit solve. The keys fall into two
+        ownership classes (#483):
 
-        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``).
+        **OWNED** — re-asserted before every solve, *unless you set the key
+        explicitly, after which your value is honoured* (the same latch that
+        makes ``snes_max_it`` reachable):
+
+        - ``snes_rtol`` = ``tolerance``
+        - ``ksp_atol``  = ``tolerance * 1e-6``
+
+        **DERIVED at set time** — written once when you assign ``tolerance``
+        (the class table ``_TOLERANCE_DERIVED_KEYS``), then yours to override:
+
+        - ``fieldsplit_pressure_ksp_rtol`` = ``tolerance * 0.1``
+        - ``fieldsplit_velocity_ksp_rtol`` = ``tolerance * 0.033``
+
+        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``),
+        which re-picks the outer ``ksp_rtol`` every Newton step — so to steer
+        the linear solve via ``ksp_rtol`` you must first switch
+        ``snes_ksp_ew`` off.
 
         Returns
         -------
@@ -6580,8 +6600,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     #: BELOW the tolerance demanded of the outer solve. These factors are that margin.
     #: Their existence is principled; their size is inherited convention, so they are
     #: DEFAULTS a user may override rather than values this property owns outright.
-    _INNER_RTOL_MARGIN = {"fieldsplit_pressure_ksp_rtol": 0.1,
-                          "fieldsplit_velocity_ksp_rtol": 0.033}
+    #: Subclasses declare their own table (Stokes_Constrained derives the outer
+    #: ksp_rtol and the Eisenstat-Walker pins instead — a real design difference:
+    #: EW pinning owns its outer accuracy). `_INNER_RTOL_MARGIN` is the
+    #: historical name for this class's table, kept as an alias.
+    _TOLERANCE_DERIVED_KEYS = {"fieldsplit_pressure_ksp_rtol": 0.1,
+                               "fieldsplit_velocity_ksp_rtol": 0.033}
+    _INNER_RTOL_MARGIN = _TOLERANCE_DERIVED_KEYS
 
     @tolerance.setter
     def tolerance(self, value):
@@ -6592,57 +6617,82 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
 
-        # Setting the tolerance re-derives the inner margins from it — that is this
+        # Setting the tolerance re-derives the margins from it — that is this
         # property's job, and a user who changes the tolerance expects it. What must NOT
         # happen is `solve()` re-deriving them on every call: it did (pyx `solve()`
         # round-trips `self.tolerance` immediately before `setFromOptions()`), which
         # overwrote any user value between it being set and PETSc reading it and made
         # both documented options silently unreachable (#477). `solve()` now re-asserts
         # only the outer keys, via `_reassert_outer_tolerances`.
-        for key, margin in self._INNER_RTOL_MARGIN.items():
+        self._derive_tolerance_margins()
+
+    def _derive_tolerance_margins(self):
+        """Write this class's DERIVED tolerance keys from the current tolerance.
+
+        One mechanism, two tables: each saddle-point class declares
+        ``_TOLERANCE_DERIVED_KEYS`` ({option key: margin factor}) and this
+        method applies it. Derivation happens at SET time only — a user who
+        overrides a derived key afterwards keeps it (#477/#483); `solve()`
+        never re-derives these.
+        """
+        for key, margin in self._TOLERANCE_DERIVED_KEYS.items():
             self.petsc_options[key] = self._tolerance * margin
 
-    def _resolve_snes_max_it(self, default):
-        """The nonlinear iteration cap for this solve, honouring a user-set
-        ``snes_max_it``.
+    def _resolve_owned_option(self, key, default):
+        """The value this solve should push for an option the solver OWNS,
+        honouring a user-set value.
 
-        ``solve()`` pushes this option before every solve, so it has to be able to tell
-        its OWN previous push from a value the user set — otherwise the first solve makes
-        the option permanently unreachable. Call once, before this solve pushes anything.
+        ``solve()`` re-pushes the owned keys before every solve, so the
+        resolver has to tell its OWN previous push from a value the user set —
+        otherwise the first solve makes the option permanently unreachable
+        (the #477 failure shape; ruling D18, generalised for #483). Call once
+        per key, before this solve pushes anything.
         """
-        pushed = getattr(self, "_snes_max_it_pushed", None)
-        user = getattr(self, "_snes_max_it_user", None)
-        if self.petsc_options.hasName("snes_max_it"):
+        pushed = self._owned_option_pushes.get(key)
+        user = self._owned_option_user.get(key)
+        if self.petsc_options.hasName(key):
             try:
-                current = int(self.petsc_options.getInt("snes_max_it"))
+                current = type(default)(self.petsc_options.getString(key))
             except Exception:
                 return default
             if pushed is None or current != pushed:
                 # Never pushed by us, or the user has moved it since. Latch: from here on
                 # the option is theirs, because the next solve will read back OUR push of
                 # THEIR value and would otherwise mistake it for our own default.
-                self._snes_max_it_user = current
+                self._owned_option_user[key] = current
                 return current
             if user is not None:
                 return user
         return default
 
+    def _push_owned_option(self, key, value):
+        """Push an owned option and remember what was pushed, so a later solve
+        can tell this solver's own value apart from a user override."""
+        self.petsc_options.setValue(key, value)
+        self._owned_option_pushes[key] = value
+
+    def _resolve_snes_max_it(self, default):
+        """The nonlinear iteration cap for this solve, honouring a user-set
+        ``snes_max_it`` (see ``_resolve_owned_option`` for the mechanism)."""
+        return self._resolve_owned_option("snes_max_it", int(default))
+
     def _push_snes_max_it(self, value):
-        """Push ``snes_max_it`` and remember what was pushed, so a later solve can tell
-        this solver's own value apart from a user override."""
-        value = int(value)
-        self.petsc_options.setValue("snes_max_it", value)
-        self._snes_max_it_pushed = value
+        self._push_owned_option("snes_max_it", int(value))
 
     def _reassert_outer_tolerances(self):
         """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.
 
         `solve()` may have changed `snes_max_it` and the SNES type for a Picard warm-up,
-        so the outer settings are re-asserted before the real solve. The sub-block rtols
-        are deliberately excluded: they belong to whoever set them last, which may be the
+        so the outer settings are re-asserted before the real solve. The keys are OWNED
+        (re-pushed each solve) but ownership is polite: a user who explicitly sets
+        `snes_rtol` or `ksp_atol` is honoured from then on — before #483 both were
+        silently discarded here every solve, the worst of the reachability middle
+        grounds (documented as settable, actually owned). The sub-block rtols are
+        deliberately excluded: they belong to whoever set them last, which may be the
         user (#477). Overwriting them here is what made them unsettable."""
-        self.petsc_options["snes_rtol"] = self._tolerance
-        self.petsc_options["ksp_atol"] = self._tolerance * 1.0e-6
+        for key, derived in (("snes_rtol", float(self._tolerance)),
+                             ("ksp_atol", float(self._tolerance) * 1.0e-6)):
+            self._push_owned_option(key, self._resolve_owned_option(key, derived))
         # The Eisenstat-Walker flags are NOT re-asserted here. solve() never changes
         # them, so they stay in the options DB from the `tolerance` setter and
         # setFromOptions picks them up regardless — while re-asserting would make
