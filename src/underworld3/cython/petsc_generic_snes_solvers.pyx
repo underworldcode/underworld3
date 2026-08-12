@@ -7019,10 +7019,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         the block solver's default ``newtonls`` defect-corrects a linear system in
         many steps when the Schur approximation is stiff.
 
-        Default ``False`` (opt-in). On the fieldsplit/iterative path it is
-        bit-identical on uniform ``mu`` and cracks the moderate-contrast wall;
-        but a monolithic ``lu`` solve factorizes the Pmat (``pc_use_amat`` is a
-        no-op there), so this term is not inert for direct solves — hence opt-in.
+        Default ``False`` (opt-in). **Reachability** (#486, from the PETSc
+        fieldsplit source): the flag swaps only the *Pmat* (h,h) block, so it
+        is live in exactly two regimes —
+
+        - ``pc_fieldsplit_schur_precondition = "a11"``: the Schur
+          preconditioner is the grouped ``[p,h]`` Pmat block, which carries
+          the swap;
+        - a monolithic direct factorisation (``pc_type = lu``/``cholesky``)
+          of the Pmat.
+
+        Under ``Stokes_Constrained``'s own defaults (``selfp`` +
+        ``diag_use_amat``) the Pmat (h,h) block is never read by the Schur
+        preconditioner and the flag is INERT — setting it there records a
+        ``multiplier_schur_pc`` entry in :attr:`pc_fallbacks` and warns.
         """
         return self._multiplier_schur_pc
 
@@ -8393,6 +8403,52 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
         # for ordinary Stokes. Register the interior screening residual and the
         # diagonal mass Jacobian/preconditioner on each multiplier's field.
+        #
+        # multiplier_schur_pc reachability (#486, resolved by tracing PETSc
+        # fieldsplit.c): the flag swaps only the Pmat (h,h) block below. With
+        # schur_precondition=selfp the Schur preconditioner Sp is assembled by
+        # MatSchurComplementGetPmat from sub-matrices split out of the AMAT
+        # whenever pc_fieldsplit_diag_use_amat is set (jac->mat[1], not
+        # jac->pmat[1]) — so under this class's defaults (selfp +
+        # diag_use_amat) the swapped block is provably never read. It IS read
+        # under schur_precondition=a11 (Sp = the grouped [p,h] Pmat block) and
+        # under a monolithic direct factorisation of the Pmat. An explicit
+        # opt-in silently doing nothing is exactly the #477 class -> record
+        # AND warn (unlike the auto declines, this one earns the warning).
+        if self._multipliers and self._multiplier_schur_pc:
+            _opts = self.petsc_options
+            _schur_pre = (_opts.getString("pc_fieldsplit_schur_precondition")
+                          if _opts.hasName("pc_fieldsplit_schur_precondition")
+                          else "")
+            _pc_type = (_opts.getString("pc_type")
+                        if _opts.hasName("pc_type") else "")
+            _diag_amat = _opts.hasName("pc_fieldsplit_diag_use_amat")
+            if (_schur_pre != "a11" and _diag_amat
+                    and _pc_type not in ("lu", "cholesky")):
+                self._record_pc_fallback(
+                    "multiplier_schur_pc",
+                    requested="1/mu multiplier Schur mass (Pmat h,h block)",
+                    installed="unread — selfp builds Sp from the Amat A11 block",
+                    reason="declined",
+                    detail=f"pc_fieldsplit_schur_precondition="
+                           f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                           f"Pmat (h,h) block never reaches the Schur "
+                           f"preconditioner; set schur_precondition='a11' (or "
+                           f"factorise the Pmat directly) to make the opt-in "
+                           f"live")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] multiplier_schur_pc=True has no effect "
+                        f"under pc_fieldsplit_schur_precondition="
+                        f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                        f"1/mu multiplier Schur mass is written into the Pmat "
+                        f"(h,h) block, which selfp never reads (Sp is built "
+                        f"from the Amat). Use "
+                        f"petsc_options['pc_fieldsplit_schur_precondition'] = "
+                        f"'a11' to make it live. See solver.pc_fallbacks.",
+                        stacklevel=2,
+                    )
         for k, mvar in enumerate(self._multipliers):
             fid = mvar._solver_field_id
             # Operator (Amat) (lambda,lambda) block is ALWAYS the true screening eps so
