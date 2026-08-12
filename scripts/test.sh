@@ -53,10 +53,12 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   echo "Running serial test suite..."
   echo ""
 
-  # Run simple tests (0000-0199: basic functionality, imports, simple operations)
+  # Run simple tests (0000-0299: basic functionality, imports, simple operations)
   $PYTEST tests/test_00[0-4]*py || status=1
   #$PYTEST tests/test_0050*py    || status=1 # disable auditor test for now
+  $PYTEST tests/test_005[1-9]*py tests/test_006[0-1]*py || status=1
   $PYTEST tests/test_01*py || status=1
+  $PYTEST tests/test_02*py || status=1
 
   # Intermediate tests (0500-0799: data structures, transformations, enhanced interfaces)
   # NOTE: Temporarily disabling test_06*py regression tests (potentially problematic)
@@ -70,11 +72,26 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   $PYTEST tests/test_100[0-9]*py || status=1
 
   # Solver / system tests (advanced solver problems)
-  $PYTEST tests/test_1010*py tests/test_1011*py tests/test_1050*py || status=1
+  # test_101* / test_102* include the rotated free-slip suite (test_1018,
+  # issue #504) and the MG / boundary-flux suites, which previously matched
+  # no batch glob and never ran in CI.
+  $PYTEST tests/test_101*py tests/test_102*py || status=1
+  $PYTEST tests/test_105*py || status=1
+  # NOT yet batched (issue #504 audit): test_106*py and test_107*py contain
+  # level_2/level_3 + slow + tier_b/tier_c suites (e.g. test_1064) and need
+  # a triage/deselect decision before being wired into CI.
 
   # Diffusion / Advection tests
   $PYTEST tests/test_1100*py || status=1
-  $PYTEST tests/test_1110*py # Annulus version || status=1
+  $PYTEST tests/test_1110*py tests/test_1120*py || status=1  # Annulus + vector SL
+  $PYTEST tests/test_1450*py || status=1
+
+  # Named (un-numbered) test files - JIT, docstrings, projections
+  $PYTEST tests/test_docstring_utils.py tests/test_jit_cache.py \
+          tests/test_jit_deterministic_ordering.py \
+          tests/test_multicomponent_projection.py \
+          tests/test_snes_vector_asymmetric_jacobian.py \
+          tests/test_symbol_disambiguation_prototype.py || status=1
 else
   echo "Skipping serial tests (--parallel-only specified)"
   echo ""
