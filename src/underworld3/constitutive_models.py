@@ -3713,27 +3713,25 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
         r"""Effective viscosity for the fault-plane shear component.
 
         Applies the yield mode (softmin/min/harmonic) to η₁, leaving
-        η₀ (bulk) unchanged. The anisotropic tensor handles the
-        directional dependence.
+        η₀ (bulk) unchanged — the anisotropic tensor handles the
+        directional dependence, and the bulk/stiffness scale stays
+        ``Parameters.shear_viscosity_0`` (reported by :attr:`K`).
+
+        Delegates to :meth:`_eta_for_tensor` with the ACTIVE integrator
+        mode, so this reports exactly the coefficient the stress tensor
+        is built from — under yield that is the persistent
+        ``_eta1_yield_eff`` container (a wrapped atom, so the Picard
+        freezing contract holds for anything that bakes this property).
+        For the hybrid integrator this reports the BDF (yield-clipped)
+        branch, matching the default ``self._c``.
+
+        Issue #463: this property previously computed the yield-limited
+        η₁_eff and then returned the un-yielded bulk η₀, so diagnostics,
+        renders and projections saw no yielding at all.
         """
-        inner_self = self.Parameters
-
-        if inner_self.yield_stress.sym == sympy.oo:
-            return inner_self.shear_viscosity_0
-
-        # η₁ is the fault-plane viscosity that gets yield-limited
-        eta_1_eff = inner_self.ve_effective_viscosity
-
-        if self.is_viscoplastic:
-            vp_eff = self._plastic_effective_viscosity
-            # Same yield envelope as the isotropic models: _combine_yield owns the
-            # harmonic / soft-min / hard-Min choice, reads delta from the
-            # constants[] atom (so a homotopy can ramp it without a recompile) and
-            # honours yield_smoother. Previously inlined here, which pinned this
-            # model to the sqrt family and to a baked float delta.
-            eta_1_eff = self._combine_yield(eta_1_eff, vp_eff)
-
-        return inner_self.shear_viscosity_0
+        mode = "etd" if self._integrator == "etd" else "bdf"
+        _, eta_1_eff = self._eta_for_tensor(mode, apply_yield=True)
+        return eta_1_eff
 
     @property
     def K(self):
@@ -4064,12 +4062,18 @@ class TransverseIsotropicVEPFlowModel(TransverseIsotropicFlowModel):
 
     @property
     def plastic_fraction(self):
-        """Fraction of strain rate that is plastic."""
-        eta_1_ve = self.Parameters.ve_effective_viscosity
-        eta_1_eff = self.viscosity
-        # viscosity property returns η₀, need to compare η₁ effective vs η₁ ve
-        # This is approximate for the anisotropic case
-        return sympy.Max(0, 1 - eta_1_eff / eta_1_ve.sym if hasattr(eta_1_ve, 'sym') else 0)
+        r"""Fraction of the fault-plane response that is plastic:
+        ``1 - η₁_eff / η₁_ve`` (zero when the yield limit is inactive).
+
+        Only the weak-plane channel is compared — the bulk η₀ is
+        structurally non-yieldable. Pre-#463 this was identically zero
+        for a yielding fault because ``.viscosity`` returned the bulk
+        η₀ (and a misplaced ternary made the ratio unconditional)."""
+        if not self.is_viscoplastic:
+            return sympy.sympify(0)
+        mode = "etd" if self._integrator == "etd" else "bdf"
+        _, eta_1_ve = self._eta_for_tensor(mode, apply_yield=False)
+        return sympy.Max(0, 1 - self.viscosity / eta_1_ve)
 
 
 class TransverseIsotropicMaxwellExponentialFlowModel(TransverseIsotropicVEPFlowModel):

@@ -4335,8 +4335,12 @@ class SNES_Vector(SolverBaseClass):
                 "Nitsche mesh size parameter (global)",
             ).sym
 
-        # Viscosity from constitutive model
-        mu = self.constitutive_model.viscosity
+        # Penalty scale from the constitutive model: use K (the stiffness /
+        # preconditioner scale) rather than .viscosity — for the transverse-
+        # isotropic models .viscosity now reports the yield-limited WEAK-PLANE
+        # eta_1 (issue #463), which would under-scale the penalty; K is the
+        # bulk eta_0 there and identical to .viscosity for isotropic models.
+        mu = self.constitutive_model.K
 
         # Constitutive flux
         flux = self._constitutive_model.flux
@@ -6482,8 +6486,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 "Nitsche mesh size parameter (global)",
             ).sym
 
-        # Viscosity from constitutive model
-        mu = self.constitutive_model.viscosity
+        # Penalty scale from the constitutive model: use K (the stiffness /
+        # preconditioner scale) rather than .viscosity — for the transverse-
+        # isotropic models .viscosity now reports the yield-limited WEAK-PLANE
+        # eta_1 (issue #463), which would under-scale the penalty; K is the
+        # bulk eta_0 there and identical to .viscosity for isotropic models.
+        mu = self.constitutive_model.K
 
         # Constitutive flux (stress tensor) — includes VE history if active
         flux = self._constitutive_model.flux  # dim x dim Matrix
