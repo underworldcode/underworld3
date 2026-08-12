@@ -6816,11 +6816,38 @@ class Mesh(Stateful, uw_object):
                          if vS <= p < vE])
             for c in range(cS, cE)]
 
+        def _sync_across_ranks(pinned_set):
+            """A vertex pinned on ANY rank is pinned on EVERY rank holding a copy.
+
+            The straddle test and the ring growth both walk rank-LOCAL cells, and
+            cells are partitioned disjointly — so a shared vertex whose cut (or
+            ring) cell lives on the neighbour rank is pinned there but not here.
+            If HERE is the owner, the mover moves it and the neighbour's pinned
+            copy follows through the SF: measured at np=4 (review of PR #488,
+            2026-08-06), two pinned leaves moved 4.2e-3 and 1.9e-3 while np=2/3
+            passed on partition luck. Matching by coordinate (the same rounded
+            key the parallel test uses) makes the set partition-independent.
+            """
+            if uw.mpi.size == 1:
+                return pinned_set
+            local_xy = (coords[[v - vS for v in pinned_set]]
+                        if pinned_set else numpy.empty((0, self.dim)))
+            global_keys = set()
+            for arr in uw.mpi.comm.allgather(local_xy):
+                for p in arr:
+                    global_keys.add(tuple(numpy.round(p, 12)))
+            out = set(pinned_set)
+            for i in range(vE - vS):
+                if tuple(numpy.round(coords[i], 12)) in global_keys:
+                    out.add(vS + i)
+            return out
+
         pinned = set()
         for verts in cell_vertices:
             d = distance[verts - vS]
             if d.min() < offset < d.max():
                 pinned.update(int(v) for v in verts)
+        pinned = _sync_across_ranks(pinned)
         for _ring in range(halo):
             grown = set()
             for verts in cell_vertices:
@@ -6828,10 +6855,17 @@ class Mesh(Stateful, uw_object):
                 if any(v in pinned for v in vv):
                     grown.update(vv)
             pinned |= grown
+            pinned = _sync_across_ranks(pinned)
 
-        if not pinned:
-            # An empty DMLabel is not merely useless: querying its strata is a
-            # hard crash, not an exception, so refuse rather than hand one back.
+        # COLLECTIVE emptiness test. A rank whose subdomain the surface never
+        # enters legitimately has an empty local band — only a GLOBALLY empty
+        # band is a user error. The previous rank-local raise here deadlocked
+        # np=4 (measured 2026-08-06, review of PR #488: a corner-confined
+        # surface left three ranks raising while the fourth entered the
+        # collective mover and hung to the 300 s timeout).
+        n_global = uw.mpi.comm.allreduce(len(pinned))
+        if n_global == 0:
+            # Raised on EVERY rank, after the collective reduction.
             raise ValueError(
                 f"no cell is cut by distance == {offset} on surface "
                 f"{getattr(surface, 'name', surface)!r}, so there is no band to "
@@ -6839,6 +6873,11 @@ class Mesh(Stateful, uw_object):
                 f"interface you meant (for a weak zone it is the HALF-WIDTH, not "
                 f"zero).")
 
+        # Every rank creates the label, including ranks whose local band is
+        # empty: the downstream consumer (smoothing.graph._pinned_mask) is
+        # documented to tolerate a present-but-empty label, and a label that
+        # exists on some ranks only is the kind of asymmetry this method is
+        # not allowed to produce.
         name = name or f"PinnedBand_{getattr(surface, 'name', 'surface')}"
         if not dm.hasLabel(name):
             dm.createLabel(name)
@@ -7417,6 +7456,33 @@ class Mesh(Stateful, uw_object):
 
         self._registered_children.add(child)
         return child
+
+    def add_fault(self, faults, verbose=False):
+        """Cut AND split one or more faults; return the split mesh.
+
+        The split-node fault pipeline in one call: each fault becomes a
+        genuine velocity discontinuity — a conforming facet chain whose
+        nodes are duplicated, with boundaries ``<name>Plus`` /
+        ``<name>Minus`` and the coincident DOF pairing recorded. Interface
+        conditions then go through ``solver.add_fault_bc(conds, name)``
+        (``conds = 0`` frictionless, ``conds`` > 0 a viscous interface) and
+        an ordinary ``solve()``.
+
+        ``faults`` is a ``Surface``, a ``(name, points)`` pair, or a
+        sequence of either (a network — cut all, then split all). Each
+        fault is one open polyline with both tips strictly inside the
+        domain; segments must not share vertices, so branches and
+        crossings are represented as OFFSET segments (a one-to-two-cell
+        ligament). The result is standalone — no geometric-MG tail, since
+        the coarse levels do not carry the fault (see
+        :meth:`add_conforming_surface`); solvers take their
+        algebraic-multigrid defaults.
+
+        Implementation and design: ``underworld3.utilities.fault_split``
+        and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
+        """
+        from underworld3.utilities.fault_split import add_fault
+        return add_fault(self, faults, verbose=verbose)
 
 
     def adapt(self, metric_field, max_levels=None, node_budget=None,

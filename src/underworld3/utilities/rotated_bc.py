@@ -231,12 +231,18 @@ def build_rotation(solver, boundaries, datum_specs=None):
             if dspec is not None:
                 node_dspec.setdefault(q, dspec)
 
+    # Split-fault contact pairs (fault_contact.add_frictionless_fault_bc):
+    # their 2·dim mean/jump blocks widen the widest row of Q.
+    fault_names = getattr(solver, "_fault_contact_faults", [])
+
     # Distributed Q with the assembled operator's ROW layout. Q is identity except a
     # per-node dim×dim orthonormal block; because a node's dim velocity components
     # live on a SINGLE DMPlex point owned by ONE rank, each block is entirely within
     # that rank's diagonal portion — no off-rank columns. Each rank sets ONLY its
     # owned rows (ghost copies of a shared boundary node are skipped: their global
-    # rows fall outside [rstart, rend)).
+    # rows fall outside [rstart, rend)). A fault PAIR block spans two points, but
+    # both are rank-local (a seam-touching fault is redistributed onto one rank
+    # before the split), so the diagonal-portion argument carries over unchanged.
     A = solver.snes.getJacobian()[0]
     rstart, rend = A.getOwnershipRange()
     nloc = rend - rstart
@@ -244,7 +250,7 @@ def build_rotation(solver, boundaries, datum_specs=None):
     Q = PETSc.Mat().create(comm=dm.comm)
     Q.setSizes(((nloc, N), (nloc, N)))
     Q.setType("aij")
-    Q.setPreallocationNNZ((dim, 0))
+    Q.setPreallocationNNZ((2 * dim if fault_names else dim, 0))
     Q.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
     for i in range(rstart, rend):
         Q.setValue(i, i, 1.0)                    # identity default (owned rows)
@@ -279,6 +285,75 @@ def build_rotation(solver, boundaries, datum_specs=None):
             nn = M.sum(axis=0); nn = nn / (np.linalg.norm(nn) + 1e-30)
             sgn = 1.0 if float(np.dot(Vt[0], nn)) >= 0.0 else -1.0
             datum_nodes.append((grows[0], q, node_dspec[q], sgn))
+
+    # Split-fault contact: one orthogonal 2·dim block per coincident DOF pair,
+    # transforming (v⁺, v⁻) to mean/jump components in the fault (n̂,t̂) frame —
+    # mean rows written on the Plus point's rows, jump rows on the Minus
+    # point's. The jump-NORMAL row joins the constrained set (no opening,
+    # datum 0); the jump-tangent (slip) row stays free, which IS the
+    # frictionless zero-shear-traction condition — its conjugate reaction is
+    # the shear traction and an unconstrained row carries none. (A future
+    # datum on the slip row is jump-only prescribed slip; a nonlinear relation
+    # on it is friction.)
+    if fault_names:
+        from underworld3.utilities import fault_contact
+        s2 = 1.0 / np.sqrt(2.0)
+        # Rank-local failures in this block (a pairing/label mismatch or a
+        # vanishing analytic normal inside _fault_pair_nodes, a fault node
+        # shared with a wall boundary, a pair straddling ranks) must not
+        # leave the peers blocked in the collective Q assembly below —
+        # collect the verdict and raise it identically on every rank.
+        # ``fault_names`` is registration state, identical across ranks, so
+        # every rank reaches the verdict exchange.
+        problem = None
+        try:
+            for fname in fault_names:
+                for q_plus, q_minus, nrm in fault_contact._fault_pair_nodes(
+                        solver, fname):
+                    if q_plus in node_normals or q_minus in node_normals:
+                        raise ValueError(
+                            f"fault {fname!r} shares a node with a rotated "
+                            "free-slip boundary; a point cannot carry both a "
+                            "wall block and a pair block.")
+                    # The tangent frame: one in-fault direction in 2-D, two
+                    # in 3-D. Shared with the interface assembler's slip
+                    # rows — _tangent_frame is the single authority. The
+                    # specific in-plane directions carry no physics: both
+                    # slip rows are free (frictionless) or enter through
+                    # |V| (laws).
+                    frame = [nrm] + fault_contact._tangent_frame(nrm)
+                    gp, gm = [], []
+                    for q, rows in ((q_plus, gp), (q_minus, gm)):
+                        lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+                        rows.extend(int(l2g.apply([lo + c])[0])
+                                    for c in range(dim))
+                    if any(g < 0 for g in gp + gm):
+                        continue
+                    owned_p = rstart <= gp[0] < rend
+                    owned_m = rstart <= gm[0] < rend
+                    if owned_p != owned_m:
+                        # Structurally impossible after the fault-aware
+                        # redistribution (the split runs rank-interior),
+                        # but "impossible by the seam rules" is exactly
+                        # where surprises have lived — keep the check,
+                        # and make its verdict collective like the rest.
+                        raise RuntimeError(
+                            "fault_contact: a coincident pair straddles "
+                            "ranks — the split's redistribution should "
+                            "make this impossible.")
+                    if not owned_p:
+                        continue
+                    for i, e in enumerate(frame):
+                        for row, sgn in ((gp[i], +1.0), (gm[i], -1.0)):
+                            for j in range(dim):
+                                Q.setValue(row, gp[j], s2 * float(e[j]))
+                                Q.setValue(row, gm[j],
+                                           sgn * s2 * float(e[j]))
+                    normal_rows.append(gm[0])      # [v]·n̂ = 0, datum 0
+        except (RuntimeError, ValueError) as err:
+            problem = str(err)
+        fault_contact._collective_raise(problem)
+
     Q.assemble()
     Qt = Q.transpose(PETSc.Mat())
 
@@ -555,6 +630,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     dm = solver.dm
     snes = solver.snes
     snes.setUp()
+    # Attach the auxiliary vector before ANY assembly. Callers that enter this
+    # loop directly (fault_contact.solve_with_fault) bypass the native solve()
+    # preamble that normally does this, so a form referencing an auxiliary
+    # MeshVariable would read a NULL aux array in the first kernel (segfault),
+    # and a repeat solve would read STALE auxiliary values after the fields
+    # change between calls. Redundant (and cheap) when the native dispatch
+    # already attached it.
+    solver.mesh.update_lvec()
+    solver.dm.setAuxiliaryVec(solver.mesh.lvec, None)
+    solver._update_constants()
     if rtol is None:
         rtol = float(solver.tolerance)
 
@@ -596,6 +681,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
     custom_Pl = None if use_lu else _build_rotated_custom_Pl(solver, Q, normal_rows)
+    # Interface constitutive laws (fault_contact.add_viscous_fault_bc /
+    # add_coulomb_fault_bc): the assembler caches the fault-trace geometry
+    # once; each iterate it adds the interface force ∫τ(V)δV to the rotated
+    # residual and the CONSISTENT tangent 2·(dτ/dV)·M to the rotated
+    # operator — full Newton in V, the stiff direction. (Only a future
+    # reaction-fed σ_n argument would be Picard-lagged, by choice.)
+    interface = None
+    if getattr(solver, "_fault_interface_laws", {}):
+        from underworld3.utilities import fault_contact
+        interface = fault_contact._InterfaceAssembler(solver)
     # The null space is built INSIDE the loop, after the first Jacobian assembly:
     # _mode_satisfies_constraints verifies each candidate mode against the
     # ASSEMBLED operator (‖J·m‖ ≈ 0), which an unassembled J cannot support.
@@ -644,6 +739,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # diagonal scale (frozen at the first tangent — only the magnitude matters),
     # and the KSP/PC context (fieldsplit ISs, FMG hierarchy, GAMG setup survive).
     Ahat = None
+    Atot = None
     Mp = None
     ctx = None
     diag_scale = None
@@ -674,8 +770,23 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         snes.computeFunction(uvec, Fc)
         if keep_cartesian:
             Fc.copy(reaction)                # stash the Cartesian reaction for σ_nn
+            if interface is not None:
+                # Picard-lag the reaction-fed normal stress into the laws:
+                # the stash IS the pure transmitted traction at this iterate
+                # (the interface force is added below, after it). Updated
+                # only at ITERATION STARTS — line-search trials
+                # (keep_cartesian=False) evaluate against the frozen sigma,
+                # which is what makes the lag a consistent comparison.
+                # Iteration 0 sees a zero state: a reaction-fed law starts
+                # frictionless and tightens as the stress field forms.
+                interface.update_normal_stress(solver, reaction)
         Fh = Fc.duplicate()
         Q.mult(Fc, Fh)
+        if interface is not None:
+            # interface constitutive force on the slip rows, evaluated at
+            # THIS iterate (the pair's equal-and-opposite tractions, already
+            # in the rotated frame)
+            interface.residual_add(solver, uvec, Fh)
         _zero_rows_local(Fh, normal_rows)
         if use_pnull:
             sp = Fh.getSubVector(pres_is)
@@ -737,6 +848,28 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Ahat = J.ptap(Qt)
         else:
             J.ptap(Qt, result=Ahat)          # same nonzero pattern → in-place refresh
+        # The interface tangent is REASSEMBLED at every iterate (that is
+        # what makes it consistent Newton, dtau/dV at the current slip
+        # rates) and added to a COPY: the ptap-with-result refresh above
+        # owns Ahat's structure, and injected entries would be
+        # stale-or-doubled on the next refresh.
+        if interface is not None:
+            Khat = interface.tangent(solver, u)
+            if Atot is not None:
+                Atot.destroy()
+            Atot = Ahat.copy()
+            Atot.axpy(1.0, Khat,
+                      structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+            Khat.destroy()
+            # A recreated operator loses the null space the first solve
+            # attached; re-attach for iterations after the first (a nonlinear
+            # interface law is what reaches them).
+            if ctx is not None and ctx.get("nsp") is not None:
+                Atot.setNullSpace(ctx["nsp"])
+                Atot.setTransposeNullSpace(ctx["nsp"])
+            Aop = Atot
+        else:
+            Aop = Ahat
         if not use_lu:
             if ctx is None:
                 Mp = _pressure_mass_schur_pmat(solver)
@@ -744,7 +877,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             elif Mp is not None:
                 Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
-            diag_scale = _velocity_diag_scale(Ahat, solver)
+            diag_scale = _velocity_diag_scale(Aop, solver)
         bhat = Fhat.copy()
         bhat.scale(-1.0)
         if lift_datum and iters == 0:
@@ -752,11 +885,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # b̂[rows] = diag·x̂ and the eliminated columns' A[:,cols]·x̂ are
             # subtracted from the other rows. For a LINEAR model this increment IS
             # the whole solve; the loop converges at the next residual check.
-            Ahat.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
+            Aop.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
             xhat.destroy()
             xhat = None
         else:
-            Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
+            Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
         if use_lu:
             if ctx is None:
                 ksp_lu = PETSc.KSP().create(comm=dm.comm)
@@ -768,10 +901,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        "pin": _naive_pressure_pin(dm)}
             pin = ctx["pin"]
             if pin is not None:
-                Ahat.zeroRows([pin], diag=1.0)
+                Aop.zeroRows([pin], diag=1.0)
                 _zero_rows_local(bhat, [pin])
-            ctx["ksp"].setOperators(Ahat)     # values changed in place → refactor
-            dhat = Ahat.createVecRight()
+            ctx["ksp"].setOperators(Aop)      # values changed in place → refactor
+            dhat = Aop.createVecRight()
             dhat.set(0.0)
             ctx["ksp"].solve(bhat, dhat)
             last_reason = ctx["ksp"].getConvergedReason()
@@ -781,7 +914,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             _zero_rows_local(dhat, normal_rows)
         else:
             dhat, last_reason, ctx = _solve_rotated_iterative(
-                solver, Ahat, bhat, Q, Qt, normal_rows,
+                solver, Aop, bhat, Q, Qt, normal_rows,
                 custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
@@ -874,6 +1007,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
     if Ahat is not None:
         Ahat.destroy()                       # the reused rotated operator
+    if Atot is not None:
+        Atot.destroy()                       # rotated operator + interface term
     if xhat is not None:
         xhat.destroy()                       # unused lift vector (loop exited before it)
     removed = _finalize_rotated_solution(solver, u, Q, normal_rows, remove_rotation_gauge)
@@ -907,8 +1042,11 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     free-slip silently lost its multigrid and solved on GAMG (#467). This is the
     ``adapt-on-top-faults`` workflow's own configuration."""
     from underworld3.utilities import custom_mg
-    h, Ps = custom_mg.build_transfers(solver, field_id=0)
-    if h is None:
+    # Same None discipline as auto_inject_custom_mg: the contract is a 2-tuple,
+    # but "no hierarchy" must degrade to the default preconditioner, never raise.
+    resolved = custom_mg.build_transfers(solver, field_id=0)
+    h, Ps = resolved if resolved is not None else (None, None)
+    if h is None or Ps is None:
         return None
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())

@@ -69,9 +69,38 @@ def _jacobian_unwrap(expr):
     This is a no-op for constant-viscosity problems (eta has no grad-v
     dependence), so those Jacobians stay bit-identical.
 
+    The unwrapped result is additionally made DIFFERENTIATION-SAFE: any
+    ``sqrt(g)`` whose argument carries non-constant symbols becomes
+    ``sqrt(g + 1e-36)``. Differentiating a bare invariant
+    :math:`\dot\varepsilon_{II} = \sqrt{g}` produces
+    :math:`\partial\sqrt{g}/\partial L = \dot\varepsilon/(2\dot\varepsilon_{II})`
+    — the DIRECTION of the strain rate, which is 0/0 at a state of rest —
+    so every consistent-tangent assembly at a cold (v = 0) start filled
+    the operator with NaN (measured: J(0) norm = nan for a ViscoPlastic
+    model at ANY yield stress, surfacing as GAMG's "Computed maximum
+    singular value as zero", error 77; the alpha-blended continuation
+    kernel inherits it even at alpha = 0 because IEEE 0*NaN = NaN). The
+    guard makes the derivative exactly zero at the singular point and
+    perturbs it by under one part in 1e24 at any resolvable strain rate.
+    The RESIDUAL is never routed through here, and the default (Picard)
+    tangent never calls this function, so both remain bit-identical.
+
     See ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
     """
-    f = lambda e: _unwrap_expression(e, mode="symbolic_keep_constants")
+    eps2 = sympy.Float(1.0e-36)
+
+    def _guard_sqrts(e):
+        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
+        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
+        # derivatives), ... — all singular in value or derivative at a
+        # zero-argument state
+        return e.replace(
+            lambda n: (n.is_Pow and n.exp.is_Rational
+                       and n.exp.q == 2 and n.args[0].free_symbols),
+            lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
+
+    f = lambda e: _guard_sqrts(
+        _unwrap_expression(e, mode="symbolic_keep_constants"))
     if isinstance(expr, sympy.MatrixBase):
         return expr.applyfunc(f)
     if isinstance(expr, sympy.NDimArray):
@@ -1357,9 +1386,11 @@ class SolverBaseClass(uw_object):
         unguard : remove the deadline.
         estimate_difficulty : bound the *work* (an iteration count) instead.
         """
-        if getattr(self, "_rotated_freeslip_bcs", None):
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
             raise NotImplementedError(
-                "guard() is not available with rotated free-slip BCs: that path runs "
+                "guard() is not available with rotated free-slip / fault-contact "
+                "BCs: that path runs "
                 "its own Krylov loop outside self.snes (utilities/rotated_bc.py), so "
                 "the deadline cannot reach it and the guard would be silently inert."
             )
@@ -1415,9 +1446,11 @@ class SolverBaseClass(uw_object):
         ``consistent_jacobian="continuation"`` the cap applies to EACH stage (Picard
         then Newton), so one probe may run up to twice ``max_nl_its``.
         """
-        if getattr(self, "_rotated_freeslip_bcs", None):
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
             raise NotImplementedError(
-                "estimate_difficulty() is not available with rotated free-slip BCs: "
+                "estimate_difficulty() is not available with rotated free-slip / "
+                "fault-contact BCs: "
                 "that path solves outside self.snes (utilities/rotated_bc.py), so the "
                 "iteration cap and resume anchor cannot be applied to it."
             )
@@ -5742,6 +5775,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._rotated_freeslip_bcs = []
         self._rotated_freeslip_datum = {}
         self._rotated_freeslip_info = None
+        # Split-fault interface conditions (add_fault_bc): fault names whose
+        # coincident DOF pairs carry a contact (the laws themselves live in
+        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
+        # Non-empty => solve() takes the rotated path, where fault_contact
+        # supplies the pair blocks and the interface operator.
+        self._fault_contact_faults = []
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -5981,6 +6020,63 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if sympy.sympify(conds).is_zero is not True:
                 self._rotated_freeslip_datum[boundary] = conds
         self._rotated_freeslip_bcs.append((boundary, normal))
+        self.is_setup = False
+        return
+
+    def add_fault_bc(self, conds=0, boundary=None, normal=None):
+        r"""Interface condition on a split-node fault (value-first).
+
+        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
+        ``fault_split.split_fault``); the mesh carries its coincident DOF
+        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
+        is always imposed strongly; ``conds`` sets the tangential law:
+
+        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
+          traction, the slip emerges (the stress-driven crack).
+        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
+          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
+          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
+          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
+          not the background's — and :math:`w` its width). ``conds`` large
+          removes the fault (only the JUMP is penalised — nothing becomes
+          rigid).
+
+        ``normal`` optionally supplies the fault's smooth unit normal —
+        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
+        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
+        smoothed normal is built from the fault's own stored polyline —
+        the right choice for digitized traces with no analytic formula),
+        or a constant ``(dim,)`` array. Use it whenever the fault trace is
+        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
+        adjacent facet normals, which zig-zags at the sampling kinks, and
+        the no-opening constraint then forbids smooth slip past each kink —
+        slip notches and normal-traction sawteeth that GROW under mesh
+        refinement. The smooth normal restores the smooth curve's
+        mechanics on the same polyline mesh. On a straight fault the
+        default is already exact, and a deliberately KINKED fault should
+        NOT be smoothed — there the kink response is the physics.
+
+        The solve then takes the rotated strong-constraint path
+        (``utilities/rotated_bc.py`` with the pair blocks of
+        ``utilities/fault_contact.py``); ``guard()`` /
+        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
+        Slip and leak per coincident pair afterwards:
+        ``fault_contact.fault_slip(solver, boundary,
+        solver._rotated_freeslip_info)``.
+        """
+        from underworld3.utilities import fault_contact
+
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_fault_bc() requires the fault's boundary name string; "
+                f"got {type(boundary).__name__}")
+        eta_f = float(conds)
+        if eta_f == 0.0:
+            fault_contact.add_frictionless_fault_bc(self, boundary,
+                                                    normal=normal)
+        else:
+            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
+                                               normal=normal)
         self.is_setup = False
         return
 
@@ -8993,7 +9089,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
-        if self._rotated_freeslip_bcs:
+        if self._rotated_freeslip_bcs or self._fault_contact_faults:
             # Run the same pre-solve preamble as the standard path so the pointwise
             # functions see the DM time, the auxiliary vector, and updated constants
             # (needed for problems whose coefficients live in auxiliary fields). This
@@ -9090,13 +9186,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # (frozen) tangent path is left bit-identical, and an explicit Picard count
         # is honoured as given.
         #
-        # This is a DESIGN REQUIREMENT, not an optimisation: under the consistent
-        # tangent a viscoplastic Jacobian is NaN at zero strain rate (the residual
-        # survives, its derivative does not), so the machinery has to make that
-        # state unreachable. Both routes to it are covered — an explicit cold start,
-        # and a nominally warm one whose solution has never been written. The
-        # "continuation" tangent needs no help: it opens on a Picard stage
-        # (alpha = 0) by construction. See
+        # This warm-up is a CONVERGENCE aid (move a cold guess toward the Newton
+        # basin), NOT the correctness mechanism for the zero-strain-rate state.
+        # Two measured facts (issue #507) retired the old "make the NaN state
+        # unreachable" framing: (1) one nrichardson sweep only propagates
+        # boundary data a single element layer, so on a BOUNDARY-DRIVEN problem
+        # the deep interior stays exactly zero after the warm-up (body-force
+        # problems fill F(0) everywhere, which is why the yield campaigns never
+        # saw it); (2) a rigidly-translating stuck region has edot = 0 at the
+        # CONVERGED solution — the state is physics, not a start-up artifact.
+        # Finiteness of the consistent tangent at edot = 0 is owned by the
+        # half-integer-power guard in _jacobian_unwrap (the derivative's
+        # removable-singularity limit, implemented). NOTE the "continuation"
+        # tangent is NOT protected by its alpha = 0 phase (the blended kernel
+        # still evaluates the Newton branch pointwise, and IEEE 0*NaN = NaN);
+        # with the guard in place both tangents are finite everywhere. See
         # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
         if (picard == 0 and self.consistent_jacobian is True
                 and (zero_init_guess or self._solution_is_trivially_zero())):
