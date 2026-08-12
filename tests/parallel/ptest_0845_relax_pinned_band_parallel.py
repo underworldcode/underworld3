@@ -47,7 +47,15 @@ def _coords(mesh):
 
 def _pinned_indices(mesh, name):
     vS, _vE = mesh.dm.getDepthStratum(0)
-    iset = mesh.dm.getLabel(name).getStratumIS(1)
+    label = mesh.dm.getLabel(name)
+    # A rank the surface never enters has the label but NO strata, and
+    # getStratumIS on an empty DMLabel is a segfault, not an exception
+    # (#291) — the same tolerant pattern smoothing.graph._pinned_mask uses.
+    # At np=4 this fixture leaves one rank band-less, which is exactly the
+    # partition case the 2026-08-02 review found uncovered.
+    if label.getNumValues() == 0:
+        return np.zeros(0, dtype=np.int64)
+    iset = label.getStratumIS(1)
     if iset is None:
         return np.zeros(0, dtype=np.int64)
     return np.asarray(iset.getIndices(), dtype=np.int64) - vS
@@ -93,7 +101,10 @@ def test_pinned_vertices_including_shared_ones_do_not_move():
     after = _coords(mesh)
 
     moved = np.linalg.norm(after - before, axis=1)
-    assert uw.mpi.comm.allreduce(float(moved[idx].max()), op=MPI.MAX) == 0.0
+    # A band-less rank (np=4 leaves one) has empty idx; max() of a zero-size
+    # array raises rank-locally and desyncs the collectives below.
+    assert uw.mpi.comm.allreduce(
+        float(moved[idx].max()) if len(idx) else 0.0, op=MPI.MAX) == 0.0
     free = np.setdiff1d(np.arange(len(before)), idx)
     assert uw.mpi.comm.allreduce(float(moved[free].max()) if len(free) else 0.0,
                                  op=MPI.MAX) > 0.0, "the mover did nothing"

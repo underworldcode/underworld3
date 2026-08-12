@@ -46,6 +46,8 @@ if [ $PARALLEL_ONLY -eq 1 ] && [ $PARALLEL_RANKS -eq 0 ]; then
 fi
 
 export UW_NO_USAGE_METRICS=0
+# A hard crash must print a Python stack, not just "Segmentation fault".
+export PYTHONFAULTHANDLER=1
 PYTEST="pytest --config-file=tests/pytest.ini"
 
 # Run serial tests (unless --parallel-only specified)

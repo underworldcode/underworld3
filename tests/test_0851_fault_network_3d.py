@@ -44,6 +44,37 @@ def test_crossing_segment_analytic():
     assert crossing_segment(P_A, P_A + [0, 0.1, 0]) is None  # parallel
 
 
+def test_crossing_segment_exact_parallel_edges():
+    """Regression: axis-aligned patches make the polygon side edges
+    EXACTLY parallel to the plane-plane intersection line (den == 0.0,
+    no LAPACK jitter). The parallel-edge branch of the line clip had an
+    inverted inside test, so exactly this configuration reported "no
+    crossing" — which is what CI's OpenBLAS produced for the tilted
+    P_A/P_B pair too, while macOS Accelerate left ~1e-17 jitter in den
+    and dodged the branch. This test fails on EVERY platform without
+    the fix."""
+    # plane y = 0.5 crossed by plane x = 0.42: intersection line
+    # x = 0.42, y = 0.5, z in [0.32, 0.68] (clipped by the second patch)
+    P_C = np.array([[0.42, 0.30, 0.32], [0.42, 0.70, 0.32],
+                    [0.42, 0.70, 0.68], [0.42, 0.30, 0.68]])
+    seg = crossing_segment(P_A, P_C)
+    assert seg is not None, (
+        "exactly-parallel polygon edges must not hide a genuine "
+        "crossing (inverted parallel-edge inside test)")
+    P0, P1 = seg
+    for P in (P0, P1):
+        assert abs(P[0] - 0.42) < 1e-9 and abs(P[1] - 0.5) < 1e-9
+    zs = sorted([P0[2], P1[2]])
+    assert abs(zs[0] - 0.32) < 1e-9 and abs(zs[1] - 0.68) < 1e-9
+
+    # negative control for the sign flip: same exact-parallel setup but
+    # the plane-plane line (x = 0.82) misses P_A (x in [0.3, 0.7]) —
+    # still no crossing
+    P_D = np.array([[0.82, 0.30, 0.32], [0.82, 0.70, 0.32],
+                    [0.82, 0.70, 0.68], [0.82, 0.30, 0.68]])
+    assert crossing_segment(P_A, P_D) is None
+
+
 def test_preparer_trims_junior_and_records_segment():
     fsA, fsB = _surfaces(("Main", P_A), ("Cross", P_B))
     prepared, report, junctions = prepare_fault_surfaces(

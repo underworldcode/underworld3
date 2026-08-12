@@ -1042,8 +1042,11 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     free-slip silently lost its multigrid and solved on GAMG (#467). This is the
     ``adapt-on-top-faults`` workflow's own configuration."""
     from underworld3.utilities import custom_mg
-    h, Ps = custom_mg.build_transfers(solver, field_id=0)
-    if h is None:
+    # Same None discipline as auto_inject_custom_mg: the contract is a 2-tuple,
+    # but "no hierarchy" must degrade to the default preconditioner, never raise.
+    resolved = custom_mg.build_transfers(solver, field_id=0)
+    h, Ps = resolved if resolved is not None else (None, None)
+    if h is None or Ps is None:
         return None
     vel_is = solver._subdict["velocity"][0]
     vis = np.asarray(vel_is.getIndices())
