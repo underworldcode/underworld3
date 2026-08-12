@@ -140,23 +140,87 @@ On the listric faults the two agree to within 7–20% and the profile
 *shapes* are the same. On the detachment the split model slips half as
 much.
 
-## The junction is the difference
+## Chasing the detachment deficit
 
-That halving is not the interface law, and it is worth being explicit
-about how we know. Two controls:
+The obvious suspect is the junction, and it is a large part of the
+answer — but not all of it, and the way that came out is worth showing,
+because the tempting conclusion is the wrong one. Every knob was turned,
+one at a time, reading peak slip on the sole:
 
-- **Remove the law entirely** ($\eta_f = 0$, a frictionless fault): peak
-  slip moves by 2–4% (sole $0.154 \to 0.161$). The matched law is a
-  small correction, as it should be when both representations are already
-  weak.
-- **Double the ligament** ($1h \to 2h$): the sole loses 16%
-  ($0.154 \to 0.130$) and F1 loses 12%.
+| control | sole slip | effect |
+|---------|-----------|--------|
+| ribbon reference | 0.317 | — |
+| split baseline ($h$ = 0.035, ligament 1$h$, dial 0.05) | 0.154 | — |
+| interface law removed ($\eta_f = 0$) | 0.161 | +5% |
+| ligament $1h \to 2h$ | 0.130 | −16% |
+| refine $h$: 0.035 → 0.0233 → 0.0175 | 0.154 → 0.181 → 0.187 | +21%, converging |
+| glue dial 0.05 → 0.01 → 0.002 | 0.181 → 0.204 → 0.210 | +16%, saturating |
+| glue plug made *larger* at fixed strength | 0.181 → 0.167 | −8% |
+| best case (finest $h$, dial at the ceiling) | **0.216** | 68% of the ribbon |
 
-So what the detachment feels is the **gap**, and on a glancing junction
-the gap is large. This is the practical rule for detachment systems: the
-junction connectivity controls how much slip transfers, and in the offset
-form you buy fidelity with elements, not with physical size — make $h$
-smaller and the ligament follows it down.
+Reading down that table:
+
+- **It is not the law.** Removing the interface condition entirely moves
+  slip by 5%. Both representations are already weak, as intended.
+- **The junction gap is the biggest single lever.** Doubling the ligament
+  costs 16%; refining the mesh — which shrinks the gap, since the
+  ligament is measured in $h$ — buys 21% back. This is the practical
+  rule: buy fidelity with elements, not with physical size.
+- **But closing the gap does not close the difference.** The refinement
+  sequence is converging to ≈0.19, not to the ribbon's 0.317, and the
+  ribbon itself is essentially $h$-independent over the same range
+  (0.3173 → 0.3155) — as it should be, since its width is a physical
+  parameter, which makes it a clean control.
+- **The glue helps, and then stops helping.** Weakening the plug raises
+  transfer to a ceiling near 0.21 — the inviscid-plug limit the network
+  documentation describes. Making the plug *bigger* at the same strength
+  makes things *worse*: a larger weak region lets the corner deform
+  instead of passing slip along the sole. A junction plug is a hinge, not
+  a bridge.
+
+Two explanations we tested and discarded, in case they occur to you too.
+The ribbon's band, being weak and sub-horizontal in horizontal extension,
+might simply be stretching along its own length, with our probe reading
+that as slip — but shrinking $w$ by 4$\times$ at fixed
+$\eta_f = \eta_{\rm band}/w$ moves the sole by only 4.5% (0.317 → 0.303),
+so it is not that. (That the ribbon is nearly $w$-independent at fixed
+$\eta_f$ is a good result on its own: it says $\eta_f$ really is the
+similarity parameter linking the two formulations.) And the plug does
+shrink away under refinement — but as the table shows, a bigger plug
+transmits less, not more.
+
+So a residual of roughly 30% survives every control we have. The best the
+offset form achieves here is 68% of the through-going detachment slip,
+and no single parameter closes the rest.
+
+## What that means for choosing
+
+The two formulations agree on what a fault *is* — the block kinematics,
+the subsidence, the slip on the individual listric faults — and disagree
+on what a *junction* is, in a way that is structural rather than
+mistuned. A through-going weak band and a network of zero-thickness
+contacts joined at offset junctions are not the same mechanical object
+where faults meet, and on this geometry the sole — the one fault that has
+to *receive* slip through two junctions — is where the disagreement
+shows. The listric faults themselves reach 86–97% of the ribbon's slip at
+the glue ceiling; the sole reaches 68%.
+
+- **Ribbons** when the width is physics — a gouge zone with its own
+  rheology, a damage zone another equation has to see — and, on this
+  evidence, when the system is **junction-dominated**: a detachment fed
+  by splays is exactly that, and the union carries the connectivity
+  natively.
+- **Split nodes** when slip on individual faults is the quantity of
+  interest — earthquake cycles, stress transfer, frictional and
+  rate-and-state laws — and when conditioning matters: there is no thin
+  feature and no viscosity contrast for the Schur complement to fight.
+
+```{warning}
+The residual is not explained. If you are modelling a detachment system
+in the offset form, calibrate the transfer rather than assuming it: the
+numbers above are for one geometry at one intersection angle, and the
+glancing junction is the hard case.
+```
 
 ## Which to use
 
@@ -170,8 +234,8 @@ smaller and the ligament follows it down.
   contrast for the Schur complement to fight.
 
 Junctions are the place to think hardest. The ribbon's are free but
-slivered; the split's are clean but offset, and on glancing intersections
-that offset is what sets the answer.
+slivered; the split's are clean but offset, and on a glancing
+intersection that offset is expensive and only partly recoverable.
 
 ```{note}
 The split solves here report an inner velocity-block KSP reaching its
