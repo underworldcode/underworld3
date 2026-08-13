@@ -2693,8 +2693,11 @@ def _patch_frame(patch):
     return n
 
 
-def _occ_assembly_3d(patches, width, size, box=None):
-    """Thicken each planar patch by ±width/2, fragment together, mesh.
+def _occ_assembly_3d(patches, width, size, box=None, assembly="fuse"):
+    """Thicken each planar patch by ±width/2, resolve overlaps, mesh.
+
+    ``assembly`` is :func:`place_thin_volume`'s: ``"fuse"`` returns the union
+    as one solid, ``"fragment"`` keeps every overlap piece.
 
     ``box = (lo, hi)`` applies the specify-long contract: the thickened
     solids are INTERSECTED with the domain box, so patches may protrude —
@@ -2725,7 +2728,14 @@ def _occ_assembly_3d(patches, width, size, box=None):
             out = occ.extrude([(2, surf)], *(width * n))
             solids += [t for d, t in out if d == 3]
         if len(solids) > 1:
-            occ.fragment([(3, solids[0])], [(3, t) for t in solids[1:]])
+            # The 2-D lesson one dimension up: the seams fragment leaves at
+            # an overlap have no physics on them (properties reach the cells
+            # from the Surface objects), and a shallow-angle overlap gives
+            # them a spike to mesh. See :func:`_occ_assembly_2d`.
+            if assembly == "fuse":
+                occ.fuse([(3, solids[0])], [(3, t) for t in solids[1:]])
+            else:
+                occ.fragment([(3, solids[0])], [(3, t) for t in solids[1:]])
         if box is not None:
             lo, hi = (np.asarray(b, dtype=float) for b in box)
             occ.synchronize()
@@ -3028,12 +3038,16 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
-def _occ_assembly_2d(polylines, width, size):
-    """Thicken each polyline segment into a quad, fragment together, mesh.
+def _occ_assembly_2d(polylines, width, size, assembly="fuse"):
+    """Thicken each polyline into a ribbon, resolve overlaps, mesh.
 
-    The 2-D thin volume: a ribbon is the union of one quad per polyline
-    segment, kinks and crossings resolved by ``fragment`` exactly as the 3-D
-    junctions are. Returns ``(points, triangles, cad_area)``.
+    The 2-D thin volume: a ribbon is the mitred outline of one polyline, and
+    the ribbons of a network are resolved against one another in CAD.
+    ``assembly`` chooses that resolution: ``"fuse"`` returns the union as ONE
+    face, ``"fragment"`` keeps every overlap piece as its own face. Both mesh
+    the same region; they differ in the internal seams the mesher must
+    honour. Returns ``(points, triangles, cad_area)``, the area being that of
+    the resolved faces — the union — under either choice.
     """
     import gmsh
 
@@ -3088,7 +3102,19 @@ def _occ_assembly_2d(polylines, width, size):
         if not surfs:
             raise ValueError("the polylines contain no segment to thicken")
         if len(surfs) > 1:
-            occ.fragment([(2, surfs[0])], [(2, t) for t in surfs[1:]])
+            # Where ribbons overlap, fragment's seams are the boundary of the
+            # overlap, and for a tangential merge that boundary is a lens
+            # closing at the convergence angle — a chain of slivers the
+            # mesher must resolve (measured on the sole geometry of
+            # test_0855: minimum angle 0 degrees and 22 cells under 5,
+            # against 37 degrees and none fused). The seams carry no physics
+            # to preserve: the zone is one label, and a cell's fault
+            # properties are read from the Surface objects by proximity, not
+            # from the piece it was meshed in.
+            if assembly == "fuse":
+                occ.fuse([(2, surfs[0])], [(2, t) for t in surfs[1:]])
+            else:
+                occ.fragment([(2, surfs[0])], [(2, t) for t in surfs[1:]])
         occ.synchronize()
 
         faces = gmsh.model.getEntities(2)
@@ -3807,7 +3833,7 @@ ZONE_LABEL = "uw_zone"
 
 
 def _place_thin_volume_2d(dm, polylines, width, label, label_value,
-                          clearance, size, verbose):
+                          clearance, size, assembly, verbose):
     """The ribbon: the identical construction one dimension down.
 
     Serial AND parallel through the same gather-first mechanism as the 3-D
@@ -3823,7 +3849,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     if comm.rank == 0:
         try:
             asm_pts, asm_tris, cad_area = _occ_assembly_2d(polylines, width,
-                                                           size)
+                                                           size, assembly)
             P = asm_pts[asm_tris]
             twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
                      - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
@@ -4057,14 +4083,15 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
 
 def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
-                      clearance=0.7, size=None, verbose=False):
+                      clearance=0.7, size=None, assembly="fuse",
+                      verbose=False):
     """Embed a THIN VOLUME of the given width around each patch, junctions free.
 
     The finite-width fault representation: each planar patch is thickened by
     ``±width/2``, the thickened volumes of the whole network are resolved
-    against one another with OCC ``fragment`` — a junction becomes ordinary
-    cells of the union, no geometric treatment, the rheology decides — the
-    assembly is meshed standalone at layer scale (sub-``h`` widths are the
+    against one another in OCC — a junction becomes ordinary cells of the
+    union, no geometric treatment, the rheology decides — the assembly is
+    meshed standalone at layer scale (sub-``h`` widths are the
     point: ``V = 2 ε̇ w`` makes the width constitutive), and the meshed
     assembly is embedded whole into the existing mesh: a cavity is carved
     around it and gmsh fills the annular gap with the assembly's boundary
@@ -4102,6 +4129,17 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         skin.
     size : float or None
         The layer's own mesh size; ``None`` takes ``0.9 * width``.
+    assembly : {"fuse", "fragment"}
+        How overlapping zones are resolved in CAD before meshing. ``"fuse"``
+        (the default) returns the union as one region with no internal seam;
+        ``"fragment"`` keeps each overlap piece as its own region, so the
+        mesh conforms to the boundaries of the overlap. The zone mesh carries
+        one label either way — a cell's fault properties come from the
+        :class:`Surface` objects, not from the piece it was meshed in — so
+        ``"fragment"`` is worth asking for only when those internal
+        boundaries are themselves of interest. Two zones converging at a
+        shallow angle make the overlap a spike, and its fragmented tip meshes
+        to arbitrarily bad angles; the fused union has no such tip.
     verbose : bool
         Report the counts.
 
@@ -4125,10 +4163,13 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if width <= 0.0:
         raise ValueError("width must be positive")
     size = 0.9 * width if size is None else float(size)
+    if assembly not in ("fuse", "fragment"):
+        raise ValueError(
+            f"assembly must be 'fuse' or 'fragment', not {assembly!r}")
 
     if dm.getDimension() == 2:
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
-                                     clearance, size, verbose)
+                                     clearance, size, assembly, verbose)
     if dm.getDimension() != 3:
         raise NotImplementedError(
             f"place_thin_volume takes a 2-D or 3-D simplex mesh; this mesh "
@@ -4151,7 +4192,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if comm.rank == 0:
         try:
             asm_pts, asm_tets, cad_vol = _occ_assembly_3d(
-                patches, width, size, box=(box_lo, box_hi))
+                patches, width, size, box=(box_lo, box_hi), assembly=assembly)
             v6 = np.einsum(
                 "ij,ij->i",
                 np.cross(asm_pts[asm_tets][:, 1] - asm_pts[asm_tets][:, 0],
