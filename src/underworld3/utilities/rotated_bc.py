@@ -892,9 +892,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             geom_ok = all(v[0] for v in verdicts)
             op_ok = all(v[1] for v in verdicts)
         if not geom_ok:
-            _destroy_rotated_linear_cache(cache)
+            # Null before destroying — same double-destroy discipline as
+            # _reset_rotated_solver_cache (#543 review, m4).
             solver._rotated_linear_cache = None
-            cache = None
+            stale, cache = cache, None
+            _destroy_rotated_linear_cache(stale)
         elif not op_ok:
             # The operator values are about to be refreshed in place; poison
             # the stored key NOW so an exception mid-refresh cannot leave a
@@ -1063,6 +1065,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ref = None
     last_reason = 0
     iters = 0
+    did_assemble = False
     converged = False
     phase = "picard" if continuation else "newton"
     for iters in range(max_it):
@@ -1097,6 +1100,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # a stale solution.
         assemble = not (reuse_operator and iters == 0)
         if assemble:
+            did_assemble = True
             snes.computeJacobian(u, J, Jp)   # Jp carries the 1/mu mass (Schur pmat)
             if Ahat is None:
                 Ahat = J.ptap(Qt)
@@ -1278,7 +1282,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
             "coefficient_variables": coefficient_variables,
             "coefficient_states": coefficient_states,
-            "operator_sig": operator_sig,
+            # The stored key must describe what Ahat HOLDS: valid if this
+            # solve reassembled (values current), or if the fast path rode a
+            # key-matched operator untouched. A poisoned solve that exited at
+            # iteration 0 without assembling must not persist a fresh key
+            # against unrefreshed values (#543 review, m2).
+            "operator_sig": (operator_sig if (did_assemble or reuse_operator)
+                             else None),
             "linear_hint": bool(converged and newton_its <= 1),
         }
     else:

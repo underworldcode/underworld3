@@ -1301,10 +1301,13 @@ class SolverBaseClass(uw_object):
         its reaction vector is independent of the cache and the σ_nn /
         dynamic-topography recoveries may still need it."""
         cache = getattr(self, "_rotated_linear_cache", None)
+        # Null BEFORE destroying: an exception mid-destroy must leave objects
+        # unreachable (leaked-but-safe), never a half-destroyed cache a later
+        # reset would double-destroy (#543 review, m4).
+        self._rotated_linear_cache = None
         if cache is not None:
             from underworld3.utilities.rotated_bc import _destroy_rotated_linear_cache
             _destroy_rotated_linear_cache(cache)
-        self._rotated_linear_cache = None
 
     def _reset(self):
 
