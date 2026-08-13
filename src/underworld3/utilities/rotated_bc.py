@@ -494,6 +494,35 @@ def _coefficient_states(variables):
     return tuple(variable._state for variable in variables)
 
 
+def _operator_constants_signature(solver):
+    """Signature of everything that reaches the compiled kernels OUTSIDE
+    mesh-variable data: the packed ``constants[]`` values and the JIT bundle
+    key.
+
+    This closes the blind spot the original PR #418 cache had: a rampable
+    UWexpression constant changes VALUE with no ``_state`` bump anywhere (the
+    #416 live-constants contract — every δ-continuation and viscosity-ramp
+    driver relies on it), so a key built from MeshVariable state counters
+    alone reported "unchanged" for a 2x viscosity ramp. The packed constants
+    ARE the values the kernels will assemble with, so comparing them closes
+    the gap exactly — at the cost of also invalidating on RHS-only constant
+    changes, which errs toward reassembly (robust generality). The JIT key
+    covers a function rewire in place (new kernels on the same DM), where the
+    manifest itself is replaced. If the manifest cannot be read, return None:
+    the caller must forfeit the fast path."""
+    from underworld3.utilities._jitextension import _pack_constants
+    try:
+        manifest = getattr(solver, "constants_manifest", None)
+        values = tuple(float(v) for v in _pack_constants(manifest)) \
+            if manifest else ()
+    except Exception:
+        return None
+    jit_key = getattr(solver, "_current_jit_cache_key", None)
+    if jit_key is None:
+        jit_key = getattr(solver, "_last_jit_cache_key", None)
+    return (str(jit_key), values)
+
+
 def _rotated_geometry_signature(solver, boundaries):
     """Signature of everything the GEOMETRY tier of the workspace was built
     from: the boundary specs (name + normal), the fault-contact registration
@@ -832,6 +861,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         if cache_allowed else None
     coefficient_variables = None
     coefficient_states = None
+    operator_sig = None
     if cache_allowed:
         if cache is not None and cache.get("geometry_sig") == geometry_sig \
                 and cache.get("coefficient_variables") is not None:
@@ -840,6 +870,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             coefficient_variables = _operator_coefficient_variables(solver)
         if coefficient_variables is not None:
             coefficient_states = _coefficient_states(coefficient_variables)
+            # The state counters alone are BLIND to rampable UWexpression
+            # constants (#416: value changes bump nothing) — the constants
+            # signature is the other half of the key.
+            operator_sig = _operator_constants_signature(solver)
 
     op_ok = False
     if cache is not None:
@@ -847,11 +881,25 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         op_ok = (geom_ok
                  and not force_operator_refresh
                  and coefficient_states is not None
-                 and cache.get("coefficient_states") == coefficient_states)
+                 and operator_sig is not None
+                 and cache.get("coefficient_states") == coefficient_states
+                 and cache.get("operator_sig") == operator_sig)
+        # COLLECTIVE verdict: state counters are bumped by rank-local data
+        # writes, so a rank-divergent match here would desync the collective
+        # assembly/PCSetUp calls the verdict gates (the np>1 deadlock class).
+        if mpi.size > 1:
+            verdicts = mpi.comm.allgather((bool(geom_ok), bool(op_ok)))
+            geom_ok = all(v[0] for v in verdicts)
+            op_ok = all(v[1] for v in verdicts)
         if not geom_ok:
             _destroy_rotated_linear_cache(cache)
             solver._rotated_linear_cache = None
             cache = None
+        elif not op_ok:
+            # The operator values are about to be refreshed in place; poison
+            # the stored key NOW so an exception mid-refresh cannot leave a
+            # stale signature that later matches half-updated values.
+            cache["operator_sig"] = None
 
     if cache is not None:
         Q, Qt = cache["Q"], cache["Qt"]
@@ -865,8 +913,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         rotation_reused = False
 
     # The iteration-0 fast path: skip Jacobian assembly / ptap / PCSetUp when
-    # the operator key proves nothing operator-relevant changed.
-    reuse_operator = bool(cache is not None and op_ok)
+    # the operator key proves nothing operator-relevant changed AND the
+    # previous solve behaved linearly (converged in <= 1 increment). For a
+    # genuinely nonlinear model the cached operator is the LAST solve's
+    # converged tangent, not this iterate's, so the skip would only trade one
+    # assembly for one wasted increment — the linear hint is self-measured,
+    # no up-front nonlinearity probe.
+    reuse_operator = bool(cache is not None and op_ok
+                          and cache.get("linear_hint", False))
     workspace_reused = False
 
     # Interface constitutive laws (fault_contact.add_viscous_fault_bc /
@@ -1212,8 +1266,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
     if cache_allowed and ctx is not None and Ahat is not None and not use_lu:
         # Persist the workspace for the next solve. The stored key describes
-        # the operator values Ahat now holds. Q/Qt are SHARED with the result
-        # dict below — one Python wrapper each, so teardown and GC compose.
+        # the operator values Ahat now holds; linear_hint records whether
+        # this solve behaved linearly (<= 1 increment), which is what
+        # licenses the iteration-0 fast path next time. Q/Qt are SHARED with
+        # the result dict below — one Python wrapper each, so teardown and
+        # GC compose.
         solver._rotated_linear_cache = {
             "geometry_sig": geometry_sig,
             "Q": Q, "Qt": Qt, "normal_rows": normal_rows,
@@ -1221,6 +1278,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
             "coefficient_variables": coefficient_variables,
             "coefficient_states": coefficient_states,
+            "operator_sig": operator_sig,
+            "linear_hint": bool(converged and newton_its <= 1),
         }
     else:
         if cache_allowed:

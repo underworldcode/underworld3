@@ -47,18 +47,40 @@ A wrong fast-path decision cannot produce a wrong answer. The loop measures
 the **true residual** (fresh kernels, current constants) at every iterate,
 convergence is declared only on that measurement, and every iteration after
 the first always reassembles the operator. A stale cached operator therefore
-costs one extra Newton increment; it can never return a stale solution.
+costs one extra Newton increment; it can never return a stale solution. This
+is deliberately independent of the invalidation key — a safety net gated by
+the trigger it guards is not a safety net, which was the unresolved finding
+of the original PR #418 review (the state-counter key was blind to rampable
+constants, and the same "unchanged" verdict disabled the matrix probe that
+was supposed to catch it, returning a bit-identical stale solution flagged
+as legitimately reused).
 
 ## Invalidation
 
-- Operator coefficient **mesh variables** are collected from the constitutive
+The iteration-0 fast path requires ALL of:
+
+- Operator coefficient **mesh variables** — collected from the constitutive
   parameters, constraint term, penalty and saddle preconditioner (expressions
   unwrapped first, unknowns excluded). Their base `MeshVariable._state`
-  counters must match for the fast path.
-- If the coefficient enumeration fails, the fast path is forfeited and every
-  solve reassembles (structure-tier reuse only) — correctness first.
+  counters must match.
+- The **constants signature** — the packed `constants[]` values the compiled
+  kernels will assemble with, plus the JIT bundle key. This is what sees a
+  rampable UWexpression constant (the #416 contract: a value change bumps no
+  state counter — the original PR's blind spot) and an in-place kernel
+  rewire. It deliberately over-invalidates on RHS-only constant changes:
+  reassembly is the safe default.
+- A **linear hint** — the previous solve on this workspace converged in at
+  most one increment. A nonlinear model's cached operator is last solve's
+  tangent, not this iterate's; the hint is self-measured by the loop, so no
+  up-front nonlinearity probe is paid.
+- If the coefficient enumeration or the constants manifest cannot be read,
+  the fast path is forfeited and every solve reassembles (structure-tier
+  reuse only) — correctness first.
 - An explicit `solve(time=...)` vetoes the fast path: `petsc_t` reaches the
-  kernels through the DM, invisible to any counter.
+  kernels through the DM, invisible to any counter or constant value.
+- The match verdict is made **collective** (allgather + unanimity) before it
+  gates any collective PETSc call — state counters follow rank-local writes,
+  and a rank-divergent verdict would be a deadlock, not a wrong answer.
 - Mesh deform, field-layout, boundary-condition or forced-setup changes route
   through the solver's full-rebuild teardown, which destroys the whole
   workspace (`_reset_rotated_solver_cache`, called from `_reset()` and from
