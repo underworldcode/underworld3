@@ -403,6 +403,159 @@ def _set_rows_local(vec, row_val_map):
 
 
 # --------------------------------------------------------------------------- #
+#  Cross-solve workspace reuse (issue #417)
+#
+#  Repeated rotated free-slip solves used to rebuild the whole linear
+#  workspace every time: the rotation Q, the PtAP'd operator, the fieldsplit
+#  Schur KSP/PC and its GAMG (or FMG) hierarchy. In a time-stepping loop that
+#  is both slow (distributed assembly + PCSetUp every step) and an allocator
+#  high-water problem (a fresh KSP/PC object graph per step). The cache below
+#  keeps the workspace alive on the solver between solves, split by what each
+#  piece actually depends on:
+#
+#  * GEOMETRY tier — Q/Qt, the constrained rows, the fault pair blocks and
+#    the custom-FMG prolongation depend only on the mesh, the boundary specs
+#    and the fault registration. They are reused whenever the geometry
+#    signature matches, and torn down by the solver's own rebuild paths
+#    (_reset / the _build full-rebuild teardown), which fire on mesh.deform,
+#    BC changes and every is_setup=False invalidation.
+#  * STRUCTURE tier — Ahat, the Schur pmat Mp and the KSP/PC context are
+#    reused as OBJECTS with their values refreshed in place (ptap-with-result
+#    / createSubMatrix-with-submat / setOperators), exactly the pattern the
+#    Newton loop already uses between its own iterations. This is always
+#    correct regardless of any change-detection: values are reassembled.
+#  * FAST PATH — iteration 0 of the Newton loop may additionally skip the
+#    Jacobian assembly / ptap / PCSetUp entirely when the operator key proves
+#    nothing operator-relevant changed. A wrong skip cannot produce a wrong
+#    answer: the loop measures the TRUE residual at every iterate and every
+#    iteration after the first always reassembles, so a stale operator costs
+#    one extra increment, never a stale solution (the structural safety net
+#    that the state-counter-keyed original lacked).
+#
+#  The cache is forfeited entirely (correctness first) for the paths where
+#  reuse is not provably sound: direct-LU solves, prescribed-datum solves
+#  (the datum is re-evaluated from possibly-changed fields inside
+#  build_rotation), and fault interface laws (the interface tangent and the
+#  Picard-lagged normal stress are solution-dependent state).
+# --------------------------------------------------------------------------- #
+
+def _operator_coefficient_variables(solver):
+    """Mesh variables that can change the assembled Stokes OPERATOR (not just
+    the RHS): everything reachable from the constitutive parameters, the
+    constraint term, the penalty and the saddle preconditioner. The solver's
+    own unknowns are excluded (the solve writes them every time). Expressions
+    are unwrapped first so variables hidden inside nested UWexpressions are
+    seen (the "unwrap before extracting atoms" rule).
+
+    Returns a tuple of variables, or ``None`` when the enumeration fails —
+    the caller must then treat the operator as always-changed (no fast path;
+    the structural refresh path is used every solve)."""
+    from underworld3.function.expressions import mesh_vars_in_expression, unwrap
+
+    expressions = []
+    try:
+        expressions.append(solver.constraints)
+        expressions.append(solver.penalty)
+        saddle_preconditioner = getattr(solver, "saddle_preconditioner", None)
+        if saddle_preconditioner is not None:
+            expressions.append(saddle_preconditioner)
+        parameters = getattr(solver.constitutive_model, "Parameters", None)
+        if parameters is not None:
+            for name in parameters._list_valid_parameters(type(parameters)):
+                expressions.append(getattr(parameters, name))
+    except Exception:
+        return None
+
+    variables = set()
+    for expression in expressions:
+        expression = getattr(expression, "sym", expression)
+        if expression is None or not hasattr(expression, "args"):
+            continue
+        try:
+            expression = unwrap(expression, keep_constants=False,
+                                return_self=False)
+            _, regular, derivatives = mesh_vars_in_expression(
+                sympy.sympify(expression))
+        except Exception:
+            return None
+        variables.update(fn.meshvar() for fn in regular)
+        variables.update(derivatives)
+
+    unknowns = {getattr(variable, "_base_var", variable)
+                for variable in solver.fields.values()}
+    variables = {getattr(variable, "_base_var", variable)
+                 for variable in variables}
+    variables.difference_update(unknowns)
+    return tuple(sorted(variables, key=lambda variable: variable._uw_id))
+
+
+def _coefficient_states(variables):
+    """UW data-version counters of the operator coefficient variables."""
+    return tuple(variable._state for variable in variables)
+
+
+def _operator_constants_signature(solver):
+    """Signature of everything that reaches the compiled kernels OUTSIDE
+    mesh-variable data: the packed ``constants[]`` values and the JIT bundle
+    key.
+
+    This closes the blind spot the original PR #418 cache had: a rampable
+    UWexpression constant changes VALUE with no ``_state`` bump anywhere (the
+    #416 live-constants contract — every δ-continuation and viscosity-ramp
+    driver relies on it), so a key built from MeshVariable state counters
+    alone reported "unchanged" for a 2x viscosity ramp. The packed constants
+    ARE the values the kernels will assemble with, so comparing them closes
+    the gap exactly — at the cost of also invalidating on RHS-only constant
+    changes, which errs toward reassembly (robust generality). The JIT key
+    covers a function rewire in place (new kernels on the same DM), where the
+    manifest itself is replaced. If the manifest cannot be read, return None:
+    the caller must forfeit the fast path."""
+    from underworld3.utilities._jitextension import _pack_constants
+    try:
+        manifest = getattr(solver, "constants_manifest", None)
+        values = tuple(float(v) for v in _pack_constants(manifest)) \
+            if manifest else ()
+    except Exception:
+        return None
+    jit_key = getattr(solver, "_current_jit_cache_key", None)
+    if jit_key is None:
+        jit_key = getattr(solver, "_last_jit_cache_key", None)
+    return (str(jit_key), values)
+
+
+def _rotated_geometry_signature(solver, boundaries):
+    """Signature of everything the GEOMETRY tier of the workspace was built
+    from: the boundary specs (name + normal), the fault-contact registration
+    (names + analytic-normal overrides) and the DM identity. All entries are
+    registration state, identical across ranks."""
+    dm = solver.dm
+    sig_boundaries = tuple((name, repr(normal))
+                           for name, normal in map(_boundary_spec, boundaries))
+    sig_faults = tuple(getattr(solver, "_fault_contact_faults", []) or [])
+    sig_fault_normals = repr(sorted(
+        (k, repr(v))
+        for k, v in getattr(solver, "_fault_normal_overrides", {}).items()))
+    return (sig_boundaries, sig_faults, sig_fault_normals,
+            dm.handle if dm is not None else 0)
+
+
+def _destroy_rotated_linear_cache(cache):
+    """Release the persistent rotated-free-slip workspace. The custom-FMG
+    prolongation list is only DEREFERENCED (its coarse Mats are shared with
+    the solver's registered multigrid hierarchy)."""
+    if not cache:
+        return
+    _destroy_rotated_ksp_ctx(cache.get("ctx"))
+    cache["ctx"] = None
+    for key in ("Ahat", "Q", "Qt"):
+        obj = cache.get(key)
+        if obj is not None:
+            obj.destroy()
+            cache[key] = None
+    cache["custom_Pl"] = None
+
+
+# --------------------------------------------------------------------------- #
 #  The rotated solve
 # --------------------------------------------------------------------------- #
 def _naive_pressure_pin(dm):
@@ -540,7 +693,8 @@ def _backtracking_line_search(u, d, rnorm, rotated_residual, Q, Qt, normal_rows,
 
 def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                            verbose=False, zero_init_guess=True, picard=0,
-                           rtol=None, atol=1.0e-11, stol=1.0e-8, max_it=50):
+                           rtol=None, atol=1.0e-11, stol=1.0e-8, max_it=50,
+                           force_operator_refresh=False):
     """THE rotated strong-free-slip solve (linear and nonlinear models alike): a
     manual outer Newton/Picard loop that rotates the residual F(u), the Jacobian
     J(u) and the strong ``v_n = ũ_n`` constraint (``ũ_n = 0`` for pure free-slip;
@@ -621,7 +775,16 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
           of Newton increments solved, ``== len(ksp_its)``) and status;
         * ``"rnorm"``, ``"rnorm0"`` — final and initial rotated residual norms ‖F̂‖
           (feed the solve report);
-        * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired.
+        * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired;
+        * ``"rotation_reused"`` — the GEOMETRY tier (Q/Qt/constrained rows/
+          prolongation) came from the cross-solve cache;
+        * ``"workspace_reused"`` — the iteration-0 operator fast path fired
+          (Jacobian assembly, ptap and PCSetUp all skipped — see the workspace
+          reuse block comment above ``_operator_coefficient_variables``).
+
+    ``force_operator_refresh=True`` disables the iteration-0 fast path for this
+    solve (used by ``time=`` solves: the DM time reaches the kernels through
+    ``petsc_t``, which no state counter or constants value can see).
     """
     if getattr(solver, "snes", None) is None:
         solver._setup_pointwise_functions()
@@ -676,11 +839,92 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # with no lift, tangent transparency, custom_Pl, nullspace) is unchanged from
     # pure free-slip.
     datum_specs = getattr(solver, "_rotated_freeslip_datum", None)
-    Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
     # Direct LU per increment: no FMG prolongation / null space to build — the
     # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
-    custom_Pl = None if use_lu else _build_rotated_custom_Pl(solver, Q, normal_rows)
+    interface_laws = bool(getattr(solver, "_fault_interface_laws", {}))
+
+    # ---- cross-solve workspace cache (issue #417; see the block comment
+    # above _operator_coefficient_variables for the tier design) ----
+    # Forfeited for LU (per-solve pin/factorisation), prescribed datum (the
+    # datum values are re-evaluated from possibly-changed fields inside
+    # build_rotation) and fault interface laws (solution-dependent interface
+    # tangent + Picard-lagged normal stress) — correctness first.
+    cache_allowed = not (use_lu or datum_specs or interface_laws)
+    cache = getattr(solver, "_rotated_linear_cache", None)
+    if cache is not None and not cache_allowed:
+        _destroy_rotated_linear_cache(cache)
+        solver._rotated_linear_cache = None
+        cache = None
+
+    geometry_sig = _rotated_geometry_signature(solver, boundaries) \
+        if cache_allowed else None
+    coefficient_variables = None
+    coefficient_states = None
+    operator_sig = None
+    if cache_allowed:
+        if cache is not None and cache.get("geometry_sig") == geometry_sig \
+                and cache.get("coefficient_variables") is not None:
+            coefficient_variables = cache["coefficient_variables"]
+        else:
+            coefficient_variables = _operator_coefficient_variables(solver)
+        if coefficient_variables is not None:
+            coefficient_states = _coefficient_states(coefficient_variables)
+            # The state counters alone are BLIND to rampable UWexpression
+            # constants (#416: value changes bump nothing) — the constants
+            # signature is the other half of the key.
+            operator_sig = _operator_constants_signature(solver)
+
+    op_ok = False
+    if cache is not None:
+        geom_ok = cache.get("geometry_sig") == geometry_sig
+        op_ok = (geom_ok
+                 and not force_operator_refresh
+                 and coefficient_states is not None
+                 and operator_sig is not None
+                 and cache.get("coefficient_states") == coefficient_states
+                 and cache.get("operator_sig") == operator_sig)
+        # COLLECTIVE verdict: state counters are bumped by rank-local data
+        # writes, so a rank-divergent match here would desync the collective
+        # assembly/PCSetUp calls the verdict gates (the np>1 deadlock class).
+        if mpi.size > 1:
+            verdicts = mpi.comm.allgather((bool(geom_ok), bool(op_ok)))
+            geom_ok = all(v[0] for v in verdicts)
+            op_ok = all(v[1] for v in verdicts)
+        if not geom_ok:
+            # Null before destroying — same double-destroy discipline as
+            # _reset_rotated_solver_cache (#543 review, m4).
+            solver._rotated_linear_cache = None
+            stale, cache = cache, None
+            _destroy_rotated_linear_cache(stale)
+        elif not op_ok:
+            # The operator values are about to be refreshed in place; poison
+            # the stored key NOW so an exception mid-refresh cannot leave a
+            # stale signature that later matches half-updated values.
+            cache["operator_sig"] = None
+
+    if cache is not None:
+        Q, Qt = cache["Q"], cache["Qt"]
+        normal_rows = cache["normal_rows"]
+        datum_map = {}                       # cache_allowed excludes datum solves
+        custom_Pl = cache.get("custom_Pl")
+        rotation_reused = True
+    else:
+        Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
+        custom_Pl = None if use_lu else _build_rotated_custom_Pl(solver, Q, normal_rows)
+        rotation_reused = False
+
+    # The iteration-0 fast path: skip Jacobian assembly / ptap / PCSetUp when
+    # the operator key proves nothing operator-relevant changed AND the
+    # previous solve behaved linearly (converged in <= 1 increment). For a
+    # genuinely nonlinear model the cached operator is the LAST solve's
+    # converged tangent, not this iterate's, so the skip would only trade one
+    # assembly for one wasted increment — the linear hint is self-measured,
+    # no up-front nonlinearity probe.
+    reuse_operator = bool(cache is not None and op_ok
+                          and cache.get("linear_hint", False))
+    workspace_reused = False
+
     # Interface constitutive laws (fault_contact.add_viscous_fault_bc /
     # add_coulomb_fault_bc): the assembler caches the fault-trace geometry
     # once; each iterate it adds the interface force ∫τ(V)δV to the rotated
@@ -688,13 +932,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # operator — full Newton in V, the stiff direction. (Only a future
     # reaction-fed σ_n argument would be Picard-lagged, by choice.)
     interface = None
-    if getattr(solver, "_fault_interface_laws", {}):
+    if interface_laws:
         from underworld3.utilities import fault_contact
         interface = fault_contact._InterfaceAssembler(solver)
     # The null space is built INSIDE the loop, after the first Jacobian assembly:
     # _mode_satisfies_constraints verifies each candidate mode against the
     # ASSEMBLED operator (‖J·m‖ ≈ 0), which an unassembled J cannot support.
-    nsp = None
+    # A cached ctx carries the (geometry-tier) null space it was built with.
+    nsp = cache["ctx"].get("nsp") if (cache is not None
+                                      and cache.get("ctx")) else None
 
     # initial guess (cartesian, composite): warm-start from the fields or zero.
     # A prescribed datum on a COLD start is imposed through the FIRST increment's
@@ -738,11 +984,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # 1/mu pressure-mass Schur pmat (values refreshed in place), the constraint
     # diagonal scale (frozen at the first tangent — only the magnitude matters),
     # and the KSP/PC context (fieldsplit ISs, FMG hierarchy, GAMG setup survive).
-    Ahat = None
+    # A cross-solve cache seeds all of them — the STRUCTURE tier: same objects,
+    # values refreshed in place unless the iteration-0 fast path fires.
+    Ahat = cache["Ahat"] if cache is not None else None
     Atot = None
-    Mp = None
-    ctx = None
-    diag_scale = None
+    ctx = cache["ctx"] if cache is not None else None
+    Mp = ctx["Mp"] if ctx is not None else None
+    diag_scale = cache["diag_scale"] if cache is not None else None
     lin_its = []
     # velocity / pressure sub-KSP LAST-APPLICATION counts, one per Newton increment
     # (iterative path only — the direct-LU path has no sub-KSPs and records None)
@@ -817,6 +1065,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     ref = None
     last_reason = 0
     iters = 0
+    did_assemble = False
     converged = False
     phase = "picard" if continuation else "newton"
     for iters in range(max_it):
@@ -843,11 +1092,22 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             if verbose:
                 mpi.pprint(f"[rotated_bc] continuation: Picard→Newton at iter {iters} "
                            f"(rel |F̂| {rnorm/(r0+1e-300):.2e})")
-        snes.computeJacobian(u, J, Jp)       # Jp carries the 1/mu mass (Schur pmat)
-        if Ahat is None:
-            Ahat = J.ptap(Qt)
+        # Iteration 0 may ride the cross-solve fast path: the cached Ahat still
+        # holds the rotated, constraint-eliminated operator and the cached
+        # KSP/PC is set up on it. Every LATER iteration always reassembles —
+        # that, plus the exact residual measured at every iterate, is the
+        # structural safety net: a wrong skip costs one extra increment, never
+        # a stale solution.
+        assemble = not (reuse_operator and iters == 0)
+        if assemble:
+            did_assemble = True
+            snes.computeJacobian(u, J, Jp)   # Jp carries the 1/mu mass (Schur pmat)
+            if Ahat is None:
+                Ahat = J.ptap(Qt)
+            else:
+                J.ptap(Qt, result=Ahat)      # same nonzero pattern → in-place refresh
         else:
-            J.ptap(Qt, result=Ahat)          # same nonzero pattern → in-place refresh
+            workspace_reused = True
         # The interface tangent is REASSEMBLED at every iterate (that is
         # what makes it consistent Newton, dtau/dV at the current slip
         # rates) and added to a COPY: the ptap-with-result refresh above
@@ -874,7 +1134,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             if ctx is None:
                 Mp = _pressure_mass_schur_pmat(solver)
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
-            elif Mp is not None:
+            elif assemble and Mp is not None:
                 Jp.createSubMatrix(pres_is, pres_is, submat=Mp)   # viscosity may be u-dependent
         if diag_scale is None:
             diag_scale = _velocity_diag_scale(Aop, solver)
@@ -888,8 +1148,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
             xhat.destroy()
             xhat = None
-        else:
+        elif assemble:
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
+        # else: the cached Aop already carries the eliminated constraint
+        # rows/cols from the solve that built it — re-zeroing would bump the
+        # Mat state and force PCSetUp, defeating the fast path.
         if use_lu:
             if ctx is None:
                 ksp_lu = PETSc.KSP().create(comm=dm.comm)
@@ -915,7 +1178,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         else:
             dhat, last_reason, ctx = _solve_rotated_iterative(
                 solver, Aop, bhat, Q, Qt, normal_rows,
-                custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx)
+                custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, verbose=False, ctx=ctx,
+                refresh_operator=assemble)
         lin_its.append(ctx["ksp"].getIterationNumber())
         vel_its_last.append(ctx.get("vel_its_last"))
         pres_its_last.append(ctx.get("pres_its_last"))
@@ -1004,9 +1268,37 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                        f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
-    _destroy_rotated_ksp_ctx(ctx)            # KSP/PC + the owned Schur pmat
-    if Ahat is not None:
-        Ahat.destroy()                       # the reused rotated operator
+    if cache_allowed and ctx is not None and Ahat is not None and not use_lu:
+        # Persist the workspace for the next solve. The stored key describes
+        # the operator values Ahat now holds; linear_hint records whether
+        # this solve behaved linearly (<= 1 increment), which is what
+        # licenses the iteration-0 fast path next time. Q/Qt are SHARED with
+        # the result dict below — one Python wrapper each, so teardown and
+        # GC compose.
+        solver._rotated_linear_cache = {
+            "geometry_sig": geometry_sig,
+            "Q": Q, "Qt": Qt, "normal_rows": normal_rows,
+            "custom_Pl": custom_Pl,
+            "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
+            "coefficient_variables": coefficient_variables,
+            "coefficient_states": coefficient_states,
+            # The stored key must describe what Ahat HOLDS: valid if this
+            # solve reassembled (values current), or if the fast path rode a
+            # key-matched operator untouched. A poisoned solve that exited at
+            # iteration 0 without assembling must not persist a fresh key
+            # against unrefreshed values (#543 review, m2).
+            "operator_sig": (operator_sig if (did_assemble or reuse_operator)
+                             else None),
+            "linear_hint": bool(converged and newton_its <= 1),
+        }
+    else:
+        if cache_allowed:
+            # nothing solvable was built (e.g. an already-converged warm start
+            # on a fresh solver) — leave no partial cache behind.
+            solver._rotated_linear_cache = None
+        _destroy_rotated_ksp_ctx(ctx)        # KSP/PC + the owned Schur pmat
+        if Ahat is not None:
+            Ahat.destroy()                   # the reused rotated operator
     if Atot is not None:
         Atot.destroy()                       # rotated operator + interface term
     if xhat is not None:
@@ -1024,7 +1316,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
             "schur_pre": "none" if use_lu else (ctx or {}).get("schur_pre"),
             "velocity_pc_type": None if use_lu else (ctx or {}).get("velocity_pc_type"),
-            "continuation_switched": continuation and phase == "newton"}
+            "continuation_switched": continuation and phase == "newton",
+            "rotation_reused": rotation_reused,
+            "workspace_reused": workspace_reused}
 
 
 def _build_rotated_custom_Pl(solver, Q, normal_rows):
@@ -1095,17 +1389,26 @@ def _velocity_diag_scale(Ahat, solver):
 
 
 def _destroy_rotated_ksp_ctx(ctx):
-    """Release the reusable rotated-KSP context (KSP and the owned Schur pmat)."""
+    """Release a reusable rotated-KSP context and its owned PETSc objects."""
     if ctx is None:
         return
     if ctx.get("ksp") is not None:
         ctx["ksp"].destroy()
+        ctx["ksp"] = None
     if ctx.get("Mp") is not None:
         ctx["Mp"].destroy()
+        ctx["Mp"] = None
+    if ctx.get("nsp") is not None:
+        ctx["nsp"].destroy()
+        ctx["nsp"] = None
+    if ctx.get("cns") is not None:
+        ctx["cns"].destroy()
+        ctx["cns"] = None
 
 
 def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=False,
-                             custom_Pl=None, nsp=None, Mp=None, ctx=None):
+                             custom_Pl=None, nsp=None, Mp=None, ctx=None,
+                             refresh_operator=True):
     """Solve the rotated saddle with a SELF-CONTAINED fieldsplit-Schur KSP on the
     rotated operator. The velocity block is geometric FMG on the CUSTOM prolongation
     (PR#290, rotated) whenever the solver has a hierarchy — ``set_custom_fmg`` or a
@@ -1138,7 +1441,11 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
     across Newton iterations — the fieldsplit ISs, Schur USER pmat and FMG
     prolongations survive; only the operator-values refresh is paid. The caller
     must keep ``Ahat``/``Mp`` the SAME Mat objects (values updated in place) and
-    release the context with ``_destroy_rotated_ksp_ctx`` when done."""
+    release the context with ``_destroy_rotated_ksp_ctx`` when done.
+
+    ``refresh_operator=False`` is the cross-solve fast path for an exactly
+    unchanged matrix: the KSP/PC/GAMG hierarchy is left untouched and only the
+    right-hand side changes."""
     from underworld3.utilities import custom_mg
     dm = solver.dm
     vel_is = solver._subdict["velocity"][0]
@@ -1320,7 +1627,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
         nsp = ctx["nsp"]
         # Same Mat objects, new values (ptap-with-result / createSubMatrix-with-
         # submat) — poke the KSP so PCSetUp refreshes on the changed operator.
-        ksp.setOperators(Ahat)
+        # refresh_operator=False is the cross-solve fast path for a provably
+        # unchanged matrix: leave the KSP/PC/GAMG setup untouched entirely.
+        if refresh_operator:
+            ksp.setOperators(Ahat)
 
     if nsp is not None:
         nsp.remove(bhat)                              # project EVERY rhs

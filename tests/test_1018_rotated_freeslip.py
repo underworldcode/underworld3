@@ -67,6 +67,211 @@ def test_rotated_freeslip_box_reproduces_essential():
     assert sol.velocity_error(v) < 1e-3
 
 
+def test_rotated_linear_workspace_reuses_unchanged_operator():
+    """Repeated linear solves reuse the rotated workspace across solves.
+
+    RHS-only changes ride the iteration-0 fast path (no Jacobian assembly, no
+    ptap, no PCSetUp — ``workspace_reused``); an operator-coefficient FIELD
+    change is detected by the state-counter key and refreshes the operator
+    values IN PLACE on the same objects (same Q/Ahat/KSP handles — the
+    structure tier); an explicit ``time=`` solve vetoes the fast path."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "Tcache", mesh, 1, degree=1, continuous=True
+    )
+    viscosity = uw.discretisation.MeshVariable(
+        "Etacache", mesh, 1, degree=1, continuous=True
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "Vcache", mesh, mesh.dim, degree=2, continuous=True
+    )
+    pressure = uw.discretisation.MeshVariable(
+        "Pcache", mesh, 1, degree=1, continuous=False
+    )
+    temperature.data[:, 0] = 1.0 + temperature.coords[:, 0]
+    viscosity.data[:, 0] = 1.0
+
+    stokes = uw.systems.Stokes(
+        mesh, velocityField=velocity, pressureField=pressure
+    )
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity.sym[0]
+    stokes.bodyforce = sympy.Matrix([[0.0, -temperature.sym[0]]])
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.petsc_options["snes_type"] = "ksponly"
+    stokes.tolerance = 1.0e-8
+
+    stokes.solve()
+    velocity_1 = velocity.data.copy()
+    cache_1 = stokes._rotated_linear_cache
+    assert cache_1 is not None, "no workspace cached after a linear rotated solve"
+    handles_1 = (
+        cache_1["Q"].handle,
+        cache_1["Ahat"].handle,
+        cache_1["ctx"]["ksp"].handle,
+    )
+    assert not stokes._rotated_freeslip_info["workspace_reused"]
+    assert not stokes._rotated_freeslip_info["rotation_reused"]
+
+    # RHS-only change: fast path (same handles, no reassembly), and the
+    # linear-in-forcing solution exactly doubles.
+    temperature.data[:, 0] *= 2.0
+    stokes.solve(zero_init_guess=False)
+
+    cache_2 = stokes._rotated_linear_cache
+    handles_2 = (
+        cache_2["Q"].handle,
+        cache_2["Ahat"].handle,
+        cache_2["ctx"]["ksp"].handle,
+    )
+    assert handles_2 == handles_1
+    assert stokes._rotated_freeslip_info["workspace_reused"]
+    assert stokes._rotated_freeslip_info["rotation_reused"]
+    relative_scaling_error = (
+        np.linalg.norm(velocity.data - 2.0 * velocity_1)
+        / np.linalg.norm(2.0 * velocity_1)
+    )
+    assert relative_scaling_error < 1.0e-6
+
+    # Operator-coefficient FIELD change: the state-counter key catches it, the
+    # operator values are refreshed in place (same objects, no fast path).
+    velocity_2 = velocity.data.copy()
+    viscosity.data[:, 0] *= 2.0
+    stokes.solve(zero_init_guess=False)
+
+    assert not stokes._rotated_freeslip_info["workspace_reused"]
+    assert stokes._rotated_freeslip_info["rotation_reused"]
+    assert stokes._rotated_linear_cache["ctx"]["ksp"].handle == handles_1[2]
+    viscosity_scaling_error = (
+        np.linalg.norm(velocity.data - 0.5 * velocity_2)
+        / np.linalg.norm(0.5 * velocity_2)
+    )
+    assert viscosity_scaling_error < 1.0e-6
+
+    # An explicit time= solve must veto the fast path (petsc_t reaches the
+    # kernels outside any state counter), while the workspace objects persist.
+    refreshed_velocity = velocity.data.copy()
+    stokes.solve(zero_init_guess=False, time=0.5)
+    assert not stokes._rotated_freeslip_info["workspace_reused"]
+    assert stokes._rotated_linear_cache["ctx"]["ksp"].handle == handles_1[2]
+    time_refresh_error = (
+        np.linalg.norm(velocity.data - refreshed_velocity)
+        / np.linalg.norm(refreshed_velocity)
+    )
+    assert time_refresh_error < 1.0e-6
+
+
+def _rampable_rotated_stokes(mesh, k_expr, tag, forcing=None):
+    """Rotated free-slip Stokes with viscosity given by a rampable
+    UWexpression constant (the #416 idiom used by every continuation
+    driver). ``forcing`` optionally supplies a scalar field for the body
+    force (an RHS-only mesh variable); default is a fixed analytic load."""
+    v = uw.discretisation.MeshVariable(f"v{tag}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"p{tag}", mesh, 1, degree=1,
+                                       continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = k_expr
+    x, y = mesh.X
+    load = forcing.sym[0] if forcing is not None \
+        else sympy.sin(sympy.pi * x) * sympy.cos(sympy.pi * y)
+    s.bodyforce = sympy.Matrix([[0.0, load]])
+    s.penalty = 0.0
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+    s.petsc_use_pressure_nullspace = True
+    return s, v
+
+
+def test_rotated_workspace_constant_ramp_invalidates():
+    """THE blind-spot regression (PR #418 review, unresolved finding): a
+    rampable UWexpression constant changes value with NO state-counter bump
+    (#416 contract). The workspace key must see it through the packed
+    constants[] signature: the fast path must NOT fire, and the second
+    solution must match a fresh-solver control at the ramped viscosity.
+
+    Fail-before validated: on the state-counter-only key (the ported
+    original), solve 2 reports workspace_reused=True — the flag lies about a
+    stale operator (the answer is still rescued by the loop's structural
+    safety net, unlike the original one-shot path which returned a
+    bit-identical stale solution)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    T = uw.discretisation.MeshVariable("Trmp", mesh, 1, degree=1)
+    xy = T.coords
+    T.data[:, 0] = np.sin(np.pi * xy[:, 0]) * np.cos(np.pi * xy[:, 1])
+
+    k = uw.function.expression(r"k_\eta", 1.0, "rampable viscosity")
+    s1, v1 = _rampable_rotated_stokes(mesh, k, "Rmp", forcing=T)
+    s1.solve()
+
+    # negative control for the test itself: an RHS-only field change must
+    # ride the fast path, proving the skip is ARMED before we assert the
+    # ramp defeats it.
+    T.data[:, 0] *= 2.0
+    s1.solve(zero_init_guess=False)
+    assert s1._rotated_freeslip_info["workspace_reused"], (
+        "fast path did not fire on an RHS-only change — the ramp assertion "
+        "below would pass vacuously")
+    u1 = v1.data.copy()
+
+    # THE RAMP: value change only — no .sym rebuild, no state bump anywhere
+    k.sym = 2.0
+    s1.solve(zero_init_guess=False)
+    info = s1._rotated_freeslip_info
+    assert not info["workspace_reused"], (
+        "constant ramp rode the fast path — the operator key is blind to "
+        "rampable constants again (#416 / PR #418 review finding)")
+    assert info["rotation_reused"], "geometry tier should survive a ramp"
+    u2 = v1.data.copy()
+
+    # fresh-solver control at the ramped viscosity, same forcing
+    k_c = uw.function.expression(r"k_c", 2.0, "control viscosity")
+    s_c, v_c = _rampable_rotated_stokes(mesh, k_c, "Ctl", forcing=T)
+    s_c.solve()
+    err = np.linalg.norm(u2 - v_c.data) / np.linalg.norm(v_c.data)
+    assert err < 1e-6, f"ramped solve differs from fresh control by {err:.2e}"
+    # and the linear model's exact halved-velocity scaling
+    half = np.linalg.norm(u2 - 0.5 * u1) / np.linalg.norm(0.5 * u1)
+    assert half < 1e-6, f"ramped solve is not the halved velocity ({half:.2e})"
+
+
+def test_rotated_workspace_deform_invalidates():
+    """mesh.deform between solves: geometry changed, so the whole workspace
+    must be rebuilt (rotation_reused False) and the answer must match a fresh
+    solver on the deformed mesh."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(10, 10), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+
+    k = uw.function.expression(r"k_d", 1.0, "viscosity")
+    s1, v1 = _rampable_rotated_stokes(mesh, k, "Dfm")
+    s1.solve()
+    assert s1._rotated_linear_cache is not None
+
+    # bump the top boundary (the free-surface pattern)
+    coords = mesh.X.coords.copy()
+    coords[:, 1] += 0.02 * coords[:, 1] * np.sin(np.pi * coords[:, 0])
+    mesh.deform(coords)
+
+    s1.solve()
+    info = s1._rotated_freeslip_info
+    assert not info["rotation_reused"], (
+        "workspace survived a mesh.deform — stale rotation Q in use")
+    assert not info["workspace_reused"]
+
+    k_c = uw.function.expression(r"k_dc", 1.0, "control viscosity")
+    s_c, v_c = _rampable_rotated_stokes(mesh, k_c, "DfC")
+    s_c.solve()
+    err = np.linalg.norm(v1.data - v_c.data) / np.linalg.norm(v_c.data)
+    assert err < 1e-6, (
+        f"post-deform solve differs from fresh control by {err:.2e}")
+
+
 @pytest.mark.level_2
 def test_rotated_freeslip_spherical_shell_3d():
     """3D spherical shell, free-slip inner+outer (the Zhong #248 configuration):
