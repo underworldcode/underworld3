@@ -3070,8 +3070,10 @@ class SolverBaseClass(uw_object):
         ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
 
         ``mass`` de-smears the nodal reaction with ``"lumped"`` or ``"consistent"``
-        boundary mass. ``"auto"`` (default) selects lumped recovery for 2D traces and
-        3D P1 triangles, and the required consistent solve for 3D P2 triangles.
+        boundary mass. ``"auto"`` (default) selects lumped recovery for 2D P1/P2
+        traces and 3D P1 triangles, and the consistent solve for 3D P2 triangles and
+        2D traces of degree >= 3 (where row-sum lumping is respectively invalid and
+        only O(h) pointwise).
         ``remove_mean`` subtracts the boundary mean — leave ``False`` for a physical
         flux (the mean is the Nusselt number); ``True`` gives a gauge-free field.
 
