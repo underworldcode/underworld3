@@ -1023,13 +1023,19 @@ def evaluate_nd(   expr,
         # same fix that lets swarm migration claim them. Serial / non-simplex
         # keep the cell-wall test (bit-identical). See
         # parallel-repeated-solve-corruption.md.
-        in_or_not = mesh.points_in_domain(coords_array, strict_validation=False)
+        #
+        # The classification also hands back the cells it located on the way,
+        # so petsc_interpolate does not look those points up again (#551
+        # item 2).
+        in_or_not, cell_hints = mesh._classify_points_in_domain(
+            coords_array, strict_validation=False)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
                                     coord_sys,
                                     mesh,
                                     simplify=simplify,
-                                    verbose=verbose, )
+                                    verbose=verbose,
+                                    cell_hints=cell_hints[in_or_not], )
 
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
@@ -1093,7 +1099,8 @@ def petsc_interpolate(   expr,
                 mesh=None,
                 other_arguments=None,
                 simplify=True,
-                verbose=False, ):
+                verbose=False,
+                cell_hints=None, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -1112,6 +1119,14 @@ def petsc_interpolate(   expr,
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
         Not yet implemented.
+    cell_hints: numpy.ndarray, optional
+        One owning cell index per coordinate, as returned by
+        ``Mesh._classify_points_in_domain``: a cell the classification
+        already located, or ``-1`` for "not looked up", which this function
+        then locates itself. Supplying it means those points are not located
+        twice. Hints must have been located against ``mesh``; hints for any
+        other mesh in the expression are ignored and that mesh locates its
+        own.
 
     Notes
     -----
@@ -1217,6 +1232,10 @@ def petsc_interpolate(   expr,
 
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
+
+    # Any cell hints the caller supplied were located against THIS mesh; an
+    # expression spanning two meshes must locate the second one itself.
+    hinted_mesh = mesh
 
     def interpolate_vars_on_mesh( varfns, np.ndarray coords ):
         """
@@ -1325,8 +1344,24 @@ def petsc_interpolate(   expr,
             # NOT AUTHORITATIVE — no hint at all: DMLocatePoints decides,
             # dropped points surface in unlocated_mask and are filled by the
             # RBF fallback below.
+            #
+            # Cells the caller's classification already located are reused;
+            # only the ones it left at -1 are searched for, and only here, on
+            # the cache miss that actually needs them. That is what makes it
+            # one location per point per call rather than two.
             if authoritative:
-                cells = mesh._robust_owning_cells(coords)
+                if cell_hints is not None and mesh is hinted_mesh:
+                    cells = np.ascontiguousarray(cell_hints, dtype=np.int64)
+                    if cells.shape[0] != coords.shape[0]:
+                        raise RuntimeError(
+                            "cell_hints must carry one cell index per coordinate "
+                            f"({cells.shape[0]} hints for {coords.shape[0]} points)."
+                        )
+                    unhinted = np.where(cells < 0)[0]
+                    if unhinted.shape[0] > 0:
+                        cells[unhinted] = mesh._robust_owning_cells(coords[unhinted])
+                else:
+                    cells = mesh._robust_owning_cells(coords)
             else:
                 cells = None
 

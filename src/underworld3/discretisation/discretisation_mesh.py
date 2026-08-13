@@ -5879,6 +5879,38 @@ class Mesh(Stateful, uw_object):
             Whether to perform strict validation near boundaries
 
         """
+        return self._classify_points_in_domain(points, strict_validation)[0]
+
+    def _classify_points_in_domain(self, points, strict_validation=True):
+        """In/out classification, keeping the owning cells it had to locate.
+
+        ``points_in_domain`` located the near-boundary points and threw the
+        owning cells away, leaving the interpolator to locate them a second
+        time. This hands them over instead, so evaluation locates each point
+        once (#551 item 2).
+
+        Parameters
+        ----------
+        points : array-like
+            Coordinate array in any physical unit system (will be
+            auto-converted).
+        strict_validation : bool
+            Whether to perform strict validation near boundaries.
+
+        Returns
+        -------
+        in_or_not : numpy.ndarray of bool
+            Exactly what :meth:`points_in_domain` returns.
+        cells : numpy.ndarray of int
+            Owning cell for the points the classification actually located,
+            at the evaluation face tolerance (:meth:`_robust_owning_cells`).
+            ``-1`` everywhere else — for an EXTERIOR point that means "not in
+            the local mesh"; for an INTERIOR point it means "not looked up",
+            because the boundary-sign test settled it without a search. A
+            caller that needs a cell for every interior point locates the
+            ``-1`` entries itself, and only when it needs them: nothing here
+            searches on the classifier's behalf.
+        """
         # Convert points to model coordinates using the unified conversion function
         # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
         import underworld3 as uw
@@ -5893,7 +5925,10 @@ class Mesh(Stateful, uw_object):
         max_radius = self.get_max_radius()
 
         if model_points.shape[0] == 0:
-            return numpy.array([], dtype=bool)
+            return (numpy.array([], dtype=bool),
+                    numpy.array([], dtype=numpy.int64))
+
+        cells = numpy.full(model_points.shape[0], -1, dtype=numpy.int64)
 
         # Cd-1 surface mesh: no boundary-face control points exist
         # (see _mark_local_boundary_faces_inside_and_out). Per the
@@ -5901,7 +5936,8 @@ class Mesh(Stateful, uw_object):
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
         if self.boundary_face_control_points_kdtree is None:
-            return self._get_closest_local_cells_internal(model_points) != -1
+            in_or_not = self._get_closest_local_cells_internal(model_points) != -1
+            return in_or_not, cells
 
         dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
             model_points, k=1, sqr_dists=True
@@ -5929,11 +5965,17 @@ class Mesh(Stateful, uw_object):
         # cell (>= 0) for any point genuinely in/on the mesh and -1 only for
         # true exterior. Serial / non-simplex keep the cell-wall test
         # (bit-identical to the validated baseline).
+        #
+        # Only the robust locator's answer is kept as a cell hint: it is the
+        # same call the evaluation path makes, so keeping it saves a repeat.
+        # The cell-wall test runs at a different face tolerance and its answer
+        # is a classification, not a hint.
         near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
         near_boundary_points = model_points[near_boundary]
 
         if self._eval_use_robust_location():
-            in_or_not[near_boundary] = self._robust_owning_cells(near_boundary_points) >= 0
+            cells[near_boundary] = self._robust_owning_cells(near_boundary_points)
+            in_or_not[near_boundary] = cells[near_boundary] >= 0
         else:
             in_or_not[near_boundary] = (
                 self._get_closest_local_cells_internal(near_boundary_points) != -1
@@ -5943,11 +5985,15 @@ class Mesh(Stateful, uw_object):
             chosen_ones = numpy.where(in_or_not == True)[0]
             chosen_points = model_points[chosen_ones]
             if self._eval_use_robust_location():
-                in_or_not[chosen_ones] = self._robust_owning_cells(chosen_points) >= 0
+                cells[chosen_ones] = self._robust_owning_cells(chosen_points)
+                in_or_not[chosen_ones] = cells[chosen_ones] >= 0
             else:
                 in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
 
-        return in_or_not
+        # A point demoted to exterior keeps no hint: it goes to RBF.
+        cells[~in_or_not] = -1
+
+        return in_or_not, cells
 
     @timing.routine_timer_decorator
     def get_closest_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
