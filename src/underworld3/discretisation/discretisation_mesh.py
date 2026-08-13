@@ -5288,6 +5288,12 @@ class Mesh(Stateful, uw_object):
         control_points_list = []
         control_points_cell_list = []
         centroids_list = []
+        # Largest distance from a cell centroid to one of that cell's own
+        # vertices, maximised over local cells. A convex cell is the convex
+        # hull of its vertices, so every point of it lies within this distance
+        # of its centroid — which makes it the rejection radius the locator
+        # needs (see _get_closest_local_cells_internal).
+        cell_reach = 0.0
 
         for cell, cell_id in enumerate(range(cStart, cEnd)):
 
@@ -5297,6 +5303,8 @@ class Mesh(Stateful, uw_object):
             cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
             cell_centroid = cell_point_coords.mean(axis=0)
             centroids_list.append(cell_centroid)
+            cell_reach = max(cell_reach, float(numpy.linalg.norm(
+                cell_point_coords - cell_centroid, axis=1).max()))
 
             # for face in range(cell_num_faces):
 
@@ -5359,6 +5367,10 @@ class Mesh(Stateful, uw_object):
         self._nav_centroids = numpy.array(
             centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
+
+        # Rejection radius for the lost-point walk. Rebuilt with the kd-tree
+        # (i.e. invalidated by deform / adapt along with _index).
+        self._local_cell_reach = cell_reach
 
         return
 
@@ -5984,6 +5996,10 @@ class Mesh(Stateful, uw_object):
             # CRITICAL: Must return 1D array, not 2D, for Cython buffer compatibility
             return numpy.array([], dtype=numpy.int64)
 
+    # Safety factor on the local cell reach used to reject a query point
+    # before the lost-point walk. See _get_closest_local_cells_internal.
+    _LOCATOR_REACH_MARGIN = 2.0
+
     def _get_closest_local_cells_internal(
         self,
         coords: numpy.ndarray,
@@ -5996,6 +6012,12 @@ class Mesh(Stateful, uw_object):
         be exactly the owning cell, but if the mesh is deformed, this
         is not guaranteed. Also compares the distance from the cell to the
         point - if this is larger than the "cell size" then returns -1
+
+        A point the first containment test rejects is looked for among the
+        nearest cell centroids. Points too far from the local mesh to be in
+        any of its cells are rejected before that walk starts, and a point
+        leaves the walk as soon as a cell claims it, so the walk costs what is
+        still lost rather than what was asked for.
 
         ``on_boundary`` and ``tol`` are forwarded to the in-cell
         containment test (see ``_test_if_points_in_cells_internal``).
@@ -6046,7 +6068,8 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
+            control_point_distance, closest_points = self._index.query(
+                coords, k=1, sqr_dists=False)
             # >= : valid indices are 0..n-1, and the empty-tree sentinel
             # (0 with n=0) must trip this guard, not index _indexMap (#399).
             if np.any(closest_points >= self._index.n):
@@ -6072,7 +6095,32 @@ class Mesh(Stateful, uw_object):
         cells[~inside] = -1
         lost_points = np.where(inside == False)[0]
 
-        # Part 2 - try to find the lost points by walking nearby cells
+        if lost_points.shape[0] == 0:
+            return cells
+
+        # Part 2 - try to find the lost points by walking nearby cells.
+        #
+        # Reject what cannot possibly be found, first. Every cell contributes
+        # its centroid to the control-point kd-tree, so a point lying in cell c
+        # is at most |p - centroid_c| from its NEAREST control point, and a
+        # convex cell puts that within the cell's vertex reach. A lost point
+        # whose nearest control point is beyond the largest local reach is in
+        # no local cell and the walk has nothing to find for it. Without this
+        # every genuinely foreign point pays the full 50-neighbour walk — 51
+        # containment tests against 1 for an owned point — and the foreign
+        # fraction is exactly what grows with rank count (#551).
+        #
+        # The margin is deliberately loose. The in-cell test admits a thin
+        # slab outside each face (``tol``), and a badly shaped cell expands
+        # further under that slab than a well-shaped one; a factor of two on
+        # the reach covers both with room to spare while still rejecting
+        # anything more than about one cell away from the local mesh.
+        reach = getattr(self, "_local_cell_reach", None)
+        if reach is not None and reach > 0.0:
+            reach = self._LOCATOR_REACH_MARGIN * reach
+            lost_points = lost_points[control_point_distance[lost_points] <= reach]
+            if lost_points.shape[0] == 0:
+                return cells
 
         # Size by the nav-DM cell count, which is what _centroid_index
         # was built from (includes ghost cells on manifold meshes).
@@ -6082,22 +6130,42 @@ class Mesh(Stateful, uw_object):
         num_local_cells = nav_centroids.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
-        dist2, closest_centroids = self._centroid_index.query(
+        centroid_distance, closest_centroids = self._centroid_index.query(
             coords[lost_points], k=num_testable_neighbours, sqr_dists=False
         )
+        # The kd-tree drops the neighbour axis at k == 1 (a rank owning a
+        # single cell); the walk indexes it either way.
+        centroid_distance = centroid_distance.reshape(lost_points.shape[0], -1)
+        closest_centroids = closest_centroids.reshape(lost_points.shape[0], -1)
 
         # This number is close to the point-point coordination value in 3D unstructured
         # grids (by inspection)
 
+        # The working set shrinks: a point drops out as soon as a neighbour
+        # claims it, or as soon as the neighbour distances (sorted, so
+        # monotonic in i) pass the rejection radius. The nearest containing
+        # centroid therefore wins, which also makes the answer independent of
+        # whether some OTHER point in the same batch is findable — previously
+        # a single unlocatable point kept every already-found point in the
+        # test set for all 50 rounds, and a shared-face point could be
+        # reassigned to a further cell in a later round.
+        working = np.arange(lost_points.shape[0])
         for i in range(0, num_testable_neighbours):
 
+            if reach is not None and reach > 0.0:
+                working = working[centroid_distance[working, i] <= reach]
+                if working.shape[0] == 0:
+                    break
+
+            candidate_cells = closest_centroids[working, i]
             inside = self._test_if_points_in_cells_internal(
-                coords[lost_points], closest_centroids[:, i],
+                coords[lost_points[working]], candidate_cells,
                 on_boundary=on_boundary, tol=tol,
             )
-            cells[lost_points[inside]] = closest_centroids[inside, i]
+            cells[lost_points[working[inside]]] = candidate_cells[inside]
 
-            if np.count_nonzero(cells == -1) == 0:
+            working = working[~inside]
+            if working.shape[0] == 0:
                 break
 
         return cells
