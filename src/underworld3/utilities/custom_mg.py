@@ -595,7 +595,8 @@ def _assert_no_zero_columns_serial(P_csr, level):
             f"operator would be singular.")
 
 
-def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
+def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
+                    ksp=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
@@ -623,8 +624,19 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None):
     fixed)."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
+    opts = PETSc.Options()
     multigrid_options.geometric_mg_bundle(coarse=coarse, smoother=smoother).apply(
-        PETSc.Options(), prefix, owned=owned)
+        opts, prefix, owned=owned)
+    # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
+    # between applications, so its KSP must judge convergence flexibly), but on
+    # the top-level path the KSP consumed its options long before this
+    # injection runs, so a database write alone never takes effect. Apply the
+    # RESOLVED value — the bundle's, or the user's own where the ownership
+    # latch left it alone — to the live object. The fieldsplit velocity
+    # sub-KSP does not need this: its ``setFromOptions`` runs at the parent's
+    # ``PCSetUp``, after the write.
+    if ksp is not None:
+        ksp.setType(opts.getString(prefix + "ksp_type", ksp.getType()))
     pc.setType("mg")
     pc.setMGLevels(nlev)
     pc.setMGType(PETSc.PC.MGType.FULL)
@@ -659,7 +671,7 @@ def _install_transfers(solver, Ps, verbose=False):
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
         _configure_pcmg(ksp.getPC(), Ps,
                         smoother=solver._mg_smoother_variant,
-                        owned=solver._managed_pc_options)
+                        owned=solver._managed_pc_options, ksp=ksp)
         if verbose:
             from underworld3 import mpi
             mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
@@ -693,6 +705,13 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
         snes.computeJacobian(x0, J, Pmat)
     except PETSc.Error:
         # fallback: throwaway max_it=0 solve assembles + splits the operator
+        solver._record_pc_fallback(
+            "custom_mg.velocity_block_assembly",
+            requested="direct Jacobian assembly (computeFunction/computeJacobian)",
+            installed="throwaway max_it=0 assembly route; same PC installed",
+            reason="build_failed",
+            detail="snes.computeJacobian raised; the operator is assembled by "
+                   "a zero-iteration solve instead")
         saved = (solver.petsc_options.getString("snes_max_it")
                  if solver.petsc_options.hasName("snes_max_it") else None)
         solver.petsc_options["snes_max_it"] = 0
@@ -843,8 +862,14 @@ class CustomMGHierarchy:
         except Exception:
             # Sanctioned swallow: setUp can fail on a not-yet-fully-configured
             # SNES (pre-solve injection). The install paths call setUp again;
-            # the finest map then reads the DM's current global section.
-            pass
+            # the finest map then reads the DM's current global section. The
+            # skip is recorded so "the section was finalized" is checkable.
+            solver._record_pc_fallback(
+                "custom_mg.presolve_setup",
+                requested="pre-build snes.setUp() (finalize the DM section)",
+                installed="deferred to install-time setUp",
+                reason="check_skipped",
+                detail="setUp raised on the not-yet-fully-configured SNES")
 
         coords, maps, ncomp = [], [], []
         for k, mesh in enumerate(self.level_meshes):
@@ -923,7 +948,15 @@ class CustomMGHierarchy:
         try:
             op_n = int(solver.snes.getJacobian()[0].getSize()[0])
         except Exception:
-            return                                   # can't read operator -> skip
+            # Sanctioned: no readable operator to check against — record the
+            # skipped guard rather than silently waiving it (#484).
+            solver._record_pc_fallback(
+                "custom_mg.finest_operator_check",
+                requested="finest reduced-map vs operator span check",
+                installed="unchecked",
+                reason="check_skipped",
+                detail="could not read the assembled operator")
+            return
         if op_n <= 0:
             return
         if parallel:
@@ -944,6 +977,53 @@ class CustomMGHierarchy:
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
         _install_transfers(solver, self.transfers, verbose=verbose)
+
+
+class _DMLevelView:
+    """A mesh-shaped view over one DM of a native ``refine()`` hierarchy.
+
+    ``CustomMGHierarchy`` consumes *meshes*, but the requested-native source in
+    :func:`build_transfers` (#478) has only the raw ``mesh.dm_hierarchy`` DMs.
+    This adapter provides exactly what a coarse level is asked for: ``.dm``
+    (used by ``_clone_dm_with_solver_discretisation`` — the hierarchy DMs carry
+    the boundary labels ``refine()`` propagates, which is all copyDS needs)
+    plus ``_get_coords_for_basis``, delegated UNBOUND to
+    ``discretisation.Mesh`` so there is one implementation. That method reads
+    only ``self.dm`` and the four scalars copied here (``dim``, ``cdim``,
+    ``isSimplex``, ``qdegree`` — shared by every level of a uniform
+    refinement), which is what makes the unbound call safe. No full ``Mesh``
+    is built: a coarse MG level needs no variables, caches, or registries.
+    """
+
+    def __init__(self, dm, fine_mesh):
+        # A CLONE, never the hierarchy DM itself: the base (gmsh-imported)
+        # level may need its coordinate field repaired below, and the shared
+        # hierarchy DMs also feed the native Stokes FMG route.
+        self.dm = dm.clone()
+        self.dim = fine_mesh.dim
+        self.cdim = fine_mesh.cdim
+        self.isSimplex = fine_mesh.isSimplex
+        self.qdegree = fine_mesh.qdegree
+
+        # The gmsh-imported BASE level carries section-only coordinates (its
+        # coordinate field is a PetscContainer, no PetscFE), and
+        # DMCreateInterpolation from such a source silently returns a ZERO
+        # matrix (measured) — _get_coords_for_basis would then hand every
+        # level-0 node the coordinate (0,0) and the transfer build collapses.
+        # refine() gives the child levels an FE coordinate space; give the
+        # clone's base the same: P1 Lagrange on the identical vertex layout.
+        cdm = self.dm.getCoordinateDM()
+        field = cdm.getField(0)
+        fobj = field[0] if isinstance(field, tuple) else field
+        if not isinstance(fobj, PETSc.FE):
+            fe = PETSc.FE().createLagrange(self.dim, self.cdim, self.isSimplex,
+                                           1, self.qdegree, comm=PETSc.COMM_SELF)
+            cdm.setField(0, fe)
+            cdm.createDS()
+
+    def _get_coords_for_basis(self, degree, continuous):
+        from underworld3.discretisation import Mesh
+        return Mesh._get_coords_for_basis(self, degree, continuous)
 
 
 # --------------------------------------------------------------------------- #
@@ -976,8 +1056,9 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
 
 def build_transfers(solver, field_id=None):
     """The custom-P prolongations this solver should drive, built and ready to
-    install — from either a solver-set hierarchy (``set_custom_fmg``) or a
-    **mesh-owned** one (a ``mesh.adapt`` refinement child).
+    install — from a solver-set hierarchy (``set_custom_fmg``), a **mesh-owned**
+    one (a ``mesh.adapt`` refinement child), or a **requested-native** one
+    (explicit ``preconditioner="fmg"`` on a single-field solver, #478).
 
     This is the shared resolution rule for every route that can drive custom-P
     multigrid: the standard solve path via :func:`auto_inject_custom_mg`, and the
@@ -985,12 +1066,20 @@ def build_transfers(solver, field_id=None):
     ``utilities.rotated_bc`` and so never reaches the standard injection hook
     (#467). Both must answer "which hierarchy does this solver get?" the same way.
 
+    Resolution order: **solver-set > mesh-owned > requested-native.** The first
+    is a DEMAND (build errors raise — the user registered it explicitly); the
+    other two are PREFERENCES, built through the same opportunistic arm
+    (barycentric, RBF retry, degrade to the solver's default preconditioner —
+    every step recorded in ``solver.pc_fallbacks``).
+
     A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
     coarse tail), so a :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]``
     targeting ``field_id`` (0 for the Stokes velocity block, None for
     scalar/vector) is built lazily on first solve — every solver on an adapted
-    mesh drives geometric MG with no per-solver call. A solver-set hierarchy (if
-    present) always wins.
+    mesh drives geometric MG with no per-solver call. The requested-native
+    source instead wraps the mesh's own ``dm_hierarchy`` tail in
+    :class:`_DMLevelView` adapters — the same coarse levels native FMG would
+    use, driven through injection-free custom-P transfers.
 
     Parameters
     ----------
@@ -1025,10 +1114,46 @@ def build_transfers(solver, field_id=None):
     # so it is faithful to the operator on adapt children too — including scalar
     # semi-Lagrangian advection-diffusion (which earlier had to be skipped).
     coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
-    if coarse is None:
+    if coarse is not None:
+        # An EXPLICIT preconditioner choice beats the opportunistic pickup. Before
+        # this guard, `solver.preconditioner = "gamg"` on an adapt child was
+        # silently clobbered back to the custom-P PCMG at solve time (measured:
+        # both arms of test_0842's fmg-vs-gamg comparison ran pc_type=mg), so a
+        # user could not opt out and any FMG-vs-GAMG comparison was vacuous.
+        # `_pc_user_override` is the same statement in the other spelling: the
+        # solver's option manager has latched "the user owns this block's pc_type"
+        # (they wrote a pc_type of their own into petsc_options), and an
+        # opportunistic pickup must stand down for exactly the same reason.
+        # "auto" (the default) still picks up the mesh-owned hierarchy.
+        # NOTE the arity: this function returns a 2-tuple, never bare None — a bare
+        # `return` here is what turned the gate into a TypeError at the call site
+        # when this hunk migrated from auto_inject_custom_mg (which returns nothing)
+        # during the #488 x #471 merge.
+        if (getattr(solver, "_preconditioner", "auto") == "gamg"
+                or getattr(solver, "_pc_user_override", False)):
+            return None, None
+        level_tail = list(coarse)
+        builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
+    elif getattr(solver, "_pc_single_field_geo_requested", False):
+        # Requested-native source (#478): an explicit `preconditioner="fmg"`
+        # on a single-field solver. The gate in _apply_preconditioner_options
+        # set the flag only when the mesh reported a hierarchy, but re-check
+        # here — a remesh between build and solve can collapse it, and this
+        # arm must degrade readably, never crash a solve.
+        hierarchy_dms = list(getattr(solver.mesh, "dm_hierarchy", []) or [])
+        if len(hierarchy_dms) < 2:
+            solver._record_pc_fallback(
+                "custom_mg.requested_native",
+                requested="custom-P geometric MG over mesh.dm_hierarchy",
+                installed="default preconditioner",
+                reason="unavailable",
+                detail="the refinement hierarchy is gone (collapsed by a "
+                       "remesh between build and solve)")
+            return None, None
+        level_tail = [_DMLevelView(dm, solver.mesh) for dm in hierarchy_dms[:-1]]
+        builder = "barycentric"
+    else:
         return None, None                   # nothing to inject
-
-    builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
     # Retry with the RBF builder before abandoning geometric MG. The
     # barycentric builder has LOCAL support: it re-triangulates the coarse
     # DOF cloud and locates each fine DOF in one simplex, so a coarse DOF
@@ -1044,7 +1169,7 @@ def build_transfers(solver, field_id=None):
     _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
     h = Ps = None
     for _i, _b in enumerate(_attempts):
-        h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=_b,
+        h = CustomMGHierarchy(level_tail + [solver.mesh], builder=_b,
                               field_id=field_id)
         try:
             Ps = h.build(solver)
@@ -1052,6 +1177,13 @@ def build_transfers(solver, field_id=None):
         except Exception as exc:            # pragma: no cover - defensive
             import warnings
             if _i + 1 < len(_attempts):
+                solver._record_pc_fallback(
+                    "custom_mg.transfer_builder",
+                    requested=_b,
+                    installed=f"{_attempts[_i + 1]} (DENSE transfer)",
+                    reason="build_failed",
+                    detail=f"{exc}; the RBF rescue is a performance cliff — "
+                           f"its transfer is dense (nnz/row == n_coarse), see #424")
                 warnings.warn(
                     f"custom_mg: {_b} transfer build failed ({exc}); "
                     f"retrying with the '{_attempts[_i + 1]}' builder, which "
@@ -1063,9 +1195,15 @@ def build_transfers(solver, field_id=None):
                     f"it as a performance cliff and fix the cause, not the "
                     f"symptom (#424).")
                 continue
+            solver._record_pc_fallback(
+                "custom_mg.build",
+                requested=f"custom-P geometric MG ({' -> '.join(_attempts)})",
+                installed="default preconditioner",
+                reason="build_failed",
+                detail=str(exc))
             warnings.warn(
-                f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
-                "solver's default preconditioner.")
+                f"custom_mg: opportunistic custom-P FMG build failed ({exc}); "
+                "using the solver's default preconditioner.")
             return None, None
 
     return h, Ps
@@ -1086,8 +1224,13 @@ def auto_inject_custom_mg(solver, field_id=None):
         inject_custom_mg(solver)
         return
 
-    h, Ps = build_transfers(solver, field_id=field_id)
-    if h is None:
+    # build_transfers' contract is a 2-tuple, but a "no hierarchy" answer has
+    # been written as a bare `return` before (the #488 x #471 merge shipped
+    # exactly that inside the explicit-gamg gate): a None here must mean
+    # "nothing to inject", never a TypeError mid-solve.
+    resolved = build_transfers(solver, field_id=field_id)
+    h, Ps = resolved if resolved is not None else (None, None)
+    if h is None or Ps is None:
         return
 
     # Dimensional guard (checkable for the monolithic operator, field_id is None):
@@ -1107,6 +1250,14 @@ def auto_inject_custom_mg(solver, field_id=None):
             # default preconditioner (round-3b annulus finding, 2026-07).
             if op_n > 0 and pr != op_n:
                 import warnings
+                solver._record_pc_fallback(
+                    "custom_mg.dimensional_guard",
+                    requested="custom-P geometric MG hierarchy",
+                    installed="default preconditioner",
+                    reason="unavailable",
+                    detail=f"finest transfer {pr}x{pc} is incompatible with the "
+                           f"operator (size {op_n}); set_custom_fmg() an explicit "
+                           f"hierarchy to override")
                 warnings.warn(
                     "custom_mg: mesh-owned adapt-mesh FMG transfer is incompatible "
                     f"with this solver's operator (transfer {pr}x{pc}, operator {op_n}); "
@@ -1114,10 +1265,22 @@ def auto_inject_custom_mg(solver, field_id=None):
                     "set_custom_fmg() an explicit hierarchy to override.")
                 return
         except Exception:
-            pass                            # can't check -> don't block working cases
+            # Sanctioned: an unreadable operator must not block working cases —
+            # but the skipped guard is on the record.
+            solver._record_pc_fallback(
+                "custom_mg.dimensional_guard",
+                requested="finest-transfer vs operator size check",
+                installed="unchecked (hierarchy installed anyway)",
+                reason="check_skipped",
+                detail="could not read the assembled operator to check the "
+                       "finest transfer against it")
 
     h.install(solver, verbose=False)
-    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
+    # auto_cached marks this as a RESOLUTION product (auto/fmg install), not a
+    # user registration: the preconditioner setter drops it so a later explicit
+    # choice re-resolves instead of re-injecting this hierarchy unconditionally.
+    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False,
+                         "auto_cached": True}
 
 
 def inject_custom_mg(solver):

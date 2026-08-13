@@ -463,9 +463,34 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
 
     # === ADDITIONAL DELEGATED METHODS ===
 
-    def clone(self):
-        """Clone the variable."""
-        return self._base_var.clone()
+    def clone(self, name, varsymbol):
+        """Create a copy of this variable with a new name and symbol.
+
+        Mirrors ``MeshVariable.clone(name, varsymbol)``: the new variable
+        shares the mesh, shape, type, degree and continuity of this one,
+        but has its own (zero-initialised) data.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new variable.
+        varsymbol : str
+            LaTeX symbol for the new variable.
+
+        Returns
+        -------
+        EnhancedMeshVariable
+            New variable with copied structure but independent data.
+        """
+        return type(self)(
+            varname=name,
+            mesh=self._base_var.mesh,
+            num_components=self._base_var.shape,
+            vtype=self._base_var.vtype,
+            degree=self._base_var.degree,
+            continuous=self._base_var.continuous,
+            varsymbol=varsymbol,
+        )
 
     def max(self):
         """Maximum value of the variable."""

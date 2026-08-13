@@ -30,12 +30,30 @@ import numpy as np
 import pytest
 import underworld3 as uw
 from petsc4py import PETSc
+from _mg_ladder import assert_coarsening_ladder
 from underworld3.utilities.nvb import TaggedBisectionMesh
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 BOUNDS_3D = [("Bottom", 11), ("Top", 12), ("Right", 13), ("Left", 14),
              ("Front", 15), ("Back", 16)]
+
+
+# The region the ladder measures `h` in. `_ball_metric`'s fine CORE is r < 0.18,
+# but the coarsest base level has edges ~0.6 long and not one midpoint lands
+# inside a ball that small — the measurement would have no sample to take. 0.25
+# is the smallest radius that contains edges of every level, and it still sits
+# well inside the metric's ramp (r_core 0.18 + width 0.25).
+BALL_CORE = 0.25
+
+
+def _in_ball(pts):
+    """The region `_ball_metric` asks to be refined."""
+    return np.linalg.norm(np.asarray(pts) - 0.5, axis=1) < BALL_CORE
+
+
+def _assert_coarsening_ladder(child, ratio=2.0):
+    return assert_coarsening_ladder(child, _in_ball, ratio=ratio)
 
 
 def _ncell(mesh):
@@ -165,8 +183,10 @@ def test_adapt_engineless_3d_returns_graded_child():
     # coarse levels = base hierarchy + (generations - 1) intermediates
     n_gens = len(child._adapt_markers)
     assert 1 <= n_gens <= 3                              # dim * max_levels
-    assert (len(child._custom_mg_coarse_meshes)
-            == len(base.dm_hierarchy) + n_gens - 1)
+    # Multigrid levels are one per DOUBLING of h, not one per generation: a
+    # generation is a 2^(1/dim) step, so `dim` of them make one level.
+    assert len(child._custom_mg_coarse_meshes) >= len(base.dm_hierarchy)
+    _assert_coarsening_ladder(child)
     # full PETSc consistency battery on the child, including the cell
     # ORIENTATION class (DMPlexCheckGeometry flags inverted cells) —
     # visualisation winding, outward normals and boundary integrals are

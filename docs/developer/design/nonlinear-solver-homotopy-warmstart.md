@@ -146,6 +146,32 @@ multi-parameter is not, and is unnecessary here. The rate-strengthening ξ term 
 *non-homotopic* regularisation, not a homotopy — it belongs in a user-domain loop
 *around* `solve()`, not inside it.
 
+#### Which side of `Min` the entry problem sits on (`yield_anchor`)
+
+Smoothing a corner by δ moves the whole curve, so each soft-min family has one free
+constant. It is fixed by choosing which point the smoothed law must reproduce exactly,
+and that choice — not the choice of family — decides whether the regularised problem is
+*stiffer* or *weaker* than the sharp one. Writing $f = \eta_{ve}/\eta_{pl}$ for the
+overstress ratio ($f = 1$ is the yield point):
+
+| `yield_anchor` | exact at | sqrt family | power mean |
+|---|---|---|---|
+| `"onset"` (default) | $f \to 0$, the unyielded branch | undershoots for $f < 2$ | the p-norm; $\eta \to 0$ as δ grows |
+| `"yield"` | $f = 1$, the yield point | offset $\delta/2$; $\ge$ `Min` | the true power mean (the $1/2$); $\ge$ `Min` |
+
+**A homotopy wants `"yield"`.** An entry problem that sits *below* the sharp law is
+weaker than the problem it is supposed to lead to, which is the opposite of an easier
+version of it. Under `"onset"` both families are weaker near the yield point, and that
+bites hardest exactly where the overstress ratio is O(1) — since the rate term floors
+the plastic viscosity ($\eta_{pl} \ge \xi$, so $f \le 1/\xi$), a held ξ puts the whole
+domain in the softened region. The cost of `"yield"` is stiffened unyielded material,
+bounded by 2 for the sqrt family and by $2^{\delta}$ for the power mean; that bound is
+why the power mean's entry δ is O(1) while the sqrt family's is O(10).
+
+The default is `"onset"` because it is the historical law, not because it is the better
+one. Changing it alters results for every existing `yield_mode="softmin"` user, so it is
+a separate maintainer decision.
+
 ### Layer 3 — smoother as a consistent-Newton consequence
 
 Turning on the consistent tangent adds the `∂η/∂(grad v)` term, which makes the

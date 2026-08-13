@@ -155,6 +155,21 @@ This makes the cache self-healing — no code path that replaces `_lvec` needs t
 
 ```{warning} Variable Creation After Data Access
 Creating new MeshVariables on a mesh triggers a DM rebuild that replaces all existing variables' PETSc vectors. Code that accesses `.data` before all variables are created will get a stale cache automatically healed on the next access — but the old NumPy array reference becomes invalid. Always re-read `.data` after creating new variables.
+
+**The rule (issue #492)**: a raw NumPy view of variable data — anything like
+`view = np.asarray(var.data)` or a kept reference to `var.data` / `var.array`
+— does **not** survive creating another variable on the same mesh. The rebuild
+releases the underlying PETSc vector, so a held view silently reads and writes
+freed memory (no error is raised; on glibc the write corrupts the heap and the
+process crashes much later, at an unrelated allocation). UW3 invalidates every
+cache it hands out (`_canonical_data`, `_data_cache`, `_array_cache`), so
+property access is always safe; raw views captured by user code cannot be
+reached and must be re-read after any variable creation.
+
+Captured PETSc *handles* (`mesh.dm`, `var.vec`) get the gentler contract: since
+the #492 fix the rebuild drops its reference instead of destroying the object,
+so a held handle stays valid — it is merely stale (it describes the pre-rebuild
+layout) and should also be re-read.
 ```
 
 ## Performance Considerations

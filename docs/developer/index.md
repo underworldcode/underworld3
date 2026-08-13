@@ -184,6 +184,7 @@ CHANGELOG
 
 subsystems/meshing
 subsystems/mesh-shape-relaxation
+subsystems/conforming-surfaces-and-fault-zones
 subsystems/discretisation
 subsystems/solvers
 subsystems/boundary-stress-and-projection-postprocessing

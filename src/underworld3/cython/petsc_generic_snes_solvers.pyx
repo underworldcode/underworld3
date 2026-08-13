@@ -69,9 +69,38 @@ def _jacobian_unwrap(expr):
     This is a no-op for constant-viscosity problems (eta has no grad-v
     dependence), so those Jacobians stay bit-identical.
 
+    The unwrapped result is additionally made DIFFERENTIATION-SAFE: any
+    ``sqrt(g)`` whose argument carries non-constant symbols becomes
+    ``sqrt(g + 1e-36)``. Differentiating a bare invariant
+    :math:`\dot\varepsilon_{II} = \sqrt{g}` produces
+    :math:`\partial\sqrt{g}/\partial L = \dot\varepsilon/(2\dot\varepsilon_{II})`
+    — the DIRECTION of the strain rate, which is 0/0 at a state of rest —
+    so every consistent-tangent assembly at a cold (v = 0) start filled
+    the operator with NaN (measured: J(0) norm = nan for a ViscoPlastic
+    model at ANY yield stress, surfacing as GAMG's "Computed maximum
+    singular value as zero", error 77; the alpha-blended continuation
+    kernel inherits it even at alpha = 0 because IEEE 0*NaN = NaN). The
+    guard makes the derivative exactly zero at the singular point and
+    perturbs it by under one part in 1e24 at any resolvable strain rate.
+    The RESIDUAL is never routed through here, and the default (Picard)
+    tangent never calls this function, so both remain bit-identical.
+
     See ``docs/developer/design/jacobian-unwrap-constants-bug.md``.
     """
-    f = lambda e: _unwrap_expression(e, mode="symbolic_keep_constants")
+    eps2 = sympy.Float(1.0e-36)
+
+    def _guard_sqrts(e):
+        # every HALF-INTEGER power: +1/2 (the invariant itself), -1/2
+        # (its reciprocal in eta_pl = tau_y/(2 edot_II)), -3/2 (their
+        # derivatives), ... — all singular in value or derivative at a
+        # zero-argument state
+        return e.replace(
+            lambda n: (n.is_Pow and n.exp.is_Rational
+                       and n.exp.q == 2 and n.args[0].free_symbols),
+            lambda n: sympy.Pow(n.args[0] + eps2, n.exp))
+
+    f = lambda e: _guard_sqrts(
+        _unwrap_expression(e, mode="symbolic_keep_constants"))
     if isinstance(expr, sympy.MatrixBase):
         return expr.applyfunc(f)
     if isinstance(expr, sympy.NDimArray):
@@ -181,6 +210,13 @@ class SolverBaseClass(uw_object):
         # helper below is a no-op.
         self._preconditioner = "auto"
         self._pc_option_prefix = None
+        # An explicit `preconditioner="fmg"` on a single-field solver cannot
+        # take the native route (#276), so it is honoured via custom-P
+        # transfers over the mesh's own dm_hierarchy instead (#478). This flag
+        # carries the request from _apply_preconditioner_options (build time)
+        # to custom_mg.build_transfers (first solve); it is re-derived on
+        # every resolution, same staleness rule as _pc_resolved.
+        self._pc_single_field_geo_requested = False
         # The pc_type value this helper last managed. Subclasses that opt in set
         # their __init__ default ("gamg"); used in "auto" mode to tell an
         # untouched framework default (eligible for FMG upgrade) apart from an
@@ -209,6 +245,22 @@ class SolverBaseClass(uw_object):
         # resolved would be exactly the stale-but-authoritative-looking summary this
         # reporting exists to prevent.
         self._pc_resolved = False
+        # Readable record of every preconditioner fallback / degrade / guard-skip
+        # decision taken for this solver, keyed by site name — see the public
+        # `pc_fallbacks` property. Written ONLY through _record_pc_fallback (the
+        # record is WRITTEN, never inferred — same doctrine as
+        # _push_managed_option). Reset rule: cleared each time
+        # _apply_preconditioner_options re-resolves (the same staleness rule as
+        # _pc_resolved); solve-time sites (custom_mg, rotated_bc) record after
+        # that, so the record always describes the CURRENT resolution.
+        # Reason vocabulary (fixed; tests assert on it):
+        #   "unavailable"   — the requested configuration could not be built here
+        #   "declined"      — available in principle, but a policy chose otherwise
+        #   "build_failed"  — an attempted build raised and a fallback was used
+        #   "check_skipped" — a correctness guard did not run (its failure mode
+        #                     is sanctioned, but the skip is now on the record)
+        #   "forced"        — a required key overrode a user/unset value
+        self._pc_fallbacks = {}
 
         # Custom multigrid prolongation hierarchy (see set_custom_mg /
         # utilities.custom_mg). None => standard FMG/GAMG path, unchanged.
@@ -240,6 +292,48 @@ class SolverBaseClass(uw_object):
             if self.petsc_options.hasName(name):
                 out[key] = self.petsc_options.getString(name)
         return out
+
+    def _record_pc_fallback(self, site, *, requested, installed, reason, detail=""):
+        """Record one preconditioner fallback / degrade / guard-skip decision.
+
+        The single write path into ``pc_fallbacks`` (records are WRITTEN, never
+        inferred). ``reason`` must come from the fixed vocabulary documented at
+        ``_pc_fallbacks`` in ``__init__``. Runs on every rank — the record is
+        state, not output, so it must not be rank-gated the way warnings are.
+        """
+        self._pc_fallbacks[site] = dict(requested=requested, installed=installed,
+                                        reason=reason, detail=detail)
+
+    @property
+    def pc_fallbacks(self):
+        """Every preconditioner fallback the current resolution took, by site.
+
+        A dict keyed by site name (e.g. ``"single_field_gate"``,
+        ``"no_hierarchy"``, ``"custom_mg.build"``); each value is a dict with
+        ``requested`` (what was asked for), ``installed`` (what actually runs),
+        ``reason`` (one of ``"unavailable"``, ``"declined"``, ``"build_failed"``,
+        ``"check_skipped"``, ``"forced"``) and ``detail``. Empty means the
+        resolved preconditioner is exactly what was requested and every guard
+        ran — the clean-solve state a test can assert on.
+
+        The record is reset whenever the preconditioner options re-resolve (a
+        rebuild/remesh), and solve-time sites (``utilities.custom_mg``,
+        ``utilities.rotated_bc``) re-record each solve, so it always describes
+        the current resolution. Solvers that manage their own PC options
+        (``_pc_option_prefix is None``) never clear at rebuild; their sites are
+        custom_mg-only, which re-record per solve.
+
+        Returns
+        -------
+        dict
+            A copy — mutating it does not affect the solver.
+
+        See Also
+        --------
+        preconditioner_settings : the option values the managed block resolved to.
+        strategy : a readable summary of the same resolution.
+        """
+        return {site: dict(rec) for site, rec in self._pc_fallbacks.items()}
 
     @property
     def _user_overridden_pc_options(self):
@@ -631,9 +725,19 @@ class SolverBaseClass(uw_object):
         - ``"auto"`` (default) — use geometric Full Multigrid (FMG) when the
           mesh carries a genuine refinement hierarchy
           (``len(mesh.dm_hierarchy) > 1``, i.e. built with ``refinement >= 1``),
-          otherwise fall back to algebraic multigrid (GAMG).
-        - ``"fmg"`` (alias ``"mg"``) — force geometric multigrid. Requires a
+          otherwise fall back to algebraic multigrid (GAMG). On a single-field
+          (scalar/vector) solver ``"auto"`` keeps GAMG even with a hierarchy —
+          the decline is recorded in :attr:`pc_fallbacks`.
+        - ``"fmg"`` (alias ``"mg"``) — geometric multigrid. Requires a
           refinement hierarchy; warns and falls back to GAMG if none exists.
+          On a single-field solver the native FMG path is unreliable (#276),
+          so the request is honoured via custom-P transfers built over the
+          same hierarchy (``utilities.custom_mg``) — installed on the live PC
+          at the first solve. If that build fails (e.g. a deformed mesh whose
+          coarse levels kept reference coordinates), the solve degrades to
+          GAMG with a readable :attr:`pc_fallbacks` record. This is a
+          *preference*; ``custom_mg.set_custom_fmg`` is the *demand* form and
+          raises on failure instead.
         - ``"gamg"`` — force algebraic multigrid (the historical default).
 
         Geometric multigrid is inherently robust to mesh anisotropy (it is built
@@ -658,6 +762,13 @@ class SolverBaseClass(uw_object):
                 f"preconditioner must be 'auto', 'fmg', or 'gamg' (got {value!r})"
             )
         self._preconditioner = choice
+        # A hierarchy cached by an earlier RESOLUTION (the auto/"fmg" install)
+        # must not outlive a new explicit choice: auto_inject_custom_mg
+        # re-installs solver._custom_mg unconditionally, which would leave a
+        # later preconditioner="gamg" unreachable with a clean pc_fallbacks
+        # record. A user registration (set_custom_fmg) is a demand and is kept.
+        if isinstance(self._custom_mg, dict) and self._custom_mg.get("auto_cached"):
+            self._custom_mg = None
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
 
@@ -675,6 +786,12 @@ class SolverBaseClass(uw_object):
         # Every path from here is a resolution decision, including "the user owns
         # these options, leave them alone".
         self._pc_resolved = True
+        # Fresh resolution => fresh fallback record (same staleness rule as
+        # _pc_resolved). Solve-time sites re-record after this. The custom-P
+        # reroute request is re-derived below for the same reason (a remesh
+        # can collapse the hierarchy it depends on).
+        self._pc_fallbacks.clear()
+        self._pc_single_field_geo_requested = False
 
         opts = self.petsc_options
 
@@ -721,22 +838,44 @@ class SolverBaseClass(uw_object):
         # on the common curved-shell cases (issue #276) as well as some flat
         # high-degree ones. The Stokes velocity sub-block (prefix
         # "fieldsplit_velocity_") is the validated, robust native-FMG path and is
-        # unaffected. So never auto-route a single-field solver to native FMG —
-        # fall back to GAMG. Geometric MG on a scalar/vector solver is available,
-        # robustly, via ``underworld3.utilities.custom_mg.set_custom_fmg`` (own
-        # barycentric/RBF prolongation + Galerkin coarse operators; no injection).
+        # unaffected. So a single-field solver never routes to NATIVE FMG. Two
+        # routes instead (#478):
+        #  * explicit `preconditioner="fmg"` is honoured via custom-P transfers
+        #    over the mesh's own dm_hierarchy (no DMCreateInjection anywhere, so
+        #    the err62 failure mode cannot arise). The options DB deliberately
+        #    keeps GAMG as the safe base configuration — the custom-P PCMG is
+        #    installed on the LIVE PC at the first solve (auto_inject_custom_mg
+        #    -> custom_mg.build_transfers, requested-native source), the same
+        #    shape the adapt-child pickup uses. If the transfer build fails, the
+        #    solve degrades to that GAMG base, recorded in `pc_fallbacks`.
+        #  * "auto" keeps GAMG (a default change needs its own validation
+        #    campaign, per #478) — the decline is recorded, never warned.
+        # `set_custom_fmg` remains the DEMAND form (raises on failure);
+        # `preconditioner="fmg"` is a PREFERENCE (degrades, loudly and readably).
         if want_fmg and prefix == "":
-            if self._preconditioner == "fmg" and uw.mpi.rank == 0:
-                import warnings
-                warnings.warn(
-                    f"[{self.name}] preconditioner='fmg' is not supported on a "
-                    f"single-field (scalar/vector) solver: native geometric FMG "
-                    f"needs DMCreateInjection, which PETSc cannot reliably build "
-                    f"on a refined DMPlex (issue #276). Falling back to GAMG. For "
-                    f"geometric MG on this solver use "
-                    f"underworld3.utilities.custom_mg.set_custom_fmg().",
-                    stacklevel=2,
-                )
+            if self._preconditioner == "fmg":
+                self._pc_single_field_geo_requested = True
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="native geometric FMG (preconditioner='fmg')",
+                    installed="custom-P geometric MG (resolved at first solve)",
+                    reason="declined",
+                    detail="native single-field FMG needs DMCreateInjection, "
+                           "which PETSc cannot reliably build on a refined "
+                           "DMPlex (#276); the request is honoured via custom-P "
+                           "transfers over the mesh hierarchy instead, degrading "
+                           "to GAMG (recorded) if the transfer build fails")
+            else:
+                # "auto" declines silently by design (never a new warning) —
+                # but the decline is the direction that matters (#484), so it
+                # is on the record.
+                self._record_pc_fallback(
+                    "single_field_gate",
+                    requested="geometric FMG (preconditioner='auto', hierarchy present)",
+                    installed="gamg",
+                    reason="declined",
+                    detail="single-field native FMG is fragile (#276); "
+                           "auto never routes there")
             want_fmg = False
 
         # The option VALUES live in utilities.multigrid_options, which is the
@@ -760,14 +899,22 @@ class SolverBaseClass(uw_object):
                     owned=self._managed_pc_options)
             self._pc_managed_value = "mg"
         else:
-            if self._preconditioner == "fmg" and n_levels <= 1 and uw.mpi.rank == 0:
-                import warnings
-                warnings.warn(
-                    f"[{self.name}] preconditioner='fmg' requested but the mesh "
-                    f"has no refinement hierarchy; falling back to GAMG. Build the "
-                    f"mesh with refinement >= 1 to enable geometric multigrid.",
-                    stacklevel=2,
-                )
+            if self._preconditioner == "fmg" and n_levels <= 1:
+                self._record_pc_fallback(
+                    "no_hierarchy",
+                    requested="geometric FMG (preconditioner='fmg')",
+                    installed="gamg",
+                    reason="unavailable",
+                    detail="the mesh has no refinement hierarchy; build it with "
+                           "refinement >= 1 to enable geometric multigrid")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] preconditioner='fmg' requested but the mesh "
+                        f"has no refinement hierarchy; falling back to GAMG. Build the "
+                        f"mesh with refinement >= 1 to enable geometric multigrid.",
+                        stacklevel=2,
+                    )
             multigrid_options.gamg_bundle().apply(
                 PETSc.Options(), self.petsc_options_prefix + prefix,
                 owned=self._managed_pc_options)
@@ -800,6 +947,13 @@ class SolverBaseClass(uw_object):
             return
         gkey = f"{prefix}pc_mg_galerkin"
         if (not opts.hasName(gkey)) or opts.getString(gkey) == "none":
+            self._record_pc_fallback(
+                "galerkin_forced",
+                requested=f"{gkey} unset (or 'none')",
+                installed="both",
+                reason="forced",
+                detail="UW3 installs no coarse-DM operator callbacks, so "
+                       "geometric MG requires Galerkin RAP coarse operators")
             if uw.mpi.rank == 0:
                 import warnings
                 warnings.warn(
@@ -1357,9 +1511,11 @@ class SolverBaseClass(uw_object):
         unguard : remove the deadline.
         estimate_difficulty : bound the *work* (an iteration count) instead.
         """
-        if getattr(self, "_rotated_freeslip_bcs", None):
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
             raise NotImplementedError(
-                "guard() is not available with rotated free-slip BCs: that path runs "
+                "guard() is not available with rotated free-slip / fault-contact "
+                "BCs: that path runs "
                 "its own Krylov loop outside self.snes (utilities/rotated_bc.py), so "
                 "the deadline cannot reach it and the guard would be silently inert."
             )
@@ -1415,9 +1571,11 @@ class SolverBaseClass(uw_object):
         ``consistent_jacobian="continuation"`` the cap applies to EACH stage (Picard
         then Newton), so one probe may run up to twice ``max_nl_its``.
         """
-        if getattr(self, "_rotated_freeslip_bcs", None):
+        if getattr(self, "_rotated_freeslip_bcs", None) \
+                or getattr(self, "_fault_contact_faults", None):
             raise NotImplementedError(
-                "estimate_difficulty() is not available with rotated free-slip BCs: "
+                "estimate_difficulty() is not available with rotated free-slip / "
+                "fault-contact BCs: "
                 "that path solves outside self.snes (utilities/rotated_bc.py), so the "
                 "iteration cap and resume anchor cannot be applied to it."
             )
@@ -1960,17 +2118,6 @@ class SolverBaseClass(uw_object):
                 self._velocity_rotation_nullspace = None
             if hasattr(self, "_constant_nullspace_obj"):
                 self._constant_nullspace_obj = None
-
-        # This is a workaround for some problem in the PETSc machinery
-        # where we need a surface integral term somewhere on every process
-        # if we have a contribution from anywhere. We add a fake one here
-        # which just integrates nothing over a bunch of points. It's enough
-        # to let the rest of the machinery work.
-
-        if len(self.natural_bcs) > 0:
-            if not any(bc.boundary == "Null_Boundary" for bc in self.natural_bcs):
-                bc = (0,)*self.Unknowns.u.shape[1]
-                self.add_natural_bc(bc, "Null_Boundary")
 
         if verbose:
             uw.pprint("Build pointwise functions")
@@ -3076,7 +3223,7 @@ class SNES_Scalar(SolverBaseClass):
         self._pc_option_prefix = ""
 
         self.petsc_options["snes_type"] = "newtonls"
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)
@@ -3989,7 +4136,7 @@ class SNES_Vector(SolverBaseClass):
         # Here we can set some defaults for this set of KSP / SNES solvers
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)
@@ -4188,8 +4335,12 @@ class SNES_Vector(SolverBaseClass):
                 "Nitsche mesh size parameter (global)",
             ).sym
 
-        # Viscosity from constitutive model
-        mu = self.constitutive_model.viscosity
+        # Penalty scale from the constitutive model: use K (the stiffness /
+        # preconditioner scale) rather than .viscosity — for the transverse-
+        # isotropic models .viscosity now reports the yield-limited WEAK-PLANE
+        # eta_1 (issue #463), which would under-scale the penalty; K is the
+        # bulk eta_0 there and identical to .viscosity for isotropic models.
+        mu = self.constitutive_model.K
 
         # Constitutive flux
         flux = self._constitutive_model.flux
@@ -5001,7 +5152,7 @@ class SNES_MultiComponent(SolverBaseClass):
         # PETSc options — mirror SNES_Vector defaults
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
-        self.petsc_options["ksp_type"] = "gmres"
+        self._push_managed_option("ksp_type", "gmres")
         self._push_managed_option("pc_type", "gamg")
         self._push_managed_option("pc_gamg_type", "agg")
         self._push_managed_option("pc_gamg_repartition", True)
@@ -5753,6 +5904,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._rotated_freeslip_bcs = []
         self._rotated_freeslip_datum = {}
         self._rotated_freeslip_info = None
+        # Split-fault interface conditions (add_fault_bc): fault names whose
+        # coincident DOF pairs carry a contact (the laws themselves live in
+        # _fault_interface_laws, set lazily by utilities/fault_contact.py).
+        # Non-empty => solve() takes the rotated path, where fault_contact
+        # supplies the pair blocks and the interface operator.
+        self._fault_contact_faults = []
         # Give the Lagrange-multiplier (lambda) block its own viscosity-scaled
         # Schur preconditioner. The constraint Schur complement S_lambda = C A^-1 C^T
         # scales as 1/mu (since A ~ mu K), exactly like the pressure Schur S_p ~ mu^-1 M_p
@@ -5815,6 +5972,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self._tolerance = 1.0e-4
         self._strategy = "default"
+
+        # Owned-option latch state (see _resolve_owned_option): the value THIS
+        # solver last pushed per key, and any user value latched per key.
+        # Ownership is RECORDED, never inferred — the same doctrine as
+        # _managed_pc_options.
+        self._owned_option_pushes = {}
+        self._owned_option_user = {}
 
         # Participate in the auto FMG/GAMG switch on the velocity fieldsplit
         # block (see the `preconditioner` property). The velocity pc/mg keys
@@ -5995,6 +6159,63 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.is_setup = False
         return
 
+    def add_fault_bc(self, conds=0, boundary=None, normal=None):
+        r"""Interface condition on a split-node fault (value-first).
+
+        ``boundary`` names a fault split by ``Mesh.add_fault`` (or
+        ``fault_split.split_fault``); the mesh carries its coincident DOF
+        pairing. The no-opening constraint :math:`[\mathbf v]\cdot\hat n = 0`
+        is always imposed strongly; ``conds`` sets the tangential law:
+
+        * ``conds = 0`` — frictionless (perfectly slippery): zero shear
+          traction, the slip emerges (the stress-driven crack).
+        * ``conds`` > 0 — viscous interface :math:`\tau = \eta_f V` with
+          ``conds`` = :math:`\eta_f` (viscosity per unit length; the
+          zero-thickness limit of a band is :math:`\eta_f = \eta_{band}/w`,
+          where :math:`\eta_{band}` is the band's OWN weak-zone viscosity —
+          not the background's — and :math:`w` its width). ``conds`` large
+          removes the fault (only the JUMP is penalised — nothing becomes
+          rigid).
+
+        ``normal`` optionally supplies the fault's smooth unit normal —
+        a sympy ``1×dim`` Matrix in ``mesh.X`` (same conventions as
+        :meth:`add_rotated_freeslip_bc`), the string ``"trace"`` (2-D: the
+        smoothed normal is built from the fault's own stored polyline —
+        the right choice for digitized traces with no analytic formula),
+        or a constant ``(dim,)`` array. Use it whenever the fault trace is
+        a SAMPLED SMOOTH CURVE: the default per-node normal averages the
+        adjacent facet normals, which zig-zags at the sampling kinks, and
+        the no-opening constraint then forbids smooth slip past each kink —
+        slip notches and normal-traction sawteeth that GROW under mesh
+        refinement. The smooth normal restores the smooth curve's
+        mechanics on the same polyline mesh. On a straight fault the
+        default is already exact, and a deliberately KINKED fault should
+        NOT be smoothed — there the kink response is the physics.
+
+        The solve then takes the rotated strong-constraint path
+        (``utilities/rotated_bc.py`` with the pair blocks of
+        ``utilities/fault_contact.py``); ``guard()`` /
+        ``estimate_difficulty()`` are unavailable, as for rotated free-slip.
+        Slip and leak per coincident pair afterwards:
+        ``fault_contact.fault_slip(solver, boundary,
+        solver._rotated_freeslip_info)``.
+        """
+        from underworld3.utilities import fault_contact
+
+        if not isinstance(boundary, str):
+            raise TypeError(
+                f"add_fault_bc() requires the fault's boundary name string; "
+                f"got {type(boundary).__name__}")
+        eta_f = float(conds)
+        if eta_f == 0.0:
+            fault_contact.add_frictionless_fault_bc(self, boundary,
+                                                    normal=normal)
+        else:
+            fault_contact.add_viscous_fault_bc(self, eta_f, boundary,
+                                               normal=normal)
+        self.is_setup = False
+        return
+
     def _residual_is_nonlinear(self, tol=1e-8):
         r"""True if the Stokes residual is nonlinear in the unknowns :math:`(v, p)`
         — i.e. the assembled Jacobian depends on the solution, so Newton / Picard
@@ -6053,10 +6274,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         :meth:`solve`.
 
         ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
-        triangles, and the required consistent surface-mass solve for 3D P2 triangles.
+        triangles, and the consistent surface-mass solve for 3D P2 triangles.
         Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
-        mathematically valid. Three-dimensional recovery currently supports triangular
-        P1/P2 traces only.
+        mathematically valid, and ``"p1"`` selects P1-PROJECTED recovery on a 3D
+        P2 trace (edge-midpoint loads folded onto vertices, lumped P1 triangle
+        mass — sound where the consistent P2 path carries the vertex-integral
+        checkerboard; the FreeSurface default in 3D). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only.
 
         .. warning::
            On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
@@ -6262,8 +6486,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 "Nitsche mesh size parameter (global)",
             ).sym
 
-        # Viscosity from constitutive model
-        mu = self.constitutive_model.viscosity
+        # Penalty scale from the constitutive model: use K (the stiffness /
+        # preconditioner scale) rather than .viscosity — for the transverse-
+        # isotropic models .viscosity now reports the yield-limited WEAK-PLANE
+        # eta_1 (issue #463), which would under-scale the penalty; K is the
+        # bulk eta_0 there and identical to .viscosity for isotropic models.
+        mu = self.constitutive_model.K
 
         # Constitutive flux (stress tensor) — includes VE history if active
         flux = self._constitutive_model.flux  # dim x dim Matrix
@@ -6368,14 +6596,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         Solver convergence tolerance for the Stokes saddle-point system.
 
-        Setting this value automatically configures PETSc tolerances for the
-        coupled velocity-pressure solve using Schur complement fieldsplit:
-        - ``snes_rtol``: Set to ``tolerance``
-        - ``ksp_atol``: Set to ``tolerance * 1e-6``
-        - ``fieldsplit_pressure_ksp_rtol``: Set to ``tolerance * 0.1``
-        - ``fieldsplit_velocity_ksp_rtol``: Set to ``tolerance * 0.033``
+        Setting it configures the PETSc tolerances of the coupled
+        velocity-pressure Schur-fieldsplit solve. The keys fall into two
+        ownership classes (#483):
 
-        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``).
+        **OWNED** — re-asserted before every solve, *unless you set the key
+        explicitly, after which your value is honoured* (the same latch that
+        makes ``snes_max_it`` reachable):
+
+        - ``snes_rtol`` = ``tolerance``
+        - ``ksp_atol``  = ``tolerance * 1e-6``
+
+        **DERIVED at set time** — written once when you assign ``tolerance``
+        (the class table ``_TOLERANCE_DERIVED_KEYS``), then yours to override:
+
+        - ``fieldsplit_pressure_ksp_rtol`` = ``tolerance * 0.1``
+        - ``fieldsplit_velocity_ksp_rtol`` = ``tolerance * 0.033``
+
+        Also enables Eisenstat-Walker adaptive tolerance (``snes_ksp_ew``),
+        which re-picks the outer ``ksp_rtol`` every Newton step — so to steer
+        the linear solve via ``ksp_rtol`` you must first switch
+        ``snes_ksp_ew`` off.
 
         Returns
         -------
@@ -6389,6 +6630,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         return self._tolerance
 
+    #: Inner-solve tolerance margins, as a fraction of the outer tolerance. The inner
+    #: solves are deliberately inexact (Citcom; Moresi & Solomatov 1995) — which is why
+    #: the sub-blocks are flexible Krylov methods — but the inexactness must stay well
+    #: BELOW the tolerance demanded of the outer solve. These factors are that margin.
+    #: Their existence is principled; their size is inherited convention, so they are
+    #: DEFAULTS a user may override rather than values this property owns outright.
+    #: Subclasses declare their own table (Stokes_Constrained derives the outer
+    #: ksp_rtol and the Eisenstat-Walker pins instead — a real design difference:
+    #: EW pinning owns its outer accuracy). `_INNER_RTOL_MARGIN` is the
+    #: historical name for this class's table, kept as an alias.
+    _TOLERANCE_DERIVED_KEYS = {"fieldsplit_pressure_ksp_rtol": 0.1,
+                               "fieldsplit_velocity_ksp_rtol": 0.033}
+    _INNER_RTOL_MARGIN = _TOLERANCE_DERIVED_KEYS
+
     @tolerance.setter
     def tolerance(self, value):
         self._tolerance = value
@@ -6397,8 +6652,90 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew_version"] = 3
 
         self.petsc_options["ksp_atol"]  = self._tolerance * 1.0e-6
-        self.petsc_options["fieldsplit_pressure_ksp_rtol"]  = self._tolerance * 0.1  # rule of thumb
-        self.petsc_options["fieldsplit_velocity_ksp_rtol"]  = self._tolerance * 0.033
+
+        # Setting the tolerance re-derives the margins from it — that is this
+        # property's job, and a user who changes the tolerance expects it. What must NOT
+        # happen is `solve()` re-deriving them on every call: it did (pyx `solve()`
+        # round-trips `self.tolerance` immediately before `setFromOptions()`), which
+        # overwrote any user value between it being set and PETSc reading it and made
+        # both documented options silently unreachable (#477). `solve()` now re-asserts
+        # only the outer keys, via `_reassert_outer_tolerances`.
+        self._derive_tolerance_margins()
+
+    def _derive_tolerance_margins(self):
+        """Write this class's DERIVED tolerance keys from the current tolerance.
+
+        One mechanism, two tables: each saddle-point class declares
+        ``_TOLERANCE_DERIVED_KEYS`` ({option key: margin factor}) and this
+        method applies it. Derivation happens at SET time only — a user who
+        overrides a derived key afterwards keeps it (#477/#483); `solve()`
+        never re-derives these.
+        """
+        for key, margin in self._TOLERANCE_DERIVED_KEYS.items():
+            self.petsc_options[key] = self._tolerance * margin
+
+    def _resolve_owned_option(self, key, default):
+        """The value this solve should push for an option the solver OWNS,
+        honouring a user-set value.
+
+        ``solve()`` re-pushes the owned keys before every solve, so the
+        resolver has to tell its OWN previous push from a value the user set —
+        otherwise the first solve makes the option permanently unreachable
+        (the #477 failure shape; ruling D18, generalised for #483). Call once
+        per key, before this solve pushes anything.
+        """
+        pushed = self._owned_option_pushes.get(key)
+        user = self._owned_option_user.get(key)
+        if self.petsc_options.hasName(key):
+            try:
+                current = type(default)(self.petsc_options.getString(key))
+            except Exception:
+                return default
+            if pushed is None or current != pushed:
+                # Never pushed by us, or the user has moved it since. Latch: from here on
+                # the option is theirs, because the next solve will read back OUR push of
+                # THEIR value and would otherwise mistake it for our own default.
+                self._owned_option_user[key] = current
+                return current
+            if user is not None:
+                return user
+        return default
+
+    def _push_owned_option(self, key, value):
+        """Push an owned option and remember what was pushed, so a later solve
+        can tell this solver's own value apart from a user override."""
+        self.petsc_options.setValue(key, value)
+        self._owned_option_pushes[key] = value
+
+    def _resolve_snes_max_it(self, default):
+        """The nonlinear iteration cap for this solve, honouring a user-set
+        ``snes_max_it`` (see ``_resolve_owned_option`` for the mechanism)."""
+        return self._resolve_owned_option("snes_max_it", int(default))
+
+    def _push_snes_max_it(self, value):
+        self._push_owned_option("snes_max_it", int(value))
+
+    def _reassert_outer_tolerances(self):
+        """Re-push the OUTER tolerance keys before a solve, leaving the inner margins be.
+
+        `solve()` may have changed `snes_max_it` and the SNES type for a Picard warm-up,
+        so the outer settings are re-asserted before the real solve. The keys are OWNED
+        (re-pushed each solve) but ownership is polite: a user who explicitly sets
+        `snes_rtol` or `ksp_atol` is honoured from then on — before #483 both were
+        silently discarded here every solve, the worst of the reachability middle
+        grounds (documented as settable, actually owned). The sub-block rtols are
+        deliberately excluded: they belong to whoever set them last, which may be the
+        user (#477). Overwriting them here is what made them unsettable."""
+        for key, derived in (("snes_rtol", float(self._tolerance)),
+                             ("ksp_atol", float(self._tolerance) * 1.0e-6)):
+            self._push_owned_option(key, self._resolve_owned_option(key, derived))
+        # The Eisenstat-Walker flags are NOT re-asserted here. solve() never changes
+        # them, so they stay in the options DB from the `tolerance` setter and
+        # setFromOptions picks them up regardless — while re-asserting would make
+        # `snes_ksp_ew` impossible to switch OFF, which is the same defect as #477 on a
+        # knob that matters: EW re-picks the outer KSP rtol every Newton step and
+        # OVERRIDES ksp_rtol, so "how hard is the linear solve actually being asked to
+        # work" is not answerable without being able to disable it.
 
 
     @property
@@ -6697,10 +7034,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         the block solver's default ``newtonls`` defect-corrects a linear system in
         many steps when the Schur approximation is stiff.
 
-        Default ``False`` (opt-in). On the fieldsplit/iterative path it is
-        bit-identical on uniform ``mu`` and cracks the moderate-contrast wall;
-        but a monolithic ``lu`` solve factorizes the Pmat (``pc_use_amat`` is a
-        no-op there), so this term is not inert for direct solves — hence opt-in.
+        Default ``False`` (opt-in). **Reachability** (#486, from the PETSc
+        fieldsplit source): the flag swaps only the *Pmat* (h,h) block, so it
+        is live in exactly two regimes —
+
+        - ``pc_fieldsplit_schur_precondition = "a11"``: the Schur
+          preconditioner is the grouped ``[p,h]`` Pmat block, which carries
+          the swap;
+        - a monolithic direct factorisation (``pc_type = lu``/``cholesky``)
+          of the Pmat.
+
+        Under ``Stokes_Constrained``'s own defaults (``selfp`` +
+        ``diag_use_amat``) the Pmat (h,h) block is never read by the Schur
+        preconditioner and the flag is INERT — setting it there records a
+        ``multiplier_schur_pc`` entry in :attr:`pc_fallbacks` and warns.
         """
         return self._multiplier_schur_pc
 
@@ -7277,42 +7624,100 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             F1_for_jac = self._jacobian_source(sympy.Array(F1_jac_src))
         else:
             F1_for_jac = self._jacobian_source(F1, self._newton_flux(F1))
+        # Normalise to strict (dim, dim) Array indexing for the explicit
+        # Jacobian loops below.
+        F1_for_jac = sympy.Array(F1_for_jac).reshape(dim, dim)
 
-        G0 = sympy.derive_by_array(F0_jac, self.u.sym)
-        G1 = sympy.derive_by_array(F0_jac, self.Unknowns.L)
-        G2 = sympy.derive_by_array(F1_for_jac, self.u.sym)
-        G3 = sympy.derive_by_array(F1_for_jac, self.Unknowns.L)
+        # Explicit-index Jacobian construction — writes each entry directly
+        # into PETSc's flat [fc, gc, df, dg] layout via row-major matrices.
+        # sympy.derive_by_array is dx-FIRST (derivative indices lead), so the
+        # previous derive_by_array + permutedims((0,2,1,3)) form assembled the
+        # MAJOR TRANSPOSE of uu_G3: it placed dF1[gc,dg]/dL[fc,df] in the
+        # [fc,gc,df,dg] slot. Invisible whenever the tangent has major symmetry
+        # (frozen C, isotropic eta(edot) Newton, linear transverse isotropy),
+        # wrong exactly when it does not (transverse-isotropic Newton — issue
+        # #457). Same explicit-loop construction as SNES_Vector above; the
+        # layout contract is docs/developer/subsystems/petsc-jacobian-layout.md.
+        U_list = [self.u.sym[0, c] for c in range(dim)]
+        L = self.Unknowns.L
+        Nc = dim
 
-        # reorganise indices from sympy to petsc orssdering / reshape to Matrix form
-        # ijkl -> LJKI (hence 3120)
-        # ij k -> KJ I (hence 210)
-        # i jk -> J KI (hence 201)
+        # Normalise the F0 Jacobian source to a flat list of dim scalar
+        # entries — F0 arrives as (1, dim) or (dim, 1) depending on how the
+        # template/bodyforce was written (Array indexing is strict).
+        _f0_flat = sympy.Array(F0_jac).reshape(dim)
+        f0_jac_list = [_f0_flat[c] for c in range(dim)]
 
-        # The indices need to be interleaved, but for symmetric problems
-        # there are lots of symmetries. This means we can find it hard to debug
-        # the required permutation for a non-symmetric problem
-        permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
-        # permutation = (0,2,3,1) # ? same symmetry as I_ijkl ? # OK
-        # permutation = (3,1,2,0) # ? same symmetry as I_ijkl ? # OK
+        # uu_G0[fc, gc]                  = dF0[fc] / dU[gc]
+        G0 = sympy.zeros(Nc, Nc)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
 
-        self._uu_G0 = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-        self._uu_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
-        self._uu_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim,dim))
-        self._uu_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim*dim))
+        # uu_G1[fc*Nc + gc, dg]          = dF0[fc] / dL[gc, dg]
+        G1 = sympy.zeros(Nc * Nc, dim)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                for dg in range(dim):
+                    G1[fc * Nc + gc, dg] = sympy.diff(f0_jac_list[fc], L[gc, dg])
+
+        # uu_G2[fc*Nc + gc, df]          = dF1[fc, df] / dU[gc]
+        G2 = sympy.zeros(Nc * Nc, dim)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                for df in range(dim):
+                    G2[fc * Nc + gc, df] = sympy.diff(F1_for_jac[fc, df], U_list[gc])
+
+        # uu_G3[fc*Nc + gc, df*dim + dg] = dF1[fc, df] / dL[gc, dg]
+        G3 = sympy.zeros(Nc * Nc, dim * dim)
+        for fc in range(Nc):
+            for gc in range(Nc):
+                for df in range(dim):
+                    for dg in range(dim):
+                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(
+                            F1_for_jac[fc, df], L[gc, dg]
+                        )
+
+        self._uu_G0 = sympy.ImmutableMatrix(G0)
+        self._uu_G1 = sympy.ImmutableMatrix(G1)
+        self._uu_G2 = sympy.ImmutableMatrix(G2)
+        self._uu_G3 = sympy.ImmutableMatrix(G3)
 
         fns_jacobian += [self._uu_G0, self._uu_G1, self._uu_G2, self._uu_G3]
 
-        # U/P block (check permutations - hard to validate without a full collection of examples)
+        # U/P block. The constraint field is scalar (Nc_p == 1), so the g-index
+        # is size 1 and only the derivative indices need explicit placement.
+        p_scalar = self.p.sym[0]
+        Gp = self._G  # (1, dim) row of dp/dx_dg symbols
 
-        G0 = sympy.derive_by_array(F0_jac, self.p.sym)
-        G1 = sympy.derive_by_array(F0_jac, self._G)
-        G2 = sympy.derive_by_array(F1_for_jac, self.p.sym)
-        G3 = sympy.derive_by_array(F1_for_jac, self._G)
+        # up_G0[fc, 0]                   = dF0[fc] / dp
+        G0 = sympy.zeros(dim, 1)
+        for fc in range(dim):
+            G0[fc, 0] = sympy.diff(f0_jac_list[fc], p_scalar)
 
-        self._up_G0 = sympy.ImmutableMatrix(G0.reshape(dim))  # zero in tests
-        self._up_G1 = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))  # zero in stokes tests
-        self._up_G2 = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim,dim))  # ?
-        self._up_G3 = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim,dim))  # zeros
+        # up_G1[fc, dg]                  = dF0[fc] / d(dp/dx_dg)
+        G1 = sympy.zeros(dim, dim)
+        for fc in range(dim):
+            for dg in range(dim):
+                G1[fc, dg] = sympy.diff(f0_jac_list[fc], Gp[0, dg])
+
+        # up_G2[fc, df]                  = dF1[fc, df] / dp
+        G2 = sympy.zeros(dim, dim)
+        for fc in range(dim):
+            for df in range(dim):
+                G2[fc, df] = sympy.diff(F1_for_jac[fc, df], p_scalar)
+
+        # up_G3[fc*dim + df, dg]         = dF1[fc, df] / d(dp/dx_dg)
+        G3 = sympy.zeros(dim * dim, dim)
+        for fc in range(dim):
+            for df in range(dim):
+                for dg in range(dim):
+                    G3[fc * dim + df, dg] = sympy.diff(F1_for_jac[fc, df], Gp[0, dg])
+
+        self._up_G0 = sympy.ImmutableMatrix(G0)  # zero in stokes tests
+        self._up_G1 = sympy.ImmutableMatrix(G1)  # zero in stokes tests
+        self._up_G2 = sympy.ImmutableMatrix(G2)  # pressure coupling
+        self._up_G3 = sympy.ImmutableMatrix(G3)  # zero in stokes tests
 
         fns_jacobian += [self._up_G0, self._up_G1, self._up_G2, self._up_G3]
 
@@ -7364,24 +7769,48 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             if bc.fn_f is not None:
 
-                permutation = (0,2,1,3) # ? same symmetry as I_ijkl ? # OK
-
                 bd_F0  = sympy.Array(bc.fn_f)
 
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
                 fns_bd_residual += [bc.fns["u_f0"]]
 
-                G0 = sympy.derive_by_array(bd_F0, self.Unknowns.u.sym)
-                G1 = sympy.derive_by_array(bd_F0, self.Unknowns.L)
-                bc.fns["uu_G0"] = sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim)) # sympy.ImmutableMatrix(sympy.permutedims(G0, permutation).reshape(dim,dim))
-                bc.fns["uu_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim)) # sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim*dim))
+                # Boundary Jacobians follow the same PETSc [fc, gc, df, dg]
+                # layout as the bulk blocks — build them with the same
+                # explicit-index loops (the old permutedims form transposed
+                # fc/gc here too; harmless only while every natural-BC
+                # tangent happened to be symmetric).
+                bd_f0_list = list(sympy.Array(bc.fn_f).reshape(dim))
+
+                # uu_G0[fc, gc]         = d bd_F0[fc] / dU[gc]
+                G0 = sympy.zeros(dim, dim)
+                for fc in range(dim):
+                    for gc in range(dim):
+                        G0[fc, gc] = sympy.diff(bd_f0_list[fc], U_list[gc])
+
+                # uu_G1[fc*dim + gc, dg] = d bd_F0[fc] / dL[gc, dg]
+                G1 = sympy.zeros(dim * dim, dim)
+                for fc in range(dim):
+                    for gc in range(dim):
+                        for dg in range(dim):
+                            G1[fc * dim + gc, dg] = sympy.diff(bd_f0_list[fc], L[gc, dg])
+
+                bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
+                bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1)
                 fns_bd_jacobian += [bc.fns["uu_G0"], bc.fns["uu_G1"]]
 
-                G0 = sympy.derive_by_array(bc.fns["u_f0"], P)
-                G1 = sympy.derive_by_array(bc.fns["u_f0"], self._G)
+                # up_G0[fc, 0]          = d bd_F0[fc] / dp
+                G0 = sympy.zeros(dim, 1)
+                for fc in range(dim):
+                    G0[fc, 0] = sympy.diff(bd_f0_list[fc], p_scalar)
 
-                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0.reshape(dim))
-                bc.fns["up_G1"] = sympy.ImmutableMatrix(sympy.permutedims(G1, permutation).reshape(dim,dim))
+                # up_G1[fc, dg]         = d bd_F0[fc] / d(dp/dx_dg)
+                G1 = sympy.zeros(dim, dim)
+                for fc in range(dim):
+                    for dg in range(dim):
+                        G1[fc, dg] = sympy.diff(bd_f0_list[fc], Gp[0, dg])
+
+                bc.fns["up_G0"] = sympy.ImmutableMatrix(G0)
+                bc.fns["up_G1"] = sympy.ImmutableMatrix(G1)
                 fns_bd_jacobian += [bc.fns["up_G0"], bc.fns["up_G1"]]
 
                 # Gradient boundary residual (f1_bd) and its Jacobians (g2, g3)
@@ -7395,16 +7824,47 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     # smooth-kink the Jacobian source so its tangent is Newton-
                     # consistent (same fix as the bulk). Residual u_F1 stays exact.
                     bd_F1_jac = self._jacobian_source(bd_F1)
-                    G2 = sympy.derive_by_array(bd_F1_jac, self.Unknowns.u.sym)
-                    G3 = sympy.derive_by_array(bd_F1_jac, self.Unknowns.L)
-                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(sympy.permutedims(G2, permutation).reshape(dim*dim, dim))
-                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(sympy.permutedims(G3, permutation).reshape(dim*dim, dim*dim))
+
+                    # uu_G2[fc*dim + gc, df]          = d bd_F1[fc, df] / dU[gc]
+                    G2 = sympy.zeros(dim * dim, dim)
+                    for fc in range(dim):
+                        for gc in range(dim):
+                            for df in range(dim):
+                                G2[fc * dim + gc, df] = sympy.diff(
+                                    bd_F1_jac[fc, df], U_list[gc]
+                                )
+
+                    # uu_G3[fc*dim + gc, df*dim + dg] = d bd_F1[fc, df] / dL[gc, dg]
+                    G3 = sympy.zeros(dim * dim, dim * dim)
+                    for fc in range(dim):
+                        for gc in range(dim):
+                            for df in range(dim):
+                                for dg in range(dim):
+                                    G3[fc * dim + gc, df * dim + dg] = sympy.diff(
+                                        bd_F1_jac[fc, df], L[gc, dg]
+                                    )
+
+                    bc.fns["uu_G2"] = sympy.ImmutableMatrix(G2)
+                    bc.fns["uu_G3"] = sympy.ImmutableMatrix(G3)
                     fns_bd_jacobian += [bc.fns["uu_G2"], bc.fns["uu_G3"]]
 
-                    G2 = sympy.derive_by_array(bc.fns["u_F1"], P)
-                    G3 = sympy.derive_by_array(bc.fns["u_F1"], self._G)
-                    bc.fns["up_G2"] = sympy.ImmutableMatrix(G2.reshape(dim, dim))
-                    bc.fns["up_G3"] = sympy.ImmutableMatrix(G3.reshape(dim, dim*dim))
+                    # up_G2[fc, df]          = d bd_F1[fc, df] / dp
+                    G2 = sympy.zeros(dim, dim)
+                    for fc in range(dim):
+                        for df in range(dim):
+                            G2[fc, df] = sympy.diff(bd_F1[fc, df], p_scalar)
+
+                    # up_G3[fc*dim + df, dg] = d bd_F1[fc, df] / d(dp/dx_dg)
+                    G3 = sympy.zeros(dim * dim, dim)
+                    for fc in range(dim):
+                        for df in range(dim):
+                            for dg in range(dim):
+                                G3[fc * dim + df, dg] = sympy.diff(
+                                    bd_F1[fc, df], Gp[0, dg]
+                                )
+
+                    bc.fns["up_G2"] = sympy.ImmutableMatrix(G2)
+                    bc.fns["up_G3"] = sympy.ImmutableMatrix(G3)
                     fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"]]
 
                 # Pressure boundary residual and Jacobians (pu, pp blocks)
@@ -7438,7 +7898,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## stiffness uu = ∂fn_f/∂u = r·(n⊗n)  (0, 0) which conditions the [p,h]
         ## Schur complement (r=0 ⇒ bare KKT, uu=0). Guarded: no-op for ordinary
         ## Stokes.
-        cbc_permutation = (0, 2, 1, 3)
         for cbc in self._block_constraint_bcs:
             n_row = cbc.normal           # sympy 1×dim Matrix
             g_sym = cbc.g
@@ -7464,11 +7923,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             cbc.fns["h_f0"] = sympy.ImmutableDenseMatrix(fn_h)
             fns_bd_residual += [cbc.fns["h_f0"]]
 
-            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape)
-            G0 = sympy.derive_by_array(sympy.Array(fn_f), self.Unknowns.u.sym)
-            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(
-                sympy.permutedims(G0, cbc_permutation).reshape(dim, dim)
-            )
+            # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — AL stiffness (mirror Nitsche shape).
+            # Explicit [fc, gc] placement like every other Jacobian block (the
+            # content is symmetric, but no permutedims survives on principle —
+            # see petsc-jacobian-layout.md).
+            G0 = sympy.zeros(dim, dim)
+            for fc in range(dim):
+                for gc in range(dim):
+                    G0[fc, gc] = sympy.diff(fn_f[fc], U_list[gc])
+            cbc.fns["uu_G0"] = sympy.ImmutableMatrix(G0)
             fns_bd_jacobian += [cbc.fns["uu_G0"]]
 
             # uh (0, h):  ∂fn_f/∂h = n  — mirror the up_G0 (velocity,scalar) shape
@@ -7955,6 +8418,55 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Lagrange-multiplier rows (block-constrained Stokes). Guarded: no-op
         # for ordinary Stokes. Register the interior screening residual and the
         # diagonal mass Jacobian/preconditioner on each multiplier's field.
+        #
+        # multiplier_schur_pc reachability (#486, resolved by tracing PETSc
+        # fieldsplit.c): the flag swaps only the Pmat (h,h) block below. With
+        # schur_precondition=selfp the Schur preconditioner Sp is assembled by
+        # MatSchurComplementGetPmat from sub-matrices split out of the AMAT
+        # whenever pc_fieldsplit_diag_use_amat is set (jac->mat[1], not
+        # jac->pmat[1]) — so under this class's defaults (selfp +
+        # diag_use_amat) the swapped block is provably never read. It IS read
+        # under schur_precondition=a11 (Sp = the grouped [p,h] Pmat block) and
+        # under a monolithic direct factorisation of the Pmat. An explicit
+        # opt-in silently doing nothing is exactly the #477 class -> record
+        # AND warn (unlike the auto declines, this one earns the warning).
+        if self._multipliers and self._multiplier_schur_pc:
+            _opts = self.petsc_options
+            _schur_pre = (_opts.getString("pc_fieldsplit_schur_precondition")
+                          if _opts.hasName("pc_fieldsplit_schur_precondition")
+                          else "")
+            _pc_type = (_opts.getString("pc_type")
+                        if _opts.hasName("pc_type") else "")
+            # Read the VALUE, not the key's presence: diag_use_amat set to
+            # "false" means the Pmat block IS read and the opt-in is live
+            # (measured: Schur pre differs by rel-Frobenius 0.30 flag-on/off).
+            _diag_amat = _opts.getBool("pc_fieldsplit_diag_use_amat", False)
+            if (_schur_pre != "a11" and _diag_amat
+                    and _pc_type not in ("lu", "cholesky")):
+                self._record_pc_fallback(
+                    "multiplier_schur_pc",
+                    requested="1/mu multiplier Schur mass (Pmat h,h block)",
+                    installed="unread — selfp builds Sp from the Amat A11 block",
+                    reason="declined",
+                    detail=f"pc_fieldsplit_schur_precondition="
+                           f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                           f"Pmat (h,h) block never reaches the Schur "
+                           f"preconditioner; set schur_precondition='a11' (or "
+                           f"factorise the Pmat directly) to make the opt-in "
+                           f"live")
+                if uw.mpi.rank == 0:
+                    import warnings
+                    warnings.warn(
+                        f"[{self.name}] multiplier_schur_pc=True has no effect "
+                        f"under pc_fieldsplit_schur_precondition="
+                        f"'{_schur_pre or 'selfp'}' with diag_use_amat: the "
+                        f"1/mu multiplier Schur mass is written into the Pmat "
+                        f"(h,h) block, which selfp never reads (Sp is built "
+                        f"from the Amat). Use "
+                        f"petsc_options['pc_fieldsplit_schur_precondition'] = "
+                        f"'a11' to make it live. See solver.pc_fallbacks.",
+                        stacklevel=2,
+                    )
         for k, mvar in enumerate(self._multipliers):
             fid = mvar._solver_field_id
             # Operator (Amat) (lambda,lambda) block is ALWAYS the true screening eps so
@@ -8741,8 +9253,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         homotopy_options : dict, optional
             March settings passed to
             :func:`~underworld3.systems.yield_continuation.yield_continuation` —
-            ``delta0``, ``down``, ``dmin``, ``entry_maxit``, ``step_maxit``,
-            ``retries``. All are defaulted; tuning them is optional.
+            ``smoother``, ``delta0``, ``down``, ``dmin``, ``entry_maxit``,
+            ``step_maxit``, ``retries``. All are defaulted; tuning them is optional.
+            ``smoother`` picks the soft-min family — ``"powermean"`` (default,
+            approaches the yield surface from below) or ``"sqrt"`` (from above). Which
+            gives the better cold entry is problem-dependent, so it is worth trying both
+            when a march will not start. Leave ``delta0`` unset unless you have a
+            reason: each family supplies its own entry, and the two δ are not the same
+            parameter.
 
         Returns
         -------
@@ -8813,7 +9331,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
-        if self._rotated_freeslip_bcs:
+        if self._rotated_freeslip_bcs or self._fault_contact_faults:
             # Run the same pre-solve preamble as the standard path so the pointwise
             # functions see the DM time, the auxiliary vector, and updated constants
             # (needed for problems whose coefficients live in auxiliary fields). This
@@ -8863,15 +9381,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             UW_DMSetTime(_time_dm_stokes.dm, t_nd)
 
         # Keep a record of these set-up parameters
-        tolerance = self.tolerance
         snes_type = self.snes.getType()
-        # NOTE: hardcoded iteration cap. Unlike tolerance/snes_type above (read
-        # from current state), this value is pushed to petsc_options before the
-        # final solve below, silently clobbering any user-set snes_max_it on
-        # every solve. Respecting the user's setting is a behaviour change
-        # deferred to the benchmarked D2 sub-wave — see
-        # docs/reviews/2026-07/REMEDIATION-WORKLIST.md rows D-22/D2 (ruling D18).
-        snes_max_it = 50
+        # Resolved ONCE, before any of this solve's own pushes, so the resolver compares
+        # against the previous solve's push rather than this one's. (Was a hardcoded 50
+        # pushed unconditionally, which made `snes_max_it` unreachable — worklist rows
+        # D-22/D2, ruling D18; same failure shape as the sub-block rtols in #477.)
+        snes_max_it = self._resolve_snes_max_it(50)
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -8888,7 +9403,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 print(f"SNES pre-solve - non-zero initial guess", flush=True)
 
 
-            self.petsc_options.setValue("snes_max_it", 0)
+            self._push_snes_max_it(0)
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
             # PETSc may rebuild operator state after setFromOptions(), so reattach
@@ -8913,13 +9428,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # (frozen) tangent path is left bit-identical, and an explicit Picard count
         # is honoured as given.
         #
-        # This is a DESIGN REQUIREMENT, not an optimisation: under the consistent
-        # tangent a viscoplastic Jacobian is NaN at zero strain rate (the residual
-        # survives, its derivative does not), so the machinery has to make that
-        # state unreachable. Both routes to it are covered — an explicit cold start,
-        # and a nominally warm one whose solution has never been written. The
-        # "continuation" tangent needs no help: it opens on a Picard stage
-        # (alpha = 0) by construction. See
+        # This warm-up is a CONVERGENCE aid (move a cold guess toward the Newton
+        # basin), NOT the correctness mechanism for the zero-strain-rate state.
+        # Two measured facts (issue #507) retired the old "make the NaN state
+        # unreachable" framing: (1) one nrichardson sweep only propagates
+        # boundary data a single element layer, so on a BOUNDARY-DRIVEN problem
+        # the deep interior stays exactly zero after the warm-up (body-force
+        # problems fill F(0) everywhere, which is why the yield campaigns never
+        # saw it); (2) a rigidly-translating stuck region has edot = 0 at the
+        # CONVERGED solution — the state is physics, not a start-up artifact.
+        # Finiteness of the consistent tangent at edot = 0 is owned by the
+        # half-integer-power guard in _jacobian_unwrap (the derivative's
+        # removable-singularity limit, implemented). NOTE the "continuation"
+        # tangent is NOT protected by its alpha = 0 phase (the blended kernel
+        # still evaluates the Newton branch pointwise, and IEEE 0*NaN = NaN);
+        # with the guard in place both tangents are finite everywhere. See
         # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
         if (picard == 0 and self.consistent_jacobian is True
                 and (zero_init_guess or self._solution_is_trivially_zero())):
@@ -8931,8 +9454,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Picard solves if requested
 
         if picard != 0:
-            self.petsc_options.setValue("snes_max_it", abs(picard))
-            self.tolerance = tolerance
+            self._push_snes_max_it(abs(picard))
+            self._reassert_outer_tolerances()
             self.snes.atol = self.atol
             self.snes.setType("nrichardson")
             self.snes.setFromOptions()
@@ -8944,9 +9467,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # warmup above was taken: restore the configured SNES type and
         # tolerances, then solve.
         self.snes.setType(snes_type)
-        self.tolerance = tolerance
+        self._reassert_outer_tolerances()
         self.snes.atol = self.atol
-        self.petsc_options.setValue("snes_max_it", snes_max_it)
+        self._push_snes_max_it(snes_max_it)
         self.snes.setFromOptions()
         self._attach_stokes_nullspace()
         # Custom geometric-MG prolongation on the velocity block (if registered

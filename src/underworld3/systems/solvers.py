@@ -2401,21 +2401,40 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         # preconditioner partition-dependent, which only cancels once the TRUE
         # residual is driven down). Pinning EW's initial = max rtol to the solver
         # tolerance makes the outer fgmres iterate until genuinely converged, so
-        # the velocity is partition-independent to round-off. Kept in sync by the
-        # `tolerance` setter below.
-        self.petsc_options["snes_ksp_ew_rtol0"] = self._tolerance * 1.0e-1
-        self.petsc_options["snes_ksp_ew_rtolmax"] = self._tolerance * 1.0e-1
+        # the velocity is partition-independent to round-off. Applied through the
+        # class derived-key table (kept in sync by the `tolerance` setter below);
+        # the table also writes ksp_rtol = tolerance * 0.1, which at the class
+        # default tolerance equals PETSc's own ksp_rtol default (and EW re-picks
+        # ksp_rtol per step regardless).
+        self._derive_tolerance_margins()
         return
+
+    #: Constrained derives DIFFERENT keys from the tolerance than the base
+    #: Stokes table: the outer ``ksp_rtol`` and the Eisenstat-Walker pins,
+    #: NOT the inner fieldsplit margins. That is a real design difference —
+    #: EW pinning owns this class's outer accuracy (see ``__init__``) — made
+    #: explicit here rather than hand-rolled in a second code path (#483).
+    _TOLERANCE_DERIVED_KEYS = {"ksp_rtol": 0.1,
+                               "snes_ksp_ew_rtol0": 0.1,
+                               "snes_ksp_ew_rtolmax": 0.1}
 
     @property
     def tolerance(self):
         """Solver tolerance (see :class:`SNES_Stokes_SaddlePt.tolerance`).
 
-        Overridden so that, in addition to ``snes_rtol`` / ``ksp_rtol`` /
-        ``ksp_atol``, the Eisenstat-Walker initial and max relative tolerances are
-        pinned to ``tolerance * 0.1`` — otherwise EW's default (0.3) under-solves
-        the ill-conditioned augmented constrained system on a linear solve and the
-        velocity becomes partition-dependent (see ``__init__``).
+        Same two ownership classes as the base property (#483):
+
+        **OWNED** (re-asserted each solve unless you set the key explicitly,
+        after which your value is honoured): ``snes_rtol`` = ``tolerance``,
+        ``ksp_atol`` = ``tolerance * 1e-6``.
+
+        **DERIVED at set time** (the class table ``_TOLERANCE_DERIVED_KEYS``;
+        yours to override afterwards): ``ksp_rtol``, ``snes_ksp_ew_rtol0``
+        and ``snes_ksp_ew_rtolmax``, all ``tolerance * 0.1`` — the EW pins
+        replace the base class's inner fieldsplit margins because EW's
+        default (0.3) under-solves the ill-conditioned augmented constrained
+        system on a linear solve and the velocity becomes
+        partition-dependent (see ``__init__``).
         """
         return self._tolerance
 
@@ -2423,10 +2442,8 @@ class SNES_Stokes_Constrained(SNES_Stokes):
     def tolerance(self, value):
         self._tolerance = value
         self.petsc_options["snes_rtol"] = value
-        self.petsc_options["ksp_rtol"] = value * 1.0e-1
         self.petsc_options["ksp_atol"] = value * 1.0e-6
-        self.petsc_options["snes_ksp_ew_rtol0"] = value * 1.0e-1
-        self.petsc_options["snes_ksp_ew_rtolmax"] = value * 1.0e-1
+        self._derive_tolerance_margins()
 
     def solve(self, *args, **kwargs):
         """Solve the constrained Stokes system (see :meth:`SNES_Stokes.solve`).
@@ -2517,20 +2534,31 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         automatically.
 
         The grouped :math:`[p,\\lambda]` Schur preconditioner is formed by
-        ``selfp`` from the operator blocks, and the pressure mass it needs is the
-        ``1/viscosity`` (``1/constitutive_model.K``) term supplied automatically.
-        There is nothing for the user to set; this property is inert and assigning
-        to it raises. (The base :class:`SNES_Stokes` keeps a settable
+        ``selfp`` **from the operator (Amat) blocks alone**: with
+        ``diag_use_amat`` set (this class's default), selfp assembles
+        :math:`S_p \\approx A_{11} - A_{10}\\,\\mathrm{diag}(A_{00})^{-1}A_{01}`
+        from Amat sub-blocks and never reads the Pmat — so the automatic
+        ``1/viscosity`` pressure mass participates only if you override
+        ``pc_fieldsplit_schur_precondition = "a11"`` (an earlier version of
+        this docstring claimed selfp used it; that was drifted, see #486).
+        There is nothing for the user to set; this property is inert and
+        assigning to it raises. (The base :class:`SNES_Stokes` keeps a settable
         ``saddle_preconditioner`` as an advanced override.)
         """
+        # TODO(BUG): should Constrained's selfp see the Pmat blocks at all?
+        # Under selfp + diag_use_amat the 1/mu pressure mass (_pp_G0) and the
+        # multiplier Schur mass (multiplier_schur_pc) are both provably unread
+        # by the Schur preconditioner (PETSc fieldsplit.c trace, #486). Whether
+        # Sp should instead be built with the Pmat A11 block is a solver-design
+        # question — out of scope for the #486 instrumentation, not changed here.
         return None
 
     @saddle_preconditioner.setter
     def saddle_preconditioner(self, value):
         raise AttributeError(
             "Stokes_Constrained does not use `saddle_preconditioner`: the Schur "
-            "preconditioner is built automatically (selfp + the 1/viscosity mass "
-            "from constitutive_model.K). Remove this assignment."
+            "preconditioner is built automatically (selfp, assembled from the "
+            "operator's Amat blocks). Remove this assignment."
         )
 
     def _viscosity_scale(self):

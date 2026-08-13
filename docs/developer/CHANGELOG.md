@@ -6,6 +6,39 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### The Free Surface Reaches the Spherical Shell (July 2026)
+
+**`uw.systems.FreeSurface` now runs in 3D on a spherical shell** — the same
+exponential three-number integrator, held-lid σ_nn recovery and strong
+material-boundary datum, with the surface machinery made dimension-general
+rather than ported piecewise:
+
+- The datum gauge (mean removal) is an FE trace-mass reduction over
+  owned boundary facets — no ordered ring, no gather; the same code is the
+  2D line gauge and the 3D area gauge. On the way it resolved a real 2D
+  defect: the deforming-ring strong-datum solves used to stall at a ~2e-3
+  residual floor, which turned out to be three stacked causes (arc-length vs
+  FE trace weights; the datum's *directed* mean flux through the deformed
+  facet normals, now stripped with the same FE surface integral the residual
+  uses; and the constant-pressure gauge mode, which the inner solver projects
+  and the outer loop therefore now measures in the quotient space). With all
+  three closed, every step of the power-law acceptance run converges.
+- σ_nn on a 3D P2 boundary is recovered by **P1 projection** (edge-midpoint
+  loads folded exactly onto vertices, sound P1 lumped triangle mass) — chosen
+  over the consistent P2 mass because its vertex-integral checkerboard sits
+  exactly at the vertices the P1 topography field consumes.
+- The two genuinely 2D features (ring Taubin filter, tangential transport)
+  are refused explicitly in 3D; everything else is shared code.
+
+First 3D evidence (spherical Y20 topographic relaxation, constant-density
+shell): exponential decay at an O(1) shell correction below the half-space
+Cathles rate, in the physically correct direction, with the equilibrium
+modal bias falling 16% → 2% of the initial amplitude over one resolution
+step (the known discrete recovery defect, resolution-convergent). The
+detailed benchmarking — analytic shell-rate comparison, convergence study,
+low-Ra spherical convection, 3D parallel — is deliberately left to the
+review pass.
+
 ### One Owner for the Geometric-Multigrid Option Bundle (July 2026)
 
 **The PETSc option bundle that configures a Stokes velocity block's multigrid

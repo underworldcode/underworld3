@@ -178,6 +178,112 @@ def validate_unknowns_sharing(multi_material_model):
 - ⚠️ Preconditioner *selection* is partly covered — see "Choosing the Krylov method for a fieldsplit sub-solve" and "The multigrid option bundle, and its one owner" below; Schur preconditioner choice is still undocumented
 - Could benefit from optimization examples
 
+## The Stokes fieldsplit: two nested Krylov loops
+
+The Stokes saddle-point solver is configured as
+
+```
+pc_type                          = fieldsplit
+pc_fieldsplit_type               = schur
+pc_fieldsplit_schur_fact_type    = full
+pc_fieldsplit_schur_precondition = a11
+```
+
+which is easy to read as one solver and is in fact **two nested Krylov loops with a third
+inside them**. Knowing which loop does the work is the difference between tuning the
+solver and permuting options.
+
+For the saddle system
+
+$$
+\begin{bmatrix} A & B^{T} \\ B & 0 \end{bmatrix}
+\begin{bmatrix} u \\ p \end{bmatrix} =
+\begin{bmatrix} f \\ g \end{bmatrix}
+$$
+
+`fieldsplit` is a **preconditioner for a Krylov method on the full coupled system**. With
+`schur_fact_type = full`, one application of that preconditioner is the block
+factorisation, which needs $A^{-1}$ twice and $\hat{S}^{-1}$ once, where
+$S = -B A^{-1} B^{T}$ is the Schur complement and $\hat S$ is its preconditioner — with
+`schur_precondition = a11`, the $1/\mu$-weighted pressure mass matrix that
+`saddle_preconditioner` supplies.
+
+The three solves:
+
+| loop | iterates on | cost of one iteration |
+|---|---|---|
+| **outer KSP** | the full coupled residual | one preconditioner application |
+| **pressure sub-KSP** | the Schur system $S p = r$ | a MatMult by $S$ — i.e. **a velocity solve** |
+| **velocity sub-KSP** | $A u = r$, preconditioned by FMG or GAMG | one multigrid cycle per Krylov step |
+
+### Two designs, and the same work in different loops
+
+The pressure block's `ksp_type` chooses between two genuinely different algorithms.
+
+**A pressure Krylov solve gives you Citcom.** The Schur system is actually solved, so the
+block preconditioner is close to the exact inverse and the outer KSP converges in one or
+two iterations — a formality wrapped around a Uzawa solve. This is the classical
+arrangement (Moresi & Solomatov 1995): an outer *pressure* iteration with an inexact
+multigrid velocity solve inside it. UW3's inner-tolerance margins (`0.033` velocity,
+`0.1` pressure, applied by the `tolerance` setter) were designed for this shape.
+
+**`fieldsplit_pressure_ksp_type = preonly` gives you a block preconditioner.** The Schur
+system is never solved; $\hat S^{-1}$ is a single mass-matrix application, the fieldsplit
+becomes a cheap approximate preconditioner, and the **outer** Krylov does all the coupling
+work. This is the Elman–Silvester–Wathen approach, standard in the finite-element
+literature. It is not a degenerate configuration — but it is not Citcom, and the margins
+above are not aimed at it.
+
+Neither is universally better, and UW3 does not take a position: the choice is
+problem-dependent and worth measuring on the problem at hand. What matters is knowing
+which one is in force, because the diagnostics differ.
+
+```{important} The two choices interact with the outer restart
+Under `preonly`, *every* coupling iteration is an **outer** iteration — and the outer loop
+is where GMRES's restart lives. A problem needing more outer iterations than
+`ksp_gmres_restart` (PETSc default 30) discards its Krylov space and stagnates, exactly
+where a deep residual is being ground out. Under a pressure Krylov the outer count stays
+at one or two, so the restart never bites there; it moves into the pressure KSP, which can
+be given its own.
+
+A `preonly` configuration therefore wants a **flexible outer method and a generous
+restart**. Note also that the outer preconditioner *varies between applications* whenever
+a sub-block is itself a Krylov solve — which a non-flexible GMRES assumes away.
+```
+
+```{tip} Report the outer iteration count
+`solve_report.sub["velocity"].its` is the total multigrid cycle count — a **cost** measure.
+A restart stagnation looks like a large **outer** count (`solve_report.ksp_its`) with a
+poor residual, and is invisible in the velocity total. When diagnosing a Stokes solve that
+grinds, print both, plus `stokes.snes.getKSP().getConvergedReason()`.
+```
+
+### Inner tolerances are deliberately inexact, and bounded
+
+The inner solves are inexact on purpose — you do not solve the velocity block exactly in
+order to apply the Schur complement. Two consequences hold together:
+
+1. inexact inner solves perturb the outer search directions, so **the outer Krylov must be
+   flexible**; and
+2. the inexactness is **bounded** — the inner solves must still converge well below the
+   tolerance demanded of the outer solve. The `0.033` and `0.1` factors are that margin.
+
+"Flexible or not" and "how tight is the inner tolerance" are two halves of one decision,
+not independent axes: flexibility buys tolerance of inexactness, and the margin bounds how
+inexact. `preonly` is the degenerate end — no tolerance, hence no margin — which is why it
+belongs to a design where the *outer* loop is doing the converging.
+
+Both `fieldsplit_velocity_ksp_rtol` and `fieldsplit_pressure_ksp_rtol` are settable, and
+setting `tolerance` re-derives them from it — so set `tolerance` first, then any override.
+
+```{warning} `preonly` under the Schur is a different matter
+`preonly` on the **pressure** block is a design choice, as described above. `preonly` on
+the **velocity** block, under `schur_fact_type = full`, is a defect: PCFieldSplit applies
+$A^{-1}$ *through* the velocity sub-KSP when forming the Schur action, so an inexact
+velocity solve hands the pressure Krylov a different operator than the one its
+preconditioner was built for.
+```
+
 ## Choosing the Krylov method for a fieldsplit sub-solve
 
 This choice gets re-argued periodically. The confusion is that it looks like three

@@ -39,6 +39,11 @@ mpirun -np 3 $PYTHON ./ptest_0010_snapshot_disk.py
 echo "ptest 0010 snapshot on-disk -np 4"
 mpirun -np 4 $PYTHON ./ptest_0010_snapshot_disk.py
 
+echo "ptest 0011 DM rebuild held handles -np 2"
+mpirun -np 2 $PYTHON ./ptest_0011_dm_rebuild_held_handles.py
+echo "ptest 0011 DM rebuild held handles -np 4"
+mpirun -np 4 $PYTHON ./ptest_0011_dm_rebuild_held_handles.py
+
 echo "ptest 0004 checkpoint FMG hierarchy -np 2"
 mpirun -np 2 $PYTHON ./ptest_0004_checkpoint_fmg_hierarchy.py
 echo "ptest 0004 checkpoint FMG hierarchy -np 3 (uneven partition)"

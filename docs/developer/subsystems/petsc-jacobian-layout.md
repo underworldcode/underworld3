@@ -61,33 +61,38 @@ pairs like-kind indices.
 
 ## Sympy's native convention
 
-`sympy.derive_by_array(F, x)` returns an array with **`F`'s indices
-first, then `x`'s**:
+```{warning}
+An earlier revision of this page stated the opposite convention
+("F's indices first, then x's") and audited the Stokes `permutedims`
+path as correct on that basis. That was wrong — it is how the issue
+#457 transposed-tangent bug survived the 2026-04-21 audit.
+```
+
+`sympy.derive_by_array(F, x)` is **dx-FIRST**: the returned array has
+**`x`'s indices first, then `F`'s** (see the sympy documentation for
+`derive_by_array`; verified numerically against finite differences in
+the #457 investigation):
 
 ```python
 G3 = sympy.derive_by_array(F1, L)
 #    F1 shape (Nc, dim), L shape (Nc, dim)
 #  → G3 shape (Nc, dim, Nc, dim)
-#  → G3[i, j, k, l] = ∂F1[i, j] / ∂L[k, l]
-#  → index order [fc, df, gc, dg]
+#  → G3[k, l, i, j] = ∂F1[i, j] / ∂L[k, l]
+#  → index order [gc, dg, fc, df]
 ```
 
-This is the same mathematical object PETSc wants, but with the **two
-middle axes swapped** relative to PETSc's flat layout. Translating
-sympy → PETSc therefore needs the permutation **`(0, 2, 1, 3)`** — swap
-axes 1 and 2 — before flattening.
+Translating sympy → PETSc's `[fc, gc, df, dg]` therefore needs the
+permutation **`(2, 0, 3, 1)`** before flattening. The historically-used
+`(0, 2, 1, 3)` yields `[gc, fc, dg, df]` — the **major transpose**
+`∂F1[gc, dg]/∂L[fc, df]` in the `[fc, gc, df, dg]` slot. That is
+identical to the true tangent whenever the tangent has major symmetry
+(any frozen major-symmetric `C`, the isotropic Newton term
+`η'·(ε̂⊗ε̂)`, linear transverse isotropy) and silently wrong when it
+does not (the transverse-isotropic Newton term is `B⊗a` with `B ∦ a` —
+issue #457).
 
-For `g1` (3D, sympy order `[fc, gc, df]`) and `g2` (3D, sympy order
-`[fc, df, gc]`):
-
-| Array | Sympy shape after `derive_by_array` | Permutation | Final 2D shape |
-|-------|--------------------------------------|-------------|----------------|
-| `g0`  | `(Nc, Nc)` — already `[fc, gc]`       | none         | `(Nc, Nc)`     |
-| `g1`  | `(Nc, Nc, dim)` — `[fc, gc, df]`      | none         | `(Nc·Nc, dim)` |
-| `g2`  | `(Nc, dim, Nc)` — `[fc, df, gc]`      | `(0, 2, 1)`  | `(Nc·Nc, dim)` |
-| `g3`  | `(Nc, dim, Nc, dim)` — `[fc, df, gc, dg]` | `(0, 2, 1, 3)` | `(Nc·Nc, dim·dim)` |
-
-The row-major flatten of the 2D form matches PETSc's flat index exactly.
+Do not reach for `permutedims` at all — use the explicit construction
+below.
 
 ## Alternative: explicit construction
 
@@ -142,13 +147,28 @@ An asymmetric F1 like raw `smoothing * L` exposes it immediately.
 Results of walking every solver in `petsc_generic_snes_solvers.pyx` as
 of 2026-04-21:
 
-| Solver | File:line | Construction | Status |
-|--------|-----------|--------------|--------|
-| `SNES_Scalar` | `petsc_generic_snes_solvers.pyx:1255` | no permutation (Nc=1) | ✅ correct — single component makes the swap a no-op |
-| `SNES_Vector` | `petsc_generic_snes_solvers.pyx:2013` | explicit per-entry construction | ✅ correct (2026-04-21 migration) |
-| `SNES_MultiComponent` | `petsc_generic_snes_solvers.pyx:2919` | explicit per-entry construction | ✅ correct (2026-04-20 fix) |
-| `SNES_Stokes_SaddlePt` | `petsc_generic_snes_solvers.pyx:3552` | `permutedims` with `(0, 2, 1, 3)` | ✅ correct — matches PETSc layout |
-| `SNES_NavierStokes` | inherits Stokes | inherited | ✅ correct |
+| Solver | Construction | Status |
+|--------|--------------|--------|
+| `SNES_Scalar` | no permutation (Nc=1) | ✅ correct — single component makes the swap a no-op |
+| `SNES_Vector` | explicit per-entry construction | ✅ correct (2026-04-21 migration) |
+| `SNES_MultiComponent` | explicit per-entry construction | ✅ correct (2026-04-20 fix) |
+| `SNES_Stokes_SaddlePt` | explicit per-entry construction | ✅ correct (2026-08 migration, issue #457 — the earlier `permutedims (0, 2, 1, 3)` form assembled the **major transpose** of `uu_G3` and was mis-audited as correct on 2026-04-21 because this page then stated the sympy convention backwards) |
+| `SNES_NavierStokes` | inherits Stokes | ✅ correct (inherited) |
+
+### `SNES_Stokes_SaddlePt` migration (2026-08, issue #457)
+
+The saddle-point solver used `derive_by_array + permutedims((0,2,1,3))`
+for the `uu`, `up`, and natural-BC Jacobian blocks. Under the true
+(dx-first) sympy convention this places `∂F1[gc,dg]/∂L[fc,df]` in
+PETSc's `[fc,gc,df,dg]` slot — the major transpose. Every isotropic
+rheology (and linear transverse isotropy) has a major-symmetric tangent,
+so the transpose was invisible to the whole test suite; the
+transverse-isotropic Newton tangent is the first in-repo tangent without
+major symmetry, and `-snes_test_jacobian` flagged it at ~1e-1 relative
+(vs FD-limited ~1e-4 after the fix). All blocks now use the same
+explicit-index loops as `SNES_Vector`/`SNES_MultiComponent`. The
+scalar-`p` blocks (`up_*`, `pu_*`) were layout-safe only where a size-1
+axis made the swap a no-op; they are explicit now too.
 
 ### `SNES_Vector` migration (2026-04-21)
 
@@ -190,11 +210,12 @@ consumers.
 
 When writing a new class that registers a `PetscDSSetJacobian` callback:
 
-1. **Decide on construction style.** For multi-field or novel residual
-   shapes, prefer the explicit-index pattern from `SNES_MultiComponent`
-   — it reads like the PETSc documentation and is robust against sympy
-   convention drift. Reserve `derive_by_array + permutedims` for cases
-   that match an already-validated solver pattern.
+1. **Use the explicit-index pattern from `SNES_MultiComponent` — always.**
+   It reads like the PETSc documentation and is robust against sympy
+   convention drift. There is no remaining in-repo
+   `derive_by_array + permutedims` Jacobian path to copy from, by design:
+   the last one (Stokes) carried a transposed tangent for months because
+   every test tangent happened to be major-symmetric (issue #457).
 
 2. **Write a validation test.** For every solver that can be reached at
    `Nc > 1` with `smoothing > 0`, include a test that:
