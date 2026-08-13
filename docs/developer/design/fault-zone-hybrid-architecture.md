@@ -48,6 +48,48 @@ and for the residual seen in the earlier junction work.
 This is the finding that makes a hybrid worth building: the handover is not
 inherently lossy, it was being built at the wrong place.
 
+### Two ways to slice, and only one of them makes a seam
+
+Measured on the listric pair at a trace separation of 0.30, four settings on
+one mesh (5110 cells in every case; slicing adds two, from duplication at the
+split):
+
+| setting | contacts | weak zone | solve | slip against control |
+|---|---|---|---|---|
+| control | none | everywhere | 20.4 s | — |
+| sliced | to the handover | everywhere | 4.7 s | 99.1% / 99.2% |
+| stripped | to the handover | only across the merge | 2.7 s | 92.0% / 75.4% |
+| stripped, penetrating | one cell past it | only across the merge | 2.5 s | 92.6% / 86.7% |
+
+The three sliced rows are one mechanism seen from three sides. Where the zone
+is left intact, a contact's tip ends *inside* weak material by construction,
+so it is never pinned and the answer is the control's. Where the zone is
+stripped back to the handover, the tip ends exactly at the weak material's
+edge — the abutting case — and slip falls to 75%. Running the tip one cell
+further in recovers part of it.
+
+This matters for what the slice criterion IS. If the zone is kept, slicing
+cannot produce a wrong answer: slicing less is slower, slicing more is faster,
+and slicing where the split machinery cannot go is an explicit refusal. The
+criterion is a performance knob with a hard stop. Only the stripped variant,
+which buys a further factor of about two, needs the handover to be
+geometrically right, and needs penetration.
+
+```{note}
+Keeping the contacts *and* the zone is roughly three times faster than the
+zone alone, and we do not yet know why. The natural explanation — that the
+contact supplies the velocity discontinuity the solver would otherwise build
+out of the viscosity contrast — is measurably wrong: the advantage is flat
+across three decades of contrast (2.8x at 1e-3, 3.1x at 1e-5) and the
+zone-only cost barely moves with it. Transverse isotropy had already removed
+that conditioning penalty; the ill-conditioned form was the *isotropic* band,
+at 296 s against the TI band's 13.5 s. The likely candidate is that the two
+configurations take different solver paths with different outer iteration
+counts. Settling it needs the rotated solve's own KSP instrumented —
+``snes.getLinearSolveIterations()`` reads zero for it, because the rotated
+path builds its own prefixed KSP.
+```
+
 ## Fusing the zone
 
 When a network's zones are thickened and resolved against one another in CAD,
