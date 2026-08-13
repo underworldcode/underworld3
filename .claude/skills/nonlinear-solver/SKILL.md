@@ -27,37 +27,30 @@ Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-sol
    the soft-min carries to the viscous branch (see the trap list for the one form
    that must be written carefully).
 
-2. **Multi-solve δ-continuation** (NOT an in-solve ramp). Hold δ **constant** for a
-   full nonlinear solve to tolerance; warm-start the next, smaller δ from that
-   converged state; march δ down to the sharp surface. δ is a `constants[]` atom,
-   so each step is a recompile-free `PetscDSSetConstants` update.
+2. **If a single solve at the sharp surface fails**, escalate in this order:
+   **grid sequencing first** (solve coarse, transfer, re-solve fine — the
+   measured 2-3x win at the notch), and only then a **multi-solve
+   δ-continuation** as the rescue of last resort. The δ-discipline, when you do
+   reach for it: hold δ **constant** for a full nonlinear solve to tolerance;
+   warm-start the next, smaller δ from that converged state; march down to the
+   sharp surface. δ is a `constants[]` atom, so each step is a recompile-free
+   `PetscDSSetConstants` update.
 
-   **This is now one call** — the model advertises the homotopy and `solve()` marches it:
-
-   ```python
-   stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
-   cm.Parameters.shear_viscosity_0 = ...
-   cm.Parameters.yield_stress = ...          # a plain pressure-dependent yield
-   report = stokes.solve(homotopy=True)      # smooth mode, tangent, march: automatic
-   report["settled_delta"]                   # smallest δ that converged
-   ```
-
-   `solve(homotopy=True)` sets the smooth mode (softmin + power-mean), picks the
-   tangent the model asks for (Newton for DP, Picard for elastic VEP), and runs a
-   residual-guided march that accelerates on easy steps and reverts + retries a
-   failed δ more gently. Tune with
-   `homotopy_options=dict(delta0=…, down=…, dmin=…, entry_maxit=…, step_maxit=…)`;
-   the driver is also callable directly as
-   `underworld3.systems.yield_continuation`.
+   The packaged driver is `stokes.solve(homotopy=True)` (also callable directly
+   as `underworld3.systems.yield_continuation`; tune with
+   `homotopy_options=dict(delta0=…, down=…, dmin=…, entry_maxit=…,
+   step_maxit=…)`). **Treat it as a rescue, not the default**: the evidence
+   that once made a δ-march the recommended entry point was retracted (it
+   rested on a unit-scaling error — `plasticity-solvers` carries the ruling
+   and the surviving evidence), and the driver's documented cold-start
+   guarantee does not currently hold (issue #473: entry can fail on a
+   pressure-dependent yield, and the step control is effectively one-shot).
+   Newton + the automatic Picard entry handles the standard cases without it.
 
 3. **Consistent-Newton tangent** for non-elastic DP (`consistent_jacobian=True`);
    **Picard** for elastic VEP — see `plasticity-solvers` for the per-model table.
 
 4. **`bt` line search** with the consistent tangent on a smooth (δ>0) surface.
-
-The δ-march is cheap: with the power-mean smoother a converged δ warm-starts every
-sharper δ in ≈0 Newton iterations, so a residual-guided auto-descent costs almost
-nothing.
 
 ---
 
@@ -128,10 +121,13 @@ if stokes.has_solution:
 - **Layer 3 — DONE:** the FMG velocity smoother defaults to `gmres`+`sor` with
   `mg_levels_ksp_norm_type=none` (fixed-cost V-cycle), unconditionally — see
   "Multigrid depth" below.
-- **Layer 2 — DONE:** the model advertises the homotopy
+- **Layer 2 — SHIPPED, DEMOTED TO RESCUE:** the model advertises the homotopy
   (`supports_yield_homotopy` / `_yield_homotopy_control`) and
   `stokes.solve(homotopy=True, homotopy_options=...)` runs the residual-guided
-  continuation, returning the march summary.
+  continuation, returning the march summary. The doctrine that made this the
+  recommended entry point was retracted (unit-scaling error — see
+  `plasticity-solvers`), and its cold-start guarantee is broken (issue #473);
+  use it after Newton + Picard entry and grid sequencing have failed.
 
 ---
 
