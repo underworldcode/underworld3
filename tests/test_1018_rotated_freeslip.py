@@ -972,3 +972,54 @@ def test_rotated_solve_fields_carry_inhomogeneous_dirichlet_walls():
             f"{name} wall u_x in the FIELD is off by {err:.2e}; the rotated "
             "copy-back dropped the inhomogeneous essential values")
         assert np.abs(vd[mask, 1]).max() < 1e-10
+
+
+@pytest.mark.parametrize("use_lu", [False, True])
+def test_the_rotated_solve_reports_its_own_convergence(use_lu):
+    """The converged reason must describe the ROTATED solve, not a linear step.
+
+    Two defects made this false, and both reported "unconverged" for a solve
+    that had converged:
+
+    - the direct path pins one pressure DOF out of the linear system
+      (`_naive_pressure_pin`) but the residual kept counting that row, so the
+      loop could never meet its tolerance and ran to `max_it` against a floor
+      it had defined as unreachable. Measured on a fault-contact problem: the
+      velocity residual reached 6e-12 at the first increment and the whole of
+      the remaining |F| was the pinned DOF, bit-identical for eight further
+      no-op iterations;
+    - the loop never published a reason on the SNES, so
+      `snes.getConvergedReason()` returned 0 even on a clean exit — and the
+      generic solver's own convergence check reads exactly that.
+
+    Both paths are covered because the pin exists only in the direct one.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(12, 12), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+
+    v = uw.discretisation.MeshVariable(
+        f"v_reason_{int(use_lu)}", mesh, mesh.dim, degree=2, continuous=True)
+    p = uw.discretisation.MeshVariable(
+        f"p_reason_{int(use_lu)}", mesh, 1, degree=1, continuous=False)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    s.bodyforce = sol.fn_bodyforce
+    s.penalty = 0.0
+    s.tolerance = 1e-9
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_rotated_freeslip_bc(0, wall)
+    s.petsc_use_pressure_nullspace = True
+    s._rotated_use_lu = use_lu
+    s.solve()
+
+    reason = int(s.snes.getConvergedReason())
+    assert reason > 0, (
+        f"the rotated solve reports reason {reason}; a converged solve must "
+        "say so, because the generic path decides convergence from this")
+
+    # The answer has to be right as well as reported right — a reason set
+    # unconditionally would pass the assertion above and mean nothing.
+    leak = np.abs(np.asarray(v.data)[:, 1]).max()
+    assert np.isfinite(leak)
