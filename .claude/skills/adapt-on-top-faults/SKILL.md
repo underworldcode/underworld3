@@ -217,15 +217,19 @@ xs, sig = stokes.boundary_normal_traction("Upper")            # or the raw σ_nn
 
 ---
 
-## FMG under rotated free-slip — READ THIS (rough edge)
+## FMG under rotated free-slip
 
-`rotated_bc.solve_rotated_freeslip` builds its OWN fieldsplit KSP and uses custom-P
-FMG **only if `solver._custom_mg` is set** (via `set_custom_fmg`). It does **not**
-read the native `dm_hierarchy`. So:
+`rotated_bc.solve_rotated_freeslip` builds its OWN fieldsplit KSP, but it resolves
+the multigrid hierarchy through the same `custom_mg.build_transfers` rule as the
+standard path: an explicit `set_custom_fmg` registration wins, otherwise a
+mesh-owned adapt tail is picked up opportunistically. So:
 - On an `adapt()` **child**, the mesh-owned custom-P tail is auto-picked-up for the
-  Stokes velocity block → FMG for free (standard, non-rotated solves).
-- On a plain **refined `Annulus`** with **rotated** free-slip, native FMG is ignored;
-  to get FMG you must build a coarse-mesh tail and call:
+  velocity block → FMG for free, **rotated free-slip included** (the old
+  unreachability — rotated solves silently falling back to GAMG on adapt
+  children — was #467, fixed).
+- On a plain **refined `Annulus`** with **rotated** free-slip, the native
+  `dm_hierarchy` is still not read; to get FMG you must build a coarse-mesh tail
+  and call:
   ```python
   from underworld3.utilities.custom_mg import set_custom_fmg
   set_custom_fmg(stokes, [Annulus(cs=0.16), Annulus(cs=0.08)], field_id=0)   # velocity block
@@ -330,10 +334,12 @@ Measured guidance, all at matched cell count:
   depends on which side a vertex happens to fall.
 - **Exact fixes.** An element-wise constant (P0) viscosity makes `Cov(η, ε̇) ≡ 0`
   on any mesh — not reduced, zero. So does aligning the interface with element
-  boundaries. Both move the error from *inside* elements to *where the element
-  boundaries fall*, which makes `relax(pin_bands=...)` the lever rather than shape
-  repair. ⚠️ P0 also breaks any within-cell marking rule (contrast is identically
-  zero) — it would have to be reposed on the facet jump.
+  boundaries — and there are now primitives that do exactly that: `place_sheet` /
+  `place_thin_volume` / `remove_embedded` in `utilities/place_surface.py`
+  (#517–#526). Both fixes move the error from *inside* elements to *where the
+  element boundaries fall*, which makes `relax(pin_bands=...)` the lever rather
+  than shape repair. ⚠️ P0 also breaks any within-cell marking rule (contrast is
+  identically zero) — it would have to be reposed on the facet jump.
 
 ## Gotchas / rough edges (candidates to fix as we go)
 
@@ -346,7 +352,7 @@ Measured guidance, all at matched cell count:
 | surface-breaking fault: huge local vmax; topo peak keeps growing | real stress singularity at the outcrop. Topo peak **saturates** (integrable/log, bounded by finite buoyancy) — far field is fine; only the pointwise outcrop value is mesh-dependent. |
 | rotated free-slip Stokes "not converged" | `s.snes` isn't the solving object (manual loop). Read `stokes._rotated_freeslip_info['ksp_reason']` / `['nonlinear_iterations']` (PR #298); sanity-check v·n leakage. |
 | nonlinear TI/VEP + rotated free-slip + timestepping gives a wrong (frozen) answer | pre-#298 the rotated path is ONE linear solve (one Newton step from u=0). PR #298 runs it inside a Newton/Picard loop — ensure it's merged for nonlinear/warm-start runs. |
-| FMG not used under rotated free-slip | rotated_bc uses a self-contained KSP and reads `solver._custom_mg`, not the native `dm_hierarchy` — `set_custom_fmg(..., field_id=0)`. FUNDAMENTAL (DM-less rotated operator can't use the DM-coupled fieldsplit; #298 keeps it), not a quick fix. |
+| FMG under rotated free-slip on a plain (non-adapt) refined mesh | the rotated KSP resolves hierarchies via `custom_mg.build_transfers`: an adapt child's mesh-owned tail is picked up AUTOMATICALLY (#467 fixed the old silent GAMG fallback), but the native `dm_hierarchy` is still not read — on a plain refined mesh, `set_custom_fmg(..., field_id=0)`. |
 | NVB at np>1 raises NotImplementedError | native `_nvb_transform` extension not built (needs the custom-PETSc/amr env). Both `nvb` and `edge_split` are otherwise fully parallel, 2-D and 3-D. |
 | high stress appears in the matrix beside the fault | elements STRADDLING the weak-zone margin: one end sees high strain rate, the other high viscosity. The FE forms `mean(η)·mean(ε̇)`; the honest cell average is `mean(η ε̇)`, and the difference is `−2 Cov(η, ε̇)` across the cell. Zero for any cell wholly in or wholly out. See the band-width section below. |
 | refinement band narrower than the fault's INFLUENCE | measured: η still 0.07 at d=0.06 while the mesh has already coarsened 4×, so the artefact peaks on the transition flank, not on the fault. **85 % of it sits at d>0.01.** Size the flat core from the *influence* width, not the fault. |

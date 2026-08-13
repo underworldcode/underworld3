@@ -70,9 +70,10 @@ proven solver config**. Mechanism: the continuation only sharpens δ from a
 **converged**, well-conditioned iterate; the in-SNES ramp sharpens δ **mid-solve**
 at a far-from-solution iterate where the consistent-Newton Jacobian on a sharpening
 surface is ill-conditioned and the linear solve fails. **Hide the *continuation*,
-not the *ramp*.** (This supersedes the `enable_yield_homotopy()` in-SNES ramp still
-described in `plasticity-solvers`; that path is retained only as a dead-experiment
-record — use the multi-solve continuation above.)
+not the *ramp*.** (An in-SNES ramp API once shipped and has been removed from the
+source entirely — use the multi-solve continuation above; `plasticity-solvers`
+carries the yield-law substrate and the evidence on when a δ-march is worth it
+at all.)
 
 ---
 
@@ -169,10 +170,11 @@ continuation to stay in the solvable region.
 
 ## FMG on an ADAPT-ON-TOP child (locally refined meshes)
 
-An `adapt()` child carries its **own custom-P geometric MG tail** — one level per
-refinement generation — on `child._custom_mg_coarse_meshes`, and solvers built on
-it pick it up automatically. So the usual advice above ("never use a non-nested
-hierarchy") is satisfied without you assembling anything:
+An `adapt()` child carries its **own custom-P geometric MG tail** — subsampled to
+one level per **DOUBLING of h** (`mg_coarsening_ratio=2.0`, the `adapt()` default)
+— on `child._custom_mg_coarse_meshes`, and solvers built on it pick it up
+automatically. So the usual advice above ("never use a non-nested hierarchy") is
+satisfied without you assembling anything:
 
 ```python
 child = base.adapt(metric, max_levels=3, engine="edge_split")
@@ -182,12 +184,15 @@ stokes.solve()          # pc=mg auto-attached off the child's tail
 
 Requirements and traps, all measured:
 
-- **The base must be built with `refinement>=1`.** That uniform tail is what the
-  adapt levels extend; without it the hierarchy starts at the adapted mesh and
-  there is no coarse grid.
-- **Keep the GRADED tail** (one MG level per generation), which is what
-  `_adapt_nested` stores. Handing the solver a base-only tail instead — coarse
-  base straight to the fully adapted mesh — **triples the V-cycle count**.
+- **Build the base with `refinement>=1` for a deeper tail.** The custom-P tail
+  always starts at the BASE mesh — with `refinement=0` it is
+  `[base] + the intermediate doubling levels`, so there IS a coarse grid — but
+  the uniform base levels extend it downward, and in MG you want the coarsest
+  grid as coarse as it can be.
+- **Keep the GRADED tail.** `_adapt_nested` stores one MG level per doubling of
+  resolution (`_subsample_mg_levels`; per-bisection-pass levels were measured
+  2.3–7.3× slower). Handing the solver a base-only tail instead — coarse base
+  straight to the fully adapted mesh — **triples the V-cycle count**.
 - **V-cycle counts are insensitive to element quality here, and that is a PASS not
   a failed measurement.** On a fault child the velocity block takes 2 iterations
   (iso) or 2–3 (TI) across meshes ranging from 156° to 105° max angle. The
@@ -195,15 +200,26 @@ Requirements and traps, all measured:
   fine operator, so shape does not move it — which is exactly what makes
   adapt-on-top viable. **If you want a solver-side probe of mesh quality, use
   GAMG**, which does respond (iso 79 → 64 velocity iterations with `repair=True`).
+  That is now actionable: `solver.preconditioner = "gamg"` is **respected** on an
+  adapt child (#530) — before that guard the opportunistic pickup silently
+  clobbered it back to `pc=mg`, so any FMG-vs-GAMG comparison was vacuous.
+- **Single-field solvers get FMG too** (#478/#534): `preconditioner = "fmg"` on a
+  Poisson/projection-class solver builds the custom-P tail over the mesh's own
+  `dm_hierarchy` — the section is not Stokes-or-adapt-child only.
 - **`relax()` can trip #424.** On a relaxed, unrepaired child the barycentric
   transfer hit 22 zero columns and fell back to the DENSE global RBF builder — a
-  performance cliff, not just a warning. Watch for the `custom_mg: barycentric
-  transfer build failed ... retrying with 'rbf'` message.
+  performance cliff, not just a warning.
+- **Every PC degradation is recorded in `solver.pc_fallbacks`** (#534) — the
+  requested/installed/reason record for the #424 barycentric→rbf retry, a
+  collapsed hierarchy, a declined pickup. Read that, don't scrape warnings.
 - **`repair=True` invalidates the any-degree nested transfer** (a flipped cell can
   straddle two coarse cells), so degree ≥ 2 falls back to the geometric builder.
   The exact ½,½ vertex prolongation survives, because flips move no vertex.
-- Under **rotated free-slip** none of this is automatic — that path builds its own
-  KSP and reads `solver._custom_mg`. See the `adapt-on-top-faults` skill.
+- Under **rotated free-slip** the mesh-owned adapt tail is picked up automatically
+  too — the rotated KSP resolves hierarchies through the same
+  `custom_mg.build_transfers` rule (#467 fixed the old silent GAMG fallback). See
+  the `adapt-on-top-faults` skill for the plain-refined-mesh case, which still
+  needs `set_custom_fmg`.
 
 Companion skills: **`adapt-on-top-faults`** (building the child, engines, repair,
 band sizing), **`adaptive-meshing`** (the mover, and `relax(pin_bands=...)` for
