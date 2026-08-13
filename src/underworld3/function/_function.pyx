@@ -1311,24 +1311,22 @@ def petsc_interpolate(   expr,
             cached_info = CachedDMInterpolationInfo()
 
             # Cell hints, by policy:
-            # AUTHORITATIVE — the estimator owner is the answer. Parallel uses
-            # the bulletproof barycentric locator (correct owner across
-            # seams). Serial simplex keeps get_closest_cells (the validated
-            # bit-for-bit PR #203 path; with planar faces + ξ-clamp the
-            # nearest-cell hint evaluates exactly). Serial quad/hex meshes
-            # that qualify by MEASUREMENT use the estimator directly — the
-            # nearest-centroid guess is not containment-checked and these
-            # meshes only just graduated, so take the checked owner.
+            # AUTHORITATIVE — the hint bypasses DMLocatePoints, so it has to
+            # be a cell that CONTAINS the point. _robust_owning_cells is the
+            # containment-checked locator: it returns a cell whose walls the
+            # point is inside (any one of them, for a point on a shared face)
+            # and -1 when no local cell contains it. Every authoritative mesh
+            # takes the same route. Serial simplex meshes used to take the
+            # nearest-CONTROL-POINT lookup (get_closest_cells) with no
+            # containment test at all; on a tetrahedron the reference-coord
+            # clamp downstream is a box clamp and cannot rescue that, so a
+            # query on a shared edge was evaluated by extrapolating the basis
+            # of a cell that does not contain it (#432, a recurrence of #390).
             # NOT AUTHORITATIVE — no hint at all: DMLocatePoints decides,
             # dropped points surface in unlocated_mask and are filled by the
             # RBF fallback below.
             if authoritative:
-                if mesh._eval_use_robust_location():
-                    cells = mesh._robust_owning_cells(coords)
-                elif not bool(mesh.dm.isSimplex()) and mesh.dim == mesh.cdim:
-                    cells = mesh._robust_owning_cells(coords)
-                else:
-                    cells = mesh.get_closest_cells(coords)
+                cells = mesh._robust_owning_cells(coords)
             else:
                 cells = None
 
