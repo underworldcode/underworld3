@@ -116,6 +116,81 @@ def test_frictionless_fault_slips_like_a_crack():
         f"peak slip {Vmag.max():.4f} vs crack value {HALF:.4f}")
 
 
+def test_fault_repeat_solve_composes_with_workspace_reuse():
+    """The cross-solve rotated workspace (issue #417) composes with the
+    split-node fault machinery, which enters the SAME rotated Newton loop.
+
+    Frictionless pair blocks are GEOMETRY (coincident-node pairing + fault
+    normals), so they cache: a repeat solve reuses the rotation, a cold
+    re-solve rides the iteration-0 fast path, and both must match a fresh
+    solver on the same mesh. Interface-LAW solvers must opt out entirely
+    (the interface tangent and the Picard-lagged normal stress are
+    solution-dependent) — asserted via the absent cache."""
+    mesh = _split_box()
+    x, y = mesh.X
+
+    def build(tag):
+        v = uw.discretisation.MeshVariable(f"vRe{tag}", mesh, 2, degree=2)
+        p = uw.discretisation.MeshVariable(f"pRe{tag}", mesh, 1, degree=0,
+                                           continuous=False)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.tolerance = 1e-8
+        stokes.petsc_use_pressure_nullspace = True
+        for side in ("Top", "Bottom", "Left", "Right"):
+            stokes.add_dirichlet_bc((y - 0.5, 0.0), side)
+        return stokes, v
+
+    stokes, v = build("A")
+    add_frictionless_fault_bc(stokes, "Flt")
+    info1 = solve_with_fault(stokes)
+    assert info1["converged"]
+    assert not info1["rotation_reused"]
+    assert stokes._rotated_linear_cache is not None, (
+        "frictionless fault solve did not cache — pair blocks are geometry "
+        "and should reuse")
+    v_first = v.data.copy()
+
+    # warm repeat, nothing changed: geometry tier reused, answer unchanged
+    info2 = solve_with_fault(stokes, zero_init_guess=False)
+    assert info2["converged"] and info2["rotation_reused"]
+    drift = np.linalg.norm(v.data - v_first) / np.linalg.norm(v_first)
+    assert drift < 1e-8, f"repeat fault solve drifted by {drift:.2e}"
+
+    # cold re-solve: a genuine increment on the cached operator (fast path)
+    info3 = solve_with_fault(stokes, zero_init_guess=True)
+    assert info3["converged"] and info3["rotation_reused"]
+    assert info3["workspace_reused"], (
+        "cold fault re-solve did not ride the iteration-0 fast path")
+    err = np.linalg.norm(v.data - v_first) / np.linalg.norm(v_first)
+    assert err < 1e-6, f"fast-path fault solve differs by {err:.2e}"
+
+    # fresh-solver control on the same mesh
+    control, vc = build("B")
+    add_frictionless_fault_bc(control, "Flt")
+    infoc = solve_with_fault(control)
+    assert infoc["converged"]
+    ctrl = np.linalg.norm(v.data - vc.data) / np.linalg.norm(vc.data)
+    assert ctrl < 1e-6, f"repeat fault solve differs from fresh control by {ctrl:.2e}"
+
+    # interface LAWS opt out: solution-dependent tangent + Picard-lagged
+    # normal stress must never ride a cross-solve cache
+    lawful, vl = build("C")
+    add_viscous_fault_bc(lawful, 1.0 / HALF, "Flt")
+    il1 = solve_with_fault(lawful)
+    assert il1["converged"]
+    assert lawful._rotated_linear_cache is None, (
+        "interface-law solve left a workspace cache — the opt-out regressed")
+    vl_first = vl.data.copy()
+    il2 = solve_with_fault(lawful, zero_init_guess=False)
+    assert il2["converged"]
+    assert not il2["rotation_reused"] and not il2["workspace_reused"]
+    assert lawful._rotated_linear_cache is None
+    ldrift = np.linalg.norm(vl.data - vl_first) / np.linalg.norm(vl_first)
+    assert ldrift < 1e-6, f"repeat interface-law solve drifted by {ldrift:.2e}"
+
+
 def test_viscous_fault_bridges_welded_to_free():
     """The linear interface law spans its two exact limits monotonically.
 
