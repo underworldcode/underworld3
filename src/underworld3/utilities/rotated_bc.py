@@ -593,10 +593,18 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
     # three 3D modes are not mutually orthogonal on a general mesh.
     # COLLECTIVE: all ranks walk the same mode list, same order.
     removed = False
+    # What the gauge decision actually was, recorded for the caller. Two solves
+    # of the same system that both converge can still differ by an admitted
+    # gauge mode, and until this was recorded there was no way to see which of
+    # them admitted what.
+    gauge = {"offered": 0, "modes": [], "orthonormal": 0, "removed": False,
+             "requested": bool(remove_rotation_gauge)}
     if remove_rotation_gauge:
         live = []
         for tg in _rigid_rotation_modes(solver):
-            if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
+            gauge["offered"] += 1
+            if _mode_satisfies_constraints(solver, Q, normal_rows, tg,
+                                           report=gauge["modes"]):
                 live.append(tg.copy())          # owned copy — pool vec goes back below
             dm.restoreGlobalVec(tg)
         ortho = []
@@ -609,10 +617,13 @@ def _finalize_rotated_solution(solver, U, Q, normal_rows, remove_rotation_gauge)
                 ortho.append(w)
             else:
                 w.destroy()
+        gauge["orthonormal"] = len(ortho)
         for q in ortho:
             U.axpy(-U.dot(q), q)
             q.destroy()
             removed = True
+    gauge["removed"] = removed
+    solver._rotated_gauge_report = gauge
 
     # scatter U → velocity/pressure fields, completing each field's essential
     # (Dirichlet) DOFs. Those are absent from the global vector, so a plain
@@ -769,6 +780,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"normal_rows"`` — global rows of the constrained normal components;
         * ``"boundaries"`` — the boundary specs the rotation was built from;
         * ``"rotation_gauge_removed"`` — whether a rigid-rotation gauge was projected out;
+        * ``"rotation_gauge"`` — how that was decided: how many rigid-body modes
+          were offered, and per mode the constraint violation, the operator
+          violation and the verdict. Two solves of the same system that both
+          converge can still differ by an admitted gauge mode, and this is the
+          only place that decision is visible;
         * ``"ksp_reason"`` — converged-reason of the LAST Newton increment's KSP;
         * ``"ksp_its"`` — list of linear iteration counts, one per Newton iteration;
         * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count (the number
@@ -1307,7 +1323,11 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
 
     return {"Q": Q, "Qt": Qt, "reaction": reaction, "U": u,
             "normal_rows": normal_rows, "boundaries": list(boundaries),
-            "rotation_gauge_removed": removed, "ksp_reason": last_reason,
+            "rotation_gauge_removed": removed,
+            # per-mode record of the gauge decision (offered / accepted / the
+            # violations that decided it) — see _finalize_rotated_solution
+            "rotation_gauge": getattr(solver, "_rotated_gauge_report", None),
+            "ksp_reason": last_reason,
             "nonlinear_iterations": newton_its, "converged": converged,
             "ksp_its": lin_its, "rnorm": rnorm, "rnorm0": r0,
             "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
@@ -1726,7 +1746,8 @@ def _rotated_nullspace(solver, Q, normal_rows):
     return PETSc.NullSpace().create(constant=False, vectors=ortho, comm=dm.comm)
 
 
-def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
+def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8,
+                                report=None):
     """True iff the rigid-body mode ``tg`` is a genuine null mode of the
     constrained problem: it satisfies all rotated v_n=0 constraints (Q·tg ~0 on
     every constrained normal row) AND it is a null vector of the assembled
@@ -1748,7 +1769,14 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
     COLLECTIVE: every rank runs the same global-vector ops. Do NOT early-return on
     a per-rank ``not normal_rows`` — in parallel a rank may own no boundary node
     (empty normal_rows) while others do, and an early return there would desync the
-    collective norms below and deadlock."""
+    collective norms below and deadlock.
+
+    ``report``, if given, is a list this appends one dict to per call: the
+    constraint violation, the operator violation (``None`` when the constraint
+    test already rejected the mode) and the verdict. Whether a mode is admitted
+    decides whether a gauge component is projected out of the answer, so when
+    two solves of the same system disagree this is the first thing to look at
+    — but nothing in the returned dict was observable before."""
     tr = tg.duplicate()
     Q.mult(tg, tr)
     full = tr.norm()                              # parallel norm
@@ -1766,6 +1794,9 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
     tr.destroy()
     trc.destroy()
     if viol >= tol:
+        if report is not None:
+            report.append({"viol": float(viol), "op_viol": None,
+                           "accepted": False, "rejected_by": "constraint"})
         return False
     # operator-nullity: rigid rotation has exactly zero strain in the discrete
     # space (P2 contains linear fields, affine cells integrate the form exactly),
@@ -1777,8 +1808,15 @@ def _mode_satisfies_constraints(solver, Q, normal_rows, tg, tol=1e-8):
     jn = Jm.norm()
     Jm.destroy()
     if jn == 0.0 and J.norm() == 0.0:             # J never assembled → cannot verify
+        if report is not None:
+            report.append({"viol": float(viol), "op_viol": None,
+                           "accepted": True, "rejected_by": "unassembled-J"})
         return True
     op_viol = jn / (_velocity_diag_scale(J, solver) * (tg.norm() + 1e-30))
+    if report is not None:
+        report.append({"viol": float(viol), "op_viol": float(op_viol),
+                       "accepted": bool(op_viol < tol),
+                       "rejected_by": None if op_viol < tol else "operator"})
     return op_viol < tol
 
 

@@ -168,14 +168,140 @@ def test_rotated_linear_workspace_reuses_unchanged_operator():
 def _solve_report(info):
     """The rotated solve's own verdict, for failure messages: an assertion
     that says only "the answer moved" cannot tell a stale operator from a
-    linear solve that stopped early."""
+    linear solve that stopped early, or either of those from a null-space
+    gauge that one solve removed and the other did not."""
+    rows = info.get("normal_rows")
+    gauge = info.get("rotation_gauge") or {}
+    modes = "; ".join(
+        f"[{i}] viol={m['viol']:.3e} op_viol="
+        f"{'n/a' if m['op_viol'] is None else format(m['op_viol'], '.3e')} "
+        f"accepted={m['accepted']}"
+        f"{'' if m['accepted'] else ' (' + str(m['rejected_by']) + ')'}"
+        for i, m in enumerate(gauge.get("modes", [])))
     return (f"converged={info.get('converged')} "
             f"ksp_reason={info.get('ksp_reason')} "
             f"ksp_its={info.get('ksp_its')} "
             f"newton_its={info.get('nonlinear_iterations')} "
             f"|r|={info.get('rnorm')} |r0|={info.get('rnorm0')} "
             f"rotation_reused={info.get('rotation_reused')} "
-            f"workspace_reused={info.get('workspace_reused')}")
+            f"workspace_reused={info.get('workspace_reused')} "
+            f"constrained_rows={None if rows is None else len(rows)} "
+            f"distinct_rows={None if rows is None else len(set(rows))} "
+            f"boundaries={info.get('boundaries')} "
+            f"gauge_offered={gauge.get('offered')} "
+            f"gauge_orthonormal={gauge.get('orthonormal')} "
+            f"gauge_removed={info.get('rotation_gauge_removed')} "
+            f"modes=({modes})")
+
+
+class _LocatorTally:
+    """Count point-location work, how much came back ``-1``, and how much of
+    that the #551 rejection radius is responsible for.
+
+    Every call is answered twice — once as shipped, once with
+    ``_local_cell_reach`` set aside so the walk cannot reject anything early —
+    and the cells are compared. ``radius_changed=0`` means the rejection radius
+    did not alter a single answer, which is the measurement that decides
+    whether the locator is implicated in a downstream disagreement. It is not
+    an argument, it is a count, and it is taken on whatever mesh the machine
+    running the test actually built.
+    """
+
+    def __init__(self):
+        self.calls = 0
+        self.points = 0
+        self.rejected = 0
+        self.radius_changed = 0
+        self._mesh_cls = uw.discretisation.discretisation_mesh.Mesh
+        self._wrapped = self._mesh_cls._get_closest_local_cells_internal
+
+    def __enter__(self):
+        outer = self
+
+        def counted(mesh_self, coords, **kwargs):
+            got = outer._wrapped(mesh_self, coords, **kwargs)
+            saved = getattr(mesh_self, "_local_cell_reach", None)
+            try:
+                mesh_self._local_cell_reach = None      # no early rejection
+                reference = outer._wrapped(mesh_self, coords, **kwargs)
+            finally:
+                mesh_self._local_cell_reach = saved
+            got_a = np.asarray(got).reshape(-1)
+            outer.calls += 1
+            outer.points += len(coords)
+            outer.rejected += int(np.count_nonzero(got_a < 0))
+            outer.radius_changed += int(np.count_nonzero(
+                got_a != np.asarray(reference).reshape(-1)))
+            return got
+
+        self._mesh_cls._get_closest_local_cells_internal = counted
+        return self
+
+    def __exit__(self, *exc):
+        self._mesh_cls._get_closest_local_cells_internal = self._wrapped
+        return False
+
+    def __str__(self):
+        return (f"calls={self.calls} points={self.points} "
+                f"returned_-1={self.rejected} "
+                f"radius_changed={self.radius_changed}")
+
+
+def _rigid_body_decomposition(coords, diff):
+    """Split a velocity difference field into rigid-body modes and the rest.
+
+    Two solves that both drive the residual to machine zero on a system with
+    the same initial residual can only differ in the null space, so the
+    question "is the difference a rigid-body mode?" has a yes/no answer. The
+    modes are the ones the solver itself considers (``_rigid_rotation_modes``:
+    ``(-y, x)`` in 2-D, ``e_k x r`` in 3-D) plus the translations, built here
+    from the nodal coordinates so this is independent of the solver's own
+    machinery. Nodal (not PETSc-global) inner products — exact in serial,
+    which is where this test runs.
+
+    Returns ``(|d|, per-direction shares, |d| off the rigid-body span)``. The
+    modes are NOT mutually orthogonal — the rotation about the origin has a
+    large translation component on a box in the first quadrant — so they are
+    Gram-Schmidt'd in order, exactly as the solver does before projecting, and
+    the per-direction shares are therefore shares on the k-th ORTHOGONALISED
+    direction, not on the named mode. The number that answers the question is
+    the off-span norm: a pure rigid rotation gives 4e-18 of it, a random field
+    gives 0.9985 of it (both measured).
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    diff = np.asarray(diff, dtype=np.float64)
+    dim = coords.shape[1]
+    modes = {}
+    for axis in range(dim):
+        e = np.zeros_like(coords)
+        e[:, axis] = 1.0
+        modes[f"translation_{'xyz'[axis]}"] = e
+    if dim == 2:
+        modes["rotation_z"] = np.column_stack([-coords[:, 1], coords[:, 0]])
+    else:
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        zero = np.zeros_like(x)
+        modes["rotation_x"] = np.column_stack([zero, -z, y])
+        modes["rotation_y"] = np.column_stack([z, zero, -x])
+        modes["rotation_z"] = np.column_stack([-y, x, zero])
+
+    total = np.linalg.norm(diff)
+    residual = diff.copy()
+    shares = {}
+    basis = []
+    for name, mode in modes.items():
+        w = mode.copy()
+        for q in basis:                      # Gram-Schmidt, as the solver does
+            w -= np.vdot(q, w) * q
+        n = np.linalg.norm(w)
+        if n <= 1.0e-14:
+            continue
+        w /= n
+        basis.append(w)
+        component = np.vdot(w, diff)
+        shares[name] = abs(component) / (total + 1.0e-300)
+        residual -= component * w
+    return total, shares, np.linalg.norm(residual)
 
 
 def _rampable_rotated_stokes(mesh, k_expr, tag, forcing=None):
@@ -279,10 +405,13 @@ def test_rotated_workspace_deform_invalidates():
     info_1 = dict(s1._rotated_freeslip_info)
     reach_before = mesh._local_cell_reach
 
-    # bump the top boundary (the free-surface pattern)
+    # bump the top boundary (the free-surface pattern). The deform is where the
+    # point locator is actually exercised — measured, the solves themselves make
+    # no location calls at all — so the tally goes here.
     coords = mesh.X.coords.copy()
     coords[:, 1] += 0.02 * coords[:, 1] * np.sin(np.pi * coords[:, 0])
-    mesh.deform(coords)
+    with _LocatorTally() as tally_deform:
+        mesh.deform(coords)
 
     # Mesh-side invariant: the kd-tree index and the point locator's rejection
     # radius (#551) are measured together in _build_kd_tree_index, which
@@ -296,32 +425,94 @@ def test_rotated_workspace_deform_invalidates():
         f"({reach_before:.8g} -> {reach_after:.8g}) — it is measured with the "
         f"kd-tree index and must be rebuilt with it")
 
-    s1.solve()
+    # NEGATIVE CONTROL for that tally: squeeze the reach and the comparison
+    # must see answers change. Otherwise a "radius_changed=0" report is the
+    # instrument failing to fire, not the radius being inert.
+    probe = np.ascontiguousarray(
+        np.random.default_rng(5).uniform(0.02, 0.98, size=(400, 2)))
+    with _LocatorTally() as tally_tight:
+        mesh._LOCATOR_REACH_MARGIN = 0.05
+        try:
+            mesh._get_closest_local_cells_internal(
+                probe, tol=mesh._EVAL_FACE_TOL)
+        finally:
+            del mesh._LOCATOR_REACH_MARGIN
+    assert tally_tight.radius_changed > 0, (
+        "a reach margin of 0.05 changed no locator answer, so the "
+        "radius_changed counts reported below cannot tell an inert rejection "
+        "radius from an instrument that is not looking")
+
+    with _LocatorTally() as tally_deformed:
+        s1.solve()
     info = s1._rotated_freeslip_info
     assert not info["rotation_reused"], (
         "workspace survived a mesh.deform — stale rotation Q in use")
     assert not info["workspace_reused"]
-    assert info["converged"], (
-        f"the post-deform solve did not converge: {_solve_report(info)}")
 
     k_c = uw.function.expression(r"k_dc", 1.0, "control viscosity")
-    s_c, v_c = _rampable_rotated_stokes(mesh, k_c, "DfC")
-    s_c.solve()
+    with _LocatorTally() as tally_control:
+        s_c, v_c = _rampable_rotated_stokes(mesh, k_c, "DfC")
+        s_c.solve()
     info_c = s_c._rotated_freeslip_info
-    assert info_c["converged"], (
-        f"the fresh control solve did not converge: {_solve_report(info_c)}")
 
-    err = np.linalg.norm(v1.data - v_c.data) / np.linalg.norm(v_c.data)
+    # Build every diagnostic EAGERLY, not inside the assertion messages: an
+    # instrument that only runs when the test fails is an instrument that has
+    # never been run.
+    report_1 = _solve_report(info_1)
+    report_deformed = _solve_report(info)
+    report_control = _solve_report(info_c)
+    diff = np.asarray(v1.data) - np.asarray(v_c.data)
+    err = np.linalg.norm(diff) / np.linalg.norm(v_c.data)
+    total, shares, off_mode = _rigid_body_decomposition(v1.coords, diff)
+    share_text = " ".join(f"{n}={f:.4f}" for n, f in shares.items())
+    off_fraction = off_mode / (total + 1.0e-300)
+    rigid_fraction = np.sqrt(max(0.0, 1.0 - off_fraction ** 2))
+
+    # NEGATIVE CONTROL for the decomposition, run on the mesh CI actually
+    # built: a pure rigid rotation must come out entirely inside the span, a
+    # random field almost entirely outside it. Without this the off-span
+    # fraction reported above would be a number nobody had checked.
+    node_coords = np.asarray(v1.coords, dtype=np.float64)
+    pure = np.column_stack([-node_coords[:, 1], node_coords[:, 0]])
+    _, _, pure_off = _rigid_body_decomposition(v1.coords, pure)
+    assert pure_off / np.linalg.norm(pure) < 1e-10, (
+        f"the rigid-body decomposition does not recognise a pure rotation "
+        f"({pure_off / np.linalg.norm(pure):.3e} of it off the span)")
+    noise = np.random.default_rng(0).normal(size=pure.shape)
+    _, _, noise_off = _rigid_body_decomposition(v1.coords, noise)
+    assert noise_off / np.linalg.norm(noise) > 0.9, (
+        f"the rigid-body decomposition absorbs a random field "
+        f"({noise_off / np.linalg.norm(noise):.3f} of it off the span), so a "
+        f"small off-span fraction above would prove nothing")
+
+    assert info["converged"], (
+        f"the post-deform solve did not converge: {report_deformed}")
+    assert info_c["converged"], (
+        f"the fresh control solve did not converge: {report_control}")
+
     assert err < 1e-6, (
         f"post-deform solve differs from fresh control by {err:.2e}\n"
-        f"  first solve   : {_solve_report(info_1)}\n"
-        f"  post-deform   : {_solve_report(info)}\n"
-        f"  fresh control : {_solve_report(info_c)}\n"
+        f"  first solve   : {report_1}\n"
+        f"  post-deform   : {report_deformed}\n"
+        f"  fresh control : {report_control}\n"
         f"  locator reach : {reach_before:.8g} -> {reach_after:.8g}\n"
-        f"Both solves assemble the same system from a zero guess, so equal "
-        f"convergence reports with a non-zero err means the two OPERATORS "
-        f"differ — something survived the deform. Different |r| or iteration "
-        f"counts means the linear solves themselves diverged.")
+        f"  locator work  : deform {tally_deform} | post-deform solve "
+        f"{tally_deformed} | control {tally_control}\n"
+        f"  difference    : |d|={total:.6e}\n"
+        f"                  IN the rigid-body span: {rigid_fraction:.6f} of |d|\n"
+        f"                  OFF it:                 {off_fraction:.6f} of |d| "
+        f"({off_mode:.6e})\n"
+        f"                  per orthogonalised direction (NOT per named mode, "
+        f"they are not orthogonal): {share_text}\n"
+        f"Both solves assemble the same system from a zero guess and both "
+        f"converge, so a difference can only live in the NULL SPACE. If the "
+        f"rigid-body span accounts for it (off-fraction near 0; a random field "
+        f"gives 0.9985), read the per-mode gauge decisions above — one solve "
+        f"admitted a mode the other rejected, and that is a #543 gauge bug "
+        f"this branch merely exposes. If the difference is OFF the span, the "
+        f"two OPERATORS differ and something survived the deform. If the "
+        f"constrained row counts or the locator tallies differ between the two "
+        f"solvers, point location is implicated and the radius is ours.")
 
 
 @pytest.mark.level_2
