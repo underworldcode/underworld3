@@ -190,6 +190,10 @@ isotropic viscosity). Rotated strong free-slip imposes `u·n̂=0` as an ESSENTIA
 constraint in a per-node (n,t) frame → machine-zero leakage AND composes with TI.
 
 ```python
+# normal=None (the default) is measure-weighted and consistent with the assembly —
+# prefer it. An analytic nhat is exact for the TRUE circle but keeps a consistency
+# error against the faceted integral (#560); use it only when the constraint must
+# follow the geometry rather than the mesh.
 nhat = mesh.CoordinateSystem.unit_e_0                    # exact radial normal (annulus/sphere)
 stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
 stokes.add_rotated_freeslip_bc(0, "Lower", normal=nhat)

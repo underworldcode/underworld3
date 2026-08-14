@@ -16,9 +16,11 @@ stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)          # free-slip
 stokes.add_rotated_freeslip_bc(h_dot.sym[0], "Upper", normal=nhat)  # u·n̂ = field
 ```
 
-`normal=None` uses the geometric facet normal; a sympy `1×dim` matrix in
-`mesh.X` supplies an analytic normal (exact `X/|X|` on curved boundaries — the
-preferred choice there); a constant array is also accepted. The datum must be a
+`normal=None` uses the geometric facet normal (the default, and the one
+consistent with what the assembler integrates — see below); a sympy `1×dim`
+matrix in `mesh.X` supplies an analytic normal, exact for the TRUE surface
+(`X/|X|` on a spherical cap, a constant on a planar face); a constant array is
+also accepted. The datum must be a
 *scalar* (a number, an expression of `mesh.X`, or a scalar field read); on an
 enclosed boundary it must be discretely flux-free for incompressibility. A
 corner or 3D-edge node shared between rotated boundaries has no single normal
@@ -38,12 +40,41 @@ exact constant-pressure vector stops being a null vector of the constrained
 operator, and the pressure gauge goes unpinned. Flat walls are unchanged to the
 last bit: every facet there shares a normal, so the weighting cancels.
 
-An **analytic** `normal=` is a deliberate override and is applied exactly as
-given. It is the right choice on a genuinely curved boundary, and it is tangent
-to the true surface — but the assembler still integrates over the straight
-facets, so on a strongly non-uniform curved boundary an analytic normal carries
-the consistency error the geometric path no longer has. Keep the facets
-near-uniform on an analytic-normal boundary, or use the geometric normal there.
+The sum runs over ALL facets meeting the node, so it must be completed **across
+ranks**. Each boundary facet is labelled on exactly one rank, so a node on a
+partition seam sees only some of its facets locally; the contributions are
+summed through the DM's local↔global scatter before normalising, which is what
+makes the normal partition-independent. Two things had to go with it: the
+outward test now points away from the facet's own support cell (the mean of the
+rank's coordinates is rank-local, and would let two facets of one node cancel),
+and the node list comes from the local mesh's exterior facets rather than the
+labelled subset, because a rank can own a node whose labelled facets are all on
+neighbours.
+
+### Which normal to use
+
+They answer different questions, and the trade is measurable. `|A z|/|A|_F` on
+an annulus (`cellSize=0.15`), `z` = the attached constant pressure:
+
+| boundary | np | geometric (default) | analytic `X/\|X\|` |
+|---|---:|---:|---:|
+| uniform arcs | 1 | **6.6e-20** | 1.1e-14 |
+| uniform arcs | 4 | **6.7e-20** | 1.1e-14 |
+| skewed (non-uniform facets) | 1 | **6.6e-20** | 3.1e-07 |
+| skewed (non-uniform facets) | 4 | **6.7e-20** | 3.1e-07 |
+
+The geometric normal is *consistent with the assembly*: it is the direction the
+straight-facet boundary integral actually sees, so the constant pressure stays a
+null vector to machine precision at every rank count. The analytic normal is
+*consistent with the geometry*: it is tangent to the true surface, which the
+faceted mesh only approximates — so the assembler and the constraint disagree by
+an amount that grows with facet non-uniformity, and #560 does not remove it (the
+analytic column is unchanged by this fix, and identical at every rank count).
+
+Prefer the default. Reach for `normal=` when the constraint must follow the true
+surface rather than the mesh — a coarse spherical shell where faceting, not the
+gauge, is the dominant error — and be aware that the pressure gauge is then only
+as good as the numbers above.
 
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy
