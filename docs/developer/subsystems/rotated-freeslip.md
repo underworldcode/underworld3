@@ -16,13 +16,97 @@ stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)          # free-slip
 stokes.add_rotated_freeslip_bc(h_dot.sym[0], "Upper", normal=nhat)  # u·n̂ = field
 ```
 
-`normal=None` uses the geometric facet normal; a sympy `1×dim` matrix in
-`mesh.X` supplies an analytic normal (exact `X/|X|` on curved boundaries — the
-preferred choice there); a constant array is also accepted. The datum must be a
+`normal=None` uses the geometric facet normal (the default, and the one
+consistent with what the assembler integrates — see below); a sympy `1×dim`
+matrix in `mesh.X` supplies an analytic normal, exact for the TRUE surface
+(`X/|X|` on a spherical cap, a constant on a planar face); a constant array is
+also accepted. The datum must be a
 *scalar* (a number, an expression of `mesh.X`, or a scalar field read); on an
 enclosed boundary it must be discretely flux-free for incompressibility. A
 corner or 3D-edge node shared between rotated boundaries has no single normal
 and stays at the free-slip pinning (the datum is ignored there).
+
+### The nodal normal is measure-weighted, not a bisector
+
+A node that sits on more than one facet — a vertex in 2D, a vertex or an
+edge-midpoint in 3D — gets one nodal normal, while the assembler integrates the
+boundary term facet by facet. The two only agree when the node's normal is
+parallel to the **measure-weighted** sum `Σ_f |f| n̂_f` (edge length in 2D, face
+area in 3D), which is what the geometric path accumulates. Plain bisector
+averaging `Σ_f n̂_f` — what UW3 did before issue #560 — is right only where the
+facets are equal; on a **kinked** wall with unequal facets it leaves a residual
+`sin(Δ/2)·(|f₁|−|f₂|)/6` in the node's free tangential row (Δ = kink angle), the
+exact constant-pressure vector stops being a null vector of the constrained
+operator, and the pressure gauge goes unpinned. **Axis-aligned** walls are
+unchanged to the last bit — their facet normals have exactly 0/±1 components, so
+`Σ_f |f| n̂_f` normalises to the same floats as `Σ_f n̂_f` whatever the weights.
+A flat but *tilted* wall is not covered by that argument and can move by one ulp.
+
+The sum runs over ALL facets meeting the node, so it must be completed **across
+ranks**. Each boundary facet is labelled on exactly one rank, so a node on a
+partition seam sees only some of its facets locally; the contributions are
+summed through the DM's local↔global scatter before normalising, which is what
+makes the normal partition-independent. Two things had to go with it: the
+outward test now points away from the facet's own support cell (the mean of the
+rank's coordinates is rank-local, and would let two facets of one node cancel),
+and the node list comes from the local mesh's exterior facets rather than the
+labelled subset, because a rank can own a node whose labelled facets are all on
+neighbours.
+
+### Which way is "outward" — and the sign of σ_nn on an inner boundary
+
+The geometric normal points away from the facet's own support cell, which is the
+**domain's** outward normal on any boundary. On a concave boundary — an annulus
+or spherical-shell **inner** arc, the CMB — that points *toward* the centre of
+curvature.
+
+This changed at #560. The old rule pointed away from the mean of the mesh
+coordinates, which on an inner arc is *into* the domain. So on a concave
+boundary, through the geometric normal:
+
+| quantity | before #560 | after |
+|---|---:|---:|
+| nodal radial component, annulus `Lower` | +1.000000 | **−1.000000** |
+| `boundary_normal_traction("Lower")` | −5.233110e-02 | **+5.233110e-02** |
+
+Magnitudes are identical to every digit; only the sign moves. `dynamic_topography_field`
+is `h = −σ_nn/(Δρ g)` on top of that number, so it reverses there too, as does the
+sign of a non-zero prescribed wall-normal datum (`u·n̂ = ũ_n`: positive now means
+outflow *from the domain* on an inner arc, where before it meant inflow). Convex
+boundaries — every box wall, an outer arc, a spherical cap — are unaffected: the two
+rules agree there.
+
+An **analytic** `normal=` is applied exactly as supplied and is *not* reoriented.
+So `X/|X|` on an inner arc is inward-of-domain and gives σ_nn of the opposite sign
+to the default. That is deliberate — the override means "use exactly this
+direction", and silently flipping it would change the meaning of a user's datum —
+but it means **you must pass `-X/|X|` on an inner boundary if you want the
+domain-outward convention.** `test_1018_rotated_nodal_normal.py` pins both halves.
+
+### Which normal to use
+
+They answer different questions, and the trade is measurable. `|A z|/|A|_F` on
+an annulus (`cellSize=0.15`), `z` = the attached constant pressure:
+
+| boundary | np | geometric (default) | analytic `X/\|X\|` |
+|---|---:|---:|---:|
+| uniform arcs | 1 | **6.6e-20** | 1.1e-14 |
+| uniform arcs | 4 | **6.7e-20** | 1.1e-14 |
+| skewed (non-uniform facets) | 1 | **6.6e-20** | 3.1e-07 |
+| skewed (non-uniform facets) | 4 | **6.7e-20** | 3.1e-07 |
+
+The geometric normal is *consistent with the assembly*: it is the direction the
+straight-facet boundary integral actually sees, so the constant pressure stays a
+null vector to machine precision at every rank count. The analytic normal is
+*consistent with the geometry*: it is tangent to the true surface, which the
+faceted mesh only approximates — so the assembler and the constraint disagree by
+an amount that grows with facet non-uniformity, and #560 does not remove it (the
+analytic column is unchanged by this fix, and identical at every rank count).
+
+Prefer the default. Reach for `normal=` when the constraint must follow the true
+surface rather than the mesh — a coarse spherical shell where faceting, not the
+gauge, is the dominant error — and be aware that the pressure gauge is then only
+as good as the numbers above.
 
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy

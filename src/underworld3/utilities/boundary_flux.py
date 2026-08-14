@@ -213,6 +213,13 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     """Per-node outward unit normal (only needed to project a vector reaction).
     ``normal`` is None (geometric facet normal), a sympy 1×dim Matrix (analytic,
     lambdified), or a constant (dim,) vector."""
+    # TODO(BUG): the geometric branch below is a stale copy of the pre-#560 rule.
+    # It orients against the mean of the mesh coordinates, which is rank-local (it
+    # averages only this rank's points) and points INTO the domain on a concave
+    # boundary — rotated_bc._boundary_velocity_nodes now orients away from the
+    # facet's own support cell and sums across ranks. Currently unreachable: the
+    # only caller guards it with `if normal is not None`, so the geometric branch
+    # never runs. It will be wrong the day someone wires a geometric normal in here.
     interior_ref = cvec.mean(axis=0)
     sym_fn = const = None
     if normal is not None:

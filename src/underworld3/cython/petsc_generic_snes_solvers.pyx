@@ -6138,11 +6138,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         boundary : str
             Boundary label to constrain.
         normal : None or sympy 1×dim Matrix or array, optional
-            Per-node outward normal source. ``None`` uses the geometric facet
-            normal (PETSc ``computeCellGeometryFVM``; works in 2D and 3D). A
-            sympy ``1×dim`` matrix supplies an analytic normal (exact
-            ``X/|X|`` on a spherical cap, a constant on a planar face) — preferred
-            on curved boundaries. A constant array is also accepted.
+            Per-node outward normal source. ``None`` (the default, and normally
+            the right choice) uses the geometric facet normal, measure-weighted
+            so that it is consistent with the straight-facet boundary integral
+            the assembler evaluates. A sympy ``1×dim`` matrix supplies an
+            analytic normal (``X/|X|`` on a spherical cap, a constant on a
+            planar face): exact for the TRUE surface, but the assembler still
+            integrates over the facets, so it keeps a consistency error that
+            grows with facet non-uniformity. Use it when the constraint must
+            follow the geometry rather than the mesh. A constant array is also
+            accepted. See ``docs/developer/subsystems/rotated-freeslip.md``.
 
         Notes
         -----

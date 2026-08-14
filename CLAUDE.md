@@ -330,8 +330,12 @@ The PETSc-based solvers are carefully optimized and validated. **NO CHANGES with
 to impose `v·n̂ = 0`:
 
 - Enforces zero wall-normal flow to **machine precision** (Nitsche / penalty leak ~1e-3).
-- Correct on **curved / tilted / deformed** boundaries — the normal is taken per node
-  (pass an analytic `normal`, e.g. `X/|X|`, for an exact normal on curved faces).
+- Correct on **curved / tilted / deformed** boundaries — the normal is taken per node,
+  measure-weighted so it matches the straight-facet integral the assembler evaluates
+  (#560). Leave `normal=None` unless the constraint must follow the TRUE surface rather
+  than the mesh; an analytic `normal` (e.g. `X/|X|`) is exact for the geometry but keeps
+  a consistency error against the faceted assembly. See
+  `docs/developer/subsystems/rotated-freeslip.md` ("Which normal to use").
 - Works **inside the nonlinear SNES** and with **geometric FMG**. It honours
   `solver.consistent_jacobian`: use `True` (consistent Newton) for smooth nonlinear
   rheologies; `"continuation"` (staged Picard→Newton) for robustness far from the

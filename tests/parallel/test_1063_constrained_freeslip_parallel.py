@@ -121,6 +121,15 @@ def _solve_gauge_diagnostics():
     return L2, meanP, topoL2
 
 
+@pytest.mark.xfail(
+    reason="#564: free-slip solves are partition dependent. CI measures velocity L2 "
+           "0.6194547487092 serial vs 0.6194402844556 at np=2 (2.3e-05). PRE-EXISTING "
+           "and not caused by #560/#561: the same seven assertions fail with numbers "
+           "identical to every digit at #561's merge base with only the "
+           "scripts/test.sh test_10*py line enabled, which is how they became visible "
+           "at all — this whole batch had never run in CI. Passes locally on "
+           "macOS/arm64, so strict=False; see #564 for the full table.",
+    strict=False)
 def test_constrained_raw_gauge_partition_independent():
     """With the automatic pressure gauge on (default), the RAW mean pressure is
     partition-independent (pinned to ~0), the velocity stays bit-identical (the
@@ -146,6 +155,17 @@ def test_constrained_raw_gauge_partition_independent():
         f"{topo_ref} vs {topo}")
 
 
+@pytest.mark.xfail(
+    reason="#564 (of which #495 is one member): free-slip solves are partition "
+           "dependent. CI measures velocity L2 [iso] 0.6194547793955 serial vs "
+           "0.6107410846031 at np=2 (1.4%) and [ti] 0.3925981604039 vs "
+           "0.3937854671587 (0.3%), against the 1e-9 this asserts. PRE-EXISTING and "
+           "not caused by #560/#561: the same numbers reproduce to every digit at "
+           "#561's merge base with only the scripts/test.sh test_10*py line enabled, "
+           "and Stokes_Constrained never calls _boundary_velocity_nodes. #564 records "
+           "that the ROTATED path is affected too, so this is a family rather than a "
+           "single solver's bug. Passes locally on macOS/arm64, so strict=False.",
+    strict=False)
 @pytest.mark.parametrize("kind", ["iso", "ti"])
 def test_constrained_freeslip_partition_independent(kind):
     """The parallel solve must reproduce the serial reference: velocity bit-

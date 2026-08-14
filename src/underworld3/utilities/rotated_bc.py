@@ -104,14 +104,71 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     unit normal. Dimension-general (2D edges, 3D faces).
 
     `normal` selects the normal source (per boundary):
-      * None      — geometric facet normal from PETSc ``computeCellGeometryFVM``
-                    (area-weighted, accumulated to the facet closure points).
+      * None      — geometric facet normal from PETSc ``computeCellGeometryFVM``,
+                    accumulated to the facet closure points weighted by the facet
+                    MEASURE (edge length in 2D, face area in 3D). The weight is
+                    what makes the constraint consistent with the assembly — see
+                    the note below.
       * sympy 1×dim Matrix — an analytic normal (function of mesh.X); evaluated
-                    at each node's coordinate. Best for exact curved/planar faces
-                    (radial ``X/|X|`` on a spherical cap; a constant on a planar
-                    side of a regional spherical box).
+                    at each node's coordinate (radial ``X/|X|`` on a spherical
+                    cap; a constant on a planar side of a regional spherical
+                    box). Exact for the TRUE surface, which is a different thing
+                    from being consistent with the straight-facet assembly — see
+                    "Which normal to use" in
+                    ``docs/developer/subsystems/rotated-freeslip.md``.
       * (dim,) array — a constant normal vector.
     Returns ``[(point, n̂), ...]``.
+
+    Why the geometric normals are MEASURE-weighted (issue #560)
+    -----------------------------------------------------------
+    A boundary node sitting on more than one facet — a vertex in 2D, a vertex or an
+    edge-midpoint in 3D — gets ONE nodal normal, while the assembler integrates the
+    boundary term facet by facet. The rotated frame's free tangential row therefore
+    collects, for a constant pressure :math:`p`,
+
+    .. math::
+        r_i = p \\sum_f \\left(\\int_f \\phi_i\\, ds\\right)\\, (\\hat t_i \\cdot n_f)
+
+    which vanishes for every tangent :math:`\\hat t_i` only when the nodal normal is
+    parallel to :math:`\\sum_f (\\int_f \\phi_i\\, ds)\\, n_f`. For simplicial P1 and P2
+    velocity the basis integral over a facet is the facet measure times a constant that
+    does not depend on which facet it is, so the measure IS the right weight. That is
+    EXACT for every simplicial facet (2D P2 vertex :math:`|f|/6`; 3D P1 vertex
+    :math:`|f|/3`; 3D P2 edge-midpoint :math:`|f|/3`; the 3D P2 vertex integral is
+    identically zero, so that row is consistent whatever normal it is given) and for
+    every 2D facet at any degree, a facet being a 1D element there. On a **non-affine
+    3D quad facet** (a deformed hex) the Jacobian varies across the facet, so the
+    measure is the leading-order weight rather than the exact one — measured, a
+    deformed hex box retains a residual ~7-16x its flat control while the bisector
+    leaves 3e8-2e9 times more, so the weighting is a large improvement there but not
+    exact.
+
+    Normalising each facet normal to unit length before accumulating — what this
+    function used to do — gives the BISECTOR :math:`n_1 + n_2` instead, which is
+    correct only where the facets are equal. On a kinked boundary with unequal facets
+    the constant-pressure vector then stops being a null vector of the constrained
+    operator, the pressure gauge goes unpinned, and the answer picks up a round-off
+    seeded offset (#560).
+
+    An axis-aligned wall is unchanged to the last bit: its facet normals have exactly
+    0/±1 components, so :math:`\\sum_f |f| n_f` normalises to the same floats as
+    :math:`\\sum_f n_f` whatever the weights. A flat but TILTED wall can move by one
+    ulp, which is why this reads "axis-aligned" and not "flat".
+
+    Parallel
+    --------
+    The sum is over ALL facets meeting the node, so it has to be completed ACROSS
+    RANKS: each boundary facet is labelled on exactly one rank, and a node on a
+    partition seam has its adjacent facets split between ranks (both edges are in the
+    local mesh, only one carries the label). Accumulating rank-locally would give a
+    seam node the wrong normal and make the answer rank-count dependent. The weighted
+    contributions are therefore summed over the DMPlex point SF before normalising, so
+    every rank ends with a bit-identical normal at a shared node. The reduction is
+    COLLECTIVE — a rank owning no facet of this boundary still takes part.
+
+    The analytic-normal path is NOT reduced: it evaluates a function of the node
+    coordinate, so every rank already computes the same value and summing copies would
+    only rescale it (and by a rank-count-dependent factor).
     """
     dm = solver.dm
     dim = solver.mesh.dim
@@ -119,15 +176,15 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
     lsec = dm.getLocalSection()
-    interior_ref = cvec.mean(axis=0)
     # Boundary facets via the consolidated "UW_Boundaries" label (per-boundary labels do
     # not survive mesh adaptation); raises a clear error for an unknown boundary name.
     # In parallel a rank may own NO part of this boundary → a null IS; guard and return
     # no local nodes (calling getIndices() on a null IS would segfault).
+    # A rank owning no part of this boundary gets a null/empty IS and contributes
+    # nothing — but it must NOT return early: the cross-rank sum below is collective.
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-    if not (sis and sis.getSize() > 0):
-        return []
-    facets = [int(z) for z in sis.getIndices()]
+    facets = ([int(z) for z in sis.getIndices()]
+              if (sis and sis.getSize() > 0) else [])
     fS, fE = dm.getHeightStratum(1)              # facets (edges in 2D, faces in 3D)
 
     def coord(q):
@@ -160,18 +217,49 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
         else:
             const_normal = np.asarray(normal, dtype=float).ravel()
 
-    nacc = {}
-    pts = set()
+    nacc = {}                                    # velocity node → Σ_f measure · n̂_f
     for f in facets:
         if not (fS <= f < fE):
             continue
-        # facet outward normal
+        # facet outward normal, and the measure the boundary term is integrated over
+        # (1.0 on the analytic path, whose normal does not come from the facet)
+        wgt = 1.0
         if normal is None:
-            _, cent, nrm = dm.computeCellGeometryFVM(f)
+            vol, cent, nrm = dm.computeCellGeometryFVM(f)
             ne = np.asarray(nrm, dtype=float)
             ne = ne / (np.linalg.norm(ne) + 1e-30)
-            if np.dot(ne, np.asarray(cent) - interior_ref) < 0:
-                ne = -ne
+            # Outward = away from the one cell this boundary facet belongs to, which
+            # is the domain's outward normal on ANY boundary, convex or not. The
+            # obvious alternative — away from the mean of the mesh coordinates — is
+            # BOTH rank-local (each rank averages only its own points, so two facets
+            # meeting at a seam node can be oriented oppositely and then CANCEL in
+            # the cross-rank sum) and wrong on a concave boundary, where it points
+            # INTO the domain.
+            #
+            # CONVENTION, and it is user-visible: on a concave boundary — an annulus
+            # or shell INNER arc, the CMB — this is the opposite of what UW3 produced
+            # before #560, so σ_nn and dynamic topography read there through the
+            # GEOMETRIC normal reverse sign against earlier releases. The new sign is
+            # the one the docstrings have always claimed ("outward"). An analytic
+            # ``normal=`` is used exactly as given and is NOT reoriented, so
+            # ``X/|X|`` on an inner arc points into the domain and disagrees in sign
+            # with the default — see "Which normal to use" in
+            # ``docs/developer/subsystems/rotated-freeslip.md``.
+            #
+            # Only an EXTERIOR facet has "the one cell it belongs to". An internal
+            # boundary's facets have two, and `support[0]` is whichever the DMPlex
+            # ordering happens to list first — flipping against that would orient
+            # neighbouring facets of the same surface oppositely, and they would then
+            # CANCEL in the measure-weighted sum. There the raw face normal is kept:
+            # PETSc orients it from support[0] to support[1] by its own convention,
+            # which is at least coherent along the surface. Both sibling
+            # implementations guard the same way (Mesh._assemble_boundary_normal,
+            # _local_boundary_candidates below).
+            if dm.getSupportSize(f) == 1:
+                _, ccent, _ = dm.computeCellGeometryFVM(int(dm.getSupport(f)[0]))
+                if np.dot(ne, np.asarray(cent) - np.asarray(ccent)) < 0:
+                    ne = -ne
+            wgt = float(vol)
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
         for q in (int(c) for c in clo):
@@ -184,12 +272,101 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
                 else:
                     ne = const_normal.copy()
                 ne = ne / (np.linalg.norm(ne) + 1e-30)
-            nacc[q] = nacc.get(q, np.zeros(dim)) + ne
-            pts.add(q)
-    out = []
-    for q in pts:
-        nrm = nacc[q] / (np.linalg.norm(nacc[q]) + 1e-30)
-        out.append((q, nrm))
+            nacc[q] = nacc.get(q, np.zeros(dim)) + wgt * ne
+
+    if normal is None:
+        nacc = _sum_facet_normals_across_ranks(solver, nacc)
+
+    return [(q, v / (np.linalg.norm(v) + 1e-30))
+            for q, v in sorted(nacc.items())
+            if np.linalg.norm(v) > 0.0]
+
+
+def _sum_facet_normals_across_ranks(solver, contribs):
+    """Complete the per-node facet sum across ranks: ``{point: Σ_f |f| n̂_f}`` restricted
+    to this rank's facets in, the sum over EVERY rank's facets out — the same value on
+    every rank that holds the node.
+
+    Each boundary facet is labelled on exactly one rank, and on the rank that owns it
+    (measured: no facet is labelled twice and none is labelled away from its owner), so
+    a plain ADD is exact and needs no de-duplication. The velocity field already has
+    ``dim`` DOFs at exactly these points, so the sum rides the DM's own local↔global
+    scatter: ADD into the global vector accumulates the ghost copies onto the owner,
+    and scattering back gives every rank the identical total.
+
+    COLLECTIVE — a rank owning no facet of this boundary still takes part.
+    """
+    dm = solver.dm
+    dim = solver.mesh.dim
+    if dm.comm.getSize() == 1:
+        return contribs
+
+    lsec = dm.getLocalSection()
+    lvec = dm.getLocalVec()
+    gvec = dm.getGlobalVec()
+    try:
+        lvec.set(0.0)
+        larr = lvec.getArray()
+        for q, v in contribs.items():
+            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+            larr[lo:lo + dim] = v
+        gvec.set(0.0)
+        dm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
+        dm.globalToLocal(gvec, lvec)
+        summed = lvec.getArray()
+        out = {}
+        for q in _local_boundary_candidates(dm, lsec) | set(contribs):
+            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+            w = np.array(summed[lo:lo + dim], dtype=float)
+            # LOAD-BEARING: the candidate set over-collects (see
+            # _local_boundary_candidates); a point off this boundary contributes
+            # nothing anywhere, so its summed normal is exactly zero and it is
+            # dropped here. This is what makes the over-collection safe.
+            if w.any():
+                out[q] = w
+            elif q in contribs:
+                # Velocity DOFs constrained out of the global vector (an essential
+                # BC meeting this boundary) come back zero. Keep this rank's own
+                # contribution so the node set is exactly what it always was.
+                # build_rotation drops these nodes (l2g < 0); boundary_normal_traction
+                # does NOT — it reads n̂·r_c at every returned node — so on such a node
+                # it reports the reaction of the ESSENTIAL constraint along a
+                # rank-locally accumulated normal. That was true before this change
+                # too, and the nodes are the corners where a rotated wall meets an
+                # essential one (measured: 2 of 75 on the test_1070 configuration, at
+                # every rank count, and never shared between ranks there).
+                out[q] = contribs[q]
+        return out
+    finally:
+        dm.restoreLocalVec(lvec)
+        dm.restoreGlobalVec(gvec)
+
+
+def _local_boundary_candidates(dm, lsec):
+    """Velocity points on a support-1 facet of this rank's LOCAL mesh — a SUPERSET of
+    its boundary nodes, deliberately.
+
+    The labelled facet list is not enough to enumerate a rank's boundary nodes: a rank
+    can OWN a node every one of whose labelled facets lives on a neighbour (the label
+    goes to one rank per facet, so a seam node's facets are split between them), and
+    such a node would otherwise never get a constraint row.
+
+    Support 1 does NOT mean "on the domain boundary": the facets on the outer fringe of
+    the overlap layer also have support 1 locally while being interior globally, and
+    measured they are 13-27% of what this returns. The caller is what makes the result
+    correct — those points receive no contribution from any labelled facet, so their
+    summed normal is exactly zero and the ``w.any()`` test in
+    :func:`_sum_facet_normals_across_ranks` drops them. That test is load-bearing, not
+    an aside; do not remove it while over-collecting here.
+    """
+    fS, fE = dm.getHeightStratum(1)
+    out = set()
+    for f in range(fS, fE):
+        if dm.getSupportSize(f) != 1:
+            continue
+        for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
+            if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
+                out.add(q)
     return out
 
 
@@ -1829,6 +2006,15 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
 
     σ_nn is recovered from the CARTESIAN nodal reaction r_c = A·u − b: the nodal load
     is R_i = n̂_i · r_c(node_i), where n̂_i is THIS boundary's outward normal at node i.
+
+    SIGN. ``n̂_i`` is whatever :func:`_boundary_velocity_nodes` produced for this
+    boundary, so σ_nn is measured along that direction. The geometric default is the
+    DOMAIN's outward normal everywhere, which on a concave boundary (an annulus or
+    shell inner arc) points toward the centre of curvature — the opposite of what UW3
+    produced before #560, so σ_nn and the dynamic topography built on it reverse sign
+    there against earlier releases. An analytic ``normal=`` is used exactly as given
+    and is not reoriented, so ``X/|X|`` on an inner arc yields the other sign. See
+    "Which way is outward" in ``docs/developer/subsystems/rotated-freeslip.md``.
     Projecting the Cartesian reaction onto the boundary normal (rather than reading the
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'
