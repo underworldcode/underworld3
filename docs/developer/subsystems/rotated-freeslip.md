@@ -24,6 +24,27 @@ enclosed boundary it must be discretely flux-free for incompressibility. A
 corner or 3D-edge node shared between rotated boundaries has no single normal
 and stays at the free-slip pinning (the datum is ignored there).
 
+### The nodal normal is measure-weighted, not a bisector
+
+A node that sits on more than one facet — a vertex in 2D, a vertex or an
+edge-midpoint in 3D — gets one nodal normal, while the assembler integrates the
+boundary term facet by facet. The two only agree when the node's normal is
+parallel to the **measure-weighted** sum `Σ_f |f| n̂_f` (edge length in 2D, face
+area in 3D), which is what the geometric path accumulates. Plain bisector
+averaging `Σ_f n̂_f` — what UW3 did before issue #560 — is right only where the
+facets are equal; on a **kinked** wall with unequal facets it leaves a residual
+`sin(Δ/2)·(|f₁|−|f₂|)/6` in the node's free tangential row (Δ = kink angle), the
+exact constant-pressure vector stops being a null vector of the constrained
+operator, and the pressure gauge goes unpinned. Flat walls are unchanged to the
+last bit: every facet there shares a normal, so the weighting cancels.
+
+An **analytic** `normal=` is a deliberate override and is applied exactly as
+given. It is the right choice on a genuinely curved boundary, and it is tangent
+to the true surface — but the assembler still integrates over the straight
+facets, so on a strongly non-uniform curved boundary an analytic normal carries
+the consistency error the geometric path no longer has. Keep the facets
+near-uniform on an analytic-normal boundary, or use the geometric normal there.
+
 Why strong rather than Nitsche/penalty: the constraint holds to machine
 precision (a penalty leaks ~1e-3, and the leak grows exactly where anisotropy
 makes the boundary condition matter), it is correct on curved/tilted/deformed
