@@ -85,6 +85,18 @@ def expression(*args, **kwargs):
     return public_expression(*args, _unique_name_generation=True, **kwargs)
 
 
+def _as_scalar(value):
+    """Collapse a zero-dimensional array to a plain scalar, leave the rest.
+
+    Unit-bearing values (UWQuantity / UnitAwareArray / pint) are returned
+    untouched: ``.item()`` would discard their units.
+    """
+    if isinstance(value, np.ndarray) and value.ndim == 0 and not hasattr(
+            value, "units"):
+        return value.item()
+    return value
+
+
 def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
     """
     Convert a nondimensional timestep estimate to physical time units.
@@ -108,8 +120,19 @@ def _apply_unit_aware_scaling(dt_nondimensional, field, mesh):
     -------
     float or UWQuantity
         Timestep with physical time units if a time scale is configured,
-        otherwise the nondimensional input.
+        otherwise the nondimensional input — always a SCALAR, never a
+        zero-dimensional array. The callers reach here through
+        ``np.squeeze(dt)``, which collapses a numpy scalar to a numpy scalar
+        but promotes a plain Python float to a 0-d ``ndarray``. A 0-d array
+        is neither of the documented return types, and it poisons the
+        arithmetic downstream: ``solve(timestep=...)`` compares the estimate
+        against ``self.delta_t`` (a UWexpression), and ndarray-vs-sympy
+        comparison raises ``TypeError: Could not convert object to sequence``
+        instead of deferring to sympy. Collapsing it here keeps the contract
+        independent of whichever numeric type a caller happened to pass in.
     """
+    dt_nondimensional = _as_scalar(dt_nondimensional)
+
     try:
         from ..function.quantities import UWQuantity
 
@@ -2153,7 +2176,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         try:
             return uw.dimensionalise(np.squeeze(min_dt_glob), {'[time]': 1})
         except Exception:
-            return np.squeeze(min_dt_glob)
+            # _as_scalar: np.squeeze promotes a Python float to a 0-d array
+            # (see _apply_unit_aware_scaling for what that breaks).
+            return _as_scalar(np.squeeze(min_dt_glob))
 
 
 class SNES_VE_Stokes(SNES_Stokes):
@@ -4207,8 +4232,10 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         try:
             return uw.dimensionalise(np.squeeze(dt_estimate), {'[time]': 1})
         except Exception:
-            # Fallback: return plain nondimensional number
-            return np.squeeze(dt_estimate)
+            # Fallback: return plain nondimensional number. _as_scalar because
+            # np.squeeze promotes a Python float to a 0-d array, which is not
+            # a number any caller expects (see _apply_unit_aware_scaling).
+            return _as_scalar(np.squeeze(dt_estimate))
 
     @timing.routine_timer_decorator
     def solve(
