@@ -6,9 +6,16 @@ fault conditions, symbolically:
 
     div u = 0
     eta * lap(u) + grad(p) = 0        (their eq 3; extension-positive pressure)
-    tau_r_theta = 0 on both faces of the fault
-    u_theta continuous across the fault
+    tau_r_theta = 0 on both faces of the fault      fault condition 3
+    u_theta continuous across the fault             fault condition 2
+    sigma_theta_theta continuous across the fault   fault condition 1
     slip = 2 U0 sqrt(r/R0)
+
+The Stokes and fault-condition checks run with the parameters left SYMBOLIC.
+That is not decoration: with U0 = R0 = eta = 1, a transcription carrying the
+wrong power of R0 in the singular pressure term gives a momentum residual of
+exactly zero, and the same transcription with the parameters free gives
+U0 eta (1 - R0) cos(3 theta / 2) / (2 sqrt(R0) r^(3/2)). Measured.
 
 If those hold simultaneously, the transcription is the solution, whatever any
 solver later does with it. That is a stronger statement than a regression test
@@ -47,8 +54,15 @@ def _polar_operators(u_r, u_t, p, r, t, eta):
 
 
 def test_the_field_is_an_incompressible_stokes_solution():
-    """div u = 0 and the momentum balance vanishes identically."""
-    sol = BarrHouseman(U0=1.0, R0=1.0, eta=1.0)
+    """div u = 0 and the momentum balance vanishes identically.
+
+    The parameters are left SYMBOLIC on purpose. With U0 = R0 = eta = 1 a
+    transcription carrying the wrong power of R0 in the pressure satisfies the
+    identity and still fails the physics, so the unit-parameter version of this
+    test is strictly weaker for the same runtime.
+    """
+    U0, R0, eta = sympy.symbols("U_0 R_0 eta", positive=True)
+    sol = BarrHouseman(U0=U0, R0=R0, eta=eta)
     r, t = sol.symbols
     u_r, u_t = sol.velocity_polar
     p = sol.pressure_polar
@@ -60,8 +74,13 @@ def test_the_field_is_an_incompressible_stokes_solution():
 
 
 def test_the_fault_conditions_hold_on_both_faces():
-    """Zero shear traction, and normal velocity continuous across the fault."""
-    sol = BarrHouseman(U0=1.0, R0=1.0, eta=1.0)
+    """All THREE of the paper's fault conditions, with symbolic parameters.
+
+    Zero shear traction, continuous normal velocity, continuous normal stress.
+    The third was claimed in the original description and not asserted.
+    """
+    U0, R0, eta = sympy.symbols("U_0 R_0 eta", positive=True)
+    sol = BarrHouseman(U0=U0, R0=R0, eta=eta)
     r, t = sol.symbols
     u_r, u_t = sol.velocity_polar
 
@@ -72,6 +91,16 @@ def test_the_fault_conditions_hold_on_both_faces():
     # u_theta is the fault-NORMAL component and must not jump; u_r is the
     # fault-parallel one and must (that jump is the slip).
     assert sympy.simplify(u_t.subs(t, 0) - u_t.subs(t, 2 * sympy.pi)) == 0
+
+    # Normal STRESS continuity — the third of the paper's three fault
+    # conditions. Extension-positive, so sigma = tau + p I, and the
+    # fault-normal component is sigma_tt = 2 eta e_tt + p with
+    # e_tt = (1/r) du_theta/dtheta + u_r/r.
+    p = sol.pressure_polar
+    e_tt = sympy.diff(u_t, t) / r + u_r / r
+    sigma_tt = 2 * sol.eta * e_tt + p
+    assert sympy.simplify(sigma_tt.subs(t, 0)
+                          - sigma_tt.subs(t, 2 * sympy.pi)) == 0
 
 
 def test_the_slip_is_the_published_normalisation():
@@ -168,3 +197,9 @@ def test_a_degenerate_geometry_is_refused():
         BarrHouseman(eta=-1.0)
     with pytest.raises(ValueError, match="singular at the fault tip"):
         BarrHouseman().evaluate(np.array([[0.0, 0.0]]))
+
+    symbolic = BarrHouseman(U0=sympy.Symbol("U_0", positive=True))
+    with pytest.raises(ValueError, match="symbolic parameters"):
+        symbolic.evaluate(np.array([[0.5, 0.1]]))
+    with pytest.raises(ValueError, match="symbolic parameters"):
+        symbolic.slip(0.5)

@@ -89,11 +89,21 @@ class BarrHouseman:
     """
 
     def __init__(self, U0=1.0, R0=1.0, eta=1.0):
-        if not (float(R0) > 0.0 and float(eta) > 0.0):
-            raise ValueError("R0 and eta must be positive.")
-        self.U0 = float(U0)
-        self.R0 = float(R0)
-        self.eta = float(eta)
+        # The parameters may be SymPy symbols. That is not a convenience: a
+        # symbolic check with U0 = R0 = eta = 1 would be satisfied by a
+        # transcription carrying the wrong power of R0 in the pressure, so the
+        # verification is strictly stronger with them left free.
+        for name, value in (("R0", R0), ("eta", eta)):
+            if not isinstance(value, sympy.Basic) and not float(value) > 0.0:
+                raise ValueError(f"{name} must be positive.")
+        self.U0 = U0 if isinstance(U0, sympy.Basic) else float(U0)
+        self.R0 = R0 if isinstance(R0, sympy.Basic) else float(R0)
+        self.eta = eta if isinstance(eta, sympy.Basic) else float(eta)
+
+    @property
+    def _is_symbolic(self):
+        return any(isinstance(v, sympy.Basic)
+                   for v in (self.U0, self.R0, self.eta))
 
     # ------------------------------------------------------------------ sympy
     @property
@@ -171,6 +181,10 @@ class BarrHouseman:
         point exactly on the fault returns the ``theta = 0`` side; approach
         from ``y < 0`` to obtain the other.
         """
+        if self._is_symbolic:
+            raise ValueError(
+                "this solution was built with symbolic parameters; give U0, "
+                "R0 and eta numeric values to evaluate it")
         X = np.asarray(coords, dtype=float)
         if X.ndim != 2 or X.shape[1] != 2:
             raise ValueError("coords must have shape (N, 2)")
@@ -207,5 +221,9 @@ class BarrHouseman:
         quantity a discrete model can be asked to reproduce — unlike the
         stress, which is singular at the tip.
         """
+        if self._is_symbolic:
+            raise ValueError(
+                "this solution was built with symbolic parameters; give U0, "
+                "R0 and eta numeric values to evaluate it")
         r = np.asarray(r, dtype=float)
         return 2.0 * self.U0 * np.sqrt(r / self.R0)
