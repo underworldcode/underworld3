@@ -165,6 +165,19 @@ def test_rotated_linear_workspace_reuses_unchanged_operator():
     assert time_refresh_error < 1.0e-6
 
 
+def _solve_report(info):
+    """The rotated solve's own verdict, for failure messages: an assertion
+    that says only "the answer moved" cannot tell a stale operator from a
+    linear solve that stopped early."""
+    return (f"converged={info.get('converged')} "
+            f"ksp_reason={info.get('ksp_reason')} "
+            f"ksp_its={info.get('ksp_its')} "
+            f"newton_its={info.get('nonlinear_iterations')} "
+            f"|r|={info.get('rnorm')} |r0|={info.get('rnorm0')} "
+            f"rotation_reused={info.get('rotation_reused')} "
+            f"workspace_reused={info.get('workspace_reused')}")
+
+
 def _rampable_rotated_stokes(mesh, k_expr, tag, forcing=None):
     """Rotated free-slip Stokes with viscosity given by a rampable
     UWexpression constant (the #416 idiom used by every continuation
@@ -244,7 +257,18 @@ def test_rotated_workspace_constant_ramp_invalidates():
 def test_rotated_workspace_deform_invalidates():
     """mesh.deform between solves: geometry changed, so the whole workspace
     must be rebuilt (rotation_reused False) and the answer must match a fresh
-    solver on the deformed mesh."""
+    solver on the deformed mesh.
+
+    Both solvers assemble the same system on the same deformed mesh from the
+    same (zero) initial guess, so any deterministic linear solver has to give
+    them the same answer: a non-zero ``err`` means one of the two systems is
+    not what it should be, not that a Krylov path drifted. The checks below
+    say WHICH, because this test has failed in CI on a platform where it
+    cannot be reproduced locally (macOS arm64, both the conda-PETSc `dev` and
+    the AMR-PETSc `amr-dev` toolchains, single test / whole file / CI batch:
+    err is exactly 0.0, one Krylov iteration, |r| = 8.3e-12 identical between
+    the two solves). Reporting the solver's own diagnostics and the mesh's
+    geometry invariants turns the next occurrence into an attribution."""
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(10, 10), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
 
@@ -252,24 +276,52 @@ def test_rotated_workspace_deform_invalidates():
     s1, v1 = _rampable_rotated_stokes(mesh, k, "Dfm")
     s1.solve()
     assert s1._rotated_linear_cache is not None
+    info_1 = dict(s1._rotated_freeslip_info)
+    reach_before = mesh._local_cell_reach
 
     # bump the top boundary (the free-surface pattern)
     coords = mesh.X.coords.copy()
     coords[:, 1] += 0.02 * coords[:, 1] * np.sin(np.pi * coords[:, 0])
     mesh.deform(coords)
 
+    # Mesh-side invariant: the kd-tree index and the point locator's rejection
+    # radius (#551) are measured together in _build_kd_tree_index, which
+    # deform() drops and rebuilds eagerly. A stale SMALL radius is the one way
+    # point location silently loses points, and this is the only test in the
+    # suite that deforms a mesh between two solves, so it is the one that
+    # would see it.
+    reach_after = mesh._local_cell_reach
+    assert reach_after != reach_before, (
+        f"the locator reach did not follow the deform "
+        f"({reach_before:.8g} -> {reach_after:.8g}) — it is measured with the "
+        f"kd-tree index and must be rebuilt with it")
+
     s1.solve()
     info = s1._rotated_freeslip_info
     assert not info["rotation_reused"], (
         "workspace survived a mesh.deform — stale rotation Q in use")
     assert not info["workspace_reused"]
+    assert info["converged"], (
+        f"the post-deform solve did not converge: {_solve_report(info)}")
 
     k_c = uw.function.expression(r"k_dc", 1.0, "control viscosity")
     s_c, v_c = _rampable_rotated_stokes(mesh, k_c, "DfC")
     s_c.solve()
+    info_c = s_c._rotated_freeslip_info
+    assert info_c["converged"], (
+        f"the fresh control solve did not converge: {_solve_report(info_c)}")
+
     err = np.linalg.norm(v1.data - v_c.data) / np.linalg.norm(v_c.data)
     assert err < 1e-6, (
-        f"post-deform solve differs from fresh control by {err:.2e}")
+        f"post-deform solve differs from fresh control by {err:.2e}\n"
+        f"  first solve   : {_solve_report(info_1)}\n"
+        f"  post-deform   : {_solve_report(info)}\n"
+        f"  fresh control : {_solve_report(info_c)}\n"
+        f"  locator reach : {reach_before:.8g} -> {reach_after:.8g}\n"
+        f"Both solves assemble the same system from a zero guess, so equal "
+        f"convergence reports with a non-zero err means the two OPERATORS "
+        f"differ — something survived the deform. Different |r| or iteration "
+        f"counts means the linear solves themselves diverged.")
 
 
 @pytest.mark.level_2
