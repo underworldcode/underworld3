@@ -698,6 +698,14 @@ def _apply_monotone_limit(
     # latent mismatch (scaling is inactive in the validated baseline so it
     # never bites). Do not "fix" without re-validating the trajectory.
     nnn = mesh.dim + 1
+    # A rank owning no cells owns no source DOFs: there is no neighbourhood
+    # to bound against, and the stencil gather would index an empty array
+    # (issue #405). Such a rank also has no interior evaluation points, so
+    # `value` is empty and returning it unchanged is exact, not a fallback.
+    # Purely rank-local: "pick" (the only collective mode) is refused above
+    # under MPI, so this early return cannot skip a collective.
+    if psi_coords_nd.shape[0] == 0 or np.asarray(coords_nd).shape[0] == 0:
+        return value
     kdt = uw.kdtree.KDTree(np.ascontiguousarray(psi_coords_nd))
     _, idxs = kdt.query(
         np.ascontiguousarray(coords_nd), k=nnn, sqr_dists=False)

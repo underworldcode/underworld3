@@ -1504,6 +1504,21 @@ class Mesh(Stateful, uw_object):
                     val, op=getattr(_MPI, op))
             return val
 
+        # A rank owning zero cells contributes the identity element of each
+        # reduction rather than raising on an empty array (issue #405).
+        def _reduce_min(arr):
+            return _reduce(float(arr.min()) if arr.size else float("inf"),
+                           "MIN")
+
+        def _reduce_max(arr):
+            return _reduce(float(arr.max()) if arr.size else float("-inf"),
+                           "MAX")
+
+        def _local_percentile(arr, pct):
+            # Rank-local estimate (see the docstring); a rank with no cells
+            # has no local distribution to take a percentile of.
+            return float(np.percentile(arr, pct)) if arr.size else float("nan")
+
         tri_vertex_lists = []
         is_simplex2d = cdim == 2
         if is_simplex2d:
@@ -1516,17 +1531,32 @@ class Mesh(Stateful, uw_object):
                     break
                 tri_vertex_lists.append(cell_vertices)
 
-        if not is_simplex2d or not tri_vertex_lists:
+        # Choose the branch COLLECTIVELY. A rank owning zero cells collects no
+        # triangles and would otherwise take the volume-only branch (three
+        # reductions) while its populated peers took the simplex branch
+        # (eleven) — mismatched collective counts, i.e. a hang (issue #405).
+        # A starved rank abstains from the vote instead.
+        has_cells = cEnd > cStart
+        n_simplex_ranks = _reduce(
+            int(has_cells and is_simplex2d and bool(tri_vertex_lists)), "SUM")
+        n_populated_ranks = _reduce(int(has_cells), "SUM")
+        is_simplex2d = (n_populated_ranks > 0
+                        and n_simplex_ranks == n_populated_ranks)
+
+        if not is_simplex2d:
             try:
                 volume = np.abs(np.array(
                     [dm.computeCellGeometryFVM(cell_id)[0]
                      for cell_id in range(cStart, cEnd)]))
             except Exception:
                 volume = np.array([1.0])
-            if not volume.size:
+            # A rank that owns cells but cannot compute their geometry keeps
+            # the unit-volume placeholder; a rank owning NO cells contributes
+            # nothing at all, so the global cell count stays honest.
+            if not volume.size and has_cells:
                 volume = np.array([1.0])
             n_cells = _reduce(int(volume.size), "SUM")
-            vol_min = _reduce(float(volume.min()), "MIN")
+            vol_min = _reduce_min(volume)
             vol_sum = _reduce(float(volume.sum()), "SUM")
             metrics = dict(
                 n_cells=n_cells, element="non-2D-simplex",
@@ -1538,7 +1568,9 @@ class Mesh(Stateful, uw_object):
                 metrics["per_cell"] = dict(volume=volume)
             return metrics
 
-        tri = np.asarray(tri_vertex_lists, dtype=np.int64)
+        # reshape(-1, 3) keeps the (0, 3) shape on a rank with no cells, where
+        # np.asarray([]) would be 1-D and the column indexing below would fail.
+        tri = np.asarray(tri_vertex_lists, dtype=np.int64).reshape(-1, 3)
         v0, v1, v2 = (vertex_coords[tri[:, 0]],
                       vertex_coords[tri[:, 1]],
                       vertex_coords[tri[:, 2]])
@@ -1566,7 +1598,9 @@ class Mesh(Stateful, uw_object):
              _angle_deg(edge_c, edge_a, edge_b)])
         longest_edge = np.maximum.reduce([edge_a, edge_b, edge_c])
         aspect = longest_edge * longest_edge / (2.0 * area)
-        rel_area = area / area.mean()
+        # rel_area only ever masks this rank's own cells, so the rank-local
+        # mean is the right scale — and an empty rank has no cells to mask.
+        rel_area = area / area.mean() if area.size else area
 
         # Neighbour size-jump: map each (undirected) edge to the triangles
         # sharing it; interior edges (exactly two triangles) contribute the
@@ -1585,22 +1619,22 @@ class Mesh(Stateful, uw_object):
         area_sum = _reduce(float(area.sum()), "SUM")
         metrics = dict(
             n_cells=n_cells, element="2D-simplex",
-            q_min=_reduce(float(shape_q.min()), "MIN"),
+            q_min=_reduce_min(shape_q),
             q_mean=q_sum / max(n_cells, 1),
-            q_p01=float(np.percentile(shape_q, 1)),
-            q_p05=float(np.percentile(shape_q, 5)),
+            q_p01=_local_percentile(shape_q, 1),
+            q_p05=_local_percentile(shape_q, 5),
             n_q_lt_0p3=_reduce(int((shape_q < 0.3).sum()), "SUM"),
             n_q_lt_0p2=_reduce(int((shape_q < 0.2).sum()), "SUM"),
-            angle_max_deg=_reduce(float(largest_angle.max()), "MAX"),
+            angle_max_deg=_reduce_max(largest_angle),
             n_angle_gt_150=_reduce(int((largest_angle > 150).sum()), "SUM"),
             n_angle_gt_165=_reduce(int((largest_angle > 165).sum()), "SUM"),
-            aspect_max=_reduce(float(aspect.max()), "MAX"),
-            aspect_p99=float(np.percentile(aspect, 99)),
+            aspect_max=_reduce_max(aspect),
+            aspect_p99=_local_percentile(aspect, 99),
             sizejump_max=float(size_jump.max()),
-            sizejump_p99=float(np.percentile(size_jump, 99)),
+            sizejump_p99=_local_percentile(size_jump, 99),
             n_big_thin=_reduce(
                 int(((rel_area > 2.0) & (aspect > 4.0)).sum()), "SUM"),
-            vol_min_over_mean=(_reduce(float(area.min()), "MIN")
+            vol_min_over_mean=(_reduce_min(area)
                                / (area_sum / max(n_cells, 1))))
         if per_cell:
             metrics["per_cell"] = dict(
@@ -4434,6 +4468,9 @@ class Mesh(Stateful, uw_object):
         Returns the mesh bounding box scaled to physical units using
         the model's length scale.
 
+        COLLECTIVE: the bounding box spans the whole mesh, so it is reduced
+        across ranks (see :meth:`_global_coord_bounds`).
+
         Returns
         -------
         tuple of UWQuantity or None
@@ -4447,10 +4484,7 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, "_model") or self._model is None:
             return None
 
-        import numpy as np
-
-        min_coords = np.min(self.points, axis=0)
-        max_coords = np.max(self.points, axis=0)
+        min_coords, max_coords = self._global_coord_bounds()
 
         return (
             self._model.scale_to_physical(min_coords, dimension="length"),
@@ -4463,6 +4497,9 @@ class Mesh(Stateful, uw_object):
         Mesh spatial extent in physical units.
 
         Returns the mesh size (max - min) in each dimension scaled to physical units.
+
+        COLLECTIVE: the extent spans the whole mesh, so it is reduced across
+        ranks (see :meth:`_global_coord_bounds`).
 
         Returns
         -------
@@ -4477,13 +4514,59 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, "_model") or self._model is None:
             return None
 
+        min_coords, max_coords = self._global_coord_bounds()
+
+        return self._model.scale_to_physical(
+            max_coords - min_coords, dimension="length")
+
+    def _global_coord_bounds(self):
+        """Bounding box of the mesh nodes, ``(min_coords, max_coords)``.
+
+        COLLECTIVE. Each rank holds only its own subdomain's nodes, so a
+        rank-local ``min``/``max`` describes the partition rather than the
+        mesh — every rank would report a different "domain size". The
+        reduction makes the answer global and identical everywhere, and lets
+        a rank owning no cells (hence no nodes) contribute the identity
+        elements instead of raising on an empty array (issue #405).
+
+        Reads the same node coordinates as the deprecated ``mesh.points``
+        (without its warning or unit wrapping), so the physical-bounds /
+        physical-extent answers are unchanged apart from being global.
+
+        .. TODO(BUG): ``mesh.points`` already multiplies by
+           ``CoordinateSystem._length_scale`` when the coordinate system is
+           scaled, and both callers then pass the result through
+           ``model.scale_to_physical(..., dimension="length")`` — a second
+           application of the same factor. Reproduced here deliberately so
+           this fix stays behaviour-neutral; the double scaling is a separate
+           question for the units owner.
+        """
         import numpy as np
+        from mpi4py import MPI
 
-        min_coords = np.min(self.points, axis=0)
-        max_coords = np.max(self.points, axis=0)
-        extent = max_coords - min_coords
+        coords = np.asarray(self._coords, dtype=np.float64).reshape(
+            -1, self.cdim)
+        if getattr(self.CoordinateSystem, "_scaled", False):
+            coords = coords * self.CoordinateSystem._length_scale
+        coords = np.ascontiguousarray(coords)
 
-        return self._model.scale_to_physical(extent, dimension="length")
+        if coords.shape[0] > 0:
+            local_min = np.ascontiguousarray(coords.min(axis=0))
+            local_max = np.ascontiguousarray(coords.max(axis=0))
+        else:
+            local_min = np.full(self.cdim, np.inf)
+            local_max = np.full(self.cdim, -np.inf)
+
+        if uw.mpi.size > 1:
+            # Buffer (uppercase) Allreduce: the pickling `allreduce` applies
+            # MPI.MIN through Python's `min()`, which is ambiguous for arrays.
+            global_min = np.empty_like(local_min)
+            global_max = np.empty_like(local_max)
+            uw.mpi.comm.Allreduce(local_min, global_min, op=MPI.MIN)
+            uw.mpi.comm.Allreduce(local_max, global_max, op=MPI.MAX)
+            local_min, local_max = global_min, global_max
+
+        return local_min, local_max
 
     @timing.routine_timer_decorator
     def write_timestep(
@@ -5198,29 +5281,6 @@ class Mesh(Stateful, uw_object):
 
         return arrcopy
 
-    def _build_kd_tree_index_DS(self):
-
-        if hasattr(self, "_index") and self._index is not None:
-            return
-
-        # Build this from the PETScDS rather than the SWARM
-
-        centroids = self._get_coords_for_basis(0, False)
-        index_coords = self._get_coords_for_basis(2, False)
-
-        points_per_cell = index_coords.shape[0] // centroids.shape[0]
-
-        cell_id = numpy.empty(index_coords.shape[0])
-        for i in range(cell_id.shape[0]):
-            cell_id[i] = i // points_per_cell
-
-        self._indexCoords = index_coords
-        self._index = uw.kdtree.KDTree(self._indexCoords)
-        # self._index.build_index()
-        self._indexMap = numpy.array(cell_id, dtype=numpy.int64)
-
-        return
-
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
         for the given vertex plex points, via the coordinate PetscSection
@@ -5288,6 +5348,12 @@ class Mesh(Stateful, uw_object):
         control_points_list = []
         control_points_cell_list = []
         centroids_list = []
+        # Largest distance from a cell centroid to one of that cell's own
+        # vertices, maximised over local cells. A convex cell is the convex
+        # hull of its vertices, so every point of it lies within this distance
+        # of its centroid — which makes it the rejection radius the locator
+        # needs (see _get_closest_local_cells_internal).
+        cell_reach = 0.0
 
         for cell, cell_id in enumerate(range(cStart, cEnd)):
 
@@ -5297,6 +5363,8 @@ class Mesh(Stateful, uw_object):
             cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
             cell_centroid = cell_point_coords.mean(axis=0)
             centroids_list.append(cell_centroid)
+            cell_reach = max(cell_reach, float(numpy.linalg.norm(
+                cell_point_coords - cell_centroid, axis=1).max()))
 
             # for face in range(cell_num_faces):
 
@@ -5360,60 +5428,15 @@ class Mesh(Stateful, uw_object):
             centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
-        return
-
-    def _build_kd_tree_index_PIC(self):
-
-        if hasattr(self, "_index") and self._index is not None:
-            return
-
-        ## Bootstrapping - the kd-tree is needed to build the index but
-        ## the index is also used in the kd-tree.
-
-        from underworld3.swarm import Swarm, SwarmPICLayout
-
-        # Create a temp swarm which we'll use to populate particles
-        # at gauss points. These will then be used as basis for
-        # kd-tree indexing back to owning cells.
-
-        from petsc4py import PETSc
-
-        tempSwarm = PETSc.DMSwarm().create()
-        tempSwarm.setDimension(self.dim)
-        tempSwarm.setCellDM(self.dm)
-        tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
-        tempSwarm.finalizeFieldRegister()
-
-        # 3^dim or 4^dim pop is used. This number may need to be considered
-        # more carefully, or possibly should be coded to be set dynamically.
-
-        tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 3)
-
-        # We can't use our own populate function since this needs THIS kd_tree to exist
-        # We will need to use a standard layout instead
-
-        ## ?? is this required given no migration ??
-        # tempSwarm.migrate(remove_sent_points=True)
-
-        PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
-        PIC_cellid = tempSwarm.getField("DMSwarm_cellid")
-
-        self._indexCoords = PIC_coords.copy()
-        self._index = uw.kdtree.KDTree(self._indexCoords)
-        self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
-        # self._index.build_index()
-
-        # We don't need an indexMap for this one because there is only one point per cell
-        # and the returned kdtree value IS the index.
-        # Note: self._centroids is not yet defined:
-
-        self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
-        # self._centroid_index.build_index()
-
-        tempSwarm.restoreField("DMSwarmPIC_coor")
-        tempSwarm.restoreField("DMSwarm_cellid")  #
-
-        tempSwarm.destroy()
+        # Rejection radius for the lost-point walk. Rebuilt with the kd-tree
+        # (i.e. invalidated by deform / adapt along with _index) — this is the
+        # ONE place it is set, and the only builder of ``_index``, so a stale
+        # reach cannot outlive the geometry it was measured on. Two other
+        # builders (``_build_kd_tree_index_PIC``, ``_build_kd_tree_index_DS``)
+        # set ``_index`` without the reach; both had zero callers and are
+        # deleted rather than taught the new invariant. Pinned by
+        # test_0761_point_locator.py::test_the_rejection_radius_is_rebuilt_when_the_mesh_moves.
+        self._local_cell_reach = cell_reach
 
         return
 
@@ -5867,6 +5890,38 @@ class Mesh(Stateful, uw_object):
             Whether to perform strict validation near boundaries
 
         """
+        return self._classify_points_in_domain(points, strict_validation)[0]
+
+    def _classify_points_in_domain(self, points, strict_validation=True):
+        """In/out classification, keeping the owning cells it had to locate.
+
+        ``points_in_domain`` located the near-boundary points and threw the
+        owning cells away, leaving the interpolator to locate them a second
+        time. This hands them over instead, so evaluation locates each point
+        once (#551 item 2).
+
+        Parameters
+        ----------
+        points : array-like
+            Coordinate array in any physical unit system (will be
+            auto-converted).
+        strict_validation : bool
+            Whether to perform strict validation near boundaries.
+
+        Returns
+        -------
+        in_or_not : numpy.ndarray of bool
+            Exactly what :meth:`points_in_domain` returns.
+        cells : numpy.ndarray of int
+            Owning cell for the points the classification actually located,
+            at the evaluation face tolerance (:meth:`_robust_owning_cells`).
+            ``-1`` everywhere else — for an EXTERIOR point that means "not in
+            the local mesh"; for an INTERIOR point it means "not looked up",
+            because the boundary-sign test settled it without a search. A
+            caller that needs a cell for every interior point locates the
+            ``-1`` entries itself, and only when it needs them: nothing here
+            searches on the classifier's behalf.
+        """
         # Convert points to model coordinates using the unified conversion function
         # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
         import underworld3 as uw
@@ -5876,12 +5931,26 @@ class Mesh(Stateful, uw_object):
         # and handles all the complexity of extracting values from unit-aware coordinates
         model_points = _convert_coords_to_si(points)
 
-        self._mark_local_boundary_faces_inside_and_out()
-
+        # get_max_radius() is COLLECTIVE, so it must be reached by every rank
+        # before any rank takes a short-circuit below — otherwise the starved
+        # ranks skip the reduction their peers are sitting in (issue #405).
         max_radius = self.get_max_radius()
 
+        self._mark_local_boundary_faces_inside_and_out()
+
         if model_points.shape[0] == 0:
-            return numpy.array([], dtype=bool)
+            return (numpy.array([], dtype=bool),
+                    numpy.array([], dtype=numpy.int64))
+
+        cells = numpy.full(model_points.shape[0], -1, dtype=numpy.int64)
+
+        # A rank owning no cells contains no points, so the honest answer is
+        # False everywhere. Its local boundary skeleton is empty too, and the
+        # closest-local-cell test below would otherwise have to interrogate a
+        # cell set that does not exist.
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        if cEnd == cStart:
+            return numpy.zeros(model_points.shape[0], dtype=bool)
 
         # Cd-1 surface mesh: no boundary-face control points exist
         # (see _mark_local_boundary_faces_inside_and_out). Per the
@@ -5889,7 +5958,8 @@ class Mesh(Stateful, uw_object):
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
         if self.boundary_face_control_points_kdtree is None:
-            return self._get_closest_local_cells_internal(model_points) != -1
+            in_or_not = self._get_closest_local_cells_internal(model_points) != -1
+            return in_or_not, cells
 
         dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
             model_points, k=1, sqr_dists=True
@@ -5917,11 +5987,17 @@ class Mesh(Stateful, uw_object):
         # cell (>= 0) for any point genuinely in/on the mesh and -1 only for
         # true exterior. Serial / non-simplex keep the cell-wall test
         # (bit-identical to the validated baseline).
+        #
+        # Only the robust locator's answer is kept as a cell hint: it is the
+        # same call the evaluation path makes, so keeping it saves a repeat.
+        # The cell-wall test runs at a different face tolerance and its answer
+        # is a classification, not a hint.
         near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
         near_boundary_points = model_points[near_boundary]
 
         if self._eval_use_robust_location():
-            in_or_not[near_boundary] = self._robust_owning_cells(near_boundary_points) >= 0
+            cells[near_boundary] = self._robust_owning_cells(near_boundary_points)
+            in_or_not[near_boundary] = cells[near_boundary] >= 0
         else:
             in_or_not[near_boundary] = (
                 self._get_closest_local_cells_internal(near_boundary_points) != -1
@@ -5931,11 +6007,15 @@ class Mesh(Stateful, uw_object):
             chosen_ones = numpy.where(in_or_not == True)[0]
             chosen_points = model_points[chosen_ones]
             if self._eval_use_robust_location():
-                in_or_not[chosen_ones] = self._robust_owning_cells(chosen_points) >= 0
+                cells[chosen_ones] = self._robust_owning_cells(chosen_points)
+                in_or_not[chosen_ones] = cells[chosen_ones] >= 0
             else:
                 in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
 
-        return in_or_not
+        # A point demoted to exterior keeps no hint: it goes to RBF.
+        cells[~in_or_not] = -1
+
+        return in_or_not, cells
 
     @timing.routine_timer_decorator
     def get_closest_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
@@ -5984,6 +6064,10 @@ class Mesh(Stateful, uw_object):
             # CRITICAL: Must return 1D array, not 2D, for Cython buffer compatibility
             return numpy.array([], dtype=numpy.int64)
 
+    # Safety factor on the local cell reach used to reject a query point
+    # before the lost-point walk. See _get_closest_local_cells_internal.
+    _LOCATOR_REACH_MARGIN = 2.0
+
     def _get_closest_local_cells_internal(
         self,
         coords: numpy.ndarray,
@@ -5996,6 +6080,34 @@ class Mesh(Stateful, uw_object):
         be exactly the owning cell, but if the mesh is deformed, this
         is not guaranteed. Also compares the distance from the cell to the
         point - if this is larger than the "cell size" then returns -1
+
+        A point the first containment test rejects is looked for among the
+        nearest cell centroids. Points too far from the local mesh to be in
+        any of its cells are rejected before that walk starts, and a point
+        leaves the walk as soon as a cell claims it, so the walk costs what is
+        still lost rather than what was asked for.
+
+        .. note:: **Which containing cell you get changed (#551).**
+
+           A point on a shared vertex, edge or face is contained by several
+           cells and this routine returns one of them; *which* one has never
+           been part of the contract. It used to be the last cell to claim the
+           point across up to 50 rounds of the walk — an order that depended
+           on whether some unrelated point in the same batch was still lost.
+           It is now the containing cell with the nearest centroid, which is
+           batch-independent. Measured on a uniform 3-D simplex box, 35% of
+           near-vertex queries (the population that actually enters the walk;
+           exact vertices and centroids are answered before it) come back in a
+           different — equally containing — cell.
+
+           For a CONTINUOUS field that is invisible: the interpolants of the
+           containing cells agree at the shared point. For a DISCONTINUOUS
+           field (P0, or the P2/P0-discontinuous pressure space the fault work
+           uses) the cell *is* the answer, so the evaluated value moves by
+           O(jump) at such points — measured max 1.935 on a P0 field of range
+           2. Both values are legitimate: each is the value of a cell that
+           contains the query. Code that needs a specific side of a jump must
+           say which side, not rely on the locator's tie-break.
 
         ``on_boundary`` and ``tol`` are forwarded to the in-cell
         containment test (see ``_test_if_points_in_cells_internal``).
@@ -6046,7 +6158,8 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
+            control_point_distance, closest_points = self._index.query(
+                coords, k=1, sqr_dists=False)
             # >= : valid indices are 0..n-1, and the empty-tree sentinel
             # (0 with n=0) must trip this guard, not index _indexMap (#399).
             if np.any(closest_points >= self._index.n):
@@ -6072,7 +6185,42 @@ class Mesh(Stateful, uw_object):
         cells[~inside] = -1
         lost_points = np.where(inside == False)[0]
 
-        # Part 2 - try to find the lost points by walking nearby cells
+        if lost_points.shape[0] == 0:
+            return cells
+
+        # Part 2 - try to find the lost points by walking nearby cells.
+        #
+        # Reject what cannot possibly be found, first. Every cell contributes
+        # its centroid to the control-point kd-tree, so a point lying in cell c
+        # is at most |p - centroid_c| from its NEAREST control point, and a
+        # convex cell puts that within the cell's vertex reach. A lost point
+        # whose nearest control point is beyond the largest local reach is in
+        # no local cell and the walk has nothing to find for it. Without this
+        # every genuinely foreign point pays the full 50-neighbour walk — 51
+        # containment tests against 1 for an owned point — and the foreign
+        # fraction is exactly what grows with rank count (#551).
+        #
+        # The margin is deliberately loose. The in-cell test admits a thin
+        # slab outside each face (``tol``), and a badly shaped cell expands
+        # further under that slab than a well-shaped one; a factor of two on
+        # the reach covers both with room to spare while still rejecting
+        # anything more than about one cell away from the local mesh.
+        #
+        # Note the two scales are set differently: the slab the containment
+        # test admits is ``tol`` times the face control-point separation,
+        # which _mark_faces_inside_and_out fixes at an ABSOLUTE 1e-3 in model
+        # units, while the radius here is a fraction of the LOCAL cell size.
+        # They only cross over when the largest local cell reach falls below
+        # about 5e-6 in model units — a whole domain a few microns across, at
+        # which scale the containment test's own absolute floors have already
+        # gone. Measured: a mesh 1e-4 across (reach 6.9e-6) and one 6371
+        # across both reject nothing they should have kept.
+        reach = getattr(self, "_local_cell_reach", None)
+        if reach is not None and reach > 0.0:
+            reach = self._LOCATOR_REACH_MARGIN * reach
+            lost_points = lost_points[control_point_distance[lost_points] <= reach]
+            if lost_points.shape[0] == 0:
+                return cells
 
         # Size by the nav-DM cell count, which is what _centroid_index
         # was built from (includes ghost cells on manifold meshes).
@@ -6082,22 +6230,42 @@ class Mesh(Stateful, uw_object):
         num_local_cells = nav_centroids.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
-        dist2, closest_centroids = self._centroid_index.query(
+        centroid_distance, closest_centroids = self._centroid_index.query(
             coords[lost_points], k=num_testable_neighbours, sqr_dists=False
         )
+        # The kd-tree drops the neighbour axis at k == 1 (a rank owning a
+        # single cell); the walk indexes it either way.
+        centroid_distance = centroid_distance.reshape(lost_points.shape[0], -1)
+        closest_centroids = closest_centroids.reshape(lost_points.shape[0], -1)
 
         # This number is close to the point-point coordination value in 3D unstructured
         # grids (by inspection)
 
+        # The working set shrinks: a point drops out as soon as a neighbour
+        # claims it, or as soon as the neighbour distances (sorted, so
+        # monotonic in i) pass the rejection radius. The nearest containing
+        # centroid therefore wins, which also makes the answer independent of
+        # whether some OTHER point in the same batch is findable — previously
+        # a single unlocatable point kept every already-found point in the
+        # test set for all 50 rounds, and a shared-face point could be
+        # reassigned to a further cell in a later round.
+        working = np.arange(lost_points.shape[0])
         for i in range(0, num_testable_neighbours):
 
+            if reach is not None and reach > 0.0:
+                working = working[centroid_distance[working, i] <= reach]
+                if working.shape[0] == 0:
+                    break
+
+            candidate_cells = closest_centroids[working, i]
             inside = self._test_if_points_in_cells_internal(
-                coords[lost_points], closest_centroids[:, i],
+                coords[lost_points[working]], candidate_cells,
                 on_boundary=on_boundary, tol=tol,
             )
-            cells[lost_points[inside]] = closest_centroids[inside, i]
+            cells[lost_points[working[inside]]] = candidate_cells[inside]
 
-            if np.count_nonzero(cells == -1) == 0:
+            working = working[~inside]
+            if working.shape[0] == 0:
                 break
 
         return cells
@@ -6240,6 +6408,11 @@ class Mesh(Stateful, uw_object):
 
         Never calls PETSc ``DMLocatePoints`` (slow, raises out-of-domain), and
         is purely kd-tree / Euclidean — manifold-safe, no manifold branch.
+
+        For a point several cells share, the cell returned is the containing
+        one with the nearest centroid — see the tie-break note on
+        :meth:`_get_closest_local_cells_internal` for what that changed and
+        why it is visible only to discontinuous fields.
         """
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
@@ -6453,13 +6626,13 @@ class Mesh(Stateful, uw_object):
         from underworld3.utilities import gather_data
 
         # A rank owning zero cells has no centroid; mean() of the empty
-        # array is NaN, and gather_data silently STRIPS NaN rows — the
-        # gathered table's row index then no longer equals rank, and
-        # _route_by_nearest_centroid mis-routes particles to the wrong
-        # rank (issue #399 review). A huge FINITE sentinel keeps the row
-        # (row == rank) while a nearest-centroid search can never select
-        # it, so starved ranks correctly receive no particles. (Finite,
-        # not inf: infinities poison the kd-tree's bounding boxes.)
+        # array is NaN. gather_data no longer strips NaN rows (issue #405
+        # made that opt-in), but a NaN row would still poison the kd-tree
+        # this table feeds, and _route_by_nearest_centroid would mis-route
+        # particles (issue #399 review). A huge FINITE sentinel keeps the
+        # row (row == rank) while a nearest-centroid search can never
+        # select it, so starved ranks correctly receive no particles.
+        # (Finite, not inf: infinities poison the kd-tree's bounding boxes.)
         if self._centroids.shape[0] > 0:
             domain_centroid = self._centroids.mean(axis=0)
         else:
@@ -6499,34 +6672,51 @@ class Mesh(Stateful, uw_object):
     @uw.collective_operation
     def get_min_radius(self) -> float:
         """
-        This method returns the global minimum distance from any cell centroid to a face.
-        It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
-        returns zero.
+        Global minimum of the characteristic cell length scale — the smallest
+        cell anywhere in the mesh, not just on this rank. Parallel-safe via
+        MPI allreduce of the local minimum.
+
+        A rank owning zero cells contributes the identity element of the
+        reduction (:math:`+\\infty`) and therefore returns the same global
+        value as its populated peers. Taking ``min()`` of that rank's empty
+        ``_radii`` array instead would raise on the starved rank alone, while
+        its peers waited in the reduction — the rank-asymmetric raise that
+        deadlocks the job (issue #405).
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
         ## does not obtain the minimum radius for the mesh.
 
         import numpy as np
+        from mpi4py import MPI
 
-        all_min_radii = uw.utilities.gather_data(np.array((self._radii.min(),)), bcast=True)
-
-        return all_min_radii.min()
+        radii = np.asarray(self._radii).reshape(-1)
+        local_min = float(radii.min()) if radii.size else float("inf")
+        if uw.mpi.size > 1:
+            local_min = uw.mpi.comm.allreduce(local_min, op=MPI.MIN)
+        return local_min
 
     @uw.collective_operation
     def get_max_radius(self) -> float:
         """
-        This method returns the global maximum distance from any cell centroid to a face.
+        Global maximum of the characteristic cell length scale — the largest
+        cell anywhere in the mesh. Parallel-safe via MPI allreduce of the
+        local maximum; a rank owning zero cells contributes the identity
+        element (:math:`-\\infty`) and still returns the global value.
+        See :meth:`get_min_radius` for why the guard matters.
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
         ## does not obtain the minimum radius for the mesh.
 
         import numpy as np
+        from mpi4py import MPI
 
-        all_max_radii = uw.utilities.gather_data(np.array((self._radii.max(),)), bcast=True)
-
-        return all_max_radii.max()
+        radii = np.asarray(self._radii).reshape(-1)
+        local_max = float(radii.max()) if radii.size else float("-inf")
+        if uw.mpi.size > 1:
+            local_max = uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
+        return local_max
 
     @uw.collective_operation
     def get_mean_radius(self) -> float:

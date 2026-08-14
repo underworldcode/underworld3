@@ -935,6 +935,15 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         D = self.data.copy()
 
+        # A rank owning no cells owns no DOFs either, so there is nothing to
+        # interpolate FROM: the kd-tree below would be built over an empty
+        # point cloud and the stencil gather would index an empty array
+        # (issue #405). Return the correctly-shaped zeros — this is a purely
+        # rank-local path, so returning early takes no collective with it.
+        # (The equivalent SwarmVariable path guards the same way.)
+        if D.shape[0] == 0:
+            return np.zeros((np.asarray(new_coords).shape[0], D.shape[1]))
+
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
 
