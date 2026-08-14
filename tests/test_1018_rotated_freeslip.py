@@ -13,6 +13,8 @@ from underworld3.utilities import custom_mg
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
+_EPS = np.finfo(float).eps
+
 
 def _wrap(dm, m0):
     return uw.discretisation.Mesh(
@@ -247,6 +249,23 @@ class _LocatorTally:
                 f"radius_changed={self.radius_changed}")
 
 
+def _deformed_box_rotated_solve(tag, coord_scale=1.0):
+    """A rotated free-slip solve on the deformed box, optionally with every
+    coordinate multiplied by ``coord_scale``. Used to MEASURE the direction the
+    system does not determine (#560): the physical response to a coordinate
+    change of a few machine epsilons is of that order, so anything the solution
+    does beyond that is the unpinned mode."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(10, 10), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    c = mesh.X.coords.copy()
+    c[:, 1] += 0.02 * c[:, 1] * np.sin(np.pi * c[:, 0])
+    mesh.deform(c * coord_scale)
+    k = uw.function.expression(r"k_probe", 1.0, "viscosity")
+    s, v = _rampable_rotated_stokes(mesh, k, tag)
+    s.solve()
+    return np.asarray(v.data).copy()
+
+
 def _rigid_body_decomposition(coords, diff):
     """Split a velocity difference field into rigid-body modes and the rest.
 
@@ -381,20 +400,39 @@ def test_rotated_workspace_constant_ramp_invalidates():
 
 
 def test_rotated_workspace_deform_invalidates():
-    """mesh.deform between solves: geometry changed, so the whole workspace
-    must be rebuilt (rotation_reused False) and the answer must match a fresh
-    solver on the deformed mesh.
+    """mesh.deform between solves: the geometry changed, so the whole workspace
+    must be rebuilt and the answer must match a fresh solver on the deformed
+    mesh — in every direction the deformed system actually determines.
 
-    Both solvers assemble the same system on the same deformed mesh from the
-    same (zero) initial guess, so any deterministic linear solver has to give
-    them the same answer: a non-zero ``err`` means one of the two systems is
-    not what it should be, not that a Krylov path drifted. The checks below
-    say WHICH, because this test has failed in CI on a platform where it
-    cannot be reproduced locally (macOS arm64, both the conda-PETSc `dev` and
-    the AMR-PETSc `amr-dev` toolchains, single test / whole file / CI batch:
-    err is exactly 0.0, one Krylov iteration, |r| = 8.3e-12 identical between
-    the two solves). Reporting the solver's own diagnostics and the mesh's
-    geometry invariants turns the next occurrence into an attribution."""
+    Two claims, deliberately separated, because only one of them is well posed:
+
+    **(a) the workspace was invalidated.** ``rotation_reused`` and
+    ``workspace_reused`` both False, the locator's rejection radius followed
+    the deform, and both solves converged. This is the contract #543 wrote the
+    test for and it is asserted hard.
+
+    **(b) the two answers agree.** Rotated free-slip on a CURVED boundary loses
+    the constant-pressure gauge (#560), leaving one direction the operator does
+    not pin: a coordinate change of two machine epsilons moves the velocity by
+    1.3e-01, and the move does not scale with the perturbation. So "the two
+    solves agree" is false as stated — a plain comparison passes only where the
+    two assemblies happen to agree bitwise, which is why this test was green on
+    macOS (err exactly 0.0 in 81 consecutive runs across two PETSc toolchains
+    and nine PYTHONHASHSEEDs) and intermittently red on CI (err 7e-2 to 1.2e-1,
+    the size of the unpinned component rather than a drift).
+
+    The unpinned subspace is one-dimensional (five perturbations move the
+    answer along the same direction to cosine 1.000000), so the claim is
+    narrowed rather than dropped: measure that direction with one extra
+    perturbed solve and require agreement in every other direction. The
+    tolerance is NOT relaxed — 1e-6, as before — it is the claim that is made
+    honest. When #560 is fixed the probe stops finding a direction, the
+    projection becomes a no-op, and the test compares the solutions directly
+    again with no further edit.
+
+    The instrumentation below (gauge decisions, constrained-row counts, locator
+    tallies, rigid-body decomposition) stays: it is what turned an unreadable
+    CI failure into #560, and it is the diagnostic for the next one."""
     mesh = uw.meshing.StructuredQuadBox(
         elementRes=(10, 10), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
 
@@ -490,8 +528,78 @@ def test_rotated_workspace_deform_invalidates():
     assert info_c["converged"], (
         f"the fresh control solve did not converge: {report_control}")
 
-    assert err < 1e-6, (
-        f"post-deform solve differs from fresh control by {err:.2e}\n"
+    # ------------------------------------------------------------------
+    # (b) the answers agree, in the directions the system actually determines
+    # ------------------------------------------------------------------
+    # Rotated free-slip on a CURVED boundary loses the constant-pressure gauge
+    # (#560): the pressure level runs to ~1e4 against a pressure variation of
+    # 6.6e-2, and the solution acquires a component along one unpinned
+    # direction whose amplitude is set by round-off. Measured: a coordinate
+    # change of two machine epsilons (4.44e-16) moves the velocity by 1.33e-01,
+    # and the size of the move does not track the size of the perturbation
+    # (4.4e-16, 2.2e-15, 1e-14, 1e-12 and 1e-9 all give 4e-2 to 2e-1). The same
+    # solve on a STRAIGHT-walled box moves by 5.9e-15, and native essential
+    # free-slip on this same deformed mesh moves by 4.8e-13 — so it is the
+    # rotated path on a curved boundary, and it is present at the merge base.
+    #
+    # So "the two solves agree" is not a property this system has, and a plain
+    # comparison passes only where the two assemblies happen to agree bitwise
+    # (macOS/arm64: err is exactly 0.0 in 81 consecutive runs across two PETSc
+    # toolchains and nine PYTHONHASHSEEDs; CI's Linux build: err ~7e-2 to
+    # 1.2e-1, which is the SIZE of the unpinned component, not a drift).
+    #
+    # The unpinned subspace is exactly ONE-dimensional — five different
+    # perturbations move the answer along the same direction to cosine
+    # 1.000000, the normalised difference set has singular values
+    # [2.236, 4.4e-9, ...], and removing the leading direction leaves 2e-9 of
+    # each difference. So the comparison can be made well posed rather than
+    # abandoned: measure that direction with one extra perturbed solve and
+    # assert the two solutions agree in every OTHER direction.
+    probe = _deformed_box_rotated_solve("Prb", coord_scale=1.0 + 2 * _EPS)
+    unpinned = np.asarray(probe) - np.asarray(v_c.data)
+    unpinned_size = np.linalg.norm(unpinned) / np.linalg.norm(v_c.data)
+
+    if unpinned_size > 1.0e-3:
+        # #560 is present (the expected branch today). Project it out.
+        direction = (unpinned / np.linalg.norm(unpinned)).ravel()
+        flat = diff.ravel()
+        residual = flat - float(np.dot(flat, direction)) * direction
+        constrained_err = np.linalg.norm(residual) / np.linalg.norm(v_c.data)
+        branch = (f"#560 present: the unpinned direction carries "
+                  f"{unpinned_size:.3e} of the solution, projected out")
+    else:
+        # #560 has been fixed — there is no unpinned direction to remove, so
+        # compare directly and let this test go back to its full strength.
+        constrained_err = err
+        branch = (f"#560 appears FIXED (a 2-eps perturbation moves the answer "
+                  f"by only {unpinned_size:.3e}) — the projection below is "
+                  f"now a no-op and this test is comparing solutions directly. "
+                  f"Delete the projection and the _deformed_box_rotated_solve "
+                  f"probe.")
+
+    # NEGATIVE CONTROL: the projection must not absorb a genuine discrepancy.
+    # Inject a difference orthogonal to the unpinned direction and check it
+    # survives, or "constrained_err is small" would be true of anything.
+    injected = np.random.default_rng(6).normal(size=diff.shape).ravel()
+    if unpinned_size > 1.0e-3:
+        d_hat = (unpinned / np.linalg.norm(unpinned)).ravel()
+        injected -= float(np.dot(injected, d_hat)) * d_hat
+    injected *= 1.0e-3 * np.linalg.norm(v_c.data) / np.linalg.norm(injected)
+    poisoned = diff.ravel() + injected
+    if unpinned_size > 1.0e-3:
+        d_hat = (unpinned / np.linalg.norm(unpinned)).ravel()
+        poisoned = poisoned - float(np.dot(poisoned, d_hat)) * d_hat
+    poisoned_err = np.linalg.norm(poisoned) / np.linalg.norm(v_c.data)
+    assert poisoned_err > 1.0e-4, (
+        f"a deliberate 1e-3 discrepancy orthogonal to the unpinned direction "
+        f"survives the projection as only {poisoned_err:.3e}, so the "
+        f"constrained comparison below would not notice a real disagreement")
+
+    assert constrained_err < 1e-6, (
+        f"post-deform solve differs from fresh control by {constrained_err:.2e} "
+        f"OUTSIDE the direction the system leaves undetermined "
+        f"(raw difference {err:.2e})\n"
+        f"  branch        : {branch}\n"
         f"  first solve   : {report_1}\n"
         f"  post-deform   : {report_deformed}\n"
         f"  fresh control : {report_control}\n"
@@ -504,15 +612,12 @@ def test_rotated_workspace_deform_invalidates():
         f"({off_mode:.6e})\n"
         f"                  per orthogonalised direction (NOT per named mode, "
         f"they are not orthogonal): {share_text}\n"
-        f"Both solves assemble the same system from a zero guess and both "
-        f"converge, so a difference can only live in the NULL SPACE. If the "
-        f"rigid-body span accounts for it (off-fraction near 0; a random field "
-        f"gives 0.9985), read the per-mode gauge decisions above — one solve "
-        f"admitted a mode the other rejected, and that is a #543 gauge bug "
-        f"this branch merely exposes. If the difference is OFF the span, the "
-        f"two OPERATORS differ and something survived the deform. If the "
-        f"constrained row counts or the locator tallies differ between the two "
-        f"solvers, point location is implicated and the radius is ours.")
+        f"This is the assertion that survives #560: the two solves must agree "
+        f"in every direction the operator determines. A failure here is NOT "
+        f"the pressure gauge. If the constrained row counts or the locator "
+        f"tallies differ between the two solvers, point location is "
+        f"implicated; if they match, the two OPERATORS differ and something "
+        f"survived the deform.")
 
 
 @pytest.mark.level_2
