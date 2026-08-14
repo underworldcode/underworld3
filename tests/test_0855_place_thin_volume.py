@@ -1,8 +1,9 @@
 """The embedded thin-volume fault mesh (:func:`place_surface.place_thin_volume`).
 
-The finite-width representation: patches are thickened by ±width/2 in OCC,
-``fragment`` resolves the network's junctions in CAD — the only kernel that
-can — the assembly is meshed standalone at layer scale, and the meshed
+The finite-width representation: patches are thickened by ±width/2 in OCC and
+resolved against one another in CAD — the only kernel that can, by ``fuse``
+into one region or ``fragment`` into the overlap pieces — the assembly is
+meshed standalone at layer scale, and the meshed
 assembly is embedded whole into the existing mesh: cavity carved, annular gap
 filled by gmsh with the assembly's skin as an interior HOLE, both constraint
 surfaces verbatim. Junctions need no geometric treatment: they are ordinary
@@ -172,6 +173,44 @@ def test_a_kinked_ribbon_does_not_sliver():
     new, info = place_thin_volume(mesh.dm, [kinked], width=0.02,
                                   label="Kink", label_value=3)
     assert info["min_angle"] > 10.0
+
+
+def test_a_tangential_merge_fuses_instead_of_slivering():
+    """The sole: a ribbon converging onto another until the two coincide.
+
+    Where two zones overlap, ``fragment`` cuts along the boundary of the
+    overlap, and for a tangential merge that boundary is a lens whose tips
+    close at the convergence angle — the mesh must resolve a chain of
+    slivers, and does (measured: 22 cells under 5 degrees, one of them
+    degenerate). ``fuse`` returns the union as one face with no such
+    boundary. The zone carries one label either way, so nothing downstream
+    can tell the difference except the conditioning.
+
+    The ``fragment`` branch is the negative control: it must show the
+    slivers, or this test is not measuring what it claims to.
+    """
+    from underworld3.utilities.line_cut import min_angles
+
+    sole = [np.array([[0.20, 0.50], [0.80, 0.50]]),
+            np.array([[0.20, 0.56], [0.50, 0.505], [0.80, 0.50]])]
+
+    mesh = _box2(0.05)
+    fused, _ = place_thin_volume(mesh.dm, sole, width=0.02, label="Sole",
+                                 label_value=7)
+    assert float(min_angles(fused).min()) > 5.0
+
+    torn, _ = place_thin_volume(mesh.dm, sole, width=0.02, label="Sole",
+                                label_value=7, assembly="fragment")
+    assert int((min_angles(torn) < 5.0).sum()) > 5, (
+        "the fragmented merge did not sliver; the geometry no longer "
+        "exercises the defect this test exists for")
+
+
+def test_an_unknown_assembly_boolean_is_refused():
+    mesh = _box2(0.2)
+    with pytest.raises(ValueError, match="fuse.*fragment"):
+        place_thin_volume(mesh.dm, [np.array([[0.3, 0.5], [0.7, 0.5]])],
+                          width=0.02, assembly="union")
 
 
 def test_a_second_zone_leaves_the_first_intact():
