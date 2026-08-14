@@ -9600,7 +9600,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         if self.mesh.dim == 3:
             magvel_squared += vel[:, 2] ** 2
 
-        max_magvel = math.sqrt(magvel_squared.max())
+        # A rank owning no cells owns no velocity DOFs; it contributes the
+        # identity element of the MAX rather than raising on the empty array
+        # while its peers wait in the allreduce (issue #405).
+        max_magvel = math.sqrt(magvel_squared.max()) if magvel_squared.size else 0.0
 
         from mpi4py import MPI
 

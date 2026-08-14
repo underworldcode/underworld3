@@ -223,10 +223,12 @@ def _global_max_diffusivity(constitutive_K, mesh):
             diffusivity = uw.function.evaluate(
                 K_sym, np.zeros((1, mesh.dim)))
         else:
-            # Spatially varying: sample at cell centroids, take the max.
+            # Spatially varying: sample at cell centroids. The maximum is
+            # taken once, in the reduction below — a rank owning no cells
+            # samples nothing, and `.max()` of that empty array would raise
+            # here while the peers waited in the allreduce (issue #405).
             diffusivity = uw.function.evaluate(
                 sympy.sympify(K_sym), mesh._centroids, mesh.N)
-            diffusivity = diffusivity.max()
     else:
         diffusivity = K
 
@@ -239,7 +241,10 @@ def _global_max_diffusivity(constitutive_K, mesh):
         # Plain UWQuantity without units context - use magnitude
         diffusivity = diffusivity.magnitude
 
-    local_max = float(np.asarray(diffusivity).max())
+    # A rank with no local samples contributes the identity element of the
+    # MAX and still receives the correct global value.
+    local_values = np.asarray(diffusivity)
+    local_max = float(local_values.max()) if local_values.size else float("-inf")
     return uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
 
 
@@ -5056,7 +5061,11 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # the maximum |component| rather than the maximum vector magnitude
         # (the other estimate_dt implementations squeeze first). Preserved
         # as-is (Wave D is behaviour-neutral); revisit with a numerical check.
-        max_magvel = np.linalg.norm(vel, axis=1).max()
+        # A rank owning no cells has no centroid samples; it contributes the
+        # identity element of the MAX rather than raising on the empty array
+        # while its peers wait in the allreduce (issue #405).
+        magvel = np.linalg.norm(vel, axis=1)
+        max_magvel = float(magvel.max()) if magvel.size else 0.0
         max_magvel_glob = comm.allreduce(max_magvel, op=MPI.MAX)
 
         ## get radius
