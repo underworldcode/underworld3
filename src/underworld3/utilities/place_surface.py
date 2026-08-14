@@ -2801,21 +2801,24 @@ def _assembly_skin(points, cells):
     return points[node_ids], skin_local, node_ids
 
 
-def _split_skin_band(skin_xyz, skin_tris, box_lo, box_hi):
+def _split_skin_band(skin_xyz, skin_facets, box_lo, box_hi):
     """Split a skin into its interior part and the wall BAND — the strip of
     the assembly's clipped face lying exactly in a wall plane (the zone's
     outcrop). One wall only; more refuses (box-edge bands are not built).
     Returns ``(interior_idx, band_idx, wall_code)`` with wall_code None
     when nothing touches a wall.
+
+    Dimension-free: facets are triangles against wall planes in 3-D, edges
+    against wall lines in 2-D.
     """
-    codes = np.full(len(skin_tris), -1, dtype=np.int64)
-    for axis in range(3):
+    codes = np.full(len(skin_facets), -1, dtype=np.int64)
+    for axis in range(skin_xyz.shape[1]):
         for side, value in ((0, box_lo[axis]), (1, box_hi[axis])):
-            on = (skin_xyz[skin_tris][:, :, axis] == value).all(axis=1)
+            on = (skin_xyz[skin_facets][:, :, axis] == value).all(axis=1)
             codes[on] = 2 * axis + side
     walls = set(int(c) for c in codes[codes >= 0])
     if not walls:
-        return np.arange(len(skin_tris)), np.empty(0, dtype=np.int64), None
+        return np.arange(len(skin_facets)), np.empty(0, dtype=np.int64), None
     if len(walls) > 1:
         raise NotImplementedError(
             "the zone meets more than one domain wall; box-edge outcrop "
@@ -3038,7 +3041,7 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
-def _occ_assembly_2d(polylines, width, size, assembly="fuse"):
+def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
     """Thicken each polyline into a ribbon, resolve overlaps, mesh.
 
     The 2-D thin volume: a ribbon is the mitred outline of one polyline, and
@@ -3048,6 +3051,13 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse"):
     the same region; they differ in the internal seams the mesher must
     honour. Returns ``(points, triangles, cad_area)``, the area being that of
     the resolved faces — the union — under either choice.
+
+    ``box = (lo, hi)`` applies the specify-long contract one dimension down
+    from :func:`_occ_assembly_3d`: the resolved faces are INTERSECTED with
+    the domain rectangle, so polylines may protrude — a ribbon reaching the
+    top surface leaves its clipped edge exactly in the wall line (snapped to
+    the line value after meshing, defensively). ``cad_area`` is then the
+    clipped area, so the meshed-vs-CAD gate holds unchanged.
     """
     import gmsh
 
@@ -3115,6 +3125,13 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse"):
                 occ.fuse([(2, surfs[0])], [(2, t) for t in surfs[1:]])
             else:
                 occ.fragment([(2, surfs[0])], [(2, t) for t in surfs[1:]])
+        if box is not None:
+            lo, hi = (np.asarray(b, dtype=float) for b in box)
+            occ.synchronize()
+            faces = [t for _d, t in gmsh.model.getEntities(2)]
+            tool = occ.addRectangle(lo[0], lo[1], 0.0,
+                                    hi[0] - lo[0], hi[1] - lo[1])
+            occ.intersect([(2, t) for t in faces], [(2, tool)])
         occ.synchronize()
 
         faces = gmsh.model.getEntities(2)
@@ -3136,6 +3153,15 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse"):
                                          dtype=np.int64).reshape(-1, 3))
         if not tris:
             raise RuntimeError("the ribbon assembly meshed to no triangles")
+        if box is not None:
+            # OCC's clipped edges sit within rounding of the wall line; the
+            # band logic and the wall relabel need EXACT line values, so
+            # snap defensively (the 3-D path does the same on its planes).
+            lo, hi = (np.asarray(b, dtype=float) for b in box)
+            for axis in range(2):
+                for value in (lo[axis], hi[axis]):
+                    near = np.abs(xy[:, axis] - value) < 1e-9
+                    xy[near, axis] = value
         return xy, np.vstack(tris), float(cad_area)
     finally:
         gmsh.finalize()
@@ -3181,6 +3207,95 @@ def _skin_loops(skin_edges):
             prev, cur = cur, nxt
         loops.append(loop)
     return loops
+
+
+def _outcrop_chain_2d(loops, band_pairs):
+    """Split the outcropping skin loop into its wall band and interior chain.
+
+    The clipped skin is still a set of closed loops — clipping puts part of
+    a loop ON the wall line, it does not open the loop. The fill, though,
+    cannot take the outcropping loop as a hole: its boundary role is played
+    by the INTERIOR CHAIN, the open path left when the band's edges are
+    removed. ``band_pairs`` is that band as a set of frozen vertex pairs.
+
+    Exactly one loop may carry band edges, and they must form ONE contiguous
+    arc of it — a ribbon meeting the wall in two separate bands is the 2-D
+    face of the box-edge case the 3-D band split refuses. Returns
+    ``(chain, holes)``: the chain as an open vertex path from one band
+    endpoint to the other, in the loop's own orientation, and the loops
+    without band edges unchanged.
+    """
+    chain, holes = None, []
+    for loop in loops:
+        n = len(loop)
+        on_band = [frozenset((loop[i], loop[(i + 1) % n])) in band_pairs
+                   for i in range(n)]
+        if not any(on_band):
+            holes.append(loop)
+            continue
+        if chain is not None:
+            raise NotImplementedError(
+                "two skin loops meet the domain wall; only one ribbon may "
+                "outcrop.")
+        starts = sum(1 for i in range(n)
+                     if on_band[i] and not on_band[i - 1])
+        if starts != 1:
+            raise NotImplementedError(
+                "the ribbon meets the wall in more than one band; a "
+                "multiply-outcropping zone is not built.")
+        i0 = next(i for i in range(n) if on_band[i] and not on_band[i - 1])
+        k = sum(on_band)
+        chain = [loop[(i0 + k + j) % n] for j in range(n - k + 1)]
+    return chain, holes
+
+
+def _outcrop_ring_splice(ring, X, open_wall, chain_ids, chain_t):
+    """Replace the cavity ring's wall span with the ribbon's interior chain.
+
+    The raw ring of an outcropping carve runs ALONG the open wall through
+    vertices about to be deleted. The fill's boundary instead descends
+    around the ribbon: the ring's single contiguous run of wall edges is
+    removed and the chain is spliced between the run's surviving end
+    vertices, oriented to meet them. The two splice segments are the 2-D
+    cap — what remains of the 3-D wall annulus one dimension down.
+
+    ``chain_ids`` are the chain's rows in the fill's combined numbering,
+    ``chain_t`` the along-wall coordinates of its two ends. Returns
+    ``(spliced_ring, removed_wall_pairs)``, the removed pairs as old vertex
+    rows for the wall-label discovery. A second wall run refuses — the
+    carve spilled onto the wall away from the outcrop.
+    """
+    axis, value = open_wall
+    t = 1 - axis
+    n = len(ring)
+    onw = [X[v][axis] == value for v in ring]
+    wall_edge = [onw[i] and onw[(i + 1) % n] for i in range(n)]
+    if not any(wall_edge):
+        raise RuntimeError(
+            "the outcrop band does not meet the cavity's wall span; raise "
+            "`clearance` so the carve reaches the wall.")
+    starts = sum(1 for i in range(n) if wall_edge[i] and not wall_edge[i - 1])
+    if starts != 1:
+        raise RuntimeError(
+            "the carve reached the domain wall in two separate spans; "
+            "reduce `clearance` or move the zone off the wall.")
+    i0 = next(i for i in range(n) if wall_edge[i] and not wall_edge[i - 1])
+    k = sum(wall_edge)
+    corner_l, corner_r = ring[i0], ring[(i0 + k) % n]
+    lo_t, hi_t = sorted((float(X[corner_l][t]), float(X[corner_r][t])))
+    if not (lo_t < min(chain_t) and max(chain_t) < hi_t):
+        raise RuntimeError(
+            "the cavity's wall span does not cover the outcrop band; raise "
+            "`clearance`.")
+    removed = [(ring[(i0 + j) % n], ring[(i0 + j + 1) % n])
+               for j in range(k)]
+    # The surviving arc, corner_r around to corner_l, then the chain with
+    # its corner_l-side end first — the loop's orientation is preserved.
+    tail = [ring[(i0 + k + j) % n] for j in range(n - k + 1)]
+    tl = float(X[corner_l][t])
+    seq = (chain_ids if abs(tl - chain_t[0]) <= abs(tl - chain_t[1])
+           else chain_ids[::-1])
+    return tail + list(seq), removed
 
 
 def _ring_growing(cells, drop, held_mask):
@@ -3839,17 +3954,32 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     Serial AND parallel through the same gather-first mechanism as the 3-D
     volume: the assembly is meshed once (rank 0) and broadcast, the region
     gathers to one rank, the carve and the holes fill run there, every rank
-    rebuilds collectively. Ribbons are interior by construction, so the 2-D
-    line path's wall-end restriction does not arise.
+    rebuilds collectively.
+
+    The specify-long contract holds as it does in 3-D: polylines may run
+    past the domain, the assembly is clipped to the box, and a clipped edge
+    left in a wall line is the ribbon's OUTCROP BAND — boundary edges
+    carrying both the skin label and the wall's labels. The 2-D cap is two
+    straight wall segments (the 3-D wall annulus one dimension down), so the
+    outcrop fill is one simply-connected polygon: the cavity ring with its
+    wall span replaced by the skin's interior chain.
     """
     comm = uw.mpi.comm
+
+    # The (axis-aligned) domain box, collectively — the clip target and the
+    # wall lines the band is identified against.
+    Xb = _coords(dm)
+    lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(2, np.inf),
+                      -(Xb.max(axis=0)) if len(Xb) else np.full(2, np.inf)])
+    comm.Allreduce(MPI.IN_PLACE, lo_hi, op=MPI.MIN)
+    box_lo, box_hi = lo_hi[0], -lo_hi[1]
 
     failure = None
     payload = None
     if comm.rank == 0:
         try:
-            asm_pts, asm_tris, cad_area = _occ_assembly_2d(polylines, width,
-                                                           size, assembly)
+            asm_pts, asm_tris, cad_area = _occ_assembly_2d(
+                polylines, width, size, assembly, box=(box_lo, box_hi))
             P = asm_pts[asm_tris]
             twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
                      - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
@@ -3872,6 +4002,23 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     skin_edges = [(int(skin_node_ids[a]), int(skin_node_ids[b]))
                   for a, b in skin_local]
     loops_asm = _skin_loops(skin_edges)
+
+    # The outcrop band: skin edges lying exactly in ONE wall line. The
+    # outcropping loop splits into band + interior chain; loops away from
+    # the wall stay holes of the fill.
+    _int_idx, band_idx, wall_code = _split_skin_band(
+        asm_pts, np.asarray(skin_edges, dtype=np.int64), box_lo, box_hi)
+    open_wall = None
+    chain_asm = None
+    hole_loops = loops_asm
+    band_pairs = set()
+    if wall_code is not None:
+        w_axis, w_side = divmod(int(wall_code), 2)
+        open_wall = (w_axis,
+                     float(box_hi[w_axis] if w_side else box_lo[w_axis]))
+        band_pairs = {frozenset((int(a), int(b)))
+                      for a, b in np.asarray(skin_edges)[band_idx]}
+        chain_asm, hole_loops = _outcrop_chain_2d(loops_asm, band_pairs)
 
     vS, vE = dm.getDepthStratum(0)
     pStart, pEnd = dm.getChart()
@@ -3916,7 +4063,18 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
         try:
             beside_held = np.zeros(len(X), dtype=bool)
             beside_held[cells[held_c].ravel()] = True
-            protected = on_wall | held_v | beside_held
+            deletable_wall = np.zeros(len(X), dtype=bool)
+            if open_wall is not None:
+                # An outcrop deletes wall vertices — in the open wall's
+                # line only. A vertex in a second wall line is a domain
+                # corner and stays protected: deleting it for one wall
+                # would breach the other.
+                deletable_wall = on_wall & (X[:, open_wall[0]]
+                                            == open_wall[1])
+                other = 1 - open_wall[0]
+                for v2 in (box_lo[other], box_hi[other]):
+                    deletable_wall &= ~(X[:, other] == v2)
+            protected = (on_wall & ~deletable_wall) | held_v | beside_held
             victim = (d_skin < reach_v) & ~protected
 
             drop = victim[cells].any(axis=1)
@@ -3936,11 +4094,28 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                 raise ValueError("the thin volume meets no cell of this mesh")
 
             ring, drop = _ring_growing(cells, drop, held_c)
-            if on_wall[np.asarray(ring)].any():
-                raise RuntimeError(
-                    "the ribbon's cavity reached the domain wall; the "
-                    "volume must be interior, with clearance to spare")
-            if victim[np.asarray(ring)].any():
+            removed_wall = []
+            if open_wall is None:
+                if on_wall[np.asarray(ring)].any():
+                    raise RuntimeError(
+                        "the ribbon's cavity reached the domain wall; the "
+                        "volume must be interior, with clearance to spare")
+            else:
+                chain_ids = [len(X) + int(v) for v in chain_asm]
+                t_ax = 1 - open_wall[0]
+                chain_t = (float(asm_pts[chain_asm[0]][t_ax]),
+                           float(asm_pts[chain_asm[-1]][t_ax]))
+                ring, removed_wall = _outcrop_ring_splice(
+                    ring, X, open_wall, chain_ids, chain_t)
+                off_open = [v for v in ring if v < len(X)
+                            and on_wall[v]
+                            and X[v][open_wall[0]] != open_wall[1]]
+                if off_open:
+                    raise RuntimeError(
+                        "the ribbon's cavity reached a second domain "
+                        "wall; only a one-wall outcrop is built.")
+            old_ring = np.asarray([v for v in ring if v < len(X)])
+            if victim[old_ring].any():
                 raise RuntimeError(
                     "a deleted vertex is on the cavity boundary")
 
@@ -3948,14 +4123,35 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             if (~drop).any():
                 referenced[cells[~drop].ravel()] = True
             orphan = ~referenced & ~victim
-            if orphan[on_wall].any():
+            if (orphan & on_wall & ~deletable_wall).any():
                 raise RuntimeError(
                     "the cavity would strand a domain-wall vertex; the "
                     "volume must be interior, with clearance to spare")
             victim |= orphan
 
+            # Labels the deleted wall span carried, read before the
+            # rebuild forgets them — the splice segments and the band are
+            # relabelled with exactly these after sewing.
+            wall_pairs = []
+            if removed_wall:
+                edge_pts = [int(dm_work.getFullJoin(
+                    [int(a) + vS, int(b) + vS])[0])
+                    for a, b in removed_wall]
+                for i in range(dm_work.getNumLabels()):
+                    name = dm_work.getLabelName(i)
+                    if name in reconnect._TOPOLOGY_LABELS:
+                        continue
+                    lab = dm_work.getLabel(name)
+                    values = lab.getValueIS()
+                    if values is None:
+                        continue
+                    for val in values.getIndices():
+                        if all(lab.getValue(p) == int(val)
+                               for p in edge_pts):
+                            wall_pairs.append((name, int(val)))
+
             Xall = np.vstack([X, asm_pts])
-            holes = [[len(X) + int(v) for v in loop] for loop in loops_asm]
+            holes = [[len(X) + int(v) for v in loop] for loop in hole_loops]
             gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes)
             placed = np.vstack([asm_pts, extra]) if len(extra) else asm_pts
 
@@ -3974,8 +4170,18 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                 raise RuntimeError(
                     "place_thin_volume internal: the gathered region "
                     "touches a shared point; the gather mask under-reached.")
+            outcrop = None
+            if open_wall is not None:
+                # The splice ends: the surviving corner vertices and the
+                # chain ends they meet — the chain is the ring's tail, in
+                # the orientation the splice chose.
+                outcrop = (wall_pairs,
+                           int(removed_wall[0][0]),
+                           int(removed_wall[-1][1]),
+                           int(ring[-len(chain_asm)]) - len(X),
+                           int(ring[-1]) - len(X))
             surgery = (np.flatnonzero(victim), np.flatnonzero(drop), made,
-                       placed)
+                       placed, outcrop)
         except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
     failures = comm.allgather(failure)
@@ -3985,14 +4191,15 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             f"place_thin_volume failed on the surgery rank: {real[0]}")
 
     if comm.rank == target:
-        victims_arr, drop_arr, made, placed = surgery
+        victims_arr, drop_arr, made, placed, outcrop = surgery
     else:
         victims_arr = np.empty(0, dtype=np.int64)
         drop_arr = np.empty(0, dtype=np.int64)
         made = []
         placed = np.empty((0, 2), dtype=float)
+        outcrop = None
 
-    new_dm, _point_map, placed_points = _rebuild_sewn(
+    new_dm, point_map, placed_points = _rebuild_sewn(
         dm_work, drop_arr, victims_arr, made, placed)
 
     skin_label = label + "_skin"
@@ -4027,6 +4234,47 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     real = [f for f in failures if f]
     if real:
         raise RuntimeError(real[0])
+
+    # An outcropping ribbon's new wall coverage — the two splice segments
+    # and the band itself — is relabelled EXPLICITLY with what the deleted
+    # wall span carried, full closures included.
+    n_wall_local = 0
+    if open_wall is not None:
+        pairs = comm.bcast(outcrop[0] if comm.rank == target else None,
+                           root=target)
+        for name, val in pairs:
+            if not new_dm.hasLabel(name):
+                new_dm.createLabel(name)
+        if comm.rank == target:
+            _wp, corner_l, corner_r, a_first, a_last = outcrop
+            wall_ids = [[int(point_map[corner_l + vS - pStart]),
+                         int(placed_points[a_first])],
+                        [int(placed_points[a_last]),
+                         int(point_map[corner_r + vS - pStart])]]
+            wall_ids += [[int(placed_points[a]), int(placed_points[b])]
+                         for a, b in (tuple(p) for p in band_pairs)]
+            for ids in wall_ids:
+                joined = new_dm.getFullJoin(ids)
+                if len(joined) != 1:
+                    failure = ("an outcrop wall edge is not an edge of the "
+                               "sewn mesh; the splice or band was not "
+                               "sewn.")
+                    break
+                for name, val in pairs:
+                    lab = new_dm.getLabel(name)
+                    for q in new_dm.getTransitiveClosure(int(joined[0]))[0]:
+                        lab.setValue(int(q), int(val))
+                n_wall_local += 1
+        failures = comm.allgather(failure)
+        real = [f for f in failures if f]
+        if real:
+            raise RuntimeError(real[0])
+        n_wall = np.array([n_wall_local], dtype=np.int64)
+        comm.Allreduce(MPI.IN_PLACE, n_wall, op=MPI.SUM)
+        if int(n_wall[0]) != 2 + len(band_pairs):
+            raise RuntimeError(
+                f"{int(n_wall[0])} outcrop wall edges relabelled for "
+                f"{2 + len(band_pairs)} given.")
 
     counts = np.array([n_zone_local, n_skin_local, len(victims_arr),
                        len(placed)], dtype=np.int64)
@@ -4116,9 +4364,11 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     patches : sequence of array_like
         In 3-D: one or more PLANAR polygons, ``(N, 3)`` corners each. In
         2-D: one or more polylines, ``(N, 2)`` points each, thickened into
-        ribbons. Interior to the domain with clearance to spare; patches may
-        cross — that is the point — but must not touch a surface already
-        embedded.
+        ribbons. Patches may cross — that is the point — and may run PAST
+        the domain: the assembly is clipped to the box, and a clipped face
+        left in a wall plane (an edge in a wall line, in 2-D) becomes the
+        zone's OUTCROP BAND, carrying both the skin label and the wall's
+        labels. Patches must not touch a surface already embedded.
     width : float
         The layer thickness, a real mesh parameter; ``width < h`` is
         supported and measured.
@@ -4156,8 +4406,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     Raises
     ------
     NotImplementedError
-        In 2-D in parallel (the ribbon shares :func:`place_along_lines`'
-        serial scope; the 3-D form is the parallel one).
+        When the zone meets more than one domain wall (box-edge outcrop
+        bands are not built), or meets one wall in more than one band.
     RuntimeError, ValueError
         Carve/fill refusals, always collective.
     """
