@@ -104,14 +104,46 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
     unit normal. Dimension-general (2D edges, 3D faces).
 
     `normal` selects the normal source (per boundary):
-      * None      — geometric facet normal from PETSc ``computeCellGeometryFVM``
-                    (area-weighted, accumulated to the facet closure points).
+      * None      — geometric facet normal from PETSc ``computeCellGeometryFVM``,
+                    accumulated to the facet closure points weighted by the facet
+                    MEASURE (edge length in 2D, face area in 3D). The weight is
+                    what makes the constraint consistent with the assembly — see
+                    the note below.
       * sympy 1×dim Matrix — an analytic normal (function of mesh.X); evaluated
                     at each node's coordinate. Best for exact curved/planar faces
                     (radial ``X/|X|`` on a spherical cap; a constant on a planar
                     side of a regional spherical box).
       * (dim,) array — a constant normal vector.
     Returns ``[(point, n̂), ...]``.
+
+    Why the geometric normals are MEASURE-weighted (issue #560)
+    -----------------------------------------------------------
+    A boundary node sitting on more than one facet — a vertex in 2D, a vertex or an
+    edge-midpoint in 3D — gets ONE nodal normal, while the assembler integrates the
+    boundary term facet by facet. The rotated frame's free tangential row therefore
+    collects, for a constant pressure :math:`p`,
+
+    .. math::
+        r_i = p \\sum_f \\left(\\int_f \\phi_i\\, ds\\right)\\, (\\hat t_i \\cdot n_f)
+
+    which vanishes for every tangent :math:`\\hat t_i` only when the nodal normal is
+    parallel to :math:`\\sum_f (\\int_f \\phi_i\\, ds)\\, n_f`. For simplicial P1 and P2
+    velocity the basis integral over a facet is the facet measure times a constant that
+    does not depend on which facet it is (2D P2 vertex :math:`|f|/6`; 3D P1 vertex
+    :math:`|f|/3`; 3D P2 edge-midpoint :math:`|f|/3`; the 3D P2 vertex integral is
+    identically zero, so that row is consistent whatever normal it is given), so the
+    measure IS the right weight and the same argument covers 2D and 3D.
+
+    Normalising each facet normal to unit length before accumulating — what this
+    function used to do — gives the BISECTOR :math:`n_1 + n_2` instead, which is
+    correct only where the facets are equal. On a kinked boundary with unequal facets
+    the constant-pressure vector then stops being a null vector of the constrained
+    operator, the pressure gauge goes unpinned, and the answer picks up a round-off
+    seeded offset (#560).
+
+    A node whose facets all carry the SAME normal — every flat wall, and the whole
+    analytic-normal path — sees the weights as one common positive factor, so the
+    weighting is skipped there and those results are bit-for-bit unchanged.
     """
     dm = solver.dm
     dim = solver.mesh.dim
@@ -160,18 +192,21 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
         else:
             const_normal = np.asarray(normal, dtype=float).ravel()
 
-    nacc = {}
+    contribs = {}                                # velocity node → [(measure, n̂_f), ...]
     pts = set()
     for f in facets:
         if not (fS <= f < fE):
             continue
-        # facet outward normal
+        # facet outward normal, and the measure the boundary term is integrated over
+        # (1.0 on the analytic path, whose normal does not come from the facet)
+        wgt = 1.0
         if normal is None:
-            _, cent, nrm = dm.computeCellGeometryFVM(f)
+            vol, cent, nrm = dm.computeCellGeometryFVM(f)
             ne = np.asarray(nrm, dtype=float)
             ne = ne / (np.linalg.norm(ne) + 1e-30)
             if np.dot(ne, np.asarray(cent) - interior_ref) < 0:
                 ne = -ne
+            wgt = float(vol)
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
         for q in (int(c) for c in clo):
@@ -184,12 +219,20 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
                 else:
                     ne = const_normal.copy()
                 ne = ne / (np.linalg.norm(ne) + 1e-30)
-            nacc[q] = nacc.get(q, np.zeros(dim)) + ne
+            contribs.setdefault(q, []).append((wgt, ne))
             pts.add(q)
     out = []
     for q in pts:
-        nrm = nacc[q] / (np.linalg.norm(nacc[q]) + 1e-30)
-        out.append((q, nrm))
+        node = contribs[q]
+        n0 = node[0][1]
+        # co-planar node (flat wall, single facet, or an analytic normal): the weights
+        # are a common positive factor, so drop them and keep the unweighted sum
+        # bit-for-bit — that is the overwhelming majority of use.
+        coplanar = all(np.array_equal(ne, n0) for _, ne in node)
+        acc = np.zeros(dim)
+        for w, ne in node:
+            acc = acc + (ne if coplanar else w * ne)
+        out.append((q, acc / (np.linalg.norm(acc) + 1e-30)))
     return out
 
 
