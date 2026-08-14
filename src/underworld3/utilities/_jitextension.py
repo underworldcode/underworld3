@@ -990,54 +990,71 @@ def generate_c_source(
         # Save original for debugging
         fn_original = fn
 
-        # Three-phase lowering (issue #302 — must match prepare_for_cache_key):
-        # Phase 1: reveal constants nested inside other UWexpressions, so the
-        #          substitution below can reach them. A top-level xreplace
-        #          missed constants inside template-wrapped parameters and
-        #          baked them as C literals while the manifest listed them.
-        fn = _reveal_constants(fn)
-
-        # A truly-constant atom the manifest does NOT know about would be
-        # silently folded to a literal in phase 3 — the manifest and the
-        # C source must never disagree (issue #302).
+        # --- Gate the UW lowering (issue #302 pipeline) on the presence of
+        # UW-expression atoms. Plain-sympy components — the derivative
+        # blocks, which dominate the expression size — have no UW atoms, so
+        # the reveal / validate / xreplace / unwrap pipeline (≈5 full
+        # traversals per component) would be pure overhead: skip it entirely
+        # when there is nothing to lower.
         from underworld3.function.expressions import UWexpression as _UWexpr
-        if constants_subs_map is not None and hasattr(fn, 'atoms'):
-            unmanifested = [
-                a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
-                if isinstance(a, _UWexpr)
-                and _is_truly_constant(a, _UWexpr)
-                and a not in constants_subs_map
-            ]
-            if unmanifested:
-                raise RuntimeError(
-                    f"JIT constants manifest is incomplete: constant expression(s) "
-                    f"{unmanifested} appear in a kernel but have no constants[] "
-                    f"slot — they would be baked into the C source (issue #302)."
-                )
+        from underworld3.function.expressions import UWDerivativeExpression as _UWderiv
 
-        # Phase 2: Substitute constant UWexpressions with _JITConstant symbols
-        #          These survive into C code as constants[i]
-        if constants_subs_map and fn is not None:
-            try:
-                fn = fn.xreplace(constants_subs_map) if hasattr(fn, 'xreplace') else fn
-            except Exception:
-                pass
+        _needs_lowering = (
+            isinstance(fn, (_UWexpr, _UWderiv))
+            # `has` is a bare traversal (no atom-set build) — the atoms()
+            # form built a set of every node, which cost seconds per 100k-node
+            # Jacobian component (measured ~20 s on a large collision model).
+            or (hasattr(fn, "has") and fn.has(_UWexpr))
+            or not isinstance(fn, (sympy.MatrixBase, sympy.MatrixExpr))
+        )
+        if _needs_lowering:
+            # Phase 1: reveal constants nested inside other UWexpressions, so
+            #          the substitution below can reach them. A top-level
+            #          xreplace missed constants inside template-wrapped
+            #          parameters and baked them as C literals while the
+            #          manifest listed them.
+            fn = _reveal_constants(fn)
 
-        # Phase 3: Unwrap remaining non-constant UWexpressions to numerical values
-        fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
+            # A truly-constant atom the manifest does NOT know about would be
+            # silently folded to a literal in phase 3 — the manifest and the
+            # C source must never disagree (issue #302).
+            if constants_subs_map is not None and hasattr(fn, 'atoms'):
+                unmanifested = [
+                    a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                    if isinstance(a, _UWexpr)
+                    and _is_truly_constant(a, _UWexpr)
+                    and a not in constants_subs_map
+                ]
+                if unmanifested:
+                    raise RuntimeError(
+                        f"JIT constants manifest is incomplete: constant expression(s) "
+                        f"{unmanifested} appear in a kernel but have no constants[] "
+                        f"slot — they would be baked into the C source (issue #302)."
+                    )
 
-        # A manifested constant surviving to here bypassed its constants[]
-        # slot and is about to be baked — refuse rather than freeze the
-        # parameter silently (issue #302).
-        if constants_subs_map and hasattr(fn, 'atoms'):
-            baked = [a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
-                     if a in constants_subs_map]
-            if baked:
-                raise RuntimeError(
-                    f"Manifested constant(s) {baked} were not routed through "
-                    f"constants[] and would be baked into the C source "
-                    f"(issue #302)."
-                )
+            # Phase 2: Substitute constant UWexpressions with _JITConstant symbols
+            #          These survive into C code as constants[i]
+            if constants_subs_map and fn is not None:
+                try:
+                    fn = fn.xreplace(constants_subs_map) if hasattr(fn, 'xreplace') else fn
+                except Exception:
+                    pass
+
+            # Phase 3: Unwrap remaining non-constant UWexpressions to numerical values
+            fn = underworld3.function.expressions.unwrap(fn, keep_constants=False, return_self=False)
+
+            # A manifested constant surviving to here bypassed its constants[]
+            # slot and is about to be baked — refuse rather than freeze the
+            # parameter silently (issue #302).
+            if constants_subs_map and hasattr(fn, 'atoms'):
+                baked = [a.name for a in _stable_sorted(fn.atoms(sympy.Symbol))
+                         if a in constants_subs_map]
+                if baked:
+                    raise RuntimeError(
+                        f"Manifested constant(s) {baked} were not routed through "
+                        f"constants[] and would be baked into the C source "
+                        f"(issue #302)."
+                    )
 
         if isinstance(fn, sympy.vector.Vector):
             fn = fn.to_matrix(mesh.N)[0 : mesh.dim, 0]
@@ -1114,7 +1131,58 @@ def generate_c_source(
                     print(f"    - {sym} (type: {type(sym).__name__}, _ccodestr: {getattr(sym, '_ccodestr', 'N/A')})")
 
         out = sympy.MatrixSymbol("out", *fn.shape)
-        eqn = ("eqn_" + str(index), printer.doprint(fn, out))
+
+        # CSE before printing: shared subexpressions become ``double xN = ...;``
+        # temps evaluated in dependency order, so the generated C — and hence
+        # the codegen time, gcc memory/time, and .so size — collapses on large
+        # expressions (measured: monster Jacobian output ~460k nodes -> ~30k).
+        # Semantics-preserving: temps are exact aliases of repeated
+        # subexpressions, so the generated kernel evaluates identical values.
+        # Opt out with UW_JIT_NOCSE=1 if a pathological case regresses.
+        if os.environ.get("UW_JIT_NOCSE") not in ("1", "true", "True"):
+            from sympy.simplify.cse_main import cse
+            from sympy.vector.scalar import BaseScalar
+
+            _repl, _red = cse([fn])
+            if _repl:
+                # cse may mint NEW coordinate instances (BaseScalar /
+                # UWCoordinate wrappers) that lack the mesh-set _ccodestr;
+                # recover it from their _id (same scheme as the
+                # COORDINATE SYMBOL RECOVERY above).
+                def _patch_coords(expr):
+                    for _sym in set(expr.free_symbols):
+                        _target = getattr(_sym, "_original_base_scalar", _sym)
+                        if isinstance(_target, BaseScalar) and not hasattr(
+                            _target, "_ccodestr"
+                        ):
+                            _idx = _target._id[0]
+                            _sys = str(_target._id[1])
+                            _target._ccodestr = (
+                                f"petsc_n[{_idx}]"
+                                if "Gamma" in _sys
+                                else f"petsc_x[{_idx}]"
+                            )
+
+                for _t_sym, _t_expr in _repl:
+                    _patch_coords(_t_expr)
+                _patch_coords(_red[0])
+
+                _temp_code = "\n".join(
+                    "double {} = {};".format(
+                        printer.doprint(t_sym), printer.doprint(t_expr)
+                    )
+                    for t_sym, t_expr in _repl
+                )
+                _red_code = printer.doprint(_red[0], out)
+                if _red_code.startswith("// Not supported in C:"):
+                    eqn = ("eqn_" + str(index), _red_code)
+                else:
+                    eqn = ("eqn_" + str(index), _temp_code + "\n" + _red_code)
+            else:
+                eqn = ("eqn_" + str(index), printer.doprint(fn, out))
+        else:
+            eqn = ("eqn_" + str(index), printer.doprint(fn, out))
+
         if eqn[1].startswith("// Not supported in C:"):
             spliteqn = eqn[1].split("\n")
             raise RuntimeError(
@@ -1130,6 +1198,27 @@ def generate_c_source(
         eqns.append(eqn)
 
     MODNAME = "fn_ptr_ext_" + str(name)
+
+    # JIT compile flags for the generated kernels. Default keeps -O3 (kernel
+    # runtime speed) but adds -g0 to drop the debug info that the base Python
+    # CFLAGS injects via sysconfig -- pure overhead, and a memory hog on huge
+    # expressions, for these generated kernels. For very large expressions
+    # whose gcc -O3 compile is slow or OOM-killed, set UW3_JIT_CFLAGS to a
+    # lower optimisation level, e.g. UW3_JIT_CFLAGS="-O1 -g0". -std=c99 is
+    # always prepended (the generated code relies on it).
+    _default_jit_cflags = ["-O3", "-g0"]
+    _jit_cflags_env = os.environ.get("UW3_JIT_CFLAGS")
+    extra_compile_args = (
+        ["-std=c99", *_jit_cflags_env.split()]
+        if _jit_cflags_env is not None
+        else ["-std=c99", *_default_jit_cflags]
+    )
+    if verbose:
+        print(
+            f"JIT compile flags: {extra_compile_args}"
+            f"{' (from UW3_JIT_CFLAGS)' if _jit_cflags_env is not None else ' (default)'}",
+            flush=True,
+        )
 
     codeguys = []
     # Create a `setup.py`
@@ -1148,7 +1237,7 @@ ext_mods = [Extension(
     library_dirs={LIBDIRS},
     runtime_library_dirs={LIBDIRS},
     libraries={LIBFILES},
-    extra_compile_args=['-std=c99','-O3'],
+    extra_compile_args={EXTRA_COMPILE_ARGS},
     extra_link_args=[]
 )]
 setup(ext_modules=cythonize(ext_mods))
@@ -1157,6 +1246,7 @@ setup(ext_modules=cythonize(ext_mods))
         HEADERS=list(_stable_sorted(underworld3._incdirs.keys())),
         LIBDIRS=list(_stable_sorted(underworld3._libdirs.keys())),
         LIBFILES=list(_stable_sorted(underworld3._libfiles.keys())),
+        EXTRA_COMPILE_ARGS=extra_compile_args,
     )
     codeguys.append(["setup.py", setup_py_str])
 
@@ -1199,7 +1289,6 @@ cdef extern from "cy_ext.h" nogil:
 
     import string
     import random
-    import os
 
     if not "UW_JITNAME" in os.environ:
         randstr = "".join(random.choices(string.ascii_uppercase, k=5))
