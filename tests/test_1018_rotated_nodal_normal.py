@@ -27,16 +27,21 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 _MACHINE = 1e-15         # |A z|/|A| at machine level; the straight box sits at 3e-18
 
 
-def _bisector_nodes(solver, boundary, normal=None):
+def _bisector_nodes(solver, boundary, normal=None,
+                    _real=rbc._boundary_velocity_nodes):
     """The pre-#560 accumulation, frozen here as the negative control.
 
     Identical to ``rbc._boundary_velocity_nodes`` except that each facet normal is
     normalised to unit length BEFORE accumulating, so a node's normal is the bisector
     of its facet normals rather than the measure-weighted average. The analytic-normal
     path is delegated to the real function — it is unchanged by the fix.
+
+    ``_real`` binds the genuine function AT IMPORT. Looking it up at call time would
+    self-recurse whenever this control is installed over the module attribute and an
+    analytic normal is passed.
     """
     if normal is not None:
-        return rbc._boundary_velocity_nodes(solver, boundary, normal=normal)
+        return _real(solver, boundary, normal=normal)
     dm = solver.dm
     dim = solver.mesh.dim
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
@@ -218,14 +223,16 @@ def test_skewed_annulus_constant_pressure_stays_a_null_vector():
 
 
 def test_flat_walls_and_analytic_normals_are_bit_identical():
-    """The weighting is a no-op wherever a node's facets share a normal, so the
-    straight box and the analytic-normal override must be unchanged to the last bit."""
+    """An AXIS-ALIGNED wall and the analytic-normal override must be unchanged to the
+    last bit: the first has facet normals with exactly 0/±1 components, so the weights
+    cancel in the normalisation whatever they are; the second never consults a facet.
+    (A flat but TILTED wall is not covered — there the weighting moves ~1 ulp.)"""
     straight = _deformed_box("I", 0.0)
     straight.solve()
     for wall in ("Top", "Bottom", "Left", "Right"):
         fixed = dict(rbc._boundary_velocity_nodes(straight, wall))
         old = dict(_bisector_nodes(straight, wall))
-        assert fixed.keys() == old.keys()
+        assert fixed and fixed.keys() == old.keys()
         for q in fixed:
             assert np.array_equal(fixed[q], old[q]), (
                 f"straight wall {wall!r} node {q} normal moved: "
@@ -238,6 +245,9 @@ def test_flat_walls_and_analytic_normals_are_bit_identical():
     for arc in ("Upper", "Lower"):
         fixed = dict(rbc._boundary_velocity_nodes(annulus, arc, normal=radial))
         old = dict(_bisector_nodes(annulus, arc, normal=radial))
+        # without this guard an empty stratum would pass with zero comparisons,
+        # and this is the only test exercising the analytic path at all
+        assert fixed and fixed.keys() == old.keys()
         for q in fixed:
             assert np.array_equal(fixed[q], old[q]), (
                 f"analytic normal on {arc!r} node {q} moved")
