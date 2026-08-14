@@ -4083,7 +4083,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
 
 def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
-                      clearance=0.7, size=None, assembly="fuse",
+                      clearance=0.7, size=None, *, assembly="fuse",
                       verbose=False):
     """Embed a THIN VOLUME of the given width around each patch, junctions free.
 
@@ -4129,8 +4129,10 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         skin.
     size : float or None
         The layer's own mesh size; ``None`` takes ``0.9 * width``.
-    assembly : {"fuse", "fragment"}
-        How overlapping zones are resolved in CAD before meshing. ``"fuse"``
+    assembly : {"fuse", "fragment"}, keyword-only
+        How overlapping zones are resolved in CAD before meshing. Keyword-only
+        so that inserting it ahead of ``verbose`` cannot rebind a positional
+        ``verbose`` from an existing caller. ``"fuse"``
         (the default) returns the union as one region with no internal seam;
         ``"fragment"`` keeps each overlap piece as its own region, so the
         mesh conforms to the boundaries of the overlap. The zone mesh carries
