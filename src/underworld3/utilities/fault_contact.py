@@ -548,9 +548,19 @@ def _fault_pair_nodes(solver, boundary):
               dm.getLabel(plus_name).getStratumIS(value).getIndices()
               if fS <= int(p) < fE]
 
+    # Facet normals accumulated to the pair nodes, weighted by the facet MEASURE for
+    # the same reason as the wall normals in rotated_bc (#560): the assembler
+    # integrates facet by facet, so a node on two facets is only consistent when its
+    # normal is parallel to Σ_f |f| n̂_f. The fault is not protected by being an
+    # interior surface — a constant pressure cancels exactly in the MEAN rows (the two
+    # sides carry opposite outward normals) but DOUBLES in the jump rows, and the
+    # jump-tangential (slip) row is free, so the bisector leaves √2·p·sin(δ/2)·(|f₁|−|f₂|)/6
+    # there: a pressure-driven spurious slip at every kink node, plus the same lost
+    # pressure gauge. Rank-local by construction — a seam-touching fault is
+    # redistributed onto one rank before the split, so no cross-rank sum is needed.
     nacc = {}
     for f in facets:
-        _, cent, nrm = dm.computeCellGeometryFVM(f)
+        vol, cent, nrm = dm.computeCellGeometryFVM(f)
         ne = np.asarray(nrm, dtype=float)
         ne = ne / (np.linalg.norm(ne) + 1e-30)
         support = dm.getSupport(f)
@@ -559,7 +569,7 @@ def _fault_pair_nodes(solver, boundary):
             ne = -ne
         for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
-                nacc[q] = nacc.get(q, np.zeros(dim)) + ne
+                nacc[q] = nacc.get(q, np.zeros(dim)) + float(vol) * ne
 
     override = _compiled_normal_override(solver, boundary)
     if override is not None:
