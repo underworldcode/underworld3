@@ -15,6 +15,7 @@ import os
 import math
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -129,9 +130,9 @@ def QuarterAnnulus(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f"uw_QuarterAnnulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_QuarterAnnulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -237,7 +238,7 @@ def QuarterAnnulus(
 
         print("generate")
 
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     new_mesh = Mesh(
@@ -397,9 +398,9 @@ def Annulus(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -466,7 +467,7 @@ def Annulus(
         gmsh.model.geo.synchronize()
 
         gmsh.model.mesh.generate(2)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Ensure boundaries conform (if refined)
@@ -625,9 +626,9 @@ def SegmentofAnnulus(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f"uw_SegmentOfAnnulus_ro{radiusOuter}_ri{radiusInner}_extent{angleExtent}_csize{cellSize}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_SegmentOfAnnulus_ro{radiusOuter}_ri{radiusInner}_extent{angleExtent}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -720,7 +721,7 @@ def SegmentofAnnulus(
         gmsh.model.geo.synchronize()
 
         gmsh.model.mesh.generate(2)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Ensure boundaries conform (if refined)
@@ -896,9 +897,9 @@ def AnnulusWithSpokes(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSizeOuter}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_annulus_ro{radiusOuter}_ri{radiusInner}_csize{cellSizeOuter}.msh"
     else:
         uw_filename = filename
 
@@ -1004,7 +1005,7 @@ def AnnulusWithSpokes(
 
         gmsh.model.mesh.generate(2)
 
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
 
         # We need to build the plex here in order to make some changes
         # before the mesh gets built
@@ -1249,9 +1250,9 @@ def AnnulusInternalBoundary(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_annulus_internalBoundary_rO{radiusOuter}rInt{radiusInternal}_rI{radiusInner}_csize{cellSize}_csizefs{cellSize_Outer}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_annulus_internalBoundary_rO{radiusOuter}rInt{radiusInternal}_rI{radiusInner}_csize{cellSize}_csizefs{cellSize_Outer}.msh"
     else:
         uw_filename = filename
 
@@ -1345,7 +1346,7 @@ def AnnulusInternalBoundary(
         gmsh.model.geo.synchronize()
 
         gmsh.model.mesh.generate(2)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     ## This is the same as the simple annulus
@@ -1558,9 +1559,9 @@ def DiscInternalBoundaries(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_disc_internalBoundaries_rO{radiusUpper}rInt{radiusInternal}_rI{radiusLower}_csize{cellSize}_csizefs{cellSize_Upper}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_disc_internalBoundaries_rO{radiusUpper}rInt{radiusInternal}_rI{radiusLower}_csize{cellSize}_csizefs{cellSize_Upper}.msh"
     else:
         uw_filename = filename
 
@@ -1643,7 +1644,7 @@ def DiscInternalBoundaries(
         gmsh.model.geo.synchronize()
 
         gmsh.model.mesh.generate(2)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     ## This is the same as the simple annulus

@@ -143,9 +143,20 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
             plex_0.setName("uw_mesh")
             plex_0.markBoundaryFaces("All_Boundaries", 1001)
 
-            viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
+            # Write aside and rename, so ``filename + ".h5"`` never names a
+            # half-written file. The name comes from the mesh PARAMETERS, so a
+            # second process building the same geometry in this directory picks
+            # the same one and would otherwise read what this one is still
+            # writing (issue #563).
+            # Imported here, not at module scope: the meshing package imports
+            # this module, so a top-level import would close a cycle.
+            from underworld3.meshing._mesh_files import _scratch_name
+
+            scratch = _scratch_name(filename + ".h5")
+            viewer = PETSc.ViewerHDF5().create(str(scratch), "w", comm=PETSc.COMM_SELF)
             viewer(plex_0)
             viewer.destroy()
+            os.replace(scratch, filename + ".h5")
     finally:
         # The gmsh import options are import-time scratch — meaningful only for
         # the createFromFile above. Clear the whole namespace so a value set by
@@ -155,7 +166,10 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
         # read as 2-D). Runs on success or failure.
         _clear_gmsh_import_options()
 
-    # Now we have an h5 file and we can hand this to _from_plexh5
+    # Now we have an h5 file and we can hand this to _from_plexh5. The barrier
+    # is what the atomic write above makes necessary AND sufficient: the other
+    # ranks must not look for the file before rank 0 has renamed it into place.
+    uw.mpi.barrier()
 
     return _from_plexh5(filename + ".h5", comm, return_sf=True)
 

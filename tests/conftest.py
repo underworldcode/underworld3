@@ -1,3 +1,5 @@
+import os
+
 # ==============================================================================
 # VISUALIZATION BACKENDS - must be set before any visualization imports
 # ==============================================================================
@@ -27,6 +29,22 @@ except ImportError:
 # ==============================================================================
 
 import pytest
+
+
+# ==============================================================================
+# MESH FILES - one directory per xdist worker
+# ==============================================================================
+# Generated mesh files are named from the mesh PARAMETERS, so two workers
+# building the same geometry choose the same name and one can read what the
+# other is still writing (issue #563). The writes are atomic, which makes that
+# safe; giving each worker its own directory also stops them doing the identical
+# work twice. Set at import, before any test builds a mesh.
+#
+# `PYTEST_XDIST_WORKER` is absent in a serial run, which correctly leaves the
+# default `.meshes/` in place.
+_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER")
+if _xdist_worker:
+    os.environ.setdefault("UW_MESH_CACHE_DIR", f".meshes/{_xdist_worker}")
 
 
 @pytest.fixture(scope="function", autouse=True)

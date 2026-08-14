@@ -16,6 +16,7 @@ import os
 import math
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -97,8 +98,8 @@ def SegmentedSphericalSurface2D(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
-        uw_filename = f".meshes/uw_segmented_spherical_surface_r{radius}_csize{cellSize}_segs{num_segments}.msh"
+            os.makedirs(mesh_file_dir(), exist_ok=True)
+        uw_filename = f"{mesh_file_dir()}/uw_segmented_spherical_surface_r{radius}_csize{cellSize}_segs{num_segments}.msh"
     else:
         uw_filename = filename
 
@@ -182,11 +183,11 @@ def SegmentedSphericalSurface2D(
 
         # Generate Mesh
         gmsh.model.mesh.generate(2)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
 
         # xyz coordinates of the mesh
         xyz = gmsh.model.mesh.get_nodes()[1].reshape(-1, 3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
         plex_0 = gmsh2dmplex(
@@ -338,8 +339,8 @@ def SegmentedSphericalShell(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
-        uw_filename = f".meshes/uw_segmented_sphere_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}_segs{num_segments}.msh"
+            os.makedirs(mesh_file_dir(), exist_ok=True)
+        uw_filename = f"{mesh_file_dir()}/uw_segmented_sphere_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}_segs{num_segments}.msh"
     else:
         uw_filename = filename
 
@@ -541,7 +542,7 @@ def SegmentedSphericalShell(
 
         gmsh.model.mesh.generate(3)
 
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
         # We need to build the plex here in order to make some changes
@@ -786,8 +787,8 @@ def SegmentedSphericalBall(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
-        uw_filename = f".meshes/uw_segmented_ball_ro{radius}_csize{cellSize}_segs{num_segments}.msh"
+            os.makedirs(mesh_file_dir(), exist_ok=True)
+        uw_filename = f"{mesh_file_dir()}/uw_segmented_ball_ro{radius}_csize{cellSize}_segs{num_segments}.msh"
     else:
         uw_filename = filename
 
@@ -961,7 +962,7 @@ def SegmentedSphericalBall(
 
         gmsh.model.mesh.generate(3)
 
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
         # We need to build the plex here in order to make some changes
