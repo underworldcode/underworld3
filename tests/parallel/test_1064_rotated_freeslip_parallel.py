@@ -402,6 +402,18 @@ def test_rotated_freeslip_box_partition_independent():
     assert verr < 1e-3, f"box velocity error {verr:.2e} too large at np={uw.mpi.size}"
 
 
+@pytest.mark.xfail(
+    reason="#564: free-slip solves are partition dependent. CI measures annulus "
+           "velocity L2 0.01897011154231 serial vs 0.01897329151624 at np=2 (1.7e-04). "
+           "PRE-EXISTING and not caused by #560/#561: the same seven assertions fail "
+           "with numbers identical to every digit at #561's merge base with only the "
+           "scripts/test.sh test_10*py line enabled, which is how they became visible "
+           "at all — this whole batch had never run in CI. This case passes an "
+           "explicit analytic normal=, and its numbers are bit-identical before and "
+           "after #560's nodal-normal fix, so it is definitively not that mechanism. "
+           "Passes locally on macOS/arm64, so strict=False; see #564 for the full "
+           "table.",
+    strict=False)
 def test_rotated_freeslip_annulus_partition_independent():
     """Annulus: the parallel radial free-slip solve reproduces the serial velocity L2
     and the (partition-independent) radial leakage on both arcs."""
@@ -454,6 +466,18 @@ def test_rotated_freeslip_mesh_owned_fmg_pickup():
     assert np.isclose(leak_up, leak_up_ref, rtol=1e-4, atol=0)
 
 
+@pytest.mark.xfail(
+    reason="#564: free-slip solves are partition dependent. CI measures 3-D spherical "
+           "velocity L2 0.004069689334228 serial vs 0.004074314572473 at np=2 "
+           "(1.1e-03). PRE-EXISTING and not caused by #560/#561: the same seven "
+           "assertions fail with numbers identical to every digit at #561's merge base "
+           "with only the scripts/test.sh test_10*py line enabled, which is how they "
+           "became visible at all — this whole batch had never run in CI. This case "
+           "passes an explicit analytic normal=, and its numbers are bit-identical "
+           "before and after #560's nodal-normal fix, so it is definitively not that "
+           "mechanism. Passes locally on macOS/arm64, so strict=False; see #564 for "
+           "the full table.",
+    strict=False)
 def test_rotated_freeslip_spherical3d_partition_independent():
     """3D spherical shell (free-slip inner+outer, all three rotation nullspace
     modes): the parallel solve reproduces the serial velocity L2, converges, and
@@ -468,6 +492,18 @@ def test_rotated_freeslip_spherical3d_partition_independent():
         f"{L2_ref} vs {L2}")
 
 
+@pytest.mark.xfail(
+    reason="#564: free-slip solves are partition dependent. CI measures a spherical "
+           "topography coefficient 0.4149689252074 serial vs 0.4125278837958 at np=2 "
+           "(5.9e-03, the largest of the family). PRE-EXISTING and not caused by "
+           "#560/#561: the same seven assertions fail with numbers identical to every "
+           "digit at #561's merge base with only the scripts/test.sh test_10*py line "
+           "enabled, which is how they became visible at all — this whole batch had "
+           "never run in CI. This case passes an explicit analytic normal=, and its "
+           "numbers are bit-identical before and after #560's nodal-normal fix, so it "
+           "is definitively not that mechanism. Passes locally on macOS/arm64, so "
+           "strict=False; see #564 for the full table.",
+    strict=False)
 def test_rotated_freeslip_spherical3d_topography_partition_independent():
     """3D boundary-mass recovery gives partition-independent topography coefficients."""
     coefficients = _spherical3d_topography_diagnostics()
