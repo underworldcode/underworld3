@@ -196,20 +196,18 @@ class BarrHouseman:
         point exactly on the fault returns the ``theta = 0`` side; approach
         from ``y < 0`` to obtain the other.
         """
-        if self._is_symbolic:
-            raise ValueError(
-                "this solution was built with symbolic parameters; give U0, "
-                "R0 and eta numeric values to evaluate it")
-        X = np.asarray(coords, dtype=float)
-        if X.ndim != 2 or X.shape[1] != 2:
-            raise ValueError("coords must have shape (N, 2)")
-        r = np.hypot(X[:, 0], X[:, 1])
-        t = np.mod(np.arctan2(X[:, 1], X[:, 0]), 2.0 * np.pi)
-        if np.any(r == 0.0):
-            raise ValueError(
-                "the solution is singular at the fault tip; exclude r = 0")
+        velocity = self.evaluate_velocity(coords)
+        return velocity, self.evaluate_pressure(coords)
 
-        R = r / self.R0
+    def evaluate_velocity(self, coords):
+        r"""Velocity at Cartesian ``coords`` measured from the tip.
+
+        Defined AT the tip: every term of the velocity carries a positive
+        power of :math:`r`, so the limit is zero and is returned. It is the
+        pressure that is singular there, not the velocity — see
+        :meth:`evaluate_pressure`.
+        """
+        r, t, R = self._polar_of(coords)
         u_r = (self.U0 / 4) * (
             R**2 * (np.sin(t) - np.sin(3 * t))
             - R**3 * (2 * np.sin(2 * t) - 2 * np.sin(4 * t))
@@ -220,13 +218,37 @@ class BarrHouseman:
             - R**3 * (4 * np.cos(2 * t) - 2 * np.cos(4 * t))
             - np.sqrt(R) * (3 * np.sin(t / 2) + 3 * np.sin(3 * t / 2))
         )
-        p = (self.eta * self.U0 / self.R0) * (
+        return np.column_stack([u_r * np.cos(t) - u_t * np.sin(t),
+                                u_r * np.sin(t) + u_t * np.cos(t)])
+
+    def evaluate_pressure(self, coords):
+        r"""Pressure at Cartesian ``coords``; refuses the tip.
+
+        The pressure carries the :math:`r^{-1/2}` term of the
+        :math:`m = -1/2` mode and genuinely diverges at :math:`r = 0`.
+        """
+        r, t, R = self._polar_of(coords)
+        if np.any(r == 0.0):
+            raise ValueError(
+                "the pressure is singular at the fault tip; exclude r = 0 "
+                "(the velocity is defined there — use evaluate_velocity)")
+        return (self.eta * self.U0 / self.R0) * (
             -2 * R * np.sin(t) + 3 * R**2 * np.sin(2 * t)
             + np.cos(t / 2) / np.sqrt(R)
         )
-        velocity = np.column_stack([u_r * np.cos(t) - u_t * np.sin(t),
-                                    u_r * np.sin(t) + u_t * np.cos(t)])
-        return velocity, p
+
+    def _polar_of(self, coords):
+        """(r, theta, r/R0) from Cartesian coordinates, cut ON the fault."""
+        if self._is_symbolic:
+            raise ValueError(
+                "this solution was built with symbolic parameters; give U0, "
+                "R0 and eta numeric values to evaluate it")
+        X = np.asarray(coords, dtype=float)
+        if X.ndim != 2 or X.shape[1] != 2:
+            raise ValueError("coords must have shape (N, 2)")
+        r = np.hypot(X[:, 0], X[:, 1])
+        t = np.mod(np.arctan2(X[:, 1], X[:, 0]), 2.0 * np.pi)
+        return r, t, r / self.R0
 
     def slip(self, r):
         r"""Fault slip :math:`2 U_0 \sqrt{r/R_0}` at radius ``r`` from the tip.

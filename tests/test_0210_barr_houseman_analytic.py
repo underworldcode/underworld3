@@ -195,8 +195,12 @@ def test_a_degenerate_geometry_is_refused():
         BarrHouseman(R0=0.0)
     with pytest.raises(ValueError, match="positive"):
         BarrHouseman(eta=-1.0)
+    # The PRESSURE is singular at the tip and refuses; the VELOCITY is
+    # defined there — every term carries a positive power of r — and is zero.
     with pytest.raises(ValueError, match="singular at the fault tip"):
-        BarrHouseman().evaluate(np.array([[0.0, 0.0]]))
+        BarrHouseman().evaluate_pressure(np.array([[0.0, 0.0]]))
+    assert np.allclose(
+        BarrHouseman().evaluate_velocity(np.array([[0.0, 0.0]])), 0.0)
 
     symbolic = BarrHouseman(U0=sympy.Symbol("U_0", positive=True))
     with pytest.raises(ValueError, match="symbolic parameters"):
