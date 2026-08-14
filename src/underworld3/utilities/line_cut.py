@@ -379,6 +379,53 @@ def _cell_vertices(dm):
                     dtype=np.int64).reshape(cE - cS, 3)
 
 
+def _minimal_face_vertices(X, cell_verts, point):
+    """Vertices of the smallest mesh face whose closure contains ``point``.
+
+    A point sits in the relative interior of exactly one face: a triangle, an
+    edge, or a vertex. This returns that face's vertices — the three corners
+    of the cell holding it, the two ends of the edge it lies on, or the single
+    vertex it coincides with. Empty when the point lies outside the mesh.
+
+    The face is read off the BARYCENTRIC coordinates of the containing cell: a
+    coordinate is zero exactly when the point lies on the opposite edge, so
+    keeping the corners with a nonzero coordinate drops the corners the point
+    is not "on". Doing it this way means one cell answers the question. Taking
+    the union of the corners of every containing cell does NOT: a point on an
+    edge lies in two cells, and the union then offers each cell's opposite
+    apex, which belongs to one of them and not the other. Moving such an apex
+    leaves the other cell without a corner on the point, which is the defect
+    this whole path exists to avoid (issue #542).
+
+    The coordinates are scale-free, so one relative tolerance serves cells of
+    any size — which embedded meshes need, their cell sizes differing by an
+    order of magnitude either side of a zone skin.
+    """
+    A = X[cell_verts[:, 0], :2]
+    B = X[cell_verts[:, 1], :2]
+    C = X[cell_verts[:, 2], :2]
+    v0, v1, v2 = C - A, B - A, np.asarray(point, dtype=float)[:2] - A
+    den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+    # A degenerate cell has no interior to be inside of; it cannot hold the
+    # point and must not divide.
+    alive = np.abs(den) > 0.0
+    den = np.where(alive, den, 1.0)
+    lc = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / den
+    lb = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / den
+    la = 1.0 - lb - lc
+
+    tol = 1e-9
+    inside = np.flatnonzero(alive & (la >= -tol) & (lb >= -tol) & (lc >= -tol))
+    if not len(inside):
+        return np.empty(0, dtype=np.int64)
+    # One containing cell settles it; the first keeps the answer independent
+    # of how the cells happen to be ordered, since every containing cell names
+    # the same face.
+    c = int(inside[0])
+    on = np.array([la[c] > tol, lb[c] > tol, lc[c] > tol])
+    return cell_verts[c][on]
+
+
 def _cell_quality(X, cell_verts):
     """Scale-free triangle quality: 1 equilateral, 0 degenerate, <0 inverted.
 
@@ -839,6 +886,14 @@ def pull_vertex_onto(dm, targets):
     behaviour as ``snap_frac``, and anything optimising over fault geometry has
     to live with it.
 
+    The vertex is chosen from the corners of the cells CONTAINING the target,
+    not from the mesh at large. The globally nearest vertex can belong to a
+    neighbouring cell, and moving that one leaves the containing cell with no
+    corner on the line, so :func:`cut_along_lines` refuses the very tip this
+    call was made to place (issue #542). Restricting the candidates ties the
+    choice to the containment relation the cut actually tests. A target outside
+    the mesh falls back to the nearest vertex anywhere.
+
     The choice is made from the coordinates alone and reduced globally, so every
     rank moves the same vertex: a rank-local nearest-vertex search picks a
     different one on each rank, which is how the mesh stops being
@@ -849,15 +904,38 @@ def pull_vertex_onto(dm, targets):
     X = _coords(dm)
     arr = X.copy()
     scale = _global_extent(dm)
+    cell_verts = _cell_vertices(dm)
 
     for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :2]:
-        d = np.linalg.norm(X[:, :2] - t, axis=1)
-        # Reduced as (distance, x, y) so the tie-break is part of the same
-        # reduction: tuples compare lexicographically, so MIN gives the closest
-        # vertex and, among equals, the one lowest in coordinate order.
-        local = ((float(d.min()), *X[int(d.argmin()), :2]) if d.size
-                 else (np.inf, np.inf, np.inf))
-        _dist, tx, ty = uw.mpi.comm.allreduce(local, op=MPI.MIN)
+        # Candidates are the vertices of the smallest face CONTAINING the
+        # target, not every vertex in the mesh. The nearest vertex overall can
+        # belong to a neighbouring cell, and moving it leaves the containing
+        # cell without a corner on the line — precisely the "entered but not
+        # left" state cut_along_lines refuses, reported for a tip that does
+        # have a vertex on it (issue #542). Measured inside a ribbon zone of
+        # width 0.02: the target sat on an edge whose two ends were at exactly
+        # 1.000e-02, being the ribbon's own edge vertices, and the apex of one
+        # of the two cells sharing that edge won by 0.4% at 9.963e-03.
+        face = _minimal_face_vertices(X, cell_verts, t)
+        held = len(face) > 0
+        candidates = face if held else np.arange(len(X))
+        d = np.linalg.norm(X[candidates, :2] - t, axis=1)
+        # Reduced as (outside, distance, x, y) so both decisions ride one
+        # reduction: tuples compare lexicographically, so MIN prefers ANY rank
+        # that holds a containing cell over every rank that does not, then the
+        # closest corner, then the one lowest in coordinate order. The
+        # outside-flag has to lead: a rank with no part of the containing cell
+        # proposes its own nearest vertex, which can easily be closer than the
+        # right answer, and a reduction on distance alone would take it.
+        #
+        # All ranks flagging 1 means the target lies outside the mesh, and the
+        # fallback is the nearest vertex anywhere — the behaviour before the
+        # containment rule, kept because a target off the mesh still has to
+        # land somewhere.
+        local = ((0 if held else 1, float(d.min()),
+                  *X[candidates[int(d.argmin())], :2])
+                 if d.size else (1, np.inf, np.inf, np.inf))
+        _outside, _dist, tx, ty = uw.mpi.comm.allreduce(local, op=MPI.MIN)
 
         # Move it by POSITION, not by index: the chosen vertex may be a ghost
         # here and an owned point there, and both copies have to end up in the

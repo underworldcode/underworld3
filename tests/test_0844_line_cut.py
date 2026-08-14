@@ -879,3 +879,74 @@ def test_repair_fixes_the_cells_the_cut_leaves_thin():
     assert cell_areas(fixed.dm).sum() == pytest.approx(
         cell_areas(plain.dm).sum(), rel=1e-13)
     assert (cell_areas(fixed.dm) > 0).all()
+
+
+def test_the_pulled_vertex_covers_every_cell_holding_the_target():
+    """A target ON AN EDGE must take one of that edge's ends, not an apex.
+
+    `pull_vertex_onto` used to move the nearest vertex in the mesh at large.
+    That vertex can be the apex of one of the two cells sharing the edge the
+    target lies on: it wins on distance, it belongs to one of the two cells,
+    and the OTHER cell is left with no corner on the target. A line ending
+    there is then "entered but not left" and `cut_along_lines` refuses a tip
+    that does have a vertex on it — issue #542, measured inside a ribbon zone
+    where the edge ends sit at exactly the zone half-width and an apex won by
+    0.4%.
+
+    The invariant asserted is the one the cut actually needs: EVERY cell whose
+    closure contains the target ends up with a corner exactly on it. Edge
+    midpoints are used because that is the configuration that fails.
+
+    The mesh is FLATTENED in y first, and that is not cosmetic: on a
+    well-shaped mesh an edge midpoint's nearest vertex is one of that edge's
+    own ends, so the defect never appears and the test would pass without
+    testing anything. Flat cells put an apex within reach of the opposite
+    edge, which is the shape a ribbon zone has along its length. The negative
+    control below asserts the mesh really does present the case.
+    """
+    from underworld3.utilities.line_cut import (_cell_vertices, _coords,
+                                                _minimal_face_vertices,
+                                                _set_coordinates)
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 12,
+        regular=False, qdegree=2)
+    dm = base.dm.clone()
+    squashed = _coords(dm).copy()
+    squashed[:, 1] *= 0.12
+    _set_coordinates(dm, np.arange(len(squashed)), squashed)
+
+    X = _coords(dm)
+    cells = _cell_vertices(dm)
+
+    interior = [e for e in range(*dm.getDepthStratum(1))
+                if len(dm.getSupport(e)) == 2]
+    vS = dm.getDepthStratum(0)[0]
+    midpoints = []
+    for e in interior[::7]:
+        a, b = (int(v) - vS for v in dm.getCone(e))
+        midpoints.append(0.5 * (X[a, :2] + X[b, :2]))
+    assert len(midpoints) > 5
+
+    exposed = 0
+    for t in midpoints:
+        face = _minimal_face_vertices(X, cells, t)
+        assert len(face) == 2, "an edge midpoint lies on an edge, two ends"
+        nearest = int(np.linalg.norm(X[:, :2] - t, axis=1).argmin())
+        if nearest not in face:
+            exposed += 1
+
+        out = pull_vertex_onto(dm, t)
+        Xo = _coords(out)
+        holders = [c for c in range(len(cells))
+                   if len(_minimal_face_vertices(X, cells[c: c + 1], t))]
+        assert holders, "the midpoint is inside the mesh"
+        for c in holders:
+            on = np.linalg.norm(Xo[cells[c], :2] - t, axis=1).min()
+            assert on < 1e-12, (
+                f"cell {c} holds the target and has no corner on it "
+                f"(closest {on:.3e}); a line ending here would be refused")
+
+    assert exposed > 0, (
+        "no midpoint had its nearest vertex off the edge, so this mesh does "
+        "not exercise the defect and the test proves nothing")
