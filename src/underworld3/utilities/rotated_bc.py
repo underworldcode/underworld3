@@ -228,17 +228,37 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
             vol, cent, nrm = dm.computeCellGeometryFVM(f)
             ne = np.asarray(nrm, dtype=float)
             ne = ne / (np.linalg.norm(ne) + 1e-30)
-            # Outward = away from the one cell this boundary facet belongs to. The
+            # Outward = away from the one cell this boundary facet belongs to, which
+            # is the domain's outward normal on ANY boundary, convex or not. The
             # obvious alternative — away from the mean of the mesh coordinates — is
             # BOTH rank-local (each rank averages only its own points, so two facets
             # meeting at a seam node can be oriented oppositely and then CANCEL in
-            # the cross-rank sum) and wrong on a non-convex domain (it points inward
-            # on an annulus' inner arc). The support cell is local geometry and needs
-            # no global reference.
-            support = dm.getSupport(f)
-            _, ccent, _ = dm.computeCellGeometryFVM(int(support[0]))
-            if np.dot(ne, np.asarray(cent) - np.asarray(ccent)) < 0:
-                ne = -ne
+            # the cross-rank sum) and wrong on a concave boundary, where it points
+            # INTO the domain.
+            #
+            # CONVENTION, and it is user-visible: on a concave boundary — an annulus
+            # or shell INNER arc, the CMB — this is the opposite of what UW3 produced
+            # before #560, so σ_nn and dynamic topography read there through the
+            # GEOMETRIC normal reverse sign against earlier releases. The new sign is
+            # the one the docstrings have always claimed ("outward"). An analytic
+            # ``normal=`` is used exactly as given and is NOT reoriented, so
+            # ``X/|X|`` on an inner arc points into the domain and disagrees in sign
+            # with the default — see "Which normal to use" in
+            # ``docs/developer/subsystems/rotated-freeslip.md``.
+            #
+            # Only an EXTERIOR facet has "the one cell it belongs to". An internal
+            # boundary's facets have two, and `support[0]` is whichever the DMPlex
+            # ordering happens to list first — flipping against that would orient
+            # neighbouring facets of the same surface oppositely, and they would then
+            # CANCEL in the measure-weighted sum. There the raw face normal is kept:
+            # PETSc orients it from support[0] to support[1] by its own convention,
+            # which is at least coherent along the surface. Both sibling
+            # implementations guard the same way (Mesh._assemble_boundary_normal,
+            # _local_boundary_candidates below).
+            if dm.getSupportSize(f) == 1:
+                _, ccent, _ = dm.computeCellGeometryFVM(int(dm.getSupport(f)[0]))
+                if np.dot(ne, np.asarray(cent) - np.asarray(ccent)) < 0:
+                    ne = -ne
             wgt = float(vol)
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
@@ -298,12 +318,23 @@ def _sum_facet_normals_across_ranks(solver, contribs):
         for q in _local_boundary_candidates(dm, lsec) | set(contribs):
             lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
             w = np.array(summed[lo:lo + dim], dtype=float)
+            # LOAD-BEARING: the candidate set over-collects (see
+            # _local_boundary_candidates); a point off this boundary contributes
+            # nothing anywhere, so its summed normal is exactly zero and it is
+            # dropped here. This is what makes the over-collection safe.
             if w.any():
                 out[q] = w
             elif q in contribs:
-                # velocity DOFs constrained out of the global vector: keep this
-                # rank's own contribution so the node set is what it always was
-                # (build_rotation skips such nodes anyway).
+                # Velocity DOFs constrained out of the global vector (an essential
+                # BC meeting this boundary) come back zero. Keep this rank's own
+                # contribution so the node set is exactly what it always was.
+                # build_rotation drops these nodes (l2g < 0); boundary_normal_traction
+                # does NOT — it reads n̂·r_c at every returned node — so on such a node
+                # it reports the reaction of the ESSENTIAL constraint along a
+                # rank-locally accumulated normal. That was true before this change
+                # too, and the nodes are the corners where a rotated wall meets an
+                # essential one (measured: 2 of 75 on the test_1070 configuration, at
+                # every rank count, and never shared between ranks there).
                 out[q] = contribs[q]
         return out
     finally:
@@ -312,14 +343,21 @@ def _sum_facet_normals_across_ranks(solver, contribs):
 
 
 def _local_boundary_candidates(dm, lsec):
-    """Velocity points on an exterior facet of this rank's LOCAL mesh.
+    """Velocity points on a support-1 facet of this rank's LOCAL mesh — a SUPERSET of
+    its boundary nodes, deliberately.
 
     The labelled facet list is not enough to enumerate a rank's boundary nodes: a rank
     can OWN a node every one of whose labelled facets lives on a neighbour (the label
-    is distributed to one rank per facet, so a seam node's two facets are split). Such
-    a node would otherwise never get a constraint row. Its facets ARE in the local mesh
-    — an interior partition facet keeps support 2 through the overlap, so support 1
-    still means the domain boundary.
+    goes to one rank per facet, so a seam node's facets are split between them), and
+    such a node would otherwise never get a constraint row.
+
+    Support 1 does NOT mean "on the domain boundary": the facets on the outer fringe of
+    the overlap layer also have support 1 locally while being interior globally, and
+    measured they are 13-27% of what this returns. The caller is what makes the result
+    correct — those points receive no contribution from any labelled facet, so their
+    summed normal is exactly zero and the ``w.any()`` test in
+    :func:`_sum_facet_normals_across_ranks` drops them. That test is load-bearing, not
+    an aside; do not remove it while over-collecting here.
     """
     fS, fE = dm.getHeightStratum(1)
     out = set()
@@ -1968,6 +2006,15 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
 
     σ_nn is recovered from the CARTESIAN nodal reaction r_c = A·u − b: the nodal load
     is R_i = n̂_i · r_c(node_i), where n̂_i is THIS boundary's outward normal at node i.
+
+    SIGN. ``n̂_i`` is whatever :func:`_boundary_velocity_nodes` produced for this
+    boundary, so σ_nn is measured along that direction. The geometric default is the
+    DOMAIN's outward normal everywhere, which on a concave boundary (an annulus or
+    shell inner arc) points toward the centre of curvature — the opposite of what UW3
+    produced before #560, so σ_nn and the dynamic topography built on it reverse sign
+    there against earlier releases. An analytic ``normal=`` is used exactly as given
+    and is not reoriented, so ``X/|X|`` on an inner arc yields the other sign. See
+    "Which way is outward" in ``docs/developer/subsystems/rotated-freeslip.md``.
     Projecting the Cartesian reaction onto the boundary normal (rather than reading the
     rotated frame's normal row) is corner-correct — at a node shared with another
     rotated-free-slip boundary the rotated frame's first row is a mix of both walls'

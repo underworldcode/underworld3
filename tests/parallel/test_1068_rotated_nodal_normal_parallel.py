@@ -19,8 +19,8 @@ angles so only the facet LENGTHS change), geometric normal, ``|A z|/|A|_F``:
 
 Run with::
 
-    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1067_rotated_nodal_normal_parallel.py
-    mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_1067_rotated_nodal_normal_parallel.py
+    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1068_rotated_nodal_normal_parallel.py
+    mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_1068_rotated_nodal_normal_parallel.py
 """
 import numpy as np
 import pytest

@@ -39,6 +39,14 @@ def _bisector_nodes(solver, boundary, normal=None,
     ``_real`` binds the genuine function AT IMPORT. Looking it up at call time would
     self-recurse whenever this control is installed over the module attribute and an
     analytic normal is passed.
+
+    It also freezes the OLD outward test (against the mean of the mesh coordinates),
+    so on a CONCAVE geometric boundary it differs from the real function by a SIGN as
+    well as by the weighting — which is what
+    ``test_geometric_normal_points_out_of_the_domain_on_a_concave_boundary`` uses it
+    for. Do not extend a bit-identity comparison onto an inner arc's geometric normal
+    expecting agreement: the sign difference there is the intended change, not a
+    regression.
     """
     if normal is not None:
         return _real(solver, boundary, normal=normal)
@@ -261,6 +269,61 @@ def test_flat_walls_and_analytic_normals_are_bit_identical():
     assert any(not np.array_equal(fixed[q], old[q]) for q in fixed), (
         "the deformed top gave identical normals under both rules — the "
         "bit-identity checks above prove nothing")
+
+
+def test_geometric_normal_points_out_of_the_domain_on_a_concave_boundary():
+    """The geometric normal is the DOMAIN's outward normal, which on a concave
+    boundary points toward the centre of curvature.
+
+    This pins a user-visible convention. Before #560 the outward test was "away from
+    the mean of the mesh coordinates", which on an annulus inner arc points INTO the
+    domain; it is now "away from the facet's own support cell", which is outward
+    everywhere. σ_nn and dynamic topography read on an inner boundary through the
+    geometric normal therefore changed sign, and without this assertion nothing would
+    stop that flipping back silently.
+
+    An analytic ``normal=`` is used exactly as supplied and is NOT reoriented, so
+    ``X/|X|`` on an inner arc is inward-of-domain — asserted here too, because the
+    disagreement between the two paths is deliberate and is what the docs describe."""
+    annulus = _skewed_annulus("C", 0.0)
+    annulus.solve()
+    dm, dim = annulus.dm, annulus.mesh.dim
+    csec = dm.getCoordinateSection()
+    cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+    v0, v1 = dm.getDepthStratum(0)
+
+    def radial_components(boundary, normal=None, nodes=None):
+        out = []
+        source = nodes or rbc._boundary_velocity_nodes
+        for q, nrm in source(annulus, boundary, normal=normal):
+            x = np.asarray(rbc._point_coord(dm, dim, cvec, csec, v0, v1, q))
+            out.append(float(np.dot(nrm, x / np.linalg.norm(x))))
+        return np.array(out)
+
+    outer = radial_components("Upper")
+    inner = radial_components("Lower")
+    assert outer.size and inner.size
+    assert np.all(outer > 0.99), (
+        f"outer arc normal is not outward (min radial component {outer.min():.6f})")
+    assert np.all(inner < -0.99), (
+        f"inner arc normal must point OUT OF THE DOMAIN, i.e. toward the origin "
+        f"(max radial component {inner.max():.6f}); the pre-#560 rule gave +1 here")
+
+    # NEGATIVE CONTROL: the frozen pre-#560 accumulation orients against the mean of
+    # the mesh coordinates, which on an inner arc is the WRONG way. If this did not
+    # come out +1 the assertion above would be pinning nothing.
+    old_inner = radial_components("Lower", nodes=_bisector_nodes)
+    assert np.all(old_inner > 0.99), (
+        f"the pre-#560 rule should give an INWARD-of-domain normal on the inner arc "
+        f"(got min {old_inner.min():.6f}); without that the sign convention asserted "
+        f"above is not actually a change anything could regress to")
+
+    x, y = annulus.mesh.X
+    radial = sympy.Matrix([[x, y]]) / sympy.sqrt(x**2 + y**2)
+    analytic_inner = radial_components("Lower", normal=radial)
+    assert np.all(analytic_inner > 0.99), (
+        "an analytic X/|X| on the inner arc should be left INWARD-of-domain — the "
+        "override is applied exactly as given, and the docs say so")
 
 
 @pytest.mark.level_2

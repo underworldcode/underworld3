@@ -37,8 +37,10 @@ averaging `Σ_f n̂_f` — what UW3 did before issue #560 — is right only wher
 facets are equal; on a **kinked** wall with unequal facets it leaves a residual
 `sin(Δ/2)·(|f₁|−|f₂|)/6` in the node's free tangential row (Δ = kink angle), the
 exact constant-pressure vector stops being a null vector of the constrained
-operator, and the pressure gauge goes unpinned. Flat walls are unchanged to the
-last bit: every facet there shares a normal, so the weighting cancels.
+operator, and the pressure gauge goes unpinned. **Axis-aligned** walls are
+unchanged to the last bit — their facet normals have exactly 0/±1 components, so
+`Σ_f |f| n̂_f` normalises to the same floats as `Σ_f n̂_f` whatever the weights.
+A flat but *tilted* wall is not covered by that argument and can move by one ulp.
 
 The sum runs over ALL facets meeting the node, so it must be completed **across
 ranks**. Each boundary facet is labelled on exactly one rank, so a node on a
@@ -50,6 +52,36 @@ rank's coordinates is rank-local, and would let two facets of one node cancel),
 and the node list comes from the local mesh's exterior facets rather than the
 labelled subset, because a rank can own a node whose labelled facets are all on
 neighbours.
+
+### Which way is "outward" — and the sign of σ_nn on an inner boundary
+
+The geometric normal points away from the facet's own support cell, which is the
+**domain's** outward normal on any boundary. On a concave boundary — an annulus
+or spherical-shell **inner** arc, the CMB — that points *toward* the centre of
+curvature.
+
+This changed at #560. The old rule pointed away from the mean of the mesh
+coordinates, which on an inner arc is *into* the domain. So on a concave
+boundary, through the geometric normal:
+
+| quantity | before #560 | after |
+|---|---:|---:|
+| nodal radial component, annulus `Lower` | +1.000000 | **−1.000000** |
+| `boundary_normal_traction("Lower")` | −5.233110e-02 | **+5.233110e-02** |
+
+Magnitudes are identical to every digit; only the sign moves. `dynamic_topography_field`
+is `h = −σ_nn/(Δρ g)` on top of that number, so it reverses there too, as does the
+sign of a non-zero prescribed wall-normal datum (`u·n̂ = ũ_n`: positive now means
+outflow *from the domain* on an inner arc, where before it meant inflow). Convex
+boundaries — every box wall, an outer arc, a spherical cap — are unaffected: the two
+rules agree there.
+
+An **analytic** `normal=` is applied exactly as supplied and is *not* reoriented.
+So `X/|X|` on an inner arc is inward-of-domain and gives σ_nn of the opposite sign
+to the default. That is deliberate — the override means "use exactly this
+direction", and silently flipping it would change the meaning of a user's datum —
+but it means **you must pass `-X/|X|` on an inner boundary if you want the
+domain-outward convention.** `test_1018_rotated_nodal_normal.py` pins both halves.
 
 ### Which normal to use
 
