@@ -1269,8 +1269,16 @@ def petsc_interpolate(   expr,
                 mesh._evaluation_interpolated_results = None
 
 
-        # For now, eval over all vars
-        vars = mesh.vars.values()
+        # For now, eval over all vars.
+        #
+        # MATERIALISE THE LIST. ``mesh.vars`` is a weakref.WeakValueDictionary
+        # and its ``.values()`` is a GENERATOR, not a view: the dofcount loop
+        # below consumes it, and every later reader (the continuity gate, the
+        # RBF fallback rung) then iterates an empty sequence. That silently
+        # disabled the fallback — points the locator returns -1 for kept the
+        # NaN written by DMInterpolationEvaluate_UW and handed it back to the
+        # caller — and it silently pinned the continuity gate at True.
+        vars = list(mesh.vars.values())
 
         cdef DM dm = mesh.dm
 
@@ -1305,7 +1313,23 @@ def petsc_interpolate(   expr,
         # O(jump) wrong-side errors. The policy participates in the cache key
         # so the same coords evaluated with a different field mix cannot
         # reuse a structure built under the other policy.
-        all_continuous = all(getattr(var, "continuous", True) for var in vars)
+        #
+        # The continuity test runs over the variables THIS CALL ASKED FOR,
+        # not every variable on the mesh. The structure carries all of them
+        # (dofcount above), but only the requested slices are read, and the
+        # gate exists to protect a field whose jump sits on a cell face. Over
+        # the whole mesh instead, one discontinuous variable anywhere would
+        # take every evaluation off the authoritative path: measured on a
+        # warped hex box (capability "continuous") carrying a P1 and a P0,
+        # that costs the CONTINUOUS field a factor 15 in accuracy (linear
+        # field, max error 8.0e-3 -> 1.2e-1 at 62 of 1500 interior points)
+        # for no correctness gain. Scoped to the request, the continuous
+        # field is bit-identical and only the P0 moves.
+        #
+        # NOTE this gate has never bound before: `vars` was an exhausted
+        # generator (see above) so `all()` was vacuously True.
+        all_continuous = all(
+            getattr(varfn.meshvar(), "continuous", True) for varfn in varfns)
         authoritative = mesh._hint_is_authoritative(all_continuous)
         location_policy = "auth" if authoritative else "locate"
 
@@ -1351,7 +1375,13 @@ def petsc_interpolate(   expr,
             # one location per point per call rather than two.
             if authoritative:
                 if cell_hints is not None and mesh is hinted_mesh:
-                    cells = np.ascontiguousarray(cell_hints, dtype=np.int64)
+                    # COPY: the unhinted entries are filled in below, and
+                    # ascontiguousarray hands back the caller's own array when
+                    # it is already int64 and contiguous. petsc_interpolate
+                    # takes cell_hints as a documented keyword, so writing
+                    # through it would mutate somebody else's array.
+                    cells = np.array(cell_hints, dtype=np.int64, copy=True,
+                                     order="C")
                     if cells.shape[0] != coords.shape[0]:
                         raise RuntimeError(
                             "cell_hints must carry one cell index per coordinate "

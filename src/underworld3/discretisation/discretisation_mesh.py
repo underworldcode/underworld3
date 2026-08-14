@@ -5198,29 +5198,6 @@ class Mesh(Stateful, uw_object):
 
         return arrcopy
 
-    def _build_kd_tree_index_DS(self):
-
-        if hasattr(self, "_index") and self._index is not None:
-            return
-
-        # Build this from the PETScDS rather than the SWARM
-
-        centroids = self._get_coords_for_basis(0, False)
-        index_coords = self._get_coords_for_basis(2, False)
-
-        points_per_cell = index_coords.shape[0] // centroids.shape[0]
-
-        cell_id = numpy.empty(index_coords.shape[0])
-        for i in range(cell_id.shape[0]):
-            cell_id[i] = i // points_per_cell
-
-        self._indexCoords = index_coords
-        self._index = uw.kdtree.KDTree(self._indexCoords)
-        # self._index.build_index()
-        self._indexMap = numpy.array(cell_id, dtype=numpy.int64)
-
-        return
-
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
         for the given vertex plex points, via the coordinate PetscSection
@@ -5369,63 +5346,14 @@ class Mesh(Stateful, uw_object):
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
         # Rejection radius for the lost-point walk. Rebuilt with the kd-tree
-        # (i.e. invalidated by deform / adapt along with _index).
+        # (i.e. invalidated by deform / adapt along with _index) — this is the
+        # ONE place it is set, and the only builder of ``_index``, so a stale
+        # reach cannot outlive the geometry it was measured on. Two other
+        # builders (``_build_kd_tree_index_PIC``, ``_build_kd_tree_index_DS``)
+        # set ``_index`` without the reach; both had zero callers and are
+        # deleted rather than taught the new invariant. Pinned by
+        # test_0761_point_locator.py::test_the_rejection_radius_is_rebuilt_when_the_mesh_moves.
         self._local_cell_reach = cell_reach
-
-        return
-
-    def _build_kd_tree_index_PIC(self):
-
-        if hasattr(self, "_index") and self._index is not None:
-            return
-
-        ## Bootstrapping - the kd-tree is needed to build the index but
-        ## the index is also used in the kd-tree.
-
-        from underworld3.swarm import Swarm, SwarmPICLayout
-
-        # Create a temp swarm which we'll use to populate particles
-        # at gauss points. These will then be used as basis for
-        # kd-tree indexing back to owning cells.
-
-        from petsc4py import PETSc
-
-        tempSwarm = PETSc.DMSwarm().create()
-        tempSwarm.setDimension(self.dim)
-        tempSwarm.setCellDM(self.dm)
-        tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
-        tempSwarm.finalizeFieldRegister()
-
-        # 3^dim or 4^dim pop is used. This number may need to be considered
-        # more carefully, or possibly should be coded to be set dynamically.
-
-        tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 3)
-
-        # We can't use our own populate function since this needs THIS kd_tree to exist
-        # We will need to use a standard layout instead
-
-        ## ?? is this required given no migration ??
-        # tempSwarm.migrate(remove_sent_points=True)
-
-        PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
-        PIC_cellid = tempSwarm.getField("DMSwarm_cellid")
-
-        self._indexCoords = PIC_coords.copy()
-        self._index = uw.kdtree.KDTree(self._indexCoords)
-        self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
-        # self._index.build_index()
-
-        # We don't need an indexMap for this one because there is only one point per cell
-        # and the returned kdtree value IS the index.
-        # Note: self._centroids is not yet defined:
-
-        self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
-        # self._centroid_index.build_index()
-
-        tempSwarm.restoreField("DMSwarmPIC_coor")
-        tempSwarm.restoreField("DMSwarm_cellid")  #
-
-        tempSwarm.destroy()
 
         return
 
@@ -6065,6 +5993,28 @@ class Mesh(Stateful, uw_object):
         leaves the walk as soon as a cell claims it, so the walk costs what is
         still lost rather than what was asked for.
 
+        .. note:: **Which containing cell you get changed (#551).**
+
+           A point on a shared vertex, edge or face is contained by several
+           cells and this routine returns one of them; *which* one has never
+           been part of the contract. It used to be the last cell to claim the
+           point across up to 50 rounds of the walk — an order that depended
+           on whether some unrelated point in the same batch was still lost.
+           It is now the containing cell with the nearest centroid, which is
+           batch-independent. Measured on a uniform 3-D simplex box, 35% of
+           near-vertex queries (the population that actually enters the walk;
+           exact vertices and centroids are answered before it) come back in a
+           different — equally containing — cell.
+
+           For a CONTINUOUS field that is invisible: the interpolants of the
+           containing cells agree at the shared point. For a DISCONTINUOUS
+           field (P0, or the P2/P0-discontinuous pressure space the fault work
+           uses) the cell *is* the answer, so the evaluated value moves by
+           O(jump) at such points — measured max 1.935 on a P0 field of range
+           2. Both values are legitimate: each is the value of a cell that
+           contains the query. Code that needs a specific side of a jump must
+           say which side, not rely on the locator's tie-break.
+
         ``on_boundary`` and ``tol`` are forwarded to the in-cell
         containment test (see ``_test_if_points_in_cells_internal``).
         Default ``(on_boundary=True, tol=0.0)`` admits on-face queries
@@ -6161,6 +6111,16 @@ class Mesh(Stateful, uw_object):
         # further under that slab than a well-shaped one; a factor of two on
         # the reach covers both with room to spare while still rejecting
         # anything more than about one cell away from the local mesh.
+        #
+        # Note the two scales are set differently: the slab the containment
+        # test admits is ``tol`` times the face control-point separation,
+        # which _mark_faces_inside_and_out fixes at an ABSOLUTE 1e-3 in model
+        # units, while the radius here is a fraction of the LOCAL cell size.
+        # They only cross over when the largest local cell reach falls below
+        # about 5e-6 in model units — a whole domain a few microns across, at
+        # which scale the containment test's own absolute floors have already
+        # gone. Measured: a mesh 1e-4 across (reach 6.9e-6) and one 6371
+        # across both reject nothing they should have kept.
         reach = getattr(self, "_local_cell_reach", None)
         if reach is not None and reach > 0.0:
             reach = self._LOCATOR_REACH_MARGIN * reach
@@ -6354,6 +6314,11 @@ class Mesh(Stateful, uw_object):
 
         Never calls PETSc ``DMLocatePoints`` (slow, raises out-of-domain), and
         is purely kd-tree / Euclidean — manifold-safe, no manifold branch.
+
+        For a point several cells share, the cell returned is the containing
+        one with the nearest centroid — see the tie-break note on
+        :meth:`_get_closest_local_cells_internal` for what that changed and
+        why it is visible only to discontinuous fields.
         """
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
