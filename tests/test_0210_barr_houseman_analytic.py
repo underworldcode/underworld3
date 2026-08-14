@@ -207,3 +207,32 @@ def test_a_degenerate_geometry_is_refused():
         symbolic.evaluate(np.array([[0.5, 0.1]]))
     with pytest.raises(ValueError, match="symbolic parameters"):
         symbolic.slip(0.5)
+
+
+def test_the_traction_reproduces_the_zero_shear_fault_condition():
+    """The traction machinery must independently give tau_r_theta = 0 on the fault.
+
+    `evaluate_traction` builds the stress by a different route from the
+    symbolic fault-condition test — SymPy-derived strain rates lambdified and
+    rotated into Cartesian — so agreeing with it is a genuine cross-check
+    rather than a restatement.
+
+    On the fault the outward normal of the upper face is -theta_hat, i.e.
+    (0, -1) in Cartesian along theta = 0. The SHEAR part of that traction is
+    its x-component, and it is the quantity the paper sets to zero.
+    """
+    sol = BarrHouseman(U0=1.0, R0=1.0, eta=1.0)
+    x = np.array([0.1, 0.25, 0.4, 0.6])
+    on_fault = np.column_stack([x, np.zeros_like(x)])
+
+    traction = sol.evaluate_traction(on_fault, [0.0, -1.0])
+    assert np.allclose(traction[:, 0], 0.0, atol=1e-10), (
+        f"shear traction on the fault is {traction[:, 0]}, not zero")
+
+    # Negative control: off the fault it is emphatically NOT zero, so the
+    # assertion above is not passing for a trivial reason.
+    off_fault = np.column_stack([x, np.full_like(x, 0.15)])
+    assert np.abs(sol.evaluate_traction(off_fault, [0.0, -1.0])[:, 0]).max() > 0.1
+
+    with pytest.raises(ValueError, match="singular at the fault tip"):
+        sol.evaluate_traction(np.array([[0.0, 0.0]]), [1.0, 0.0])

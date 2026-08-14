@@ -100,6 +100,7 @@ class BarrHouseman:
         self.R0 = R0 if isinstance(R0, sympy.Basic) else float(R0)
         self.eta = eta if isinstance(eta, sympy.Basic) else float(eta)
         self._symbols = None
+        self._stress_fn = None
 
     @property
     def _is_symbolic(self):
@@ -249,6 +250,53 @@ class BarrHouseman:
         r = np.hypot(X[:, 0], X[:, 1])
         t = np.mod(np.arctan2(X[:, 1], X[:, 0]), 2.0 * np.pi)
         return r, t, r / self.R0
+
+    def evaluate_traction(self, coords, normal):
+        r"""Traction :math:`\sigma \cdot \hat n` at Cartesian ``coords``.
+
+        Extension-positive, matching the paper: :math:`\sigma = \tau + p I`
+        with :math:`\tau = 2\eta\dot\varepsilon`. Refuses the tip, where the
+        stress diverges.
+
+        This is what a boundary needs if its NORMAL velocity component is left
+        free rather than prescribed. Leaving one component free is worth doing:
+        with velocity Dirichlet on every wall the pressure is determined only
+        up to a constant AND the datum must carry exactly zero net flux, and a
+        traction condition removes both requirements at once. It is also what
+        Barr & Houseman do — their left-hand boundary carries a constant normal
+        stress, not a prescribed normal velocity.
+        """
+        r, t, _R = self._polar_of(coords)
+        if np.any(r == 0.0):
+            raise ValueError(
+                "the stress is singular at the fault tip; exclude r = 0")
+        srr, srt, stt = self._stress_polar_numeric(r, t)
+
+        n = np.asarray(normal, dtype=float)
+        if n.ndim == 1:
+            n = np.broadcast_to(n, (len(r), 2))
+        c, s_ = np.cos(t), np.sin(t)
+        # rotate the polar stress into Cartesian, then contract with n
+        sxx = srr * c**2 - 2 * srt * c * s_ + stt * s_**2
+        sxy = (srr - stt) * c * s_ + srt * (c**2 - s_**2)
+        syy = srr * s_**2 + 2 * srt * c * s_ + stt * c**2
+        return np.column_stack([sxx * n[:, 0] + sxy * n[:, 1],
+                                sxy * n[:, 0] + syy * n[:, 1]])
+
+    def _stress_polar_numeric(self, r, t):
+        """(sigma_rr, sigma_r_theta, sigma_theta_theta), built once via SymPy."""
+        if self._stress_fn is None:
+            rs, ts = self.symbols
+            u_r, u_t = self.velocity_polar
+            p = self.pressure_polar
+            e_rr = sympy.diff(u_r, rs)
+            e_tt = sympy.diff(u_t, ts) / rs + u_r / rs
+            e_rt = (rs * sympy.diff(u_t / rs, rs) + sympy.diff(u_r, ts) / rs) / 2
+            two_eta = 2 * self.eta
+            self._stress_fn = sympy.lambdify(
+                (rs, ts), [two_eta * e_rr + p, two_eta * e_rt,
+                           two_eta * e_tt + p], "numpy")
+        return self._stress_fn(r, t)
 
     def slip(self, r):
         r"""Fault slip :math:`2 U_0 \sqrt{r/R_0}` at radius ``r`` from the tip.
