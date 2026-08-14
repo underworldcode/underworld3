@@ -1504,6 +1504,21 @@ class Mesh(Stateful, uw_object):
                     val, op=getattr(_MPI, op))
             return val
 
+        # A rank owning zero cells contributes the identity element of each
+        # reduction rather than raising on an empty array (issue #405).
+        def _reduce_min(arr):
+            return _reduce(float(arr.min()) if arr.size else float("inf"),
+                           "MIN")
+
+        def _reduce_max(arr):
+            return _reduce(float(arr.max()) if arr.size else float("-inf"),
+                           "MAX")
+
+        def _local_percentile(arr, pct):
+            # Rank-local estimate (see the docstring); a rank with no cells
+            # has no local distribution to take a percentile of.
+            return float(np.percentile(arr, pct)) if arr.size else float("nan")
+
         tri_vertex_lists = []
         is_simplex2d = cdim == 2
         if is_simplex2d:
@@ -1516,17 +1531,32 @@ class Mesh(Stateful, uw_object):
                     break
                 tri_vertex_lists.append(cell_vertices)
 
-        if not is_simplex2d or not tri_vertex_lists:
+        # Choose the branch COLLECTIVELY. A rank owning zero cells collects no
+        # triangles and would otherwise take the volume-only branch (three
+        # reductions) while its populated peers took the simplex branch
+        # (eleven) — mismatched collective counts, i.e. a hang (issue #405).
+        # A starved rank abstains from the vote instead.
+        has_cells = cEnd > cStart
+        n_simplex_ranks = _reduce(
+            int(has_cells and is_simplex2d and bool(tri_vertex_lists)), "SUM")
+        n_populated_ranks = _reduce(int(has_cells), "SUM")
+        is_simplex2d = (n_populated_ranks > 0
+                        and n_simplex_ranks == n_populated_ranks)
+
+        if not is_simplex2d:
             try:
                 volume = np.abs(np.array(
                     [dm.computeCellGeometryFVM(cell_id)[0]
                      for cell_id in range(cStart, cEnd)]))
             except Exception:
                 volume = np.array([1.0])
-            if not volume.size:
+            # A rank that owns cells but cannot compute their geometry keeps
+            # the unit-volume placeholder; a rank owning NO cells contributes
+            # nothing at all, so the global cell count stays honest.
+            if not volume.size and has_cells:
                 volume = np.array([1.0])
             n_cells = _reduce(int(volume.size), "SUM")
-            vol_min = _reduce(float(volume.min()), "MIN")
+            vol_min = _reduce_min(volume)
             vol_sum = _reduce(float(volume.sum()), "SUM")
             metrics = dict(
                 n_cells=n_cells, element="non-2D-simplex",
@@ -1538,7 +1568,9 @@ class Mesh(Stateful, uw_object):
                 metrics["per_cell"] = dict(volume=volume)
             return metrics
 
-        tri = np.asarray(tri_vertex_lists, dtype=np.int64)
+        # reshape(-1, 3) keeps the (0, 3) shape on a rank with no cells, where
+        # np.asarray([]) would be 1-D and the column indexing below would fail.
+        tri = np.asarray(tri_vertex_lists, dtype=np.int64).reshape(-1, 3)
         v0, v1, v2 = (vertex_coords[tri[:, 0]],
                       vertex_coords[tri[:, 1]],
                       vertex_coords[tri[:, 2]])
@@ -1566,7 +1598,9 @@ class Mesh(Stateful, uw_object):
              _angle_deg(edge_c, edge_a, edge_b)])
         longest_edge = np.maximum.reduce([edge_a, edge_b, edge_c])
         aspect = longest_edge * longest_edge / (2.0 * area)
-        rel_area = area / area.mean()
+        # rel_area only ever masks this rank's own cells, so the rank-local
+        # mean is the right scale — and an empty rank has no cells to mask.
+        rel_area = area / area.mean() if area.size else area
 
         # Neighbour size-jump: map each (undirected) edge to the triangles
         # sharing it; interior edges (exactly two triangles) contribute the
@@ -1585,22 +1619,22 @@ class Mesh(Stateful, uw_object):
         area_sum = _reduce(float(area.sum()), "SUM")
         metrics = dict(
             n_cells=n_cells, element="2D-simplex",
-            q_min=_reduce(float(shape_q.min()), "MIN"),
+            q_min=_reduce_min(shape_q),
             q_mean=q_sum / max(n_cells, 1),
-            q_p01=float(np.percentile(shape_q, 1)),
-            q_p05=float(np.percentile(shape_q, 5)),
+            q_p01=_local_percentile(shape_q, 1),
+            q_p05=_local_percentile(shape_q, 5),
             n_q_lt_0p3=_reduce(int((shape_q < 0.3).sum()), "SUM"),
             n_q_lt_0p2=_reduce(int((shape_q < 0.2).sum()), "SUM"),
-            angle_max_deg=_reduce(float(largest_angle.max()), "MAX"),
+            angle_max_deg=_reduce_max(largest_angle),
             n_angle_gt_150=_reduce(int((largest_angle > 150).sum()), "SUM"),
             n_angle_gt_165=_reduce(int((largest_angle > 165).sum()), "SUM"),
-            aspect_max=_reduce(float(aspect.max()), "MAX"),
-            aspect_p99=float(np.percentile(aspect, 99)),
+            aspect_max=_reduce_max(aspect),
+            aspect_p99=_local_percentile(aspect, 99),
             sizejump_max=float(size_jump.max()),
-            sizejump_p99=float(np.percentile(size_jump, 99)),
+            sizejump_p99=_local_percentile(size_jump, 99),
             n_big_thin=_reduce(
                 int(((rel_area > 2.0) & (aspect > 4.0)).sum()), "SUM"),
-            vol_min_over_mean=(_reduce(float(area.min()), "MIN")
+            vol_min_over_mean=(_reduce_min(area)
                                / (area_sum / max(n_cells, 1))))
         if per_cell:
             metrics["per_cell"] = dict(
@@ -4434,6 +4468,9 @@ class Mesh(Stateful, uw_object):
         Returns the mesh bounding box scaled to physical units using
         the model's length scale.
 
+        COLLECTIVE: the bounding box spans the whole mesh, so it is reduced
+        across ranks (see :meth:`_global_coord_bounds`).
+
         Returns
         -------
         tuple of UWQuantity or None
@@ -4447,10 +4484,7 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, "_model") or self._model is None:
             return None
 
-        import numpy as np
-
-        min_coords = np.min(self.points, axis=0)
-        max_coords = np.max(self.points, axis=0)
+        min_coords, max_coords = self._global_coord_bounds()
 
         return (
             self._model.scale_to_physical(min_coords, dimension="length"),
@@ -4463,6 +4497,9 @@ class Mesh(Stateful, uw_object):
         Mesh spatial extent in physical units.
 
         Returns the mesh size (max - min) in each dimension scaled to physical units.
+
+        COLLECTIVE: the extent spans the whole mesh, so it is reduced across
+        ranks (see :meth:`_global_coord_bounds`).
 
         Returns
         -------
@@ -4477,13 +4514,59 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, "_model") or self._model is None:
             return None
 
+        min_coords, max_coords = self._global_coord_bounds()
+
+        return self._model.scale_to_physical(
+            max_coords - min_coords, dimension="length")
+
+    def _global_coord_bounds(self):
+        """Bounding box of the mesh nodes, ``(min_coords, max_coords)``.
+
+        COLLECTIVE. Each rank holds only its own subdomain's nodes, so a
+        rank-local ``min``/``max`` describes the partition rather than the
+        mesh — every rank would report a different "domain size". The
+        reduction makes the answer global and identical everywhere, and lets
+        a rank owning no cells (hence no nodes) contribute the identity
+        elements instead of raising on an empty array (issue #405).
+
+        Reads the same node coordinates as the deprecated ``mesh.points``
+        (without its warning or unit wrapping), so the physical-bounds /
+        physical-extent answers are unchanged apart from being global.
+
+        .. TODO(BUG): ``mesh.points`` already multiplies by
+           ``CoordinateSystem._length_scale`` when the coordinate system is
+           scaled, and both callers then pass the result through
+           ``model.scale_to_physical(..., dimension="length")`` — a second
+           application of the same factor. Reproduced here deliberately so
+           this fix stays behaviour-neutral; the double scaling is a separate
+           question for the units owner.
+        """
         import numpy as np
+        from mpi4py import MPI
 
-        min_coords = np.min(self.points, axis=0)
-        max_coords = np.max(self.points, axis=0)
-        extent = max_coords - min_coords
+        coords = np.asarray(self._coords, dtype=np.float64).reshape(
+            -1, self.cdim)
+        if getattr(self.CoordinateSystem, "_scaled", False):
+            coords = coords * self.CoordinateSystem._length_scale
+        coords = np.ascontiguousarray(coords)
 
-        return self._model.scale_to_physical(extent, dimension="length")
+        if coords.shape[0] > 0:
+            local_min = np.ascontiguousarray(coords.min(axis=0))
+            local_max = np.ascontiguousarray(coords.max(axis=0))
+        else:
+            local_min = np.full(self.cdim, np.inf)
+            local_max = np.full(self.cdim, -np.inf)
+
+        if uw.mpi.size > 1:
+            # Buffer (uppercase) Allreduce: the pickling `allreduce` applies
+            # MPI.MIN through Python's `min()`, which is ambiguous for arrays.
+            global_min = np.empty_like(local_min)
+            global_max = np.empty_like(local_max)
+            uw.mpi.comm.Allreduce(local_min, global_min, op=MPI.MIN)
+            uw.mpi.comm.Allreduce(local_max, global_max, op=MPI.MAX)
+            local_min, local_max = global_min, global_max
+
+        return local_min, local_max
 
     @timing.routine_timer_decorator
     def write_timestep(
@@ -5876,12 +5959,23 @@ class Mesh(Stateful, uw_object):
         # and handles all the complexity of extracting values from unit-aware coordinates
         model_points = _convert_coords_to_si(points)
 
-        self._mark_local_boundary_faces_inside_and_out()
-
+        # get_max_radius() is COLLECTIVE, so it must be reached by every rank
+        # before any rank takes a short-circuit below — otherwise the starved
+        # ranks skip the reduction their peers are sitting in (issue #405).
         max_radius = self.get_max_radius()
+
+        self._mark_local_boundary_faces_inside_and_out()
 
         if model_points.shape[0] == 0:
             return numpy.array([], dtype=bool)
+
+        # A rank owning no cells contains no points, so the honest answer is
+        # False everywhere. Its local boundary skeleton is empty too, and the
+        # closest-local-cell test below would otherwise have to interrogate a
+        # cell set that does not exist.
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        if cEnd == cStart:
+            return numpy.zeros(model_points.shape[0], dtype=bool)
 
         # Cd-1 surface mesh: no boundary-face control points exist
         # (see _mark_local_boundary_faces_inside_and_out). Per the
@@ -6453,13 +6547,13 @@ class Mesh(Stateful, uw_object):
         from underworld3.utilities import gather_data
 
         # A rank owning zero cells has no centroid; mean() of the empty
-        # array is NaN, and gather_data silently STRIPS NaN rows — the
-        # gathered table's row index then no longer equals rank, and
-        # _route_by_nearest_centroid mis-routes particles to the wrong
-        # rank (issue #399 review). A huge FINITE sentinel keeps the row
-        # (row == rank) while a nearest-centroid search can never select
-        # it, so starved ranks correctly receive no particles. (Finite,
-        # not inf: infinities poison the kd-tree's bounding boxes.)
+        # array is NaN. gather_data no longer strips NaN rows (issue #405
+        # made that opt-in), but a NaN row would still poison the kd-tree
+        # this table feeds, and _route_by_nearest_centroid would mis-route
+        # particles (issue #399 review). A huge FINITE sentinel keeps the
+        # row (row == rank) while a nearest-centroid search can never
+        # select it, so starved ranks correctly receive no particles.
+        # (Finite, not inf: infinities poison the kd-tree's bounding boxes.)
         if self._centroids.shape[0] > 0:
             domain_centroid = self._centroids.mean(axis=0)
         else:
@@ -6499,34 +6593,51 @@ class Mesh(Stateful, uw_object):
     @uw.collective_operation
     def get_min_radius(self) -> float:
         """
-        This method returns the global minimum distance from any cell centroid to a face.
-        It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
-        returns zero.
+        Global minimum of the characteristic cell length scale — the smallest
+        cell anywhere in the mesh, not just on this rank. Parallel-safe via
+        MPI allreduce of the local minimum.
+
+        A rank owning zero cells contributes the identity element of the
+        reduction (:math:`+\\infty`) and therefore returns the same global
+        value as its populated peers. Taking ``min()`` of that rank's empty
+        ``_radii`` array instead would raise on the starved rank alone, while
+        its peers waited in the reduction — the rank-asymmetric raise that
+        deadlocks the job (issue #405).
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
         ## does not obtain the minimum radius for the mesh.
 
         import numpy as np
+        from mpi4py import MPI
 
-        all_min_radii = uw.utilities.gather_data(np.array((self._radii.min(),)), bcast=True)
-
-        return all_min_radii.min()
+        radii = np.asarray(self._radii).reshape(-1)
+        local_min = float(radii.min()) if radii.size else float("inf")
+        if uw.mpi.size > 1:
+            local_min = uw.mpi.comm.allreduce(local_min, op=MPI.MIN)
+        return local_min
 
     @uw.collective_operation
     def get_max_radius(self) -> float:
         """
-        This method returns the global maximum distance from any cell centroid to a face.
+        Global maximum of the characteristic cell length scale — the largest
+        cell anywhere in the mesh. Parallel-safe via MPI allreduce of the
+        local maximum; a rank owning zero cells contributes the identity
+        element (:math:`-\\infty`) and still returns the global value.
+        See :meth:`get_min_radius` for why the guard matters.
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
         ## does not obtain the minimum radius for the mesh.
 
         import numpy as np
+        from mpi4py import MPI
 
-        all_max_radii = uw.utilities.gather_data(np.array((self._radii.max(),)), bcast=True)
-
-        return all_max_radii.max()
+        radii = np.asarray(self._radii).reshape(-1)
+        local_max = float(radii.max()) if radii.size else float("-inf")
+        if uw.mpi.size > 1:
+            local_max = uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
+        return local_max
 
     @uw.collective_operation
     def get_mean_radius(self) -> float:

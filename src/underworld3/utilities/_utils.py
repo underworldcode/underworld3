@@ -193,15 +193,33 @@ def mem_footprint():
     return python_process.memory_info().rss // 1000000
 
 
-def gather_data(val, bcast=False, dtype="float64"):
+def gather_data(val, bcast=False, dtype="float64", strip_nan=False):
     """
-    gather values on root (bcast=False) or all (bcast = True) processors
-    Parameters:
-        vals : Values to combine into a single array on the root or all processors
+    Gather values on root (``bcast=False``) or on all (``bcast=True``) processors.
 
-    returns:
-        val_global : combination of values form all processors
+    Parameters
+    ----------
+    val : array-like or scalar
+        This rank's contribution. Ranks may contribute different lengths
+        (including zero rows).
+    bcast : bool, default False
+        Make the combined array available on every rank rather than root only.
+    dtype : str, default "float64"
+        dtype of the combined array.
+    strip_nan : bool, default False
+        Drop NaN entries from the combined array. **Off by default and
+        rarely what you want**: one row per rank is the usual contract, and
+        silently dropping a rank's NaN row shifts every later row up so the
+        table index no longer equals the rank that contributed it. That
+        renumbering was the mechanism behind the nearest-centroid particle
+        mis-route on starved ranks (issues #399, #405). Pass ``True`` only
+        where the result is an unordered bag of values and NaN means "no
+        contribution".
 
+    Returns
+    -------
+    numpy.ndarray
+        The concatenated contributions from all ranks, in rank order.
     """
 
     comm = uw.mpi.comm
@@ -233,8 +251,7 @@ def gather_data(val, bcast=False, dtype="float64"):
 
     comm.barrier()
 
-    if uw.mpi.rank == 0:
-        ### remove rows with NaN
+    if strip_nan and uw.mpi.rank == 0:
         val_global = val_global[~np.isnan(val_global)]
 
     comm.barrier()
