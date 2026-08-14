@@ -99,6 +99,7 @@ class BarrHouseman:
         self.U0 = U0 if isinstance(U0, sympy.Basic) else float(U0)
         self.R0 = R0 if isinstance(R0, sympy.Basic) else float(R0)
         self.eta = eta if isinstance(eta, sympy.Basic) else float(eta)
+        self._symbols = None
 
     @property
     def _is_symbolic(self):
@@ -108,8 +109,22 @@ class BarrHouseman:
     # ------------------------------------------------------------------ sympy
     @property
     def symbols(self):
-        """The polar symbols ``(r, theta)`` the expressions are written in."""
-        return sympy.symbols("r theta", positive=True)
+        """The polar symbols ``(r, theta)`` the expressions are written in.
+
+        ``r`` is positive — the solution is singular at ``r = 0`` and never
+        evaluated there — but ``theta`` is only REAL. It runs over
+        :math:`[0, 2\pi)` and the fault conditions are checked at
+        :math:`\theta = 0`, which a ``positive=True`` assumption excludes;
+        SymPy would then be entitled to simplify a substitution that the
+        assumption says cannot happen.
+
+        Cached on the instance, so repeated access returns the same objects
+        rather than relying on SymPy's global symbol cache for identity.
+        """
+        if self._symbols is None:
+            self._symbols = (sympy.Symbol("r", positive=True),
+                             sympy.Symbol("theta", real=True))
+        return self._symbols
 
     def _polar(self):
         r, t = self.symbols
