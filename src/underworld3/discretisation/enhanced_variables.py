@@ -481,16 +481,21 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         -------
         EnhancedMeshVariable
             New variable with copied structure but independent data.
+
+        Notes
+        -----
+        This forwarded no arguments at all until issue #498, so it raised
+        whichever way it was called: with the two arguments every caller uses,
+        and without them inside the base. Six shipped examples aborted on it.
+
+        The construction itself lives in ``_BaseMeshVariable.clone``, which
+        goes through the public ``uw.discretisation.MeshVariable`` factory and
+        so returns the enhanced type. Delegating keeps a single code path;
+        duplicating the constructor call here is what let the two halves of
+        #498 drift apart in the first place.
         """
-        return type(self)(
-            varname=name,
-            mesh=self._base_var.mesh,
-            num_components=self._base_var.shape,
-            vtype=self._base_var.vtype,
-            degree=self._base_var.degree,
-            continuous=self._base_var.continuous,
-            varsymbol=varsymbol,
-        )
+
+        return self._base_var.clone(name, varsymbol)
 
     def max(self):
         """Maximum value of the variable."""

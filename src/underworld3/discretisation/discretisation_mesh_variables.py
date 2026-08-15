@@ -593,7 +593,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         MeshVariable
             New mesh variable with copied structure but independent data.
         """
-        newMeshVariable = MeshVariable(
+        # Built through the public factory rather than a bare `MeshVariable`,
+        # which is not a name in this module — the clone therefore came back as
+        # a NameError for every caller. See issue #498. Going through the
+        # factory also returns the same enhanced type the caller started with,
+        # so a clone behaves like its original.
+        return uw.discretisation.MeshVariable(
             varname=name,
             mesh=self.mesh,
             num_components=self.shape,
@@ -602,8 +607,6 @@ class _BaseMeshVariable(Stateful, uw_object):
             continuous=self.continuous,
             varsymbol=varsymbol,
         )
-
-        return newMeshVariable
 
     def pack_raw_data_to_petsc(self, data_array, sync=True):
         """

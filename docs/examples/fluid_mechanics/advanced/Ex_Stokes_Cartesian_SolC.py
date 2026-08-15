@@ -14,38 +14,41 @@
 
 # %% [markdown]
 """
-# Stokes Benchmark SolCx
+# Stokes Benchmark SolC
 
 **PHYSICS:** fluid_mechanics
 **DIFFICULTY:** advanced
 
 ## Description
 
-The SolCx benchmark tests the Stokes solver with a sharp viscosity contrast.
-A vertical step in viscosity at x = 0.5 creates a challenging test case for
-iterative solvers. Compares Dirichlet and natural boundary conditions.
+SolC is the *isoviscous* benchmark: a dense column occupying half the box drives
+flow through a fluid of uniform viscosity. The difficulty is the discontinuous
+forcing, not a material contrast — the pressure has a kink at the column edge
+that a discretisation has to resolve.
+
+(For the sharp **viscosity** contrast, see SolCx. This file was previously
+titled and documented as SolCx while solving SolC, which is worth knowing if
+you are comparing old output.)
 
 ## Key Concepts
 
-- **Viscosity jump**: Step function viscosity contrast (10^6)
-- **Benchmark validation**: Comparison with analytical solution (if UW2 available)
-- **Natural vs Dirichlet BCs**: Free-slip implemented different ways
-- **Piecewise functions**: Using sympy.Piecewise for sharp interfaces
-- **Multigrid preconditioning**: Essential for high viscosity contrast
+- **Discontinuous body force**: buoyancy steps at x = 0.5, viscosity is uniform
+- **Benchmark validation**: against `uw.analytic.SolC`, in-tree and validated
+- **Truncated series**: the exact solution is a Fourier sum, `modes` terms of it
+- **Free slip on all walls**, with a pressure null space
 
 ## Mathematical Formulation
 
-Viscosity step function:
-$$\\eta(x) = \\begin{cases} 10^6 & x > 0.5 \\\\ 1 & x \\le 0.5 \\end{cases}$$
-
-Buoyancy forcing:
-$$f_y = -\\cos(\\pi x) \\sin(2\\pi y)$$
+Uniform viscosity $\\eta = 1$, with buoyancy stepping at the column edge. Both
+the forcing and the exact velocity come from `uw.analytic.SolC`, so they cannot
+disagree about sign or side — see the note in the validation section below.
 
 ## Parameters
 
 - `uw_resolution`: Mesh resolution
 - `uw_refinement`: Mesh refinement level
-- `uw_viscosity_contrast`: log10 of viscosity contrast
+- `uw_modes`: Fourier modes in the SolC analytic solution
+- `uw_viscosity_contrast`: log10 contrast, used by the SolCx section
 """
 
 # %% [markdown]
@@ -87,14 +90,15 @@ python Ex_Stokes_Cartesian_SolC.py -uw_viscosity_contrast 4
 params = uw.Params(
     uw_resolution = 4,              # Base mesh resolution
     uw_refinement = 2,              # Mesh refinement levels
-    uw_viscosity_contrast = 6,      # log10 of viscosity contrast
     uw_use_simplex = 1,             # Use simplex mesh (1) or quad (0)
     uw_penalty = 100,               # Stokes penalty parameter
+    uw_modes = 40,                  # Fourier modes in the SolC analytic solution
+    uw_viscosity_contrast = 6,      # log10 contrast, for the SolCx section below
 )
 
 # Derived parameters
-eta_ratio = 10 ** params.uw_viscosity_contrast
 use_simplex = bool(params.uw_use_simplex)
+eta_ratio = 10 ** params.uw_viscosity_contrast
 
 # %% [markdown]
 """
@@ -159,20 +163,19 @@ Verify solver with a simple step function forcing.
 """
 
 # %%
-eta_0 = 1
 x_c = sympy.Rational(1, 2)
-f_0 = 1
+
+# The exact solution supplies the forcing as well as the answer. Writing the
+# body force out by hand here is how this file came to solve a mirrored,
+# sign-flipped problem from the one it compared against: SolC's buoyancy is
+# negative on x < x_c, and the Piecewise previously used was +1 on x > x_c.
+# Nobody noticed, because the comparison sat behind an `import underworld` that
+# always failed.
+solC = uw.analytic.SolC(mesh, x_c=x_c, modes=int(params.uw_modes))
 
 stokes.penalty = params.uw_penalty
-stokes.bodyforce = sympy.Matrix(
-    [
-        0,
-        Piecewise(
-            (f_0, x > x_c),
-            (0.0, True),
-        ),
-    ]
-)
+stokes.constitutive_model.Parameters.shear_viscosity_0 = solC.fn_viscosity
+stokes.bodyforce = solC.fn_bodyforce
 
 # Free-slip boundary conditions (Dirichlet form)
 stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
@@ -210,6 +213,25 @@ stokes.solve()
 
 # %% [markdown]
 """
+## Validation against the analytic solution
+
+This has to happen **here**, not at the end of the file. Everything below
+reconfigures the same solver for other experiments, and `v` then holds those
+answers rather than this one — which is exactly how the old check came to
+compare a SolC analytic solution against a SolCx solve with penalty boundary
+conditions.
+"""
+
+# %%
+# `error` is a global reduction, so this is the same number on any rank count.
+solC_velocity_error = solC.error("velocity", v)
+solC_pressure_error = solC.error("pressure", p)
+
+uw.pprint(f"SolC relative velocity error: {solC_velocity_error:.6e}")
+uw.pprint(f"SolC relative pressure error: {solC_pressure_error:.6e}")
+
+# %% [markdown]
+"""
 ## SolCx Benchmark Configuration
 
 Step viscosity at x = 0.5 with harmonic forcing.
@@ -231,7 +253,7 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 timing.reset()
 timing.start()
 stokes.solve(zero_init_guess=True)
-timing.print_table(display_fraction=0.999)
+timing.print_table()  # see #499: display_fraction was removed from the API
 
 # Save solution with Dirichlet BCs
 v0.data[...] = v.data[...]
@@ -256,7 +278,7 @@ stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 timing.reset()
 timing.start()
 stokes.solve()
-timing.print_table(display_fraction=0.999)
+timing.print_table()  # see #499: display_fraction was removed from the API
 
 v1.data[...] = v.data[...]
 
@@ -278,7 +300,7 @@ stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 timing.reset()
 timing.start()
 stokes.solve()
-timing.print_table(display_fraction=0.999)
+timing.print_table()  # see #499: display_fraction was removed from the API
 
 # %% [markdown]
 """
@@ -330,32 +352,19 @@ if uw.mpi.size == 1:
         show_scalar_bar=False,
     )
 
-    pl.show(cpos="xy")
-
-# %% [markdown]
-"""
-## Validation Against UW2 (if available)
-"""
-
-# %%
-try:
-    import underworld as uw2
-
-    solC = uw2.function.analytic.SolC()
-    vel_soln_analytic = solC.fn_velocity.evaluate(mesh.X.coords)
-    from mpi4py import MPI
-    from numpy import linalg as LA
-
-    comm = MPI.COMM_WORLD
-
-    num = function.evaluate(v.fn, mesh.X.coords)
-    if comm.rank == 0:
-        print(f"Velocity difference norm: {LA.norm(v.data - vel_soln_analytic):.6e}")
-    comm.barrier()
-except ImportError:
-    import warnings
-
-    warnings.warn("Unable to validate against UW2 analytical solution (UW2 not available).")
+    # Only when there is somewhere to show it. Guarded on mpi.size alone, this
+    # blocks a script run forever waiting on a window that never opens — which
+    # is why running this file to completion was not something anyone had done.
+    if uw.is_notebook:
+        pl.show(cpos="xy")
 
 # %%
-print(f"SolCx benchmark complete: resolution {n_els}, refinement {refinement}")
+uw.pprint(
+    f"Complete: resolution {n_els}, refinement {refinement}, "
+    f"modes {int(params.uw_modes)}"
+)
+uw.pprint(f"  SolC velocity error (validated above): {solC_velocity_error:.6e}")
+uw.pprint(
+    "  The SolCx and natural-BC solves that follow it are BC experiments, "
+    "not benchmarks — nothing here compares them against an exact solution."
+)
