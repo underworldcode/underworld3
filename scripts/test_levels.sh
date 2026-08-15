@@ -146,26 +146,34 @@ run_tests() {
 }
 
 # Functions for each test level using pytest markers
+#
+# A level selection EXCLUDES the levels above it, and has to: pytest MERGES
+# marks rather than overriding them, so a file whose module declares
+# `pytestmark = pytest.mark.level_1` and whose heavy test then carries
+# `@pytest.mark.level_2` leaves that test marked BOTH. A plain `-m level_1`
+# selects it, and the demotion the author wrote does nothing. Nine files rely
+# on that demotion; the heaviest of their tests is a 96-second homotopy solve
+# that was running in the "quick" tier because of it.
 run_level_1() {
     echo "⚡ Running LEVEL 1: Quick Tests (Core Functionality)"
-    echo "Using pytest marker: -m level_1"
+    echo "Using pytest marker: -m 'level_1 and not level_2 and not level_3'"
     echo "Expected runtime: ~2 minutes"
     echo ""
 
-    # Run all tests marked with level_1
+    # Tests marked level_1 and NOT demoted to a higher level (see above)
     run_tests "Level 1 tests (quick core functionality)" \
-        tests/ -m level_1
+        tests/ -m "level_1 and not level_2 and not level_3"
 }
 
 run_level_2() {
     echo "🔧 Running LEVEL 2: Intermediate Tests"
-    echo "Using pytest marker: -m level_2"
+    echo "Using pytest marker: -m 'level_2 and not level_3'"
     echo "Expected runtime: ~5 minutes"
     echo ""
 
-    # Run all tests marked with level_2
+    # Tests marked level_2 and NOT demoted to level_3 (see above)
     run_tests "Level 2 tests (units, integration, projections)" \
-        tests/ -m level_2
+        tests/ -m "level_2 and not level_3"
 
     # Parallel tests for global statistics (requires MPI)
     if [ $RUN_PARALLEL -eq 1 ]; then

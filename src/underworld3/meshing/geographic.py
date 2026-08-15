@@ -15,6 +15,7 @@ import os
 import math
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -206,8 +207,8 @@ def RegionalSphericalBox(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
-        uw_filename = f".meshes/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElementsDepth}_plex{simplex}.msh"
+            os.makedirs(mesh_file_dir(), exist_ok=True)
+        uw_filename = f"{mesh_file_dir()}/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElementsDepth}_plex{simplex}.msh"
     else:
         uw_filename = filename
 
@@ -326,7 +327,7 @@ def RegionalSphericalBox(
 
         # Generate Mesh
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def spherical_mesh_refinement_callback(dm):
@@ -618,9 +619,9 @@ def RegionalGeographicBox(
     # Generate mesh filename if not provided
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
         uw_filename = (
-            f".meshes/uw_geographic_{ellipsoid_dict['planet']}_"
+            f"{mesh_file_dir()}/uw_geographic_{ellipsoid_dict['planet']}_"
             f"lon{lon_min:.1f}_{lon_max:.1f}_"
             f"lat{lat_min:.1f}_{lat_max:.1f}_"
             f"d{depth_min:.0f}_{depth_max:.0f}_"
@@ -764,7 +765,7 @@ def RegionalGeographicBox(
 
         # Generate mesh
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def geographic_return_coords_to_bounds(coords):
