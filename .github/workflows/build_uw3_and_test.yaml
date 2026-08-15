@@ -28,16 +28,19 @@ env:
   # the UCX transports and retire the whole flake class.
   UCX_TLS: tcp,sm,self
 
-  # WORKERS is deliberately NOT set: the batches run in-process until #567 is
-  # fixed. Distributing them works and was measured at 4 workers (49m43s ->
-  # 30m53s) but changes which files share a process, which makes three
-  # point-locator tests answer in the wrong cell. Setting `WORKERS: 4` here is
-  # the whole change once #567 lands — and the only change, because
-  # scripts/test.sh already honours it.
+  # Distribute the serial batches across worker processes. This was held back
+  # until #567 was fixed: worker counts change which files share a process, and
+  # a units test that switched the units system on at import time then reached
+  # a module-scoped fixture in the point-locator suite before anything reset it.
+  # That is fixed at source in tests/conftest.py, and the whole suite is green
+  # at 4, 8 and 16 workers.
   #
-  # Note if you do set it: detect nothing. The first attempt derived the count
-  # inside the job, got 1, and ran xdist with a single worker — a spawn and a
-  # fresh underworld3 import per batch, parallelising nothing, for 52m37s.
+  # 4 is the vCPU count of the runner. Do NOT try to detect it: the first
+  # attempt derived the count inside the job, got 1, and ran xdist with a single
+  # worker — a spawn and a fresh underworld3 import per batch, parallelising
+  # nothing, for 52m37s. The MPI batches are unaffected either way; they run
+  # their own mpirun.
+  WORKERS: 4
 
 jobs:
   test:
