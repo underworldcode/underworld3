@@ -31,7 +31,14 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The suite has outgrown 60 minutes. Measured 2026-08-15: the SERIAL phase
+    # alone is ~55 min (three batches at 14-15 min each), so the parallel phase
+    # - which runs last - was being cut off mid-run and reported as a failure
+    # that looked like a test failure. Any addition at all pushed a run over.
+    # This is a stop-gap that unblocks landing work; the durable fix is to split
+    # the batches across parallel jobs so wall-clock stops tracking total test
+    # time. See the CI-runtime issue for that.
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
