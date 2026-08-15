@@ -48,7 +48,28 @@ fi
 export UW_NO_USAGE_METRICS=0
 # A hard crash must print a Python stack, not just "Segmentation fault".
 export PYTHONFAULTHANDLER=1
-PYTEST="pytest --config-file=tests/pytest.ini"
+
+# Each worker is a full PETSc/BLAS process. Without pinning the thread pools,
+# N workers each start their own and oversubscribe the runner badly enough to
+# run slower than serial.
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+# Serial batches run across worker processes, one file at a time per worker.
+# --dist loadfile is the granularity this suite is safe at, and it is the same
+# mechanism the batching below already exists for: tests within a file follow
+# each other, PETSc objects and global state do not cross between workers.
+# WORKERS defaults to the runner's core count, capped at 8 — measured on 16
+# cores, throughput saturates by 8, and at one worker per core the file
+# grouping shifts enough to expose test pollution.
+if [ -z "$WORKERS" ]; then
+    _cores=$( (command -v nproc >/dev/null && nproc) \
+              || sysctl -n hw.ncpu 2>/dev/null || echo 2 )
+    WORKERS=$(( _cores < 8 ? _cores : 8 ))
+fi
+echo "Serial batches: $WORKERS worker process(es)"
+PYTEST="pytest --config-file=tests/pytest.ini --dist loadfile -n $WORKERS"
 
 # Run serial tests (unless --parallel-only specified)
 if [ $PARALLEL_ONLY -eq 0 ]; then
