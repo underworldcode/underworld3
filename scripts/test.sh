@@ -56,25 +56,23 @@ export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
-# CI runs the batches in-process, deliberately. Distributing them across
-# workers WORKS and is measured — 49m43s to 30m53s at 4 workers on the
-# runner — but it also changes which files share a process, and that exposes
-# a real defect: three point-locator tests then answer in a cell that does
-# not contain the query point, for every point (issue #567). We are not
-# marking those xfail to buy the speedup.
+# WORKERS distributes the serial batches, one file at a time per worker. It was
+# held back while #567 was open: the worker count decides which files share a
+# process, and a units test that switched the units system on at IMPORT time
+# then reached a module-scoped fixture in the point-locator suite before
+# anything reset it. Fixed at source in tests/conftest.py, so this is now just
+# a speed knob. Measured here, ./scripts/test.sh --p 2 on 16 cores:
 #
-# So CI stays serial until #567 is fixed. The developer loop does use workers
-# (scripts/test_levels.sh, `./uw test`: 9:45 to 1:22), because its grouping
-# does not hit the defect and the fast feedback is what stops people skipping
-# tests. Turning CI on afterwards is this block plus WORKERS in the workflow.
+#   serial batches   25.1 min -> 9.6 min at 8 workers
+#   end to end       28:04    -> 12:21
 #
-# WORKERS is honoured if set, so the parallel run stays one env var away for
-# anyone bisecting #567 in CI.
+# Unset (or 1) still runs everything in one process, which is what you want
+# when a test passes alone and fails in a full run.
 if [ -n "$WORKERS" ] && [ "$WORKERS" -gt 1 ]; then
-    echo "Serial batches: $WORKERS worker process(es) (WORKERS set; see #567)"
+    echo "Serial batches: $WORKERS worker process(es)"
     PYTEST="pytest --config-file=tests/pytest.ini --dist loadfile -n $WORKERS"
 else
-    echo "Serial batches: in-process (workers held back pending #567)"
+    echo "Serial batches: in-process (set WORKERS=N to distribute)"
     PYTEST="pytest --config-file=tests/pytest.ini"
 fi
 
