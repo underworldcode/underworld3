@@ -28,6 +28,7 @@ underworld3.analytic._base : the contract each solution satisfies.
 
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
+from .barr_houseman import FaultedMedium
 from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient
@@ -41,6 +42,7 @@ __all__ = [
     "AdvectedFront",
     "EllipticalInclusion",
     "ErfcDiffusion",
+    "FaultedMedium",
     "CylindricalStokes",
     "GardnerSteady",
     "GardnerTransient",
@@ -72,6 +74,7 @@ _SOLUTIONS = {
     "CylindricalStokes": CylindricalStokes,
     "EllipticalInclusion": EllipticalInclusion,
     "ErfcDiffusion": ErfcDiffusion,
+    "FaultedMedium": FaultedMedium,
     "GardnerSteady": GardnerSteady,
     "GardnerTransient": GardnerTransient,
     "Poisson1D": Poisson1D,

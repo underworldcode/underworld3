@@ -46,6 +46,13 @@ SWEEP = {
         {"matrix_viscosity": 3.0},
         {"matrix_viscosity": 0.5, "viscosity_ratio": 100.0},
     ],
+    # The tip position is this solution's equivalent of a viscosity off unity:
+    # at the default it sits on the origin, where a dropped offset cancels.
+    "FaultedMedium": [
+        {"U0": 2.5},
+        {"R0": 3.0, "eta": 0.25},
+        {"U0": 1.3, "R0": 2.0, "eta": 0.7, "tip": (0.3, -0.2)},
+    ],
 }
 
 ALL_STOKES = sorted(
@@ -167,7 +174,12 @@ def test_strain_rate_matches_the_velocity_off_default(cache, meshes, name, kw):
 # --------------------------------------------------------------------------
 
 
-FORCED = [n for n in STOKES if n != "EllipticalInclusion"]
+# Two solutions are driven entirely by their boundaries and have no body force
+# to flip. That is a property of the problems, so they are named here and the
+# claim is asserted below rather than skipped silently.
+FORCE_FREE = {"EllipticalInclusion", "FaultedMedium"}
+
+FORCED = [n for n in STOKES if n not in FORCE_FREE]
 
 
 @pytest.mark.parametrize("name", FORCED)
@@ -179,9 +191,10 @@ def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name
     :math:`\nabla\cdot\sigma + \mathbf f = 0`; if the suite tolerated the other
     sign it would not be validating that.
 
-    EllipticalInclusion is excluded because it has no body force to flip — it is
-    driven entirely by its boundary. That is a property of the problem, so it is
-    excluded by name here and asserted below rather than skipped silently.
+    The solutions in FORCE_FREE are excluded because they have no body force to
+    flip — they are driven entirely by their boundaries. That is a property of
+    those problems, so they are excluded by name here and asserted below rather
+    than skipped silently.
     """
 
     sol = _built(cache, meshes, name, {})
@@ -202,10 +215,11 @@ def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name
     )
 
 
-def test_the_inclusion_really_has_no_body_force(cache, meshes):
-    """The stated grounds for excluding it from the negative control above."""
+@pytest.mark.parametrize("name", sorted(FORCE_FREE))
+def test_the_force_free_solutions_really_have_no_body_force(cache, meshes, name):
+    """The stated grounds for excluding them from the negative control above."""
 
-    sol = _built(cache, meshes, "EllipticalInclusion", {})
+    sol = _built(cache, meshes, name, {})
     assert all(component == 0 for component in sol.fn_bodyforce)
 
 

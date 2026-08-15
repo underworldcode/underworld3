@@ -97,6 +97,11 @@ SWEEP = {
         {"matrix_viscosity": 3.0},
         {"matrix_viscosity": 0.5, "viscosity_ratio": 100.0},
     ],
+    "FaultedMedium": [
+        {"U0": 2.5},
+        {"R0": 3.0, "eta": 0.25},
+        {"U0": 1.3, "R0": 2.0, "eta": 0.7, "tip": (0.3, -0.2)},
+    ],
 }
 
 # Defaults first, then every off-default case.
@@ -206,7 +211,11 @@ def test_strain_rate_matches_the_velocity(cache, meshes, name, kw):
     assert _validation.strainrate_consistency(sol, sol.sample_points(count=8)) < 1.0e-8
 
 
-FORCED = [n for n in STOKES if n != "EllipticalInclusion"]
+# Driven entirely by their boundaries: no body force to flip. Named rather than
+# detected, and asserted below.
+FORCE_FREE = {"EllipticalInclusion", "FaultedMedium"}
+
+FORCED = [n for n in STOKES if n not in FORCE_FREE]
 
 
 @pytest.mark.parametrize("name", FORCED)
@@ -216,8 +225,8 @@ def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name
     The negative control, run here over the whole family. Without it the momentum
     gate is only an assertion that a small number is small.
 
-    EllipticalInclusion is excluded because it is boundary-driven and has no body
-    force to flip — asserted below rather than skipped silently.
+    The FORCE_FREE solutions are excluded because they are boundary-driven and
+    have no body force to flip — asserted below rather than skipped silently.
     """
 
     sol = _built(cache, meshes, name, {})
@@ -238,10 +247,11 @@ def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name
     )
 
 
-def test_the_inclusion_really_has_no_body_force(cache, meshes):
-    """The stated grounds for excluding it from the negative control above."""
+@pytest.mark.parametrize("name", sorted(FORCE_FREE))
+def test_the_force_free_solutions_really_have_no_body_force(cache, meshes, name):
+    """The stated grounds for excluding them from the negative control above."""
 
-    sol = _built(cache, meshes, "EllipticalInclusion", {})
+    sol = _built(cache, meshes, name, {})
     assert all(component == 0 for component in sol.fn_bodyforce)
 
 
