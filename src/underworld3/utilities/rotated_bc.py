@@ -35,6 +35,11 @@ from underworld3 import mpi
 from underworld3.utilities.boundary_flux import (
     _boundary_stratum_is, _desmear, write_boundary_scalar_field)
 
+# The outward-orientation rule for a boundary facet is shared with the two sibling
+# accumulators (Mesh._assemble_boundary_normal, boundary_flux._node_normals) so the
+# three cannot drift apart again — they did, and #564 was the bill.
+from underworld3.utilities.facet_normals import facet_measure_and_normal
+
 # The multigrid option bundles are owned in ONE place and shared with the native
 # and standard custom-P routes, so the rotated velocity block cannot be
 # configured differently from the others (#468).
@@ -222,44 +227,27 @@ def _boundary_velocity_nodes(solver, boundary, normal=None):
         if not (fS <= f < fE):
             continue
         # facet outward normal, and the measure the boundary term is integrated over
-        # (1.0 on the analytic path, whose normal does not come from the facet)
+        # (1.0 on the analytic path, whose normal does not come from the facet).
+        #
+        # The orientation rule lives in ONE place, `facet_measure_and_normal`:
+        # outward = away from the one cell this boundary facet belongs to, which is
+        # the domain's outward normal on ANY boundary, convex or not, and which needs
+        # no global reference point. Read its docstring for why the obvious
+        # alternative (away from the mean of the mesh coordinates) is both rank-local
+        # and inward on a concave boundary, and for the internal-boundary guard.
+        #
+        # CONVENTION, and it is user-visible: on a concave boundary — an annulus or
+        # shell INNER arc, the CMB — this is the opposite of what UW3 produced before
+        # #560, so σ_nn and dynamic topography read there through the GEOMETRIC normal
+        # reverse sign against earlier releases. The new sign is the one the
+        # docstrings have always claimed ("outward"). An analytic ``normal=`` is used
+        # exactly as given and is NOT reoriented, so ``X/|X|`` on an inner arc points
+        # into the domain and disagrees in sign with the default — see "Which normal
+        # to use" in ``docs/developer/subsystems/rotated-freeslip.md``.
         wgt = 1.0
         if normal is None:
-            vol, cent, nrm = dm.computeCellGeometryFVM(f)
-            ne = np.asarray(nrm, dtype=float)
-            ne = ne / (np.linalg.norm(ne) + 1e-30)
-            # Outward = away from the one cell this boundary facet belongs to, which
-            # is the domain's outward normal on ANY boundary, convex or not. The
-            # obvious alternative — away from the mean of the mesh coordinates — is
-            # BOTH rank-local (each rank averages only its own points, so two facets
-            # meeting at a seam node can be oriented oppositely and then CANCEL in
-            # the cross-rank sum) and wrong on a concave boundary, where it points
-            # INTO the domain.
-            #
-            # CONVENTION, and it is user-visible: on a concave boundary — an annulus
-            # or shell INNER arc, the CMB — this is the opposite of what UW3 produced
-            # before #560, so σ_nn and dynamic topography read there through the
-            # GEOMETRIC normal reverse sign against earlier releases. The new sign is
-            # the one the docstrings have always claimed ("outward"). An analytic
-            # ``normal=`` is used exactly as given and is NOT reoriented, so
-            # ``X/|X|`` on an inner arc points into the domain and disagrees in sign
-            # with the default — see "Which normal to use" in
-            # ``docs/developer/subsystems/rotated-freeslip.md``.
-            #
-            # Only an EXTERIOR facet has "the one cell it belongs to". An internal
-            # boundary's facets have two, and `support[0]` is whichever the DMPlex
-            # ordering happens to list first — flipping against that would orient
-            # neighbouring facets of the same surface oppositely, and they would then
-            # CANCEL in the measure-weighted sum. There the raw face normal is kept:
-            # PETSc orients it from support[0] to support[1] by its own convention,
-            # which is at least coherent along the surface. Both sibling
-            # implementations guard the same way (Mesh._assemble_boundary_normal,
-            # _local_boundary_candidates below).
-            if dm.getSupportSize(f) == 1:
-                _, ccent, _ = dm.computeCellGeometryFVM(int(dm.getSupport(f)[0]))
-                if np.dot(ne, np.asarray(cent) - np.asarray(ccent)) < 0:
-                    ne = -ne
-            wgt = float(vol)
+            vol, ne, _exterior = facet_measure_and_normal(dm, f)
+            wgt = vol
         # all velocity points on this facet (closure): verts + edges(3D) + the facet
         clo = dm.getTransitiveClosure(f)[0]
         for q in (int(c) for c in clo):

@@ -79,6 +79,14 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # no batch glob and never ran in CI.
   $PYTEST tests/test_101*py tests/test_102*py || status=1
   $PYTEST tests/test_105*py || status=1
+
+  # The boundary-normal guard lives under tests/parallel/ but carries NO
+  # mpi(min_size=2) mark, because the defect it guards is present in SERIAL in
+  # 3-D as well (#564: the facet-to-DOF routing, up to 5.9 degrees on a uniform
+  # spherical shell at np=1). Run it here so the serial job covers that path —
+  # every other serial test of the default boundary normal is on a box, where
+  # flat walls make the question vacuous. It also runs in the --p N batch below.
+  $PYTEST tests/parallel/test_1069_boundary_normal_parallel.py || status=1
   # NOT yet batched (issue #504 audit): test_106*py and test_107*py contain
   # level_2/level_3 + slow + tier_b/tier_c suites (e.g. test_1064) and need
   # a triage/deselect decision before being wired into CI.
@@ -118,9 +126,10 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py || status=1
 
     # Parallel SOLVER tests. This line was commented out, so test_1017 and
-    # test_1062..test_1068 — the whole rotated / constrained / MG parallel set,
-    # including the partition-independence guard for the rotated nodal normal
-    # (#560) — executed at NO rank count in CI.
+    # test_1062..test_1069 — the whole rotated / constrained / MG parallel set,
+    # including the partition-independence guards for the rotated nodal normal
+    # (#560) and the mesh boundary normal (#564) — executed at NO rank count
+    # in CI.
     echo "Testing parallel solvers..."
     mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_10*py || status=1
 
