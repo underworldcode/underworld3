@@ -31,7 +31,7 @@ Development* 14, 1899-1919. doi:10.5194/gmd-14-1899-2021
 
 import numpy as np
 
-from ._base import AnalyticSolution
+from ._base import AnalyticSolution, free_slip, prescribed_velocity
 
 
 _INSTALL_MESSAGE = (
@@ -254,14 +254,28 @@ class CylindricalStokes(AnalyticSolution):
         return float(np.sqrt(difference / magnitude))
 
     def apply_boundary_conditions(self, solver):
-        """Free-slip or zero-slip on both walls, as the case declares."""
+        """Free-slip or zero-slip on both arcs, as the case declares.
+
+        The two boundaries are curved, and the constraint uses the solver's own
+        geometric normal rather than the analytic radial one. That is deliberate:
+        the geometric normal is the direction the straight-facet boundary
+        integral actually sees, so the constant pressure stays a null vector to
+        machine precision, where ``X/|X|`` leaves a consistency error that grows
+        with facet non-uniformity. Reach for ``normal=`` only when the constraint
+        must follow the true circle rather than the mesh — see the "Which normal
+        to use" section of ``docs/developer/subsystems/rotated-freeslip.md``.
+        """
 
         if self.boundary == "zero":
-            for wall in self.boundaries:
-                solver.add_dirichlet_bc((0.0, 0.0), wall)
+            # TODO(BUG): the zero-slip case leaves the pressure nullspace in
+            # place, where every other enclosed case in the suite removes it. An
+            # annulus with both arcs held at zero velocity is enclosed, so its
+            # pressure is determined only up to a constant and a direct solve on
+            # the singular saddle can return a quiet, wrong answer. Preserved
+            # here because this refactor is behaviour-preserving by contract;
+            # fix it under its own test.
+            prescribed_velocity(solver, self.boundaries, (0.0, 0.0))
             return
 
-        for wall in self.boundaries:
-            solver.add_rotated_freeslip_bc(0.0, wall)
-
+        free_slip(solver, self.boundaries)
         solver.petsc_use_pressure_nullspace = True

@@ -2,9 +2,9 @@
 
 `uw.analytic` is the namespace for exact solutions used to validate a solve.
 These tests fix the contract itself — that the base class exposes the fields and
-error norms every solution promises, that the boundary-condition mixins configure
-a solver rather than returning something the caller has to apply, and that a
-solution reached through the new namespace is the *same object* as the one
+error norms every solution promises, that the boundary-condition helpers
+configure a solver rather than returning something the caller has to apply, and
+that a solution reached through the new namespace is the *same object* as the one
 reached through the old one.
 
 That last check matters more than it looks: `uw.function.analytic` is a compiled
@@ -31,7 +31,7 @@ def mesh():
     )
 
 
-class Quadratic(uw.analytic.FixedWalls, uw.analytic.AnalyticSolution):
+class Quadratic(uw.analytic.AnalyticSolution):
     r"""A manufactured Stokes solution used to exercise the contract.
 
     Divergence-free by construction: :math:`\mathbf u = (y, -x)` is a rigid
@@ -56,10 +56,23 @@ class Quadratic(uw.analytic.FixedWalls, uw.analytic.AnalyticSolution):
         self.fn_strainrate = sympy.Matrix([[0, 0], [0, 0]])
         self.fn_stress = sympy.Matrix([[0, 0], [0, 0]])
 
+    def apply_boundary_conditions(self, solver):
+        uw.analytic.prescribed_velocity(solver, self.boundaries, self.fn_velocity)
+        solver.petsc_use_pressure_nullspace = True
+
 
 def test_contract_is_exported():
-    """The contract and the mixins are reachable from the package namespace."""
-    for name in ("AnalyticSolution", "FreeSlipWalls", "FixedWalls"):
+    """The contract and the BC helpers are reachable from the package namespace.
+
+    A solution written outside this package has to be able to reach the helpers
+    it composes, so they are public API rather than a private convenience.
+    """
+    for name in (
+        "AnalyticSolution",
+        "free_slip",
+        "prescribed_scalar",
+        "prescribed_velocity",
+    ):
         assert name in uw.analytic.__all__
         assert hasattr(uw.analytic, name)
 
@@ -266,8 +279,8 @@ def test_missing_boundary_conditions_are_an_error(mesh):
         sol.apply_boundary_conditions(stokes)
 
 
-def test_fixed_walls_configures_the_solver(mesh):
-    """FixedWalls imposes the exact velocity on every wall and kills the nullspace."""
+def test_prescribed_velocity_configures_the_solver(mesh):
+    """The velocity helper imposes the exact velocity on the boundaries it is given."""
     sol = Quadratic(mesh)
     stokes = uw.systems.Stokes(mesh)
 
@@ -277,8 +290,8 @@ def test_fixed_walls_configures_the_solver(mesh):
     assert {bc.boundary for bc in stokes.essential_bcs} == set(sol.boundaries)
 
 
-def test_free_slip_walls_uses_the_rotated_constraint(mesh):
-    """FreeSlipWalls imposes u.n = 0 by rotation, not by masking a component.
+def test_free_slip_uses_the_rotated_constraint(mesh):
+    """free_slip imposes u.n = 0 by rotation, not by masking a component.
 
     Component masking is only equivalent on an axis-aligned box; the rotated form
     is what still holds when a solution is used to validate a curved or adapted
@@ -286,18 +299,56 @@ def test_free_slip_walls_uses_the_rotated_constraint(mesh):
     is the only signal that distinguishes the two paths.
     """
 
-    class FreeSlip(uw.analytic.FreeSlipWalls, Quadratic):
-        pass
-
-    sol = FreeSlip(mesh)
+    sol = Quadratic(mesh)
     stokes = uw.systems.Stokes(mesh)
 
-    sol.apply_boundary_conditions(stokes)
+    uw.analytic.free_slip(stokes, sol.boundaries)
 
-    assert stokes.petsc_use_pressure_nullspace
     registered = {boundary for boundary, _ in stokes._rotated_freeslip_bcs}
     assert registered == set(sol.boundaries)
     assert stokes.essential_bcs == []
+
+
+def test_boundaries_can_carry_different_conditions(mesh):
+    """The reason the helpers take a boundary list rather than reading self.
+
+    A shell, an annulus or a channel is not "walls of one kind": the condition
+    differs from one boundary to the next. A solution says so by calling more
+    than one helper, each with the boundaries it applies to.
+    """
+
+    sol = Quadratic(mesh)
+    stokes = uw.systems.Stokes(mesh)
+
+    uw.analytic.free_slip(stokes, ["Left", "Right"])
+    uw.analytic.prescribed_velocity(stokes, ["Bottom", "Top"], sol.fn_velocity)
+
+    slipping = {boundary for boundary, _ in stokes._rotated_freeslip_bcs}
+    driven = {bc.boundary for bc in stokes.essential_bcs}
+
+    assert slipping == {"Left", "Right"}
+    assert driven == {"Bottom", "Top"}
+
+
+def test_free_slip_passes_an_analytic_normal_through(mesh):
+    """A curved-boundary solution can choose the normal; the default is geometric.
+
+    Both calls must register, and the analytic one must carry the normal it was
+    given — otherwise a spherical or annulus solution silently gets the facet
+    normal it explicitly declined.
+    """
+
+    stokes = uw.systems.Stokes(mesh)
+    x, y = mesh.X
+    radial = sympy.Matrix([[x, y]]) / sympy.sqrt(x**2 + y**2)
+
+    uw.analytic.free_slip(stokes, ["Left"])
+    uw.analytic.free_slip(stokes, ["Right"], normal=radial)
+
+    registered = dict(stokes._rotated_freeslip_bcs)
+
+    assert registered["Left"] is None
+    assert registered["Right"] == radial
 
 
 def test_boundaries_follow_the_mesh_dimension(mesh):

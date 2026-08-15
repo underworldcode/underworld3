@@ -17,7 +17,7 @@ import os
 
 import sympy
 
-from ._base import AnalyticSolution, FixedWalls, FreeSlipWalls
+from ._base import AnalyticSolution, free_slip, prescribed_velocity
 from ._transcribe import (
     CSource,
     evaluate_block,
@@ -113,7 +113,7 @@ def _solcx_kernel(variant="_solCx_A"):
     }
 
 
-class SolCx(FreeSlipWalls, AnalyticSolution):
+class SolCx(AnalyticSolution):
     r"""Isoviscous-column Stokes flow with a viscosity step — the SolCx benchmark.
 
     Viscosity jumps from :math:`\eta_A` to :math:`\eta_B` at :math:`x = x_c` on
@@ -234,6 +234,12 @@ class SolCx(FreeSlipWalls, AnalyticSolution):
         if reference:
             self._use_reference_kernel()
 
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
+
     def velocity_error(self, velocity_var):
         """Global relative L2 velocity error. Equivalent to ``error("velocity", ...)``."""
 
@@ -344,7 +350,7 @@ def _solnl_kernel():
     }
 
 
-class SolNL(FixedWalls, AnalyticSolution):
+class SolNL(AnalyticSolution):
     r"""Power-law viscous flow — the SolNL nonlinear benchmark.
 
     A manufactured solution for a shear-thinning fluid: the viscosity depends on
@@ -447,6 +453,12 @@ class SolNL(FixedWalls, AnalyticSolution):
         if reference:
             self._use_reference_kernel()
 
+    def apply_boundary_conditions(self, solver):
+        """The exact velocity on all four walls — SolNL is driven by its boundaries."""
+
+        prescribed_velocity(solver, self.boundaries, self.fn_velocity)
+        solver.petsc_use_pressure_nullspace = True
+
     def _use_reference_kernel(self):
         """Point-evaluation only: opaque to the JIT, so no solver can use it."""
 
@@ -523,7 +535,7 @@ def _solkx_kernel():
     }
 
 
-class SolKx(FreeSlipWalls, AnalyticSolution):
+class SolKx(AnalyticSolution):
     r"""Stokes flow with an exponentially varying viscosity — the SolKx benchmark.
 
     Viscosity :math:`\eta = e^{2Bx}` on the unit box, driven by the density
@@ -624,6 +636,12 @@ class SolKx(FreeSlipWalls, AnalyticSolution):
             ),
         )
 
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
+
 
 _Y = sympy.Symbol("y")
 _BETA = sympy.Symbol("Beta")
@@ -677,10 +695,20 @@ def _soldb_kernel(dim):
     return fields
 
 
-class _SolDB(FixedWalls, AnalyticSolution):
+class _SolDB(AnalyticSolution):
     """Shared assembly for the Dohrmann–Bochev manufactured solutions."""
 
     stress_is_deviatoric = True
+
+    def apply_boundary_conditions(self, solver):
+        """The exact velocity on every wall; the enclosed box has a pressure nullspace.
+
+        These are manufactured solutions whose velocity is not tangential to the
+        box, so free slip would be a different problem.
+        """
+
+        prescribed_velocity(solver, self.boundaries, self.fn_velocity)
+        solver.petsc_use_pressure_nullspace = True
 
     def _assemble(self, mesh, values, names):
         kernel = {
@@ -826,7 +854,7 @@ def _solkz_kernel():
     }
 
 
-class SolKz(FreeSlipWalls, AnalyticSolution):
+class SolKz(AnalyticSolution):
     r"""Stokes flow with a depth-dependent viscosity — the SolKz benchmark.
 
     Viscosity :math:`\eta = e^{2Bz}` on the unit box, free slip everywhere,
@@ -909,6 +937,12 @@ class SolKz(FreeSlipWalls, AnalyticSolution):
             ),
         )
 
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
+
 
 _SIGMA = sympy.Symbol("sigma")
 
@@ -950,7 +984,7 @@ def _solab_kernel(name):
     }
 
 
-class _SolAB(FreeSlipWalls, AnalyticSolution):
+class _SolAB(AnalyticSolution):
     """Shared assembly for the two isoviscous Velic solutions."""
 
     dim = 2
@@ -1031,6 +1065,12 @@ class _SolAB(FreeSlipWalls, AnalyticSolution):
                 (kernel["stress_zx"], stress_zz),
             ),
         )
+
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
 
 
 class SolA(_SolAB):
@@ -1157,7 +1197,7 @@ def _solm_kernel():
     }
 
 
-class SolM(FreeSlipWalls, AnalyticSolution):
+class SolM(AnalyticSolution):
     r"""Stokes flow with a laterally oscillating viscosity — the SolM benchmark.
 
     Viscosity :math:`\eta = 1 + \eta_0(1 + \cos(r\pi x))` on the unit box, free
@@ -1250,6 +1290,12 @@ class SolM(FreeSlipWalls, AnalyticSolution):
             ),
         )
 
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
+
 
 _XC_C = sympy.Symbol("xc_solc")
 
@@ -1321,7 +1367,7 @@ def _solc_kernel(modes):
     return totals
 
 
-class SolC(FreeSlipWalls, AnalyticSolution):
+class SolC(AnalyticSolution):
     r"""Isoviscous flow driven by a dense column — the SolC benchmark.
 
     Constant viscosity on the unit box, free slip everywhere, driven by a density
@@ -1409,6 +1455,12 @@ class SolC(FreeSlipWalls, AnalyticSolution):
                 (kernel["stress_zx"], kernel["stress_zz"]),
             ),
         )
+
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
 
 
 _ZC, _DX, _X0 = sympy.symbols("zc dx x0")
@@ -1508,7 +1560,7 @@ def _solda_kernel(modes):
     return totals
 
 
-class SolDA(FreeSlipWalls, AnalyticSolution):
+class SolDA(AnalyticSolution):
     r"""A dense column in a layered fluid — the SolDA benchmark.
 
     A rectangular density anomaly of width *dx* centred at *x_0*, in a fluid
@@ -1620,6 +1672,12 @@ class SolDA(FreeSlipWalls, AnalyticSolution):
             ),
         )
 
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
+
 
 _DY = sympy.Symbol("dy")
 
@@ -1695,7 +1753,7 @@ def _solh_kernel(modes):
     return totals
 
 
-class SolH(FreeSlipWalls, AnalyticSolution):
+class SolH(AnalyticSolution):
     r"""A dense block in three dimensions — the SolH benchmark.
 
     Isoviscous flow in the unit cube, free slip everywhere, driven by a
@@ -1783,3 +1841,9 @@ class SolH(FreeSlipWalls, AnalyticSolution):
                 (kernel["stress_xz"], kernel["stress_yz"], kernel["stress_zz"]),
             ),
         )
+
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all six faces; the enclosed cube has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True

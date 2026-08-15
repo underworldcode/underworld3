@@ -36,7 +36,7 @@ import functools
 
 import sympy
 
-from ._base import AnalyticSolution, FixedWalls
+from ._base import AnalyticSolution, prescribed_velocity
 
 
 def _conjugate(expression):
@@ -172,7 +172,7 @@ def _potentials(zeta, viscosity_ratio, aspect_ratio, alpha, pure_shear, simple_s
     }
 
 
-class EllipticalInclusion(FixedWalls, AnalyticSolution):
+class EllipticalInclusion(AnalyticSolution):
     r"""A viscous elliptical inclusion in a matrix under general shear.
 
     Parameters
@@ -375,6 +375,18 @@ class EllipticalInclusion(FixedWalls, AnalyticSolution):
 
         self._potentials = potentials
         self._centre = tuple(float(c) for c in centre)
+
+    def apply_boundary_conditions(self, solver):
+        """The exact velocity on every wall; the enclosed box has a pressure nullspace.
+
+        The flow is driven by the far field, so the domain boundary is where that
+        far field enters: the walls carry the exact solution rather than a slip
+        condition, and cutting the box closer to the inclusion changes only how
+        much of the analytic far field is imposed rather than solved for.
+        """
+
+        prescribed_velocity(solver, self.boundaries, self.fn_velocity)
+        solver.petsc_use_pressure_nullspace = True
 
     @property
     def semi_axes(self):
