@@ -604,6 +604,7 @@ class FaultedMedium(AnalyticSolution):
     def _refuse_the_tip(r, quantity):
         if np.any(r == 0.0):
             raise ValueError(
-                f"the {quantity} is singular at the fault tip; exclude r = 0 "
-                f"(the velocity is defined there — use evaluate_velocity)"
+                f"the {quantity} is singular at the fault tip; exclude r = 0. "
+                f"The velocity is defined there — evaluate_velocity returns the "
+                f"limit, which is zero."
             )

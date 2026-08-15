@@ -381,6 +381,29 @@ def test_the_cartesian_fields_are_the_fault_frame_ones(mesh):
             assert mine[k] == pytest.approx(expect, rel=1e-9, abs=1e-11), name
 
 
+def test_the_contract_evaluation_path_compiles(mesh):
+    """`evaluate` — and so `error` — must work, which means the branch cut has
+    to survive code generation.
+
+    The whole family's argument for one SymPy form is that it compiles: the same
+    expression is a Dirichlet datum, a JIT kernel and an error norm. For this
+    solution that claim rests on a `Piecewise` around two `atan2` calls, which is
+    the part a C printer could plausibly get wrong, so it is exercised rather
+    than assumed. Agreement with the independent NumPy path is the check.
+
+    The disc is placed INSIDE the mesh here, unlike everywhere else in this file:
+    `uw.function.evaluate` needs points the mesh actually contains, while the
+    residual gates only need the coordinate symbols.
+    """
+
+    sol = uw.analytic.FaultedMedium(mesh, R0=0.4, tip=(0.5, 0.5))
+    points = sol.sample_points(count=4)
+
+    through_the_jit = np.asarray(sol.evaluate("velocity", points)).reshape(-1, 2)
+
+    assert np.abs(through_the_jit - sol.evaluate_velocity(points)).max() < 1.0e-12
+
+
 def test_the_residual_gates_hold_with_the_tip_off_the_origin(mesh):
     """The oracle-free gates, at a tip the conformance sweep never uses.
 
