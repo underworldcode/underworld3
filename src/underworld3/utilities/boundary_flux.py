@@ -29,6 +29,11 @@ set ``remove_mean=True`` for a gauge-free field (e.g. dynamic topography).
 import numpy as np
 from mpi4py import MPI
 
+# One rule for a boundary facet's outward normal and measure, shared with the two
+# sibling accumulators (rotated_bc._boundary_velocity_nodes,
+# Mesh._assemble_boundary_normal).
+from underworld3.utilities.facet_normals import facet_measure_and_normal
+
 
 # M_e = (area / 12) * _P1_TRIANGLE_MASS.
 _P1_TRIANGLE_MASS = np.array(
@@ -213,14 +218,15 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     """Per-node outward unit normal (only needed to project a vector reaction).
     ``normal`` is None (geometric facet normal), a sympy 1×dim Matrix (analytic,
     lambdified), or a constant (dim,) vector."""
-    # TODO(BUG): the geometric branch below is a stale copy of the pre-#560 rule.
-    # It orients against the mean of the mesh coordinates, which is rank-local (it
-    # averages only this rank's points) and points INTO the domain on a concave
-    # boundary — rotated_bc._boundary_velocity_nodes now orients away from the
-    # facet's own support cell and sums across ranks. Currently unreachable: the
-    # only caller guards it with `if normal is not None`, so the geometric branch
-    # never runs. It will be wrong the day someone wires a geometric normal in here.
-    interior_ref = cvec.mean(axis=0)
+    # The geometric branch below now takes its orientation and its measure weight from
+    # the shared `facet_measure_and_normal` (the #560/#561 rule), so it is no longer a
+    # stale copy of the pre-#560 bisector.
+    #
+    # TODO(parallel): it still accumulates over THIS RANK's labelled facets only, so a
+    # node on a partition seam would get a partial stencil — the #564 defect. It is
+    # unreachable today (the only caller guards it with `if normal is not None`), which
+    # is why it is not carrying its own cross-rank reduction: wire one in from
+    # `rotated_bc._sum_facet_normals_across_ranks` before making this branch live.
     sym_fn = const = None
     if normal is not None:
         try:
@@ -244,13 +250,10 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
         for f in facets:
             if not (fS <= f < fE):
                 continue
-            _, cent, nrm = dm.computeCellGeometryFVM(f)
-            ne = np.asarray(nrm, float); ne = ne / (np.linalg.norm(ne) + 1e-30)
-            if np.dot(ne, np.asarray(cent) - interior_ref) < 0:
-                ne = -ne
+            measure, ne, _exterior = facet_measure_and_normal(dm, f)
             for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
                 if q in pts:
-                    acc[q] = acc.get(q, np.zeros(dim)) + ne
+                    acc[q] = acc.get(q, np.zeros(dim)) + measure * ne
         for q, s, _c in nodes:
             nn = acc.get(q, np.zeros(dim))
             nmap[(q, s)] = nn / (np.linalg.norm(nn) + 1e-30)

@@ -119,6 +119,45 @@ that must morph in time (Dirichlet→Neumann ramps).
 **Implementation**: `src/underworld3/utilities/rotated_bc.py`; registration and
 dispatch in `petsc_generic_snes_solvers.pyx` (`add_rotated_freeslip_bc`).
 
+### The same rule holds for the other two free-slip paths
+
+`add_constraint_bc` (the Lagrange-multiplier free-slip) and `add_nitsche_bc` do
+not use `_boundary_velocity_nodes`. Their default constraint direction is
+`mesh.boundary_normal(boundary)`, a P1 field assembled by
+`Mesh._assemble_boundary_normal` — a second copy of the same accumulation, and
+it was left rank-local when #560/#561 fixed the rotated one. That is **#564**:
+on `Annulus(cellSize=0.12)` the worst nodal normal on the Upper arc was 3.0e-10
+from the exact radial one in serial and **5.8e-02 (3.3°) at np=2, 3 and 4** —
+one facet's normal instead of the average of two, so its size is set by the
+facet's angular span and does not shrink with more ranks. End to end that moved
+a constrained free-slip velocity by **3.4 %** between np=1 and np=2 (#495).
+
+It is fixed the same way — the weighted contributions are summed through the
+variable's own sub-DM local↔global scatter before normalising — and all three
+accumulators now take their orientation and measure from one shared
+`utilities/facet_normals.facet_measure_and_normal`, so they cannot drift apart
+again. `boundary_flux._node_normals` is the third; its geometric branch is
+unreachable today (its caller guards it with `if normal is not None`) and it
+carries a `TODO(parallel)` rather than its own reduction.
+
+Guard: `tests/parallel/test_1069_boundary_normal_parallel.py` (an analytic
+oracle on the annulus, a global-facet-sum oracle in 2-D and 3-D, corner
+preservation, a negative control, and the Nitsche end-to-end).
+
+Two caveats that are *not* the normal, recorded so they are not re-derived:
+
+* an **internal** boundary's facets have two support cells, so
+  `Mesh._assemble_boundary_normal` skips them and
+  `mesh.boundary_normal("Internal")` comes back **zero**. `rotated_bc` keeps
+  PETSc's own face normal there instead. Neither is a supported configuration;
+  do not read either as an endorsement.
+* `add_nitsche_bc`'s default `local_h=True` scales the penalty by
+  `mesh.cell_size()`, which is **partition-dependent in its own right** (it
+  comes from a kd-tree query against this rank's centroids — see the
+  `TODO(BUG)` on `Mesh._assemble_cell_size`). With `local_h=False` the Nitsche
+  annulus agrees to 3.6e-10 at np=1…4; with it, to 6.6e-03. That is a separate
+  defect from #564 and is not fixed by it.
+
 ## One solve path
 
 There is a single driver, `solve_rotated_freeslip`: a manual outer
