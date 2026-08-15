@@ -2909,13 +2909,19 @@ class Mesh(Stateful, uw_object):
     def boundary_normal(self, boundary):
         """Outward unit normal of a single boundary, tracking deformation.
 
-        Assembles the EXACT, outward, area-weighted PETSc facet normals
+        Assembles the EXACT, outward, measure-weighted PETSc facet normals
         (``dm.computeCellGeometryFVM``) from ONLY this boundary's facets onto
         its P1 vertices. Because each boundary is assembled independently,
         a vertex shared by two boundaries (a sharp corner) is NOT averaged
         across the discontinuity — each boundary keeps its own normal. On a
         smooth boundary (e.g. a free surface) the result is the smooth
         deformed normal. Cached per boundary; rebuilt lazily after a deform.
+
+        COLLECTIVE. The per-vertex sum runs over ALL the facets meeting the
+        vertex, which in parallel are split between ranks, so it is completed
+        through the variable's own local↔global scatter before normalising
+        (#564). Every rank must call this, including one that owns no part of
+        the boundary.
 
         Returns a sympy Matrix (row) of the P1 normal-field components, for
         use as the constraint direction in Nitsche/penalty BCs.
@@ -2975,55 +2981,114 @@ class Mesh(Stateful, uw_object):
         return face_pts
 
     def _assemble_boundary_normal(self, var, name):
-        """Fill ``var`` with the area-weighted outward facet normal assembled
-        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
-        from scipy.spatial import cKDTree
+        """Fill ``var`` with the measure-weighted outward facet normal assembled
+        from the faces of boundary ``name`` only (see :meth:`boundary_normal`).
+
+        The nodal normal is ``Σ_f |f| n̂_f`` over EVERY facet of this boundary that
+        meets the node, normalised at the end. In parallel that sum has to be
+        completed across ranks before the normalise: a boundary facet is labelled
+        on exactly one rank (measured — see the note below), so a node on a
+        partition seam sees only SOME of its facets locally and normalising a
+        partial stencil gives it a rotated normal. That is #564: on an
+        ``Annulus(cellSize=0.12)`` the Upper arc's worst nodal normal was 3.0e-10
+        from the exact radial one in serial and 5.8e-02 (3.3 degrees) at np=2,3,4 —
+        exactly the error of taking one facet's normal instead of the average of
+        the two — and it moved a constrained free-slip answer by 3.4 %.
+
+        COLLECTIVE. The reduction runs on every rank, including one that owns no
+        facet of this boundary (the #405 lesson: a rank-local early return here
+        deadlocks the ranks that do own facets).
+
+        Why a plain ADD is exact, with no de-duplication: no boundary facet is
+        labelled on two ranks and none is labelled away from its owner. Measured
+        on the annulus and the spherical shell at np=2,3,4 for BOTH label sources
+        (the per-boundary label this uses and the consolidated ``UW_Boundaries``);
+        the guard that keeps it true is
+        ``tests/parallel/test_1069_boundary_normal_parallel.py``.
+        """
+        from underworld3.utilities.facet_normals import facet_measure_and_normal
+
         cdim = self.cdim
         dm = self.dm
-        coords = numpy.ascontiguousarray(var.coords)
-        accum = numpy.zeros((coords.shape[0], cdim))
+        ncomp = var.num_components
+        # Dense over this rank's LOCAL DOFs (ghosts included), so a node whose
+        # labelled facets all live on a neighbour needs no special enumeration —
+        # it is simply a row that stays zero until the reduction fills it.
+        accum = numpy.zeros_like(numpy.asarray(var.data))
 
         face_pts = self._boundary_facets(name)
 
-        tree = cKDTree(coords)
-        # P1 vertices per facet, counted from the facet's own closure so this
-        # works for non-simplex facets too (2D edge=2, 3D tri=3, 3D quad=4).
-        vStart, vEnd = dm.getDepthStratum(0)
-        for f in face_pts:
-            if dm.getSupportSize(f) != 1:
-                continue
-            area, cent, nrm = dm.computeCellGeometryFVM(f)
-            nrm = numpy.asarray(nrm)[:cdim]
-            cell = dm.getSupport(f)[0]
-            _, ccent, _ = dm.computeCellGeometryFVM(cell)
-            if numpy.dot(nrm, numpy.asarray(cent)[:cdim]
-                         - numpy.asarray(ccent)[:cdim]) < 0:
-                nrm = -nrm
-            _clo = dm.getTransitiveClosure(f)[0]
-            nverts = int(numpy.count_nonzero((_clo >= vStart) & (_clo < vEnd))) or cdim
-            # Accumulate to the facet's P1 DOFs (its vertices) — found as the
-            # nearest DOFs to the facet centroid. This avoids indexing the local
-            # coordinate array by (vertex_point - vStart), which is only valid
-            # in serial (the parallel coordinate layout differs → out-of-range).
-            # Normalisation at the end makes the per-DOF weight (full vs share)
-            # irrelevant to the resulting direction.
-            _, idxs = tree.query(numpy.asarray(cent)[:cdim], k=nverts)
-            for idx in numpy.atleast_1d(idxs):
-                accum[idx] += area * nrm
+        # DOF rows come from the variable's OWN section on its sub-DM: exact on
+        # every rank, and the same section the reduction below scatters through.
+        # (This used to be a kd-tree lookup of the DOFs nearest the facet
+        # centroid — a heuristic that can mis-assign on a graded mesh, and one
+        # that cannot be made to agree across ranks because each rank's tree is
+        # built from its own local coordinates.)
+        indexset, subdm = dm.createSubDM(var.field_id)
+        try:
+            ssec = subdm.getLocalSection()
+            for f in face_pts:
+                # Orientation needs the facet's OWN support cell, and only an
+                # exterior facet has exactly one. An internal boundary's facets
+                # have two and support[0] is arbitrary, so neighbouring facets of
+                # the same surface could be oriented oppositely and CANCEL in the
+                # sum — those facets are skipped, which is why a normal requested
+                # for an INTERNAL boundary comes back zero. (rotated_bc keeps the
+                # raw PETSc normal there instead; neither is a supported use of
+                # this routine today.)
+                measure, nrm, exterior = facet_measure_and_normal(dm, f)
+                if not exterior:
+                    continue
+                for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
+                    if ssec.getDof(q) <= 0:
+                        continue
+                    accum[ssec.getOffset(q) // ncomp] += measure * nrm[:cdim]
 
-        # TODO(parallel): a boundary vertex on a partition interface should
-        # ADD-reduce the UNnormalised facet contributions from both ranks before
-        # normalising (DMLocalToGlobal ADD_VALUES on the variable's section),
-        # so its normal is the full-stencil average rather than this rank's
-        # partial stencil. This is parallel-SAFE as-is (rank-interior boundary
-        # vertices are exact; only the handful of partition-seam surface
-        # vertices get a slightly-rotated unit normal). A first ADD-reduce
-        # attempt SEGV'd on the lazily-built work variable's global vec; deferred
-        # to a focused follow-up with the right vec/section plumbing.
+            if dm.comm.getSize() > 1:
+                accum = self._sum_local_dofs_across_ranks(subdm, accum)
+        finally:
+            indexset.destroy()
+            subdm.destroy()
+
         mag = numpy.sqrt(numpy.sum(accum ** 2, axis=1))
         nonzero = mag > 1.0e-30
         accum[nonzero] /= mag[nonzero, numpy.newaxis]
         var.data[...] = accum
+
+    def _sum_local_dofs_across_ranks(self, subdm, values):
+        """Complete a per-DOF sum across ranks: this rank's own contributions in,
+        the sum over EVERY rank's contributions out — the same value on every rank
+        that holds the DOF.
+
+        ``values`` is dense over ``subdm``'s LOCAL DOFs, shaped ``(ndof, ncomp)``
+        exactly like the variable's ``.data``. The sum rides the sub-DM's own
+        local↔global scatter: ADD into the global vector accumulates every ghost
+        copy onto the owner, and scattering back hands every rank the identical
+        total. Work vectors are created here rather than borrowed from the
+        variable, whose global vec is built lazily.
+
+        COLLECTIVE on the DM's communicator.
+        """
+        ncomp = values.shape[1]
+        lvec = subdm.createLocalVector()
+        gvec = subdm.createGlobalVector()
+        try:
+            lvec.array[...] = values.reshape(-1)
+            gvec.set(0.0)
+            subdm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
+            subdm.globalToLocal(gvec, lvec, addv=PETSc.InsertMode.INSERT_VALUES)
+            summed = numpy.array(lvec.array, dtype=float).reshape(-1, ncomp)
+        finally:
+            lvec.destroy()
+            gvec.destroy()
+        # A DOF constrained out of the global vector would come back zero; keep
+        # this rank's own contribution there rather than losing it. The mesh DM
+        # carries no essential-BC constraints (those live on the solver DM), so
+        # this does not fire today — it is here so that it degrades to the old
+        # rank-local answer instead of to zero if that ever changes.
+        dropped = (~summed.any(axis=1)) & values.any(axis=1)
+        summed[dropped] = values[dropped]
+        return summed
 
     def cell_size(self):
         """Local, per-cell characteristic mesh size as a scalar field symbol.
@@ -3106,6 +3171,23 @@ class Mesh(Stateful, uw_object):
         access, no collective): mixing a rank-local fast path with a
         collective fallback would diverge across ranks and deadlock, because
         ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
+        # TODO(BUG): this field is PARTITION-DEPENDENT, and so therefore is the
+        # Nitsche penalty gamma*mu/h that consumes it (local_h=True, the default).
+        # Not the indexing here — the values. `_get_mesh_sizes` measures a cell by
+        # the distance from its vertices to the NEAREST CENTROID in a kd-tree built
+        # from THIS RANK's centroids, so near a partition seam the nearest centroid
+        # may simply be absent. Measured on Annulus(cellSize=0.12): the field's sum
+        # is 26.0822 at np=1, 26.1211 at np=2 and 26.1386 at np=4, and its max moves
+        # at np=4. End to end that is 6.6e-03 in the velocity of a Nitsche free-slip
+        # annulus and it does NOT shrink with solver tolerance.
+        # This is a DIFFERENT defect from the boundary normal fixed for #564 (which
+        # is now clean: the same solve with local_h=False agrees to 3.6e-10 at
+        # np=1..4). It is the local h that is left, and it also reaches every other
+        # consumer of `cell_size()`. Not fixed here because `_get_mesh_sizes` also
+        # feeds `get_min_radius`, the adaptivity metrics and the free-surface
+        # relaxation, and it needs its own benchmarking.
+        # Guard/measurement: tests/parallel/test_1069_boundary_normal_parallel.py
+        # (_nitsche_annulus_diagnostics docstring records the numbers).
         radii = numpy.asarray(self._radii).reshape(-1)
         # Empty partition (no local cells): nothing to fill on this rank.
         if radii.size == 0 or var.data.shape[0] == 0:
