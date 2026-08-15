@@ -21,26 +21,16 @@ import pytest
 import sympy
 import underworld3 as uw
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(180)]
+from serial_reference import compare, emit, mesh_fingerprint, serial_reference
 
-# serial reference (np1), used to catch a partition-dependent datum bug
-_INT_VV_REF = 6.6559607579
+# The timeout covers the np=1 child the partition test spawns as well as the
+# parallel solve itself.
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(900)]
 
 
-@pytest.mark.xfail(
-    reason="#564: free-slip solves are partition dependent. CI measures the solve "
-           "energy 6.65602336 against the recorded 6.6559607579 at np=2 (9.4e-06) — "
-           "the smallest of the family, but the same defect. PRE-EXISTING and not "
-           "caused by #560/#561: the same seven assertions fail with numbers "
-           "identical to every digit at #561's merge base with only the "
-           "scripts/test.sh test_10*py line enabled, which is how they became "
-           "visible at all — this whole batch had never run in CI. This case passes "
-           "an explicit analytic normal=, and its numbers are bit-identical before "
-           "and after #560's nodal-normal fix, so it is definitively not that "
-           "mechanism. Passes locally on macOS/arm64, so strict=False; see #564 for "
-           "the full table.",
-    strict=False)
-def test_rotated_datum_prescribed_normal_partition_independent():
+def _datum_diagnostics():
+    """Prescribe ``u.n = cos(theta)`` on the annulus surface and return
+    ``((relL2 of the datum residual, solve energy int v.v), fingerprint)``."""
     RI, RO = 0.5, 1.0
     mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.1, qdegree=3)
     x, y = mesh.X
@@ -63,12 +53,33 @@ def test_rotated_datum_prescribed_normal_partition_independent():
     vn = (v.sym[0] * x + v.sym[1] * y) / r
     num = float(uw.maths.BdIntegral(mesh=mesh, fn=(vn - x / r) ** 2, boundary="Upper").evaluate())
     den = float(uw.maths.BdIntegral(mesh=mesh, fn=(x / r) ** 2, boundary="Upper").evaluate())
-    relL2 = np.sqrt(num / den)
-    assert relL2 < 1.0e-3, f"prescribed u.n=cos(theta) not imposed (relL2={relL2:.3e})"
-
+    relL2 = float(np.sqrt(num / den))
     vv = float(uw.maths.Integral(mesh, v.sym.dot(v.sym)).evaluate())
-    assert abs(vv - _INT_VV_REF) / _INT_VV_REF < 1.0e-6, \
-        f"solve energy is partition-dependent: ∫v·v={vv:.8e} vs ref {_INT_VV_REF}"
+    return (relL2, vv), mesh_fingerprint(mesh)
+
+
+def test_rotated_datum_prescribed_normal_partition_independent():
+    """The datum is imposed, and the solve energy reproduces THIS ENVIRONMENT's np=1
+    run rather than a constant recorded elsewhere.
+
+    The 9.4e-06 this test used to report on CI (6.65602336 measured against a recorded
+    6.6559607579) was the distance to a golden taken on macOS/arm64 while the runner's
+    gmsh built a different annulus — not a partition effect. See the module docstring
+    of ``test_1064_rotated_freeslip_parallel.py`` for the CI measurement that settles
+    it.
+    """
+    values, fingerprint = _datum_diagnostics()
+    # ABSOLUTE check: the prescribed datum really is imposed. The residual is the
+    # P2/faceting interpolation error, not a partition effect, so this is an accuracy
+    # gate and NOT a partition comparison.
+    assert values[0] < 1.0e-3, (
+        f"prescribed u.n=cos(theta) not imposed (relL2={values[0]:.3e})")
+    reference = serial_reference(__file__, "datum")
+    compare(values[1:], {"values": reference["values"][1:],
+                         "fingerprint": reference["fingerprint"]},
+            rtols=(1e-6,),
+            labels=("solve energy int v.v",), fingerprint=fingerprint,
+            what="rotated prescribed-normal datum")
 
 
 def test_rotated_datum_nonlinear_parallel():
@@ -110,3 +121,16 @@ def test_rotated_datum_nonlinear_parallel():
     den = float(uw.maths.BdIntegral(mesh=mesh, fn=(x / r) ** 2, boundary="Upper").evaluate())
     relL2 = np.sqrt(max(num, 0.0) / den)
     assert relL2 < 1.0e-3, f"nonlinear u.n=cos(theta) not imposed (relL2={relL2:.3e})"
+
+
+if __name__ == "__main__":
+    # Single-rank child of the parallel run (see serial_reference), and a
+    # human-readable recompute: `python <thisfile> datum`.
+    import sys
+    _kind = sys.argv[1] if len(sys.argv) > 1 else "datum"
+    if _kind != "datum":
+        raise SystemExit(f"unknown kind {_kind!r}")
+    _values, _fingerprint = _datum_diagnostics()
+    emit(_values, _fingerprint)
+    uw.mpi.pprint(f"DIAG_DATUM relL2={_values[0]:.6e} vv={_values[1]:.12e} "
+                  f"[cells={_fingerprint[0]:.0f} vol={_fingerprint[1]:.12g}]")
