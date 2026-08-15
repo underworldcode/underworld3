@@ -48,6 +48,11 @@ from petsc4py import PETSc
 
 from underworld3 import mpi
 
+# One rule for a facet's measure and normal, shared with the three wall accumulators
+# (rotated_bc._boundary_velocity_nodes, Mesh._assemble_boundary_normal,
+# boundary_flux._node_normals). This was a fourth verbatim copy.
+from underworld3.utilities.facet_normals import facet_measure_and_normal
+
 # PETSc section field id of the velocity unknown (solver field registration
 # order: velocity first) — the same convention as rotated_bc.
 _VELOCITY_FIELD = 0
@@ -558,15 +563,18 @@ def _fault_pair_nodes(solver, boundary):
     # there: a pressure-driven spurious slip at every kink node, plus the same lost
     # pressure gauge. Rank-local by construction — a seam-touching fault is
     # redistributed onto one rank before the split, so no cross-rank sum is needed.
+    # Same rule, same one place, as the three wall accumulators — see
+    # `facet_normals.facet_measure_and_normal`. `orient="support0"` is the ONE
+    # difference and it is deliberate: a fault facet is interior by construction (two
+    # support cells), so the "exterior" rule would decline to orient it at all. Every
+    # facet of a split fault lists the same side first, so "away from support[0]" IS
+    # the ±side split and is coherent along the surface. Keeping the normalise, the
+    # +1e-30 epsilon and the measure weight shared is the point: this was a fourth
+    # verbatim copy of those six lines, and copies of them drifting apart is what
+    # produced #560 and then #564.
     nacc = {}
     for f in facets:
-        vol, cent, nrm = dm.computeCellGeometryFVM(f)
-        ne = np.asarray(nrm, dtype=float)
-        ne = ne / (np.linalg.norm(ne) + 1e-30)
-        support = dm.getSupport(f)
-        _, ccent, _ = dm.computeCellGeometryFVM(int(support[0]))
-        if np.dot(ne, np.asarray(cent) - np.asarray(ccent)) < 0:
-            ne = -ne
+        vol, ne, _exterior = facet_measure_and_normal(dm, f, orient="support0")
         for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
                 nacc[q] = nacc.get(q, np.zeros(dim)) + float(vol) * ne

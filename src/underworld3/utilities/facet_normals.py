@@ -39,25 +39,46 @@ with the assembly that integrates the boundary term facet by facet (#560); see
 import numpy as np
 
 
-def facet_measure_and_normal(dm, facet):
+def facet_measure_and_normal(dm, facet, orient="exterior"):
     """``(measure, unit normal, exterior)`` for a height-1 DMPlex point.
 
     ``measure`` is the facet's length (2-D) / area (3-D). The normal is a unit vector
     of length ``dm.getCoordinateDim()``. ``exterior`` is True when the facet has
-    exactly one support cell, in which case the normal has been oriented AWAY from
-    that cell — the domain's outward direction. When it is False the normal carries
-    PETSc's own sign and no orientation claim is made.
+    exactly one support cell.
+
+    ``orient`` selects which of the two rules above applies:
+
+    * ``"exterior"`` (default) — flip away from the support cell ONLY when there is
+      exactly one, i.e. only where "the domain's outward direction" is defined. On an
+      internal facet the normal carries PETSc's own sign and no orientation claim is
+      made; ``exterior`` is False and the caller decides what to do about it. This is
+      what a BOUNDARY accumulator wants.
+    * ``"support0"`` — flip away from ``support[0]``'s centroid unconditionally. This
+      is what an INTERNAL SURFACE accumulator wants: on a split fault every facet of
+      the surface has the same side listed first, so "away from support[0]" is the
+      ±side split, coherent along the surface, and the reason the ``exterior`` guard
+      would be wrong there rather than merely unnecessary. Do NOT use it on a surface
+      whose facets could have their support order chosen independently — neighbouring
+      facets would then orient oppositely and CANCEL in a measure-weighted sum.
+
+    Note on dimensions: the returned vector has ``dm.getCoordinateDim()`` components
+    and the orientation dot product is taken over all of them. That is the mesh's
+    ``cdim`` for every volume mesh; on a manifold mesh (``dim < cdim``) a caller that
+    slices the result to fewer components would be taking a different dot product from
+    the one used here.
 
     Purely rank-local: it reads geometry, takes no collective, and says nothing about
     whether this rank sees all of the node's facets. Completing a per-node SUM across
     ranks is the caller's job — a boundary facet is labelled on exactly one rank, so a
     node on a partition seam sees only some of its facets locally (#564).
     """
+    if orient not in ("exterior", "support0"):
+        raise ValueError(f"orient must be 'exterior' or 'support0', got {orient!r}")
     measure, centroid, normal = dm.computeCellGeometryFVM(facet)
     n = np.asarray(normal, dtype=float)
     n = n / (np.linalg.norm(n) + 1.0e-30)
     exterior = dm.getSupportSize(facet) == 1
-    if exterior:
+    if exterior or orient == "support0":
         _, cell_centroid, _ = dm.computeCellGeometryFVM(int(dm.getSupport(facet)[0]))
         if np.dot(n, np.asarray(centroid) - np.asarray(cell_centroid)) < 0.0:
             n = -n
