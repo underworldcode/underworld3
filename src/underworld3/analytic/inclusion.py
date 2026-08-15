@@ -333,7 +333,15 @@ class EllipticalInclusion(FixedWalls, AnalyticSolution):
         matrix_pressure = -(
             potentials["phi_prime"] + _conjugate(potentials["phi_prime"])
         )
-        self.fn_pressure = sympy.Piecewise(
+        # The potentials are normalised to UNIT matrix viscosity. Under a
+        # rescaling eta -> lambda*eta at fixed boundary velocity, Stokes flow
+        # leaves the velocity and the strain rate alone and scales the stress
+        # AND the pressure by lambda. Omitting the factor here left the viscous
+        # part of sigma scaled and the pressure part unscaled, so
+        # div(sigma) = 0 failed by 0.63 at matrix_viscosity = 3 while every
+        # other gate — tracelessness, strain-rate consistency — still passed,
+        # because those do not couple the two parts.
+        self.fn_pressure = self.matrix_viscosity * sympy.Piecewise(
             (potentials["interior_pressure"], inside),
             (matrix_pressure, True),
         ).subs(physical)

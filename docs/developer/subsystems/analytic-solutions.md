@@ -269,14 +269,36 @@ would hide exactly that.
 
 **Check which stress a kernel publishes. Do not read it off the variable name.**
 
-| solution | its stress output is |
+| solution | what we transcribe is |
 |---|---|
 | SolA, SolB, SolC, SolCx, SolDA, SolKx | total (Cauchy) $\sigma$ |
-| SolKz, SolNL, SolDB2d, SolDB3d | deviatoric $\tau$ |
+| SolKz, SolNL, SolDB2d, SolDB3d | deviatoric $\tau$ (SolKz: see the cut-point note below) |
 | SolM | published, but wrong — see below |
+| SolA | total, but its $zz$ component is wrong — see below |
 
-SolA is the clearest case to read: its source writes `u3 = 2*kn*ss_z - pp`, with the
-pressure subtracted in plain sight. SolKz's writes the same quantity without it.
+SolB is the clearest case to read: its source writes `u3 = 2.0*Z*kn*ss_z - pp`,
+with the pressure subtracted in plain sight. (Do **not** use solA's version of
+that line as the exemplar, as this document once did — it is the one that is
+missing the viscosity.)
+
+Two further traps that are not about deviatoric-vs-total:
+
+- **Component order is not uniform.** Every kernel here writes `[xx, zz, xz]`
+  except `solKx.c`, which writes **`[xx, xz, zz]`** (:481-491, with the legend
+  at :456). It has a different provenance from the rest — it is vendored from
+  PETSc's `ex69.c`, not the Underworld tree.
+- **Several kernels label the vertical velocity `u1`** and the horizontal `u2`
+  — solA (:151), solB (:135), solC (:142), solDA (:910), solKz (:493). solCx
+  (:1467) and solKx (:456) do not. `solH.c` reverses all three (:173-182). The
+  transcription maps components explicitly rather than positionally; a swap here
+  is caught by the momentum residual only because the components have different
+  functional forms, and would be invisible in a symmetric problem.
+
+Both are uniform across the family in the two ways that matter for a solve, and
+neither is stated in most of the files — both had to be measured by
+finite-differencing the kernels' own outputs: the momentum sign is
+$\nabla\cdot\sigma + \mathbf f = 0$ with $\mathbf f = -\rho\hat z$ under unit
+gravity in $-z$, and pressure is positive in compression.
 
 ### The body force is minus the density
 
@@ -306,11 +328,53 @@ This is the case for having a check that consults no reference. Comparing SolM
 against its own kernel would have reproduced the error faithfully and reported
 agreement.
 
-SolKz is the trap: it writes into an array literally called `total_stress`, and
-the contents are the deviator. Taking the name at face value leaves the momentum
-residual at order $|\mathbf f|$ *and* manufactures a horizontal body force in a
-benchmark that has none — a large, structured error that reads like a
-transcription failure rather than a convention one.
+SolKz is the trap, though it needs stating more carefully than it was here
+originally. `solKz.c` *does* convert to the total stress, and says so — `u6 -=
+u5; /* get total stress */` (:490), restated at :527 as `/* sigma = tau - p */`.
+The array the C function returns is the total. What is deviatoric is **what our
+transcription captures**: the transcriber reads the per-mode straight-line block
+and stops at the first accumulation, and `sum5 += ...` (:489) precedes the
+conversion (:490), so the per-mode `u6` and `u3` we take are pre-conversion.
+`stress_is_deviatoric = True` on `SolKz` is therefore correct, but it describes
+the transcription's cut point rather than the kernel's output — and anyone
+transcribing afresh from the *returned array* must not set it.
+
+Getting that wrong leaves the momentum residual at order $|\mathbf f|$ *and*
+manufactures a horizontal body force in a benchmark that has none — a large,
+structured error that reads like a transcription failure rather than a
+convention one. Measured on the transcribed fields: as the deviator (ours)
+1.7e-16, as the total 6.0e-1.
+
+### A published stress that is silently right at the default
+
+`solA.c:156` computes the $zz$ stress as `u3 = 2.0*kn*ss_z - pp`. The matching
+line in `solB.c:140` is `2.0*Z*kn*ss_z - pp`, and solA's own $xx$ stress two
+lines later carries the `Z`. The published $\sigma_{zz}$ is short by
+$\tau_{zz}(1-Z)/Z$.
+
+That is **identically zero at $Z = 1$** — the only case the file's own disabled
+driver exercised, and the default `eta` in our transcription. Every gate in the
+conformance file passed. At `eta=3`, three of them fail: momentum 2.8e-1,
+deviator trace 6.7e-1, strain-rate consistency 6.7e-1, where
+$|1-3|/3 = 0.667$ exactly.
+
+The transcription restores the factor, declared per solution as
+`_zz_stress_lost_the_viscosity`; the vendored source stays verbatim.
+
+Note the repair that was **rejected**. Tracelessness gives
+$\sigma_{zz} = -\sigma_{xx} - 2p$ straight from the correct $xx$ component, and
+it works — but it would make the deviator traceless *by construction* and so
+retire one of the three gates that caught the defect. Restoring the missing
+factor instead keeps tracelessness an independent statement about the repair.
+`test_1028` asserts both halves: that solA's published deviator is not traceless
+at $Z=3$, and that solB's is.
+
+**The general lesson, and the reason `test_1028_analytic_parameter_sweep.py`
+exists**: the conformance sweep builds every solution from a mesh alone. That is
+right — the defaults are part of the interface — but a coefficient that is unity
+by default multiplies a term nothing ever looks at. Any new solution needs an
+entry in that file's `SWEEP` table, and the file asserts that every registered
+Stokes solution has one.
 
 Two cheap signatures tell them apart, and both are worth running on any new
 kernel:

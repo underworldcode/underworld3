@@ -151,12 +151,81 @@ def test_solution_satisfies_the_momentum_balance(name, built):
 
 
 @pytest.mark.parametrize("name", STOKES)
+def test_strain_rate_matches_the_velocity(name, built):
+    r""":math:`\tfrac12(\nabla\mathbf u + \nabla\mathbf u^{T})` vs `fn_strainrate`.
+
+    This is the independent one, and it belongs in the family-wide sweep rather
+    than in a single solution's file. The velocity and the stress are *separate
+    outputs of the same kernel*, and the strain rate here is derived from the
+    stress — so the comparison relates two quantities the source derived
+    separately, and it exercises the derivatives, which is what a solver
+    consumes and where a transcription can be wrong while still matching
+    pointwise.
+
+    Contrast `test_stress_and_strain_rate_agree` below, which for most of the
+    family is structural.
+    """
+
+    from underworld3.analytic import _validation
+
+    sol = built[name]
+    points = sol.sample_points(count=8)
+
+    assert _validation.strainrate_consistency(sol, points) < 1.0e-8
+
+
+# `set_fields` accepts a stress OR a strain rate and derives the other from
+# sigma + p I = 2 eta edot. For a solution that supplied only one of the two,
+# the assertion below is exactly that derivation read back, so it is structural
+# rather than evidential. These three supply BOTH, so for them it compares two
+# separately published quantities and is a real check.
+#
+# It is kept for the whole family regardless: it is nearly free, and it is what
+# would catch `set_fields` itself regressing.
+PUBLISH_BOTH = {"SolNL", "SolDB2d", "SolDB3d"}
+
+
+def test_the_list_of_solutions_publishing_both_is_accurate():
+    """PUBLISH_BOTH is a claim about the sources; check it against them.
+
+    A solution that starts supplying both — or stops — silently changes what the
+    gate below is worth, so the claim is asserted rather than commented.
+    """
+
+    import inspect
+
+    from underworld3 import analytic
+
+    for name in STOKES:
+        cls = getattr(analytic, name)
+        source = ""
+        for klass in cls.__mro__:
+            try:
+                text = inspect.getsource(klass)
+            except (OSError, TypeError):
+                continue
+            if "set_fields(" in text:
+                source = text
+                break
+
+        both = "stress=" in source and "strainrate=" in source
+        assert both == (name in PUBLISH_BOTH), (
+            f"{name}: publishes both = {both}, but PUBLISH_BOTH says "
+            f"{name in PUBLISH_BOTH}"
+        )
+
+
+@pytest.mark.parametrize("name", STOKES)
 def test_stress_and_strain_rate_agree(name, built):
     r""":math:`\sigma + p\,I = 2\eta\dot\varepsilon`, however each was obtained.
 
     Some solutions publish both and some derive one from the other; either way
     the pair has to be consistent, and a wrong `stress_is_deviatoric` shows up
     here as a full pressure's worth of disagreement.
+
+    For the solutions NOT in `PUBLISH_BOTH` this is the identity `set_fields`
+    used to build the missing quantity, so passing it is structural. See
+    `test_strain_rate_matches_the_velocity` above for the independent check.
     """
 
     from underworld3.analytic import _validation

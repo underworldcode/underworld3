@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
-from underworld3.function import analytic as A
+from underworld3 import analytic as A
 from underworld3.utilities import custom_mg
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]

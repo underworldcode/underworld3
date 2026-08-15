@@ -396,6 +396,19 @@ class SolNL(FixedWalls, AnalyticSolution):
             raise ValueError("n (vertical wavenumber) must be a positive integer.")
         if float(r) <= 0.0:
             raise ValueError("r (power-law exponent) must be positive.")
+        # The published closed form is singular at alpha = 1/r - 1 = -1/2. The
+        # pressure's denominator (AnalyticSolNL.c:52, `t44`) vanishes there
+        # identically — for every wavenumber, so this is a pole of the solution
+        # and not a bad (r, n) pairing. Refuse it here: left to run it produces
+        # ComplexInfinity in the pressure, stress and body force, and the first
+        # symptom is a KeyError from SymPy's code printer, a long way from the
+        # cause.
+        if float(r) == 2.0:
+            raise ValueError(
+                "r = 2 is a pole of the published SolNL solution: its pressure "
+                "denominator vanishes identically at alpha = 1/r - 1 = -1/2. "
+                "Use a nearby exponent (r = 1.9 or 2.1) instead."
+            )
 
         self.eta_0 = float(eta_0)
         self.n = int(n)
@@ -940,6 +953,12 @@ class _SolAB(FreeSlipWalls, AnalyticSolution):
     _kernel = None
     _vertical = None
 
+    #: Whether this kernel's published zz stress is missing the viscosity that
+    #: its xx stress carries. True for solA (solA.c:156) and false for solB,
+    #: whose matching line (solB.c:140) is correct. Declared per solution rather
+    #: than patched in place: the vendored sources stay verbatim.
+    _zz_stress_lost_the_viscosity = False
+
     def __init__(self, mesh, sigma=1.0, eta=1.0, n=3, m=2):
         super().__init__(mesh)
 
@@ -967,6 +986,32 @@ class _SolAB(FreeSlipWalls, AnalyticSolution):
             for field, expression in _solab_kernel(self._kernel).items()
         }
 
+        # ERRATUM (solA.c:156). solA's published zz stress is
+        # `u3 = 2.0*kn*ss_z - pp`, where the matching line in solB.c:140 — and
+        # solA's OWN xx stress on the next line but one — carry a factor of the
+        # viscosity Z. The published sigma_zz is therefore short by
+        # tau_zz*(1-Z)/Z, which is identically zero at Z=1: the only case the
+        # file's own (disabled) driver exercises, and the default `eta` here.
+        # Left alone it survives every check made at the default and fails three
+        # of them at any other viscosity.
+        #
+        # Rather than edit a vendored source, the MISSING FACTOR is restored on
+        # the term that lost it: the published deviator is
+        # tau_zz = u3 + pp = 2*kn*ss_z, and the correct one is Z times that.
+        #
+        # Deriving sigma_zz from sigma_xx instead (tau_zz = -tau_xx) would also
+        # work and is tempting, but it would make the deviator TRACELESS BY
+        # CONSTRUCTION and so retire one of the three gates that caught this.
+        # Repairing the factor keeps tracelessness an independent statement
+        # about the repair, and it is the one the sweep checks.
+        if self._zz_stress_lost_the_viscosity:
+            stress_zz = (
+                sympy.Rational(self.eta) * (kernel["stress_zz"] + kernel["pressure"])
+                - kernel["pressure"]
+            )
+        else:
+            stress_zz = kernel["stress_zz"]
+
         self.set_fields(
             velocity=(kernel["velocity_x"], kernel["velocity_z"]),
             pressure=kernel["pressure"],
@@ -979,7 +1024,7 @@ class _SolAB(FreeSlipWalls, AnalyticSolution):
             ),
             stress=(
                 (kernel["stress_xx"], kernel["stress_zx"]),
-                (kernel["stress_zx"], kernel["stress_zz"]),
+                (kernel["stress_zx"], stress_zz),
             ),
         )
 
@@ -994,6 +1039,17 @@ class SolA(_SolAB):
     the viscosity structure entirely, so a discrepancy here is in the
     discretisation or the solve rather than in how a hard coefficient is handled.
     Run it before concluding anything from SolCx or SolKx.
+
+    .. note::
+       **Erratum in the published kernel.** ``solA.c:156`` computes the $zz$
+       stress without the factor of viscosity that its own $xx$ stress carries
+       and that ``solB.c:140`` carries — the published $\sigma_{zz}$ is short by
+       $\tau_{zz}(1-Z)/Z$. That is identically zero at $Z = 1$, which is the
+       default ``eta`` and the only value the kernel's own driver exercised, so
+       it is invisible unless you change the viscosity. The transcription
+       restores the factor; the vendored source is left verbatim. If you compare
+       our $\sigma_{zz}$ against the published kernel at ``eta != 1`` they will
+       disagree, and the kernel is the one that is wrong.
 
     Parameters
     ----------
@@ -1011,6 +1067,7 @@ class SolA(_SolAB):
 
     _kernel = "solA"
     _vertical = staticmethod(sympy.sin)
+    _zz_stress_lost_the_viscosity = True
     reference = (
         "Velic. Transcribed from the published kernel vendored at "
         "underworld3/analytic/_reference/solA.c."

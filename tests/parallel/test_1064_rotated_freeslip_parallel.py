@@ -34,7 +34,7 @@ import sympy
 import pytest
 
 import underworld3 as uw
-from underworld3.function import analytic as A
+from underworld3 import analytic as A
 from underworld3.utilities import custom_mg
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(180)]
