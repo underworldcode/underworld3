@@ -255,7 +255,7 @@ than by being exempted:
 |---|---|---|
 | `sample_points` | unit box or cube, plus faces and corners | the elliptical inclusion is not box-filling, and the conformal map is singular at its foci — a generic sampler lands on both |
 | `boundaries` | box wall labels | a curved geometry has its own |
-| `apply_boundary_conditions` | free slip or Dirichlet mixin | — |
+| `apply_boundary_conditions` | refuses, with the helpers named | every solution writes it — see below |
 | `stress_is_deviatoric` | `False` | the source publishes $\tau$ |
 
 One consequence worth knowing: `_validation.sample` returns real values, and if
@@ -264,6 +264,62 @@ discarding it. The elliptical inclusion is built from complex potentials and is
 real-valued without SymPy being able to prove it — but a *genuinely* complex
 result would mean the construction is wrong, and silently taking the real part
 would hide exactly that.
+
+## Boundary conditions: composed functions, not inherited wall types
+
+Every solution writes its own `apply_boundary_conditions`. It composes three
+module-level helpers, each of which takes **the boundaries it applies to**:
+
+```python
+from underworld3.analytic import free_slip, prescribed_velocity, prescribed_scalar
+
+free_slip(solver, boundaries, normal=None)          # strong rotated u.n = 0
+prescribed_velocity(solver, boundaries, velocity)   # Dirichlet velocity
+prescribed_scalar(solver, boundaries, field)        # Dirichlet scalar
+```
+
+A typical Velic solution is then three lines:
+
+```python
+    def apply_boundary_conditions(self, solver):
+        """Free slip on all four walls; the enclosed box has a pressure nullspace."""
+
+        free_slip(solver, self.boundaries)
+        solver.petsc_use_pressure_nullspace = True
+```
+
+**Why not mixins.** This started as `FreeSlipWalls` and `FixedWalls` — mixed in,
+looping over every boundary, applying one condition. That encodes "every boundary
+is a wall of the same kind", which is true of the classical box benchmarks and
+false of most of what the suite has to serve next: a spherical shell or annulus
+with different conditions on the two radii, a faulted disc, a channel driven at
+one end. A mixin cannot express those without growing a parameter for each, and
+inheritance advertises the choice as if it were part of what the solution *is*.
+Functions taking an explicit boundary list say what is imposed *where*, and a
+solution needing two kinds calls two of them:
+
+```python
+    def apply_boundary_conditions(self, solver):
+        free_slip(solver, ["Upper"])
+        prescribed_velocity(solver, ["Lower"], self.fn_velocity)
+```
+
+**The pressure nullspace is stated by the solution, not by a wall type.** It is a
+property of the domain — enclosed, so the pressure is determined only up to a
+constant — and not of any one boundary's condition. Both mixins used to set it,
+which hid that. Leaving it out on an enclosed domain is the failure this whole
+suite exists to catch: a direct solve on the singular saddle returns a quiet,
+wrong answer that only an exact solution exposes.
+
+**Curved boundaries.** `free_slip` takes an optional `normal=`. Leave it out —
+the solver's geometric facet normal is measure-weighted to match the
+straight-facet integral the assembler evaluates, and keeps the constant pressure
+a null vector to machine precision. Pass an analytic normal such as `X/|X|` only
+when the constraint must follow the *true* surface rather than the mesh; it is
+exact for the geometry but keeps a consistency error that grows with facet
+non-uniformity. `CylindricalStokes`, the one curved-geometry solution here, uses
+the default deliberately. See
+[rotated-freeslip.md](rotated-freeslip.md) ("Which normal to use").
 
 ## The stress convention is not uniform across the family
 
@@ -545,8 +601,9 @@ Starting a comparison from a smooth profile at $t > 0$ rather than from the step
 itself is the point of using these: the step is not representable on the mesh,
 which is what makes `test_1100`'s current comparison fragile.
 
-They cannot reuse the Stokes boundary-condition mixins, which apply a *velocity*.
-`_Transport` prescribes `fn_solution` on every wall instead.
+Their boundary condition prescribes the field itself, not a velocity, so it uses
+`prescribed_scalar`. `_Transport` applies `fn_solution` on every wall, and there
+is no pressure nullspace to remove.
 
 ### Transient solutions are singular at t = 0, and that changes how you use them
 
@@ -802,8 +859,8 @@ a spatial singularity (the inclusion's foci, SolCx's isoviscous limit) needs a
 integer wavenumbers; the Gardner solutions require $\psi < 0$. Ranges become
 constructor validation, which is where they stop being folklore.
 
-1. Subclass `AnalyticSolution` and one of the boundary-condition mixins
-   (`FreeSlipWalls`, `FixedWalls`) — or `_Transport` for a scalar solution.
+1. Subclass `AnalyticSolution` — or `_Transport` for a scalar solution — and
+   write `apply_boundary_conditions`, composing the helpers below.
 2. Build the exact fields on `mesh.X` in `__init__`; set `dim`, `reference`, and
    the `eqn_*` LaTeX strings that document the *problem*. Set the fields through
    `set_fields` (Stokes) or `set_scalar_field` (transport) rather than assigning
