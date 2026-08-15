@@ -118,9 +118,10 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py || status=1
 
     # Parallel SOLVER tests. This line was commented out, so test_1017 and
-    # test_1062..test_1068 — the whole rotated / constrained / MG parallel set,
-    # including the partition-independence guard for the rotated nodal normal
-    # (#560) — executed at NO rank count in CI.
+    # test_1062..test_1069 — the whole rotated / constrained / MG parallel set,
+    # including the partition-independence guards for the rotated nodal normal
+    # (#560) and the mesh boundary normal (#564) — executed at NO rank count
+    # in CI.
     echo "Testing parallel solvers..."
     mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_10*py || status=1
 

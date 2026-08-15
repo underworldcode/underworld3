@@ -3016,8 +3016,6 @@ class Mesh(Stateful, uw_object):
         # it is simply a row that stays zero until the reduction fills it.
         accum = numpy.zeros_like(numpy.asarray(var.data))
 
-        face_pts = self._boundary_facets(name)
-
         # DOF rows come from the variable's OWN section on its sub-DM: exact on
         # every rank, and the same section the reduction below scatters through.
         # (This used to be a kd-tree lookup of the DOFs nearest the facet
@@ -3027,22 +3025,33 @@ class Mesh(Stateful, uw_object):
         indexset, subdm = dm.createSubDM(var.field_id)
         try:
             ssec = subdm.getLocalSection()
-            for f in face_pts:
-                # Orientation needs the facet's OWN support cell, and only an
-                # exterior facet has exactly one. An internal boundary's facets
-                # have two and support[0] is arbitrary, so neighbouring facets of
-                # the same surface could be oriented oppositely and CANCEL in the
-                # sum — those facets are skipped, which is why a normal requested
-                # for an INTERNAL boundary comes back zero. (rotated_bc keeps the
-                # raw PETSc normal there instead; neither is a supported use of
-                # this routine today.)
-                measure, nrm, exterior = facet_measure_and_normal(dm, f)
-                if not exterior:
-                    continue
-                for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-                    if ssec.getDof(q) <= 0:
+            try:
+                for f in self._boundary_facets(name):
+                    # Orientation needs the facet's OWN support cell, and only an
+                    # exterior facet has exactly one. An internal boundary's facets
+                    # have two and support[0] is arbitrary, so neighbouring facets
+                    # of the same surface could be oriented oppositely and CANCEL
+                    # in the sum — those facets are skipped, which is why a normal
+                    # requested for an INTERNAL boundary comes back zero.
+                    # (rotated_bc keeps the raw PETSc normal there instead;
+                    # neither is a supported use of this routine today.)
+                    measure, nrm, exterior = facet_measure_and_normal(dm, f)
+                    if not exterior:
                         continue
-                    accum[ssec.getOffset(q) // ncomp] += measure * nrm[:cdim]
+                    for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
+                        if ssec.getDof(q) <= 0:
+                            continue
+                        accum[ssec.getOffset(q) // ncomp] += measure * nrm[:cdim]
+            except Exception:
+                # Sanctioned swallow, and it is deliberately INSIDE the collective:
+                # the facet walk is rank-local, and a rank that cannot complete it
+                # (a boundary whose label vanished from the current DM, e.g. after
+                # region extraction) simply contributes nothing. Raising or
+                # returning here would take this rank out of the reduction below
+                # and HANG the ranks that did find the label — the failure mode the
+                # caller's `except: pass` in deform() would otherwise convert a
+                # one-rank error into.
+                accum[...] = 0.0
 
             if dm.comm.getSize() > 1:
                 accum = self._sum_local_dofs_across_ranks(subdm, accum)
@@ -3987,6 +3996,14 @@ class Mesh(Stateful, uw_object):
                     # complete and must not be rolled back for one BC aid.
                     # Consequence of skipping: that Nitsche/penalty BC
                     # keeps its setup-time normal until next refresh.
+                    #
+                    # NB _assemble_boundary_normal is COLLECTIVE (it completes
+                    # the facet sum across ranks, #564). It swallows its own
+                    # rank-local failures INSIDE that collective so one rank
+                    # cannot drop out of the reduction and hang the others; this
+                    # outer guard therefore only ever sees a symmetric failure.
+                    # The dict is built by a collective accessor, so every rank
+                    # iterates the same boundaries in the same order.
                     pass
         # Likewise refresh the local cell-size field (Nitsche penalty scaling)
         # so its cell-constant data tracks the deformed geometry.
