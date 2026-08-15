@@ -64,12 +64,24 @@ export MKL_NUM_THREADS=1
 # cores, throughput saturates by 8, and at one worker per core the file
 # grouping shifts enough to expose test pollution.
 if [ -z "$WORKERS" ]; then
-    _cores=$( (command -v nproc >/dev/null && nproc) \
-              || sysctl -n hw.ncpu 2>/dev/null || echo 2 )
+    _cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 0)
+    case "$_cores" in
+        ''|*[!0-9]*) _cores=0 ;;          # unparseable: fall through to 2
+    esac
+    [ "$_cores" -lt 1 ] && _cores=2
     WORKERS=$(( _cores < 8 ? _cores : 8 ))
 fi
-echo "Serial batches: $WORKERS worker process(es)"
-PYTEST="pytest --config-file=tests/pytest.ini --dist loadfile -n $WORKERS"
+echo "Serial batches: $WORKERS worker process(es) (detected ${_cores:-preset} core(s))"
+
+# One worker is worse than none: xdist would add a process spawn and a fresh
+# underworld3 import to every batch and parallelise nothing. Measured in CI,
+# where core detection returned 1: 52m37s against 49m43s without xdist.
+if [ "$WORKERS" -le 1 ]; then
+    echo "  (single worker — running in-process, xdist would be pure overhead)"
+    PYTEST="pytest --config-file=tests/pytest.ini"
+else
+    PYTEST="pytest --config-file=tests/pytest.ini --dist loadfile -n $WORKERS"
+fi
 
 # Run serial tests (unless --parallel-only specified)
 if [ $PARALLEL_ONLY -eq 0 ]; then

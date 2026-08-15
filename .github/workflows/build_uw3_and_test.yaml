@@ -28,6 +28,13 @@ env:
   # the UCX transports and retire the whole flake class.
   UCX_TLS: tcp,sm,self
 
+  # Worker processes for the serial batches. Set explicitly rather than
+  # detected: the first run of this change detected ONE core on the runner and
+  # so ran xdist with a single worker — a process spawn and a fresh
+  # underworld3 import per batch, parallelising nothing, for 52m37s against
+  # 49m43s without it. GitHub's standard ubuntu-latest runner has 4 vCPU.
+  WORKERS: 4
+
 jobs:
   test:
     runs-on: ubuntu-latest
