@@ -193,10 +193,12 @@ def incompressibility_residual(solution, points):
     coordinates = solution.mesh.X
     velocity = solution.fn_velocity
 
-    divergence = sum(
-        sympy.diff(velocity[0, i], coordinates[i]) for i in range(solution.mesh.dim)
+    # Summed numerically rather than symbolically — see the note in
+    # `momentum_residual`. Same argument, same round-off.
+    values = sum(
+        sample(solution, sympy.diff(velocity[0, i], coordinates[i]), points)
+        for i in range(solution.mesh.dim)
     )
-    values = sample(solution, divergence, points)
 
     return float(np.max(np.abs(values)))
 
@@ -222,16 +224,30 @@ def momentum_residual(solution, points):
         terms = [sympy.diff(stress[i, j], coordinates[j]) for j in range(dim)]
         terms.append(bodyforce[0, i])
 
-        residual = sum(terms)
-        worst = max(worst, float(np.max(np.abs(sample(solution, residual, points)))))
+        # Sample each term and add the ARRAYS, rather than sampling the symbolic
+        # sum. The two agree to round-off, and the terms have to be sampled
+        # individually anyway for the scale below — so the symbolic sum was pure
+        # extra cost, and a large one: `sample` runs common-subexpression
+        # elimination, which on the sum of several nearly-cancelling series
+        # expressions is far more expensive than on any one of them. For SolKz it
+        # was 14.9s of the gate's 27.5s.
+        #
+        # Round-off is the right thing to measure here in any case. The residual
+        # is a cancellation of O(1) terms down to ~1e-16 relative, and the gate
+        # sits at 1e-8 — eight orders of margin — while flipping the body force
+        # sign moves it to order unity. Summing symbolically can cancel to an
+        # exact zero where summing numerically leaves 1e-16; both are the same
+        # statement about the mathematics, and the second is the honest one.
+        sampled = [sample(solution, term, points) for term in terms]
+        worst = max(worst, float(np.max(np.abs(sum(sampled)))))
 
         # Scale by the largest term being cancelled, not by the body force. A
         # solution driven entirely by its boundary has no body force at all — the
         # elliptical inclusion is one — and normalising by it divides by zero.
         # The size of the terms is also the right yardstick for a cancellation:
         # it says how many digits actually had to cancel.
-        for term in terms:
-            scale = max(scale, float(np.max(np.abs(sample(solution, term, points)))))
+        for values in sampled:
+            scale = max(scale, float(np.max(np.abs(values))))
 
     return worst / max(scale, 1.0e-300)
 
@@ -255,10 +271,10 @@ def transport_residual(solution, points):
     terms = [sympy.diff(flux[i], coordinates[i]) for i in range(dim)]
     terms.append(solution.fn_source)
 
-    worst = float(np.max(np.abs(sample(solution, sum(terms), points))))
-    scale = max(
-        float(np.max(np.abs(sample(solution, term, points)))) for term in terms
-    )
+    # Summed numerically — see the note in `momentum_residual`.
+    sampled = [sample(solution, term, points) for term in terms]
+    worst = float(np.max(np.abs(sum(sampled))))
+    scale = max(float(np.max(np.abs(values))) for values in sampled)
 
     return worst / max(scale, 1.0e-300)
 
@@ -294,14 +310,24 @@ def diffusion_residual(solution, points, time):
         for i in range(dim)
     )
 
+    # Combined numerically — see the note in `momentum_residual`.
     at_time = {solution.t: time}
-    residual = (rate + carried - spread).subs(at_time)
-    worst = float(np.max(np.abs(sample(solution, residual, points))))
-    scale = max(
-        float(np.max(np.abs(sample(solution, term.subs(at_time), points))))
-        for term in (rate, carried, spread)
+    values = {
+        name: sample(solution, term.subs(at_time), points)
+        for name, term in (("rate", rate), ("carried", carried), ("spread", spread))
         if term != 0
+    }
+
+    worst = float(
+        np.max(
+            np.abs(
+                values.get("rate", 0.0)
+                + values.get("carried", 0.0)
+                - values.get("spread", 0.0)
+            )
+        )
     )
+    scale = max(float(np.max(np.abs(v))) for v in values.values())
 
     return worst / max(scale, 1.0e-300)
 
@@ -329,12 +355,15 @@ def strainrate_consistency(solution, points):
                 sympy.diff(velocity[0, i], coordinates[j])
                 + sympy.diff(velocity[0, j], coordinates[i])
             ) / 2
-            difference = from_velocity - solution.fn_strainrate[i, j]
 
-            values = sample(solution, difference, points)
+            # Differenced numerically, not symbolically — see `momentum_residual`.
+            # The reference has to be sampled anyway for the scale, so forming
+            # the symbolic difference only added a second, larger expression to
+            # run CSE over.
+            mine = sample(solution, from_velocity, points)
             reference = sample(solution, solution.fn_strainrate[i, j], points)
 
-            worst = max(worst, float(np.max(np.abs(values))))
+            worst = max(worst, float(np.max(np.abs(mine - reference))))
             scale = max(scale, float(np.max(np.abs(reference))))
 
     return worst / max(scale, 1.0e-300)

@@ -568,6 +568,8 @@ class SolKx(FreeSlipWalls, AnalyticSolution):
     """
 
     dim = 2
+    # exponential viscosity e^{2Bx} -> tens of thousands of operations per expression
+    expensive_to_validate = True
     reference = (
         "Velic; transcribed from PETSc src/snes/tutorials/ex69.c (SolKxSolution), "
         "vendored at underworld3/analytic/_reference/solKx.c (BSD-2-Clause)."
@@ -855,6 +857,8 @@ class SolKz(FreeSlipWalls, AnalyticSolution):
     """
 
     dim = 2
+    # exponential viscosity e^{2Bz} -> tens of thousands of operations per expression
+    expensive_to_validate = True
     stress_is_deviatoric = True
     reference = (
         "Velic. Transcribed from the published kernel vendored at "
@@ -1353,6 +1357,8 @@ class SolC(FreeSlipWalls, AnalyticSolution):
     """
 
     dim = 2
+    # accumulates over 40 modes -> tens of thousands of operations per expression
+    expensive_to_validate = True
     reference = (
         "Velic. Transcribed from the published kernel vendored at "
         "underworld3/analytic/_reference/solC.c."
@@ -1546,6 +1552,8 @@ class SolDA(FreeSlipWalls, AnalyticSolution):
     """
 
     dim = 2
+    # accumulates over modes, with a viscosity step -> tens of thousands of operations per expression
+    expensive_to_validate = True
     reference = (
         "Velic. Transcribed from the published kernel vendored at "
         "underworld3/analytic/_reference/solDA.c."
@@ -1722,6 +1730,8 @@ class SolH(FreeSlipWalls, AnalyticSolution):
     """
 
     dim = 3
+    # accumulates over modes in 3-D -> tens of thousands of operations per expression
+    expensive_to_validate = True
     reference = (
         "Velic. Transcribed from the published kernel vendored at "
         "underworld3/analytic/_reference/solH.c."

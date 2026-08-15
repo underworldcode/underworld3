@@ -108,6 +108,23 @@ class AnalyticSolution(uw_object):
     #: than a convention one. See the table in the subsystem documentation.
     stress_is_deviatoric = False
 
+    #: Whether validating this solution is expensive enough to keep out of the
+    #: per-PR test sweep.
+    #:
+    #: The cost is intrinsic and predictable from the mathematics rather than a
+    #: property of any machine: a solution that accumulates over modes (SolC
+    #: sums forty) or carries an exponential viscosity (SolKx, SolKz) produces
+    #: expressions with tens of thousands of operations, and every residual gate
+    #: differentiates them symbolically and runs common-subexpression
+    #: elimination over the result. Measured, the five solutions flagged here
+    #: account for 565s of the suite's 1010s while the other eight together cost
+    #: about 17s.
+    #:
+    #: This changes WHICH SOLUTIONS a given run covers, never which checks are
+    #: applied to a solution. The full family, gates and all, runs from
+    #: ``tests/analytic_full/``.
+    expensive_to_validate = False
+
     #: Whether the source published BOTH a stress and a strain rate, set by
     #: :meth:`set_fields` from what it was actually given.
     #:

@@ -25,12 +25,19 @@ import underworld3 as uw
 
 # B = 2.3026 is a decade of viscosity contrast per unit length, so e^2B ~ 100
 # across the box; B = 5 is four orders. Both wavenumbers, integer and not.
+# The canonical case only, on every PR. SolKx declares
+# `expensive_to_validate`: an exponential viscosity makes every residual
+# here a symbolic differentiation of a very large expression, and the four
+# cases together were 88s of the analytic suite's 1010s.
+#
+# The remaining cases below are not dropped — they run in
+# tests/analytic_full/, which sweeps this solution over its parameter table
+# with the same residual gates. Every CHECK in this file still runs on every
+# PR; what is reduced is how many parameter values it runs on.
 CASES = [
     (2.302585092994046, 3, 2),
-    (2.302585092994046, 1, 1),
-    (5.0, 2, 3),
-    (1.0, 4, 2),
 ]
+
 
 
 @pytest.fixture(scope="module")
@@ -46,6 +53,25 @@ LEFT = np.array([(0.0, t) for t in (0.13, 0.47, 0.82)])
 RIGHT = np.array([(1.0, t) for t in (0.13, 0.47, 0.82)])
 BOTTOM = np.array([(t, 0.0) for t in (0.13, 0.47, 0.82)])
 TOP = np.array([(t, 1.0) for t in (0.13, 0.47, 0.82)])
+
+
+@pytest.fixture(scope="module")
+def cache():
+    """One construction per (B, n, m), shared across the gates below.
+
+    Constructing SolKx substitutes parameters into an expression tens of
+    thousands of operations long. Two gates run over every case, so building
+    afresh in each doubled the file's cost for nothing.
+    """
+
+    return {}
+
+
+def _sol(cache, mesh, B, n, m):
+    key = (B, n, m)
+    if key not in cache:
+        cache[key] = uw.analytic.SolKx(mesh, B=B, n=n, m=m)
+    return cache[key]
 
 
 def _at(sol, expression, points):

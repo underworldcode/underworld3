@@ -376,6 +376,47 @@ by default multiplies a term nothing ever looks at. Any new solution needs an
 entry in that file's `SWEEP` table, and the file asserts that every registered
 Stokes solution has one.
 
+## Two test tiers, and how to run the slow one
+
+The residual gates are not cheap. Every one of them differentiates the
+solution's expressions symbolically and runs common-subexpression elimination
+over the result, and five solutions produce expressions with tens of thousands
+of operations — SolC accumulates over forty modes, SolDA and SolH over several
+more, and SolKx and SolKz carry an exponential viscosity.
+
+Measured: those five cost **565s of the suite's 1010s**; the other eight
+together cost about 17s. CI was already within five minutes of its 60-minute cap
+before this suite existed, so they cannot ride on every PR.
+
+| tier | what it covers | cost | where |
+|---|---|---|---|
+| per-PR | every gate, on every solution that is cheap to validate; one canonical parameter case for SolKx/SolKz | **4m07s** | `tests/test_101[5-9]_analytic_*`, `tests/test_102[0-8]_analytic_*` — matched by the CI batch globs |
+| full family | every gate, on every solution, over the whole parameter table | **8m34s** | `tests/analytic_full/` — matched by nothing in CI |
+
+```bash
+# the full family — before a release, and after touching
+# underworld3/analytic/ or _validation.py
+pixi run -e amr-dev python -m pytest tests/analytic_full/ -v
+```
+
+**The split is by solutions per run, never by checks per solution.** The
+momentum residual, incompressibility, tracelessness, strain-rate consistency and
+the body-force negative control all run in both tiers, on every solution that
+tier covers. Those are the gates that caught the four errata above, and none of
+them is weakened by the split.
+
+Solutions declare their own side of it — `expensive_to_validate` on the class —
+so the two tiers partition the family from one source of truth. Two guards keep
+that honest: `test_1024` asserts that every solution it skips is *named* in the
+full-family file, and the full-family file asserts its own hand-written list
+matches the declarations.
+
+`tests/analytic_full/` is a **subdirectory** rather than a marked file because
+`scripts/test.sh` batches by file glob (`tests/test_101*py`, ...) and not by
+marker — a `slow` marker alone would need every batch line to remember to
+deselect it, whereas the globs do not recurse. The `level_2` mark on the file
+additionally keeps it out of `pytest -m "level_1 and tier_a" tests/`, which does.
+
 Two cheap signatures tell them apart, and both are worth running on any new
 kernel:
 

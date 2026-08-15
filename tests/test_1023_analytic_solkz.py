@@ -27,12 +27,19 @@ import sympy
 import underworld3 as uw
 
 
+# The canonical case only, on every PR. SolKz declares
+# `expensive_to_validate`: an exponential viscosity makes every residual
+# here a symbolic differentiation of a very large expression, and the four
+# cases together were 189s of the analytic suite's 1010s.
+#
+# The remaining cases below are not dropped — they run in
+# tests/analytic_full/, which sweeps this solution over its parameter table
+# with the same residual gates. Every CHECK in this file still runs on every
+# PR; what is reduced is how many parameter values it runs on.
 CASES = [
     (2.302585092994046, 3, 2),
-    (1.0, 2, 1),
-    (4.0, 1, 3),
-    (5.0, 2, 2),
 ]
+
 
 INTERIOR = np.array([(0.2, 0.3), (0.7, 0.8), (0.5, 0.5), (0.9, 0.15), (0.05, 0.95)])
 WALLS = {
@@ -50,6 +57,25 @@ def mesh():
     )
 
 
+@pytest.fixture(scope="module")
+def cache():
+    """One construction per (B, n, m), shared across the gates below.
+
+    Constructing SolKz substitutes parameters into an expression tens of
+    thousands of operations long. Two gates run over every case, so building
+    afresh in each doubled the file's cost for nothing.
+    """
+
+    return {}
+
+
+def _sol(cache, mesh, B, n, m):
+    key = (B, n, m)
+    if key not in cache:
+        cache[key] = uw.analytic.SolKz(mesh, B=B, n=n, m=m)
+    return cache[key]
+
+
 def _at(sol, expression, points):
     """Magnitudes over a whole point set — lambdified once, not once per point."""
 
@@ -59,8 +85,8 @@ def _at(sol, expression, points):
 
 
 @pytest.mark.parametrize("B,n,m", CASES)
-def test_solkz_satisfies_the_stokes_equations(mesh, B, n, m):
-    sol = uw.analytic.SolKz(mesh, B=B, n=n, m=m)
+def test_solkz_satisfies_the_stokes_equations(cache, mesh, B, n, m):
+    sol = _sol(cache, mesh, B, n, m)
     x, z = mesh.X
 
     scale = _at(sol, sol.fn_bodyforce[0, 1], INTERIOR).max()
@@ -89,8 +115,8 @@ def test_solkz_satisfies_the_stokes_equations(mesh, B, n, m):
 
 
 @pytest.mark.parametrize("B,n,m", CASES)
-def test_solkz_is_free_slip_on_every_wall(mesh, B, n, m):
-    sol = uw.analytic.SolKz(mesh, B=B, n=n, m=m)
+def test_solkz_is_free_slip_on_every_wall(cache, mesh, B, n, m):
+    sol = _sol(cache, mesh, B, n, m)
     vx, vz = sol.fn_velocity[0, 0], sol.fn_velocity[0, 1]
 
     assert _at(sol, vx, WALLS["left"]).max() < 1.0e-10

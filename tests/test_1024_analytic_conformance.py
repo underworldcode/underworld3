@@ -19,6 +19,8 @@ import pytest
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
+import pathlib
+
 import numpy as np
 import sympy
 import underworld3 as uw
@@ -34,17 +36,28 @@ import underworld3 as uw
 #
 # The excluded names are asserted below, so an accidental exclusion — a typo in
 # a class attribute, say — fails here rather than quietly shrinking the sweep.
-SOLUTIONS = sorted(
+ALL_SYMBOLIC = sorted(
     name
     for name in uw.analytic.available()
     if getattr(uw.analytic, name).symbolic and uw.analytic.is_available(name)
 )
 
+# The per-PR sweep drops the five solutions that declare themselves expensive
+# (see AnalyticSolution.expensive_to_validate). Measured, they are 565s of the
+# suite's 1010s; the rest of the family together is about 17s.
+#
+# Every gate below still runs on every solution it covers — the reduction is in
+# solutions per run, never in checks per solution. tests/analytic_full/ runs the
+# whole family, gates and all, and is not matched by any CI batch glob.
+SOLUTIONS = [n for n in ALL_SYMBOLIC if not getattr(uw.analytic, n).expensive_to_validate]
+
+SKIPPED_AS_EXPENSIVE = [n for n in ALL_SYMBOLIC if n not in SOLUTIONS]
+
 
 def test_the_sweep_covers_everything_it_can():
     """What this file skips, and on what declared grounds."""
 
-    excluded = set(uw.analytic.available()) - set(SOLUTIONS)
+    excluded = set(uw.analytic.available()) - set(ALL_SYMBOLIC)
 
     for name in excluded:
         solution = getattr(uw.analytic, name)
@@ -52,7 +65,26 @@ def test_the_sweep_covers_everything_it_can():
             f"{name} is symbolic and available but is not being swept"
         )
 
-    assert len(SOLUTIONS) >= 19, "the sweep has lost solutions"
+    assert len(ALL_SYMBOLIC) >= 19, "the sweep has lost solutions"
+
+
+def test_the_expensive_solutions_are_covered_somewhere():
+    """The per-PR sweep drops solutions; something has to still cover them.
+
+    Asserts the full-family file exists and names every solution this file skips,
+    so dropping one here cannot quietly drop it everywhere. That file is the one
+    place they run, and nothing in CI runs it — this is the link that keeps it
+    honest.
+    """
+
+    full = pathlib.Path(__file__).parent / "analytic_full" / "test_analytic_full_family.py"
+    assert full.exists(), f"the full-family sweep is missing: {full}"
+
+    text = full.read_text()
+    for name in SKIPPED_AS_EXPENSIVE:
+        assert name in text, (
+            f"{name} is skipped here as expensive but is not named in {full.name}"
+        )
 
 
 @pytest.fixture(scope="module")

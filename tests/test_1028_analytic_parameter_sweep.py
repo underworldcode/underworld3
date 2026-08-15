@@ -36,12 +36,7 @@ from underworld3.analytic import _validation
 SWEEP = {
     "SolA": [{"eta": 3.0}, {"eta": 0.25}, {"eta": 3.0, "n": 2, "m": 1.5}],
     "SolB": [{"eta": 3.0}, {"eta": 0.25}, {"eta": 3.0, "n": 2, "m": 1.5}],
-    "SolC": [{"eta": 3.0}, {"eta": 0.25, "x_c": 0.3}],
-    "SolH": [{"eta": 3.0}, {"eta": 0.25, "dx": 0.3, "dy": 0.4}],
     "SolCx": [{"eta_A": 3.0, "eta_B": 0.1}, {"eta_A": 1.0e4, "eta_B": 1.0, "x_c": 0.3}],
-    "SolDA": [{"eta_A": 2.0, "eta_B": 0.5}, {"sigma": 3.0, "z_c": 0.4}],
-    "SolKx": [{"B": 1.0, "n": 2, "m": 1.0}, {"B": 4.0}],
-    "SolKz": [{"B": 1.0, "n": 2, "m": 1.0}, {"B": 4.0}],
     "SolM": [{"eta_0": 3.0}, {"eta_0": 0.5, "n": 2, "m": 1, "r": 3.0}],
     "SolNL": [{"eta_0": 2.0}, {"r": 2.5}],
     "SolDB2d": [],  # a manufactured solution with no free parameters
@@ -53,13 +48,18 @@ SWEEP = {
     ],
 }
 
-STOKES = sorted(
+ALL_STOKES = sorted(
     name
     for name in uw.analytic.available()
     if getattr(uw.analytic, name).symbolic
     and uw.analytic.is_available(name)
     and getattr(uw.analytic, name).solves == "stokes"
 )
+
+# SolC, SolDA, SolH, SolKx and SolKz declare `expensive_to_validate` and are
+# swept in tests/analytic_full/ instead — same table, same gates, just not on
+# every PR. See that file, and the note on the class attribute, for the cost.
+STOKES = [n for n in ALL_STOKES if not getattr(uw.analytic, n).expensive_to_validate]
 
 CASES = [(name, kw) for name in STOKES for kw in SWEEP.get(name, [])]
 
@@ -70,6 +70,10 @@ def test_every_stokes_solution_is_swept():
     SolDB2d is listed with an empty sweep rather than omitted: "this one has no
     parameters" is a claim worth recording, and it is different from "nobody got
     round to it".
+
+    A solution that declares itself expensive belongs in the full-family table
+    rather than this one, so it must be absent here and present there — the
+    conformance file asserts the second half.
     """
 
     assert set(SWEEP) == set(STOKES), (
