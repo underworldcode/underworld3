@@ -2923,6 +2923,25 @@ class Mesh(Stateful, uw_object):
         (#564). Every rank must call this, including one that owns no part of
         the boundary.
 
+        .. note:: **The 3-D answer changed at #564, in SERIAL as well as in
+           parallel.** Facet contributions used to be routed to "the DOFs
+           nearest the facet centroid" by a kd-tree query. On a TETRAHEDRAL
+           boundary the three DOFs nearest a face centroid are not always that
+           face's own three vertices, so the query silently picked up a
+           neighbour and the assembled normal was wrong — by up to **0.103 in
+           the unit normal (≈5.9°) on ``SphericalShell(0.55, 1.0, cs=0.35)``,
+           at np=1, on a UNIFORM mesh**. Rows now come from the variable's own
+           section, which is exact: measured against an independent
+           global-facet-sum oracle, 1.9e-16 (Upper) and 2.2e-16 (Lower) where the
+           old route was 4.7e-02 and 1.03e-01.
+
+           2-D is unaffected (annulus 1.1e-16 old and new, box bit-identical) —
+           on an edge the two nearest DOFs to the midpoint are always its own two
+           vertices. So any **3-D** result that used the default ``normal=None``
+           on a curved boundary moves, and moves toward the right answer. Guarded
+           by ``tests/parallel/test_1069_boundary_normal_parallel.py``, which runs
+           at np=1 as well as np>1 precisely so this path is covered.
+
         Returns a sympy Matrix (row) of the P1 normal-field components, for
         use as the constraint direction in Nitsche/penalty BCs.
 
@@ -3005,27 +3024,74 @@ class Mesh(Stateful, uw_object):
         (the per-boundary label this uses and the consolidated ``UW_Boundaries``);
         the guard that keeps it true is
         ``tests/parallel/test_1069_boundary_normal_parallel.py``.
+
+        FAILURE IS COLLECTIVE AND LOUD. A rank that cannot complete its facet walk
+        raises :class:`RuntimeError` on EVERY rank, not just its own. Two failure
+        modes are being avoided, and both were measured on the first version of
+        this routine:
+
+        * swallowing the failure rank-locally and carrying on gives that rank's
+          OWNED boundary DOFs a ZERO normal — so the constraint direction over
+          that part of the boundary is the zero vector, with a converged solve
+          and no message. That is strictly worse than the 3.3-degree error this
+          routine exists to remove, and indistinguishable from success;
+        * raising rank-locally takes that rank out of the sub-DM collectives
+          below and HANGS the others (measured: rank 1 returns, rank 0 blocks,
+          killed by the launcher timeout).
+
+        So the flag is agreed with an all-reduce first, every rank then takes the
+        same branch, and every rank raises. Callers that swallow the exception
+        (:meth:`deform`) are therefore safe by construction: what reaches them is
+        already symmetric.
         """
         from underworld3.utilities.facet_normals import facet_measure_and_normal
 
         cdim = self.cdim
         dm = self.dm
-        ncomp = var.num_components
-        # Dense over this rank's LOCAL DOFs (ghosts included), so a node whose
-        # labelled facets all live on a neighbour needs no special enumeration —
-        # it is simply a row that stays zero until the reduction fills it.
-        accum = numpy.zeros_like(numpy.asarray(var.data))
+        comm = dm.comm.tompi4py()
+        failed = 0
+        detail = ""
+        ncomp = None
+        accum = None
+
+        # Rank-local set-up. Guarded like the facet walk below and for the same
+        # reason: `dm.createSubDM` is COLLECTIVE, so a rank must not leave before
+        # reaching it.
+        try:
+            ncomp = var.num_components
+            # One node per DMPlex point is assumed by the `offset // ncomp` row
+            # arithmetic below. True for the degree-1 variable `boundary_normal`
+            # builds, but that path adopts a pre-existing `_n_bd_<name>` variable
+            # if one is already registered (a checkpoint restore, or user code),
+            # and a higher-degree space puts several nodes on one point — a P3
+            # edge carries two in 2-D — which would land both on the first row and
+            # leave the second at zero. Refuse rather than silently half-fill.
+            if var.degree != 1:
+                raise RuntimeError(
+                    f"boundary_normal needs a degree-1 field; '{var.clean_name}' is "
+                    f"degree {var.degree}. A higher-degree space carries several "
+                    f"nodes per DMPlex point and this assembly writes one row per "
+                    f"point.")
+            # Dense over this rank's LOCAL DOFs (ghosts included), so a node whose
+            # labelled facets all live on a neighbour needs no special enumeration —
+            # it is simply a row that stays zero until the reduction fills it.
+            accum = numpy.zeros_like(numpy.asarray(var.data))
+        except Exception as exc:
+            failed, detail = 1, f"{type(exc).__name__}: {exc}"
 
         # DOF rows come from the variable's OWN section on its sub-DM: exact on
         # every rank, and the same section the reduction below scatters through.
         # (This used to be a kd-tree lookup of the DOFs nearest the facet
-        # centroid — a heuristic that can mis-assign on a graded mesh, and one
-        # that cannot be made to agree across ranks because each rank's tree is
-        # built from its own local coordinates.)
+        # centroid. That is a heuristic, and not only on a graded mesh: on a
+        # TETRAHEDRAL boundary the three DOFs nearest a face centroid are not
+        # always that face's own three vertices, so it mis-assigned on a uniform
+        # spherical shell in SERIAL — see :meth:`boundary_normal`. It also cannot
+        # be made to agree across ranks, because each rank's tree is built from
+        # its own local coordinates.)
         indexset, subdm = dm.createSubDM(var.field_id)
         try:
-            ssec = subdm.getLocalSection()
             try:
+                ssec = subdm.getLocalSection()
                 for f in self._boundary_facets(name):
                     # Orientation needs the facet's OWN support cell, and only an
                     # exterior facet has exactly one. An internal boundary's facets
@@ -3042,22 +3108,28 @@ class Mesh(Stateful, uw_object):
                         if ssec.getDof(q) <= 0:
                             continue
                         accum[ssec.getOffset(q) // ncomp] += measure * nrm[:cdim]
-            except Exception:
-                # Sanctioned swallow, and it is deliberately INSIDE the collective:
-                # the facet walk is rank-local, and a rank that cannot complete it
-                # (a boundary whose label vanished from the current DM, e.g. after
-                # region extraction) simply contributes nothing. Raising or
-                # returning here would take this rank out of the reduction below
-                # and HANG the ranks that did find the label — the failure mode the
-                # caller's `except: pass` in deform() would otherwise convert a
-                # one-rank error into.
-                accum[...] = 0.0
+            except Exception as exc:
+                if not failed:
+                    failed, detail = 1, f"{type(exc).__name__}: {exc}"
 
-            if dm.comm.getSize() > 1:
-                accum = self._sum_local_dofs_across_ranks(subdm, accum)
+            # Agree on the outcome BEFORE the reduction, so every rank takes the
+            # same branch. Skipping the reduction on a failure is what keeps the
+            # raise below from being reached by only some ranks.
+            if comm.size > 1:
+                failed = comm.allreduce(failed)
+            if not failed:
+                accum = self._sum_local_dofs_across_ranks(subdm, accum) \
+                    if comm.size > 1 else accum
         finally:
             indexset.destroy()
             subdm.destroy()
+
+        if failed:
+            reports = [d for d in (comm.allgather(detail) if comm.size > 1
+                                   else [detail]) if d]
+            raise RuntimeError(
+                f"boundary normal assembly for {name!r} failed on "
+                f"{failed} of {comm.size} rank(s): {'; '.join(reports[:4])}")
 
         mag = numpy.sqrt(numpy.sum(accum ** 2, axis=1))
         nonzero = mag > 1.0e-30
@@ -3077,6 +3149,18 @@ class Mesh(Stateful, uw_object):
         variable, whose global vec is built lazily.
 
         COLLECTIVE on the DM's communicator.
+
+        There is deliberately NO "the round trip lost this DOF, keep the local
+        value" fallback. The question such a fallback wants to ask is "was this
+        DOF constrained out of the global vector?"; the only thing it can cheaply
+        test is "did it come back all-zero?", and those two differ on exactly the
+        input where it would matter — a node whose GLOBAL contributions cancel
+        (opposed facets on a degenerate or zero-thickness boundary) would have its
+        rank-local PARTIAL value restored, re-introducing #564 on the one case the
+        reduction exists to get right. The mesh DM carries no essential-BC
+        constraints (those live on the solver DM), so nothing is lost today; if
+        that ever changes, this should fail loudly rather than guess, and
+        ``ssec.getConstraintDof(q)`` is the predicate to use.
         """
         ncomp = values.shape[1]
         lvec = subdm.createLocalVector()
@@ -3090,13 +3174,6 @@ class Mesh(Stateful, uw_object):
         finally:
             lvec.destroy()
             gvec.destroy()
-        # A DOF constrained out of the global vector would come back zero; keep
-        # this rank's own contribution there rather than losing it. The mesh DM
-        # carries no essential-BC constraints (those live on the solver DM), so
-        # this does not fire today — it is here so that it degrades to the old
-        # rank-local answer instead of to zero if that ever changes.
-        dropped = (~summed.any(axis=1)) & values.any(axis=1)
-        summed[dropped] = values[dropped]
         return summed
 
     def cell_size(self):
@@ -3986,25 +4063,47 @@ class Mesh(Stateful, uw_object):
         # geometry (the JIT reads the variable's .data, which would otherwise
         # hold the setup-time normal). Re-assemble each cached boundary normal.
         if getattr(self, "_boundary_normal_vars", None):
+            _bn_comm = self.dm.comm.tompi4py()
             for _nm, _var in list(self._boundary_normal_vars.items()):
+                # The outcome is decided COLLECTIVELY, not per rank. The callee
+                # already all-reduces its own failure flag and raises on every rank
+                # or none, so this is belt and braces for anything raised OUTSIDE
+                # its guarded region — but it is what makes "every rank takes the
+                # same branch" a property of this loop rather than an inherited
+                # assumption. The all-reduce is reached on the exception path too;
+                # that is the whole point.
+                _bn_failed, _bn_exc = 0, None
                 try:
                     self._assemble_boundary_normal(_var, _nm)
-                except Exception:
+                except Exception as _e:
+                    _bn_failed, _bn_exc = 1, _e
+                if _bn_comm.size > 1:
+                    _bn_failed = _bn_comm.allreduce(_bn_failed)
+                if _bn_failed:
+                    _exc = _bn_exc if _bn_exc is not None else RuntimeError(
+                        "failed on another rank")
                     # Sanctioned swallow: a normal refresh can fail for a
                     # boundary whose label vanished from the current DM
                     # (e.g. after region extraction); the deform itself is
                     # complete and must not be rolled back for one BC aid.
                     # Consequence of skipping: that Nitsche/penalty BC
-                    # keeps its setup-time normal until next refresh.
+                    # keeps its setup-time normal until next refresh — which is
+                    # why it is a WARNING and not silence. A silent skip here
+                    # leaves a stale constraint direction on a moved boundary.
                     #
-                    # NB _assemble_boundary_normal is COLLECTIVE (it completes
-                    # the facet sum across ranks, #564). It swallows its own
-                    # rank-local failures INSIDE that collective so one rank
-                    # cannot drop out of the reduction and hang the others; this
-                    # outer guard therefore only ever sees a symmetric failure.
-                    # The dict is built by a collective accessor, so every rank
-                    # iterates the same boundaries in the same order.
-                    pass
+                    # SAFE TO SWALLOW because _assemble_boundary_normal is
+                    # COLLECTIVE (it completes the facet sum across ranks, #564)
+                    # and its failures are collective too: it all-reduces its own
+                    # failure flag and raises on EVERY rank or none. So what
+                    # arrives here is already symmetric and every rank takes this
+                    # branch together. Do not weaken that contract — a rank-local
+                    # raise out of that routine hangs the job here rather than
+                    # failing it. The dict is built by a collective accessor, so
+                    # every rank iterates the same boundaries in the same order.
+                    uw.mpi.pprint(
+                        f"[mesh.deform] WARNING: could not refresh the boundary "
+                        f"normal for {_nm!r} ({type(_exc).__name__}: {_exc}); BCs "
+                        f"that captured it keep their pre-deform direction.")
         # Likewise refresh the local cell-size field (Nitsche penalty scaling)
         # so its cell-constant data tracks the deformed geometry.
         if getattr(self, "_cell_size_variable", None) is not None:
