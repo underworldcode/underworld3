@@ -431,12 +431,14 @@ def test_rotated_freeslip_box_partition_independent():
     values, fingerprint = _box_diagnostics()
     compare(values[:1], _reference("box", 1), rtols=(1e-8,), labels=("velocity L2",),
             fingerprint=fingerprint, what="box rotated free-slip")
-    accuracy_anchor(values[:1], ANCHORS["box"], fingerprint, ("velocity L2",),
-                    what="box rotated free-slip")
     # ACCURACY check, not a partition check: the SolCx error is a property of the
     # discretisation, and the gate is loose enough to survive a cross-host mesh.
+    # Asserted BEFORE the fingerprint-gated anchor: that anchor SKIPS on a host
+    # whose mesh differs, and this assertion must not be skipped with it.
     assert values[1] < 1e-3, (
         f"box velocity error {values[1]:.2e} too large at np={uw.mpi.size}")
+    accuracy_anchor(values[:1], ANCHORS["box"], fingerprint, ("velocity L2",),
+                    what="box rotated free-slip")
 
 
 def test_rotated_freeslip_annulus_partition_independent():
