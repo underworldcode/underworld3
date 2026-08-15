@@ -56,31 +56,26 @@ export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
-# Serial batches run across worker processes, one file at a time per worker.
-# --dist loadfile is the granularity this suite is safe at, and it is the same
-# mechanism the batching below already exists for: tests within a file follow
-# each other, PETSc objects and global state do not cross between workers.
-# WORKERS defaults to the runner's core count, capped at 8 — measured on 16
-# cores, throughput saturates by 8, and at one worker per core the file
-# grouping shifts enough to expose test pollution.
-if [ -z "$WORKERS" ]; then
-    _cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 0)
-    case "$_cores" in
-        ''|*[!0-9]*) _cores=0 ;;          # unparseable: fall through to 2
-    esac
-    [ "$_cores" -lt 1 ] && _cores=2
-    WORKERS=$(( _cores < 8 ? _cores : 8 ))
-fi
-echo "Serial batches: $WORKERS worker process(es) (detected ${_cores:-preset} core(s))"
-
-# One worker is worse than none: xdist would add a process spawn and a fresh
-# underworld3 import to every batch and parallelise nothing. Measured in CI,
-# where core detection returned 1: 52m37s against 49m43s without xdist.
-if [ "$WORKERS" -le 1 ]; then
-    echo "  (single worker — running in-process, xdist would be pure overhead)"
-    PYTEST="pytest --config-file=tests/pytest.ini"
-else
+# CI runs the batches in-process, deliberately. Distributing them across
+# workers WORKS and is measured — 49m43s to 30m53s at 4 workers on the
+# runner — but it also changes which files share a process, and that exposes
+# a real defect: three point-locator tests then answer in a cell that does
+# not contain the query point, for every point (issue #567). We are not
+# marking those xfail to buy the speedup.
+#
+# So CI stays serial until #567 is fixed. The developer loop does use workers
+# (scripts/test_levels.sh, `./uw test`: 9:45 to 1:22), because its grouping
+# does not hit the defect and the fast feedback is what stops people skipping
+# tests. Turning CI on afterwards is this block plus WORKERS in the workflow.
+#
+# WORKERS is honoured if set, so the parallel run stays one env var away for
+# anyone bisecting #567 in CI.
+if [ -n "$WORKERS" ] && [ "$WORKERS" -gt 1 ]; then
+    echo "Serial batches: $WORKERS worker process(es) (WORKERS set; see #567)"
     PYTEST="pytest --config-file=tests/pytest.ini --dist loadfile -n $WORKERS"
+else
+    echo "Serial batches: in-process (workers held back pending #567)"
+    PYTEST="pytest --config-file=tests/pytest.ini"
 fi
 
 # Run serial tests (unless --parallel-only specified)
