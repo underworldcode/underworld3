@@ -331,24 +331,42 @@ def test_boundaries_can_carry_different_conditions(mesh):
 
 
 def test_free_slip_passes_an_analytic_normal_through(mesh):
-    """A curved-boundary solution can choose the normal; the default is geometric.
+    """A curved-boundary solution can choose the normal; otherwise it says nothing.
 
-    Both calls must register, and the analytic one must carry the normal it was
-    given — otherwise a spherical or annulus solution silently gets the facet
-    normal it explicitly declined.
+    The distinction is between passing `normal=None` and not passing `normal` at
+    all: the first overrides the solver's default with nothing, the second leaves
+    the solver to choose. So this records the *call*, rather than reading the
+    value back off the solver — reading it back would only confirm what the
+    solver's own default happens to be.
     """
 
-    stokes = uw.systems.Stokes(mesh)
     x, y = mesh.X
     radial = sympy.Matrix([[x, y]]) / sympy.sqrt(x**2 + y**2)
 
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def add_rotated_freeslip_bc(self, value, boundary, **kwargs):
+            self.calls.append((value, boundary, kwargs))
+
+    solver = Recorder()
+    uw.analytic.free_slip(solver, ["Left"])
+    uw.analytic.free_slip(solver, ["Right"], normal=radial)
+
+    assert solver.calls == [
+        (0.0, "Left", {}),
+        (0.0, "Right", {"normal": radial}),
+    ]
+
+
+def test_free_slip_reaches_a_real_solver(mesh):
+    """The recorded call is the one a Stokes solver actually accepts."""
+
+    stokes = uw.systems.Stokes(mesh)
     uw.analytic.free_slip(stokes, ["Left"])
-    uw.analytic.free_slip(stokes, ["Right"], normal=radial)
 
-    registered = dict(stokes._rotated_freeslip_bcs)
-
-    assert registered["Left"] is None
-    assert registered["Right"] == radial
+    assert {boundary for boundary, _ in stokes._rotated_freeslip_bcs} == {"Left"}
 
 
 def test_boundaries_follow_the_mesh_dimension(mesh):

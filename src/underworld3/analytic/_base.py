@@ -620,8 +620,10 @@ def prescribed_velocity(solver, boundaries, velocity):
         The solver to configure.
     boundaries : sequence of str
         The boundary labels to constrain.
-    velocity : sympy Matrix, shape (1, dim)
-        Usually the solution's own ``fn_velocity``.
+    velocity : sequence of length dim
+        Usually the solution's own ``fn_velocity``, a 1 x dim sympy Matrix, but
+        any dim-long sequence will do — a solution holding a wall at rest passes
+        a tuple of zeros.
     """
 
     for boundary in boundaries:
@@ -641,7 +643,11 @@ def prescribed_scalar(solver, boundaries, field):
     boundaries : sequence of str
         The boundary labels to constrain.
     field : sympy expression
-        Usually the solution's own ``fn_solution``.
+        Usually the solution's own ``fn_solution``. A single expression, not a
+        sequence — the bracket below is this function's job, because
+        ``add_dirichlet_bc`` takes one entry per component and a scalar solution
+        has exactly one. That is the only difference from
+        :func:`prescribed_velocity`, whose argument already is the sequence.
     """
 
     for boundary in boundaries:
