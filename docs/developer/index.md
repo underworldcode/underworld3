@@ -37,6 +37,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Data access | [subsystems/data-access.md](subsystems/data-access.md) (internals reference: [NDArray System](UW3_Developers_NDArrays.md)) |
 | Local scattered-point interpolation | [subsystems/interpolation.md](subsystems/interpolation.md) |
 | Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
+| Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
 | Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
@@ -197,6 +198,7 @@ subsystems/constitutive-models-anisotropy
 subsystems/swarm-system
 subsystems/data-access
 subsystems/interpolation
+subsystems/analytic-solutions
 subsystems/expressions-functions
 subsystems/containers
 subsystems/checkpointing-system

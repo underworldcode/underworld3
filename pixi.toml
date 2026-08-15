@@ -332,6 +332,13 @@ anthropic = "*"
 sphinx-math-dollar = "*"
 sphinxcontrib-mermaid = "*"
 
+# Kramer et al. (2021) curved-geometry Stokes solutions, behind
+# uw.analytic.CylindricalStokes and the annulus/spherical benchmark examples.
+# A dev dependency rather than a runtime one: it is the `benchmarks` extra in
+# pyproject.toml for users, and here so that tests/test_1027 actually runs
+# instead of skipping itself into a green tick. Pure Python, ~12 kB.
+assess = "*"
+
 [feature.dev.tasks]
 install-claude = "npm install -g @anthropic-ai/claude-code"
 claude = "claude"

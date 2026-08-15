@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
-from underworld3.function import analytic as A
+from underworld3 import analytic as A
 from _mg_ladder import assert_coarsening_ladder
 from underworld3.utilities.nvb import NVBMesh
 

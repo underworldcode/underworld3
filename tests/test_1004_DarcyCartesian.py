@@ -117,20 +117,18 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
     pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords).squeeze()
 
     # #### Get analytical solution
-    La = -1.0 * interfaceY
-    Lb = 1.0 + interfaceY
-    dP = max_pressure
-
-    S = 0
-    Pa = (dP / Lb - S + k1 / k2 * S) / (1.0 / Lb + k1 / k2 / La)
-    pressure_analytic_noG = np.piecewise(
-        ycoords,
-        [ycoords >= -La, ycoords < -La],
-        [
-            lambda ycoords: -Pa * ycoords / La,
-            lambda ycoords: Pa + (dP - Pa) * (-ycoords - La) / Lb,
-        ],
+    #
+    # Note k1 is the *upper* layer here (y >= interfaceY), so it is passed as
+    # k_upper. uw.analytic.TwoLayerDarcy derives the profile from constant flux
+    # rather than carrying the closed form this test used to write out; the two
+    # agree to 1e-16 in both gravity cases.
+    exact_noG = uw.analytic.TwoLayerDarcy(
+        mesh, k_lower=k2, k_upper=k1, interface=interfaceY,
+        pressure_drop=max_pressure, gravity=0.0, bottom=minY, top=maxY,
     )
+    pressure_analytic_noG = uw.function.evaluate(
+        exact_noG.fn_solution, xy_coords
+    ).squeeze()
 
     print(pressure_interp)
     print(pressure_analytic_noG)
@@ -142,16 +140,11 @@ def test_Darcy_boxmesh_G_and_noG(mesh):
 
     ## Suggest we re-solve right here for version with G to avoid all the re-definitions
 
-    S = 1
-    Pa = (dP / Lb - S + k1 / k2 * S) / (1.0 / Lb + k1 / k2 / La)
-    pressure_analytic = np.piecewise(
-        ycoords,
-        [ycoords >= -La, ycoords < -La],
-        [
-            lambda ycoords: -Pa * ycoords / La,
-            lambda ycoords: Pa + (dP - Pa) * (-ycoords - La) / Lb,
-        ],
+    exact = uw.analytic.TwoLayerDarcy(
+        mesh, k_lower=k2, k_upper=k1, interface=interfaceY,
+        pressure_drop=max_pressure, gravity=1.0, bottom=minY, top=maxY,
     )
+    pressure_analytic = uw.function.evaluate(exact.fn_solution, xy_coords).squeeze()
 
     darcy.constitutive_model.Parameters.s = sympy.Matrix(
         [0, -1]

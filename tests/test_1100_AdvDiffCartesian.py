@@ -78,15 +78,12 @@ def create_mesh(mesh_type):
 # -
 
 # ### setup analytical function
-
-# +
-u, t, x, x0, x1 = sp.symbols("u, t, x, x0, x1")
-
-
-U_a_x = (
-    sp.erf((x1 - x + (u * t)) / (2 * sp.sqrt(kappa * t)))
-    + sp.erf((-x0 + x - (u * t)) / (2 * sp.sqrt(kappa * t)))
-) / 2
+#
+# The two-erf advecting top hat used to be written out here. It is now
+# uw.analytic.AdvectedFront, which is the same expression checked against
+# du/dt + v.grad(u) = kappa lap(u) — the version here was never verified to
+# solve anything, and its own residual is what caught that the check needed the
+# advection term at all.
 
 
 # %%
@@ -154,7 +151,10 @@ def test_advDiff_boxmesh(mesh_type):
     # v.array[:, 0, 0] = -1*v.coords[:,1]
     v.array[:, 0, 0] = velocity
 
-    U_start = U_a_x.subs({u: velocity, t: t_start, x: mesh.X[0], x0: 0.4, x1: 0.6})
+    exact = uw.analytic.AdvectedFront(
+        mesh, kappa=kappa, speed=velocity, x0=0.4, x1=0.6
+    )
+    U_start = exact.fn_solution.subs(exact.t, t_start)
 
     T.array = uw.function.evaluate(U_start, T.coords)
 
@@ -180,7 +180,7 @@ def test_advDiff_boxmesh(mesh_type):
     ### compare UW and 1D numerical solution
     T_UW = uw.function.evaluate(T.sym[0], sample_points).squeeze()
 
-    U_end = U_a_x.subs({u: velocity, t: t_end, x: mesh.X[0], x0: 0.4, x1: 0.6})
+    U_end = exact.fn_solution.subs(exact.t, t_end)
     T_analytical = uw.function.evaluate(U_end, sample_points).squeeze()
 
     ### moderate atol due to evaluating onto points

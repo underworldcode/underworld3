@@ -54,7 +54,7 @@ import sympy
 import pytest
 
 import underworld3 as uw
-from underworld3.function import analytic as A
+from underworld3 import analytic as A
 from underworld3.utilities import custom_mg
 
 from serial_reference import (
