@@ -24,7 +24,30 @@ Flat axis-aligned walls are immune — every facet of such a wall carries the sa
 normal, so a partial stencil normalises to the same answer — which is why the box
 tests never saw this and why every test here is on a curved boundary or a corner.
 
+AND IT WAS ALSO WRONG IN SERIAL, IN 3-D
+---------------------------------------
+Facet contributions used to reach their DOFs by a kd-tree query for "the nodes
+nearest the facet centroid". On a TETRAHEDRAL boundary the three DOFs nearest a face
+centroid are not always that face's own three vertices, so the query picked up a
+neighbour and the assembled normal was wrong on a **uniform** mesh **at np=1**:
+
+    SphericalShell(0.55, 1.0, cs=0.35)   vs the global facet sum
+    Upper    old 4.71e-02   new 1.9e-16
+    Lower    old 1.03e-01   new 2.2e-16       (1.03e-01 is 5.9 degrees)
+
+2-D is unaffected (annulus 1.1e-16 old and new; box bit-identical) — on an edge the
+two nearest DOFs to the midpoint are always its own two vertices.
+
+That defect is invisible to the analytic radial oracle: at this resolution the honest
+faceting error is 8.8e-02 / 2.26e-01 and the WORST node is the same before and after,
+so ``max‖n − r̂‖`` is identical either way. Only the global-facet-sum oracle sees it.
+That is why this file has one, and why **this file deliberately carries no
+``mpi(min_size=2)`` mark**: it must run at np=1, or the serial 3-D path — which no
+other test in the tree reaches, every serial default-normal test being on a box —
+goes uncovered again. The single test that genuinely needs np>1 skips itself.
+
 Run with:
+    python -m pytest tests/parallel/test_1069_boundary_normal_parallel.py
     mpirun -n 2 python -m pytest --with-mpi \\
       tests/parallel/test_1069_boundary_normal_parallel.py
     mpirun -n 4 python -m pytest --with-mpi \\
@@ -40,7 +63,9 @@ from underworld3.utilities.facet_normals import facet_measure_and_normal
 
 from serial_reference import compare, emit, mesh_fingerprint, serial_reference
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(600)]
+# NO mpi(min_size=2): see "AND IT WAS ALSO WRONG IN SERIAL, IN 3-D" above. The one
+# test that cannot mean anything at np=1 skips itself.
+pytestmark = [pytest.mark.timeout(600)]
 
 _KEY_DECIMALS = 10
 
@@ -177,6 +202,36 @@ def test_boundary_normal_annulus_matches_exact_radial(boundary, sign):
 def _shell(cell_size=0.35):
     return uw.meshing.SphericalShell(radiusInner=0.55, radiusOuter=1.0,
                                      cellSize=cell_size, qdegree=3)
+
+
+def test_boundary_normal_shell_matches_global_facet_sum_in_serial():
+    """THE SERIAL 3-D CASE, on its own, because it is a second defect this change
+    fixes and nothing else in the tree reaches it.
+
+    At np=1 there is no partition, so the cross-rank reduction is a no-op and the ONLY
+    thing under test is where a facet's contribution lands. The old kd-tree route
+    ("the DOFs nearest the facet centroid") put it on the wrong vertex often enough to
+    be 4.71e-02 (Upper) and 1.03e-01 (Lower, ≈5.9°) away from the true facet sum on a
+    UNIFORM shell; the section-based route is 1.9e-16 / 2.2e-16.
+
+    Kept separate from the parametrised test below, and asserted at np=1 explicitly,
+    so that this cannot quietly become parallel-only again — which is exactly how the
+    defect survived: `test_1069` was `mpi(min_size=2)`, and every other serial test of
+    the default normal is on a box, where flat walls make the question vacuous.
+    """
+    if uw.mpi.size != 1:
+        pytest.skip("this assertion is about the SERIAL path; the parametrised "
+                    "facet-sum test covers np>1")
+    mesh = _shell()
+    for boundary in ("Upper", "Lower"):
+        assembled, _ = _assembled_normals(mesh, boundary)
+        worst, missing = _worst_difference(
+            assembled, _global_facet_sum_oracle(mesh, boundary))
+        assert missing == 0, f"shell {boundary}: {missing} nodes in only one node set"
+        assert worst < 1.0e-12, (
+            f"shell {boundary} at np=1: assembled normal is {worst:.3e} from the "
+            f"global facet sum over {len(assembled)} nodes — the facet-to-DOF routing "
+            f"is wrong, independently of any partition effect")
 
 
 @pytest.mark.parametrize("geometry", ["annulus", "shell"])
