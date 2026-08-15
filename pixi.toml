@@ -26,7 +26,7 @@
 name = "underworld3"
 authors = ["Louis Moresi <louis.moresi@anu.edu.au>"]
 channels = ["conda-forge"]
-platforms = ["osx-arm64", "linux-64"]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 version = "0.99.0b"
 
 # ============================================
@@ -97,6 +97,13 @@ pytest-xdist = ">=3.8,<4"
 psutil = ">=5.9,<8"  # leak-loop regression test in tests/test_0111_swarm_lifecycle.py
 
 # Mesh generation
+# gmsh and python-gmsh are in [dependencies] (conda-forge) rather than [pypi-dependencies]:
+# - PyPI gmsh wheels have no linux-aarch64 build; conda-forge does.
+# - conda-forge gmsh ships only the binary/library; python-gmsh is the separate
+#   conda-forge package that provides the Python module (import gmsh).
+#   The original environment.yaml listed both; pixi.toml must too.
+gmsh = ">=4.13,<5"
+python-gmsh = ">=4.13,<5"
 meshio = ">=5.3,<6"
 
 # Utilities
@@ -114,7 +121,6 @@ pixi-kernel = ">=0.7.1,<0.8"
 sphinx-design = ">=0.6.1,<0.7"
 
 [pypi-dependencies]
-gmsh = ">=4.13,<5"
 pygmsh = ">=7.1,<8"
 rich = "*"
 
@@ -134,6 +140,9 @@ openmpi = ">=5.0,<6"
 h5py = { version = ">=3.12,<4", build = "*openmpi*" }
 
 [feature.conda-petsc.target.linux-64.dependencies]
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+
+[feature.conda-petsc.target.linux-aarch64.dependencies]
 h5py = { version = ">=3.12,<4", build = "*mpich*" }
 
 # ============================================
@@ -187,6 +196,10 @@ hdf5 = { version = ">=1.14,<2", build = "*openmpi*" }
 h5py = { version = ">=3.12,<4", build = "*openmpi*" }
 
 [feature.amr.target.linux-64.dependencies]
+hdf5 = { version = ">=1.14,<2", build = "*mpich*" }
+h5py = { version = ">=3.12,<4", build = "*mpich*" }
+
+[feature.amr.target.linux-aarch64.dependencies]
 hdf5 = { version = ">=1.14,<2", build = "*mpich*" }
 h5py = { version = ">=3.12,<4", build = "*mpich*" }
 
