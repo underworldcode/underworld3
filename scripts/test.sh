@@ -48,7 +48,35 @@ fi
 export UW_NO_USAGE_METRICS=0
 # A hard crash must print a Python stack, not just "Segmentation fault".
 export PYTHONFAULTHANDLER=1
-PYTEST="pytest --config-file=tests/pytest.ini"
+
+# Each worker is a full PETSc/BLAS process. Without pinning the thread pools,
+# N workers each start their own and oversubscribe the runner badly enough to
+# run slower than serial.
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+# CI runs the batches in-process, deliberately. Distributing them across
+# workers WORKS and is measured — 49m43s to 30m53s at 4 workers on the
+# runner — but it also changes which files share a process, and that exposes
+# a real defect: three point-locator tests then answer in a cell that does
+# not contain the query point, for every point (issue #567). We are not
+# marking those xfail to buy the speedup.
+#
+# So CI stays serial until #567 is fixed. The developer loop does use workers
+# (scripts/test_levels.sh, `./uw test`: 9:45 to 1:22), because its grouping
+# does not hit the defect and the fast feedback is what stops people skipping
+# tests. Turning CI on afterwards is this block plus WORKERS in the workflow.
+#
+# WORKERS is honoured if set, so the parallel run stays one env var away for
+# anyone bisecting #567 in CI.
+if [ -n "$WORKERS" ] && [ "$WORKERS" -gt 1 ]; then
+    echo "Serial batches: $WORKERS worker process(es) (WORKERS set; see #567)"
+    PYTEST="pytest --config-file=tests/pytest.ini --dist loadfile -n $WORKERS"
+else
+    echo "Serial batches: in-process (workers held back pending #567)"
+    PYTEST="pytest --config-file=tests/pytest.ini"
+fi
 
 # Run serial tests (unless --parallel-only specified)
 if [ $PARALLEL_ONLY -eq 0 ]; then

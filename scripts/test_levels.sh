@@ -21,21 +21,24 @@
 #   --parallel          Run parallel (MPI) tests with 2 ranks
 #   --parallel-ranks N  Run parallel (MPI) tests with N ranks
 #   --full-parallel     Run parallel tests with both 2 and 4 ranks
-#   --isolation         Enable per-file process isolation (prevents test pollution)
+#   --isolation         Run on ONE worker, still per-file (for pinning down
+#                       a pollution failure; slower than the default)
+#   --workers N, -j N   Worker processes (default: min(cores, 8))
 #   --verbose           Show verbose test output
 #   --help              Show this help message
 #
 # Defaults:
-#   Tests run WITHOUT process isolation and WITHOUT parallel (MPI) tests.
-#   This is the fastest mode for quick feedback during development.
+#   Tests run across min(cores, 8) worker processes, one file at a time per
+#   worker, and WITHOUT parallel (MPI) tests. Level 1 measured on 16 cores:
+#   9:45 serial, 1:32 at 8 workers.
 #
 # Process Isolation (--isolation):
-#   Runs each test file in a fresh subprocess via pytest-xdist (--dist loadfile -n 1).
-#   Prevents test pollution from global state (Model, units, PETSc contexts).
-#   Slower but more reliable for CI and comprehensive testing.
+#   Drops to ONE worker, still one file at a time. Every run is already
+#   per-file isolated; this removes the concurrency as well, which is what you
+#   want when a test passes alone and fails in a full run.
 #
 # Examples:
-#   ./test_levels.sh 1                       # Quick tests, fast mode
+#   ./test_levels.sh 1                       # Quick tests, all workers
 #   ./test_levels.sh --isolation 1,2         # Levels 1+2 with process isolation
 #   ./test_levels.sh --parallel 2            # Level 2 with MPI tests (2 ranks)
 #   ./test_levels.sh --parallel-ranks 4 2    # Level 2 with MPI tests (4 ranks)
@@ -70,6 +73,10 @@ while [[ $# -gt 0 ]]; do
         --isolation)
             RUN_ISOLATION=1
             shift
+            ;;
+        --workers|-j)
+            WORKERS="$2"
+            shift 2
             ;;
         --verbose|-v)
             VERBOSE="-v"
@@ -106,19 +113,42 @@ export UW_NO_USAGE_METRICS=0
 # Disable telemetry during tests to prevent race conditions with kdtree
 export UW_ENABLE_TELEMETRY=0
 
-# Build pytest command with optional isolation
-# --dist loadfile: each test file runs in its own subprocess
-# -n 1: single worker (sequential but isolated per file)
+# Tests run across several worker processes by default.
+#
+# --dist loadfile keeps every test in a file on ONE worker, which is the
+# granularity the suite is safe at: tests within a file are written to follow
+# each other, while global state (Model, units, PETSc contexts) does not
+# survive between workers.
+#
+# Each worker is a full PETSc/BLAS process, so the thread pools have to be
+# pinned; without this, N workers each start their own and oversubscribe the
+# machine badly enough to run SLOWER than serial.
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+# Worker count. Measured on a 16-core box, level 1: serial 9:45, -n 4 2:17,
+# -n 8 1:32, -n 16 1:31 — so throughput saturates around 8 and the last
+# doubling buys nothing. It also costs something: at one worker per core the
+# file-to-worker grouping changes and three point-locator tests fail on state
+# left by whatever shared their process. Default to 8, capped by the machine.
+if [ -z "$WORKERS" ]; then
+    _cores=$( (command -v nproc >/dev/null && nproc) \
+              || sysctl -n hw.ncpu 2>/dev/null || echo 4 )
+    WORKERS=$(( _cores < 8 ? _cores : 8 ))
+fi
+
 # --timeout=120: prevent tests from hanging indefinitely (2 min per test max)
-# This prevents test pollution from global state (Model, units, PETSc)
 # Show test configuration
 echo "Configuration:"
 if [ $RUN_ISOLATION -eq 1 ]; then
+    # One worker, still per-file: sequential AND isolated, for pinning down a
+    # pollution failure rather than for speed.
     ISOLATION_OPTS="--dist loadfile -n 1"
-    echo "  🔒 Process isolation: ON"
+    echo "  🔒 Process isolation: ON (1 worker, one file at a time)"
 else
-    ISOLATION_OPTS=""
-    echo "  ⚡ Process isolation: OFF (fast mode)"
+    ISOLATION_OPTS="--dist loadfile -n $WORKERS"
+    echo "  ⚡ Workers: $WORKERS (one file at a time per worker)"
 fi
 if [ $RUN_PARALLEL -eq 1 ]; then
     echo "  🔀 Parallel (MPI): ON ($PARALLEL_RANKS ranks)"

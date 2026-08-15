@@ -28,6 +28,17 @@ env:
   # the UCX transports and retire the whole flake class.
   UCX_TLS: tcp,sm,self
 
+  # WORKERS is deliberately NOT set: the batches run in-process until #567 is
+  # fixed. Distributing them works and was measured at 4 workers (49m43s ->
+  # 30m53s) but changes which files share a process, which makes three
+  # point-locator tests answer in the wrong cell. Setting `WORKERS: 4` here is
+  # the whole change once #567 lands — and the only change, because
+  # scripts/test.sh already honours it.
+  #
+  # Note if you do set it: detect nothing. The first attempt derived the count
+  # inside the job, got 1, and ran xdist with a single worker — a spawn and a
+  # fresh underworld3 import per batch, parallelising nothing, for 52m37s.
+
 jobs:
   test:
     runs-on: ubuntu-latest
