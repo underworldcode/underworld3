@@ -28,7 +28,7 @@ underworld3.analytic._base : the contract each solution satisfies.
 
 from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
 
-from .barr_houseman import FaultedMedium
+from .barr_houseman_96 import FaultedMedium
 from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient

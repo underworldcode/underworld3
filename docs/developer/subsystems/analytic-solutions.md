@@ -511,12 +511,16 @@ the cost was imagined.
 
 ## A solution with a fault in it
 
-`FaultedMedium` (Barr & Houseman 1996, `analytic/barr_houseman.py`) is the linear
+`FaultedMedium` (Barr & Houseman 1996, `analytic/barr_houseman_96.py`) is the linear
 plane-strain case of their Appendix: a fault that terminates *inside* a viscous
 medium, on a disc of radius $R_0$ with the tip at the centre and the fault
 running out to the perimeter. It carries zero shear traction on the fault,
 continuous normal velocity and continuous normal stress across it, and slip
 $2U_0\sqrt{r/R_0}$.
+
+The year remains in the module name to distinguish this closed-form 1996
+solution from the related 1992 study, which does not provide the corresponding
+full Cartesian analytical field.
 
 It is here because it is the only absolute standard in the suite for a fault
 calculation. Everything else a fault model can be measured against is another
