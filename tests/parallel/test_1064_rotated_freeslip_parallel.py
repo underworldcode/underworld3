@@ -57,11 +57,53 @@ import underworld3 as uw
 from underworld3.function import analytic as A
 from underworld3.utilities import custom_mg
 
-from serial_reference import compare, emit, mesh_fingerprint, serial_reference
+from serial_reference import (
+    accuracy_anchor, compare, emit, mesh_fingerprint, serial_reference)
 
 # The timeout covers the np=1 child each partition test spawns as well as the
 # parallel solve itself.
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(900)]
+
+# ABSOLUTE accuracy anchors, gated on the mesh fingerprint.
+#
+# `compare` proves the answer does not depend on the PARTITION; it says nothing about
+# whether the answer is RIGHT. A rotated constraint that stopped constraining equally
+# on every rank, an FMG hierarchy converging to the wrong place, a Zhong l=2 benchmark
+# coefficient drifting — all of those pass a self-referential test. These are the
+# pre-#568 goldens, kept for that second job, and gated so a host whose gmsh
+# triangulates differently SKIPS the accuracy claim instead of failing it (which is
+# what made them misleading in the first place — see the module docstring).
+#
+# rtol is 1e-2: not a reproducibility gate, just "is this still the same answer".
+# Fingerprints are (owned cell count, integral 1 dV); recompute any line with
+# `python <thisfile> <kind>`.
+_MESH_BOX24 = [576, 1.0000000000000004]        # StructuredQuadBox(24, 24)
+_MESH_BOX8 = [64, 0.9999999999999999]          # StructuredQuadBox(8, 8)
+_MESH_ANNULUS = [600, 2.356187202481425]       # Annulus(0.5, 1.0, cellSize=0.1)
+_MESH_ANNULUS_FMG = [2304, 2.356078287527854]  # cellSize=0.2, refined twice
+_MESH_SHELL = [1417, 3.4521585981151097]       # SphericalShell(0.55, 1.0, cs=0.25)
+_MESH_SHELL_INT = [2016, 3.4521585981151106]   # SphericalShellInternalBoundary
+
+ANCHORS = {
+    "box": {"fingerprint": _MESH_BOX24,
+            "values": (1.275109036912e-03,)},
+    "annulus": {"fingerprint": _MESH_ANNULUS,
+                "values": (1.897011154231e-02, 4.563841e-05, 9.341699e-06)},
+    "annulus_fmg": {"fingerprint": _MESH_ANNULUS_FMG,
+                    "values": (1.906961759626e-02, 5.428193e-06, 1.177002e-06)},
+    "spherical3d": {"fingerprint": _MESH_SHELL,
+                    "values": (4.069689334228e-03,)},
+    "spherical3d_topo": {"fingerprint": _MESH_SHELL_INT,
+                         "values": (4.149689252074e-01, 3.952301937705e-01,
+                                    4.215939953379e-01, 7.932177563075e-01,
+                                    8.426041179682e-01, 7.762363224500e-01)},
+    "nonlinear": {"fingerprint": _MESH_BOX8,
+                  "values": (8.069396188270e-04, 8)},
+    "sigma": {"fingerprint": _MESH_BOX24,
+              "values": (5.554578e-02, 0.998466)},
+    "topo": {"fingerprint": _MESH_BOX24,
+             "values": (2.553916470e-01,)},
+}
 
 
 def _wrap(dm, m0):
@@ -389,6 +431,8 @@ def test_rotated_freeslip_box_partition_independent():
     values, fingerprint = _box_diagnostics()
     compare(values[:1], _reference("box", 1), rtols=(1e-8,), labels=("velocity L2",),
             fingerprint=fingerprint, what="box rotated free-slip")
+    accuracy_anchor(values[:1], ANCHORS["box"], fingerprint, ("velocity L2",),
+                    what="box rotated free-slip")
     # ACCURACY check, not a partition check: the SolCx error is a property of the
     # discretisation, and the gate is loose enough to survive a cross-host mesh.
     assert values[1] < 1e-3, (
@@ -407,9 +451,13 @@ def test_rotated_freeslip_annulus_partition_independent():
     values, fingerprint = _annulus_diagnostics()
     # velocity L2 is iterative-solver-tolerance reproducible (~1e-8 rel), not the
     # box's 1e-10 — the annulus carries a rotation null space + gauge removal.
+    labels = ("velocity L2", "Lower radial leakage", "Upper radial leakage")
     compare(values, _reference("annulus", 3), rtols=(1e-6, 1e-4, 1e-4),
-            labels=("velocity L2", "Lower radial leakage", "Upper radial leakage"),
-            fingerprint=fingerprint, what="annulus rotated free-slip")
+            labels=labels, fingerprint=fingerprint, what="annulus rotated free-slip")
+    # The LEAKAGE anchors are the point here: a rotated constraint that stopped
+    # constraining would keep every partition agreeing with every other.
+    accuracy_anchor(values, ANCHORS["annulus"], fingerprint, labels,
+                    what="annulus rotated free-slip")
 
 
 def test_rotated_freeslip_annulus_fmg_partition_independent():
@@ -417,9 +465,12 @@ def test_rotated_freeslip_annulus_fmg_partition_independent():
     driven by CUSTOM GEOMETRIC FMG (set_custom_fmg) reproduces its own np=1 velocity L2
     and radial leakage in parallel — FMG x rotated x annulus x np>1."""
     values, fingerprint = _annulus_fmg_diagnostics()
+    labels = ("velocity L2", "Lower radial leakage", "Upper radial leakage")
     compare(values, _reference("annulus_fmg", 3), rtols=(1e-6, 1e-4, 1e-4),
-            labels=("velocity L2", "Lower radial leakage", "Upper radial leakage"),
-            fingerprint=fingerprint, what="custom-FMG annulus rotated free-slip")
+            labels=labels, fingerprint=fingerprint,
+            what="custom-FMG annulus rotated free-slip")
+    accuracy_anchor(values, ANCHORS["annulus_fmg"], fingerprint, labels,
+                    what="custom-FMG annulus rotated free-slip")
 
 
 def test_rotated_freeslip_mesh_owned_fmg_pickup():
@@ -438,9 +489,12 @@ def test_rotated_freeslip_mesh_owned_fmg_pickup():
     run against the explicitly-registered serial run asserts both properties at once.
     """
     values, fingerprint = _annulus_fmg_diagnostics(mesh_owned=True)
+    labels = ("velocity L2", "Lower radial leakage", "Upper radial leakage")
     compare(values, _reference("annulus_fmg", 3), rtols=(1e-6, 1e-4, 1e-4),
-            labels=("velocity L2", "Lower radial leakage", "Upper radial leakage"),
-            fingerprint=fingerprint, what="mesh-owned FMG annulus rotated free-slip")
+            labels=labels, fingerprint=fingerprint,
+            what="mesh-owned FMG annulus rotated free-slip")
+    accuracy_anchor(values, ANCHORS["annulus_fmg"], fingerprint, labels,
+                    what="mesh-owned FMG annulus rotated free-slip")
 
 
 def test_rotated_freeslip_spherical3d_partition_independent():
@@ -450,11 +504,21 @@ def test_rotated_freeslip_spherical3d_partition_independent():
     preconditioner — issue #248's rotated blow-out was ~44 its)."""
     values, fingerprint, its, reason = _spherical3d_diagnostics()
     # ABSOLUTE checks on the solve itself, not partition comparisons.
+    #
+    # INVARIANT: everything asserted before the `compare` below must be identical on
+    # every rank, because `compare` calls the COLLECTIVE `serial_reference`. A gate
+    # that fails on one rank only would take that rank out of the broadcast and hang
+    # the others instead of failing the test. `reason` and `its` come from the
+    # solver's own collective telemetry and `nnodes` (in the sigma test) is bcast, so
+    # all of them satisfy it today — but nothing enforces it, so put new absolute
+    # gates AFTER the compare unless you have checked.
     assert reason > 0, f"3D spherical rotated solve diverged: reason {reason}"
     assert its <= 25, f"3D spherical Schur iteration blow-out: {its} outer its"
     compare(values, _reference("spherical3d", 1), rtols=(1e-5,),
             labels=("velocity L2",), fingerprint=fingerprint,
             what="3D spherical rotated free-slip")
+    accuracy_anchor(values, ANCHORS["spherical3d"], fingerprint, ("velocity L2",),
+                    what="3D spherical rotated free-slip")
 
 
 def test_rotated_freeslip_spherical3d_topography_partition_independent():
@@ -465,6 +529,10 @@ def test_rotated_freeslip_spherical3d_topography_partition_independent():
     compare(values, _reference("spherical3d_topo", 6), rtols=(1e-6,) * 6,
             labels=labels, fingerprint=fingerprint,
             what="3D spherical rotated topography")
+    # Zhong l=2 benchmark coefficients — physics numbers, and the reason an absolute
+    # anchor matters more here than anywhere else in this file.
+    accuracy_anchor(values, ANCHORS["spherical3d_topo"], fingerprint, labels,
+                    what="3D spherical rotated topography")
 
 
 def test_rotated_freeslip_box_nonlinear_partition_independent():
@@ -475,9 +543,11 @@ def test_rotated_freeslip_box_nonlinear_partition_independent():
     norms)."""
     values, fingerprint = _box_nonlinear_diagnostics()
     # rtol=0 on the iteration count: it is an integer and the claim is exact equality.
-    compare(values, _reference("nonlinear", 2), rtols=(1e-6, 0.0),
-            labels=("velocity L2", "nonlinear iteration count"),
+    labels = ("velocity L2", "nonlinear iteration count")
+    compare(values, _reference("nonlinear", 2), rtols=(1e-6, 0.0), labels=labels,
             fingerprint=fingerprint, what="nonlinear box rotated free-slip")
+    accuracy_anchor(values, ANCHORS["nonlinear"], fingerprint, labels,
+                    what="nonlinear box rotated free-slip")
 
 
 def test_rotated_freeslip_box_sigma_nn_partition_independent():
@@ -490,9 +560,11 @@ def test_rotated_freeslip_box_sigma_nn_partition_independent():
     # solution. Neither is a partition comparison.
     assert nnodes == 49, f"expected 49 top nodes, gathered {nnodes} at np={uw.mpi.size}"
     assert relL2 < 0.10, f"sigma_nn relL2 vs analytic {relL2:.3f} too large"
-    compare((relL2, corr), _reference("sigma", 2), rtols=(1e-4, 1e-4),
-            labels=("sigma_nn relL2", "sigma_nn |corr|"),
+    labels = ("sigma_nn relL2", "sigma_nn |corr|")
+    compare((relL2, corr), _reference("sigma", 2), rtols=(1e-4, 1e-4), labels=labels,
             fingerprint=fingerprint, what="box sigma_nn recovery")
+    accuracy_anchor((relL2, corr), ANCHORS["sigma"], fingerprint, labels,
+                    what="box sigma_nn recovery")
 
 
 def test_rotated_freeslip_dynamic_topography_partition_independent():
@@ -504,6 +576,8 @@ def test_rotated_freeslip_dynamic_topography_partition_independent():
     compare(values, _reference("topo", 1), rtols=(1e-6,),
             labels=("topography BdIntegral L2",), fingerprint=fingerprint,
             what="box dynamic topography")
+    accuracy_anchor(values, ANCHORS["topo"], fingerprint,
+                    ("topography BdIntegral L2",), what="box dynamic topography")
 
 
 _DIAGNOSTICS = {
@@ -538,7 +612,11 @@ if __name__ == "__main__":
     #                       nonlinear,sigma,topo}`.
     import sys
     _kind = sys.argv[1] if len(sys.argv) > 1 else "box"
-    _result = _DIAGNOSTICS[_kind]()
+    # `python <thisfile> spherical3d_topo 0.3` still works: the extra argument is a
+    # debugging affordance (a coarser shell for a quick look) and is NOT reachable from
+    # serial_reference, which always calls the default so the anchor stays comparable.
+    _extra = [float(a) for a in sys.argv[2:]]
+    _result = _DIAGNOSTICS[_kind](*_extra)
     # _spherical3d_diagnostics carries its solver telemetry after the fingerprint.
     _values, _fingerprint = _result[0], _result[1]
     emit(_values, _fingerprint)

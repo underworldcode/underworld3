@@ -45,9 +45,35 @@ import pytest
 
 import underworld3 as uw
 
-from serial_reference import compare, emit, mesh_fingerprint, serial_reference
+from serial_reference import (
+    accuracy_anchor, compare, emit, mesh_fingerprint, serial_reference)
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(600)]
+
+# ABSOLUTE accuracy anchors, gated on the mesh fingerprint.
+#
+# The self-referential comparison below proves the answer does not depend on the
+# PARTITION. It says nothing about whether the answer is RIGHT — a solve that broke
+# identically at every rank count would sail through it. These are the pre-#568
+# goldens, kept for that second job and gated so that a host whose gmsh triangulates
+# differently SKIPS the accuracy claim rather than failing it. That is what the #564
+# investigation recommended and it costs nothing.
+#
+# rtol is 1e-2 on purpose: this is not a reproducibility gate (that is `compare`, six
+# to eight orders tighter), it only has to notice that the answer became a different
+# answer. Recompute the fingerprint with `python <thisfile> <kind>`.
+_ANCHOR_MESH = [434, 2.355685412534114]         # Annulus(1.0, 0.5, cellSize=0.12)
+ANCHORS = {
+    "iso": {"fingerprint": _ANCHOR_MESH,
+            "values": (6.194547793955e-01, 3.786068778041e+01)},
+    "ti": {"fingerprint": _ANCHOR_MESH,
+           "values": (3.925981604039e-01, 3.707799837159e+01)},
+}
+# (velocity L2, mean-stripped topography). The raw mean pressure is NOT anchored: it is
+# pinned to ~0, and a relative gate on a number near machine zero measures nothing —
+# it has its own absolute assertion in the test.
+ANCHOR_GAUGE = {"fingerprint": _ANCHOR_MESH,
+                "values": (6.194547487092e-01, 3.781793823254e+01)}
 
 # Velocity reproduces to the parallel reduction order. The topography is read off
 # the multiplier, whose [p,lambda] Schur sub-block grinds into its 200-iteration cap
@@ -152,11 +178,13 @@ def test_constrained_raw_gauge_partition_independent():
     # machine zero measures nothing. The other two go against the np=1 run.
     assert abs(meanP) < 1e-6, (
         f"raw mean pressure is not pinned at np={uw.mpi.size}: {meanP!r}")
+    labels = ("velocity L2", "mean-stripped topography")
     compare((L2, topo), {"values": [reference["values"][0], reference["values"][2]],
                          "fingerprint": reference["fingerprint"]},
-            rtols=(_RTOL_VELOCITY, _RTOL_TOPOGRAPHY),
-            labels=("velocity L2", "mean-stripped topography"),
+            rtols=(_RTOL_VELOCITY, _RTOL_TOPOGRAPHY), labels=labels,
             fingerprint=fingerprint, what="constrained raw-gauge annulus")
+    accuracy_anchor((L2, topo), ANCHOR_GAUGE, fingerprint, labels,
+                    what="constrained raw-gauge annulus")
 
 
 @pytest.mark.parametrize("kind", ["iso", "ti"])
@@ -165,10 +193,12 @@ def test_constrained_freeslip_partition_independent(kind):
     parallel reduction order, and the gauge-fixed (mean-stripped) topography to the
     multiplier solve's reproducibility."""
     values, fingerprint = _solve_diagnostics(kind)
+    labels = ("velocity L2", "mean-stripped topography")
     compare(values, serial_reference(__file__, kind),
-            rtols=(_RTOL_VELOCITY, _RTOL_TOPOGRAPHY),
-            labels=("velocity L2", "mean-stripped topography"),
+            rtols=(_RTOL_VELOCITY, _RTOL_TOPOGRAPHY), labels=labels,
             fingerprint=fingerprint, what=f"constrained free-slip [{kind}]")
+    accuracy_anchor(values, ANCHORS[kind], fingerprint, labels,
+                    what=f"constrained free-slip [{kind}]")
 
 
 if __name__ == "__main__":

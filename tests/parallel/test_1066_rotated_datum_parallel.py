@@ -21,7 +21,15 @@ import pytest
 import sympy
 import underworld3 as uw
 
-from serial_reference import compare, emit, mesh_fingerprint, serial_reference
+from serial_reference import (
+    accuracy_anchor, compare, emit, mesh_fingerprint, serial_reference)
+
+# ABSOLUTE accuracy anchor, gated on the mesh fingerprint — `compare` proves the answer
+# is partition-independent, not that it is right. The value is the pre-#568
+# `_INT_VV_REF`; the fingerprint is (owned cell count, integral 1 dV) for
+# Annulus(0.5, 1.0, cellSize=0.1). rtol 1e-2, i.e. "is this still the same answer".
+ANCHOR_DATUM = {"fingerprint": [600, 2.356187202481425],
+                "values": (6.6559607579,)}
 
 # The timeout covers the np=1 child the partition test spawns as well as the
 # parallel solve itself.
@@ -80,6 +88,9 @@ def test_rotated_datum_prescribed_normal_partition_independent():
             rtols=(1e-6,),
             labels=("solve energy int v.v",), fingerprint=fingerprint,
             what="rotated prescribed-normal datum")
+    accuracy_anchor(values[1:], ANCHOR_DATUM, fingerprint,
+                    ("solve energy int v.v",),
+                    what="rotated prescribed-normal datum")
 
 
 def test_rotated_datum_nonlinear_parallel():
