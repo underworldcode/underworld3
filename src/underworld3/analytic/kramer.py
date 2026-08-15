@@ -267,13 +267,13 @@ class CylindricalStokes(AnalyticSolution):
         """
 
         if self.boundary == "zero":
-            # TODO(BUG): the zero-slip case leaves the pressure nullspace in
-            # place, where every other enclosed case in the suite removes it. An
-            # annulus with both arcs held at zero velocity is enclosed, so its
-            # pressure is determined only up to a constant and a direct solve on
-            # the singular saddle can return a quiet, wrong answer. Preserved
-            # here because this refactor is behaviour-preserving by contract;
-            # fix it under its own test.
+            # TODO(BUG): issue #577 — the zero-slip case leaves the pressure
+            # nullspace in place, where every other enclosed case in the suite
+            # removes it. An annulus with both arcs held at zero velocity is
+            # enclosed, so its pressure is determined only up to a constant and
+            # a direct solve on the singular saddle can return a quiet, wrong
+            # answer. Preserved here because this refactor is
+            # behaviour-preserving by contract; fix it under its own test.
             prescribed_velocity(solver, self.boundaries, (0.0, 0.0))
             return
 
