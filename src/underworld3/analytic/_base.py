@@ -108,6 +108,22 @@ class AnalyticSolution(uw_object):
     #: than a convention one. See the table in the subsystem documentation.
     stress_is_deviatoric = False
 
+    #: Whether the source published BOTH a stress and a strain rate, set by
+    #: :meth:`set_fields` from what it was actually given.
+    #:
+    #: This decides what the conformance check
+    #: ``sigma + p I == 2 eta edot`` is worth. When only one of the two was
+    #: supplied, :meth:`set_fields` derived the other from exactly that identity,
+    #: so the check is structural rather than evidential — it re-reads a
+    #: derivation. When both were supplied it compares two separately published
+    #: quantities and is a real check.
+    #:
+    #: Recorded here rather than inferred from the source text: a solution that
+    #: bypasses :meth:`set_fields` altogether keeps the ``False`` default, which
+    #: is the honest answer for it and the one a source scan gets wrong (it finds
+    #: the parameter names in this class's own signature).
+    publishes_both_stress_and_strainrate = False
+
     eqn_velocity = ""
     eqn_pressure = ""
     eqn_viscosity = ""
@@ -222,6 +238,13 @@ class AnalyticSolution(uw_object):
         self.fn_bodyforce = sympy.Matrix([list(bodyforce)])
         self.fn_pressure = sympy.sympify(pressure)
         self.fn_viscosity = sympy.sympify(viscosity)
+
+        # What the source actually gave us, not what the class says it gives.
+        # See the attribute's docstring: this is what tells the conformance
+        # sweep whether its stress/strain-rate check is evidence or bookkeeping.
+        self.publishes_both_stress_and_strainrate = (
+            stress is not None and strainrate is not None
+        )
 
         identity = sympy.eye(self.dim)
 

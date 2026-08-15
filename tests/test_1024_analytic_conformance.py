@@ -185,30 +185,21 @@ def test_strain_rate_matches_the_velocity(name, built):
 PUBLISH_BOTH = {"SolNL", "SolDB2d", "SolDB3d"}
 
 
-def test_the_list_of_solutions_publishing_both_is_accurate():
+def test_the_list_of_solutions_publishing_both_is_accurate(built):
     """PUBLISH_BOTH is a claim about the sources; check it against them.
 
     A solution that starts supplying both — or stops — silently changes what the
     gate below is worth, so the claim is asserted rather than commented.
+
+    The fact is read from `set_fields`, which records what it was handed, rather
+    than scraped from the source text. Scraping gets it wrong in the one case
+    that matters: `EllipticalInclusion` never calls `set_fields` at all, and a
+    walk up the MRO finds `stress=` and `strainrate=` in *this base class's own
+    signature*.
     """
 
-    import inspect
-
-    from underworld3 import analytic
-
     for name in STOKES:
-        cls = getattr(analytic, name)
-        source = ""
-        for klass in cls.__mro__:
-            try:
-                text = inspect.getsource(klass)
-            except (OSError, TypeError):
-                continue
-            if "set_fields(" in text:
-                source = text
-                break
-
-        both = "stress=" in source and "strainrate=" in source
+        both = built[name].publishes_both_stress_and_strainrate
         assert both == (name in PUBLISH_BOTH), (
             f"{name}: publishes both = {both}, but PUBLISH_BOTH says "
             f"{name in PUBLISH_BOTH}"
