@@ -443,11 +443,11 @@ class FaultedMedium(AnalyticSolution):
         return ["Perimeter", "FaultUpper", "FaultLower"]
 
     def apply_boundary_conditions(self, solver):
-        """Refused: a fault is not a set of wall conditions.
+        """Refused: this solution needs a mesh Underworld cannot yet build.
 
-        This solution is the one member of the family whose conditions the
-        mixins cannot express, and bending the contract to pretend otherwise
-        would be worse than saying so. Two reasons, both real:
+        Every other solution in the family states its conditions here by
+        composing :func:`~underworld3.analytic.free_slip` and friends. This one
+        refuses, and the reason is the mesh rather than the boundary conditions:
 
         * The fault is an **internal** boundary whose two faces must be separate
           degrees of freedom at the same coordinates. That is a property of the
@@ -455,8 +455,8 @@ class FaultedMedium(AnalyticSolution):
           that reaches the domain boundary (#549).
         * Its conditions are per-component — the fault-normal velocity is
           prescribed on both faces while the tangential traction is left natural
-          — rather than the whole-velocity or whole-normal conditions
-          :class:`FixedWalls` and :class:`FreeSlipWalls` apply.
+          — so they need a component-wise Dirichlet condition on an internal
+          boundary rather than any of the whole-velocity helpers.
 
         The pieces a model needs are all here:
         :meth:`boundary_velocity` (the perimeter datum, their A8),
@@ -469,8 +469,8 @@ class FaultedMedium(AnalyticSolution):
             "FaultedMedium is posed on a slit disc: the fault is an internal "
             "boundary with two coincident faces, and its conditions are "
             "per-component (fault-normal velocity prescribed, tangential "
-            "traction natural). Neither mixin expresses that, and UW3 cannot yet "
-            "mesh a fault that reaches the domain boundary (#549). Build the "
+            "traction natural). UW3 cannot yet mesh a fault that reaches the "
+            "domain boundary (#549). Build the "
             "conditions from boundary_velocity(), fault_normal_velocity() and "
             "slip() — see the docstring."
         )

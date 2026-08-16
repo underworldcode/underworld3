@@ -617,8 +617,8 @@ deliberate. The fault is an internal boundary whose two faces must be separate
 degrees of freedom at coincident coordinates — a property of the mesh, not of the
 solver, and one Underworld cannot yet build for a fault that reaches the domain
 boundary (#549). Its conditions are also per-component (fault-normal velocity
-prescribed on both faces, tangential traction natural), which is not what
-`FixedWalls` or `FreeSlipWalls` apply. Applying the perimeter datum and quietly
+prescribed on both faces, tangential traction natural), so none of the
+whole-velocity helpers fits. Applying the perimeter datum and quietly
 leaving the fault unconstrained would solve a different problem and report a
 plausible error, which is worse than refusing. The pieces a model needs —
 `boundary_velocity()`, `fault_normal_velocity()`, `slip()` — are exposed instead.
