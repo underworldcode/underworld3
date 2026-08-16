@@ -47,6 +47,129 @@ if _xdist_worker:
     os.environ.setdefault("UW_MESH_CACHE_DIR", f".meshes/{_xdist_worker}")
 
 
+# ==============================================================================
+# COLLECTION-TIME GLOBAL STATE GUARD (#575)
+# ==============================================================================
+# pytest imports a test module in order to collect it, so anything a module does
+# at import time runs BEFORE any test, any fixture and any isolation the
+# fixtures below provide. Two defects have reached `development` that way:
+#
+#   #567  a module switched the units system on process-wide at import, and the
+#         first module-scoped fixture in that worker built its mesh under
+#         dimensional coordinates;
+#   #505  a module ran two Stokes solves at import, so `--collect-only` sat
+#         inside SNESSolve for 20+ minutes looking like a silent death.
+#
+# The fixtures below fix the consequence. This guard fixes the practice: it
+# fingerprints the process state around each module's import and fails the run,
+# naming the module and what moved, when a module writes to it.
+#
+# The check is skipped when underworld3 is not importable — conftest.py is
+# loaded before the package is necessarily installed in CI.
+
+
+def _global_state_fingerprint():
+    """Process-global state that importing a test module must leave alone."""
+
+    try:
+        import underworld3 as uw
+        from underworld3 import model as _model
+        from underworld3.utilities._api_tools import uw_object
+    except ImportError:
+        return None
+
+    active_model = _model._default_model
+    reference_quantities = ()
+    if active_model is not None:
+        reference_quantities = tuple(
+            sorted(getattr(active_model, "_reference_quantities", None) or {})
+        )
+
+    return {
+        "uw objects created": uw_object.uw_object_counter(),
+        "units reference quantities": reference_quantities,
+        "strict units": uw.is_strict_units_active(),
+    }
+
+
+# Modules that already do this, measured on `development` at the time the guard
+# was written. They are exempted so the guard can be turned on today; the list
+# is a ratchet, not an approval — nothing may be added to it, and each entry is
+# a module whose module-level work belongs in a fixture (#587).
+#
+# `test_0601_mesh_vector_calc.py` is the one to fix first: alone in this list it
+# moves the units state (`use_strict_units(False)` at import), which is the #567
+# mechanism itself and reaches every module collected after it.
+_KNOWN_COLLECTION_TIME_WORK = (
+    "parallel/test_0765_internal_boundary_integral_mpi.py",
+    "test_0004_pointwise_fns.py",
+    "test_0005_IndexSwarmVariable.py",
+    "test_0501_integrals.py",
+    "test_0502_boundary_integrals.py",
+    "test_0504_projections.py",
+    "test_0601_mesh_vector_calc.py",
+    "test_0810_amr_swarm_migration_regression.py",
+    "test_0830_mesh_adapt_variable_transfer.py",
+    "test_1000_poissonCart.py",
+    "test_1000_poissonNaturalBC.py",
+    "test_1001_poissonSph.py",
+    "test_1004_DarcyCartesian.py",
+    "test_1010_stokesCart.py",
+    "test_1011_stokesSph.py",
+    "test_1014_stokes_multigrid.py",
+    "test_1014_stokes_shell_nullspace.py",
+    "test_1050_VEstokesCart.py",
+)
+
+
+def _is_known_offender(nodeid):
+    path = nodeid.replace(os.sep, "/")
+    return any(path.endswith(known) for known in _KNOWN_COLLECTION_TIME_WORK)
+
+
+_state_before_collect = {}
+_collection_offenders = []
+
+
+def pytest_collectstart(collector):
+    if isinstance(collector, pytest.Module):
+        _state_before_collect[collector.nodeid] = _global_state_fingerprint()
+
+
+def pytest_collectreport(report):
+    before = _state_before_collect.pop(report.nodeid, None)
+    if before is None:
+        return
+
+    after = _global_state_fingerprint()
+    if after is None:
+        return
+
+    moved = {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+    if moved and not _is_known_offender(report.nodeid):
+        _collection_offenders.append((report.nodeid, moved))
+
+
+def pytest_collection_finish(session):
+    if not _collection_offenders:
+        return
+
+    lines = [
+        "Test modules changed global state while being COLLECTED.",
+        "",
+        "Work belongs inside a test function or a fixture. Code at module level",
+        "runs at import, before the isolation fixtures in tests/conftest.py can",
+        "act, and it runs even under --collect-only (issues #567, #505).",
+        "",
+    ]
+    for nodeid, moved in _collection_offenders:
+        lines.append(f"  {nodeid}")
+        for key, (before, after) in moved.items():
+            lines.append(f"      {key}: {before} -> {after}")
+
+    raise pytest.UsageError("\n".join(lines))
+
+
 @pytest.fixture(scope="module", autouse=True)
 def isolate_module_state():
     """Reset the global model BEFORE a module's own fixtures are built.
