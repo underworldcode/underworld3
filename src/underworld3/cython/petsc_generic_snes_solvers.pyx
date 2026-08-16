@@ -222,6 +222,15 @@ class SolverBaseClass(uw_object):
         # untouched framework default (eligible for FMG upgrade) apart from an
         # explicit user override of pc_type, which must be respected.
         self._pc_managed_value = "gamg"
+        # Components per node in the field the managed block solves. Subclasses
+        # whose unknown is a vector set mesh.dim; 1 is right for a scalar. The
+        # GAMG bundle turns this into `mat_block_size` so that algebraic
+        # coarsening aggregates nodes rather than scalars — worth a factor of
+        # two to nine (#579). It has to live here rather than only at the
+        # __init__ call sites because _apply_preconditioner_options re-applies
+        # the bundle on EVERY build, and a bundle built without it would list
+        # `mat_block_size` as a stale key and delete what __init__ had set.
+        self._pc_block_size = 1
         # Latches once the user (or harness) is seen to have set the PC options
         # themselves. _apply_preconditioner_options() runs on EVERY _build (so
         # "auto" can re-resolve after a remesh), and without this latch the
@@ -915,9 +924,10 @@ class SolverBaseClass(uw_object):
                         f"mesh with refinement >= 1 to enable geometric multigrid.",
                         stacklevel=2,
                     )
-            multigrid_options.gamg_bundle().apply(
-                PETSc.Options(), self.petsc_options_prefix + prefix,
-                owned=self._managed_pc_options)
+            multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).apply(
+                    PETSc.Options(), self.petsc_options_prefix + prefix,
+                    owned=self._managed_pc_options)
             self._pc_managed_value = "gamg"
 
     def _enforce_galerkin_for_geometric_mg(self):
@@ -3254,16 +3264,10 @@ class SNES_Scalar(SolverBaseClass):
 
         self.petsc_options["snes_type"] = "newtonls"
         self._push_managed_option("ksp_type", "gmres")
-        self._push_managed_option("pc_type", "gamg")
-        self._push_managed_option("pc_gamg_type", "agg")
-        self._push_managed_option("pc_gamg_repartition", True)
-        self._push_managed_option("pc_mg_type", "additive")
-        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
-        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
+        for key, value in multigrid_options.gamg_bundle().settings.items():
+            self._push_managed_option(key, value)
 
         self.petsc_options["snes_rtol"] = 1.0e-4
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -4167,14 +4171,13 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self._push_managed_option("ksp_type", "gmres")
-        self._push_managed_option("pc_type", "gamg")
-        self._push_managed_option("pc_gamg_type", "agg")
-        self._push_managed_option("pc_gamg_repartition", True)
-        self._push_managed_option("pc_mg_type", "additive")
-        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
+        # A vector unknown: mesh.dim components per node, which GAMG has to be
+        # told. See multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.dim
+        for key, value in multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).settings.items():
+            self._push_managed_option(key, value)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
-        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -5183,14 +5186,13 @@ class SNES_MultiComponent(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self._push_managed_option("ksp_type", "gmres")
-        self._push_managed_option("pc_type", "gamg")
-        self._push_managed_option("pc_gamg_type", "agg")
-        self._push_managed_option("pc_gamg_repartition", True)
-        self._push_managed_option("pc_mg_type", "additive")
-        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
+        # Block size left at 1. The unknown here is a general multi-component
+        # field whose components-per-node is not mesh.dim in general, and
+        # claiming the wrong node size would cost rather than save. Worth
+        # revisiting per instantiation — see #579.
+        for key, value in multigrid_options.gamg_bundle().settings.items():
+            self._push_managed_option(key, value)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
-        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -6025,6 +6027,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
 
+        # The outer Krylov must be FLEXIBLE, because both sub-blocks below are
+        # themselves Krylov solves run to a tolerance. Inside the Schur
+        # factorisation the velocity sub-solve computes the search direction, so
+        # the operator the outer method applies differs from one outer iteration
+        # to the next, and plain GMRES's residual recurrence assumes it does not.
+        # PETSc's default is `gmres`, and that default is invisible on easy
+        # problems -- isoviscous SolKz converges in two outer iterations -- and
+        # expensive on hard ones: on the Spiegelman notch at refinement 3, 983
+        # velocity iterations per step and DIVERGED_LINEAR_SOLVE, against 58 for
+        # fgmres and 23 with a loosened inner tolerance. Raising the velocity
+        # iteration cap changes nothing (byte-identical residuals), so the failure
+        # is inconsistency rather than too few iterations. See #576.
+        self.petsc_options["ksp_type"] = "fgmres"
+
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
         self.petsc_options["pc_fieldsplit_schur_fact_type"] = "full"     # diag is an alternative (quick/dirty)
@@ -6067,13 +6083,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_{v_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{v_name}_ksp_rtol"]  = self._tolerance * 0.1
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_type", "gamg")
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_type", "agg")
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_repartition", True)
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_mg_type", "additive")
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths", 2)
-        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_max_it", 3)
-        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits", None)
+        # The velocity field carries mesh.dim components per node; say so, or
+        # GAMG aggregates scalars. See multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.dim
+        for key, value in multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).settings.items():
+            self._push_managed_option(f"fieldsplit_{v_name}_{key}", value)
 
         # Create this dict
         self.fields = {}
@@ -6859,6 +6874,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
+
+        # Flexible for the same reason as in __init__ (#576): the sub-blocks are
+        # inexact Krylov solves, so the outer operator varies between iterations.
+        self.petsc_options["ksp_type"] = "fgmres"
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
