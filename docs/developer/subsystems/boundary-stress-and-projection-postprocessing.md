@@ -74,6 +74,54 @@ Combine the two rules — project the τ components with `linear_solver()` for t
 cheap linear solve, then compose `σ_rr` analytically — for accurate boundary
 stress recovery that also scales.
 
+## 3. Use `Stokes.geoid()` for spherical-shell response
+
+For Zhong-style spherical-shell response functions, solve the Stokes system and
+call the solver facade:
+
+```python
+stokes.solve()
+
+response = stokes.geoid(
+    radius_inner=0.55,
+    radius_outer=1.0,
+    radius_internal=0.775,
+    harmonic_degree=2,
+    self_gravity=True,
+)
+```
+
+`Stokes.geoid()` validates the solved spherical-shell model and internally
+selects rotated-reaction, constrained-multiplier, or CBF residual topography.
+Users do not choose the boundary-reaction mass recovery or duplicate the
+velocity field in benchmark scripts.
+
+The implementation remains in
+`uw.postprocessing.spherical_shell_dynamic_response(...)`. Call that function
+directly only when an advanced workflow must override boundary names,
+topography source, constrained reference, or physical self-gravity constants.
+The facade and direct API return the same `SphericalShellDynamicResponse`.
+
+The Zhong Appendix A calculation is expressed as one linear operator:
+
+```text
+N = G h + n_load
+(I - Q G) h_self_gravity = h + Q n_load
+```
+
+where `h` contains surface and CMB topography, `N` contains their geoid
+responses, and `Q` contains the two self-gravity density factors. Sharing `G`
+and `n_load` between the no-self-gravity and self-gravity paths avoids separate
+scalar implementations of the same coefficients.
+
+The current rotated/CBF harmonic projector gathers boundary samples to rank
+zero and reconstructs a spherical triangulation. This is validated for the
+benchmark resolutions but is not the final large-model scaling strategy. A
+direct finite-element mass-weighted projection of the boundary reaction onto
+the harmonic basis would avoid the gather and reconstructed triangulation; it
+should replace the internal projector once the boundary-reaction API exposes
+that functional directly.
+
 ## See also
 
 - Issues [#156] (projection solver settings), [#157] (projection memory),

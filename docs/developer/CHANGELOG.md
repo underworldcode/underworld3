@@ -273,6 +273,12 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   seam sensitivity is unchanged (#404).
 - Recorded as the preferred free-slip BC in the project guidance (#300);
   conda PETSc floor raised to ≥ 3.25 for FMG/rotation API consistency (#304).
+- `Stokes.geoid(...)` is the compact spherical-benchmark entry point. It
+  validates the solved spherical shell and delegates to
+  `uw.postprocessing.spherical_shell_dynamic_response(...)`, which auto-selects
+  rotated reaction, constrained multiplier, or CBF topography and shares one
+  Appendix A linear operator between geoid and self-gravity calculations. The
+  direct postprocessing function remains available for advanced controls.
 
 ### Generalized Geometric Multigrid via Custom Prolongation (July 2026)
 

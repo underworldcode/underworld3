@@ -1659,6 +1659,146 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 divergence_retries=divergence_retries,
             )
 
+    def geoid(
+        self,
+        *,
+        radius_inner: float,
+        radius_outer: float,
+        radius_internal: float,
+        harmonic_degree: int,
+        self_gravity: bool = False,
+        surface_boundary: str = "Upper",
+        cmb_boundary: str = "Lower",
+        density_mantle: float = 3300.0,
+        density_cmb: float = 5400.0,
+        planet_radius: float = 6370000.0,
+        gravity: float = 9.8,
+        gravitational_constant: float = 6.67e-11,
+    ):
+        r"""Return spherical-shell topography and geoid response after a solve.
+
+        This is a convenience facade over
+        :func:`uw.postprocessing.spherical_shell_dynamic_response`; the geoid
+        and self-gravity mathematics remain in the post-processing package.
+        Boundary-condition-specific topography recovery is selected internally:
+        constrained multiplier, rotated constraint reaction, or CBF residual.
+
+        Parameters
+        ----------
+        radius_inner, radius_outer, radius_internal : float
+            CMB, surface, and internal-load radii, ordered as
+            ``0 < radius_inner < radius_internal < radius_outer``.
+        harmonic_degree : int
+            Non-negative spherical-harmonic degree.
+        self_gravity : bool, default False
+            Include the Zhong-style self-gravity correction.
+        surface_boundary, cmb_boundary : str
+            Surface and CMB mesh boundary labels.
+        density_mantle, density_cmb : float
+            Density factors used when ``self_gravity=True``.
+        planet_radius, gravity, gravitational_constant : float
+            Physical constants used when ``self_gravity=True``.
+
+        Returns
+        -------
+        uw.postprocessing.geoid.SphericalShellDynamicResponse
+            Surface/CMB topography and geoid coefficients, plus the optional
+            self-gravity response.
+
+        Notes
+        -----
+        The method currently supports three-dimensional spherical-coordinate
+        meshes and requires a completed, converged solve. Advanced users may
+        call :func:`uw.postprocessing.spherical_shell_dynamic_response`
+        directly; both entry points use the same implementation.
+        """
+
+        from numbers import Integral
+        from underworld3.coordinates import CoordinateSystemType
+
+        if self.mesh.dim != 3 or (
+            self.mesh.CoordinateSystemType != CoordinateSystemType.SPHERICAL
+        ):
+            raise ValueError(
+                "Stokes.geoid() requires a three-dimensional spherical-coordinate mesh."
+            )
+
+        available_boundaries = {boundary.name for boundary in self.mesh.boundaries}
+        for role, boundary in (
+            ("surface", surface_boundary),
+            ("CMB", cmb_boundary),
+        ):
+            if boundary not in available_boundaries:
+                raise ValueError(
+                    f"Unknown {role} boundary {boundary!r}; "
+                    f"available boundaries are {sorted(available_boundaries)}."
+                )
+
+        try:
+            ri = float(radius_inner)
+            ro = float(radius_outer)
+            rint = float(radius_internal)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                "radius_inner, radius_internal, and radius_outer must be real numbers."
+            ) from error
+        if not np.all(np.isfinite((ri, rint, ro))) or not 0.0 < ri < rint < ro:
+            raise ValueError(
+                "Expected finite radii ordered as "
+                "0 < radius_inner < radius_internal < radius_outer."
+            )
+
+        if isinstance(harmonic_degree, bool) or not isinstance(
+            harmonic_degree, Integral
+        ):
+            raise TypeError("harmonic_degree must be an integer.")
+        degree = int(harmonic_degree)
+        if degree < 0:
+            raise ValueError("harmonic_degree must be non-negative.")
+        if not isinstance(self_gravity, bool):
+            raise TypeError("self_gravity must be True or False.")
+
+        rotated_info = getattr(self, "_rotated_freeslip_info", None)
+        if rotated_info is not None:
+            converged = int(rotated_info.get("ksp_reason", 0)) > 0 and bool(
+                rotated_info.get("converged", True)
+            )
+        else:
+            try:
+                converged = int(self.snes.getConvergedReason()) > 0
+            except (AttributeError, TypeError):
+                converged = False
+        if not converged:
+            raise RuntimeError(
+                "Stokes.geoid() requires a completed, converged Stokes solve."
+            )
+
+        from underworld3.postprocessing import spherical_shell_dynamic_response
+
+        self_gravity_kwargs = {}
+        if self_gravity:
+            self_gravity_kwargs = {
+                "density_mantle": density_mantle,
+                "density_cmb": density_cmb,
+                "planet_radius": planet_radius,
+                "gravity": gravity,
+                "gravitational_constant": gravitational_constant,
+            }
+
+        return spherical_shell_dynamic_response(
+            stokes=self,
+            radius_inner=ri,
+            radius_outer=ro,
+            radius_internal=rint,
+            harmonic_degree=degree,
+            include_self_gravity=self_gravity,
+            surface_boundary=surface_boundary,
+            cmb_boundary=cmb_boundary,
+            topography_source="auto",
+            constrained_reference="mean",
+            **self_gravity_kwargs,
+        )
+
     @property
     def tau(self):
         r"""Deviatoric stress from the most recent solve.
