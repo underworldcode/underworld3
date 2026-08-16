@@ -2022,9 +2022,10 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
         ``"lumped"``.
 
     Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
-    section offset; the boundary mass is assembled globally by a coordinate-keyed
-    allgather of the boundary elements, so every rank produces the same de-smear and the
-    mean-removal gauge is global. In 3D, only triangular P1/P2 traces are supported.
+    section offset. In 3D, coordinate-keyed reactions and boundary elements are gathered
+    to rank zero, which assembles and solves the global boundary-mass system once before
+    scattering each rank's recovered values. The mean-removal gauge remains global. Only
+    triangular P1/P2 traces are supported in 3D.
     """
     dm = solver.dm
     dim = solver.mesh.dim
