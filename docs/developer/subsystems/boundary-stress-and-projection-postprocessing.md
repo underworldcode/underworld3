@@ -74,6 +74,53 @@ Combine the two rules — project the τ components with `linear_solver()` for t
 cheap linear solve, then compose `σ_rr` analytically — for accurate boundary
 stress recovery that also scales.
 
+## 3. Zhong spherical-shell geoid response
+
+Rotated free slip already exposes normal traction through
+`Stokes.boundary_normal_traction()`. The Zhong adapter projects that recovered
+traction onto the unnormalised `P_l^0` benchmark harmonic and applies the
+Appendix A geoid operator:
+
+```python
+stokes.solve()
+
+response = uw.postprocessing.zhong2008_response_from_rotated_stokes(
+    stokes=stokes,
+    radius_inner=0.55,
+    radius_outer=1.0,
+    radius_internal=0.775,
+    harmonic_degree=2,
+    load_scale=1.0,
+    include_self_gravity=True,
+)
+```
+
+The adapter delegates stress recovery to the existing rotated-free-slip API;
+it does not implement a second CBF, constrained-multiplier, or topography
+recovery path. `load_scale` must match the coefficient multiplying the model's
+internal `P_l^0` load.
+
+When surface and CMB topography coefficients are already available, call
+`zhong2008_geoid_response()` or `zhong2008_self_gravity_response()` directly.
+These functions are pure post-processing and do not require a Stokes object.
+
+The Zhong Appendix A calculation is expressed as one linear operator:
+
+```text
+N = G h + n_load
+(I - Q G) h_self_gravity = h + Q n_load
+```
+
+where `h` contains surface and CMB topography, `N` contains their geoid
+responses, and `Q` contains the two self-gravity density factors. Sharing `G`
+and `n_load` between the no-self-gravity and self-gravity paths avoids separate
+scalar implementations of the same coefficients.
+
+The rotated harmonic projector gathers boundary samples to rank zero and
+reconstructs their spherical triangulation. A future boundary-reaction
+functional could replace this step with a direct distributed finite-element
+projection without changing the Zhong operator API.
+
 ## See also
 
 - Issues [#156] (projection solver settings), [#157] (projection memory),
