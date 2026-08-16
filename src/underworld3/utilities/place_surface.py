@@ -2677,6 +2677,305 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
 # ``~/+Simulations/mesh_reconnection_study/thin_volume_spike.py`` — widths
 # h, h/2, h/4 and junction angles down to 10 degrees, all gated.
 
+# ------------------------------------------- the domain boundary as a tool
+
+def _domain_boundary_facets(dm):
+    """The DOMAIN boundary as one small global complex, identical everywhere.
+
+    A facet of the domain boundary has support 1 AND is unshared — a
+    partition-seam facet also has local support 1, and clipping against a
+    seam would eat the mesh differently at every rank count (the
+    :func:`_true_wall_vertex_mask` distinction). Each boundary facet lives
+    on exactly one rank, so the gathered set holds each facet once; the
+    facets are stitched by exact coordinate identity, which is sound
+    because a shared vertex's coordinates are copies of the same bytes on
+    every rank. COLLECTIVE.
+
+    Returns ``(verts, facets)``: coordinates ``(nv, dim)`` and vertex-index
+    facets ``(nf, dim)`` — edges in 2-D, triangles in 3-D.
+    """
+    dim = dm.getDimension()
+    vS, vE = dm.getDepthStratum(0)
+    pStart, _pEnd = dm.getChart()
+    X = _coords(dm)[: vE - vS]
+    shared = _shared_point_flags(dm).astype(bool)
+    corners = []
+    for f in range(*dm.getHeightStratum(1)):
+        if len(dm.getSupport(f)) == 1 and not shared[f - pStart]:
+            vv = [int(q) - vS for q in dm.getTransitiveClosure(f)[0]
+                  if vS <= int(q) < vE]
+            corners.append(X[vv])
+    local = (np.asarray(corners, dtype=float) if corners
+             else np.zeros((0, dim, dim), dtype=float))
+    pieces = [g for g in uw.mpi.comm.allgather(local) if len(g)]
+    if not pieces:
+        raise RuntimeError("the mesh has no domain boundary facet")
+    stack = np.concatenate(pieces)
+    verts, inverse = np.unique(stack.reshape(-1, dim), axis=0,
+                               return_inverse=True)
+    return verts, inverse.reshape(-1, dim).astype(np.int64)
+
+
+def _domain_loops_2d(dm):
+    """The 2-D domain boundary as closed coordinate loops. COLLECTIVE."""
+    verts, edges = _domain_boundary_facets(dm)
+    loops = _skin_loops([(int(a), int(b)) for a, b in edges],
+                        what="the domain boundary")
+    return [verts[loop] for loop in loops]
+
+
+def _compress_collinear_loop(loop_xy):
+    """The loop's vertices where the boundary actually TURNS.
+
+    The OCC tool needs the boundary's geometry, not its segmentation: a box
+    wall's collinear run collapses to its corners, so a box builds the same
+    four-sided (six-faced, one dimension up) tool the analytic box gave,
+    and the boolean does not imprint the wall's mesh spacing onto the
+    clipped faces. The compressed polygon carries the identical point set,
+    so the cut itself is unchanged.
+    """
+    P = np.asarray(loop_xy, dtype=float)
+    e1 = P - np.roll(P, 1, axis=0)
+    e2 = np.roll(P, -1, axis=0) - P
+    if P.shape[1] == 2:
+        cross = np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
+    else:
+        cross = np.linalg.norm(np.cross(e1, e2), axis=1)
+    turn = cross > (1e-12 * np.linalg.norm(e1, axis=1)
+                    * np.linalg.norm(e2, axis=1))
+    if turn.sum() < 3:
+        raise RuntimeError(
+            "a domain boundary loop compresses to fewer than three corners")
+    return P[turn]
+
+
+def _occ_domain_2d(occ, loops):
+    """The domain as ONE OCC plane surface built from its boundary loops.
+
+    ``loops`` are the (compressed) boundary polygons of the mesh's own
+    vertices; the largest-area loop is the exterior, the rest are holes —
+    an annulus arrives natively. The tool is exactly the discrete domain,
+    so a boolean against it lands on the mesh's own facets (measured:
+    3.5e-17 from the chords, against the 8.6e-3 sagitta a cut on the smooth
+    circle would have left). Returns the surface tag; the caller
+    synchronizes.
+    """
+    def area(P):
+        return 0.5 * float(P[:, 0] @ np.roll(P[:, 1], -1)
+                           - P[:, 1] @ np.roll(P[:, 0], -1))
+
+    order = sorted(range(len(loops)), key=lambda k: -abs(area(loops[k])))
+    rings = []
+    for k in order:
+        P = loops[k]
+        pts = [occ.addPoint(x, y, 0.0) for x, y in P]
+        lines = [occ.addLine(pts[i], pts[(i + 1) % len(pts)])
+                 for i in range(len(pts))]
+        rings.append(occ.addCurveLoop(lines))
+    return occ.addPlaneSurface(rings)
+
+
+def _snap_to_boundary_2d(xy, loops, tol=1e-9):
+    """Snap nodes within ``tol`` of the domain boundary ONTO it, exactly.
+
+    OCC's clipped edges sit within rounding of the tool; the band logic and
+    the sew need EXACT membership. A node near a boundary corner takes the
+    corner; a node near a segment loses only its normal component — on an
+    axis-aligned wall that is exactly the wall-plane snap the box clip
+    used, the tangential coordinate untouched.
+    """
+    for P in loops:
+        for v in P:
+            xy[np.linalg.norm(xy - v, axis=1) < tol] = v
+        n = len(P)
+        for i in range(n):
+            A, B = P[i], P[(i + 1) % n]
+            e = B - A
+            length = float(np.linalg.norm(e))
+            nrm = np.array([-e[1], e[0]]) / length
+            off = (xy - A) @ nrm
+            u = ((xy - A) @ e) / (length * length)
+            near = (np.abs(off) < tol) & (u > 0.0) & (u < 1.0)
+            xy[near] -= off[near, None] * nrm
+    return xy
+
+
+def _occ_domain_3d(occ, verts, tris):
+    """The domain as ONE OCC solid built from its boundary triangles.
+
+    Adjacent coplanar triangles merge into single planar faces first — a
+    box wall becomes one rectangle, so a box builds the same six-faced tool
+    the analytic box gave, and the boolean does not imprint the wall's mesh
+    spacing onto the clipped faces — and each merged face's rim compresses
+    to its corners. The chain shared by two merged faces lies in both
+    planes, hence on a straight line, so both faces compress it to the same
+    endpoints; a vertex where three or more faces meet is always kept, or
+    two faces whose planes cross the same line would disagree about it.
+    Faces share OCC points and lines, so the shells they close into are
+    topologically sewn. Returns ``(volume_tag, planes)`` with ``planes`` a
+    list of ``(anchor, unit_normal)`` per merged face, for the snap; the
+    caller synchronizes.
+    """
+    tris = np.asarray(tris, dtype=np.int64)
+    T = verts[tris]
+    raw_n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    nn = np.linalg.norm(raw_n, axis=1)
+    if (nn == 0.0).any():
+        raise RuntimeError("a domain boundary triangle is degenerate")
+    unit_n = raw_n / nn[:, None]
+
+    parent = list(range(len(tris)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    edge_first = {}
+    for t, tri in enumerate(tris):
+        opp = {frozenset((int(tri[0]), int(tri[1]))): int(tri[2]),
+               frozenset((int(tri[1]), int(tri[2]))): int(tri[0]),
+               frozenset((int(tri[2]), int(tri[0]))): int(tri[1])}
+        for key, far in opp.items():
+            if key not in edge_first:
+                edge_first[key] = t
+                continue
+            s = edge_first[key]
+            scale = max(nn[t], nn[s]) ** 0.5
+            coplanar = (np.linalg.norm(np.cross(unit_n[t], unit_n[s]))
+                        < 1e-12
+                        and abs((verts[far] - T[s, 0]) @ unit_n[s])
+                        < 1e-12 * scale)
+            if coplanar:
+                parent[find(t)] = find(s)
+
+    regions = {}
+    for t in range(len(tris)):
+        regions.setdefault(find(t), []).append(t)
+    regions_at = {}
+    for t, tri in enumerate(tris):
+        r = find(t)
+        for v in tri:
+            regions_at.setdefault(int(v), set()).add(r)
+
+    point_tag, line_tag = {}, {}
+
+    def point(v):
+        if v not in point_tag:
+            point_tag[v] = occ.addPoint(*verts[v])
+        return point_tag[v]
+
+    def line(a, b):
+        key = (a, b) if a < b else (b, a)
+        if key not in line_tag:
+            line_tag[key] = occ.addLine(point(key[0]), point(key[1]))
+        return line_tag[key]
+
+    def compress_rim(loop):
+        P = verts[np.asarray(loop)]
+        e1 = P - np.roll(P, 1, axis=0)
+        e2 = np.roll(P, -1, axis=0) - P
+        cross = np.linalg.norm(np.cross(e1, e2), axis=1)
+        turn = cross > (1e-12 * np.linalg.norm(e1, axis=1)
+                        * np.linalg.norm(e2, axis=1))
+        junction = np.array([len(regions_at[int(v)]) >= 3 for v in loop])
+        keep = turn | junction
+        if keep.sum() < 3:
+            raise RuntimeError(
+                "a domain face's rim compresses to fewer than three "
+                "corners")
+        return [int(v) for v, k in zip(loop, keep) if k]
+
+    from collections import Counter
+
+    face_of_region = {}
+    planes = []
+    for r, members in regions.items():
+        rim = Counter()
+        for t in members:
+            a, b, c = (int(v) for v in tris[t])
+            for e in (frozenset((a, b)), frozenset((b, c)),
+                      frozenset((c, a))):
+                rim[e] += 1
+        rim_edges = [tuple(e) for e, k in rim.items() if k == 1]
+        loops = _skin_loops(rim_edges, what="a domain face's rim")
+        m = unit_n[members[0]]
+        anchor = verts[int(tris[members[0]][0])]
+        planes.append((anchor, m))
+        # In-plane coordinates for the outer-vs-hole ranking only.
+        u = T[members[0], 1] - T[members[0], 0]
+        u = u / np.linalg.norm(u)
+        w = np.cross(m, u)
+
+        def rim_area(loop):
+            Q = verts[np.asarray(loop)] - anchor
+            x, y = Q @ u, Q @ w
+            return 0.5 * float(x @ np.roll(y, -1) - y @ np.roll(x, -1))
+
+        loops = sorted((compress_rim(lp) for lp in loops),
+                       key=lambda lp: -abs(rim_area(lp)))
+        rings = []
+        for lp in loops:
+            rings.append(occ.addCurveLoop(
+                [line(lp[i], lp[(i + 1) % len(lp)])
+                 for i in range(len(lp))]))
+        face_of_region[r] = occ.addPlaneSurface(rings)
+
+    # Shells: connected components of the triangulation; the component
+    # enclosing the greatest volume is the outer boundary, the others are
+    # interior cavities (a spherical shell's inner surface).
+    sparent = list(range(len(tris)))
+
+    def sfind(a):
+        while sparent[a] != a:
+            sparent[a] = sparent[sparent[a]]
+            a = sparent[a]
+        return a
+
+    edge_seen = {}
+    for t, tri in enumerate(tris):
+        a, b, c = (int(v) for v in tri)
+        for e in (frozenset((a, b)), frozenset((b, c)), frozenset((c, a))):
+            if e in edge_seen:
+                sparent[sfind(t)] = sfind(edge_seen[e])
+            else:
+                edge_seen[e] = t
+    shells, shell_tris = {}, {}
+    for t in range(len(tris)):
+        s = sfind(t)
+        shells.setdefault(s, set()).add(find(t))
+        shell_tris.setdefault(s, []).append(t)
+    enclosed = {}
+    for s, ts in shell_tris.items():
+        Q = T[ts]
+        enclosed[s] = abs(float(np.einsum(
+            "ij,ij->i", np.cross(Q[:, 0], Q[:, 1]), Q[:, 2]).sum()) / 6.0)
+    order = sorted(shells, key=lambda s: -enclosed[s])
+    loops3 = [occ.addSurfaceLoop([face_of_region[r] for r in shells[s]])
+              for s in order]
+    return occ.addVolume(loops3), planes
+
+
+def _snap_to_boundary_3d(xyz, verts, tris, planes, tol=1e-9):
+    """Snap nodes within ``tol`` of the domain boundary ONTO it, exactly.
+
+    Boundary corners first, then each merged face's plane, each a pure
+    normal-component move — on an axis-aligned wall that is exactly the
+    wall-plane snap the box clip used, the in-plane coordinates untouched.
+    A node near two planes (a domain edge) is snapped by both passes, as
+    the box path snapped both axes at a corner.
+    """
+    for v in np.unique(tris):
+        p = verts[int(v)]
+        xyz[np.linalg.norm(xyz - p, axis=1) < tol] = p
+    for anchor, m in planes:
+        off = (xyz - anchor) @ m
+        near = np.abs(off) < tol
+        xyz[near] -= off[near, None] * m
+    return xyz
+
+
 def _patch_frame(patch):
     """Unit normal of a planar patch, with planarity asserted."""
     P = np.asarray(patch, dtype=float)
@@ -2693,16 +2992,18 @@ def _patch_frame(patch):
     return n
 
 
-def _occ_assembly_3d(patches, width, size, box=None, assembly="fuse"):
+def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
     """Thicken each planar patch by ±width/2, resolve overlaps, mesh.
 
     ``assembly`` is :func:`place_thin_volume`'s: ``"fuse"`` returns the union
     as one solid, ``"fragment"`` keeps every overlap piece.
 
-    ``box = (lo, hi)`` applies the specify-long contract: the thickened
-    solids are INTERSECTED with the domain box, so patches may protrude —
-    an assembly reaching the top surface leaves its clipped face exactly in
-    the wall plane (snapped to the plane value after meshing, defensively).
+    ``domain = (verts, tris)`` — the mesh's boundary complex
+    (:func:`_domain_boundary_facets`) — applies the specify-long contract:
+    the thickened solids are INTERSECTED with the domain built as OCC
+    geometry from those very facets, so patches may protrude — an assembly
+    reaching a boundary leaves its clipped face exactly on the boundary's
+    own facets (snapped onto their planes after meshing, defensively).
 
     Returns ``(points, tets, cad_volume)`` — the assembly mesh in its own
     numbering, and the CAD volume of the (clipped) pieces, against which the
@@ -2736,11 +3037,12 @@ def _occ_assembly_3d(patches, width, size, box=None, assembly="fuse"):
                 occ.fuse([(3, solids[0])], [(3, t) for t in solids[1:]])
             else:
                 occ.fragment([(3, solids[0])], [(3, t) for t in solids[1:]])
-        if box is not None:
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
+        planes = None
+        if domain is not None:
+            dom_verts, dom_tris = domain
             occ.synchronize()
             solids = [t for _d, t in gmsh.model.getEntities(3)]
-            tool = occ.addBox(*lo, *(hi - lo))
+            tool, planes = _occ_domain_3d(occ, dom_verts, dom_tris)
             occ.intersect([(3, t) for t in solids], [(3, tool)])
         occ.synchronize()
 
@@ -2764,15 +3066,11 @@ def _occ_assembly_3d(patches, width, size, box=None, assembly="fuse"):
                                          dtype=np.int64).reshape(-1, 4))
         if not tets:
             raise RuntimeError("the assembly meshed to no tetrahedra")
-        if box is not None:
-            # OCC's clipped faces sit within rounding of the plane; the
-            # band logic and the cap's node sharing need EXACT plane
-            # values, so snap defensively.
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
-            for axis in range(3):
-                for value in (lo[axis], hi[axis]):
-                    near = np.abs(xyz[:, axis] - value) < 1e-9
-                    xyz[near, axis] = value
+        if planes is not None:
+            # OCC's clipped faces sit within rounding of the boundary; the
+            # band logic and the cap's node sharing need EXACT membership,
+            # so snap defensively.
+            xyz = _snap_to_boundary_3d(xyz, dom_verts, dom_tris, planes)
         return xyz, np.vstack(tets), float(cad_volume)
     finally:
         gmsh.finalize()
@@ -3041,7 +3339,7 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
-def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
+def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
     """Thicken each polyline into a ribbon, resolve overlaps, mesh.
 
     The 2-D thin volume: a ribbon is the mitred outline of one polyline, and
@@ -3052,12 +3350,14 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
     honour. Returns ``(points, triangles, cad_area)``, the area being that of
     the resolved faces — the union — under either choice.
 
-    ``box = (lo, hi)`` applies the specify-long contract one dimension down
-    from :func:`_occ_assembly_3d`: the resolved faces are INTERSECTED with
-    the domain rectangle, so polylines may protrude — a ribbon reaching the
-    top surface leaves its clipped edge exactly in the wall line (snapped to
-    the line value after meshing, defensively). ``cad_area`` is then the
-    clipped area, so the meshed-vs-CAD gate holds unchanged.
+    ``domain`` — the mesh's boundary loops (:func:`_domain_loops_2d`) —
+    applies the specify-long contract one dimension down from
+    :func:`_occ_assembly_3d`: the resolved faces are INTERSECTED with the
+    domain built as OCC geometry from those very loops, so polylines may
+    protrude — a ribbon reaching a boundary leaves its clipped edge exactly
+    on the boundary's own facets (snapped onto them after meshing,
+    defensively). ``cad_area`` is then the clipped area, so the
+    meshed-vs-CAD gate holds unchanged.
     """
     import gmsh
 
@@ -3125,12 +3425,13 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
                 occ.fuse([(2, surfs[0])], [(2, t) for t in surfs[1:]])
             else:
                 occ.fragment([(2, surfs[0])], [(2, t) for t in surfs[1:]])
-        if box is not None:
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
+        comp = None
+        if domain is not None:
+            comp = [_compress_collinear_loop(np.asarray(L, dtype=float))
+                    for L in domain]
             occ.synchronize()
             faces = [t for _d, t in gmsh.model.getEntities(2)]
-            tool = occ.addRectangle(lo[0], lo[1], 0.0,
-                                    hi[0] - lo[0], hi[1] - lo[1])
+            tool = _occ_domain_2d(occ, comp)
             occ.intersect([(2, t) for t in faces], [(2, tool)])
         occ.synchronize()
 
@@ -3153,15 +3454,11 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
                                          dtype=np.int64).reshape(-1, 3))
         if not tris:
             raise RuntimeError("the ribbon assembly meshed to no triangles")
-        if box is not None:
-            # OCC's clipped edges sit within rounding of the wall line; the
-            # band logic and the wall relabel need EXACT line values, so
+        if comp is not None:
+            # OCC's clipped edges sit within rounding of the boundary; the
+            # band logic and the wall relabel need EXACT membership, so
             # snap defensively (the 3-D path does the same on its planes).
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
-            for axis in range(2):
-                for value in (lo[axis], hi[axis]):
-                    near = np.abs(xy[:, axis] - value) < 1e-9
-                    xy[near, axis] = value
+            xy = _snap_to_boundary_2d(xy, comp)
         return xy, np.vstack(tris), float(cad_area)
     finally:
         gmsh.finalize()
@@ -3179,19 +3476,19 @@ def _segments_distance(X, pts, edges):
     return best
 
 
-def _skin_loops(skin_edges):
+def _skin_loops(skin_edges, what="the assembly's skin"):
     """Order a 2-D skin's edges into closed loops of vertex ids.
 
     A manifold skin gives every vertex exactly two incident edges; anything
-    else is a defect of the assembly mesh and is refused.
+    else is a defect of the mesh the edges bound and is refused.
     """
     adj = {}
     for a, b in skin_edges:
         adj.setdefault(int(a), []).append(int(b))
         adj.setdefault(int(b), []).append(int(a))
     if any(len(v) != 2 for v in adj.values()):
-        raise RuntimeError("the assembly's skin is not a set of closed "
-                           "loops; the layer mesh is defective")
+        raise RuntimeError(f"{what} is not a set of closed loops; "
+                           "the mesh it bounds is defective")
     loops, seen = [], set()
     for start in sorted(adj):
         if start in seen:
@@ -3966,8 +4263,11 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     """
     comm = uw.mpi.comm
 
-    # The (axis-aligned) domain box, collectively — the clip target and the
-    # wall lines the band is identified against.
+    # The domain's own boundary, collectively — the clip target. The
+    # axis-aligned box survives alongside it as the frame the outcrop BAND
+    # is identified against (wall lines); a general-boundary band is the
+    # trace-labelling stage, not this one.
+    domain_loops = _domain_loops_2d(dm)
     Xb = _coords(dm)
     lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(2, np.inf),
                       -(Xb.max(axis=0)) if len(Xb) else np.full(2, np.inf)])
@@ -3979,7 +4279,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     if comm.rank == 0:
         try:
             asm_pts, asm_tris, cad_area = _occ_assembly_2d(
-                polylines, width, size, assembly, box=(box_lo, box_hi))
+                polylines, width, size, assembly, domain=domain_loops)
             P = asm_pts[asm_tris]
             twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
                      - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
@@ -4430,8 +4730,12 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     comm = uw.mpi.comm
 
     # The specify-long contract: patches may extend PAST the domain; the
-    # assembly is clipped against the (axis-aligned) box, and a clipped
-    # face left in a wall plane becomes the zone's OUTCROP BAND.
+    # assembly is clipped against the mesh's own boundary, and a clipped
+    # face left in a wall plane becomes the zone's OUTCROP BAND. The
+    # axis-aligned box survives alongside as the frame the band is
+    # identified against; a general-boundary band is the trace-labelling
+    # stage, not this one.
+    dom_verts, dom_tris = _domain_boundary_facets(dm)
     Xb = _coords(dm)
     lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(3, np.inf),
                       -(Xb.max(axis=0)) if len(Xb) else np.full(3, np.inf)])
@@ -4444,7 +4748,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if comm.rank == 0:
         try:
             asm_pts, asm_tets, cad_vol = _occ_assembly_3d(
-                patches, width, size, box=(box_lo, box_hi), assembly=assembly)
+                patches, width, size, domain=(dom_verts, dom_tris),
+                assembly=assembly)
             v6 = np.einsum(
                 "ij,ij->i",
                 np.cross(asm_pts[asm_tets][:, 1] - asm_pts[asm_tets][:, 0],
