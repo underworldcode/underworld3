@@ -307,8 +307,9 @@ def test_an_outcropping_zone_leaves_a_band_on_the_surface():
                     ).reshape(-1, 3)[: vE - vS]
     top_label = new.getLabel("Top")
     skin_label = new.getLabel("Zone_skin")
+    trace_label = new.getLabel("Zone_trace")
     tv = bounds["Top"].value
-    n_band = 0
+    n_band = n_trace = 0
     for f in range(fS, fE):
         if len(new.getSupport(f)) != 1:
             continue
@@ -318,7 +319,12 @@ def test_an_outcropping_zone_leaves_a_band_on_the_surface():
             assert top_label.getValue(f) == tv
             if skin_label.getValue(f) == zv:
                 n_band += 1
+            if trace_label.getValue(f) == zv:
+                n_trace += 1
     assert n_band > 0, "the zone left no band on the surface"
+    assert n_trace == n_band, (
+        "the trace label does not coincide with the band")
+    assert info["n_trace_facets"] == n_trace
 
     mesh = uw.discretisation.Mesh(
         new, simplex=True, qdegree=3, boundaries=bounds,
@@ -343,17 +349,21 @@ def test_an_outcropping_zone_leaves_a_band_on_the_surface():
 # ------------------------------------------------------------ 2-D outcrop
 
 def _top_edge_census_2d(new, skin_value):
-    """Boundary edges in the top wall line: (total, band, missing Top).
+    """Boundary edges in the top wall line: (total, band, missing Top,
+    trace).
 
     The band is an edge carrying BOTH the zone's skin label and the wall's;
     an edge missing the Top label is a hole the relabel left in the wall.
+    The trace label marks the intersection itself and must coincide with
+    the band.
     """
     fS, fE = new.getHeightStratum(1)
     vS, vE = new.getDepthStratum(0)
     Xn = np.asarray(new.getCoordinatesLocal().array).reshape(-1, 2)[: vE - vS]
     top = new.getLabel("Top")
     skin = new.getLabel("Zone_skin")
-    n_top = n_band = n_bare = 0
+    trace = new.getLabel("Zone_trace")
+    n_top = n_band = n_bare = n_trace = 0
     for f in range(fS, fE):
         if len(new.getSupport(f)) != 1:
             continue
@@ -365,7 +375,9 @@ def _top_edge_census_2d(new, skin_value):
                 n_bare += 1
             if skin.getValue(f) == skin_value:
                 n_band += 1
-    return n_top, n_band, n_bare
+            if trace is not None and trace.getValue(f) == skin_value:
+                n_trace += 1
+    return n_top, n_band, n_bare, n_trace
 
 
 def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
@@ -388,12 +400,15 @@ def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
     bounds = base._boundaries_with("Zone")
     zv = bounds["Zone"].value
 
-    interior, _ = place_thin_volume(
+    interior, info0 = place_thin_volume(
         base.dm, [np.array([[0.35, 0.40], [0.60, 0.80]])], width=0.03,
         label="Zone", label_value=zv)
-    n_top0, n_band0, _bare0 = _top_edge_census_2d(interior, zv)
+    n_top0, n_band0, _bare0, n_trace0 = _top_edge_census_2d(interior, zv)
     assert n_top0 > 0 and n_band0 == 0, (
         "the census counted a band on an interior ribbon; it cannot "
+        "validate the outcrop")
+    assert n_trace0 == 0 and info0["n_trace_facets"] == 0, (
+        "an interior ribbon carries a trace; the trace label cannot "
         "validate the outcrop")
 
     before = float(cell_areas(base.dm).sum())
@@ -401,9 +416,12 @@ def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
     new, info = place_thin_volume(base.dm, [line], width=0.03,
                                   label="Zone", label_value=zv)
     assert info["n_zone_cells"] > 0
-    n_top, n_band, n_bare = _top_edge_census_2d(new, zv)
+    n_top, n_band, n_bare, n_trace = _top_edge_census_2d(new, zv)
     assert n_band > 0, "the ribbon left no band on the surface"
     assert n_bare == 0, "the relabel left top-wall edges without Top"
+    assert n_trace == n_band, (
+        "the trace label does not coincide with the band")
+    assert info["n_trace_facets"] == n_trace
     assert float(cell_areas(new).sum()) == pytest.approx(before, rel=1e-12)
 
     mesh = uw.discretisation.Mesh(

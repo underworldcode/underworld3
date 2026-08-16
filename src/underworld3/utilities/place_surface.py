@@ -3099,30 +3099,56 @@ def _assembly_skin(points, cells):
     return points[node_ids], skin_local, node_ids
 
 
-def _split_skin_band(skin_xyz, skin_facets, box_lo, box_hi):
-    """Split a skin into its interior part and the wall BAND — the strip of
-    the assembly's clipped face lying exactly in a wall plane (the zone's
-    outcrop). One wall only; more refuses (box-edge bands are not built).
-    Returns ``(interior_idx, band_idx, wall_code)`` with wall_code None
-    when nothing touches a wall.
+def _split_skin_trace(skin_xyz, skin_facets, dom_verts, dom_facets,
+                      tol=1e-9):
+    """Split a skin into its interior part and the boundary TRACE — the
+    facets of the assembly's clipped face lying ON the domain's own
+    boundary facets (the zone's outcrop). Membership is metric but
+    unambiguous: the post-clip snap puts a clipped vertex within rounding
+    of the boundary complex, while an interior skin vertex is a layer
+    mesh-size away. Every vertex AND the centroid must be on the boundary,
+    so a facet spanning between two boundary contacts through the interior
+    cannot pass.
 
-    Dimension-free: facets are triangles against wall planes in 3-D, edges
-    against wall lines in 2-D.
+    Dimension-free: edges against boundary edges in 2-D, triangles against
+    boundary triangles in 3-D. Returns ``(interior_idx, trace_idx)``.
     """
-    codes = np.full(len(skin_facets), -1, dtype=np.int64)
+    distance = (_segments_distance if skin_xyz.shape[1] == 2
+                else _sheet_distance)
+    d_vertex = distance(skin_xyz, dom_verts, dom_facets)
+    corners = d_vertex[skin_facets].max(axis=1)
+    d_centre = distance(skin_xyz[skin_facets].mean(axis=1),
+                        dom_verts, dom_facets)
+    on = (corners < tol) & (d_centre < tol)
+    return np.flatnonzero(~on), np.flatnonzero(on)
+
+
+def _trace_wall_code(skin_xyz, skin_facets, trace_idx, box_lo, box_hi):
+    """The single axis-aligned wall the trace lies in, as the legacy
+    ``2*axis + side`` code — the frame the carve and the sew still run
+    against. One wall only; more refuses (box-edge bands are not built),
+    and a trace on a non-axis-aligned boundary refuses until the general
+    carve/sew exists.
+    """
+    codes = np.full(len(trace_idx), -1, dtype=np.int64)
     for axis in range(skin_xyz.shape[1]):
         for side, value in ((0, box_lo[axis]), (1, box_hi[axis])):
-            on = (skin_xyz[skin_facets][:, :, axis] == value).all(axis=1)
+            on = (skin_xyz[skin_facets[trace_idx]][:, :, axis]
+                  == value).all(axis=1)
             codes[on] = 2 * axis + side
-    walls = set(int(c) for c in codes[codes >= 0])
-    if not walls:
-        return np.arange(len(skin_facets)), np.empty(0, dtype=np.int64), None
+    if (codes < 0).any():
+        # TODO(DESIGN): the general carve/sew (arc-ordered splice, cap
+        # meshed on the boundary facets) lifts this; the trace split above
+        # already finds the band on any boundary.
+        raise NotImplementedError(
+            "the zone outcrops on a non-axis-aligned boundary; the "
+            "general carve/sew is not yet built.")
+    walls = set(int(c) for c in codes)
     if len(walls) > 1:
         raise NotImplementedError(
             "the zone meets more than one domain wall; box-edge outcrop "
             "bands are not built.")
-    band = np.flatnonzero(codes >= 0)
-    return np.flatnonzero(codes < 0), band, walls.pop()
+    return walls.pop()
 
 
 def _single_loop(edges, what):
@@ -4263,11 +4289,13 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     """
     comm = uw.mpi.comm
 
-    # The domain's own boundary, collectively — the clip target. The
-    # axis-aligned box survives alongside it as the frame the outcrop BAND
-    # is identified against (wall lines); a general-boundary band is the
-    # trace-labelling stage, not this one.
-    domain_loops = _domain_loops_2d(dm)
+    # The domain's own boundary, collectively — the clip target and the
+    # complex the outcrop TRACE is identified against. The axis-aligned box
+    # survives alongside as the frame the carve/sew still runs in.
+    dom_verts, dom_edges = _domain_boundary_facets(dm)
+    domain_loops = [dom_verts[loop] for loop in
+                    _skin_loops([(int(a), int(b)) for a, b in dom_edges],
+                                what="the domain boundary")]
     Xb = _coords(dm)
     lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(2, np.inf),
                       -(Xb.max(axis=0)) if len(Xb) else np.full(2, np.inf)])
@@ -4303,11 +4331,15 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                   for a, b in skin_local]
     loops_asm = _skin_loops(skin_edges)
 
-    # The outcrop band: skin edges lying exactly in ONE wall line. The
+    # The outcrop band: the skin's trace on the domain boundary. The
     # outcropping loop splits into band + interior chain; loops away from
-    # the wall stay holes of the fill.
-    _int_idx, band_idx, wall_code = _split_skin_band(
-        asm_pts, np.asarray(skin_edges, dtype=np.int64), box_lo, box_hi)
+    # the boundary stay holes of the fill.
+    skin_edge_arr = np.asarray(skin_edges, dtype=np.int64)
+    _int_idx, band_idx = _split_skin_trace(asm_pts, skin_edge_arr,
+                                           dom_verts, dom_edges)
+    wall_code = (None if not len(band_idx)
+                 else _trace_wall_code(asm_pts, skin_edge_arr, band_idx,
+                                       box_lo, box_hi))
     open_wall = None
     chain_asm = None
     hole_loops = loops_asm
@@ -4503,7 +4535,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
         dm_work, drop_arr, victims_arr, made, placed)
 
     skin_label = label + "_skin"
-    for name in (label, skin_label):
+    trace_label = label + "_trace"
+    for name in (label, skin_label, trace_label):
         if not new_dm.hasLabel(name):
             new_dm.createLabel(name)
     n_zone_local = 0
@@ -4553,17 +4586,23 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                          int(point_map[corner_r + vS - pStart])]]
             wall_ids += [[int(placed_points[a]), int(placed_points[b])]
                          for a, b in (tuple(p) for p in band_pairs)]
-            for ids in wall_ids:
+            # The first two entries are the splice segments (the 2-D cap);
+            # the rest are the band — the TRACE, the intersection itself,
+            # labelled as such so the model can form whatever unions it
+            # needs (never a partition of the wall into named halves).
+            out_trace = new_dm.getLabel(trace_label)
+            for k, ids in enumerate(wall_ids):
                 joined = new_dm.getFullJoin(ids)
                 if len(joined) != 1:
                     failure = ("an outcrop wall edge is not an edge of the "
                                "sewn mesh; the splice or band was not "
                                "sewn.")
                     break
-                for name, val in pairs:
-                    lab = new_dm.getLabel(name)
-                    for q in new_dm.getTransitiveClosure(int(joined[0]))[0]:
-                        lab.setValue(int(q), int(val))
+                for q in new_dm.getTransitiveClosure(int(joined[0]))[0]:
+                    for name, val in pairs:
+                        new_dm.getLabel(name).setValue(int(q), int(val))
+                    if k >= 2:
+                        out_trace.setValue(int(q), int(label_value))
                 n_wall_local += 1
         failures = comm.allgather(failure)
         real = [f for f in failures if f]
@@ -4620,6 +4659,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     comm.Allreduce(MPI.IN_PLACE, mins, op=MPI.MIN)
     info = {"n_zone_cells": n_zone, "n_skin_faces": n_skin,
             "n_placed": n_placed, "n_removed": n_removed,
+            "n_trace_facets": int(len(band_idx)),
             "min_area": float(mins[0]), "min_angle": float(mins[1])}
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {n_zone} zone cells, "
@@ -4775,9 +4815,12 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     asm_pts, asm_tets = comm.bcast(payload, root=0)
     skin_xyz, skin_tris, skin_node_ids = _assembly_skin(asm_pts, asm_tets)
 
-    # The outcrop band: skin triangles lying exactly in ONE wall plane.
-    interior_idx, band_idx, wall_code = _split_skin_band(
-        skin_xyz, skin_tris, box_lo, box_hi)
+    # The outcrop band: the skin's trace on the domain boundary.
+    interior_idx, band_idx = _split_skin_trace(skin_xyz, skin_tris,
+                                               dom_verts, dom_tris)
+    wall_code = (None if not len(band_idx)
+                 else _trace_wall_code(skin_xyz, skin_tris, band_idx,
+                                       box_lo, box_hi))
     open_wall = None
     band_outline = None
     if wall_code is not None:
@@ -4982,7 +5025,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     # is invisible to the interface machinery, so the skin faces — which a
     # later placement must hold clear of — go under their own name.
     skin_label = label + "_skin"
-    for name in (label, skin_label):
+    trace_label = label + "_trace"
+    for name in (label, skin_label, trace_label):
         if not new.hasLabel(name):
             new.createLabel(name)
     n_cells_local = 0
@@ -5040,18 +5084,25 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
 
         wall_tris = ([[new_id(int(v)) for v in t] for t in cap_out]
                      if cap_out is not None else [])
+        n_cap_tris = len(wall_tris)
         wall_tris += [[int(placed_new[int(skin_row[int(v)])]) for v in t]
                       for t in skin_tris[band_idx]]
-        for ids in wall_tris:
+        # The cap's annulus first, then the band — the TRACE, the
+        # intersection itself, labelled as such so the model can form
+        # whatever unions it needs (never a partition of the wall into
+        # named pieces).
+        out_trace = new.getLabel(trace_label)
+        for k, ids in enumerate(wall_tris):
             joined = new.getFullJoin(ids)
             if len(joined) != 1:
                 failure = ("an outcrop wall triangle is not a face of the "
                            "sewn mesh; the cap or band was not sewn.")
                 break
-            for name, val in pairs:
-                lab = new.getLabel(name)
-                for q in new.getTransitiveClosure(int(joined[0]))[0]:
-                    lab.setValue(int(q), int(val))
+            for q in new.getTransitiveClosure(int(joined[0]))[0]:
+                for name, val in pairs:
+                    new.getLabel(name).setValue(int(q), int(val))
+                if k >= n_cap_tris:
+                    out_trace.setValue(int(q), int(label_value))
             n_wall_local += 1
     failures = comm.allgather(failure)
     real = [f for f in failures if f]
@@ -5110,6 +5161,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
 
     info = {"n_zone_cells": n_zone, "n_skin_faces": n_skin_faces,
             "n_placed": n_placed, "n_removed": n_removed,
+            "n_trace_facets": int(len(band_idx)),
             "min_volume": float(min_vol[0])}
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {info['n_zone_cells']} "
