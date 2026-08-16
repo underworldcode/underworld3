@@ -522,11 +522,20 @@ class AnalyticSolution(uw_object):
         self.fn_capacity = sympy.sympify(capacity)
 
     def apply_boundary_conditions(self, solver):
-        """Impose the boundary conditions this solution is posed under."""
+        """Impose the boundary conditions this solution is posed under.
+
+        Every solution writes this itself, because the conditions are part of
+        the problem it answers and are not always the same on every boundary.
+        :func:`free_slip`, :func:`prescribed_velocity` and
+        :func:`prescribed_scalar` are here to be composed inside it — each takes
+        the boundaries it applies to, so a solution with a slipping wall and a
+        driven one calls both.
+        """
 
         raise NotImplementedError(
             f"{type(self).__name__} does not declare its boundary conditions. "
-            f"Mix in FreeSlipWalls or FixedWalls, or override this method."
+            f"Write apply_boundary_conditions, composing free_slip, "
+            f"prescribed_velocity or prescribed_scalar as the problem requires."
         )
 
     def _object_viewer(self):
@@ -547,39 +556,99 @@ class AnalyticSolution(uw_object):
                 display(Markdown(rf"{label}: $\displaystyle {equation}$"))
 
 
-class FreeSlipWalls:
-    r"""Mixin: the solution is posed with free slip on every wall.
+# The boundary conditions solutions build from. Functions rather than mixins:
+# a mixin can only say "every boundary of this solution gets the same
+# condition", which is true of the classical box benchmarks and false of most
+# of what the suite has to serve next — a spherical shell or annulus with
+# different conditions on the two radii, a faulted disc, a channel driven at one
+# end. Composed inside a solution's own `apply_boundary_conditions`, these say
+# what is imposed WHERE, and a solution that needs two kinds calls two of them.
+#
+# The pressure nullspace is deliberately NOT set here. It is a property of the
+# domain — enclosed, so the pressure is determined only up to a constant — and
+# not of any one wall's condition, so each solution states it for itself:
+#
+#     solver.petsc_use_pressure_nullspace = True
+#
+# Leaving it out on an enclosed domain is the failure this whole suite exists to
+# catch: a direct solve on the singular saddle returns a quiet, wrong answer
+# that only an exact solution exposes.
 
-    Free slip is imposed as a strong *rotated* constraint
-    (:math:`\mathbf u\cdot\hat{\mathbf n}=0` to machine precision) rather than by
-    zeroing a velocity component. On an axis-aligned box the two agree; on a
-    curved, tilted or adapted boundary only the rotated form is correct, so it is
-    the one that still holds when a solution is used to validate an adapted mesh.
 
-    The domain is enclosed, so the pressure carries a constant nullspace and the
-    solver is told to remove it. Leaving that out is the failure this whole suite
-    exists to catch: a direct solve on the singular saddle returns a quiet, wrong
-    answer that only an exact solution exposes.
+def free_slip(solver, boundaries, normal=None):
+    r"""Impose free slip, :math:`\mathbf u\cdot\hat{\mathbf n}=0`, on *boundaries*.
+
+    Applied as a strong *rotated* constraint (satisfied to machine precision)
+    rather than by zeroing a velocity component. On an axis-aligned box the two
+    agree; on a curved, tilted or adapted boundary only the rotated form is
+    correct, so it is the one that still holds when a solution is used to
+    validate an adapted mesh.
+
+    Parameters
+    ----------
+    solver : Stokes
+        The solver to configure.
+    boundaries : sequence of str
+        The boundary labels to constrain — not necessarily all of them.
+    normal : sympy 1 x dim Matrix, optional
+        Analytic outward normal. The default takes the solver's geometric facet
+        normal, which is consistent with the straight-facet integral the
+        assembler evaluates and is normally the right choice even on a curved
+        wall. Supply one only when the constraint must follow the TRUE surface
+        rather than the mesh; see the "Which normal to use" section of
+        ``docs/developer/subsystems/rotated-freeslip.md``.
     """
 
-    def apply_boundary_conditions(self, solver):
-        for boundary in self.boundaries:
-            solver.add_rotated_freeslip_bc(0.0, boundary)
+    # Passed only when the solution has actually chosen a normal, so that
+    # otherwise the solver's own geometric default governs.
+    choice = {} if normal is None else {"normal": normal}
 
-        solver.petsc_use_pressure_nullspace = True
+    for boundary in boundaries:
+        solver.add_rotated_freeslip_bc(0.0, boundary, **choice)
 
 
-class FixedWalls:
-    """Mixin: velocity is prescribed on every wall, from the exact solution.
+def prescribed_velocity(solver, boundaries, velocity):
+    """Impose a velocity on *boundaries*, component by component.
 
-    For solutions driven by their boundaries rather than by a body force — a
-    far-field shear, say — and for manufactured solutions whose exact velocity is
-    not tangential to the domain. The domain is again enclosed, so the pressure
-    nullspace is removed.
+    For a solution driven through its boundaries rather than by a body force —
+    a far-field shear, say — and for any solution whose exact velocity is not
+    tangential to the domain.
+
+    Parameters
+    ----------
+    solver : Stokes
+        The solver to configure.
+    boundaries : sequence of str
+        The boundary labels to constrain.
+    velocity : sequence of length dim
+        Usually the solution's own ``fn_velocity``, a 1 x dim sympy Matrix, but
+        any dim-long sequence will do — a solution holding a wall at rest passes
+        a tuple of zeros.
     """
 
-    def apply_boundary_conditions(self, solver):
-        for boundary in self.boundaries:
-            solver.add_dirichlet_bc(self.fn_velocity, boundary)
+    for boundary in boundaries:
+        solver.add_dirichlet_bc(velocity, boundary)
 
-        solver.petsc_use_pressure_nullspace = True
+
+def prescribed_scalar(solver, boundaries, field):
+    """Impose a scalar field on *boundaries*.
+
+    The scalar counterpart of :func:`prescribed_velocity`, for the transport and
+    Richards families: temperature, pressure head, hydraulic head.
+
+    Parameters
+    ----------
+    solver : Poisson or Darcy
+        The solver to configure.
+    boundaries : sequence of str
+        The boundary labels to constrain.
+    field : sympy expression
+        Usually the solution's own ``fn_solution``. A single expression, not a
+        sequence — the bracket below is this function's job, because
+        ``add_dirichlet_bc`` takes one entry per component and a scalar solution
+        has exactly one. That is the only difference from
+        :func:`prescribed_velocity`, whose argument already is the sequence.
+    """
+
+    for boundary in boundaries:
+        solver.add_dirichlet_bc([field], boundary)

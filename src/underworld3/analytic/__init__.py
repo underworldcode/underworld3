@@ -26,7 +26,12 @@ See Also
 underworld3.analytic._base : the contract each solution satisfies.
 """
 
-from ._base import AnalyticSolution, FreeSlipWalls, FixedWalls
+from ._base import (
+    AnalyticSolution,
+    free_slip,
+    prescribed_scalar,
+    prescribed_velocity,
+)
 
 from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
@@ -36,8 +41,9 @@ from .velic import SolA, SolB, SolC, SolCx, SolDA, SolDB2d, SolDB3d, SolH, SolKx
 
 __all__ = [
     "AnalyticSolution",
-    "FreeSlipWalls",
-    "FixedWalls",
+    "free_slip",
+    "prescribed_scalar",
+    "prescribed_velocity",
     "AdvectedFront",
     "EllipticalInclusion",
     "ErfcDiffusion",

@@ -16,25 +16,29 @@ underworld3.analytic.velic : the Stokes family.
 
 import sympy
 
-from ._base import AnalyticSolution
+from ._base import AnalyticSolution, prescribed_scalar
 
 
 class _Transport(AnalyticSolution):
     """Shared metadata and boundary conditions for the scalar solutions.
 
-    These prescribe the field itself on the boundary, so they cannot reuse the
-    Stokes mixins — `FixedWalls` applies a velocity, which a scalar solution does
-    not have.
+    The whole family is posed with its own exact field on every wall, which is
+    why the condition is stated once here. A member that needs something else on
+    one boundary — a no-flux base, an inflow face — writes its own
+    ``apply_boundary_conditions`` and composes the helpers per boundary.
     """
 
     solves = "transport"
     dim = 2
 
     def apply_boundary_conditions(self, solver):
-        """Prescribe the exact field on every wall."""
+        """Prescribe the exact field on every wall.
 
-        for boundary in self.boundaries:
-            solver.add_dirichlet_bc([self.fn_solution], boundary)
+        There is no pressure nullspace to remove: the field is pinned by its own
+        Dirichlet data everywhere on the boundary.
+        """
+
+        prescribed_scalar(solver, self.boundaries, self.fn_solution)
 
 
 class Poisson1D(_Transport):

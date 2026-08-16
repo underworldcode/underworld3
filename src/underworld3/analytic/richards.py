@@ -26,7 +26,7 @@ underworld3.analytic.transport : the linear scalar solutions.
 
 import sympy
 
-from ._base import AnalyticSolution
+from ._base import AnalyticSolution, prescribed_scalar
 
 
 def gardner_steady_saturation(y, psi_0, psi_L, L, alpha):
@@ -91,10 +91,14 @@ class _Gardner(AnalyticSolution):
     )
 
     def apply_boundary_conditions(self, solver):
-        """Prescribe the exact head on every wall."""
+        """Prescribe the exact head on every wall.
 
-        for boundary in self.boundaries:
-            solver.add_dirichlet_bc([self.fn_solution], boundary)
+        Both Gardner solutions are column problems posed with their own head on
+        the boundary. A member needing a flux condition on the base instead
+        writes its own method and composes the helpers per boundary.
+        """
+
+        prescribed_scalar(solver, self.boundaries, self.fn_solution)
 
     def _gardner_material(self, head):
         r"""Conductivity and capacity for a given head expression.
