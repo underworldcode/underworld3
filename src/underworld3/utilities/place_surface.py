@@ -5711,27 +5711,30 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         old_pts = np.vstack([tri for tri, _p in removed_wall])
         old_tris = np.arange(3 * len(removed_wall)).reshape(-1, 3)
         d_old, at_old = _nearest_facet(centres, old_pts, old_tris)
+        # A raise here is rank-local — a hang at np>=2 — so every
+        # refusal in this block goes through the collective failure.
         if (d_old > 1e-9).any():
-            raise RuntimeError(
-                "an outcrop wall triangle lies on no removed wall face; "
-                "the collar and the bowl disagree")
-        # The cap's collar first, then the band — the TRACE, the
-        # intersection itself, labelled as such so the model can form
-        # whatever unions it needs (never a partition of the wall into
-        # named pieces).
-        out_trace = new.getLabel(trace_label)
-        for k, ids in enumerate(wall_tris):
-            joined = new.getFullJoin(ids)
-            if len(joined) != 1:
-                failure = ("an outcrop wall triangle is not a face of the "
-                           "sewn mesh; the cap or band was not sewn.")
-                break
-            for q in new.getTransitiveClosure(int(joined[0]))[0]:
-                for name, val in removed_wall[int(at_old[k])][1]:
-                    new.getLabel(name).setValue(int(q), int(val))
-                if k >= n_cap_tris:
-                    out_trace.setValue(int(q), int(label_value))
-            n_wall_local += 1
+            failure = ("an outcrop wall triangle lies on no removed wall "
+                       "face; the collar and the bowl disagree")
+        else:
+            # The cap's collar first, then the band — the TRACE, the
+            # intersection itself, labelled as such so the model can form
+            # whatever unions it needs (never a partition of the wall
+            # into named pieces).
+            out_trace = new.getLabel(trace_label)
+            for k, ids in enumerate(wall_tris):
+                joined = new.getFullJoin(ids)
+                if len(joined) != 1:
+                    failure = ("an outcrop wall triangle is not a face of "
+                               "the sewn mesh; the cap or band was not "
+                               "sewn.")
+                    break
+                for q in new.getTransitiveClosure(int(joined[0]))[0]:
+                    for name, val in removed_wall[int(at_old[k])][1]:
+                        new.getLabel(name).setValue(int(q), int(val))
+                    if k >= n_cap_tris:
+                        out_trace.setValue(int(q), int(label_value))
+                n_wall_local += 1
     failures = comm.allgather(failure)
     real = [f for f in failures if f]
     if real:
