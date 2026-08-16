@@ -445,6 +445,94 @@ def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
         f"= {float(err.max()):.3e}")
 
 
+def _annulus_boundary_census(new, zone_value):
+    """Boundary edges of the annulus: (total, trace, missing a wall label).
+
+    An edge missing both Lower and Upper is a hole the relabel left in the
+    boundary; the trace marks the outcrop band.
+    """
+    fS, fE = new.getHeightStratum(1)
+    lower = new.getLabel("Lower")
+    upper = new.getLabel("Upper")
+    trace = new.getLabel("Zone_trace")
+    n_bound = n_trace = n_bare = 0
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        n_bound += 1
+        if lower.getValue(f) < 0 and upper.getValue(f) < 0:
+            n_bare += 1
+        if trace.getValue(f) == zone_value:
+            n_trace += 1
+    return n_bound, n_trace, n_bare
+
+
+def test_an_outcropping_ribbon_on_the_annulus_leaves_a_trace():
+    """The general boundary: a radial ribbon out of the annulus's outer
+    boundary. There is no circle the annulus is failing to be — the clip
+    must land on the mesh's own chords, so the domain area is conserved to
+    round-off, the trace edges carry the Upper label as well as the trace,
+    and the P2 oracle stays exact through the zone.
+
+    The negative control comes first: an interior twin of the same ribbon
+    carries no trace, so the trace counted on the outcrop is produced by
+    the outcrop.
+    """
+    import sympy
+    from underworld3.utilities.line_cut import cell_areas
+
+    base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+                              cellSize=0.06, qdegree=3)
+    bounds = base._boundaries_with("Zone")
+    zv = bounds["Zone"].value
+    theta = 0.4
+    ray = np.array([np.cos(theta), np.sin(theta)])
+
+    interior, info0 = place_thin_volume(
+        base.dm, [np.array([0.62 * ray, 0.88 * ray])], width=0.03,
+        label="Zone", label_value=zv)
+    _nb0, n_trace0, _bare0 = _annulus_boundary_census(interior, zv)
+    assert info0["n_trace_facets"] == 0 and n_trace0 == 0, (
+        "an interior ribbon carries a trace; the census cannot validate "
+        "the outcrop")
+
+    before = float(cell_areas(base.dm).sum())
+    line = np.array([0.62 * ray, 1.30 * ray])       # past the outer boundary
+    new, info = place_thin_volume(base.dm, [line], width=0.03,
+                                  label="Zone", label_value=zv)
+    assert info["n_zone_cells"] > 0
+    assert info["n_trace_facets"] > 0, "the ribbon left no trace"
+    n_bound, n_trace, n_bare = _annulus_boundary_census(new, zv)
+    assert n_trace == info["n_trace_facets"]
+    assert n_bare == 0, "the relabel left boundary edges without a label"
+    assert float(cell_areas(new).sum()) == pytest.approx(before, rel=1e-12)
+    # A clipped corner landing near an imprinted domain vertex once meshed
+    # a 0.18-degree sliver; the imprint collapse restores the interior
+    # twin's quality (measured 29.4 against 29.6 degrees). The floor is
+    # far above any sliver and far below the healthy fill.
+    assert info["min_angle"] > 15.0
+
+    mesh = uw.discretisation.Mesh(
+        new, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y = mesh.X
+    exact = x**2 + y**2
+    t = uw.discretisation.MeshVariable("T_ann", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -4.0
+    for wall in ("Lower", "Upper"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0]) - (X[:, 0]**2 + X[:, 1]**2))
+    assert float(err.max()) < 1e-8, (
+        f"the outcropped annulus assembles a wrong operator: "
+        f"max |u - exact| = {float(err.max()):.3e}")
+
+
 def test_a_ribbon_stopping_short_of_the_wall_still_refuses():
     """No band, no outcrop: the interior contract keeps its refusal.
 

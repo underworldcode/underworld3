@@ -3123,6 +3123,121 @@ def _split_skin_trace(skin_xyz, skin_facets, dom_verts, dom_facets,
     return np.flatnonzero(~on), np.flatnonzero(on)
 
 
+def _collapse_boundary_imprints(asm_pts, asm_tris, loops, delta):
+    """Merge a clipped-corner node into the domain vertex it almost hits.
+
+    The boolean imprints the tool's corners into the clipped face. Where
+    the assembly's own clipped corner lands within ``delta`` of an
+    imprinted domain vertex, two forced nodes sit a hair apart on the same
+    boundary segment and the layer meshes a sliver spanning them
+    (measured: 0.18 degrees on an annulus radial outcrop, against 29.6 for
+    its interior twin). Taking the domain vertex moves the band's end
+    ALONG the boundary, so the domain's shape and area are untouched; the
+    assembly's side edge tilts by under ``delta`` across its last cell —
+    the end-snap contract, one level up. Runs after the meshed-vs-CAD
+    gate: the collapse is our own exact bookkeeping, not the mesher's.
+    """
+    comp = [_compress_collinear_loop(L) for L in loops]
+    seg_pts, seg_edges = [], []
+    for L in comp:
+        base = len(seg_pts)
+        n = len(L)
+        seg_edges += [(base + i, base + (i + 1) % n) for i in range(n)]
+        seg_pts += list(L)
+    on_bound = (_segments_distance(asm_pts, np.asarray(seg_pts), seg_edges)
+                < 1e-9)
+    remap = np.arange(len(asm_pts))
+    for c in np.vstack(loops):
+        hit = np.flatnonzero((asm_pts == c).all(axis=1))
+        if not len(hit):
+            continue
+        j = int(hit[0])
+        d = np.linalg.norm(asm_pts - c, axis=1)
+        for m in np.flatnonzero((d > 0.0) & (d < delta) & on_bound):
+            remap[int(m)] = j
+    if (remap == np.arange(len(asm_pts))).all():
+        return asm_pts, asm_tris
+    tris = remap[asm_tris]
+    degenerate = ((tris[:, 0] == tris[:, 1]) | (tris[:, 1] == tris[:, 2])
+                  | (tris[:, 2] == tris[:, 0]))
+    tris = tris[~degenerate]
+    used = np.unique(tris)
+    compact = np.full(len(asm_pts), -1, dtype=np.int64)
+    compact[used] = np.arange(len(used))
+    return asm_pts[used], compact[tris]
+
+
+def _refuse_multiple_bands(band_facets):
+    """One contiguous band only: a single carve-and-splice is built.
+
+    Two ribbons out of two walls, or one arch out of the same wall twice,
+    both arrive here as more than one connected component of band facets.
+    """
+    parent = {}
+
+    def find(v):
+        while parent[v] != v:
+            parent[v] = parent[parent[v]]
+            v = parent[v]
+        return v
+
+    for facet in band_facets:
+        for v in facet:
+            parent.setdefault(int(v), int(v))
+        roots = {find(int(v)) for v in facet}
+        anchor = roots.pop()
+        for r in roots:
+            parent[r] = anchor
+    if len({find(v) for v in parent}) > 1:
+        raise NotImplementedError(
+            "the zone meets the domain boundary in more than one band; a "
+            "multiply-outcropping zone is not built.")
+
+
+def _outcrop_frame_2d(comp_loops, asm_pts, band_pairs, X, on_wall):
+    """Which mesh boundary vertices an outcrop may DELETE, and which ring
+    vertices count as boundary contact AWAY from the outcrop.
+
+    A boundary vertex may go when the band re-provides its geometry (the
+    vertex lies ON the band — the assembly holds a node at its exact
+    position), or when it lies on a band-touched straight segment of the
+    compressed boundary, where the splice's cap segments stay collinear
+    with the segment and the domain shape is preserved. A compressed
+    CORNER off the band is the domain's shape itself and is never deleted.
+    On a box this reproduces the wall-plane rule exactly: the touched
+    segment is the whole wall, and the box corners are the protected ones.
+
+    Returns ``(deletable, near_touched)`` — masks over the mesh vertices.
+    """
+    band_nodes = sorted({int(v) for pair in band_pairs for v in pair})
+    B = asm_pts[band_nodes]
+    seg_pts, seg_edges, corners = [], [], []
+    for L in comp_loops:
+        corners.append(L)
+        n = len(L)
+        for i in range(n):
+            A, C = L[i], L[(i + 1) % n]
+            e = C - A
+            u = np.clip(((B - A) @ e) / float(e @ e), 0.0, 1.0)
+            d = np.linalg.norm(B - (A + u[:, None] * e), axis=1)
+            if (d < 1e-9).any():
+                seg_edges.append((len(seg_pts), len(seg_pts) + 1))
+                seg_pts += [A, C]
+    if not seg_edges:
+        raise RuntimeError(
+            "the outcrop band lies on no boundary segment; the clip and "
+            "the boundary disagree")
+    d_seg = _segments_distance(X, np.asarray(seg_pts), seg_edges)
+    d_band = _segments_distance(X, asm_pts,
+                                [tuple(p) for p in band_pairs])
+    is_corner = np.zeros(len(X), dtype=bool)
+    for c in np.vstack(corners):
+        is_corner |= np.linalg.norm(X - c, axis=1) < 1e-9
+    near_touched = d_seg < 1e-9
+    deletable = on_wall & near_touched & (~is_corner | (d_band < 1e-9))
+    return deletable, near_touched
+
+
 def _trace_wall_code(skin_xyz, skin_facets, trace_idx, box_lo, box_hi):
     """The single axis-aligned wall the trace lies in, as the legacy
     ``2*axis + side`` code — the frame the carve and the sew still run
@@ -3572,27 +3687,47 @@ def _outcrop_chain_2d(loops, band_pairs):
     return chain, holes
 
 
-def _outcrop_ring_splice(ring, X, open_wall, chain_ids, chain_t):
-    """Replace the cavity ring's wall span with the ribbon's interior chain.
+def _arc_project(polyline, p):
+    """``(distance, arc length)`` of the closest point on an open polyline."""
+    best_d, best_s = np.inf, 0.0
+    s0 = 0.0
+    for i in range(len(polyline) - 1):
+        A, B = polyline[i], polyline[i + 1]
+        e = B - A
+        length = float(np.linalg.norm(e))
+        u = float(np.clip((p - A) @ e / (length * length), 0.0, 1.0))
+        d = float(np.linalg.norm(p - (A + u * e)))
+        if d < best_d:
+            best_d, best_s = d, s0 + u * length
+        s0 += length
+    return best_d, best_s
 
-    The raw ring of an outcropping carve runs ALONG the open wall through
-    vertices about to be deleted. The fill's boundary instead descends
-    around the ribbon: the ring's single contiguous run of wall edges is
-    removed and the chain is spliced between the run's surviving end
-    vertices, oriented to meet them. The two splice segments are the 2-D
-    cap — what remains of the 3-D wall annulus one dimension down.
 
-    ``chain_ids`` are the chain's rows in the fill's combined numbering,
-    ``chain_t`` the along-wall coordinates of its two ends. Returns
-    ``(spliced_ring, removed_wall_pairs)``, the removed pairs as old vertex
-    rows for the wall-label discovery. A second wall run refuses — the
-    carve spilled onto the wall away from the outcrop.
+def _outcrop_ring_splice(ring, X, boundary_pairs, chain_ids, chain_ends):
+    """Replace the cavity ring's boundary span with the ribbon's interior
+    chain.
+
+    The raw ring of an outcropping carve runs ALONG the domain boundary
+    through vertices about to be deleted. The fill's boundary instead
+    descends around the ribbon: the ring's single contiguous run of
+    boundary edges is removed and the chain is spliced between the run's
+    surviving end vertices, oriented to meet them. The two splice segments
+    are the 2-D cap — what remains of the 3-D wall annulus one dimension
+    down.
+
+    ``boundary_pairs`` is the mesh's own boundary-edge vertex pairs, so
+    the span is a topological run, not a coordinate test.  ``chain_ids``
+    are the chain's rows in the fill's combined numbering, ``chain_ends``
+    the coordinates of its two end nodes; coverage and orientation are
+    arc projections onto the removed span's own polyline, so a curved
+    boundary orders exactly as a straight wall did. Returns
+    ``(spliced_ring, removed_wall_pairs)``, the removed pairs as old
+    vertex rows for the wall-label discovery. A second boundary run
+    refuses — the carve spilled onto the boundary away from the outcrop.
     """
-    axis, value = open_wall
-    t = 1 - axis
     n = len(ring)
-    onw = [X[v][axis] == value for v in ring]
-    wall_edge = [onw[i] and onw[(i + 1) % n] for i in range(n)]
+    wall_edge = [frozenset((ring[i], ring[(i + 1) % n])) in boundary_pairs
+                 for i in range(n)]
     if not any(wall_edge):
         raise RuntimeError(
             "the outcrop band does not meet the cavity's wall span; raise "
@@ -3604,20 +3739,24 @@ def _outcrop_ring_splice(ring, X, open_wall, chain_ids, chain_t):
             "reduce `clearance` or move the zone off the wall.")
     i0 = next(i for i in range(n) if wall_edge[i] and not wall_edge[i - 1])
     k = sum(wall_edge)
-    corner_l, corner_r = ring[i0], ring[(i0 + k) % n]
-    lo_t, hi_t = sorted((float(X[corner_l][t]), float(X[corner_r][t])))
-    if not (lo_t < min(chain_t) and max(chain_t) < hi_t):
+    removed = [(ring[(i0 + j) % n], ring[(i0 + j + 1) % n])
+               for j in range(k)]
+    span = X[np.asarray([ring[(i0 + j) % n] for j in range(k + 1)])]
+    ends = [_arc_project(span, np.asarray(c, dtype=float))
+            for c in chain_ends]
+    strictly_inside = all(
+        d < 1e-9
+        and np.linalg.norm(c - span[0]) > 1e-9
+        and np.linalg.norm(c - span[-1]) > 1e-9
+        for (d, _s), c in zip(ends, chain_ends))
+    if not strictly_inside:
         raise RuntimeError(
             "the cavity's wall span does not cover the outcrop band; raise "
             "`clearance`.")
-    removed = [(ring[(i0 + j) % n], ring[(i0 + j + 1) % n])
-               for j in range(k)]
     # The surviving arc, corner_r around to corner_l, then the chain with
     # its corner_l-side end first — the loop's orientation is preserved.
     tail = [ring[(i0 + k + j) % n] for j in range(n - k + 1)]
-    tl = float(X[corner_l][t])
-    seq = (chain_ids if abs(tl - chain_t[0]) <= abs(tl - chain_t[1])
-           else chain_ids[::-1])
+    seq = chain_ids if ends[0][1] <= ends[1][1] else chain_ids[::-1]
     return tail + list(seq), removed
 
 
@@ -4290,17 +4429,11 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     comm = uw.mpi.comm
 
     # The domain's own boundary, collectively — the clip target and the
-    # complex the outcrop TRACE is identified against. The axis-aligned box
-    # survives alongside as the frame the carve/sew still runs in.
+    # complex the outcrop TRACE is identified against.
     dom_verts, dom_edges = _domain_boundary_facets(dm)
     domain_loops = [dom_verts[loop] for loop in
                     _skin_loops([(int(a), int(b)) for a, b in dom_edges],
                                 what="the domain boundary")]
-    Xb = _coords(dm)
-    lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(2, np.inf),
-                      -(Xb.max(axis=0)) if len(Xb) else np.full(2, np.inf)])
-    comm.Allreduce(MPI.IN_PLACE, lo_hi, op=MPI.MIN)
-    box_lo, box_hi = lo_hi[0], -lo_hi[1]
 
     failure = None
     payload = None
@@ -4317,6 +4450,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     f"the ribbon assembly meshed to area {mesh_area:.12e} "
                     f"against CAD {cad_area:.12e}; the layer mesh does not "
                     "fill its own outlines.")
+            asm_pts, asm_tris = _collapse_boundary_imprints(
+                asm_pts, asm_tris, domain_loops, 0.1 * size)
             payload = (asm_pts, asm_tris)
         except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
@@ -4337,19 +4472,14 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     skin_edge_arr = np.asarray(skin_edges, dtype=np.int64)
     _int_idx, band_idx = _split_skin_trace(asm_pts, skin_edge_arr,
                                            dom_verts, dom_edges)
-    wall_code = (None if not len(band_idx)
-                 else _trace_wall_code(asm_pts, skin_edge_arr, band_idx,
-                                       box_lo, box_hi))
-    open_wall = None
+    outcropping = bool(len(band_idx))
     chain_asm = None
     hole_loops = loops_asm
     band_pairs = set()
-    if wall_code is not None:
-        w_axis, w_side = divmod(int(wall_code), 2)
-        open_wall = (w_axis,
-                     float(box_hi[w_axis] if w_side else box_lo[w_axis]))
+    if outcropping:
+        _refuse_multiple_bands(skin_edge_arr[band_idx])
         band_pairs = {frozenset((int(a), int(b)))
-                      for a, b in np.asarray(skin_edges)[band_idx]}
+                      for a, b in skin_edge_arr[band_idx]}
         chain_asm, hole_loops = _outcrop_chain_2d(loops_asm, band_pairs)
 
     vS, vE = dm.getDepthStratum(0)
@@ -4396,16 +4526,12 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             beside_held = np.zeros(len(X), dtype=bool)
             beside_held[cells[held_c].ravel()] = True
             deletable_wall = np.zeros(len(X), dtype=bool)
-            if open_wall is not None:
-                # An outcrop deletes wall vertices — in the open wall's
-                # line only. A vertex in a second wall line is a domain
-                # corner and stays protected: deleting it for one wall
-                # would breach the other.
-                deletable_wall = on_wall & (X[:, open_wall[0]]
-                                            == open_wall[1])
-                other = 1 - open_wall[0]
-                for v2 in (box_lo[other], box_hi[other]):
-                    deletable_wall &= ~(X[:, other] == v2)
+            near_touched = None
+            if outcropping:
+                comp_loops = [_compress_collinear_loop(L)
+                              for L in domain_loops]
+                deletable_wall, near_touched = _outcrop_frame_2d(
+                    comp_loops, asm_pts, band_pairs, X, on_wall)
             protected = (on_wall & ~deletable_wall) | held_v | beside_held
             victim = (d_skin < reach_v) & ~protected
 
@@ -4427,25 +4553,26 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
             ring, drop = _ring_growing(cells, drop, held_c)
             removed_wall = []
-            if open_wall is None:
+            if not outcropping:
                 if on_wall[np.asarray(ring)].any():
                     raise RuntimeError(
                         "the ribbon's cavity reached the domain wall; the "
                         "volume must be interior, with clearance to spare")
             else:
+                boundary_pairs = {frozenset((a, b))
+                                  for _e, a, b in _boundary_edges(dm_work)}
                 chain_ids = [len(X) + int(v) for v in chain_asm]
-                t_ax = 1 - open_wall[0]
-                chain_t = (float(asm_pts[chain_asm[0]][t_ax]),
-                           float(asm_pts[chain_asm[-1]][t_ax]))
+                chain_ends = (asm_pts[chain_asm[0]],
+                              asm_pts[chain_asm[-1]])
                 ring, removed_wall = _outcrop_ring_splice(
-                    ring, X, open_wall, chain_ids, chain_t)
-                off_open = [v for v in ring if v < len(X)
-                            and on_wall[v]
-                            and X[v][open_wall[0]] != open_wall[1]]
-                if off_open:
+                    ring, X, boundary_pairs, chain_ids, chain_ends)
+                off_band = [v for v in ring if v < len(X)
+                            and on_wall[v] and not near_touched[v]]
+                if off_band:
                     raise RuntimeError(
-                        "the ribbon's cavity reached a second domain "
-                        "wall; only a one-wall outcrop is built.")
+                        "the ribbon's cavity reached the domain boundary "
+                        "away from the outcrop band; only a one-band "
+                        "outcrop is built.")
             old_ring = np.asarray([v for v in ring if v < len(X)])
             if victim[old_ring].any():
                 raise RuntimeError(
@@ -4503,7 +4630,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     "place_thin_volume internal: the gathered region "
                     "touches a shared point; the gather mask under-reached.")
             outcrop = None
-            if open_wall is not None:
+            if outcropping:
                 # The splice ends: the surviving corner vertices and the
                 # chain ends they meet — the chain is the ring's tail, in
                 # the orientation the splice chose.
@@ -4572,7 +4699,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     # and the band itself — is relabelled EXPLICITLY with what the deleted
     # wall span carried, full closures included.
     n_wall_local = 0
-    if open_wall is not None:
+    if outcropping:
         pairs = comm.bcast(outcrop[0] if comm.rank == target else None,
                            root=target)
         for name, val in pairs:
