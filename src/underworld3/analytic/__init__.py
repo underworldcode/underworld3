@@ -33,7 +33,7 @@ from ._base import (
     prescribed_velocity,
 )
 
-from .barr_houseman import FaultedMedium
+from .barr_houseman_96 import FaultedMedium
 from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient

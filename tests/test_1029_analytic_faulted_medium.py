@@ -453,6 +453,7 @@ def test_it_is_registered_in_the_family(mesh):
     assert uw.analytic.is_available("FaultedMedium")
     assert "Barr" in uw.analytic.describe("FaultedMedium")
 
+    assert uw.analytic.barr_houseman_96.FaultedMedium is uw.analytic.FaultedMedium
     assert uw.analytic.FaultedMedium.solves == "stokes"
     assert uw.analytic.FaultedMedium.symbolic is True
     assert uw.analytic.FaultedMedium.expensive_to_validate is False
