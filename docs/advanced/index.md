@@ -35,6 +35,18 @@ fault-plane yield for modelling fault zones.
 
 **[→ VEP + Transverse Isotropy](vep-transverse-isotropy-faults.md)**
 
+### Fault Zones That Cross
+Finite-width fault zones fused into one region, and what the rheology of
+the overlap is worth.
+
+**[→ Crossing Fault Zones](crossing-fault-zones.md)**
+
+### Gouge Zones
+What a fault zone's width is for, and what collapsing it to a surface
+throws away.
+
+**[→ Gouge Zones](gouge-zones.md)**
+
 ### Custom Meshes
 Create complex geometries with gmsh for research problems.
 
@@ -105,6 +117,8 @@ complex-rheologies
 vep-transverse-isotropy-faults
 split-node-faults
 fault-networks
+crossing-fault-zones
+gouge-zones
 fault-mechanics-examples
 custom-meshes
 curved-boundary-conditions
