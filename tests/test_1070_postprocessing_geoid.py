@@ -9,63 +9,84 @@ import underworld3 as uw
 pytestmark = pytest.mark.level_2
 
 
-def test_zhong2008_postprocessing_is_public():
+def test_spherical_shell_postprocessing_is_public():
     assert hasattr(uw, "postprocessing")
-    assert hasattr(uw.postprocessing, "zhong2008_geoid_response")
-    assert hasattr(uw.postprocessing, "zhong2008_self_gravity_response")
-    assert hasattr(uw.postprocessing, "zhong2008_response_from_rotated_stokes")
+    assert uw.postprocessing.__all__ == ["geoid"]
+    assert hasattr(uw.postprocessing.geoid, "spherical_shell_geoid_response")
+    assert hasattr(uw.postprocessing.geoid, "spherical_shell_self_gravity_response")
+    assert hasattr(uw.postprocessing.geoid, "spherical_shell_response_from_rotated_stokes")
 
 
-def test_zhong2008_geoid_response_matches_direct_formula_and_load_scale():
+def test_spherical_shell_geoid_response_matches_direct_formula_and_load():
     radius_inner = 0.55
     radius_outer = 1.0
-    radius_internal = 0.775
+    rint = 0.775
     degree = 2
-    load_scale = 1.75
+    internal_load_coefficient = 1.75
     surface_topography = 0.3918264884592169
     cmb_topography = 0.2653834107104151
 
-    response = uw.postprocessing.zhong2008_geoid_response(
+    response = uw.postprocessing.geoid.spherical_shell_geoid_response(
         radius_inner=radius_inner,
         radius_outer=radius_outer,
-        radius_internal=radius_internal,
         harmonic_degree=degree,
         surface_topography_coefficient=surface_topography,
         cmb_topography_coefficient=cmb_topography,
-        load_scale=load_scale,
+        internal_load_radius=rint,
+        internal_load_coefficient=internal_load_coefficient,
     )
 
     denominator = 2 * degree + 1
     surface_expected = (
         radius_inner * (radius_inner / radius_outer) ** (degree + 1) * cmb_topography
         + radius_outer * surface_topography
-        - load_scale
-        * radius_internal
-        * (radius_internal / radius_outer) ** (degree + 1)
+        - internal_load_coefficient * rint * (rint / radius_outer) ** (degree + 1)
     ) / denominator
     cmb_expected = (
         radius_inner * cmb_topography
         + radius_outer * (radius_inner / radius_outer) ** degree * surface_topography
-        - load_scale * radius_internal * (radius_inner / radius_internal) ** degree
+        - internal_load_coefficient * rint * (radius_inner / rint) ** degree
     ) / denominator
 
     assert math.isclose(response.surface_geoid, surface_expected)
     assert math.isclose(response.cmb_geoid, cmb_expected)
 
 
-def test_zhong2008_self_gravity_response_matches_direct_solve():
-    surface_topography = 0.3918264884592169
-    cmb_topography = 0.2653834107104151
-    response = uw.postprocessing.zhong2008_self_gravity_response(
+def test_spherical_shell_geoid_response_without_internal_load():
+    response = uw.postprocessing.geoid.spherical_shell_geoid_response(
         radius_inner=0.55,
         radius_outer=1.0,
-        radius_internal=0.775,
+        harmonic_degree=3,
+        surface_topography_coefficient=0.4,
+        cmb_topography_coefficient=-0.2,
+    )
+
+    denominator = 7.0
+    expected = np.array(
+        [
+            (0.4 + 0.55 * 0.55**4 * -0.2) / denominator,
+            (0.55**3 * 0.4 + 0.55 * -0.2) / denominator,
+        ]
+    )
+    assert np.allclose([response.surface_geoid, response.cmb_geoid], expected)
+
+
+def test_spherical_shell_self_gravity_response_matches_direct_solve():
+    surface_topography = 0.3918264884592169
+    cmb_topography = 0.2653834107104151
+    response = uw.postprocessing.geoid.spherical_shell_self_gravity_response(
+        radius_inner=0.55,
+        radius_outer=1.0,
         harmonic_degree=2,
         surface_topography_coefficient=surface_topography,
         cmb_topography_coefficient=cmb_topography,
-        load_scale=1.0,
+        internal_load_radius=0.775,
+        internal_load_coefficient=1.0,
         surface_density_contrast=3300.0,
         cmb_density_contrast=5400.0,
+        planet_radius=6370000.0,
+        gravity=9.8,
+        gravitational_constant=6.67e-11,
     )
 
     q_surface = 4.0 * np.pi * 6.67e-11 * 6370000.0 * 3300.0 / 9.8
@@ -103,35 +124,55 @@ def test_zhong2008_self_gravity_response_matches_direct_solve():
 
 
 @pytest.mark.parametrize("harmonic_degree", [0, -1, 2.0, True])
-def test_zhong2008_geoid_rejects_invalid_harmonic_degree(harmonic_degree):
+def test_spherical_shell_geoid_rejects_invalid_harmonic_degree(harmonic_degree):
     error = TypeError if isinstance(harmonic_degree, (float, bool)) else ValueError
     with pytest.raises(error):
-        uw.postprocessing.zhong2008_geoid_response(
+        uw.postprocessing.geoid.spherical_shell_geoid_response(
             radius_inner=0.55,
             radius_outer=1.0,
-            radius_internal=0.775,
             harmonic_degree=harmonic_degree,
             surface_topography_coefficient=0.4,
             cmb_topography_coefficient=0.7,
         )
 
 
-def test_zhong2008_rotated_stokes_adapter_matches_table_2():
+def test_internal_load_requires_a_radius():
+    with pytest.raises(ValueError, match="internal_load_radius is required"):
+        uw.postprocessing.geoid.spherical_shell_geoid_response(
+            radius_inner=0.55,
+            radius_outer=1.0,
+            harmonic_degree=2,
+            surface_topography_coefficient=0.4,
+            cmb_topography_coefficient=0.7,
+            internal_load_coefficient=1.0,
+        )
+
+
+def test_rotated_adapter_requires_explicit_self_gravity_parameters():
+    with pytest.raises(ValueError, match="Self-gravity requires explicit values"):
+        uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
+            stokes=object(),
+            radius_inner=0.55,
+            radius_outer=1.0,
+            harmonic_degree=2,
+            include_self_gravity=True,
+        )
+
+
+def test_rotated_stokes_adapter_matches_zhong_table_2():
     radius_inner = 0.55
     radius_outer = 1.0
-    radius_internal = 0.775
+    rint = 0.775
     mesh = uw.meshing.SphericalShellInternalBoundary(
         radiusOuter=radius_outer,
-        radiusInternal=radius_internal,
+        radiusInternal=rint,
         radiusInner=radius_inner,
         cellSize=0.25,
         qdegree=2,
         degree=1,
     )
     velocity = uw.discretisation.MeshVariable("U_geoid", mesh, mesh.dim, degree=2)
-    pressure = uw.discretisation.MeshVariable(
-        "P_geoid", mesh, 1, degree=1, continuous=True
-    )
+    pressure = uw.discretisation.MeshVariable("P_geoid", mesh, 1, degree=1, continuous=True)
     stokes = uw.systems.Stokes(
         mesh,
         velocityField=velocity,
@@ -151,14 +192,19 @@ def test_zhong2008_rotated_stokes_adapter_matches_table_2():
     stokes.tolerance = 1.0e-5
     stokes.solve()
 
-    response = uw.postprocessing.zhong2008_response_from_rotated_stokes(
+    response = uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
         stokes=stokes,
         radius_inner=radius_inner,
         radius_outer=radius_outer,
-        radius_internal=radius_internal,
         harmonic_degree=2,
-        load_scale=1.0,
+        internal_load_radius=rint,
+        internal_load_coefficient=1.0,
         include_self_gravity=True,
+        surface_density_contrast=3300.0,
+        cmb_density_contrast=5400.0,
+        planet_radius=6370000.0,
+        gravity=9.8,
+        gravitational_constant=6.67e-11,
     )
 
     assert np.isclose(response.surface_topography, 0.41920, rtol=0.10)

@@ -1,4 +1,11 @@
-r"""Zhong et al. (2008) spherical-shell geoid response functions."""
+r"""Spherical-harmonic geoid and self-gravity response functions.
+
+The pure coefficient functions in this module are independent of a particular
+Stokes discretisation.  They combine surface, CMB, and optional internal-load
+coefficients through the radial Green's function for one spherical-harmonic
+degree.  A separate convenience adapter obtains the two topography coefficients
+from a completed rotated-free-slip Stokes solve.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +16,26 @@ from mpi4py import MPI
 import numpy as np
 
 
+__all__ = [
+    "GeoidResponse",
+    "SelfGravityResponse",
+    "SphericalShellResponse",
+    "spherical_shell_geoid_response",
+    "spherical_shell_self_gravity_response",
+    "spherical_shell_response_from_rotated_stokes",
+]
+
+
 @dataclass(frozen=True)
-class Zhong2008GeoidResponse:
-    """No-self-gravity surface and CMB geoid coefficients."""
+class GeoidResponse:
+    """Surface and CMB geoid coefficients without self-gravity feedback."""
 
     surface_geoid: float
     cmb_geoid: float
 
 
 @dataclass(frozen=True)
-class Zhong2008SelfGravityResponse:
+class SelfGravityResponse:
     """Self-gravity-corrected topography and geoid coefficients."""
 
     surface_topography: float
@@ -30,59 +47,66 @@ class Zhong2008SelfGravityResponse:
 
 
 @dataclass(frozen=True)
-class Zhong2008DynamicResponse:
-    """Rotated-Stokes topography and corresponding geoid coefficients."""
+class SphericalShellResponse:
+    """Spherical-shell topography and corresponding geoid coefficients."""
 
     surface_topography: float
     cmb_topography: float
     surface_geoid: float
     cmb_geoid: float
-    self_gravity: Zhong2008SelfGravityResponse | None = None
+    self_gravity: SelfGravityResponse | None = None
 
 
 def _validate_geometry(
     radius_inner: float,
     radius_outer: float,
-    radius_internal: float,
     harmonic_degree: int,
-) -> tuple[float, float, float, int]:
+) -> tuple[float, float, int]:
     try:
         ri = float(radius_inner)
         ro = float(radius_outer)
-        rint = float(radius_internal)
     except (TypeError, ValueError) as error:
         raise TypeError("The shell radii must be real numbers.") from error
-    if not np.all(np.isfinite((ri, rint, ro))) or not 0.0 < ri < rint < ro:
-        raise ValueError(
-            "Expected finite radii ordered as "
-            "0 < radius_inner < radius_internal < radius_outer."
-        )
+    if not np.all(np.isfinite((ri, ro))) or not 0.0 < ri < ro:
+        raise ValueError("Expected finite radii ordered as 0 < radius_inner < radius_outer.")
     if isinstance(harmonic_degree, bool) or not isinstance(harmonic_degree, Integral):
         raise TypeError("harmonic_degree must be an integer.")
     degree = int(harmonic_degree)
     if degree < 1:
         raise ValueError("harmonic_degree must be at least one.")
-    return ri, ro, rint, degree
+    return ri, ro, degree
 
 
-def _zhong2008_geoid_operator(
+def _spherical_shell_geoid_operator(
     radius_inner: float,
     radius_outer: float,
-    radius_internal: float,
     harmonic_degree: int,
-    load_scale: float,
+    internal_load_radius: float | None,
+    internal_load_coefficient: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the Zhong Appendix A topography operator and load vector."""
+    """Return the boundary-topography operator and fixed-load vector."""
 
-    ri, ro, rint, degree = _validate_geometry(
+    ri, ro, degree = _validate_geometry(
         radius_inner,
         radius_outer,
-        radius_internal,
         harmonic_degree,
     )
-    load_scale = float(load_scale)
-    if not np.isfinite(load_scale):
-        raise ValueError("load_scale must be finite.")
+    internal_load_coefficient = float(internal_load_coefficient)
+    if not np.isfinite(internal_load_coefficient):
+        raise ValueError("internal_load_coefficient must be finite.")
+
+    rint = None
+    if internal_load_radius is not None:
+        try:
+            rint = float(internal_load_radius)
+        except (TypeError, ValueError) as error:
+            raise TypeError("internal_load_radius must be a real number or None.") from error
+        if not np.isfinite(rint) or not ri < rint < ro:
+            raise ValueError("internal_load_radius must lie strictly between the shell radii.")
+    elif internal_load_coefficient != 0.0:
+        raise ValueError(
+            "internal_load_radius is required when internal_load_coefficient is nonzero."
+        )
 
     denominator = float(2 * degree + 1)
     operator = np.array(
@@ -98,38 +122,43 @@ def _zhong2008_geoid_operator(
         ],
         dtype=float,
     )
-    load = load_scale * np.array(
-        [
-            -rint * (rint / ro) ** (degree + 1) / denominator,
-            -rint * (ri / rint) ** degree / denominator,
-        ],
-        dtype=float,
-    )
+    load = np.zeros(2, dtype=float)
+    if rint is not None and internal_load_coefficient != 0.0:
+        load = -internal_load_coefficient * np.array(
+            [
+                rint * (rint / ro) ** (degree + 1) / denominator,
+                rint * (ri / rint) ** degree / denominator,
+            ],
+            dtype=float,
+        )
     return operator, load
 
 
-def zhong2008_geoid_response(
+def spherical_shell_geoid_response(
     *,
     radius_inner: float,
     radius_outer: float,
-    radius_internal: float,
     harmonic_degree: int,
     surface_topography_coefficient: float,
     cmb_topography_coefficient: float,
-    load_scale: float = 1.0,
-) -> Zhong2008GeoidResponse:
-    r"""Return the nondimensional Zhong no-self-gravity geoid coefficients.
+    internal_load_radius: float | None = None,
+    internal_load_coefficient: float = 0.0,
+) -> GeoidResponse:
+    r"""Return spherical-shell geoid coefficients without self-gravity.
 
-    The topography coefficients and ``load_scale`` must use the same
-    unnormalised :math:`P_l^0` forcing convention as the Stokes solve.
+    All source coefficients must use one consistent spherical-harmonic
+    normalisation.  The radial potential kernel depends on degree but not order,
+    so coefficients for any order :math:`m` may be used.  A positive optional
+    internal-load coefficient follows the outward radial-load convention and
+    enters the potential with the opposite sign to boundary topography.
     """
 
-    operator, load = _zhong2008_geoid_operator(
+    operator, load = _spherical_shell_geoid_operator(
         radius_inner,
         radius_outer,
-        radius_internal,
         harmonic_degree,
-        load_scale,
+        internal_load_radius,
+        internal_load_coefficient,
     )
     topography = np.array(
         [surface_topography_coefficient, cmb_topography_coefficient],
@@ -138,61 +167,53 @@ def zhong2008_geoid_response(
     if not np.all(np.isfinite(topography)):
         raise ValueError("The topography coefficients must be finite.")
     geoid = operator @ topography + load
-    return Zhong2008GeoidResponse(float(geoid[0]), float(geoid[1]))
+    return GeoidResponse(float(geoid[0]), float(geoid[1]))
 
 
-def zhong2008_self_gravity_response(
+def spherical_shell_self_gravity_response(
     *,
     radius_inner: float,
     radius_outer: float,
-    radius_internal: float,
     harmonic_degree: int,
     surface_topography_coefficient: float,
     cmb_topography_coefficient: float,
-    load_scale: float = 1.0,
-    surface_density_contrast: float = 3300.0,
-    cmb_density_contrast: float = 5400.0,
-    planet_radius: float = 6370000.0,
-    gravity: float = 9.8,
-    gravitational_constant: float = 6.67e-11,
-) -> Zhong2008SelfGravityResponse:
-    r"""Return the Zhong self-gravity-corrected response coefficients.
+    surface_density_contrast: float,
+    cmb_density_contrast: float,
+    planet_radius: float,
+    gravity: float,
+    internal_load_radius: float | None = None,
+    internal_load_coefficient: float = 0.0,
+    gravitational_constant: float = 6.67430e-11,
+) -> SelfGravityResponse:
+    r"""Return self-gravity-corrected spherical-shell response coefficients.
 
-    Density contrasts are in kg/m³, ``planet_radius`` in metres, ``gravity`` in
-    m/s², and ``gravitational_constant`` in SI units. Shell radii and response
-    coefficients remain nondimensional.
+    Density contrasts are signed and in kg/m³, ``planet_radius`` is in metres,
+    ``gravity`` is in m/s², and ``gravitational_constant`` is in SI units.
+    Shell radii and response coefficients remain nondimensional.
     """
 
-    operator, load = _zhong2008_geoid_operator(
+    operator, load = _spherical_shell_geoid_operator(
         radius_inner,
         radius_outer,
-        radius_internal,
         harmonic_degree,
-        load_scale,
+        internal_load_radius,
+        internal_load_coefficient,
     )
     topography = np.array(
         [surface_topography_coefficient, cmb_topography_coefficient],
         dtype=float,
     )
-    physical_values = np.array(
-        [
-            surface_density_contrast,
-            cmb_density_contrast,
-            planet_radius,
-            gravity,
-            gravitational_constant,
-        ],
-        dtype=float,
-    )
+    density_contrasts = np.array([surface_density_contrast, cmb_density_contrast], dtype=float)
+    physical_constants = np.array([planet_radius, gravity, gravitational_constant], dtype=float)
     if not np.all(np.isfinite(topography)):
         raise ValueError("The topography coefficients must be finite.")
-    if not np.all(np.isfinite(physical_values)) or np.any(physical_values <= 0.0):
-        raise ValueError("Density contrasts and physical constants must be positive.")
+    if not np.all(np.isfinite(density_contrasts)):
+        raise ValueError("Density contrasts must be finite.")
+    if not np.all(np.isfinite(physical_constants)) or np.any(physical_constants <= 0.0):
+        raise ValueError("Physical constants must be finite and positive.")
 
     gravity_scale = 4.0 * np.pi * gravitational_constant * planet_radius / gravity
-    q = gravity_scale * np.array(
-        [surface_density_contrast, cmb_density_contrast], dtype=float
-    )
+    q = gravity_scale * density_contrasts
     q_matrix = np.diag(q)
     corrected_topography = np.linalg.solve(
         np.eye(2) - q_matrix @ operator,
@@ -200,7 +221,7 @@ def zhong2008_self_gravity_response(
     )
     corrected_geoid = operator @ corrected_topography + load
 
-    return Zhong2008SelfGravityResponse(
+    return SelfGravityResponse(
         surface_topography=float(corrected_topography[0]),
         cmb_topography=float(corrected_topography[1]),
         surface_geoid=float(corrected_geoid[0]),
@@ -300,41 +321,58 @@ def _rotated_topography_coefficient(
     return float(MPI.COMM_WORLD.bcast(coefficient, root=0))
 
 
-def zhong2008_response_from_rotated_stokes(
+def spherical_shell_response_from_rotated_stokes(
     *,
     stokes,
     radius_inner: float,
     radius_outer: float,
-    radius_internal: float,
     harmonic_degree: int,
-    load_scale: float = 1.0,
+    internal_load_radius: float | None = None,
+    internal_load_coefficient: float = 0.0,
     surface_boundary: str = "Upper",
     cmb_boundary: str = "Lower",
     surface_buoyancy_scale: float = 1.0,
     cmb_buoyancy_scale: float = 1.0,
     include_self_gravity: bool = False,
-    surface_density_contrast: float = 3300.0,
-    cmb_density_contrast: float = 5400.0,
-    planet_radius: float = 6370000.0,
-    gravity: float = 9.8,
-    gravitational_constant: float = 6.67e-11,
-) -> Zhong2008DynamicResponse:
-    r"""Compute Zhong response coefficients from a rotated-free-slip Stokes solve.
+    surface_density_contrast: float | None = None,
+    cmb_density_contrast: float | None = None,
+    planet_radius: float | None = None,
+    gravity: float | None = None,
+    gravitational_constant: float = 6.67430e-11,
+) -> SphericalShellResponse:
+    r"""Compute spherical-shell response from a rotated-free-slip Stokes solve.
 
     Normal traction recovery is delegated to the existing
     :meth:`Stokes.boundary_normal_traction` implementation. This adapter only
     projects the two boundary responses onto the unnormalised
-    :math:`P_l^0` harmonic and applies the Zhong Appendix A operator.
+    axisymmetric :math:`P_l^0` harmonic.  Use the pure coefficient functions
+    directly for other harmonic orders or topography-recovery methods. Density
+    contrasts, planet radius, and gravity are required when
+    ``include_self_gravity`` is true.
     """
 
-    ri, ro, _, degree = _validate_geometry(
+    ri, ro, degree = _validate_geometry(
         radius_inner,
         radius_outer,
-        radius_internal,
         harmonic_degree,
     )
     if not isinstance(include_self_gravity, bool):
         raise TypeError("include_self_gravity must be True or False.")
+    if include_self_gravity:
+        missing = [
+            name
+            for name, value in (
+                ("surface_density_contrast", surface_density_contrast),
+                ("cmb_density_contrast", cmb_density_contrast),
+                ("planet_radius", planet_radius),
+                ("gravity", gravity),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                "Self-gravity requires explicit values for " + ", ".join(missing) + "."
+            )
 
     surface_topography = _rotated_topography_coefficient(
         stokes,
@@ -352,33 +390,33 @@ def zhong2008_response_from_rotated_stokes(
         cmb_buoyancy_scale,
         -1.0,
     )
-    geoid = zhong2008_geoid_response(
+    geoid = spherical_shell_geoid_response(
         radius_inner=ri,
         radius_outer=ro,
-        radius_internal=radius_internal,
         harmonic_degree=degree,
         surface_topography_coefficient=surface_topography,
         cmb_topography_coefficient=cmb_topography,
-        load_scale=load_scale,
+        internal_load_radius=internal_load_radius,
+        internal_load_coefficient=internal_load_coefficient,
     )
     self_gravity = None
     if include_self_gravity:
-        self_gravity = zhong2008_self_gravity_response(
+        self_gravity = spherical_shell_self_gravity_response(
             radius_inner=ri,
             radius_outer=ro,
-            radius_internal=radius_internal,
             harmonic_degree=degree,
             surface_topography_coefficient=surface_topography,
             cmb_topography_coefficient=cmb_topography,
-            load_scale=load_scale,
-            surface_density_contrast=surface_density_contrast,
-            cmb_density_contrast=cmb_density_contrast,
-            planet_radius=planet_radius,
-            gravity=gravity,
+            internal_load_radius=internal_load_radius,
+            internal_load_coefficient=internal_load_coefficient,
+            surface_density_contrast=float(surface_density_contrast),
+            cmb_density_contrast=float(cmb_density_contrast),
+            planet_radius=float(planet_radius),
+            gravity=float(gravity),
             gravitational_constant=gravitational_constant,
         )
 
-    return Zhong2008DynamicResponse(
+    return SphericalShellResponse(
         surface_topography=surface_topography,
         cmb_topography=cmb_topography,
         surface_geoid=geoid.surface_geoid,

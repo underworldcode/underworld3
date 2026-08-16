@@ -7,25 +7,23 @@ import underworld3 as uw
 pytestmark = pytest.mark.level_2
 
 
-def test_zhong2008_rotated_geoid_matches_serial_reference():
+def test_rotated_spherical_shell_geoid_matches_serial_reference():
     if uw.mpi.size == 1:
         pytest.skip("Run this regression with at least two MPI ranks.")
 
     radius_inner = 0.55
     radius_outer = 1.0
-    radius_internal = 0.775
+    rint = 0.775
     mesh = uw.meshing.SphericalShellInternalBoundary(
         radiusOuter=radius_outer,
-        radiusInternal=radius_internal,
+        radiusInternal=rint,
         radiusInner=radius_inner,
         cellSize=0.25,
         qdegree=2,
         degree=1,
     )
     velocity = uw.discretisation.MeshVariable("U_geoid_mpi", mesh, mesh.dim, degree=2)
-    pressure = uw.discretisation.MeshVariable(
-        "P_geoid_mpi", mesh, 1, degree=1, continuous=True
-    )
+    pressure = uw.discretisation.MeshVariable("P_geoid_mpi", mesh, 1, degree=1, continuous=True)
     stokes = uw.systems.Stokes(
         mesh,
         velocityField=velocity,
@@ -45,14 +43,19 @@ def test_zhong2008_rotated_geoid_matches_serial_reference():
     stokes.tolerance = 1.0e-5
     stokes.solve()
 
-    response = uw.postprocessing.zhong2008_response_from_rotated_stokes(
+    response = uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
         stokes=stokes,
         radius_inner=radius_inner,
         radius_outer=radius_outer,
-        radius_internal=radius_internal,
         harmonic_degree=2,
-        load_scale=1.0,
+        internal_load_radius=rint,
+        internal_load_coefficient=1.0,
         include_self_gravity=True,
+        surface_density_contrast=3300.0,
+        cmb_density_contrast=5400.0,
+        planet_radius=6370000.0,
+        gravity=9.8,
+        gravitational_constant=6.67e-11,
     )
     values = np.array(
         [

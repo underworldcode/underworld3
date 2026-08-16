@@ -273,10 +273,11 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   seam sensitivity is unchanged (#404).
 - Recorded as the preferred free-slip BC in the project guidance (#300);
   conda PETSc floor raised to ≥ 3.25 for FMG/rotation API consistency (#304).
-- `uw.postprocessing.zhong2008_response_from_rotated_stokes(...)` projects the
-  existing rotated-free-slip boundary traction onto the benchmark harmonic and
-  applies one Appendix A operator for geoid and self-gravity response. The pure
-  operator functions also accept precomputed topography coefficients.
+- `uw.postprocessing.geoid` provides generic spherical-shell geoid and
+  self-gravity coefficient functions. Its rotated-Stokes adapter projects the
+  existing boundary traction onto an axisymmetric harmonic; the pure functions
+  also accept coefficients recovered by other methods and an optional internal
+  load.
 
 ### Generalized Geometric Multigrid via Custom Prolongation (July 2026)
 

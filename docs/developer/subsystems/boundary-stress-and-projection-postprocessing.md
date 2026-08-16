@@ -74,37 +74,51 @@ Combine the two rules — project the τ components with `linear_solver()` for t
 cheap linear solve, then compose `σ_rr` analytically — for accurate boundary
 stress recovery that also scales.
 
-## 3. Zhong spherical-shell geoid response
+## 3. Spherical-shell geoid and self-gravity response
 
 Rotated free slip already exposes normal traction through
-`Stokes.boundary_normal_traction()`. The Zhong adapter projects that recovered
-traction onto the unnormalised `P_l^0` benchmark harmonic and applies the
-Appendix A geoid operator:
+`Stokes.boundary_normal_traction()`. The convenience adapter projects that
+recovered traction onto the unnormalised axisymmetric `P_l^0` harmonic and
+applies the spherical-shell geoid operator:
 
 ```python
 stokes.solve()
 
-response = uw.postprocessing.zhong2008_response_from_rotated_stokes(
+response = uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
     stokes=stokes,
     radius_inner=0.55,
     radius_outer=1.0,
-    radius_internal=0.775,
     harmonic_degree=2,
-    load_scale=1.0,
+    internal_load_radius=0.775,
+    internal_load_coefficient=1.0,
     include_self_gravity=True,
+    surface_density_contrast=3300.0,
+    cmb_density_contrast=5400.0,
+    planet_radius=6370000.0,
+    gravity=9.8,
+    gravitational_constant=6.67e-11,
 )
 ```
 
 The adapter delegates stress recovery to the existing rotated-free-slip API;
 it does not implement a second CBF, constrained-multiplier, or topography
-recovery path. `load_scale` must match the coefficient multiplying the model's
-internal `P_l^0` load.
+recovery path. `internal_load_coefficient` must use the same harmonic
+normalisation and sign convention as the model's internal load.
 
 When surface and CMB topography coefficients are already available, call
-`zhong2008_geoid_response()` or `zhong2008_self_gravity_response()` directly.
-These functions are pure post-processing and do not require a Stokes object.
+`uw.postprocessing.geoid.spherical_shell_geoid_response()` or
+`uw.postprocessing.geoid.spherical_shell_self_gravity_response()` directly.
+These functions are pure post-processing, work for any spherical-harmonic
+order with a consistent coefficient normalisation, and do not require a Stokes
+object. The internal load is optional.
 
-The Zhong Appendix A calculation is expressed as one linear operator:
+The density contrasts, dimensional outer-radius scale, and gravity are required
+when self-gravity is enabled. They deliberately have no Earth- or
+benchmark-specific defaults. The universal gravitational constant defaults to
+the current CODATA value and can be overridden when reproducing a paper's
+rounded constant.
+
+The calculation is expressed as one linear operator:
 
 ```text
 N = G h + n_load
@@ -116,10 +130,15 @@ responses, and `Q` contains the two self-gravity density factors. Sharing `G`
 and `n_load` between the no-self-gravity and self-gravity paths avoids separate
 scalar implementations of the same coefficients.
 
+This module does not compute a benchmark's semi-analytical Stokes solution.
+Published reference solvers, such as the Zhong et al. propagator-matrix method,
+belong in `uw.analytic`; their computed topography coefficients can be passed to
+the pure post-processing functions above.
+
 The rotated harmonic projector gathers boundary samples to rank zero and
 reconstructs their spherical triangulation. A future boundary-reaction
 functional could replace this step with a direct distributed finite-element
-projection without changing the Zhong operator API.
+projection without changing the coefficient API.
 
 ## See also
 
