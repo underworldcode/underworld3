@@ -77,6 +77,16 @@ So the geometry the phrase "high angle" suggests — the square X — is the
 one geometry where the question cannot be asked. The tensors to compare
 differ most at 45 degrees.
 
+```{warning}
+**This degeneracy is two-dimensional and does not carry to 3-D.** It
+exists because the deviatoric space here has only two dimensions, so two
+lines in it must either coincide or be distinct in one way. In 3-D that
+space has five dimensions, two weak planes at any angle occupy different
+subspaces, and there is no null. Do not carry "a 90-degree crossing is
+safe" into a 3-D model — the 3-D question is open and nothing on this
+page answers it.
+```
+
 ### The orthotropic tensor is a TI tensor
 
 Summing the two planes' compliances and inverting gives a tensor with two
@@ -115,6 +125,17 @@ switch off away from coincidence. The average treats the overlap as a
 50/50 mixture of the two fabrics and degenerates to the single plane
 exactly. Both are carried below; neither is obviously right.
 
+```{important}
+There is **no external reference solution** here, and there cannot be one
+without modelling the fabric itself. Both constructions are assumptions,
+so what is measured below is the distance from the shipped rule to a
+*choice*, not to a truth. What makes that worth reading is that the two
+choices differ by a factor of two in how weak they make the overlap and
+still bracket the answer tightly — 61.8% against 70.0% at the worst
+angle, 92.3% against 93.0% at $45^\circ$. The conclusion is insensitive
+to the part that had to be assumed.
+```
+
 ## The experiment
 
 Two straight ribbons crossing at the centre of a unit box, fused into one
@@ -144,6 +165,13 @@ referenced to the `none` control on the same mesh at the same angle. It
 is a single number with no probe geometry in it. (The control dissipates
 exactly 4.000000 in this box, which is the analytic value, so the
 integral is checked as well.)
+
+Note what $W$ is made of at a shallow crossing: at $\Delta = 10^\circ$
+the two dissipations are 3.9521 and 3.9225 against a control of 4.0000,
+so the whole signal is a difference of about 0.03 between numbers that
+agree to 1%. The exact control and the resolution study below are what
+make that difference readable; a single run at one resolution would not
+be.
 
 ### What comes out
 
