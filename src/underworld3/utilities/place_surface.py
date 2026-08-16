@@ -4588,26 +4588,29 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     "volume must be interior, with clearance to spare")
             victim |= orphan
 
-            # Labels the deleted wall span carried, read before the
-            # rebuild forgets them — the splice segments and the band are
-            # relabelled with exactly these after sewing.
-            wall_pairs = []
+            # Labels the deleted wall span carried, read PER EDGE before
+            # the rebuild forgets them — a span across a domain corner
+            # changes label mid-way (Top on one side, Right on the other),
+            # so each new wall edge must take the labels of the old
+            # segment it lies on, not a set common to the whole span.
+            span_labels = []
+            span_segments = []
             if removed_wall:
-                edge_pts = [int(dm_work.getFullJoin(
-                    [int(a) + vS, int(b) + vS])[0])
-                    for a, b in removed_wall]
-                for i in range(dm_work.getNumLabels()):
-                    name = dm_work.getLabelName(i)
-                    if name in reconnect._TOPOLOGY_LABELS:
-                        continue
-                    lab = dm_work.getLabel(name)
-                    values = lab.getValueIS()
-                    if values is None:
-                        continue
-                    for val in values.getIndices():
-                        if all(lab.getValue(p) == int(val)
-                               for p in edge_pts):
-                            wall_pairs.append((name, int(val)))
+                names = [dm_work.getLabelName(i)
+                         for i in range(dm_work.getNumLabels())
+                         if dm_work.getLabelName(i)
+                         not in reconnect._TOPOLOGY_LABELS]
+                for a, b in removed_wall:
+                    p = int(dm_work.getFullJoin([int(a) + vS,
+                                                 int(b) + vS])[0])
+                    pairs_p = []
+                    for name in names:
+                        val = dm_work.getLabel(name).getValue(p)
+                        if val >= 0:
+                            pairs_p.append((name, int(val)))
+                    span_labels.append(pairs_p)
+                    span_segments.append((X[int(a)].copy(),
+                                          X[int(b)].copy()))
 
             Xall = np.vstack([X, asm_pts])
             holes = [[len(X) + int(v) for v in loop] for loop in hole_loops]
@@ -4634,7 +4637,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                 # The splice ends: the surviving corner vertices and the
                 # chain ends they meet — the chain is the ring's tail, in
                 # the orientation the splice chose.
-                outcrop = (wall_pairs,
+                outcrop = (span_labels, span_segments,
                            int(removed_wall[0][0]),
                            int(removed_wall[-1][1]),
                            int(ring[-len(chain_asm)]) - len(X),
@@ -4700,23 +4703,44 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     # wall span carried, full closures included.
     n_wall_local = 0
     if outcropping:
-        pairs = comm.bcast(outcrop[0] if comm.rank == target else None,
-                           root=target)
-        for name, val in pairs:
+        label_names = comm.bcast(
+            sorted({name for pairs_p in outcrop[0] for name, _v in pairs_p})
+            if comm.rank == target else None, root=target)
+        for name in label_names:
             if not new_dm.hasLabel(name):
                 new_dm.createLabel(name)
         if comm.rank == target:
-            _wp, corner_l, corner_r, a_first, a_last = outcrop
+            (span_lab, span_seg, corner_l, corner_r,
+             a_first, a_last) = outcrop
             wall_ids = [[int(point_map[corner_l + vS - pStart]),
                          int(placed_points[a_first])],
                         [int(placed_points[a_last]),
                          int(point_map[corner_r + vS - pStart])]]
             wall_ids += [[int(placed_points[a]), int(placed_points[b])]
                          for a, b in (tuple(p) for p in band_pairs)]
+            mids = [0.5 * (X[corner_l] + asm_pts[a_first]),
+                    0.5 * (asm_pts[a_last] + X[corner_r])]
+            mids += [0.5 * (asm_pts[a] + asm_pts[b])
+                     for a, b in (tuple(p) for p in band_pairs)]
+
+            def span_labels_at(m):
+                best, at = np.inf, 0
+                for k2, (A, B) in enumerate(span_seg):
+                    e = B - A
+                    u = np.clip(float((m - A) @ e) / float(e @ e),
+                                0.0, 1.0)
+                    d = float(np.linalg.norm(m - (A + u * e)))
+                    if d < best:
+                        best, at = d, k2
+                return span_lab[at]
+
             # The first two entries are the splice segments (the 2-D cap);
             # the rest are the band — the TRACE, the intersection itself,
             # labelled as such so the model can form whatever unions it
             # needs (never a partition of the wall into named halves).
+            # Each edge takes the labels of the removed segment it lies
+            # on, so a band across a domain corner restores Top on one
+            # side and Right on the other.
             out_trace = new_dm.getLabel(trace_label)
             for k, ids in enumerate(wall_ids):
                 joined = new_dm.getFullJoin(ids)
@@ -4726,7 +4750,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                                "sewn.")
                     break
                 for q in new_dm.getTransitiveClosure(int(joined[0]))[0]:
-                    for name, val in pairs:
+                    for name, val in span_labels_at(mids[k]):
                         new_dm.getLabel(name).setValue(int(q), int(val))
                     if k >= 2:
                         out_trace.setValue(int(q), int(label_value))

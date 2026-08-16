@@ -533,6 +533,56 @@ def test_an_outcropping_ribbon_on_the_annulus_leaves_a_trace():
         f"max |u - exact| = {float(err.max()):.3e}")
 
 
+def test_a_ribbon_out_through_a_box_corner_embeds():
+    """A single ribbon exiting diagonally through the (1,1) corner.
+
+    The wall-code frame used to refuse this as \"more than one domain
+    wall\"; the general carve/sew subsumes it. The corner vertex lies ON
+    the band, so it is deletable and the band re-provides its exact
+    position — one contiguous band across the corner, area conserved,
+    both walls' labels restored. Two SEPARATE bands stay refused
+    (the two-ribbon and arch tests below).
+    """
+    from underworld3.utilities.line_cut import cell_areas
+
+    base = _box2(0.05)
+    bounds = base._boundaries_with("Zone")
+    zv = bounds["Zone"].value
+    before = float(cell_areas(base.dm).sum())
+    corner = np.array([[0.6, 0.6], [1.1, 1.1]])
+    new, info = place_thin_volume(base.dm, [corner], width=0.03,
+                                  label="Zone", label_value=zv)
+    assert info["n_zone_cells"] > 0
+    assert info["n_trace_facets"] > 0, "the ribbon left no trace"
+    assert info["min_angle"] > 15.0
+    assert float(cell_areas(new).sum()) == pytest.approx(before, rel=1e-12)
+
+    # The trace edges carry a wall label each — Top or Right — and no
+    # boundary edge in either wall line is left bare.
+    fS, fE = new.getHeightStratum(1)
+    vS, vE = new.getDepthStratum(0)
+    Xn = np.asarray(new.getCoordinatesLocal().array).reshape(-1, 2)[: vE - vS]
+    top = new.getLabel("Top")
+    right = new.getLabel("Right")
+    trace = new.getLabel("Zone_trace")
+    n_trace = n_bare = 0
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        verts = [int(q) - vS for q in new.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        on_top = all(Xn[v][1] == 1.0 for v in verts)
+        on_right = all(Xn[v][0] == 1.0 for v in verts)
+        if not (on_top or on_right):
+            continue
+        if top.getValue(f) < 0 and right.getValue(f) < 0:
+            n_bare += 1
+        if trace.getValue(f) == zv:
+            n_trace += 1
+    assert n_trace == info["n_trace_facets"]
+    assert n_bare == 0, "the relabel left a wall edge without its label"
+
+
 def test_a_ribbon_stopping_short_of_the_wall_still_refuses():
     """No band, no outcrop: the interior contract keeps its refusal.
 
