@@ -141,17 +141,17 @@ def _is_known_offender(nodeid):
     return any(path.endswith(known) for known in _KNOWN_COLLECTION_TIME_WORK)
 
 
-_state_before_collect = {}
-_collection_offenders = []
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector):
+    """Fingerprint the process around a module's import, which is its collection."""
 
+    if not (_GUARD_ENABLED and isinstance(collector, pytest.Module)):
+        yield
+        return
 
-def pytest_collectstart(collector):
-    if _GUARD_ENABLED and isinstance(collector, pytest.Module):
-        _state_before_collect[collector.nodeid] = _global_state_fingerprint()
+    before = _global_state_fingerprint()
+    outcome = yield
 
-
-def pytest_collectreport(report):
-    before = _state_before_collect.pop(report.nodeid, None)
     if before is None:
         return
 
@@ -160,28 +160,35 @@ def pytest_collectreport(report):
         return
 
     moved = {k: (before[k], after[k]) for k in before if before[k] != after[k]}
-    if moved and not _is_known_offender(report.nodeid):
-        _collection_offenders.append((report.nodeid, moved))
-
-
-def pytest_collection_finish(session):
-    if not _collection_offenders:
+    if not moved or _is_known_offender(collector.nodeid):
         return
 
+    report = outcome.get_result()
+    if report.failed:
+        return
+
+    # Reported as a COLLECTION ERROR against the offending module rather than by
+    # aborting the session. An abort (`pytest.exit`, or raising from
+    # `pytest_collection_finish`) leaves an xdist worker part-collected, and the
+    # controller then reports `INTERNALERROR ... assert not crashitem` instead of
+    # anything a reader can act on. A collection error is a state both the serial
+    # and the distributed runner already know how to carry.
     lines = [
-        "Test modules changed global state while being COLLECTED.",
+        f"{collector.nodeid} changed global state while being COLLECTED:",
+        "",
+    ]
+    for key, (was, now) in moved.items():
+        lines.append(f"    {key}: {was} -> {now}")
+    lines += [
         "",
         "Work belongs inside a test function or a fixture. Code at module level",
         "runs at import, before the isolation fixtures in tests/conftest.py can",
-        "act, and it runs even under --collect-only (issues #567, #505).",
-        "",
+        "act, and it runs even under --collect-only (issues #567, #505, #587).",
     ]
-    for nodeid, moved in _collection_offenders:
-        lines.append(f"  {nodeid}")
-        for key, (before, after) in moved.items():
-            lines.append(f"      {key}: {before} -> {after}")
 
-    raise pytest.UsageError("\n".join(lines))
+    report.outcome = "failed"
+    report.longrepr = "\n".join(lines)
+    report.result = []
 
 
 @pytest.fixture(scope="module", autouse=True)
