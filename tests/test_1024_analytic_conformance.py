@@ -270,7 +270,7 @@ def test_stress_and_strain_rate_agree(name, built):
             assert np.abs(_validation.sample(sol, difference, points)).max() / scale < 1.0e-8
 
 
-# The boundary-condition mixins are exercised in test_1016_analytic_contract.py.
+# The boundary-condition helpers are exercised in test_1016_analytic_contract.py.
 # Building a Stokes solver per solution here as well was not worth what it cost:
 # it dominated the runtime of this file without checking anything the contract
 # tests do not already cover.
