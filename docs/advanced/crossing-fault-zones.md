@@ -173,9 +173,13 @@ mod $90^\circ$, so the nearest-fault rule assigns that same tensor on
 both sides of the medial axis. The experiment reproduces it exactly, and
 that is what licenses the other six rows.
 
-Now read up the column. The nearest-fault rule recovers only **70% of the
-weakening** at a $10^\circ$ crossing, and the error closes monotonically
-as the crossing squares up.
+Now read up the column. The nearest-fault rule loses a substantial part
+of the network's weakening at a shallow crossing, and the error closes
+monotonically as the crossing squares up. The percentages in that table
+are computed at a zone mesh of $w/4$ and are **bounds**, not estimates —
+refining the zone mesh moves the rule closer to the orthotropic one, and
+the converged values are about 76% at $10^\circ$ and 95% at $45^\circ$
+(see the resolution control below).
 
 ```{figure} figures/crossing_map.png
 :width: 100%
@@ -252,10 +256,25 @@ designed and worth having as a measurement rather than a claim.
 
 The **zone** mesh does. Halving it twice moves the ratio 88.2 → 93.0 →
 94.5%, and the increments fall by about a factor of three, so the
-converged value here is near 95%. Refinement always moves the
-nearest-fault rule *closer* to the orthotropic one — so the table earlier
-on this page, computed at $w/4$, **overstates the error**, and its
-percentages should be read as bounds rather than estimates.
+converged value here is near 95%.
+
+The same check at the worst angle, $\Delta = 10^\circ$, where the overlap
+is largest and the resolution matters most:
+
+| host cell | zone $h$ | zone cells | overlap | $W$ nearest | $W$ orthotropic | ratio |
+|---|---|---|---|---|---|---|
+| 0.030 | 0.0050 | 1374 | 141 | 1.1980% | 1.7103% | 70.0% |
+| 0.030 | 0.0025 | 4910 | 522 | 1.2731% | 1.7252% | 73.8% |
+| 0.030 | 0.0013 | 19562 | 2051 | 1.3030% | 1.7361% | 75.1% |
+
+Increments of +3.8 then +1.3, the same threefold contraction, giving a
+converged value near 76%.
+
+Refinement always moves the nearest-fault rule *closer* to the
+orthotropic one, so the sweep table earlier on this page **overstates the
+error** everywhere. The corrected statement is that the rule loses about
+a quarter of the network's weakening at the worst crossing angle, not a
+third — which changes the size of the effect and none of its structure.
 
 ## `clearance` is not monotone
 
