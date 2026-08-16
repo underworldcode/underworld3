@@ -72,8 +72,8 @@ def _validate_geometry(
     if isinstance(harmonic_degree, bool) or not isinstance(harmonic_degree, Integral):
         raise TypeError("harmonic_degree must be an integer.")
     degree = int(harmonic_degree)
-    if degree < 1:
-        raise ValueError("harmonic_degree must be at least one.")
+    if degree < 0:
+        raise ValueError("harmonic_degree must be non-negative.")
     return ri, ro, degree
 
 
@@ -358,6 +358,11 @@ def spherical_shell_response_from_rotated_stokes(
     )
     if not isinstance(include_self_gravity, bool):
         raise TypeError("include_self_gravity must be True or False.")
+    if degree == 0:
+        raise ValueError(
+            "The rotated-Stokes adapter requires harmonic_degree >= 1 because "
+            "boundary_normal_traction() removes the degree-zero mean."
+        )
     if include_self_gravity:
         missing = [
             name

@@ -110,7 +110,9 @@ When surface and CMB topography coefficients are already available, call
 `uw.postprocessing.geoid.spherical_shell_self_gravity_response()` directly.
 These functions are pure post-processing, work for any spherical-harmonic
 order with a consistent coefficient normalisation, and do not require a Stokes
-object. The internal load is optional.
+object. They support non-negative harmonic degrees, and the internal load is
+optional. The rotated-Stokes adapter requires degree one or greater because
+normal-traction recovery removes the degree-zero mean.
 
 The density contrasts, dimensional outer-radius scale, and gravity are required
 when self-gravity is enabled. They deliberately have no Earth- or

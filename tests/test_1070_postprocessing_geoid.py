@@ -123,7 +123,20 @@ def test_spherical_shell_self_gravity_response_matches_direct_solve():
     )
 
 
-@pytest.mark.parametrize("harmonic_degree", [0, -1, 2.0, True])
+def test_spherical_shell_geoid_supports_degree_zero():
+    response = uw.postprocessing.geoid.spherical_shell_geoid_response(
+        radius_inner=0.55,
+        radius_outer=1.0,
+        harmonic_degree=0,
+        surface_topography_coefficient=0.4,
+        cmb_topography_coefficient=-0.2,
+    )
+
+    assert math.isclose(response.surface_geoid, 0.4 - 0.55**2 * 0.2)
+    assert math.isclose(response.cmb_geoid, 0.4 - 0.55 * 0.2)
+
+
+@pytest.mark.parametrize("harmonic_degree", [-1, 2.0, True])
 def test_spherical_shell_geoid_rejects_invalid_harmonic_degree(harmonic_degree):
     error = TypeError if isinstance(harmonic_degree, (float, bool)) else ValueError
     with pytest.raises(error):
@@ -133,6 +146,16 @@ def test_spherical_shell_geoid_rejects_invalid_harmonic_degree(harmonic_degree):
             harmonic_degree=harmonic_degree,
             surface_topography_coefficient=0.4,
             cmb_topography_coefficient=0.7,
+        )
+
+
+def test_rotated_adapter_rejects_degree_zero():
+    with pytest.raises(ValueError, match="requires harmonic_degree >= 1"):
+        uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
+            stokes=object(),
+            radius_inner=0.55,
+            radius_outer=1.0,
+            harmonic_degree=0,
         )
 
 
