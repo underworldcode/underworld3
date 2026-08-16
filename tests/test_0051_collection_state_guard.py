@@ -53,6 +53,26 @@ def test_guard_fails_the_run_on_module_level_work(pytester):
     )
 
 
+def test_guard_can_be_turned_off_for_a_generated_offender(pytester, monkeypatch):
+    """`UW_TEST_COLLECTION_GUARD=off` lets the same module through.
+
+    `test_0742` needs this: it generates a module that leaks units at import,
+    because what it pins is that the module-scoped reset survives exactly that.
+    """
+
+    monkeypatch.setenv("UW_TEST_COLLECTION_GUARD", "off")
+    pytester.makeconftest(_SUB_CONFTEST)
+    pytester.makepyfile(
+        test_offender="import underworld3 as uw\n"
+        "mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))\n"
+        "def test_x():\n    assert True\n"
+    )
+
+    result = pytester.runpytest_subprocess("--collect-only")
+
+    assert result.ret == 0
+
+
 def test_guard_is_silent_when_nothing_is_built(pytester):
     """The control: a module that only defines a test collects cleanly."""
 

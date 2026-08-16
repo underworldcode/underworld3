@@ -66,6 +66,20 @@ if _xdist_worker:
 #
 # The check is skipped when underworld3 is not importable — conftest.py is
 # loaded before the package is necessarily installed in CI.
+#
+# `UW_TEST_COLLECTION_GUARD=off` turns it off. That exists for harnesses which
+# GENERATE an offending module on purpose: `test_0742` copies this conftest into
+# a pytester sub-run together with a module that leaks units at import, because
+# what it pins is that the module-scoped reset survives exactly that. The guard
+# firing there is correct and would stop the test reaching its assertion.
+
+
+_GUARD_ENABLED = os.environ.get("UW_TEST_COLLECTION_GUARD", "on").lower() not in (
+    "0",
+    "off",
+    "false",
+    "no",
+)
 
 
 def _global_state_fingerprint():
@@ -132,7 +146,7 @@ _collection_offenders = []
 
 
 def pytest_collectstart(collector):
-    if isinstance(collector, pytest.Module):
+    if _GUARD_ENABLED and isinstance(collector, pytest.Module):
         _state_before_collect[collector.nodeid] = _global_state_fingerprint()
 
 
