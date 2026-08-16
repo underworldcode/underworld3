@@ -6126,6 +6126,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         )
         multipliers = list(getattr(self, "_multipliers", None) or [])
 
+        if adding == "solve":
+            # The dispatch reads both lists, so it can only report the pair.
+            if not (rotated and multipliers):
+                return
+            raise RuntimeError(
+                f"solve(): this solver carries {len(rotated)} rotated "
+                f"(free-slip or fault contact) and {len(multipliers)} "
+                f"block-constraint boundary condition(s). The rotated solve "
+                f"splits velocity and pressure by field number and the "
+                f"multiplier fields lie outside that split, so the "
+                f"preconditioner would cover only part of the operator. Both "
+                f"impose the same wall-normal condition — use one of them "
+                f"(issue #464)."
+            )
+
         if adding == "add_constraint_bc":
             if not rotated:
                 return
@@ -9386,6 +9401,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         constitutive_model : Viscosity and stress definitions.
         """
 
+
+        # Checked here as well as at registration (#464). The registration check
+        # gives the better message — it knows which call was refused — but it
+        # only covers what goes through the solver's own methods, and
+        # `fault_contact` writes `_fault_contact_faults` directly. This runs
+        # before any setup reads either list, so an unsupported pair costs
+        # nothing before it is refused.
+        self._reject_mixed_constraint_mechanisms("solve")
 
         if homotopy:
             # The march runs a SEQUENCE of ordinary solves at successively sharper

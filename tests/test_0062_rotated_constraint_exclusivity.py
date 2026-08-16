@@ -63,3 +63,20 @@ def test_several_block_constraints_are_still_allowed(stokes):
     stokes.add_constraint_bc(0.0, "Top")
 
     assert len(stokes._multipliers) == 2
+
+
+def test_the_dispatch_refuses_the_pair_even_if_registration_was_bypassed(stokes):
+    """The guarantee, as opposed to the message.
+
+    The registration checks only cover what goes through the solver's own
+    methods, and `fault_contact` writes `_fault_contact_faults` directly. The
+    solve dispatch is where both lists are read together, so it carries the
+    check as well. Reaching it here means bypassing registration, which is
+    exactly the case the dispatch exists to catch.
+    """
+
+    stokes.add_rotated_freeslip_bc(0.0, "Left")
+    stokes._multipliers.append(object())
+
+    with pytest.raises(RuntimeError, match=r"solve\(\).*#464"):
+        stokes.solve()
