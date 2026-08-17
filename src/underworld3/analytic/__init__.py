@@ -33,6 +33,7 @@ from ._base import (
     prescribed_velocity,
 )
 
+from .barr_houseman_96 import FaultedMedium
 from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient
@@ -47,6 +48,7 @@ __all__ = [
     "AdvectedFront",
     "EllipticalInclusion",
     "ErfcDiffusion",
+    "FaultedMedium",
     "CylindricalStokes",
     "GardnerSteady",
     "GardnerTransient",
@@ -78,6 +80,7 @@ _SOLUTIONS = {
     "CylindricalStokes": CylindricalStokes,
     "EllipticalInclusion": EllipticalInclusion,
     "ErfcDiffusion": ErfcDiffusion,
+    "FaultedMedium": FaultedMedium,
     "GardnerSteady": GardnerSteady,
     "GardnerTransient": GardnerTransient,
     "Poisson1D": Poisson1D,
