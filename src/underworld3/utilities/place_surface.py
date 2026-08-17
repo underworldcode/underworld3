@@ -5402,7 +5402,13 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                          asm_pts[asm_tets][:, 2] - asm_pts[asm_tets][:, 0]),
                 asm_pts[asm_tets][:, 3] - asm_pts[asm_tets][:, 0])
             mesh_vol = float(np.abs(v6).sum() / 6.0)
-            if abs(mesh_vol - cad_vol) > 1e-9 * cad_vol:
+            # This gate catches UNMESHED solids — an O(1) relative defect
+            # (and the kernel-confusion false positive the feasibility
+            # test met). Its reference, OCC's boolean mass, is only good
+            # to ~5e-7 relative on a many-faceted tool (measured: a
+            # 16.6k-face adapted sphere, where the honest mesh "overfills"
+            # the reported mass), so the tolerance sits above that noise.
+            if abs(mesh_vol - cad_vol) > 1e-6 * cad_vol:
                 raise RuntimeError(
                     f"the assembly meshed to volume {mesh_vol:.12e} against "
                     f"CAD {cad_vol:.12e}; the layer mesh does not fill its "
