@@ -322,6 +322,21 @@ for clearance in (1.0, 0.9, 1.1, 0.8, 1.2, 0.7, 1.3):
     break
 ```
 
+## Postscript: this test was too kind
+
+Everything above is measured in pure extension with the fault pair
+symmetric about the load — a drive with **no rotation**. Repeating the
+question in a shear box with an asymmetric branching geometry (spin in
+the kinematics, nothing mirror-symmetric) inverts the verdict: the
+difference between director rules stays immaterial, but the *entire
+TI-arms family* loses factors — not percent — against the isotropic
+reference wherever the network must hand slip between differently
+oriented members. The overlap tensor was never the dominant term; the
+arms' constraint is. See
+[Branching Faults and Junctions](fault-branching-junctions.md), which
+supersedes the recommendation implied here for any network that
+redistributes slip.
+
 ## See also
 
 - [Fault networks](fault-networks.md) — the zero-thickness toolkit, and

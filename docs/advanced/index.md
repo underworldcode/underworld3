@@ -47,6 +47,12 @@ throws away.
 
 **[→ Gouge Zones](gouge-zones.md)**
 
+### Branching Faults and Junctions
+What a crack model cannot do at a branch point, measured in a shear box
+— and how to choose representations because of it.
+
+**[→ Branching Faults and Junctions](fault-branching-junctions.md)**
+
 ### Custom Meshes
 Create complex geometries with gmsh for research problems.
 
@@ -119,6 +125,7 @@ split-node-faults
 fault-networks
 crossing-fault-zones
 gouge-zones
+fault-branching-junctions
 fault-mechanics-examples
 custom-meshes
 curved-boundary-conditions
