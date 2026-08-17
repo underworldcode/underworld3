@@ -781,6 +781,67 @@ class SolverBaseClass(uw_object):
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
 
+    def _withdraw_block_size_if_not_node_blocked(self, field_name=None, prefix=""):
+        """Remove ``mat_block_size`` when the block it describes is not node-blocked.
+
+        The GAMG bundle declares ``mat_block_size`` so that coarsening aggregates
+        nodes rather than scalars (#579). ``MatSetFromOptions`` hands that to
+        ``PetscLayoutSetBlockSize``, which is a HARD ERROR when a rank's local row
+        count is not divisible by it — PETSc does not treat it as a hint it may
+        decline:
+
+            Arguments are incompatible
+            Local size 67 not compatible with block size 2
+
+        Whether it divides is a property of the particular COMBINATION of
+        boundary conditions, not of their kind. Constrained degrees of freedom
+        are absent from the field's global section, so on a 3x3 P2 velocity
+        field: no velocity BCs gives 98, full vector Dirichlet on every wall
+        gives 50, and component-wise free slip gives 70 — all even, all fine —
+        while ``(0, 0)`` on one wall with ``(0, None)`` on the other three gives
+        67. There is then no node blocking to declare, and asking for one is not
+        a lost optimisation but an error.
+
+        The decision is COLLECTIVE. PETSc requires divisibility on every rank,
+        and a rank-local decision would leave ranks disagreeing about the
+        contents of the options DB.
+
+        Called immediately before ``setFromOptions`` because that is the first
+        point at which the field decomposition exists;
+        ``_apply_preconditioner_options`` re-pushes the bundle on every build, so
+        this has to run on every build too.
+        """
+
+        block_size = getattr(self, "_pc_block_size", 1)
+        if block_size <= 1:
+            return
+
+        names, isets, _ = self.dm.createFieldDecomposition()
+        names = list(names)
+        if field_name is None:
+            if len(names) != 1:
+                return
+            field_name = names[0]
+        elif field_name not in names:
+            return
+
+        local = isets[names.index(field_name)].getLocalSize()
+
+        from mpi4py import MPI
+
+        divides = self.dm.comm.tompi4py().allreduce(
+            local % block_size == 0, op=MPI.LAND
+        )
+        if divides:
+            return
+
+        key = f"{self.petsc_options_prefix}{prefix}mat_block_size"
+        options = PETSc.Options()
+        if key in options:
+            options.delValue(key)
+
+        self._pc_block_size_withdrawn = (field_name, block_size, local)
+
     def _apply_preconditioner_options(self):
         """Push the PETSc option bundle implied by ``self.preconditioner``.
 
@@ -3839,6 +3900,8 @@ class SNES_Scalar(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -4916,6 +4979,8 @@ class SNES_Vector(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -5673,6 +5738,8 @@ class SNES_MultiComponent(SolverBaseClass):
                 coarse_dm.createClosureIndex(None)
 
             self.dm.setUp()
+
+            self._withdraw_block_size_if_not_node_blocked()
 
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
@@ -8765,6 +8832,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # hierarchy for geometric MG/FMG. Must precede setFromOptions.
             if self._block_constraint_bcs:
                 self._setup_block_fieldsplit_options()
+
+            self._withdraw_block_size_if_not_node_blocked(
+                "velocity", prefix="fieldsplit_velocity_")
 
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
