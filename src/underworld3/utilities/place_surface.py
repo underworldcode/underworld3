@@ -3141,12 +3141,29 @@ def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
                                          dtype=np.int64).reshape(-1, 4))
         if not tets:
             raise RuntimeError("the assembly meshed to no tetrahedra")
+        tets = np.vstack(tets)
+        # The meshed-vs-CAD gate runs BEFORE the snap (the 2-D collapse
+        # precedent): it tests gmsh's fidelity to the boolean, while the
+        # snap is our own exact bookkeeping whose volume effect is gated
+        # by the caller's domain-conservation check. The reference, OCC's
+        # boolean mass, is itself only good to ~5e-7 relative on a
+        # many-faceted tool, hence the tolerance.
+        P = xyz[tets]
+        v6 = np.einsum("ij,ij->i",
+                       np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                       P[:, 3] - P[:, 0])
+        mesh_vol = float(np.abs(v6).sum() / 6.0)
+        if abs(mesh_vol - cad_volume) > 1e-6 * cad_volume:
+            raise RuntimeError(
+                f"the assembly meshed to volume {mesh_vol:.12e} against "
+                f"CAD {cad_volume:.12e}; the layer mesh does not fill its "
+                "own solids.")
         if planes is not None:
             # OCC's clipped faces sit within rounding of the boundary; the
             # band logic and the cap's node sharing need EXACT membership,
             # so snap defensively.
             xyz = _snap_to_boundary_3d(xyz, dom_verts, dom_tris, planes)
-        return xyz, np.vstack(tets), float(cad_volume)
+        return xyz, tets, float(cad_volume)
     finally:
         gmsh.finalize()
 
@@ -3240,6 +3257,103 @@ def _collapse_boundary_imprints(asm_pts, asm_tris, loops, delta):
     compact = np.full(len(asm_pts), -1, dtype=np.int64)
     compact[used] = np.arange(len(used))
     return asm_pts[used], compact[tris]
+
+
+def _collapse_boundary_imprints_3d(asm_pts, asm_tets, dom_verts, dom_tris,
+                                   delta):
+    """Route the band outline THROUGH any boundary vertex it grazes.
+
+    The 2-D collapse one dimension up. The clip lands the band's outline
+    where geometry puts it, and over a long band it passes arbitrarily
+    close to some of the wall's own vertices; the collar then meshes a
+    sliver between the vertex and the outline (measured: a 2.4 m gap on
+    a 1000 km megathrust, refused by the 2-D fill as moved nodes). Where
+    a kept-able boundary vertex lies within ``delta`` of the outline,
+    the outline is made to pass THROUGH it: the nearest outline node
+    moves onto the vertex when one is close enough, otherwise the
+    outline edge is split at the vertex — every tetrahedron on that edge
+    bisects, shape-safe because the new node sits within ``delta`` of
+    the edge it splits. The vertex is then band-covered exactly, the
+    frame rule deletes it, and the outline node re-provides its
+    position; the band still tiles the same faceted surface, so the
+    domain's shape is untouched. The band's side faces tilt by under
+    ``delta`` across their last cell — the end-snap contract, one level
+    up.
+    """
+    from collections import Counter
+
+    skin_xyz, skin_local, node_ids = _assembly_skin(asm_pts, asm_tets)
+    _interior, band_idx = _split_skin_trace(skin_xyz, skin_local,
+                                            dom_verts, dom_tris)
+    if not len(band_idx):
+        return asm_pts, asm_tets
+    cnt = Counter()
+    for t in skin_local[band_idx]:
+        a, b, c = sorted(int(v) for v in t)
+        for e in ((a, b), (a, c), (b, c)):
+            cnt[e] += 1
+    outline = [(int(node_ids[a]), int(node_ids[b]))
+               for (a, b), k in cnt.items() if k == 1]
+
+    pts = list(asm_pts)
+    tets = [list(t) for t in asm_tets]
+    onode_xyz = asm_pts[np.unique(np.asarray(outline).ravel())]
+    lo = onode_xyz.min(axis=0) - 2.0 * delta
+    hi = onode_xyz.max(axis=0) + 2.0 * delta
+    candidates = [int(v) for v in np.unique(dom_tris)
+                  if (lo <= dom_verts[v]).all()
+                  and (dom_verts[v] <= hi).all()]
+
+    def v6_of(row, at=None, coord=None):
+        P = [coord if at is not None and x == at else np.asarray(pts[x])
+             for x in row]
+        return float(np.cross(P[1] - P[0], P[2] - P[0]) @ (P[3] - P[0]))
+
+    for v in candidates:
+        V = dom_verts[v]
+        best_d, best_k = np.inf, -1
+        for k, (a, b) in enumerate(outline):
+            A, B = np.asarray(pts[a]), np.asarray(pts[b])
+            e = B - A
+            u = float(np.clip((V - A) @ e / float(e @ e), 0.0, 1.0))
+            d = float(np.linalg.norm(V - (A + u * e)))
+            if d < best_d:
+                best_d, best_k = d, k
+        if best_d >= delta or best_d < 1e-12:
+            continue
+        a, b = outline[best_k]
+        da = float(np.linalg.norm(np.asarray(pts[a]) - V))
+        db = float(np.linalg.norm(np.asarray(pts[b]) - V))
+        # A move or split may not flatten any incident tetrahedron — two
+        # grazes competing for the same neighbourhood would otherwise
+        # stack nodes and degenerate cells. A skipped vertex keeps its
+        # sliver, which is the status quo, not a defect.
+        if min(da, db) < 1.5 * delta:
+            n = a if da <= db else b
+            star = [row for row in tets if n in row]
+            if all(abs(v6_of(row, at=n, coord=V))
+                   > 0.2 * abs(v6_of(row)) for row in star):
+                pts[n] = V.copy()
+            continue
+        edge_rows = [row for row in tets if a in row and b in row]
+        m = len(pts)
+        ok = all(min(abs(v6_of([m if x == a else x for x in row],
+                              at=m, coord=V)),
+                     abs(v6_of([m if x == b else x for x in row],
+                              at=m, coord=V)))
+                 > 0.05 * abs(v6_of(row)) for row in edge_rows)
+        if not ok:
+            continue
+        pts.append(V.copy())
+        fresh = []
+        for row in edge_rows:
+            two = [m if x == b else x for x in row]
+            row[:] = [m if x == a else x for x in row]
+            fresh.append(two)
+        tets.extend(fresh)
+        outline[best_k] = (a, m)
+        outline.append((m, b))
+    return np.asarray(pts, dtype=float), np.asarray(tets, dtype=np.int64)
 
 
 def _refuse_multiple_bands(band_facets):
@@ -3366,14 +3480,17 @@ def _outcrop_frame_3d(X, on_wall, dom_verts, dom_tris, region,
     bowl legitimately spills onto facets beside the band's own, while a
     box's other walls stay refused across their sharp creases. DELETABLE
     is by SHAPE: a vertex may go when the band re-provides its geometry
-    (it lies ON the band), when it is interior to a single band-touched
-    coplanar region (the collar re-mesh stays in the region's own plane),
-    or when it is interior to a STRAIGHT crease between two touched
-    regions — a straight crease's interior vertices carry no shape, and
-    the overlay rebuilds the line through the survivors. A vertex where
-    three or more regions meet (a box corner, every vertex of a faceted
-    sphere) is the domain's shape itself — the 2-D compressed corner —
-    and is never deleted off the band.
+    (it lies ON the band — :func:`_collapse_boundary_imprints_3d` routes
+    the outline THROUGH any vertex it merely grazes, so the exact test
+    suffices), when it is interior to a single band-touched coplanar
+    region (the collar re-mesh stays in the region's own plane), or when
+    it is interior to a STRAIGHT crease between two touched regions — a
+    straight crease's interior vertices carry no shape, and the overlay
+    rebuilds the line through the survivors. A vertex where three or
+    more regions meet (a box corner, every vertex of a faceted sphere)
+    is the domain's shape itself — the 2-D compressed corner — and is
+    never deleted off the band: its uncrossed facets' crease chains
+    would dangle without it.
 
     Membership is exact: the gathered complex's vertex coordinates are the
     mesh's own bytes, so a mesh vertex's regions are read off the facets
@@ -3518,7 +3635,14 @@ def _outcrop_collar_3d(X, alive, cap_faces, cap_region, planes_of,
                       int(band_outline[(i + 1) % n_out]))
                      for i in range(n_out)]
 
+    band_edge_owner = {}
+    for k, tri in enumerate(band_tris):
+        a, b, c = sorted(int(v) for v in tri)
+        for e in ((a, b), (a, c), (b, c)):
+            band_edge_owner.setdefault(e, []).append(k)
+
     # ------------------------------------------------- the crease overlay
+    on_crease_edge = {}
     for pair, edges in crease_edges.items():
         parent = {}
 
@@ -3563,11 +3687,13 @@ def _outcrop_collar_3d(X, alive, cap_faces, cap_region, planes_of,
                 mid = 0.5 * (skin_xyz[a] + skin_xyz[b])
                 if (off_line(skin_xyz[a]) < tol
                         and off_line(skin_xyz[b]) < tol
-                        and off_line(mid) < tol
                         and span[0] < arc(mid) < span[1]):
-                    raise NotImplementedError(
-                        "the outcrop band runs ALONG a domain crease; a "
-                        "band bounded by a crease is not built.")
+                    # The outline runs ALONG this crease for one edge: the
+                    # band reaches the crease there, so the edge bounds
+                    # the collar piece on the OTHER side, not the owning
+                    # band triangle's own region.
+                    key = (a, b) if a < b else (b, a)
+                    on_crease_edge[key] = pair
             for kind, i, s in resolved:
                 if kind != 'a':
                     continue
@@ -3600,11 +3726,6 @@ def _outcrop_collar_3d(X, alive, cap_faces, cap_region, planes_of,
 
     # The band outline bounds the collar from inside; each outline edge
     # belongs to exactly one band triangle, whose region takes it.
-    band_edge_owner = {}
-    for k, tri in enumerate(band_tris):
-        a, b, c = sorted(int(v) for v in tri)
-        for e in ((a, b), (a, c), (b, c)):
-            band_edge_owner.setdefault(e, []).append(k)
     for a, b in outline_edges:
         e = (a, b) if a < b else (b, a)
         owners = band_edge_owner.get(e, [])
@@ -3613,6 +3734,20 @@ def _outcrop_collar_3d(X, alive, cap_faces, cap_region, planes_of,
                 "a band outline edge does not bound exactly one band "
                 "facet; the outline and the band disagree")
         r = int(band_tri_region[owners[0]])
+        if e in on_crease_edge:
+            pair = on_crease_edge[e]
+            if r not in pair:
+                raise RuntimeError(
+                    "a band outline edge lies on a crease its own band "
+                    "facet does not touch; the trace and the boundary "
+                    "disagree")
+            other = pair[0] if pair[1] == r else pair[1]
+            if other not in region_faces:
+                raise NotImplementedError(
+                    "the outcrop band runs ALONG a domain crease with no "
+                    "bowl beyond it; widen `clearance` so the cavity "
+                    "covers both sides.")
+            r = other
         soup.setdefault(r, []).append((('a', a), ('a', b)))
 
     # ------------------------------------- mesh each region's piece flat
@@ -3687,9 +3822,35 @@ def _outcrop_collar_3d(X, alive, cap_faces, cap_region, planes_of,
                              key=lambda c: len(containers[c])) == k
                      and len(containers[j]) == len(containers[k]) + 1]
             ring = loop if signed_area(loop) > 0.0 else loop[::-1]
-            fill_tris, extra2 = _gmsh_fill_2d(
-                P2, list(ring), None,
-                holes=[list(loops[j]) for j in holes])
+            try:
+                fill_tris, extra2 = _gmsh_fill_2d(
+                    P2, list(ring), None,
+                    holes=[list(loops[j]) for j in holes])
+            except RuntimeError as exc:
+                # Name the pinch: the thinnest node-to-segment gap in the
+                # polygon, with the node KINDS ('m' = mesh vertex, 'a' =
+                # assembly outline node), says which near-coincidence to
+                # chase.
+                ids = list(ring) + [w for j in holes for w in loops[j]]
+                gap, gi, gj0, gj1 = np.inf, -1, -1, -1
+                for i2 in ids:
+                    for j2 in range(len(ids)):
+                        j3 = (j2 + 1) % len(ids)
+                        if i2 in (ids[j2], ids[j3]):
+                            continue
+                        A, B = P2[ids[j2]], P2[ids[j3]]
+                        e2 = B - A
+                        u2 = float(np.clip((P2[i2] - A) @ e2
+                                           / float(e2 @ e2), 0.0, 1.0))
+                        d2 = float(np.linalg.norm(P2[i2]
+                                                  - (A + u2 * e2)))
+                        if d2 < gap:
+                            gap, gi, gj0, gj1 = d2, i2, ids[j2], ids[j3]
+                raise RuntimeError(
+                    f"an outcrop collar piece failed to mesh ({exc}); "
+                    f"thinnest feature {gap:.3e} between node "
+                    f"{local_nodes[gi]} and segment "
+                    f"{local_nodes[gj0]}-{local_nodes[gj1]}")
             base = len(local_nodes)
             extra_row = {}
             for t in fill_tris:
@@ -5374,7 +5535,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     ------
     NotImplementedError
         When the zone meets the boundary in more than one band, or the
-        band runs ALONG a domain crease rather than across it.
+        band runs along a domain crease with no cavity bowl beyond it.
     RuntimeError, ValueError
         Carve/fill refusals, always collective.
     """
@@ -5407,26 +5568,13 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     payload = None
     if comm.rank == 0:
         try:
-            asm_pts, asm_tets, cad_vol = _occ_assembly_3d(
+            # The meshed-vs-CAD volume gate runs inside the assembly
+            # builder, before its boundary snap.
+            asm_pts, asm_tets, _cad_vol = _occ_assembly_3d(
                 patches, width, size, domain=(dom_verts, dom_tris),
                 assembly=assembly)
-            v6 = np.einsum(
-                "ij,ij->i",
-                np.cross(asm_pts[asm_tets][:, 1] - asm_pts[asm_tets][:, 0],
-                         asm_pts[asm_tets][:, 2] - asm_pts[asm_tets][:, 0]),
-                asm_pts[asm_tets][:, 3] - asm_pts[asm_tets][:, 0])
-            mesh_vol = float(np.abs(v6).sum() / 6.0)
-            # This gate catches UNMESHED solids — an O(1) relative defect
-            # (and the kernel-confusion false positive the feasibility
-            # test met). Its reference, OCC's boolean mass, is only good
-            # to ~5e-7 relative on a many-faceted tool (measured: a
-            # 16.6k-face adapted sphere, where the honest mesh "overfills"
-            # the reported mass), so the tolerance sits above that noise.
-            if abs(mesh_vol - cad_vol) > 1e-6 * cad_vol:
-                raise RuntimeError(
-                    f"the assembly meshed to volume {mesh_vol:.12e} against "
-                    f"CAD {cad_vol:.12e}; the layer mesh does not fill its "
-                    "own solids.")
+            asm_pts, asm_tets = _collapse_boundary_imprints_3d(
+                asm_pts, asm_tets, dom_verts, dom_tris, 0.1 * size)
             payload = (asm_pts, asm_tets)
         # Exception, not just RuntimeError/ValueError: a raw gmsh error
         # (e.g. a PLC intersection) is a plain Exception, and an
