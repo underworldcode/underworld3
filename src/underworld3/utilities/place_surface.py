@@ -2662,16 +2662,18 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
             f"the placement changed the domain volume: "
             f"{volume_before[0]:.12f} -> {volume_after[0]:.12f}")
 
-    # TODO(BUG): Euler 1 assumes a ball-topology domain; a spherical
-    # shell is Euler 2 and refuses here. place_thin_volume gates on
-    # CONSERVATION of the input's Euler number instead — do the same.
+    # The surgery must CONSERVE the domain's topology, not assume it: a
+    # box is a ball (Euler 1) but a spherical shell is S^2 x I (Euler 2).
+    owned = np.asarray(_owned_stratum_counts(dm), dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
+    euler_before = int(owned[0] - owned[1] + owned[2] - owned[3])
     owned = np.asarray(_owned_stratum_counts(new), dtype=np.int64)
     comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
     nv_g, ne_g, nf_g, nc_g = (int(x) for x in owned)
-    if nv_g - ne_g + nf_g - nc_g != 1:
+    if nv_g - ne_g + nf_g - nc_g != euler_before:
         raise RuntimeError(
-            f"the sewn mesh has global Euler number "
-            f"{nv_g - ne_g + nf_g - nc_g}, not 1")
+            f"the placement changed the global Euler number: "
+            f"{euler_before} -> {nv_g - ne_g + nf_g - nc_g}")
 
     after = _interior_face_counts_3d(new)
     for key, before in held_counts.items():
@@ -4823,16 +4825,18 @@ def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
             f"the removal changed the domain volume: "
             f"{volume_before[0]:.12f} -> {volume_after[0]:.12f}")
 
-    # TODO(BUG): Euler 1 assumes a ball-topology domain; a spherical
-    # shell is Euler 2 and refuses here. place_thin_volume gates on
-    # CONSERVATION of the input's Euler number instead — do the same.
+    # The surgery must CONSERVE the domain's topology, not assume it: a
+    # box is a ball (Euler 1) but a spherical shell is S^2 x I (Euler 2).
+    owned = np.asarray(_owned_stratum_counts(dm), dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
+    euler_before = int(owned[0] - owned[1] + owned[2] - owned[3])
     owned = np.asarray(_owned_stratum_counts(new), dtype=np.int64)
     comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
     nv_g, ne_g, nf_g, nc_g = (int(x) for x in owned)
-    if nv_g - ne_g + nf_g - nc_g != 1:
+    if nv_g - ne_g + nf_g - nc_g != euler_before:
         raise RuntimeError(
-            f"the cleared mesh has global Euler number "
-            f"{nv_g - ne_g + nf_g - nc_g}, not 1")
+            f"the removal changed the global Euler number: "
+            f"{euler_before} -> {nv_g - ne_g + nf_g - nc_g}")
 
     after = _interior_face_counts_3d(new, exclude=removed_pairs)
     for key, before in held_counts.items():
