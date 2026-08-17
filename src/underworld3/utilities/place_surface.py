@@ -3018,22 +3018,36 @@ def _occ_domain_3d(occ, verts, tris):
     return occ.addVolume(loops3), planes
 
 
-def _snap_to_boundary_3d(xyz, verts, tris, planes, tol=1e-9):
+def _snap_to_boundary_3d(xyz, verts, tris, planes, tol=1e-6):
     """Snap nodes within ``tol`` of the domain boundary ONTO it, exactly.
 
     Boundary corners first, then each merged face's plane, each a pure
     normal-component move — on an axis-aligned wall that is exactly the
     wall-plane snap the box clip used, the in-plane coordinates untouched.
     A node near two planes (a domain edge) is snapped by both passes, as
-    the box path snapped both axes at a corner.
+    the box path snapped both axes at a corner, so a band-outline node at
+    a crease crossing lands ON the crease line.
+
+    ``tol`` must sit above OCC's boolean placement noise, which reaches
+    ~4e-7 on O(1) geometry against a many-faceted tool (measured: a
+    crease-crossing node left 3.8e-7 off its crease, which the collar
+    then meshed as a razor sliver) — and far below the layer mesh size,
+    which keeps genuinely interior nodes out of reach. Candidates are
+    masked by distance to the boundary FACETS first: the planes are
+    infinite, and at this tolerance every point in space is near SOME
+    plane of a many-faceted tool.
     """
+    near_boundary = _sheet_distance(xyz, verts, tris) < tol
+    idx = np.flatnonzero(near_boundary)
+    sub = xyz[idx]
     for v in np.unique(tris):
         p = verts[int(v)]
-        xyz[np.linalg.norm(xyz - p, axis=1) < tol] = p
+        sub[np.linalg.norm(sub - p, axis=1) < tol] = p
     for anchor, m in planes:
-        off = (xyz - anchor) @ m
+        off = (sub - anchor) @ m
         near = np.abs(off) < tol
-        xyz[near] -= off[near, None] * m
+        sub[near] -= off[near, None] * m
+    xyz[idx] = sub
     return xyz
 
 
