@@ -2,11 +2,6 @@ import os
 import sympy
 import underworld3
 
-# The Barr & Houseman faulted-medium solution is elementary (no compiled
-# kernel), so it lives in a plain module and is re-exported here to keep
-# one analytic namespace.
-from underworld3.function._barr_houseman import BarrHouseman
-
 # Add info for linking against the Cython compiled module which contains symbols defined below.
 libdir = os.path.dirname(__file__)
 libfile = os.path.basename(__file__)
