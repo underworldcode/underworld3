@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.level_2]
 import numpy as np
 import sympy
 import underworld3 as uw
-from underworld3.function import analytic as A
+from underworld3 import analytic as A
 
 ETA_A, ETA_B, XC, NZ, RES = 1.0, 1.0e6, 0.5, 1, 32
 

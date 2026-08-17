@@ -16,6 +16,7 @@ import os
 import math
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -73,7 +74,8 @@ def UnstructuredSimplexBox(
         Currently only works for 2D meshes.
     filename : str, optional
         Path to save the mesh file. If None, generates a unique name
-        in the ``.meshes/`` directory based on mesh parameters.
+        in the mesh-file directory (``.meshes/`` by default, or
+        ``UW_MESH_CACHE_DIR``) based on mesh parameters.
     refinement : int, optional
         Number of uniform refinement levels to apply after mesh
         generation. Each level approximately quadruples element count.
@@ -197,9 +199,9 @@ def UnstructuredSimplexBox(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_simplexbox_minC{minCoords}_maxC{maxCoords}_csize{cellSize}_reg{regular}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_simplexbox_minC{minCoords}_maxC{maxCoords}_csize{cellSize}_reg{regular}.msh"
     else:
         uw_filename = filename
 
@@ -309,7 +311,7 @@ def UnstructuredSimplexBox(
 
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
@@ -413,7 +415,8 @@ def BoxInternalBoundary(
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
-        Path to save the mesh file. If None, auto-generates in ``.meshes/``.
+        Path to save the mesh file. If None, auto-generates in the mesh-file
+        directory (``.meshes/`` by default, or ``UW_MESH_CACHE_DIR``).
     refinement : int, optional
         Number of uniform refinement levels to apply.
     gmsh_verbosity : int, default=0
@@ -540,12 +543,12 @@ def BoxInternalBoundary(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
         if not simplex:
             # structuredQuadBoxIB
-            uw_filename = f".meshes/uw_sqbIB_minC{minCoords}_maxC{maxCoords}.msh"
+            uw_filename = f"{mesh_file_dir()}/uw_sqbIB_minC{minCoords}_maxC{maxCoords}.msh"
         else:
-            uw_filename = f".meshes/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh"
+            uw_filename = f"{mesh_file_dir()}/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh"
     else:
         uw_filename = filename
 
@@ -646,7 +649,7 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_recombine(2, surface2)
 
             gmsh.model.mesh.generate(dim)
-            gmsh.write(uw_filename)
+            write_gmsh(uw_filename)
             gmsh.finalize()
 
         if dim == 3:
@@ -883,7 +886,7 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_recombine(3, volume_b)
 
             gmsh.model.mesh.generate(dim)
-            gmsh.write(uw_filename)
+            write_gmsh(uw_filename)
             gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
@@ -1132,11 +1135,11 @@ def BoxInternalPatch(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
         grade = ("" if patch_cellSize is None
                  else f"_pcs{patch_cellSize}_gd{grading_distance}")
         tagline = "_".join(f"{nm}{len(p)}" for nm, p, _f in patches)
-        uw_filename = (f".meshes/uw_boxpatch_minC{minCoords}_"
+        uw_filename = (f"{mesh_file_dir()}/uw_boxpatch_minC{minCoords}_"
                        f"maxC{maxCoords}_csize{cellSize}{grade}_"
                        f"{tagline}.msh")
     else:
@@ -1224,7 +1227,7 @@ def BoxInternalPatch(
         # message. Fault-session follow-up.
         try:
             gmsh.model.mesh.generate(3)
-            gmsh.write(uw_filename)
+            write_gmsh(uw_filename)
         finally:
             # A mesher failure must not leave the gmsh session
             # initialized: a poisoned session makes the NEXT mesh
@@ -1298,7 +1301,8 @@ def StructuredQuadBox(
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
-        Path to save the mesh file. If None, auto-generates in ``.meshes/``.
+        Path to save the mesh file. If None, auto-generates in the mesh-file
+        directory (``.meshes/`` by default, or ``UW_MESH_CACHE_DIR``).
     refinement : int, optional
         Number of uniform refinement levels to apply.
     gmsh_verbosity : int, default=0
@@ -1421,9 +1425,9 @@ def StructuredQuadBox(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
     else:
         uw_filename = filename
 
@@ -1616,7 +1620,7 @@ def StructuredQuadBox(
 
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):

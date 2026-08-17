@@ -82,3 +82,72 @@ def test_refusals_are_collective():
     assert all(m is not None for m in messages), (
         f"some rank did NOT raise: {[m is None for m in messages]}")
     assert len(set(messages)) == 1, "ranks raised different errors"
+
+
+def test_a_2d_outcropping_ribbon_embeds_in_parallel():
+    """The 2-D outcrop through the same gather-first mechanism, at np>=2.
+
+    The box, the band split and the chain decomposition are collective;
+    the splice and relabel run on the surgery rank. Asserted: the info
+    dict identical on every rank, the labels of the advertised sizes, a
+    band present on the top wall, and no top-wall edge left without Top.
+    """
+    comm = uw.mpi.comm
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.07,
+        regular=False, qdegree=2)
+    line = np.array([[0.35, 0.40], [0.60, 1.10]])   # past the top wall
+    new, info = place_thin_volume(mesh.dm, [line], width=0.04,
+                                  label="Zone", label_value=5)
+    assert info["n_zone_cells"] > 0
+    assert _owned_label_count(new, "Zone", 5) == info["n_zone_cells"]
+    assert _owned_label_count(new, "Zone_skin", 5) == info["n_skin_faces"]
+    gathered = comm.allgather(info)
+    assert all(g == gathered[0] for g in gathered)
+
+    pStart, pEnd = new.getChart()
+    leaves = np.zeros(pEnd - pStart, dtype=bool)
+    try:
+        _n, ilocal, _ir = new.getPointSF().getGraph()
+        if ilocal is not None and len(ilocal):
+            leaves[np.asarray(ilocal, dtype=np.int64) - pStart] = True
+    except (ValueError, TypeError):
+        pass
+    fS, fE = new.getHeightStratum(1)
+    vS, vE = new.getDepthStratum(0)
+    Xn = np.asarray(new.getCoordinatesLocal().array).reshape(-1, 2)[: vE - vS]
+    top = new.getLabel("Top")
+    skin = new.getLabel("Zone_skin")
+    n_band = n_bare = 0
+    for f in range(fS, fE):
+        if leaves[f - pStart] or len(new.getSupport(f)) != 1:
+            continue
+        verts = [int(q) - vS for q in new.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        if all(Xn[v][1] == 1.0 for v in verts):
+            if top.getValue(f) < 0:
+                n_bare += 1
+            if skin.getValue(f) == 5:
+                n_band += 1
+    n_band = int(comm.allreduce(n_band, op=MPI.SUM))
+    n_bare = int(comm.allreduce(n_bare, op=MPI.SUM))
+    assert n_band > 0, "the ribbon left no band on the surface"
+    assert n_bare == 0, "the relabel left top-wall edges without Top"
+
+
+def test_2d_refusals_are_collective():
+    """A ribbon stopping short of the wall refuses IDENTICALLY everywhere."""
+    comm = uw.mpi.comm
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.07,
+        regular=False, qdegree=2)
+    short = np.array([[0.35, 0.40], [0.60, 0.97]])
+    message = None
+    try:
+        place_thin_volume(mesh.dm, [short], width=0.04, label="Bad")
+    except (RuntimeError, ValueError) as exc:
+        message = str(exc)
+    messages = comm.allgather(message)
+    assert all(m is not None for m in messages), (
+        f"some rank did NOT raise: {[m is None for m in messages]}")
+    assert len(set(messages)) == 1, "ranks raised different errors"

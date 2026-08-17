@@ -16,6 +16,7 @@ import os
 import math
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -137,10 +138,10 @@ def SphericalShell(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
         uw_filename = (
-            f".meshes/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+            f"{mesh_file_dir()}/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
         )
     else:
         uw_filename = filename
@@ -210,7 +211,7 @@ def SphericalShell(
         gmsh.model.occ.synchronize()
 
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Ensure boundaries conform (if refined)
@@ -382,9 +383,9 @@ def SphericalManifold(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
         uw_filename = (
-            f".meshes/uw_spherical_manifold_r{radius}_csize{cellSize}.msh"
+            f"{mesh_file_dir()}/uw_spherical_manifold_r{radius}_csize{cellSize}.msh"
         )
     else:
         uw_filename = filename
@@ -414,7 +415,7 @@ def SphericalManifold(
 
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
         gmsh.model.mesh.generate(2)  # 2-D mesh in 3-D space
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Force the PETSc gmsh reader to preserve the 3-D embedding when
@@ -572,9 +573,9 @@ def SphericalShellInternalBoundary(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_spherical_shell_ro{radiusOuter}_rint{radiusInternal}_ri{radiusInner}_csize{cellSize}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_spherical_shell_ro{radiusOuter}_rint{radiusInternal}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -692,7 +693,7 @@ def SphericalShellInternalBoundary(
         gmsh.model.addPhysicalGroup(shell_vol[0], [shell_vol[1]], 99999, "Elements")
 
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Ensure boundaries conform (if refined)
@@ -876,9 +877,9 @@ def SegmentofSphere(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_segmentofsphere_ro{radiusOuter}_ri{radiusInner}_longext{longitudeExtent}_latext{latitudeExtent}_csize{cellSize}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_segmentofsphere_ro{radiusOuter}_ri{radiusInner}_longext{longitudeExtent}_latext{latitudeExtent}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -997,7 +998,7 @@ def SegmentofSphere(
         gmsh.model.occ.synchronize()
 
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Ensure boundaries conform (if refined)
@@ -1156,8 +1157,8 @@ def CubedSphere(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
-        uw_filename = f".meshes/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElements}_plex{simplex}.msh"
+            os.makedirs(mesh_file_dir(), exist_ok=True)
+        uw_filename = f"{mesh_file_dir()}/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElements}_plex{simplex}.msh"
     else:
         uw_filename = filename
 
@@ -1266,7 +1267,7 @@ def CubedSphere(
 
         # Generate Mesh
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def sphere_return_coords_to_bounds(coords):

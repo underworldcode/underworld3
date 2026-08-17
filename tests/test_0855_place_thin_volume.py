@@ -1,8 +1,9 @@
 """The embedded thin-volume fault mesh (:func:`place_surface.place_thin_volume`).
 
-The finite-width representation: patches are thickened by ±width/2 in OCC,
-``fragment`` resolves the network's junctions in CAD — the only kernel that
-can — the assembly is meshed standalone at layer scale, and the meshed
+The finite-width representation: patches are thickened by ±width/2 in OCC and
+resolved against one another in CAD — the only kernel that can, by ``fuse``
+into one region or ``fragment`` into the overlap pieces — the assembly is
+meshed standalone at layer scale, and the meshed
 assembly is embedded whole into the existing mesh: cavity carved, annular gap
 filled by gmsh with the assembly's skin as an interior HOLE, both constraint
 surfaces verbatim. Junctions need no geometric treatment: they are ordinary
@@ -174,6 +175,44 @@ def test_a_kinked_ribbon_does_not_sliver():
     assert info["min_angle"] > 10.0
 
 
+def test_a_tangential_merge_fuses_instead_of_slivering():
+    """The sole: a ribbon converging onto another until the two coincide.
+
+    Where two zones overlap, ``fragment`` cuts along the boundary of the
+    overlap, and for a tangential merge that boundary is a lens whose tips
+    close at the convergence angle — the mesh must resolve a chain of
+    slivers, and does (measured: 22 cells under 5 degrees, one of them
+    degenerate). ``fuse`` returns the union as one face with no such
+    boundary. The zone carries one label either way, so nothing downstream
+    can tell the difference except the conditioning.
+
+    The ``fragment`` branch is the negative control: it must show the
+    slivers, or this test is not measuring what it claims to.
+    """
+    from underworld3.utilities.line_cut import min_angles
+
+    sole = [np.array([[0.20, 0.50], [0.80, 0.50]]),
+            np.array([[0.20, 0.56], [0.50, 0.505], [0.80, 0.50]])]
+
+    mesh = _box2(0.05)
+    fused, _ = place_thin_volume(mesh.dm, sole, width=0.02, label="Sole",
+                                 label_value=7)
+    assert float(min_angles(fused).min()) > 5.0
+
+    torn, _ = place_thin_volume(mesh.dm, sole, width=0.02, label="Sole",
+                                label_value=7, assembly="fragment")
+    assert int((min_angles(torn) < 5.0).sum()) > 5, (
+        "the fragmented merge did not sliver; the geometry no longer "
+        "exercises the defect this test exists for")
+
+
+def test_an_unknown_assembly_boolean_is_refused():
+    mesh = _box2(0.2)
+    with pytest.raises(ValueError, match="fuse.*fragment"):
+        place_thin_volume(mesh.dm, [np.array([[0.3, 0.5], [0.7, 0.5]])],
+                          width=0.02, assembly="union")
+
+
 def test_a_second_zone_leaves_the_first_intact():
     mesh = _box2(0.05)
     l1 = np.array([[0.3, 0.35], [0.7, 0.65]])
@@ -299,3 +338,121 @@ def test_an_outcropping_zone_leaves_a_band_on_the_surface():
     err = np.abs(np.asarray(t.data[:, 0])
                  - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
     assert float(err.max()) < 1e-8
+
+
+# ------------------------------------------------------------ 2-D outcrop
+
+def _top_edge_census_2d(new, skin_value):
+    """Boundary edges in the top wall line: (total, band, missing Top).
+
+    The band is an edge carrying BOTH the zone's skin label and the wall's;
+    an edge missing the Top label is a hole the relabel left in the wall.
+    """
+    fS, fE = new.getHeightStratum(1)
+    vS, vE = new.getDepthStratum(0)
+    Xn = np.asarray(new.getCoordinatesLocal().array).reshape(-1, 2)[: vE - vS]
+    top = new.getLabel("Top")
+    skin = new.getLabel("Zone_skin")
+    n_top = n_band = n_bare = 0
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        verts = [int(q) - vS for q in new.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        if all(Xn[v][1] == 1.0 for v in verts):
+            n_top += 1
+            if top.getValue(f) < 0:
+                n_bare += 1
+            if skin.getValue(f) == skin_value:
+                n_band += 1
+    return n_top, n_band, n_bare
+
+
+def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
+    """The 2-D zone outcrop: a ribbon specified past the top wall embeds.
+
+    Specify-long: the polyline protrudes, the assembly is clipped in OCC,
+    and the clipped edge is the BAND — boundary edges carrying both the
+    skin label and the wall's. The 2-D cap is the two splice segments, so
+    every top-line boundary edge must still be labelled Top (relabelled,
+    not stripped) and the domain area is conserved.
+
+    The negative control comes first: the identical census on an INTERIOR
+    twin counts no band, so the band counted here is produced by the
+    outcrop, not by a probe that fires on anything.
+    """
+    import sympy
+    from underworld3.utilities.line_cut import cell_areas
+
+    base = _box2(0.05)
+    bounds = base._boundaries_with("Zone")
+    zv = bounds["Zone"].value
+
+    interior, _ = place_thin_volume(
+        base.dm, [np.array([[0.35, 0.40], [0.60, 0.80]])], width=0.03,
+        label="Zone", label_value=zv)
+    n_top0, n_band0, _bare0 = _top_edge_census_2d(interior, zv)
+    assert n_top0 > 0 and n_band0 == 0, (
+        "the census counted a band on an interior ribbon; it cannot "
+        "validate the outcrop")
+
+    before = float(cell_areas(base.dm).sum())
+    line = np.array([[0.35, 0.40], [0.60, 1.10]])   # past the top wall
+    new, info = place_thin_volume(base.dm, [line], width=0.03,
+                                  label="Zone", label_value=zv)
+    assert info["n_zone_cells"] > 0
+    n_top, n_band, n_bare = _top_edge_census_2d(new, zv)
+    assert n_band > 0, "the ribbon left no band on the surface"
+    assert n_bare == 0, "the relabel left top-wall edges without Top"
+    assert float(cell_areas(new).sum()) == pytest.approx(before, rel=1e-12)
+
+    mesh = uw.discretisation.Mesh(
+        new, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y = mesh.X
+    exact = x**2 + y**2
+    t = uw.discretisation.MeshVariable("T_band2", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -4.0
+    for wall in ("Bottom", "Top", "Left", "Right"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0]) - (X[:, 0]**2 + X[:, 1]**2))
+    assert float(err.max()) < 1e-8, (
+        f"the outcropped mesh assembles a wrong operator: max |u - exact| "
+        f"= {float(err.max()):.3e}")
+
+
+def test_a_ribbon_stopping_short_of_the_wall_still_refuses():
+    """No band, no outcrop: the interior contract keeps its refusal.
+
+    A ribbon ending just inside the wall has no clipped edge, so the carve
+    must still refuse when its cavity reaches the wall — the outcrop path
+    must not have widened what interior ribbons may do.
+    """
+    mesh = _box2(0.05)
+    short = np.array([[0.35, 0.40], [0.60, 0.98]])
+    with pytest.raises(RuntimeError, match="domain wall"):
+        place_thin_volume(mesh.dm, [short], width=0.03, label="Zone")
+
+
+def test_an_outcrop_through_two_walls_is_refused():
+    mesh = _box2(0.05)
+    out_top = np.array([[0.30, 0.50], [0.30, 1.10]])
+    out_right = np.array([[0.70, 0.50], [1.10, 0.50]])
+    with pytest.raises(NotImplementedError, match="more than one"):
+        place_thin_volume(mesh.dm, [out_top, out_right], width=0.03,
+                          label="Zone")
+
+
+def test_a_ribbon_meeting_the_wall_in_two_bands_is_refused():
+    """An arch out the top twice: one skin loop, two bands — refused."""
+    mesh = _box2(0.05)
+    arch = np.array([[0.30, 1.10], [0.35, 0.50], [0.65, 0.50],
+                     [0.70, 1.10]])
+    with pytest.raises(NotImplementedError, match="more than one band"):
+        place_thin_volume(mesh.dm, [arch], width=0.03, label="Zone")

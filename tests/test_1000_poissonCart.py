@@ -289,8 +289,11 @@ def test_poisson_sinusoidal_source():
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson.constitutive_model.Parameters.diffusivity = 1
 
-    # Symbolic source term: f = π²sin(πy) so that ∇²u = -π²sin(πy) has solution u = sin(πy)
-    poisson.f = sympy.pi**2 * sympy.sin(sympy.pi * y)
+    # The source and the solution come from the same object, so they cannot
+    # disagree: uw.analytic.Poisson1D carries f = pi^2 sin(pi y) alongside
+    # u = sin(pi y), and is checked against div(k grad u) + f = 0.
+    exact = uw.analytic.Poisson1D(mesh, source="sinusoid")
+    poisson.f = exact.fn_source
 
     # BCs: u(y=0) = 0, u(y=1) = 0 (consistent with sin(πy))
     poisson.add_dirichlet_bc(0.0, "Bottom")
@@ -306,7 +309,7 @@ def test_poisson_sinusoidal_source():
 
     # Analytical solution: u(y) = sin(πy)
     u_numerical = uw.function.evaluate(u.sym[0], sample_points, rbf=False).squeeze()
-    u_analytical = np.sin(np.pi * sample_y)
+    u_analytical = uw.function.evaluate(exact.fn_solution, sample_points).squeeze()
 
     error = np.sqrt(np.mean((u_numerical - u_analytical) ** 2))
 

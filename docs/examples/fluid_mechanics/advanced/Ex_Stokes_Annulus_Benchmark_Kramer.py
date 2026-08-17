@@ -72,7 +72,12 @@ from underworld3.systems import Stokes
 import numpy as np
 import sympy
 import os
-import assess
+# `assess` (Kramer et al. 2021) is an optional dependency: pip install
+# "underworld3[benchmarks]". Imported through the wrapper so a missing install
+# reports what to do about it rather than a bare ModuleNotFoundError.
+from underworld3.analytic.kramer import require_assess
+
+assess = require_assess()
 import h5py
 from enum import Enum
 
