@@ -114,9 +114,17 @@ def test_sub_solve_gauge_sees_work_the_outer_count_cannot(guarded):
 
 def test_first_solve_admits_its_count_is_a_lower_bound():
     """A fresh solver cannot see the fieldsplit blocks until PETSc has set up the
-    preconditioner, part-way through its first solve. The count that results is short —
-    measured, by about half — so the report must say so rather than pass it off as
-    exact."""
+    preconditioner, part-way through its first solve. Whatever the monitor catches is
+    therefore a LOWER BOUND, and the report must say so rather than pass it off as
+    exact.
+
+    How short that bound is depends on where PCSetUp falls relative to the first
+    application of the velocity block, which is a function of the preconditioner
+    configuration and not something the contract promises. It used to be short by about
+    half. Since the GAMG and outer-Krylov defaults changed (#579, #576) it is tight on
+    this problem — same count either way — so this asserts the contract (a bound, and
+    honestly flagged) rather than the size of the gap, which was incidental.
+    """
     solver, _ = _stokes("lb", lambda v: 1.0)
     solver.solve()
     first = solver.solve_report.sub["velocity"]
@@ -125,9 +133,9 @@ def test_first_solve_admits_its_count_is_a_lower_bound():
 
     assert not first.complete, "the first solve claimed an exact count it cannot have"
     assert second.complete
-    assert second.its > first.its, (
-        "the first solve should undercount; if it does not, the 'lower bound' contract "
-        "is either wrong or no longer needed"
+    assert second.its >= first.its, (
+        "the first solve reported MORE work than the complete count that follows it, so "
+        "it is not a lower bound at all"
     )
 
 
