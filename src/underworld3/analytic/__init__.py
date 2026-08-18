@@ -38,7 +38,21 @@ from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient
 from .transport import AdvectedFront, ErfcDiffusion, Poisson1D, TwoLayerDarcy
-from .velic import SolA, SolB, SolC, SolCx, SolDA, SolDB2d, SolDB3d, SolH, SolKx, SolKz, SolM, SolNL
+from .velic import (
+    SolA,
+    SolB,
+    SolC,
+    SolCx,
+    SolDA,
+    SolDB2d,
+    SolDB3d,
+    SolH,
+    SolKx,
+    SolKz,
+    SolM,
+    SolNL,
+)
+from .zhong2008 import Zhong2008, Zhong2008Response
 
 __all__ = [
     "AnalyticSolution",
@@ -66,6 +80,8 @@ __all__ = [
     "SolM",
     "SolNL",
     "TwoLayerDarcy",
+    "Zhong2008",
+    "Zhong2008Response",
     "available",
     "describe",
     "is_available",

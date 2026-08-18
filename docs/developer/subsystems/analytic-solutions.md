@@ -908,6 +908,98 @@ Two class attributes carry this:
 | `symbolic` | fields are SymPy on `mesh.X`. False means the residual gates cannot be applied at all |
 | `requires` | name of an optional package, or `None` |
 
+## Numeric response oracles
+
+Not every published analytical benchmark is a pointwise field on a mesh. The
+Zhong et al. (2008) spherical-shell benchmark publishes scalar response
+functions computed by a semi-analytic radial propagator. It belongs in
+`uw.analytic`, but it does **not** subclass `AnalyticSolution` and is not listed
+by `available()` because it cannot satisfy that class's symbolic mesh-field
+contract.
+
+```python
+reference = uw.analytic.Zhong2008(
+    harmonic_degree=2,
+    radius_inner=0.55,
+    radius_outer=1.0,
+    internal_load_radius=0.775,
+)
+response = reference.response()
+
+print(response.surface_characteristic_velocity)
+print(response.self_gravity.surface_topography)
+```
+
+### Radial state and propagator
+
+For one spherical-harmonic degree `l`, define `L = l(l + 1)` and use
+`v = log(r)`. The four-component poloidal state follows Hager and O'Connell
+(1981):
+
+```text
+u = (y1, y2, r sigma_rr / eta0, r sigma_r_perp / eta0)^T
+```
+
+`y1` is radial velocity and `y2` is the characteristic horizontal velocity.
+Within one constant-viscosity layer, with dimensionless viscosity `eta`,
+
+```text
+du/dv = A u
+
+    [ -2          L          0   0     ]
+    [ -1          1          0   1/eta ]
+A = [ 12 eta     -6 L eta    1   L     ]
+    [ -6 eta  2(2L-1) eta   -1  -2     ]
+```
+
+The exact layer transfer is `exp(A log(r_b/r_a))`. Transfers are multiplied in
+increasing-radius order. Because the state stores physical tractions relative
+to one fixed reference viscosity, all four components remain continuous at a
+viscosity interface.
+
+The outward radial delta load of coefficient `a` at `rint` gives the jump
+
+```text
+u(rint+) - u(rint-) = (0, 0, -rint a, 0)^T.
+```
+
+Impermeable free slip requires `u[0] = u[3] = 0` at the CMB and surface. The
+two remaining CMB state components are obtained from a dense two-by-two solve.
+
+### Recovering published quantities
+
+With CMB and surface states `ub` and `us`, respectively:
+
+```text
+surface topography without self-gravity = -us[2] / radius_outer
+CMB topography without self-gravity     =  ub[2] / radius_inner
+surface characteristic velocity         =  us[1]
+CMB characteristic velocity             =  ub[1]
+surface horizontal divergence            = -L us[1] / radius_outer
+CMB horizontal divergence                = -L ub[1] / radius_inner
+```
+
+The topography coefficients then pass through the generic
+`uw.postprocessing.geoid.spherical_shell_geoid_response()` and
+`spherical_shell_self_gravity_response()` functions. The propagator module does
+not carry a second geoid implementation.
+
+`Zhong2008Response.surface_topography` and `.surface_geoid` are the
+no-self-gravity quantities. The corresponding Table 2 or Table 3 quantities
+are under `.self_gravity`. Velocity is unchanged by that postprocessing.
+
+### Validation
+
+`tests/test_1029_analytic_zhong2008.py` checks every parenthesized analytical
+entry in Zhong et al. (2008) Tables 2 and 3: three load depths, four harmonic
+degrees, isoviscous and `10^4`-lid cases, and eight response quantities per
+case. The 192 comparisons agree within the precision printed in the paper. The
+test also checks both free-slip boundary states, load linearity, no-self-gravity
+recovery, and invalid input handling.
+
+This is stronger than copying table values into benchmark scripts: the values
+are independently recomputed from the governing radial system for every case.
+
 ## Adding a new solution
 
 ### The format to supply a new solution in
