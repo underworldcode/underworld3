@@ -260,3 +260,100 @@ def test_an_outcropping_zone_on_a_spherical_shell_leaves_a_trace():
     assert info["min_volume"] > 0.0
 
     _p2_oracle(new, base, ("Lower", "Upper"))
+
+
+def test_an_outcropping_sheet_on_a_spherical_shell_leaves_a_trace_chain():
+    """The SHEET path through the general machinery: the trace is a CHAIN.
+
+    A sheet has no area on the wall, so its outcrop is the trace polyline
+    itself, labelled ``<label>_trace`` on edges through to the wall — the
+    splittable trace the split machinery needs to carry a daylighting
+    fault through the boundary (the hybrid-seam lesson: a fault that
+    cannot slip where it meets the wall is worse than either pure
+    representation). The collar covers the whole bowl with the chain
+    EMBEDDED in the pieces, woven across the sphere's facet regions with
+    its crossing nodes on the creases — the case the box wall-code frame
+    could not express at all.
+    """
+    from underworld3.utilities.place_surface import place_sheet
+
+    def shell():
+        return uw.meshing.SphericalShell(radiusInner=0.25, radiusOuter=1.0,
+                                         cellSize=0.13, qdegree=2)
+
+    def sheet(centre, d1, d2, s1, s2):
+        pts = np.array([centre + a * d1 + b * d2 for a in s1 for b in s2])
+        n2 = len(s2)
+        tris = []
+        for i in range(len(s1) - 1):
+            for j in range(n2 - 1):
+                a0 = i * n2 + j
+                tris += [(a0, a0 + 1, a0 + n2 + 1),
+                         (a0, a0 + n2 + 1, a0 + n2)]
+        return pts, np.array(tris, dtype=np.int64)
+
+    def trace_census(new, value):
+        """(labelled trace edges, of them on a boundary face's closure).
+
+        The stratum size is read FIRST: ``getStratumIS`` on an empty
+        stratum hands back an IS whose ``getIndices`` segfaults.
+        """
+        trace = new.getLabel("Zone_trace")
+        if trace.getStratumSize(value) == 0:
+            return 0, 0
+        pts = [int(p) for p in trace.getStratumIS(value).getIndices()]
+        edges = [p for p in pts if new.getPointDepth(p) == 1]
+        on_wall = sum(1 for e in edges
+                      if any(len(new.getSupport(int(f))) == 1
+                             for f in new.getSupport(e)))
+        return len(edges), on_wall
+
+    def bare_walls(new):
+        from underworld3.utilities import reconnect
+        names = [new.getLabelName(i) for i in range(new.getNumLabels())]
+        wall_names = [n for n in names
+                      if n not in reconnect._TOPOLOGY_LABELS
+                      and not n.startswith("Zone")]
+        fS, fE = new.getHeightStratum(1)
+        return sum(1 for f in range(fS, fE)
+                   if len(new.getSupport(f)) == 1
+                   and all(new.getLabel(n).getValue(f) < 0
+                           for n in wall_names))
+
+    d1 = np.array([0.0, 1.0, 0.0])
+    d2 = np.array([1.0, 0.0, 1.0]) / np.sqrt(2.0)
+
+    # Negative control: an interior sheet counts no trace, so the trace
+    # counted on the outcrop is produced by the outcrop.
+    ip, it = sheet(np.array([0.45, 0.0, 0.45]), d1,
+                   np.array([-1.0, 0.0, 1.0]) / np.sqrt(2.0),
+                   np.linspace(-0.1, 0.1, 5), np.linspace(-0.1, 0.1, 5))
+    # The base mesh is HELD for the placement's duration: an inline
+    # `shell().dm` leaves the owning Mesh unreferenced, and a GC pass
+    # mid-surgery destroys the DM under PETSc's feet (measured: SEGV).
+    base0 = shell()
+    new0, info0 = place_sheet(base0.dm, ip, it, label="Zone",
+                              label_value=7)
+    ne0, _nw0 = trace_census(new0, 7)
+    assert info0["n_trace_edges"] == 0 and ne0 == 0, (
+        "the interior twin counts a trace; the census cannot validate "
+        "the outcrop")
+
+    # The outcrop: the sheet runs PAST the outer surface.
+    op, ot = sheet(np.array([0.75, 0.0, 0.75]), d1, d2,
+                   np.linspace(-0.25, 0.25, 9),
+                   np.linspace(-0.35, 0.35, 11))
+    base = shell()
+    before = _volume(base.dm)
+    new, info = place_sheet(base.dm, op, ot, label="Zone", label_value=7)
+    assert info["n_surface_facets"] > 0
+    assert info["n_trace_edges"] > 0, "the sheet left no trace chain"
+    n_edges, n_on_wall = trace_census(new, 7)
+    assert n_edges == n_on_wall == info["n_trace_edges"], (
+        f"{n_edges} trace edges labelled, {n_on_wall} on the wall, for "
+        f"{info['n_trace_edges']} reported")
+    assert bare_walls(new) == 0, "the relabel left outer-surface faces bare"
+    assert _volume(new) == pytest.approx(before, rel=1e-12)
+    assert info["min_volume"] > 0.0
+
+    _p2_oracle(new, base, ("Lower", "Upper"))
