@@ -270,6 +270,7 @@ def plot_stress_glyphs(
     title="",
     cpos="xy",
     window_size=(750, 750),
+    show=True,
 ):
     """Plot principal-stress crosses sampled at seed points.
 
@@ -309,12 +310,17 @@ def plot_stress_glyphs(
         PyVista camera position (``"xy"`` for 2-D sections).
     window_size : tuple of int, optional
         Render window size in pixels.
+    show : bool, optional
+        Call ``show()`` before returning. Pass ``False`` to add
+        overlays to the returned plotter and screenshot it yourself —
+        actors added after ``show()`` are ignored by a finalized
+        scene.
 
     Returns
     -------
     pyvista.Plotter
-        The plotter, so callers can add overlays before showing or
-        re-shooting.
+        The plotter. With ``show=False`` it is still open: add
+        overlays, then ``show()`` or ``screenshot()``.
     """
     import numpy as np
     import pyvista as pv
@@ -395,8 +401,9 @@ def plot_stress_glyphs(
     if len(title):
         pl.add_text(title, font_size=11, color="black")
 
-    pl.show(cpos=cpos)
-
+    pl.camera_position = cpos
+    if show:
+        pl.show()
     if save_png:
         pl.screenshot(dir_fname)
 
