@@ -98,7 +98,11 @@ def test_annulus_default_seeds_avoid_the_hole():
     x, y = mesh.X
     stress = sympy.Matrix([[x, y], [y, -x]])
 
-    pl = vis.plot_stress_glyphs(mesh, stress, num_seeds=12)
+    # show=False: the test asserts what the plot BUILDS, and a CI
+    # runner must never enter a render/interactor path — a worker
+    # that calls show() can hang the whole xdist session (run
+    # 32097850915 sat from 90% to the 2 h timeout).
+    pl = vis.plot_stress_glyphs(mesh, stress, num_seeds=12, show=False)
     pl.close()
 
     # Rebuild the same default seeding to inspect it directly.
