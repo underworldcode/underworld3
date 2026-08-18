@@ -307,8 +307,9 @@ def test_an_outcropping_zone_leaves_a_band_on_the_surface():
                     ).reshape(-1, 3)[: vE - vS]
     top_label = new.getLabel("Top")
     skin_label = new.getLabel("Zone_skin")
+    trace_label = new.getLabel("Zone_trace")
     tv = bounds["Top"].value
-    n_band = 0
+    n_band = n_trace = 0
     for f in range(fS, fE):
         if len(new.getSupport(f)) != 1:
             continue
@@ -318,7 +319,12 @@ def test_an_outcropping_zone_leaves_a_band_on_the_surface():
             assert top_label.getValue(f) == tv
             if skin_label.getValue(f) == zv:
                 n_band += 1
+            if trace_label.getValue(f) == zv:
+                n_trace += 1
     assert n_band > 0, "the zone left no band on the surface"
+    assert n_trace == n_band, (
+        "the trace label does not coincide with the band")
+    assert info["n_trace_facets"] == n_trace
 
     mesh = uw.discretisation.Mesh(
         new, simplex=True, qdegree=3, boundaries=bounds,
@@ -343,17 +349,21 @@ def test_an_outcropping_zone_leaves_a_band_on_the_surface():
 # ------------------------------------------------------------ 2-D outcrop
 
 def _top_edge_census_2d(new, skin_value):
-    """Boundary edges in the top wall line: (total, band, missing Top).
+    """Boundary edges in the top wall line: (total, band, missing Top,
+    trace).
 
     The band is an edge carrying BOTH the zone's skin label and the wall's;
     an edge missing the Top label is a hole the relabel left in the wall.
+    The trace label marks the intersection itself and must coincide with
+    the band.
     """
     fS, fE = new.getHeightStratum(1)
     vS, vE = new.getDepthStratum(0)
     Xn = np.asarray(new.getCoordinatesLocal().array).reshape(-1, 2)[: vE - vS]
     top = new.getLabel("Top")
     skin = new.getLabel("Zone_skin")
-    n_top = n_band = n_bare = 0
+    trace = new.getLabel("Zone_trace")
+    n_top = n_band = n_bare = n_trace = 0
     for f in range(fS, fE):
         if len(new.getSupport(f)) != 1:
             continue
@@ -365,7 +375,9 @@ def _top_edge_census_2d(new, skin_value):
                 n_bare += 1
             if skin.getValue(f) == skin_value:
                 n_band += 1
-    return n_top, n_band, n_bare
+            if trace is not None and trace.getValue(f) == skin_value:
+                n_trace += 1
+    return n_top, n_band, n_bare, n_trace
 
 
 def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
@@ -388,12 +400,15 @@ def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
     bounds = base._boundaries_with("Zone")
     zv = bounds["Zone"].value
 
-    interior, _ = place_thin_volume(
+    interior, info0 = place_thin_volume(
         base.dm, [np.array([[0.35, 0.40], [0.60, 0.80]])], width=0.03,
         label="Zone", label_value=zv)
-    n_top0, n_band0, _bare0 = _top_edge_census_2d(interior, zv)
+    n_top0, n_band0, _bare0, n_trace0 = _top_edge_census_2d(interior, zv)
     assert n_top0 > 0 and n_band0 == 0, (
         "the census counted a band on an interior ribbon; it cannot "
+        "validate the outcrop")
+    assert n_trace0 == 0 and info0["n_trace_facets"] == 0, (
+        "an interior ribbon carries a trace; the trace label cannot "
         "validate the outcrop")
 
     before = float(cell_areas(base.dm).sum())
@@ -401,9 +416,12 @@ def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
     new, info = place_thin_volume(base.dm, [line], width=0.03,
                                   label="Zone", label_value=zv)
     assert info["n_zone_cells"] > 0
-    n_top, n_band, n_bare = _top_edge_census_2d(new, zv)
+    n_top, n_band, n_bare, n_trace = _top_edge_census_2d(new, zv)
     assert n_band > 0, "the ribbon left no band on the surface"
     assert n_bare == 0, "the relabel left top-wall edges without Top"
+    assert n_trace == n_band, (
+        "the trace label does not coincide with the band")
+    assert info["n_trace_facets"] == n_trace
     assert float(cell_areas(new).sum()) == pytest.approx(before, rel=1e-12)
 
     mesh = uw.discretisation.Mesh(
@@ -425,6 +443,144 @@ def test_an_outcropping_ribbon_leaves_a_band_on_the_surface():
     assert float(err.max()) < 1e-8, (
         f"the outcropped mesh assembles a wrong operator: max |u - exact| "
         f"= {float(err.max()):.3e}")
+
+
+def _annulus_boundary_census(new, zone_value):
+    """Boundary edges of the annulus: (total, trace, missing a wall label).
+
+    An edge missing both Lower and Upper is a hole the relabel left in the
+    boundary; the trace marks the outcrop band.
+    """
+    fS, fE = new.getHeightStratum(1)
+    lower = new.getLabel("Lower")
+    upper = new.getLabel("Upper")
+    trace = new.getLabel("Zone_trace")
+    n_bound = n_trace = n_bare = 0
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        n_bound += 1
+        if lower.getValue(f) < 0 and upper.getValue(f) < 0:
+            n_bare += 1
+        if trace.getValue(f) == zone_value:
+            n_trace += 1
+    return n_bound, n_trace, n_bare
+
+
+def test_an_outcropping_ribbon_on_the_annulus_leaves_a_trace():
+    """The general boundary: a radial ribbon out of the annulus's outer
+    boundary. There is no circle the annulus is failing to be — the clip
+    must land on the mesh's own chords, so the domain area is conserved to
+    round-off, the trace edges carry the Upper label as well as the trace,
+    and the P2 oracle stays exact through the zone.
+
+    The negative control comes first: an interior twin of the same ribbon
+    carries no trace, so the trace counted on the outcrop is produced by
+    the outcrop.
+    """
+    import sympy
+    from underworld3.utilities.line_cut import cell_areas
+
+    base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+                              cellSize=0.06, qdegree=3)
+    bounds = base._boundaries_with("Zone")
+    zv = bounds["Zone"].value
+    theta = 0.4
+    ray = np.array([np.cos(theta), np.sin(theta)])
+
+    interior, info0 = place_thin_volume(
+        base.dm, [np.array([0.62 * ray, 0.88 * ray])], width=0.03,
+        label="Zone", label_value=zv)
+    _nb0, n_trace0, _bare0 = _annulus_boundary_census(interior, zv)
+    assert info0["n_trace_facets"] == 0 and n_trace0 == 0, (
+        "an interior ribbon carries a trace; the census cannot validate "
+        "the outcrop")
+
+    before = float(cell_areas(base.dm).sum())
+    line = np.array([0.62 * ray, 1.30 * ray])       # past the outer boundary
+    new, info = place_thin_volume(base.dm, [line], width=0.03,
+                                  label="Zone", label_value=zv)
+    assert info["n_zone_cells"] > 0
+    assert info["n_trace_facets"] > 0, "the ribbon left no trace"
+    n_bound, n_trace, n_bare = _annulus_boundary_census(new, zv)
+    assert n_trace == info["n_trace_facets"]
+    assert n_bare == 0, "the relabel left boundary edges without a label"
+    assert float(cell_areas(new).sum()) == pytest.approx(before, rel=1e-12)
+    # A clipped corner landing near an imprinted domain vertex once meshed
+    # a 0.18-degree sliver; the imprint collapse restores the interior
+    # twin's quality (measured 29.4 against 29.6 degrees). The floor is
+    # far above any sliver and far below the healthy fill.
+    assert info["min_angle"] > 15.0
+
+    mesh = uw.discretisation.Mesh(
+        new, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y = mesh.X
+    exact = x**2 + y**2
+    t = uw.discretisation.MeshVariable("T_ann", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -4.0
+    for wall in ("Lower", "Upper"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0]) - (X[:, 0]**2 + X[:, 1]**2))
+    assert float(err.max()) < 1e-8, (
+        f"the outcropped annulus assembles a wrong operator: "
+        f"max |u - exact| = {float(err.max()):.3e}")
+
+
+def test_a_ribbon_out_through_a_box_corner_embeds():
+    """A single ribbon exiting diagonally through the (1,1) corner.
+
+    The wall-code frame used to refuse this as \"more than one domain
+    wall\"; the general carve/sew subsumes it. The corner vertex lies ON
+    the band, so it is deletable and the band re-provides its exact
+    position — one contiguous band across the corner, area conserved,
+    both walls' labels restored. Two SEPARATE bands stay refused
+    (the two-ribbon and arch tests below).
+    """
+    from underworld3.utilities.line_cut import cell_areas
+
+    base = _box2(0.05)
+    bounds = base._boundaries_with("Zone")
+    zv = bounds["Zone"].value
+    before = float(cell_areas(base.dm).sum())
+    corner = np.array([[0.6, 0.6], [1.1, 1.1]])
+    new, info = place_thin_volume(base.dm, [corner], width=0.03,
+                                  label="Zone", label_value=zv)
+    assert info["n_zone_cells"] > 0
+    assert info["n_trace_facets"] > 0, "the ribbon left no trace"
+    assert info["min_angle"] > 15.0
+    assert float(cell_areas(new).sum()) == pytest.approx(before, rel=1e-12)
+
+    # The trace edges carry a wall label each — Top or Right — and no
+    # boundary edge in either wall line is left bare.
+    fS, fE = new.getHeightStratum(1)
+    vS, vE = new.getDepthStratum(0)
+    Xn = np.asarray(new.getCoordinatesLocal().array).reshape(-1, 2)[: vE - vS]
+    top = new.getLabel("Top")
+    right = new.getLabel("Right")
+    trace = new.getLabel("Zone_trace")
+    n_trace = n_bare = 0
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        verts = [int(q) - vS for q in new.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        on_top = all(Xn[v][1] == 1.0 for v in verts)
+        on_right = all(Xn[v][0] == 1.0 for v in verts)
+        if not (on_top or on_right):
+            continue
+        if top.getValue(f) < 0 and right.getValue(f) < 0:
+            n_bare += 1
+        if trace.getValue(f) == zv:
+            n_trace += 1
+    assert n_trace == info["n_trace_facets"]
+    assert n_bare == 0, "the relabel left a wall edge without its label"
 
 
 def test_a_ribbon_stopping_short_of_the_wall_still_refuses():
