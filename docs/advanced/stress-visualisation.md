@@ -40,15 +40,17 @@ regions — in fault models, keep seeds out of the weak zones, where the
 recovered stress mixes materials across the interface.
 
 ```{figure} figures/stress_glyphs_thrust.png
-:alt: Two-panel figure for a thrust-ramp model. Top panel, principal stress crosses on a 26 by 13 seed grid over a 2 by 1 section with two grey parabolic ramps rising from a basal decollement. Far-field crosses are blue-horizontal (compression); in the wedges riding each ramp the crosses turn red and near-vertical (tension), with the largest red bars just above the blind ramp tips. Bottom panel, stress trajectories: dark sigma-1 lines run horizontally and arch smoothly over each ramp tip, pale sigma-3 lines rise near-vertically between them, and the two families cross at right angles everywhere.
+:alt: Two-panel figure for a thrust-ramp model. Top panel, principal stress crosses on a 26 by 13 seed grid over a 2 by 1 section with two grey parabolic ramps rising from a basal decollement, drawn over a faint peach strain-rate wash in which the quiet wedges riding each ramp glow white and the blind ramp tips smudge darker. Far-field crosses are blue-horizontal (compression); in the wedges the crosses turn red and near-vertical (tension), largest just above the blind tips. Bottom panel, stress trajectories over the same wash: dark sigma-1 lines run horizontally and arch smoothly over each ramp tip, pale sigma-3 lines rise near-vertically between them, crossing at right angles everywhere.
 :name: fig-stress-glyphs-thrust
 
 Principal-stress crosses (top) and stress trajectories (bottom) for a
-blind-thrust model. The colour convention matches the RdBu_r field
-convention used across the documentation: blue compressive, red
-tensile. The trajectory panel shows the $\sigma_1$ family (dark)
-arching over the ramp tips with the $\sigma_3$ family (pale)
-orthogonal to it.
+blind-thrust model, over a faint strain-rate wash (log scale,
+background-percentile limits, low opacity — the second invariant of
+the strain rate from the same recovered stress). The colour
+convention matches the RdBu_r field convention used across the
+documentation: blue compressive, red tensile. The wash ties the
+stress geometry to the deformation it drives: the near-rigid thrust
+wedges glow white while the blind tips concentrate both quantities.
 ```
 
 ### The pressure gauge matters for colours, not directions
@@ -117,6 +119,33 @@ Draw the compressive family dark and the tensile family pale, as in
 the figure above. In 3-D the analogue of a trajectory is a surface;
 we do not attempt those — draw glyphs on section planes instead.
 
+## Two more regimes, same recipe
+
+The same two panels for the extensional and strike-slip companions of
+the thrust model — nested listric normal faults above a detachment,
+and en-echelon segments in dextral simple shear. Nothing changes in
+the code except the checkpoint being loaded.
+
+```{figure} figures/stress_glyphs_listric.png
+:alt: Two-panel figure for three nested listric normal faults soling into a basal detachment, over a faint peach strain-rate wash with white quiet triangles in the footwall beneath each sole. Top panel, principal stress crosses: red-horizontal tension dominates the upper plate and deepens between the fault traces; blue compression concentrates near the detachment, with strongly rotated mixed crosses hugging each curved fault. Below the detachment the crosses return to uniform red-horizontal. Bottom panel, trajectories: dark sigma-1 lines hang near-vertically in the extending upper plate, bending to meet each listric sole, while pale sigma-3 lines run horizontally; beneath the detachment the net is an undisturbed rectangular grid.
+:name: fig-stress-glyphs-listric
+
+Nested listric normal faults (extension): horizontal tension aloft,
+compression concentrating under the soles, and an undisturbed
+trajectory grid beneath the detachment — the faults decouple the two
+plates.
+```
+
+```{figure} figures/stress_glyphs_enechelon.png
+:alt: Two-panel map-view figure for three en-echelon fault segments in dextral simple shear, over a faint strain-rate wash with bright white lobes at the relay steps between segment tips. Top panel, principal stress crosses at 45 degrees far from the faults, shrinking and rotating through the relay zones, with a blue compressive bridge linking overlapping tips. Bottom panel, trajectories: the dark sigma-1 family sweeps diagonally across the box and kinks sharply as it hands across each relay step; the pale sigma-3 family crosses it orthogonally.
+:name: fig-stress-glyphs-enechelon
+
+En-echelon segments in dextral simple shear (map view): the conjugate
+cross pattern of the far field collapses through the relay steps, and
+the trajectory families kink as stress hands across from segment to
+segment.
+```
+
 ## 3-D glyphs
 
 `principal_stress_glyphs` accepts `(n, 3, 3)` tensors and returns
@@ -133,12 +162,14 @@ pl = vis.plot_stress_glyphs(mesh, stress, seeds=plane)
 ```
 
 ```{figure} figures/stress_glyphs_sinker3d.png
-:alt: A unit cube drawn in outline with a grey sphere of radius 0.16 near the centre, slightly above mid-height. Three-bar principal stress glyphs are drawn on a vertical section plane and a horizontal section plane through the sphere. Above the sphere the bars are red and near-vertical (tension as material is pulled down behind the sinker); below and beside it they are blue (compression), fanning outward on the horizontal plane beneath the sphere. Bar length decays with distance from the sphere.
+:alt: A unit cube drawn in outline with a grey sphere of radius 0.16 near the centre, slightly above mid-height. Three-bar principal stress glyphs are drawn on a vertical section plane and a horizontal section plane through the sphere, via the one-call plot_stress_glyphs with the cube edges and sphere added to the returned plotter. Above the sphere the bars are red and near-vertical (tension as material is pulled down behind the sinker); below and beside it they are blue (compression), fanning outward on the horizontal plane beneath the sphere. Bar length decays with distance from the sphere.
 :name: fig-stress-glyphs-sinker
 
 Three-bar principal-stress glyphs on two section planes through a
 Stokes sinker: a tensile (red) column above the sinking sphere, a
-compressive (blue) fan below and around it.
+compressive (blue) fan below and around it. Rendered with
+`plot_stress_glyphs(..., show=False)` so the cube outline and sphere
+could be added to the returned plotter before the screenshot.
 ```
 
 ## Building blocks
@@ -154,8 +185,13 @@ separately for custom figures:
 | `trajectories_to_pv_lines(lines)` | Bundle polylines for `add_mesh` |
 | `plot_stress_glyphs(mesh, stress, ...)` | One-call cross plot |
 
-The figures on this page come from checkpointed models (a blind-thrust
-fault network and a Stokes sinker): the solve writes the mesh, the
-velocity, the pressure, and the recovered stress components with
-`mesh.write_timestep`, and the glyph plots load them back with
-`read_timestep` — no re-solving to restyle a figure.
+The figures on this page come from checkpointed models (the three
+fault-interaction examples and a Stokes sinker): the solve writes the
+mesh, the velocity, the pressure, and the recovered stress components
+with `mesh.write_timestep`, and the glyph plots load them back with
+`read_timestep` — no re-solving to restyle a figure. The faint
+background in the 2-D panels is the strain-rate second invariant from
+the same recovered stress ($\dot\varepsilon = \tau/2$ at matrix
+viscosity 1), drawn first at low opacity with log scaling and
+background-percentile colour limits, so the glyphs carry the figure
+and the wash only whispers where deformation concentrates.
