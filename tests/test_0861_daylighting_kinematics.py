@@ -190,3 +190,74 @@ def test_a_blind_fault_slips_to_the_surface_through_its_damage_zone():
         "composition")
     assert ruled[1] > 1.2 * pinned[1], (
         "the damage zone adds no surface localization")
+
+
+def test_a_setback_sheet_is_blind_located_and_splittable():
+    """The deliberate workflow, end to end: the job is still to figure
+    out the intersection so the fault can STOP before it hits it — it
+    just never meshes or splits all the way there.
+
+    A through-running sheet placed with a setback arrives BLIND: no
+    trace on the wall, its shallowest point exactly a setback below it
+    (the box's offset plane is exact), the would-be intersection
+    reported as ``surface_trace`` ON the true boundary — the damage
+    region's locator — and the placed patch splits as it stands: the
+    rim is strictly interior, so the split's daylighting refusal never
+    fires.
+    """
+    from underworld3.utilities.fault_split import split_along_label_3d
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.12, regular=False, qdegree=2)
+    strike = np.array([1.0, 0.0, 0.0])
+    dip = np.array([0.0, 0.15, -1.0])
+    dip /= np.linalg.norm(dip)
+    top = np.array([0.5, 0.5, 1.1])              # 0.1 ABOVE the box
+    s = np.linspace(-0.22, 0.22, 5)
+    d = np.linspace(0.0, 0.55, 6)
+    pts = np.array([top + a * strike + b * dip for b in d for a in s])
+    tris, n = [], 5
+    for i in range(len(d) - 1):
+        for j in range(n - 1):
+            a, b = i * n + j, i * n + j + 1
+            c, e = (i + 1) * n + j, (i + 1) * n + j + 1
+            tris += [(a, b, e), (a, e, c)]
+
+    setback = 0.25
+    placed, info = place_sheet(base.dm, pts, np.array(tris, dtype=np.int64),
+                               label="FltA", label_value=41,
+                               setback=setback)
+    assert info["n_trace_edges"] == 0, "a setback sheet must not outcrop"
+    assert info["n_surface_facets"] > 0
+
+    # The would-be intersection is located ON the true boundary.
+    trace = np.asarray(info["surface_trace"])
+    assert trace is not None and len(trace) >= 2
+    assert np.abs(trace[:, 2] - 1.0).max() < 1e-9, (
+        "the surface trace is off the wall it locates")
+
+    # The blind rim: the placed sheet's shallowest vertex sits exactly a
+    # setback below the wall (the box's inward-offset plane is exact).
+    X = np.asarray(placed.getCoordinatesLocal().array).reshape(-1, 3)
+    vS, vE = placed.getDepthStratum(0)
+    fault = placed.getLabel("FltA")
+    fS, fE = placed.getHeightStratum(1)
+    z_max = -np.inf
+    for p in fault.getStratumIS(41).getIndices():
+        if not (fS <= int(p) < fE):
+            continue
+        for q in placed.getTransitiveClosure(int(p))[0]:
+            if vS <= int(q) < vE:
+                z_max = max(z_max, float(X[int(q) - vS][2]))
+    assert z_max == pytest.approx(1.0 - setback, abs=1e-12)
+
+    # And it splits as it stands — the ruling's point.
+    split, _point_map, _clone_map = split_along_label_3d(
+        placed, "FltA", 41, "FltAPlus", 1, "FltAMinus", 2)
+    plus = split.getLabel("FltAPlus")
+    assert plus is not None
+    n_plus = sum(1 for p in plus.getStratumIS(1).getIndices()
+                 if split.getPointDepth(int(p)) == 2)
+    assert n_plus == info["n_surface_facets"], (
+        f"{n_plus} Plus faces for {info['n_surface_facets']} placed")

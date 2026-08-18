@@ -1787,8 +1787,17 @@ def _concave_crease_facets(verts, tris):
     return concave
 
 
-def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12):
+def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
+                            setback=0.0):
     """Clip a triangulated sheet against the mesh's OWN boundary complex.
+
+    ``setback > 0`` clips against the boundary OFFSET INWARD by that
+    distance (each region plane shifted along its inward normal): the
+    sheet stops deliberately short of the surface — a BLIND fault, whose
+    rim is strictly interior and therefore splittable — rather than
+    outcropping. On a curved boundary the offset is the shifted faceted
+    planes' intersection, within a sagitta of the true offset surface,
+    which is the right contract for "stop an element or two below".
 
     The specify-long contract (ruling, 2026-08-11) on a general boundary:
     fault surfaces are defined generously PAST the domain and prep trims
@@ -1811,9 +1820,10 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12):
     """
     pts_in = np.asarray(pts, dtype=float)
     tris_in = np.asarray(tris, dtype=np.int64)
+    setback = float(setback)
     oriented = _orient_boundary_complex(dom_verts, dom_tris)
     sd = _boundary_signed_distance(pts_in, dom_verts, oriented)
-    inside = sd < tol
+    inside = sd < tol - setback
     if inside.all():
         return pts_in, tris_in
 
@@ -1833,13 +1843,14 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12):
     def cut_on(key, A, B, r):
         # Interned by identity, endpoints canonical: the two triangles
         # sharing a cut compute the bitwise-identical point, ONE node, and
-        # the clipped sheet stays conforming.
+        # the clipped sheet stays conforming. The plane is the region's,
+        # shifted inward by the setback.
         if key not in cut_id:
             anchor, nrm = planes_of[int(r)]
-            oa = float((A - anchor) @ nrm)
-            ob = float((B - anchor) @ nrm)
+            oa = float((A - anchor) @ nrm) + setback
+            ob = float((B - anchor) @ nrm) + setback
             p = A + (oa / (oa - ob)) * (B - A)
-            p -= float((p - anchor) @ nrm) * nrm     # exactly on the plane
+            p -= (float((p - anchor) @ nrm) + setback) * nrm
             cut_id[key] = len(out_pts)
             out_pts.append(p)
         return cut_id[key]
@@ -1855,10 +1866,12 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12):
             continue
         if not flags.any():
             continue
-        # The facet planes this triangle can cross: bbox overlap.
+        # The facet planes this triangle can cross: bbox overlap, widened
+        # by the setback — a shifted plane cuts a triangle that never
+        # comes within bbox reach of the facet itself.
         P3 = pts_in[tri]
-        t_lo = P3.min(axis=0) - tol
-        t_hi = P3.max(axis=0) + tol
+        t_lo = P3.min(axis=0) - tol - setback
+        t_hi = P3.max(axis=0) + tol + setback
         near = np.flatnonzero(((f_lo <= t_hi) & (f_hi >= t_lo)).all(axis=1))
         if concave[near].any():
             raise NotImplementedError(
@@ -1883,7 +1896,7 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12):
         srcs = [sides[a0], sides[b0], sides[c0]]
         for r in sorted({int(region[f]) for f in near}):
             anchor, nrm = planes_of[r]
-            offs = [float((q - anchor) @ nrm) for q in poly]
+            offs = [float((q - anchor) @ nrm) + setback for q in poly]
             if all(o > -tol for o in offs):     # wholly outside (or on)
                 poly, rows, srcs = [], [], []
                 break
@@ -1928,13 +1941,58 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12):
     new_pts = np.array([out_pts[v] for v in used])
     new_tris = np.array([[remap[v] for v in t] for t in out_tris],
                         dtype=np.int64)
+
+    # A face with ALL THREE vertices on the clipped sheet's rim cannot be
+    # split-node duplicated (its two copies would carry the same vertex
+    # triple), and the cut's corner polygons produce a few however fine
+    # the sheet — two side-rim originals plus cut nodes admit no
+    # triangulation without one. Splitting the face's longest INTERIOR
+    # edge at its midpoint bisects both sharing faces — the midpoint is a
+    # new interior vertex, rim edges (the trace included) are untouched,
+    # and no child is worse-shaped than its parent (a centroid inside a
+    # sliver corner face was tried and drove the fill to 1e-23 cell
+    # volumes).
+    from collections import Counter
+    P = [p for p in new_pts]
+    T = [[int(v) for v in t] for t in new_tris]
+    while True:
+        edge_use = Counter()
+        for a, b, c in T:
+            for e in ((a, b), (b, c), (c, a)):
+                edge_use[(e[0], e[1]) if e[0] < e[1] else (e[1], e[0])] += 1
+        rim_v = {v for e, k in edge_use.items() if k == 1 for v in e}
+        bad = next((k for k, t in enumerate(T)
+                    if all(v in rim_v for v in t)), None)
+        if bad is None:
+            break
+        a, b, c = T[bad]
+        splittable = [(u, w) for u, w in ((a, b), (b, c), (c, a))
+                      if edge_use[(u, w) if u < w else (w, u)] == 2]
+        if not splittable:
+            raise RuntimeError(
+                "a clipped sheet face has no interior vertex and no "
+                "interior edge; the clipped sheet is a single sliver and "
+                "cannot be placed as a splittable fault")
+        u, w = max(splittable,
+                   key=lambda e: float(np.linalg.norm(P[e[0]] - P[e[1]])))
+        m = len(P)
+        P.append(0.5 * (P[u] + P[w]))
+        fresh = []
+        for row in T:
+            if u in row and w in row:
+                fresh.append([m if v == w else v for v in row])
+                row[:] = [m if v == u else v for v in row]
+        T.extend(fresh)
+    new_pts = np.asarray(P, dtype=float)
+    new_tris = np.asarray(T, dtype=np.int64)
+
     sd_out = _boundary_signed_distance(new_pts, dom_verts, oriented)
-    if (sd_out > 1e-9).any():
+    if (sd_out > 1e-9 - setback).any():
         raise RuntimeError(
-            "the clip kept a sheet node outside the domain; the boundary "
-            "is not locally convex at the crossing's scale, or the "
-            "crossing spans facets the clip did not see. A defect, not a "
-            "tolerance.")
+            "the clip kept a sheet node outside the domain (or inside the "
+            "setback strip); the boundary is not locally convex at the "
+            "crossing's scale, or the crossing spans facets the clip did "
+            "not see. A defect, not a tolerance.")
     return new_pts, new_tris
 
 
@@ -2487,7 +2545,7 @@ def _validity_and_orientation_gates(new, comm):
 
 
 def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
-                clearance=0.6, verbose=False):
+                clearance=0.6, verbose=False, *, setback=0.0):
     """Embed a triangulated sheet in a 3-D mesh by placing its points.
 
     The 3-D form of :func:`place_along_lines`: the sheet's points become mesh
@@ -2533,6 +2591,17 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         sheet.
     verbose : bool
         Report the counts.
+    setback : float, keyword-only
+        Stop the sheet this far INSIDE the boundary instead of
+        outcropping: the clip runs against the boundary offset inward, so
+        the placed sheet is a BLIND fault whose rim is strictly interior
+        — splittable by :func:`~underworld3.utilities.fault_split.split_along_label_3d`
+        as it stands (the ruling: faults reach daylight blind, under a
+        damage region, never split through the surface). The would-be
+        intersection with the true boundary is still computed and
+        returned as ``info["surface_trace"]`` — the locator for the
+        damage region above. Use at least a couple of background cells,
+        so the carve's cavity clears the wall.
 
     Returns
     -------
@@ -2543,7 +2612,10 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     info : dict
         Global counts: ``n_placed``, ``n_on_surface`` (always 0 in 3-D),
         ``n_removed``, ``n_surface_facets``, ``n_trace_edges``,
-        ``min_volume``.
+        ``min_volume``; with ``setback > 0`` also ``surface_trace`` — the
+        would-be intersection polyline with the true boundary as a list
+        of ``[x, y, z]`` points (or ``None`` if the sheet never reaches
+        it).
 
     Raises
     ------
@@ -2571,8 +2643,23 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     # The boundary complex is gathered identically everywhere and the clip
     # is deterministic from it, so every rank computes the same sheet.
     dom_verts, dom_tris = _domain_boundary_facets(dm)
+    setback = float(setback)
+    if setback < 0.0:
+        raise ValueError("setback must be non-negative")
+    surface_trace = None
+    if setback > 0.0:
+        # The intersection the sheet is deliberately stopped short of:
+        # computed from the UNCLIPPED input against the true boundary —
+        # the job is still to figure out where daylight would be, so the
+        # damage region above the blind fault can be placed there.
+        trace_pts, trace_tris = _clip_sheet_to_boundary(
+            sheet_pts, sheet_tris, dom_verts, dom_tris)
+        trace_chain = _outcrop_chain(trace_pts, trace_tris,
+                                     dom_verts, dom_tris)
+        if trace_chain is not None:
+            surface_trace = trace_pts[trace_chain].tolist()
     sheet_pts, sheet_tris = _clip_sheet_to_boundary(
-        sheet_pts, sheet_tris, dom_verts, dom_tris)
+        sheet_pts, sheet_tris, dom_verts, dom_tris, setback=setback)
     chain = _outcrop_chain(sheet_pts, sheet_tris, dom_verts, dom_tris)
 
     # -------------------------------------------------- mark, then gather
@@ -2926,6 +3013,8 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
             "n_removed": n_removed, "n_surface_facets": n_facets,
             "n_trace_edges": (len(chain) - 1 if chain is not None else 0),
             "min_volume": float(min_vol[0])}
+    if setback > 0.0:
+        info["surface_trace"] = surface_trace
     if verbose:
         uw.pprint(f"[place_sheet {label!r}] placed {info['n_placed']} "
                   f"vertices, removed {info['n_removed']}; "
