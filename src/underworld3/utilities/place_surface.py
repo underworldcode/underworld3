@@ -417,10 +417,13 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
 
     The ring — the cavity boundary, anticlockwise — goes in as a discrete
     curve carrying its existing segmentation; the surface's chain as a second
-    discrete curve embedded in the plane surface. A chain end that IS a ring
-    vertex (a crossing, or an end on the wall) is expressed by having the
-    chain's elements reference the ring's own node tag — no duplicate node, no
-    snapping — and a free end is a tip, gmsh's ordinary free-end embed.
+    discrete curve embedded in the plane surface. ``chain`` is one polyline
+    of ``Xall`` indices or a sequence of polylines (a trace crossing a
+    collar piece in several runs), each its own discrete curve. A chain end
+    that IS a ring vertex (a crossing, or an end on the wall) is expressed
+    by having the chain's elements reference the ring's own node tag — no
+    duplicate node, no snapping — and a free end is a tip, gmsh's ordinary
+    free-end embed.
 
     ``holes`` are further closed loops of ``Xall`` indices excluded from the
     fill — the 2-D thin volume's skin, meshed elsewhere and sewn on — each a
@@ -437,9 +440,15 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
     import gmsh
 
     ring = [int(v) for v in ring]
-    chain = [int(v) for v in (chain if chain is not None else [])]
+    if chain is None or not len(chain):
+        chains = []
+    elif isinstance(chain[0], (list, tuple, np.ndarray)):
+        chains = [[int(v) for v in c] for c in chain]
+    else:
+        chains = [[int(v) for v in chain]]
+    flat_chain = [v for c in chains for v in c]
     holes = [[int(v) for v in loop] for loop in holes]
-    if len(set(chain)) != len(chain):
+    if len(set(flat_chain)) != len(flat_chain):
         raise RuntimeError("the surface's chain repeats a vertex")
     tag_of = {v: i + 1 for i, v in enumerate(ring)}
     nxt = len(ring) + 1
@@ -452,7 +461,7 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
             tag_of[v] = nxt
             hole_nodes.append(v)
             nxt += 1
-    interior = [v for v in chain if v not in tag_of]
+    interior = [v for v in flat_chain if v not in tag_of]
     for v in interior:
         tag_of[v] = nxt
         nxt += 1
@@ -480,32 +489,35 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
         ring_tag = discrete_loop(ring)
         hole_tags = [discrete_loop(loop) for loop in holes]
 
-        line_tag = None
-        if chain:
+        chain_tags = []
+        added = set(ring) | set(hole_nodes)
+        for c in chains:
             line_tag = gmsh.model.addDiscreteEntity(1)
-            if interior:
+            own = [v for v in c if v not in added]
+            added.update(own)
+            if own:
                 gmsh.model.mesh.addNodes(
-                    1, line_tag, [tag_of[v] for v in interior],
-                    np.column_stack([Xall[interior],
-                                     np.zeros(len(interior))])
+                    1, line_tag, [tag_of[v] for v in own],
+                    np.column_stack([Xall[own], np.zeros(len(own))])
                     .reshape(-1).tolist())
             cseg = np.array([[tag_of[a], tag_of[b]]
-                             for a, b in zip(chain[:-1], chain[1:])],
+                             for a, b in zip(c[:-1], c[1:])],
                             dtype=np.int64)
             gmsh.model.mesh.addElementsByType(line_tag, 1, [],
                                               cseg.reshape(-1).tolist())
+            chain_tags.append(line_tag)
 
         loops = [gmsh.model.geo.addCurveLoop([ring_tag])]
         loops += [gmsh.model.geo.addCurveLoop([t]) for t in hole_tags]
         surf = gmsh.model.geo.addPlaneSurface(loops)
         gmsh.model.geo.synchronize()
-        if line_tag is not None:
-            gmsh.model.mesh.embed(1, [line_tag], 2, surf)
+        if chain_tags:
+            gmsh.model.mesh.embed(1, chain_tags, 2, surf)
 
         # Sizes bracketing what is already there: fine enough to accept the
         # chain's own spacing, coarse enough not to refine the cavity beyond
         # the surviving mesh around it.
-        constrained = (ring + ring[:1], chain,
+        constrained = (ring + ring[:1], *chains,
                        *[loop + loop[:1] for loop in holes])
         lengths = np.concatenate(
             [np.linalg.norm(np.diff(Xall[c], axis=0), axis=1)
@@ -546,7 +558,8 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
             for e in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
                 edges.add((min(e), max(e)))
         wanted = list(zip(ring, ring[1:] + ring[:1]))
-        wanted += list(zip(chain, chain[1:]))
+        for c in chains:
+            wanted += list(zip(c, c[1:]))
         for loop in holes:
             wanted += list(zip(loop, loop[1:] + loop[:1]))
         missing = [(a, b) for a, b in wanted
@@ -1384,6 +1397,38 @@ def _sheet_distance(X, pts, tris):
     return best
 
 
+def _nearest_facet(X, pts, tris):
+    """``(distance, facet index)`` from each point of ``X`` to a
+    triangulated sheet — :func:`_sheet_distance` keeping the argmin, for
+    when the answer is WHICH facet a point lies on, not how far it is."""
+    best = np.full(len(X), np.inf)
+    which = np.zeros(len(X), dtype=np.int64)
+    for k, t in enumerate(tris):
+        A, B, C = pts[t[0]], pts[t[1]], pts[t[2]]
+        ab, ac = B - A, C - A
+        n = np.cross(ab, ac)
+        nn = float(n @ n)
+        rel = X - A
+        d00, d01, d11 = float(ab @ ab), float(ab @ ac), float(ac @ ac)
+        d20, d21 = rel @ ab, rel @ ac
+        denom = d00 * d11 - d01 * d01
+        v = (d11 * d20 - d01 * d21) / denom
+        w = (d00 * d21 - d01 * d20) / denom
+        inside = (v >= 0.0) & (w >= 0.0) & (v + w <= 1.0)
+        d_plane = np.abs(rel @ n) / np.sqrt(nn)
+        d_edge = np.full(len(X), np.inf)
+        for P, Q in ((A, B), (B, C), (C, A)):
+            e = Q - P
+            u = np.clip(((X - P) @ e) / float(e @ e), 0.0, 1.0)
+            d_edge = np.minimum(
+                d_edge, np.linalg.norm(X - (P + u[:, None] * e), axis=1))
+        d = np.where(inside, d_plane, d_edge)
+        closer = d < best
+        best[closer] = d[closer]
+        which[closer] = k
+    return best, which
+
+
 def _propagate_vertex(dm, chart_values, mpi_op, np_combine):
     """Reconcile a chart-length per-point array over the point star-forest.
 
@@ -1529,7 +1574,7 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
 
 def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
                      held_cells, h_vertex, on_wall, shared_chart,
-                     open_wall=None):
+                     open_deletable=None, open_near=None):
     """Victims, dropped tets and the closed cavity shell around the sheet.
 
     The same two-part rule as 2-D — vertices within the clearance go, and any
@@ -1541,19 +1586,20 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     guarantees (and this function asserts) that the whole region is interior
     to this rank — the gather's contract.
 
-    ``open_wall = (axis, value)`` is the OUTCROP bowl: wall vertices lying
-    in that plane may be victims (the cap over the cavity is remeshed), and
-    the shell may open there — the wall faces of dropped cells come back as
-    ``cap_faces`` for the caller to pre-mesh. Returns
+    An OUTCROP passes its frame rule as two vertex masks
+    (:func:`_outcrop_frame_3d`, the same contract as
+    :func:`_carve_around_volume_3d`): ``open_deletable`` — wall vertices the
+    carve may take — and ``open_near`` — wall vertices near the outcrop,
+    where the cavity may open into cap faces; the wall faces of dropped
+    cells come back as ``cap_faces`` for the caller to pre-mesh. Returns
     ``(victims, drop_ids, shell, cap_faces)``.
     """
     from underworld3.utilities.edge_split import cell_diameters
 
     h_cell = cell_diameters(dm)
     d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
-    on_open = np.zeros(len(X), dtype=bool)
-    if open_wall is not None:
-        on_open = X[:, open_wall[0]] == open_wall[1]
+    on_open = (open_deletable if open_deletable is not None
+               else np.zeros(len(X), dtype=bool))
 
     held_vertex = np.zeros(len(X), dtype=bool)
     if held_cells:
@@ -1612,18 +1658,22 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
 
     shell, cap_faces, drop = _closed_shell_3d(
         dm, X, cells, drop, victim, held_cells, shared_chart, "sheet",
-        open_wall=open_wall)
+        open_vertex=open_near)
 
     # The straddle rule — or the shell growth — can drop the whole star of
     # a vertex that is NOT a victim; such a vertex is on no shell face and
     # would come through the rebuild as an ISOLATED point (global Euler 2,
     # not 1 — the measured defect class). Every surviving vertex must have
-    # a surviving cell.
+    # a surviving cell — except a PROTECTED wall vertex near the outcrop,
+    # which is a COLLAR node: the cap is re-triangulated through it and the
+    # fill's tets reference it (the volume carve's measured rule).
     referenced = np.zeros(len(X), dtype=bool)
     if (~drop).any():
         referenced[cells[~drop].ravel()] = True
     orphan = ~referenced & ~victim
-    if orphan[on_wall & ~on_open].any():
+    if open_near is not None:
+        orphan &= ~(orphan & on_wall & ~on_open & open_near)
+    if (orphan & on_wall & ~on_open).any():
         raise RuntimeError(
             "the sheet's cavity would strand a domain-wall vertex; the sheet "
             "must be interior, with clearance to spare")
@@ -1631,87 +1681,273 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     return np.flatnonzero(victim), np.flatnonzero(drop), shell, cap_faces
 
 
-def _clip_sheet_to_box(pts, tris, lo, hi):
-    """Clip a triangulated sheet to the axis-aligned box ``[lo, hi]``.
+def _orient_boundary_complex(verts, tris):
+    """Orient a closed boundary complex so every facet normal points OUT of
+    the domain.
 
-    The specify-long contract (ruling, 2026-08-11): fault surfaces are
-    defined generously PAST the domain and prep trims them. Each triangle is
-    Sutherland–Hodgman-clipped against the six half-spaces; cut points snap
-    exactly onto the plane, and a cut point is computed from its edge's
-    endpoints in a canonical order so the two triangles sharing the edge
-    produce the bitwise-identical point (the dedup relies on it). Returns
-    ``(pts, tris, on_plane)`` with ``on_plane[k] = 2*axis + side`` for a
-    point lying exactly on a wall plane, else ``-1``.
+    The gathered complex carries no orientation, so it is propagated by
+    shared-edge parity within each connected component, and each component's
+    global sign comes from its enclosed signed volume: the component
+    enclosing the greatest volume is the outer boundary (normals away from
+    the domain, signed volume positive), every other component bounds an
+    interior cavity — a spherical shell's inner surface — whose
+    domain-outward normals point INTO the cavity, so its signed volume is
+    made negative. Returns the reoriented ``(nf, 3)`` triangle array.
     """
-    lo = np.asarray(lo, dtype=float)
-    hi = np.asarray(hi, dtype=float)
-    pts = np.asarray(pts, dtype=float)
-    key_of = {}
-    out_pts = []
-    corner_ids = {}
+    tris = [list(map(int, t)) for t in np.asarray(tris)]
+    edge_owner = {}
+    for k, (a, b, c) in enumerate(tris):
+        for e in ((a, b), (b, c), (c, a)):
+            edge_owner.setdefault(frozenset(e), []).append(k)
+    seen = np.zeros(len(tris), dtype=bool)
+    comp = np.full(len(tris), -1, dtype=np.int64)
+    n_comp = 0
+    for start in range(len(tris)):
+        if seen[start]:
+            continue
+        stack = [start]
+        seen[start] = True
+        comp[start] = n_comp
+        while stack:
+            k = stack.pop()
+            a, b, c = tris[k]
+            for e in ((a, b), (b, c), (c, a)):
+                for j in edge_owner[frozenset(e)]:
+                    if j == k or seen[j]:
+                        continue
+                    ja, jb, jc = tris[j]
+                    # Consistent orientation: the shared edge must appear in
+                    # OPPOSITE directions in its two facets.
+                    if e in {(ja, jb), (jb, jc), (jc, ja)}:
+                        tris[j] = [ja, jc, jb]
+                    seen[j] = True
+                    comp[j] = n_comp
+                    stack.append(j)
+        n_comp += 1
+    T = np.asarray(tris, dtype=np.int64)
+    P = verts[T]
+    vol6 = np.einsum("ij,ij->i", np.cross(P[:, 0], P[:, 1]), P[:, 2])
+    comp_vol = np.array([vol6[comp == c].sum() for c in range(n_comp)])
+    outer = int(np.argmax(np.abs(comp_vol)))
+    for c in range(n_comp):
+        if (comp_vol[c] > 0.0) != (c == outer):
+            rows = comp == c
+            T[rows] = T[rows][:, [0, 2, 1]]
+    return T
 
-    def intern(p):
-        k = tuple(float(x) for x in p)
-        if k not in key_of:
-            key_of[k] = len(out_pts)
-            out_pts.append(np.asarray(p, dtype=float))
-        return key_of[k]
 
-    def cut(a_id, b_id, A, B, axis, value):
-        # Canonical order so both triangles sharing the edge agree bitwise.
-        if (a_id, tuple(A)) > (b_id, tuple(B)):
-            a_id, b_id, A, B = b_id, a_id, B, A
-        t = (value - A[axis]) / (B[axis] - A[axis])
-        p = A + t * (B - A)
-        p[axis] = value                       # exactly on the plane
-        return p
+def _boundary_signed_distance(X, verts, tris):
+    """Signed distance to an ORIENTED closed complex: NEGATIVE inside.
+
+    The sign comes from the nearest facet's outward normal; a tie at a
+    crease is broken by whichever facet is truly nearest, which is
+    unambiguous for query points off the surface by more than rounding.
+    """
+    d, at = _nearest_facet(X, verts, tris)
+    T = verts[np.asarray(tris)[at]]
+    n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    n = n / np.linalg.norm(n, axis=1)[:, None]
+    side = np.einsum("ij,ij->i", X - T[:, 0], n)
+    return np.where(side >= 0.0, d, -d)
+
+
+def _concave_crease_facets(verts, tris):
+    """Mask of facets of an ORIENTED complex incident to a locally CONCAVE
+    crease.
+
+    A crease between two facets is concave when either facet's far vertex
+    lies on the OUTWARD side of the other's plane: every crease of an inner
+    boundary is, no crease of a convex outer boundary is. The sequential
+    plane clip is exact only across convex creases, so a crossing that can
+    touch a concave one is refused rather than mis-cut. The threshold sits
+    at rounding — a genuinely concave crease's offset is O(h^2/R), many
+    orders above it.
+    """
+    tris = np.asarray(tris, dtype=np.int64)
+    T = verts[tris]
+    n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    n = n / np.linalg.norm(n, axis=1)[:, None]
+    concave = np.zeros(len(tris), dtype=bool)
+    edge_first = {}
+    for t, tri in enumerate(tris):
+        opp = {frozenset((int(tri[0]), int(tri[1]))): int(tri[2]),
+               frozenset((int(tri[1]), int(tri[2]))): int(tri[0]),
+               frozenset((int(tri[2]), int(tri[0]))): int(tri[1])}
+        for e, far in opp.items():
+            if e not in edge_first:
+                edge_first[e] = (t, far)
+                continue
+            s, far_s = edge_first[e]
+            ea, eb = (int(v) for v in e)
+            scale = float(np.linalg.norm(verts[eb] - verts[ea]))
+            if (float((verts[far] - T[s, 0]) @ n[s]) > 1e-12 * scale
+                    or float((verts[far_s] - T[t, 0]) @ n[t])
+                    > 1e-12 * scale):
+                concave[t] = concave[s] = True
+    return concave
+
+
+def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12):
+    """Clip a triangulated sheet against the mesh's OWN boundary complex.
+
+    The specify-long contract (ruling, 2026-08-11) on a general boundary:
+    fault surfaces are defined generously PAST the domain and prep trims
+    them. Sheet vertices classify by signed distance to the oriented
+    complex; a mixed triangle is cut sequentially by the planes of the
+    boundary facets it can cross, keeping the inside — exact where the
+    crossed boundary is locally CONVEX (a box wall, a sphere's outer
+    surface), which covers the outcrop cases. A crossing that can touch a
+    locally concave crease (an inner boundary) needs the true polyline cut
+    and is refused. The cutting planes are the COPLANAR REGIONS'
+    (:func:`_coplanar_regions`) — a box wall cuts as one plane however it
+    is faceted — and cut nodes are computed from canonically ordered edge
+    endpoints and interned by the ``(edge, region)`` identity, so the two
+    triangles sharing a cut edge produce the SAME node and the clipped
+    sheet stays conforming; each cut node lands exactly on its region's
+    plane. Uncut geometry is preserved verbatim. Every kept node is gated
+    inside the domain on exit — a violation means the crossing was not
+    locally convex at the sheet's scale and is a refusal, not a tolerance.
+    Returns ``(pts, tris)``.
+    """
+    pts_in = np.asarray(pts, dtype=float)
+    tris_in = np.asarray(tris, dtype=np.int64)
+    oriented = _orient_boundary_complex(dom_verts, dom_tris)
+    sd = _boundary_signed_distance(pts_in, dom_verts, oriented)
+    inside = sd < tol
+    if inside.all():
+        return pts_in, tris_in
+
+    DT = dom_verts[oriented]
+    f_lo = DT.min(axis=1)
+    f_hi = DT.max(axis=1)
+    concave = _concave_crease_facets(dom_verts, oriented)
+    # The cutting planes are the coplanar regions': two coplanar facets of
+    # one wall must cut with the IDENTICAL plane, or the two triangles
+    # sharing a cut edge key their cut by different facets and the sheet
+    # tears along a duplicated node (measured on the box top wall).
+    region, planes_of = _coplanar_regions(dom_verts, oriented)
+
+    out_pts = [p for p in pts_in]
+    cut_id = {}
+
+    def cut_on(key, A, B, r):
+        # Interned by identity, endpoints canonical: the two triangles
+        # sharing a cut compute the bitwise-identical point, ONE node, and
+        # the clipped sheet stays conforming.
+        if key not in cut_id:
+            anchor, nrm = planes_of[int(r)]
+            oa = float((A - anchor) @ nrm)
+            ob = float((B - anchor) @ nrm)
+            p = A + (oa / (oa - ob)) * (B - A)
+            p -= float((p - anchor) @ nrm) * nrm     # exactly on the plane
+            cut_id[key] = len(out_pts)
+            out_pts.append(p)
+        return cut_id[key]
+
+    def edge_key(a, b):
+        return (a, b) if a < b else (b, a)
 
     out_tris = []
-    for tri in tris:
-        # The polygon starts as the triangle, with vertex identity carried
-        # so shared cut edges intern to the same point.
-        poly = [(int(v), pts[int(v)].copy()) for v in tri]
-        for axis in range(3):
-            for side, value, keep in ((0, lo[axis], 1.0), (1, hi[axis], -1.0)):
-                if not poly:
-                    break
-                nxt = []
-                for i in range(len(poly)):
-                    (ai, A), (bi, B) = poly[i], poly[(i + 1) % len(poly)]
-                    a_in = keep * (A[axis] - value) >= 0.0
-                    b_in = keep * (B[axis] - value) >= 0.0
-                    if a_in:
-                        nxt.append((ai, A))
-                    if a_in != b_in:
-                        p = cut(ai, bi, A, B, axis, value)
-                        nxt.append((("cut", min(ai, bi), max(ai, bi),
-                                     axis, side), p))
-                poly = nxt
+    for tri in tris_in:
+        flags = inside[tri]
+        if flags.all():
+            out_tris.append([int(v) for v in tri])
+            continue
+        if not flags.any():
+            continue
+        # The facet planes this triangle can cross: bbox overlap.
+        P3 = pts_in[tri]
+        t_lo = P3.min(axis=0) - tol
+        t_hi = P3.max(axis=0) + tol
+        near = np.flatnonzero(((f_lo <= t_hi) & (f_hi >= t_lo)).all(axis=1))
+        if concave[near].any():
+            raise NotImplementedError(
+                "the sheet crosses the domain boundary at a locally "
+                "concave crease (an inner boundary); the sequential plane "
+                "clip is exact only for convex crossings and the polyline "
+                "cut is not built.")
+        # Each polygon vertex carries the ORIGINAL sheet edges it lies on:
+        # a cut on a triangle side is re-derived from that side's original
+        # endpoints and interned by (edge, region), so the neighbouring
+        # triangle — whose side may be truncated differently — produces the
+        # bitwise-identical node (a sub-segment interpolation differs by
+        # rounding, measured as ~1e-17 duplicate pairs on the sphere). A
+        # cut on a CHORD (a previous cut's trace across the interior, i.e.
+        # a crease crossing) is triangle-local and keys by its endpoints.
+        a0, b0, c0 = (int(v) for v in tri)
+        sides = {a0: {edge_key(a0, b0), edge_key(a0, c0)},
+                 b0: {edge_key(a0, b0), edge_key(b0, c0)},
+                 c0: {edge_key(a0, c0), edge_key(b0, c0)}}
+        poly = [pts_in[v].copy() for v in (a0, b0, c0)]
+        rows = [a0, b0, c0]
+        srcs = [sides[a0], sides[b0], sides[c0]]
+        for r in sorted({int(region[f]) for f in near}):
+            anchor, nrm = planes_of[r]
+            offs = [float((q - anchor) @ nrm) for q in poly]
+            if all(o > -tol for o in offs):     # wholly outside (or on)
+                poly, rows, srcs = [], [], []
+                break
+            if all(o < tol for o in offs):      # wholly inside: no cut
+                continue
+            new_poly, new_rows, new_srcs = [], [], []
+            m = len(poly)
+            for i in range(m):
+                j = (i + 1) % m
+                oi, oj = offs[i], offs[j]
+                if oi < tol:
+                    new_poly.append(poly[i])
+                    new_rows.append(rows[i])
+                    new_srcs.append(srcs[i])
+                if (oi < -tol and oj > tol) or (oi > tol and oj < -tol):
+                    common = srcs[i] & srcs[j]
+                    if common:
+                        e, = common
+                        w = cut_on((e[0], e[1], r), pts_in[e[0]],
+                                   pts_in[e[1]], r)
+                        src = {e}
+                    else:
+                        lo_r, hi_r = edge_key(rows[i], rows[j])
+                        w = cut_on(('x', lo_r, hi_r, r),
+                                   np.asarray(out_pts[lo_r]),
+                                   np.asarray(out_pts[hi_r]), r)
+                        src = set()
+                    new_poly.append(np.asarray(out_pts[w]))
+                    new_rows.append(w)
+                    new_srcs.append(src)
+            poly, rows, srcs = new_poly, new_rows, new_srcs
         if len(poly) < 3:
             continue
-        ids = [intern(p) for _tag, p in poly]
-        for k in range(1, len(ids) - 1):
-            if len({ids[0], ids[k], ids[k + 1]}) == 3:
-                out_tris.append((ids[0], ids[k], ids[k + 1]))
+        for k in range(1, len(rows) - 1):
+            if len({rows[0], rows[k], rows[k + 1]}) == 3:
+                out_tris.append([rows[0], rows[k], rows[k + 1]])
 
     if not out_tris:
         raise ValueError("the sheet lies entirely outside the domain")
-    out_pts = np.array(out_pts)
-    on_plane = np.full(len(out_pts), -1, dtype=np.int64)
-    for axis in range(3):
-        on_plane[out_pts[:, axis] == lo[axis]] = 2 * axis
-        on_plane[out_pts[:, axis] == hi[axis]] = 2 * axis + 1
-    return out_pts, np.array(out_tris, dtype=np.int64), on_plane
+    used = sorted({v for t in out_tris for v in t})
+    remap = {v: i for i, v in enumerate(used)}
+    new_pts = np.array([out_pts[v] for v in used])
+    new_tris = np.array([[remap[v] for v in t] for t in out_tris],
+                        dtype=np.int64)
+    sd_out = _boundary_signed_distance(new_pts, dom_verts, oriented)
+    if (sd_out > 1e-9).any():
+        raise RuntimeError(
+            "the clip kept a sheet node outside the domain; the boundary "
+            "is not locally convex at the crossing's scale, or the "
+            "crossing spans facets the clip did not see. A defect, not a "
+            "tolerance.")
+    return new_pts, new_tris
 
 
-def _outcrop_chain(pts, tris, on_plane):
-    """The sheet's boundary polyline on ONE wall plane, ordered.
+def _outcrop_chain(pts, tris, dom_verts, dom_tris, tol=1e-9):
+    """The clipped sheet's boundary polyline ON the domain boundary, ordered.
 
-    Boundary edges of the clipped sheet whose BOTH ends lie on the same
-    plane form the outcrop. One open chain on one wall is the supported
-    case; anything else (two walls, a closed loop, several chains) is
-    refused with the reason — box-edge outcrops are a later phase.
-    Returns ``(chain_point_ids, wall_code)`` or ``(None, None)``.
+    Boundary edges of the clipped sheet whose ends AND midpoint lie on the
+    domain's boundary complex form the outcrop trace — the membership rule
+    of :func:`_split_skin_trace` one dimension down, metric but unambiguous:
+    the clip put cut nodes ON the crossed facets, while an interior rim node
+    is a sheet spacing away. One open chain is the supported case; multiple
+    chains or a closed loop are refused with the reason. Returns the ordered
+    chain of point rows, or ``None``.
     """
     from collections import Counter
 
@@ -1719,18 +1955,19 @@ def _outcrop_chain(pts, tris, on_plane):
     for a, b, c in tris:
         for e in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
             edge_count[tuple(sorted(e))] += 1
-    walls = set(int(w) for w in on_plane[on_plane >= 0])
-    if not walls:
-        return None, None
-    if len(walls) > 1:
-        raise NotImplementedError(
-            "the sheet meets more than one domain wall; box-edge outcrops "
-            "are not built. Clip the sheet to a single wall.")
-    wall = walls.pop()
-    chain_edges = [e for e, k in edge_count.items() if k == 1
-                   and on_plane[e[0]] == wall and on_plane[e[1]] == wall]
+    boundary_edges = [e for e, k in edge_count.items() if k == 1]
+    if not boundary_edges:
+        return None
+    on_v = _sheet_distance(pts, dom_verts, dom_tris) < tol
+    both_on = [e for e in boundary_edges if on_v[e[0]] and on_v[e[1]]]
+    if not both_on:
+        return None
+    mids = 0.5 * (pts[[e[0] for e in both_on]]
+                  + pts[[e[1] for e in both_on]])
+    mid_on = _sheet_distance(mids, dom_verts, dom_tris) < tol
+    chain_edges = [e for e, ok in zip(both_on, mid_on) if ok]
     if not chain_edges:
-        return None, None
+        return None
     adj = {}
     for a, b in chain_edges:
         adj.setdefault(a, []).append(b)
@@ -1746,11 +1983,11 @@ def _outcrop_chain(pts, tris, on_plane):
         nxt = ns[0] if ns[0] != prev else ns[1]
         chain.append(nxt)
         prev, cur = cur, nxt
-    return chain, wall
+    return chain
 
 
 def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
-                     noun, open_wall=None):
+                     noun, open_vertex=None):
     """The cavity shell over ``drop``, GROWN at pinch edges until manifold.
 
     Shared by every 3-D carve. The union of victim stars around any object
@@ -1761,16 +1998,18 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
     original mesh did not). Growing the drop at every non-manifold edge
     merges the wedges; dropping more cells only enlarges the fill.
 
-    ``open_wall = (axis, value)`` lets the cavity OPEN onto one flat wall —
-    the outcrop bowl. A dropped cell's wall face lying in that plane becomes
-    a CAP face (returned separately; the caller pre-meshes the cap); any
-    other wall contact still refuses. The manifold check runs on shell
-    ∪ cap, which together must close.
+    ``open_vertex`` (a vertex mask) lets the cavity OPEN onto the boundary
+    near an outcrop — the bowl. A dropped cell's wall face whose vertices
+    all carry the mask becomes a CAP face (returned separately; the caller
+    pre-meshes the cap); any other wall contact still refuses. The mask is
+    the caller's frame rule: the wall plane for a box-framed sheet, the
+    band-touched coplanar regions for a general zone. The manifold check
+    runs on shell ∪ cap, which together must close.
 
     Refusals stay per-object worded via ``noun``; a wall or seam contact and
     a growth that would need a held cell are refusals, not growth. Returns
     ``(shell, cap_faces, drop)`` with ``drop`` possibly grown; ``cap_faces``
-    is empty when ``open_wall`` is None.
+    is empty when ``open_vertex`` is None.
     """
     from collections import Counter
 
@@ -1805,8 +2044,8 @@ def _closed_shell_3d(dm, X, cells, drop, victim, held_cells, shared_chart,
                         "after the gather; the region marking under-reached. "
                         "A defect, not a configuration error.")
                 verts = face_verts[f]
-                if open_wall is not None and all(
-                        X[v][open_wall[0]] == open_wall[1] for v in verts):
+                if open_vertex is not None and all(
+                        open_vertex[v] for v in verts):
                     cap_faces.append((f, verts))
                     continue
                 raise RuntimeError(
@@ -2278,9 +2517,15 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         A 3-D simplex mesh, serial or distributed. **Not modified.**
     points, triangles : array_like
         The sheet: ``(N, 3)`` vertices and ``(M, 3)`` triangle indices — the
-        form :class:`~underworld3.meshing.FaultSurface` carries. Interior to
-        the domain, non-self-intersecting, at least a cell from any embedded
-        surface.
+        form :class:`~underworld3.meshing.FaultSurface` carries.
+        Non-self-intersecting, at least a cell from any embedded surface.
+        The sheet may run PAST the domain: it is clipped against the mesh's
+        own boundary, and a trace left ON the boundary becomes the sheet's
+        OUTCROP — the trace chain's edges carry ``<label>_trace`` in the
+        result and the wall's own labels are restored beside them, so the
+        split machinery can carry a daylighting fault through the wall. The
+        boundary need not be axis-aligned; a crossing at a locally concave
+        crease (an inner boundary) is refused.
     label, label_value : str, int
         Label put on the sheet's faces in the result.
     clearance : float
@@ -2297,7 +2542,8 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         carrying ``label``.
     info : dict
         Global counts: ``n_placed``, ``n_on_surface`` (always 0 in 3-D),
-        ``n_removed``, ``n_surface_facets``, ``min_volume``.
+        ``n_removed``, ``n_surface_facets``, ``n_trace_edges``,
+        ``min_volume``.
 
     Raises
     ------
@@ -2318,24 +2564,16 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     sheet_tris = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
 
     # The specify-long contract (ruling 2026-08-11): the sheet may extend
-    # PAST the domain; it is clipped to the (axis-aligned) bounds here, and
-    # a trace left on ONE wall plane becomes the OUTCROP — the cavity opens
-    # onto that wall and the cap over it is remeshed to conform. The clip
-    # is deterministic from the input, so every rank computes the same
-    # sheet; the bounds are global.
-    Xb = _coords(dm)
-    lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(3, np.inf),
-                      -(Xb.max(axis=0)) if len(Xb) else np.full(3, np.inf)])
-    comm.Allreduce(MPI.IN_PLACE, lo_hi, op=MPI.MIN)
-    box_lo, box_hi = lo_hi[0], -lo_hi[1]
-    sheet_pts, sheet_tris, on_plane = _clip_sheet_to_box(
-        sheet_pts, sheet_tris, box_lo, box_hi)
-    chain, wall_code = _outcrop_chain(sheet_pts, sheet_tris, on_plane)
-    open_wall = None
-    if chain is not None:
-        axis, side = wall_code // 2, wall_code % 2
-        open_wall = (int(axis),
-                     float(box_hi[axis] if side else box_lo[axis]))
+    # PAST the domain; it is clipped against the mesh's OWN boundary — any
+    # boundary, axis-aligned or not — and a trace left ON the boundary
+    # becomes the OUTCROP: the cavity opens into a bowl there and the wall
+    # collar over it is remeshed to conform, with the trace chain embedded.
+    # The boundary complex is gathered identically everywhere and the clip
+    # is deterministic from it, so every rank computes the same sheet.
+    dom_verts, dom_tris = _domain_boundary_facets(dm)
+    sheet_pts, sheet_tris = _clip_sheet_to_boundary(
+        sheet_pts, sheet_tris, dom_verts, dom_tris)
+    chain = _outcrop_chain(sheet_pts, sheet_tris, dom_verts, dom_tris)
 
     # -------------------------------------------------- mark, then gather
     vS, vE = dm.getDepthStratum(0)
@@ -2396,10 +2634,19 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     fill = None
     if comm.rank == target:
         try:
+            deletable = near = None
+            dom_region = dom_planes = None
+            if chain is not None:
+                chain_edges = np.column_stack([chain[:-1], chain[1:]])
+                dom_region, dom_planes = _coplanar_regions(dom_verts,
+                                                           dom_tris)
+                deletable, near, _regions = _outcrop_frame_3d(
+                    X, on_wall, dom_verts, dom_tris, dom_region,
+                    sheet_pts, chain_edges)
             victims, drop_ids, shell, cap_faces = _carve_cavity_3d(
                 dm_work, X, cells, sheet_pts, sheet_tris, clearance,
                 held_cells, h_vertex, on_wall, shared,
-                open_wall=open_wall)
+                open_deletable=deletable, open_near=near)
             # The gather's contract, asserted: nothing the surgery touches is
             # shared. A violation is a marking defect and must be loud.
             touched = set()
@@ -2420,68 +2667,49 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                                    for _f, verts in shell], dtype=np.int64)
 
             cap_payload = None
-            wall_pairs = []
+            removed_wall = []
             if cap_faces:
-                from collections import Counter
-                # The cap's rim (one closed loop of surviving wall
-                # vertices), the labels the REPLACED wall faces carried
-                # (written back onto the new cap explicitly — joins cannot
-                # recover new points), and the cap PRE-MESH: the 2-D fill
-                # in the wall plane's own coordinates, rim ring verbatim,
-                # outcrop chain embedded.
-                cap_edge = Counter()
-                for _f, verts in cap_faces:
-                    a, b, c = sorted(verts)
-                    for e in ((a, b), (a, c), (b, c)):
-                        cap_edge[e] += 1
-                rim_adj = {}
-                for (a, b), k in cap_edge.items():
-                    if k == 1:
-                        rim_adj.setdefault(a, []).append(b)
-                        rim_adj.setdefault(b, []).append(a)
-                if any(len(v) != 2 for v in rim_adj.values()):
+                # Labels each removed wall face carried, read PER FACE
+                # before the rebuild forgets them — the bowl can span
+                # several walls (a curved boundary's facets), so each new
+                # wall triangle takes the labels of the old face it lies
+                # on, not a set common to the whole bowl (the volume
+                # path's rule).
+                names = [dm_work.getLabelName(i)
+                         for i in range(dm_work.getNumLabels())
+                         if dm_work.getLabelName(i)
+                         not in reconnect._TOPOLOGY_LABELS]
+                for f, verts in cap_faces:
+                    pairs_f = []
+                    for name in names:
+                        val = dm_work.getLabel(name).getValue(int(f))
+                        if val >= 0:
+                            pairs_f.append((name, int(val)))
+                    removed_wall.append((X[np.asarray(verts)].copy(),
+                                         pairs_f))
+
+                cap_tris_mesh = np.array([verts for _f, verts in cap_faces],
+                                         dtype=np.int64)
+                d_cap, at_cap = _nearest_facet(
+                    X[cap_tris_mesh].mean(axis=1), dom_verts, dom_tris)
+                if (d_cap > 1e-9).any():
                     raise RuntimeError(
-                        "the outcrop cap's rim is not a single loop; the "
-                        "cavity may touch a box edge, which is not built")
-                start = min(rim_adj)
-                rim, prev, cur = [start], None, start
-                while True:
-                    a, b = rim_adj[cur]
-                    nxt = b if a == prev else a
-                    if nxt == start:
-                        break
-                    rim.append(nxt)
-                    prev, cur = cur, nxt
-
-                cap_face_pts = [int(f) for f, _v in cap_faces]
-                for i in range(dm_work.getNumLabels()):
-                    name = dm_work.getLabelName(i)
-                    if name in reconnect._TOPOLOGY_LABELS:
-                        continue
-                    lab = dm_work.getLabel(name)
-                    values = lab.getValueIS()
-                    if values is None:
-                        continue
-                    for val in values.getIndices():
-                        if all(lab.getValue(p) == int(val)
-                               for p in cap_face_pts):
-                            wall_pairs.append((name, int(val)))
-
-                axis = open_wall[0]
-                uv = [a for a in range(3) if a != axis]
-                cap_X2 = np.vstack([X[rim][:, uv],
-                                    sheet_pts[chain][:, uv]])
-                cap_tris_local, cap_extra2 = _gmsh_fill_2d(
-                    cap_X2, list(range(len(rim))),
-                    list(range(len(rim), len(rim) + len(chain))))
-                extra_xyz = np.zeros((len(cap_extra2), 3))
-                extra_xyz[:, uv] = cap_extra2
-                extra_xyz[:, axis] = open_wall[1]
+                        "an outcrop bowl wall face lies off the gathered "
+                        "boundary complex; the wall mask and the complex "
+                        "disagree")
+                alive = np.ones(len(X), dtype=bool)
+                alive[np.asarray(victims, dtype=np.int64)] = False
+                cap_nodes, chain_nodes, cap_extra, cap_tris = \
+                    _outcrop_collar_3d(
+                        X, alive, cap_tris_mesh, dom_region[at_cap],
+                        dom_planes, sheet_pts,
+                        np.zeros((0, 3), dtype=np.int64),
+                        np.zeros(0, dtype=np.int64), None, chain=chain)
                 cap_payload = {
-                    "rim_shell_local": [local[v] for v in rim],
-                    "chain_sheet_local": list(chain),
-                    "tris": cap_tris_local,
-                    "extra_xyz": extra_xyz,
+                    "rim_shell_local": [local[v] for v in cap_nodes],
+                    "chain_sheet_local": list(chain_nodes),
+                    "tris": cap_tris,
+                    "extra_xyz": cap_extra,
                 }
 
             fill = _gmsh_fill_3d(shell_xyz, shell_tris, sheet_pts,
@@ -2569,10 +2797,17 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     # The outcrop cap's new wall faces, relabelled EXPLICITLY with whatever
     # the replaced faces carried ("Top" and friends): joins cannot recover
     # new points, and an unlabelled patch of boundary silently loses its
-    # Dirichlet conditions. The whole face closure is labelled, matching
-    # the completeness the box labels ship with.
-    pairs = comm.bcast(wall_pairs if comm.rank == target else None,
-                       root=target)
+    # Dirichlet conditions. Each new cap triangle takes the labels of the
+    # removed face it lies on (the volume path's per-face rule — the bowl
+    # can span several walls), whole face closures included; and the trace
+    # chain's edges are labelled ``<label>_trace`` so the split machinery
+    # can carry the fault THROUGH the wall.
+    trace_label = label + "_trace"
+    if not new.hasLabel(trace_label):
+        new.createLabel(trace_label)
+    pairs = comm.bcast(
+        sorted({p for _tri, pairs_f in removed_wall for p in pairs_f})
+        if comm.rank == target else None, root=target)
     n_cap_expect = comm.bcast(
         (len(cap_out) if (comm.rank == target and cap_out is not None)
          else 0), root=target)
@@ -2580,27 +2815,52 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         if not new.hasLabel(name):
             new.createLabel(name)
     n_cap_local = 0
+    n_trace_local = 0
     if comm.rank == target and cap_out is not None:
         n_shell_ids = np.asarray(shell_vert_ids, dtype=np.int64)
-        for t in cap_out:
-            ids = []
-            for v in t:
-                if v < n_shell:
-                    old_pt = (int(n_shell_ids[v])
-                              + dm_work.getDepthStratum(0)[0])
-                    ids.append(int(point_map[old_pt - pStart]))
-                else:
-                    ids.append(int(placed_new[v - n_shell]))
-            joined = new.getFullJoin(ids)
-            if len(joined) != 1:
-                failure = ("an outcrop cap triangle is not a face of the "
-                           "sewn mesh; the cap was not sewn onto the wall.")
-                break
-            for name, val in pairs:
-                lab = new.getLabel(name)
+
+        def new_id(v):
+            if v < n_shell:
+                old_pt = (int(n_shell_ids[v])
+                          + dm_work.getDepthStratum(0)[0])
+                return int(point_map[old_pt - pStart])
+            return int(placed_new[v - n_shell])
+
+        centres = np.array([fill_pts[np.asarray(t)].mean(axis=0)
+                            for t in cap_out])
+        old_pts = np.vstack([tri for tri, _p in removed_wall])
+        old_tris = np.arange(3 * len(removed_wall)).reshape(-1, 3)
+        d_old, at_old = _nearest_facet(centres, old_pts, old_tris)
+        # A raise here is rank-local — a hang at np>=2 — so every refusal
+        # in this block goes through the collective failure.
+        if (d_old > 1e-9).any():
+            failure = ("an outcrop cap triangle lies on no removed wall "
+                       "face; the collar and the bowl disagree")
+        else:
+            for k, t in enumerate(cap_out):
+                joined = new.getFullJoin([new_id(int(v)) for v in t])
+                if len(joined) != 1:
+                    failure = ("an outcrop cap triangle is not a face of "
+                               "the sewn mesh; the cap was not sewn onto "
+                               "the wall.")
+                    break
                 for q in new.getTransitiveClosure(int(joined[0]))[0]:
-                    lab.setValue(int(q), int(val))
-            n_cap_local += 1
+                    for name, val in removed_wall[int(at_old[k])][1]:
+                        new.getLabel(name).setValue(int(q), int(val))
+                n_cap_local += 1
+            else:
+                out_trace = new.getLabel(trace_label)
+                for a, b in zip(chain[:-1], chain[1:]):
+                    joined = new.getFullJoin([int(placed_new[int(a)]),
+                                              int(placed_new[int(b)])])
+                    if len(joined) != 1:
+                        failure = ("a trace edge is not an edge of the "
+                                   "sewn mesh; the trace was not sewn "
+                                   "onto the wall.")
+                        break
+                    for q in new.getTransitiveClosure(int(joined[0]))[0]:
+                        out_trace.setValue(int(q), int(label_value))
+                    n_trace_local += 1
     failures = comm.allgather(failure)
     real = [f for f in failures if f]
     if real:
@@ -2610,6 +2870,13 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         raise RuntimeError(
             f"{n_cap} outcrop cap faces relabelled for {n_cap_expect} "
             "given.")
+    n_trace = int(comm.allreduce(n_trace_local, op=MPI.SUM))
+    # The chain is computed identically on every rank, before the gather.
+    n_trace_expect = (len(chain) - 1
+                      if (chain is not None and n_cap_expect) else 0)
+    if n_trace != n_trace_expect:
+        raise RuntimeError(
+            f"{n_trace} trace edges labelled for {n_trace_expect} given.")
 
     # ------------------------------------------------------- global gates
     counts = np.array([n_facets_local, len(victims_arr),
@@ -2628,13 +2895,18 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
             f"the placement changed the domain volume: "
             f"{volume_before[0]:.12f} -> {volume_after[0]:.12f}")
 
+    # The surgery must CONSERVE the domain's topology, not assume it: a
+    # box is a ball (Euler 1) but a spherical shell is S^2 x I (Euler 2).
+    owned = np.asarray(_owned_stratum_counts(dm), dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
+    euler_before = int(owned[0] - owned[1] + owned[2] - owned[3])
     owned = np.asarray(_owned_stratum_counts(new), dtype=np.int64)
     comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
     nv_g, ne_g, nf_g, nc_g = (int(x) for x in owned)
-    if nv_g - ne_g + nf_g - nc_g != 1:
+    if nv_g - ne_g + nf_g - nc_g != euler_before:
         raise RuntimeError(
-            f"the sewn mesh has global Euler number "
-            f"{nv_g - ne_g + nf_g - nc_g}, not 1")
+            f"the placement changed the global Euler number: "
+            f"{euler_before} -> {nv_g - ne_g + nf_g - nc_g}")
 
     after = _interior_face_counts_3d(new)
     for key, before in held_counts.items():
@@ -2652,6 +2924,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
 
     info = {"n_placed": n_placed, "n_on_surface": 0,
             "n_removed": n_removed, "n_surface_facets": n_facets,
+            "n_trace_edges": (len(chain) - 1 if chain is not None else 0),
             "min_volume": float(min_vol[0])}
     if verbose:
         uw.pprint(f"[place_sheet {label!r}] placed {info['n_placed']} "
@@ -2800,21 +3073,15 @@ def _snap_to_boundary_2d(xy, loops, tol=1e-9):
     return xy
 
 
-def _occ_domain_3d(occ, verts, tris):
-    """The domain as ONE OCC solid built from its boundary triangles.
+def _coplanar_regions(verts, tris):
+    """The boundary's COPLANAR REGIONS: adjacent coplanar facets merged.
 
-    Adjacent coplanar triangles merge into single planar faces first — a
-    box wall becomes one rectangle, so a box builds the same six-faced tool
-    the analytic box gave, and the boolean does not imprint the wall's mesh
-    spacing onto the clipped faces — and each merged face's rim compresses
-    to its corners. The chain shared by two merged faces lies in both
-    planes, hence on a straight line, so both faces compress it to the same
-    endpoints; a vertex where three or more faces meet is always kept, or
-    two faces whose planes cross the same line would disagree about it.
-    Faces share OCC points and lines, so the shells they close into are
-    topologically sewn. Returns ``(volume_tag, planes)`` with ``planes`` a
-    list of ``(anchor, unit_normal)`` per merged face, for the snap; the
-    caller synchronizes.
+    Two triangles sharing an edge join when their planes agree to rounding,
+    so a box wall is one region while a faceted sphere keeps every triangle
+    its own — the region is the 3-D analogue of the compressed straight
+    segment of a 2-D boundary loop. Region ids are member triangle indices,
+    arbitrary but deterministic. Returns ``(region, planes)``: the region id
+    per triangle and ``{region: (anchor, unit_normal)}``.
     """
     tris = np.asarray(tris, dtype=np.int64)
     T = verts[tris]
@@ -2849,6 +3116,35 @@ def _occ_domain_3d(occ, verts, tris):
                         < 1e-12 * scale)
             if coplanar:
                 parent[find(t)] = find(s)
+
+    region = np.array([find(t) for t in range(len(tris))], dtype=np.int64)
+    planes = {int(r): (verts[int(tris[r][0])], unit_n[r])
+              for r in np.unique(region)}
+    return region, planes
+
+
+def _occ_domain_3d(occ, verts, tris):
+    """The domain as ONE OCC solid built from its boundary triangles.
+
+    Adjacent coplanar triangles merge into single planar faces first — a
+    box wall becomes one rectangle, so a box builds the same six-faced tool
+    the analytic box gave, and the boolean does not imprint the wall's mesh
+    spacing onto the clipped faces — and each merged face's rim compresses
+    to its corners. The chain shared by two merged faces lies in both
+    planes, hence on a straight line, so both faces compress it to the same
+    endpoints; a vertex where three or more faces meet is always kept, or
+    two faces whose planes cross the same line would disagree about it.
+    Faces share OCC points and lines, so the shells they close into are
+    topologically sewn. Returns ``(volume_tag, planes)`` with ``planes`` a
+    list of ``(anchor, unit_normal)`` per merged face, for the snap; the
+    caller synchronizes.
+    """
+    tris = np.asarray(tris, dtype=np.int64)
+    T = verts[tris]
+    region, planes_of = _coplanar_regions(verts, tris)
+
+    def find(t):
+        return int(region[t])
 
     regions = {}
     for t in range(len(tris)):
@@ -2900,8 +3196,7 @@ def _occ_domain_3d(occ, verts, tris):
                 rim[e] += 1
         rim_edges = [tuple(e) for e, k in rim.items() if k == 1]
         loops = _skin_loops(rim_edges, what="a domain face's rim")
-        m = unit_n[members[0]]
-        anchor = verts[int(tris[members[0]][0])]
+        anchor, m = planes_of[r]
         planes.append((anchor, m))
         # In-plane coordinates for the outer-vs-hole ranking only.
         u = T[members[0], 1] - T[members[0], 0]
@@ -2957,22 +3252,36 @@ def _occ_domain_3d(occ, verts, tris):
     return occ.addVolume(loops3), planes
 
 
-def _snap_to_boundary_3d(xyz, verts, tris, planes, tol=1e-9):
+def _snap_to_boundary_3d(xyz, verts, tris, planes, tol=1e-6):
     """Snap nodes within ``tol`` of the domain boundary ONTO it, exactly.
 
     Boundary corners first, then each merged face's plane, each a pure
     normal-component move — on an axis-aligned wall that is exactly the
     wall-plane snap the box clip used, the in-plane coordinates untouched.
     A node near two planes (a domain edge) is snapped by both passes, as
-    the box path snapped both axes at a corner.
+    the box path snapped both axes at a corner, so a band-outline node at
+    a crease crossing lands ON the crease line.
+
+    ``tol`` must sit above OCC's boolean placement noise, which reaches
+    ~4e-7 on O(1) geometry against a many-faceted tool (measured: a
+    crease-crossing node left 3.8e-7 off its crease, which the collar
+    then meshed as a razor sliver) — and far below the layer mesh size,
+    which keeps genuinely interior nodes out of reach. Candidates are
+    masked by distance to the boundary FACETS first: the planes are
+    infinite, and at this tolerance every point in space is near SOME
+    plane of a many-faceted tool.
     """
+    near_boundary = _sheet_distance(xyz, verts, tris) < tol
+    idx = np.flatnonzero(near_boundary)
+    sub = xyz[idx]
     for v in np.unique(tris):
         p = verts[int(v)]
-        xyz[np.linalg.norm(xyz - p, axis=1) < tol] = p
+        sub[np.linalg.norm(sub - p, axis=1) < tol] = p
     for anchor, m in planes:
-        off = (xyz - anchor) @ m
+        off = (sub - anchor) @ m
         near = np.abs(off) < tol
-        xyz[near] -= off[near, None] * m
+        sub[near] -= off[near, None] * m
+    xyz[idx] = sub
     return xyz
 
 
@@ -3066,12 +3375,29 @@ def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
                                          dtype=np.int64).reshape(-1, 4))
         if not tets:
             raise RuntimeError("the assembly meshed to no tetrahedra")
+        tets = np.vstack(tets)
+        # The meshed-vs-CAD gate runs BEFORE the snap (the 2-D collapse
+        # precedent): it tests gmsh's fidelity to the boolean, while the
+        # snap is our own exact bookkeeping whose volume effect is gated
+        # by the caller's domain-conservation check. The reference, OCC's
+        # boolean mass, is itself only good to ~5e-7 relative on a
+        # many-faceted tool, hence the tolerance.
+        P = xyz[tets]
+        v6 = np.einsum("ij,ij->i",
+                       np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                       P[:, 3] - P[:, 0])
+        mesh_vol = float(np.abs(v6).sum() / 6.0)
+        if abs(mesh_vol - cad_volume) > 1e-6 * cad_volume:
+            raise RuntimeError(
+                f"the assembly meshed to volume {mesh_vol:.12e} against "
+                f"CAD {cad_volume:.12e}; the layer mesh does not fill its "
+                "own solids.")
         if planes is not None:
             # OCC's clipped faces sit within rounding of the boundary; the
             # band logic and the cap's node sharing need EXACT membership,
             # so snap defensively.
             xyz = _snap_to_boundary_3d(xyz, dom_verts, dom_tris, planes)
-        return xyz, np.vstack(tets), float(cad_volume)
+        return xyz, tets, float(cad_volume)
     finally:
         gmsh.finalize()
 
@@ -3167,6 +3493,103 @@ def _collapse_boundary_imprints(asm_pts, asm_tris, loops, delta):
     return asm_pts[used], compact[tris]
 
 
+def _collapse_boundary_imprints_3d(asm_pts, asm_tets, dom_verts, dom_tris,
+                                   delta):
+    """Route the band outline THROUGH any boundary vertex it grazes.
+
+    The 2-D collapse one dimension up. The clip lands the band's outline
+    where geometry puts it, and over a long band it passes arbitrarily
+    close to some of the wall's own vertices; the collar then meshes a
+    sliver between the vertex and the outline (measured: a 2.4 m gap on
+    a 1000 km megathrust, refused by the 2-D fill as moved nodes). Where
+    a kept-able boundary vertex lies within ``delta`` of the outline,
+    the outline is made to pass THROUGH it: the nearest outline node
+    moves onto the vertex when one is close enough, otherwise the
+    outline edge is split at the vertex — every tetrahedron on that edge
+    bisects, shape-safe because the new node sits within ``delta`` of
+    the edge it splits. The vertex is then band-covered exactly, the
+    frame rule deletes it, and the outline node re-provides its
+    position; the band still tiles the same faceted surface, so the
+    domain's shape is untouched. The band's side faces tilt by under
+    ``delta`` across their last cell — the end-snap contract, one level
+    up.
+    """
+    from collections import Counter
+
+    skin_xyz, skin_local, node_ids = _assembly_skin(asm_pts, asm_tets)
+    _interior, band_idx = _split_skin_trace(skin_xyz, skin_local,
+                                            dom_verts, dom_tris)
+    if not len(band_idx):
+        return asm_pts, asm_tets
+    cnt = Counter()
+    for t in skin_local[band_idx]:
+        a, b, c = sorted(int(v) for v in t)
+        for e in ((a, b), (a, c), (b, c)):
+            cnt[e] += 1
+    outline = [(int(node_ids[a]), int(node_ids[b]))
+               for (a, b), k in cnt.items() if k == 1]
+
+    pts = list(asm_pts)
+    tets = [list(t) for t in asm_tets]
+    onode_xyz = asm_pts[np.unique(np.asarray(outline).ravel())]
+    lo = onode_xyz.min(axis=0) - 2.0 * delta
+    hi = onode_xyz.max(axis=0) + 2.0 * delta
+    candidates = [int(v) for v in np.unique(dom_tris)
+                  if (lo <= dom_verts[v]).all()
+                  and (dom_verts[v] <= hi).all()]
+
+    def v6_of(row, at=None, coord=None):
+        P = [coord if at is not None and x == at else np.asarray(pts[x])
+             for x in row]
+        return float(np.cross(P[1] - P[0], P[2] - P[0]) @ (P[3] - P[0]))
+
+    for v in candidates:
+        V = dom_verts[v]
+        best_d, best_k = np.inf, -1
+        for k, (a, b) in enumerate(outline):
+            A, B = np.asarray(pts[a]), np.asarray(pts[b])
+            e = B - A
+            u = float(np.clip((V - A) @ e / float(e @ e), 0.0, 1.0))
+            d = float(np.linalg.norm(V - (A + u * e)))
+            if d < best_d:
+                best_d, best_k = d, k
+        if best_d >= delta or best_d < 1e-12:
+            continue
+        a, b = outline[best_k]
+        da = float(np.linalg.norm(np.asarray(pts[a]) - V))
+        db = float(np.linalg.norm(np.asarray(pts[b]) - V))
+        # A move or split may not flatten any incident tetrahedron — two
+        # grazes competing for the same neighbourhood would otherwise
+        # stack nodes and degenerate cells. A skipped vertex keeps its
+        # sliver, which is the status quo, not a defect.
+        if min(da, db) < 1.5 * delta:
+            n = a if da <= db else b
+            star = [row for row in tets if n in row]
+            if all(abs(v6_of(row, at=n, coord=V))
+                   > 0.2 * abs(v6_of(row)) for row in star):
+                pts[n] = V.copy()
+            continue
+        edge_rows = [row for row in tets if a in row and b in row]
+        m = len(pts)
+        ok = all(min(abs(v6_of([m if x == a else x for x in row],
+                              at=m, coord=V)),
+                     abs(v6_of([m if x == b else x for x in row],
+                              at=m, coord=V)))
+                 > 0.05 * abs(v6_of(row)) for row in edge_rows)
+        if not ok:
+            continue
+        pts.append(V.copy())
+        fresh = []
+        for row in edge_rows:
+            two = [m if x == b else x for x in row]
+            row[:] = [m if x == a else x for x in row]
+            fresh.append(two)
+        tets.extend(fresh)
+        outline[best_k] = (a, m)
+        outline.append((m, b))
+    return np.asarray(pts, dtype=float), np.asarray(tets, dtype=np.int64)
+
+
 def _refuse_multiple_bands(band_facets):
     """One contiguous band only: a single carve-and-splice is built.
 
@@ -3238,32 +3661,549 @@ def _outcrop_frame_2d(comp_loops, asm_pts, band_pairs, X, on_wall):
     return deletable, near_touched
 
 
-def _trace_wall_code(skin_xyz, skin_facets, trace_idx, box_lo, box_hi):
-    """The single axis-aligned wall the trace lies in, as the legacy
-    ``2*axis + side`` code — the frame the carve and the sew still run
-    against. One wall only; more refuses (box-edge bands are not built),
-    and a trace on a non-axis-aligned boundary refuses until the general
-    carve/sew exists.
+# Adjacent boundary facets whose normals differ by less than this are the
+# same SMOOTH WALL: the faceting of a curved boundary (angle -> 0 under
+# refinement) groups into one wall, while a box-like corner (90 degrees)
+# separates two. The outcrop bowl may open anywhere on a band-touched wall.
+_WALL_DIHEDRAL_COS = np.cos(np.deg2rad(45.0))
+
+
+def _boundary_walls(dom_verts, dom_tris, region):
+    """Group coplanar regions into SMOOTH WALLS across low-angle creases.
+
+    Returns ``{region: wall}`` with wall ids arbitrary but deterministic.
     """
-    codes = np.full(len(trace_idx), -1, dtype=np.int64)
-    for axis in range(skin_xyz.shape[1]):
-        for side, value in ((0, box_lo[axis]), (1, box_hi[axis])):
-            on = (skin_xyz[skin_facets[trace_idx]][:, :, axis]
-                  == value).all(axis=1)
-            codes[on] = 2 * axis + side
-    if (codes < 0).any():
-        # TODO(DESIGN): the general carve/sew (arc-ordered splice, cap
-        # meshed on the boundary facets) lifts this; the trace split above
-        # already finds the band on any boundary.
-        raise NotImplementedError(
-            "the zone outcrops on a non-axis-aligned boundary; the "
-            "general carve/sew is not yet built.")
-    walls = set(int(c) for c in codes)
-    if len(walls) > 1:
-        raise NotImplementedError(
-            "the zone meets more than one domain wall; box-edge outcrop "
-            "bands are not built.")
-    return walls.pop()
+    tris = np.asarray(dom_tris, dtype=np.int64)
+    T = dom_verts[tris]
+    n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    n = n / np.linalg.norm(n, axis=1)[:, None]
+
+    parent = {int(r): int(r) for r in np.unique(region)}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    edge_first = {}
+    for t, tri in enumerate(tris):
+        a, b, c = sorted(int(v) for v in tri)
+        for e in ((a, b), (a, c), (b, c)):
+            if e not in edge_first:
+                edge_first[e] = t
+                continue
+            s = edge_first[e]
+            # The gathered complex carries no consistent orientation, so
+            # the dihedral test must not depend on the facet normals'
+            # signs; |cos| also merges a near-zero fold, which a domain
+            # boundary does not have.
+            if abs(float(n[t] @ n[s])) > _WALL_DIHEDRAL_COS:
+                parent[find(int(region[t]))] = find(int(region[s]))
+    return {r: find(r) for r in parent}
+
+
+def _outcrop_frame_3d(X, on_wall, dom_verts, dom_tris, region,
+                      skin_xyz, band_facets, tol=1e-9):
+    """Which mesh boundary vertices a 3-D outcrop may DELETE, and which
+    count as boundary contact NEAR the outcrop.
+
+    The outcrop's footprint arrives as ``band_facets`` over ``skin_xyz``:
+    a BAND of skin triangles (a fat zone) or a trace CHAIN of edges (a
+    sheet, whose outcrop has no area) — the frame never asks whether the
+    object is fat or thin, only where its footprint lies.
+
+    The 2-D frame rule one dimension up, with the two notions the third
+    dimension separates. NEAR — where the cavity may open into cap faces —
+    is by SMOOTH WALL (:func:`_boundary_walls`): on a faceted sphere the
+    bowl legitimately spills onto facets beside the band's own, while a
+    box's other walls stay refused across their sharp creases. DELETABLE
+    is by SHAPE: a vertex may go when the band re-provides its geometry
+    (it lies ON the band — :func:`_collapse_boundary_imprints_3d` routes
+    the outline THROUGH any vertex it merely grazes, so the exact test
+    suffices), when it is interior to a single band-touched coplanar
+    region (the collar re-mesh stays in the region's own plane), or when
+    it is interior to a STRAIGHT crease between two touched regions — a
+    straight crease's interior vertices carry no shape, and the overlay
+    rebuilds the line through the survivors. A vertex where three or
+    more regions meet (a box corner, every vertex of a faceted sphere)
+    is the domain's shape itself — the 2-D compressed corner — and is
+    never deleted off the band: its uncrossed facets' crease chains
+    would dangle without it.
+
+    Membership is exact: the gathered complex's vertex coordinates are the
+    mesh's own bytes, so a mesh vertex's regions are read off the facets
+    incident to its coordinate, not off a distance.
+
+    Returns ``(deletable, near_touched, touched)`` — masks over the mesh
+    vertices, and the set of touched region ids.
+    """
+    band_facets = np.asarray(band_facets, dtype=np.int64)
+    band_cen = skin_xyz[band_facets].mean(axis=1)
+    d_cen, at = _nearest_facet(band_cen, dom_verts, dom_tris)
+    if (d_cen > tol).any():
+        raise RuntimeError(
+            "the outcrop band lies off the domain boundary; the clip and "
+            "the boundary disagree")
+    touched = {int(region[k]) for k in at}
+    wall_of = _boundary_walls(dom_verts, dom_tris, region)
+    touched_walls = {wall_of[r] for r in touched}
+
+    row_of = {tuple(v): i for i, v in enumerate(dom_verts)}
+    regions_at = {}
+    crease_dirs = {}
+    edge_first = {}
+    for t, tri in enumerate(dom_tris):
+        for v in tri:
+            regions_at.setdefault(int(v), set()).add(int(region[t]))
+        a, b, c = sorted(int(v) for v in tri)
+        for e in ((a, b), (a, c), (b, c)):
+            if e not in edge_first:
+                edge_first[e] = t
+                continue
+            if int(region[t]) != int(region[edge_first[e]]):
+                d = dom_verts[e[1]] - dom_verts[e[0]]
+                d = d / np.linalg.norm(d)
+                for v in e:
+                    crease_dirs.setdefault(int(v), []).append(d)
+
+    d_band = (_segments_distance(X, skin_xyz,
+                                 [tuple(e) for e in band_facets])
+              if band_facets.shape[1] == 2
+              else _sheet_distance(X, skin_xyz, band_facets))
+    deletable = np.zeros(len(X), dtype=bool)
+    near_touched = np.zeros(len(X), dtype=bool)
+    for i in np.flatnonzero(on_wall):
+        dv = row_of.get(tuple(X[i]))
+        if dv is None:
+            raise RuntimeError(
+                "a domain-wall vertex is missing from the gathered "
+                "boundary complex; the wall mask and the complex disagree")
+        mine = regions_at[dv]
+        if not any(wall_of[r] in touched_walls for r in mine):
+            continue
+        near_touched[i] = True
+        if d_band[i] < tol:
+            deletable[i] = True
+        elif len(mine) == 1:
+            deletable[i] = mine <= touched
+        elif len(mine) == 2 and mine <= touched:
+            dirs = crease_dirs.get(dv, [])
+            deletable[i] = (len(dirs) == 2 and
+                            float(np.linalg.norm(
+                                np.cross(dirs[0], dirs[1]))) < 1e-9)
+    return deletable, near_touched, touched
+
+
+def _outcrop_collar_3d(X, alive, cap_faces, cap_region, planes_of,
+                       skin_xyz, band_tris, band_tri_region, band_outline,
+                       chain=None, tol=1e-9):
+    """Re-triangulate the outcrop bowl's wall collar, region by region.
+
+    The collar is the bowl's wall footprint minus the band — in the box
+    case a flat annulus between the cavity's wall rim and the band's
+    outline. On a general boundary the footprint spans several COPLANAR
+    REGIONS, so each region's piece is meshed flat in its own plane — the
+    cap stays exactly on the faceted surface, which is what conserves the
+    domain volume — and the pieces conform along the CREASES between
+    regions.
+
+    A SHEET's outcrop has no area: instead of a band it passes ``chain`` —
+    the ordered trace polyline as rows of ``skin_xyz`` (``band_tris``
+    empty, ``band_outline`` None) — and the collar covers the WHOLE bowl
+    with the chain EMBEDDED in the pieces rather than a hole cut out of
+    them. A chain node at a crease crossing lands ON the crease and enters
+    the 1-D overlay as an 'a' node exactly as a band's outline node does;
+    the chain's runs between crossings are embedded per region, free ends
+    (a trace ending mid-wall) as gmsh's ordinary free-end embed. A trace
+    edge lying ALONG a crease, or off the bowl entirely, is refused.
+
+    Along a crease the two sides segment the line differently: the bowl's
+    nodes are mesh vertices, the band's crossing nodes are assembly nodes,
+    so edge identity cannot match them. The 1-D overlay merges both node
+    sets by arc coordinate along the (straight) crease and keeps each
+    elementary sub-segment for the side(s) whose bowl piece covers it and
+    the band does not. Deleted crease vertices (``alive`` False — the
+    frame rule lets a straight crease's interior go) contribute geometry
+    but not nodes: the chain is rebuilt through the survivors. A
+    sub-segment covered from ONE side only must be a whole mesh edge,
+    because the face matching it in the fill's closed surface is a
+    cavity-shell face carrying the mesh segmentation — anything else there
+    is a refusal, not a crack.
+
+    ``cap_faces`` are the bowl's wall triangles as rows of ``X`` with
+    ``alive`` the surviving-vertex mask, ``cap_region`` their coplanar
+    region ids, ``planes_of`` the region planes; ``band_tris`` are the
+    band's skin triangles (rows of ``skin_xyz``) with ``band_tri_region``
+    their region ids and ``band_outline`` the band's closed outline loop
+    of skin nodes.
+
+    Returns ``(mesh_nodes, skin_nodes, extra_xyz, tris)`` — the cap in the
+    fill's three node namespaces (kept mesh vertices, assembly skin nodes,
+    new in-plane points), ``tris`` indexing their concatenation in that
+    order, exactly as :func:`_gmsh_fill_annulus_3d` reads its payload.
+    """
+    cap_faces = np.asarray(cap_faces, dtype=np.int64)
+    cap_region = np.asarray(cap_region, dtype=np.int64)
+    band_tris = np.asarray(band_tris, dtype=np.int64).reshape(-1, 3)
+    if (band_outline is None) == (chain is None):
+        raise RuntimeError(
+            "the outcrop collar takes a band outline (a zone) or a trace "
+            "chain (a sheet), exactly one")
+    chain = [int(v) for v in chain] if chain is not None else None
+
+    # The bowl's wall edges. Within one region an edge seen once is the
+    # bowl rim (matched by a cavity-shell face, so it stays a mesh edge
+    # verbatim); an edge shared by two regions' faces is a crease edge and
+    # goes to the overlay; an edge seen twice within one region is
+    # interior to that region's piece.
+    edge_faces = {}
+    for k, tri in enumerate(cap_faces):
+        a, b, c = sorted(int(v) for v in tri)
+        for e in ((a, b), (a, c), (b, c)):
+            edge_faces.setdefault(e, []).append(k)
+
+    soup = {}
+    crease_edges = {}
+    for e, ks in edge_faces.items():
+        if len(ks) > 2:
+            raise RuntimeError(
+                "an outcrop bowl wall edge belongs to more than two wall "
+                "faces; the boundary complex is not manifold")
+        rs = sorted({int(cap_region[k]) for k in ks})
+        if len(ks) == 1:
+            soup.setdefault(rs[0], []).append((('m', e[0]), ('m', e[1])))
+        elif len(rs) == 2:
+            crease_edges.setdefault(tuple(rs), []).append(e)
+
+    # Region soups of the coverage tests, once.
+    region_faces = {int(r): cap_faces[cap_region == r]
+                    for r in np.unique(cap_region)}
+
+    def covered(r, P):
+        return bool(_sheet_distance(P[None, :], X, region_faces[r])[0]
+                    < tol)
+
+    def in_band(P):
+        if not len(band_tris):
+            return False
+        return bool(_sheet_distance(P[None, :], skin_xyz, band_tris)[0]
+                    < tol)
+
+    outline_edges = []
+    if band_outline is not None:
+        n_out = len(band_outline)
+        outline_edges = [(int(band_outline[i]),
+                          int(band_outline[(i + 1) % n_out]))
+                         for i in range(n_out)]
+    # The skin nodes that may sit on a crease: a band's outline vertices,
+    # or every node of a sheet's trace chain.
+    overlay_candidates = ({v for e in outline_edges for v in e}
+                          if band_outline is not None else set(chain))
+
+    band_edge_owner = {}
+    for k, tri in enumerate(band_tris):
+        a, b, c = sorted(int(v) for v in tri)
+        for e in ((a, b), (a, c), (b, c)):
+            band_edge_owner.setdefault(e, []).append(k)
+
+    # ------------------------------------------------- the crease overlay
+    on_crease_edge = {}
+    for pair, edges in crease_edges.items():
+        parent = {}
+
+        def find(v):
+            while parent[v] != v:
+                parent[v] = parent[parent[v]]
+                v = parent[v]
+            return v
+
+        for a, b in edges:
+            parent.setdefault(a, a)
+            parent.setdefault(b, b)
+            parent[find(a)] = find(b)
+        crease_chains = {}
+        for a, b in edges:
+            crease_chains.setdefault(find(a), []).append((a, b))
+
+        # Not `chain` — that name is the sheet-trace parameter one scope up.
+        for crease_chain in crease_chains.values():
+            chain_all = sorted({v for e in crease_chain for v in e})
+            nodes_m = [v for v in chain_all if alive[v]]
+            origin = X[chain_all[0]]
+            far = max(chain_all, key=lambda v: float(
+                np.linalg.norm(X[v] - origin)))
+            u = X[far] - origin
+            u = u / np.linalg.norm(u)
+
+            def arc(P):
+                return float((P - origin) @ u)
+
+            def off_line(P):
+                return float(np.linalg.norm((P - origin)
+                                            - arc(P) * u))
+
+            span = [min(arc(X[v]) for v in chain_all) - tol,
+                    max(arc(X[v]) for v in chain_all) + tol]
+            resolved = [('m', v, arc(X[v])) for v in nodes_m]
+            for s in overlay_candidates:
+                P = skin_xyz[s]
+                if off_line(P) < tol and span[0] < arc(P) < span[1]:
+                    resolved.append(('a', int(s), arc(P)))
+            for a, b in outline_edges:
+                mid = 0.5 * (skin_xyz[a] + skin_xyz[b])
+                if (off_line(skin_xyz[a]) < tol
+                        and off_line(skin_xyz[b]) < tol
+                        and span[0] < arc(mid) < span[1]):
+                    # The outline runs ALONG this crease for one edge: the
+                    # band reaches the crease there, so the edge bounds
+                    # the collar piece on the OTHER side, not the owning
+                    # band triangle's own region.
+                    key = (a, b) if a < b else (b, a)
+                    on_crease_edge[key] = pair
+            for kind, i, s in resolved:
+                if kind != 'a':
+                    continue
+                if any(k2 == 'm' and abs(s2 - s) < tol
+                       for k2, _i2, s2 in resolved):
+                    raise RuntimeError(
+                        "a band outline node lands within rounding of a "
+                        "kept mesh vertex on a domain crease; the collapse "
+                        "of boundary imprints is not built in 3-D — move "
+                        "the patch or change the mesh spacing.")
+            chain_set = {(a, b) if a < b else (b, a)
+                         for a, b in crease_chain}
+            resolved.sort(key=lambda n: n[2])
+            for (k0, i0, s0), (k1, i1, s1) in zip(resolved, resolved[1:]):
+                mid = origin + (0.5 * (s0 + s1)) * u
+                if in_band(mid):
+                    continue
+                sides = [r for r in pair if covered(r, mid)]
+                if not sides:
+                    continue
+                if len(sides) == 1 and (
+                        'a' in (k0, k1)
+                        or ((i0, i1) if i0 < i1 else (i1, i0))
+                        not in chain_set):
+                    raise RuntimeError(
+                        "the outcrop band splits a wall edge that the "
+                        "cavity shell keeps whole; raise `clearance` so "
+                        "the carve covers the crease on both sides")
+                for r in sides:
+                    soup.setdefault(r, []).append(((k0, i0), (k1, i1)))
+
+    # The band outline bounds the collar from inside; each outline edge
+    # belongs to exactly one band triangle, whose region takes it.
+    for a, b in outline_edges:
+        e = (a, b) if a < b else (b, a)
+        owners = band_edge_owner.get(e, [])
+        if len(owners) != 1:
+            raise RuntimeError(
+                "a band outline edge does not bound exactly one band "
+                "facet; the outline and the band disagree")
+        r = int(band_tri_region[owners[0]])
+        if e in on_crease_edge:
+            pair = on_crease_edge[e]
+            if r not in pair:
+                raise RuntimeError(
+                    "a band outline edge lies on a crease its own band "
+                    "facet does not touch; the trace and the boundary "
+                    "disagree")
+            other = pair[0] if pair[1] == r else pair[1]
+            if other not in region_faces:
+                raise NotImplementedError(
+                    "the outcrop band runs ALONG a domain crease with no "
+                    "bowl beyond it; widen `clearance` so the cavity "
+                    "covers both sides.")
+            r = other
+        soup.setdefault(r, []).append((('a', a), ('a', b)))
+
+    # A sheet's trace, split into per-region RUNS at its crease crossings.
+    # Each trace edge belongs to the one region covering its midpoint: two
+    # regions is an edge ALONG a crease (needs an overlay the trace cannot
+    # provide), none is a trace off the bowl — both are refusals with the
+    # reason, not mis-assignments.
+    runs = {}
+    if chain is not None:
+        prev_r = None
+        for a, b in zip(chain[:-1], chain[1:]):
+            mid = 0.5 * (skin_xyz[a] + skin_xyz[b])
+            rs = [r for r in region_faces if covered(r, mid)]
+            if len(rs) > 1:
+                raise NotImplementedError(
+                    "the sheet's trace runs ALONG a domain crease; "
+                    "embedding a trace edge into a crease is not built — "
+                    "move the sheet or change the mesh spacing.")
+            if not rs:
+                raise RuntimeError(
+                    "a trace edge lies on no collar region; the trace and "
+                    "the bowl disagree")
+            r = rs[0]
+            if r == prev_r:
+                runs[r][-1].append(b)
+            else:
+                runs.setdefault(r, []).append([a, b])
+            prev_r = r
+
+    # ------------------------------------- mesh each region's piece flat
+    mesh_nodes, skin_nodes = [], []
+    m_row, a_row = {}, {}
+
+    def namespace(kind, i):
+        if kind == 'm':
+            if i not in m_row:
+                m_row[i] = len(mesh_nodes)
+                mesh_nodes.append(int(i))
+            return ('m', m_row[i])
+        if i not in a_row:
+            a_row[i] = len(skin_nodes)
+            skin_nodes.append(int(i))
+        return ('a', a_row[i])
+
+    extra_xyz = []
+    tris_out = []
+    for r, segments in sorted(soup.items()):
+        local_of, local_nodes = {}, []
+        for e in segments:
+            for kind, i in e:
+                if (kind, i) not in local_of:
+                    local_of[(kind, i)] = len(local_nodes)
+                    local_nodes.append((kind, i))
+        # The region's embedded trace runs: their crossing ends are already
+        # ring nodes (the overlay put them there); interior run nodes join
+        # the table as new 'a' rows.
+        r_runs = runs.get(int(r), [])
+        for run in r_runs:
+            for v in run:
+                if ('a', v) not in local_of:
+                    local_of[('a', v)] = len(local_nodes)
+                    local_nodes.append(('a', v))
+        coords = np.array([X[i] if kind == 'm' else skin_xyz[i]
+                           for kind, i in local_nodes])
+        m_coords = np.array([X[i] for kind, i in local_nodes
+                             if kind == 'm'])
+        if any(kind == 'm' and not alive[i] for kind, i in local_nodes):
+            raise RuntimeError(
+                "an outcrop collar node was deleted by the carve; the "
+                "frame rule and the collar disagree")
+        for kind, i in local_nodes:
+            if kind != 'a' or not len(m_coords):
+                continue
+            if np.linalg.norm(m_coords - skin_xyz[i], axis=1).min() < tol:
+                raise RuntimeError(
+                    "a band outline node lands within rounding of a kept "
+                    "mesh vertex; the collapse of boundary imprints is "
+                    "not built in 3-D — move the patch or change the mesh "
+                    "spacing.")
+
+        anchor, nrm = planes_of[int(r)]
+        f0 = region_faces[int(r)][0]
+        e0 = X[f0[1]] - X[f0[0]]
+        e0 = e0 / np.linalg.norm(e0)
+        w0 = np.cross(nrm, e0)
+        P2 = np.column_stack([(coords - anchor) @ e0,
+                              (coords - anchor) @ w0])
+
+        loops = _skin_loops(
+            [(local_of[e[0]], local_of[e[1]]) for e in segments],
+            what="an outcrop collar piece's boundary")
+
+        def signed_area(loop):
+            Q = P2[np.asarray(loop)]
+            return 0.5 * float(Q[:, 0] @ np.roll(Q[:, 1], -1)
+                               - Q[:, 1] @ np.roll(Q[:, 0], -1))
+
+        containers = {k: [j for j, other in enumerate(loops)
+                          if j != k and _inside_polygon(
+                              P2[np.asarray(other)], P2[loop[0]])]
+                      for k, loop in enumerate(loops)}
+        run_local = [[local_of[('a', v)] for v in run] for run in r_runs]
+        run_assigned = [False] * len(run_local)
+        for k, loop in enumerate(loops):
+            if len(containers[k]) % 2:
+                continue                      # a hole; its outer takes it
+            holes = [j for j in range(len(loops))
+                     if containers[j]
+                     and max(containers[j],
+                             key=lambda c: len(containers[c])) == k
+                     and len(containers[j]) == len(containers[k]) + 1]
+            ring = loop if signed_area(loop) > 0.0 else loop[::-1]
+            # Each trace run goes to the outer loop containing it, tested
+            # at its first edge's midpoint (the run's ends may lie ON the
+            # ring at crease crossings; the midpoint is strictly inside).
+            mine = []
+            for q, run in enumerate(run_local):
+                probe = 0.5 * (P2[run[0]] + P2[run[1]])
+                if (_inside_polygon(P2[np.asarray(ring)], probe)
+                        and not any(_inside_polygon(
+                            P2[np.asarray(loops[j])], probe)
+                            for j in holes)):
+                    mine.append(run)
+                    run_assigned[q] = True
+            try:
+                fill_tris, extra2 = _gmsh_fill_2d(
+                    P2, list(ring), mine or None,
+                    holes=[list(loops[j]) for j in holes])
+            except RuntimeError as exc:
+                # Name the pinch: the thinnest node-to-segment gap in the
+                # polygon, with the node KINDS ('m' = mesh vertex, 'a' =
+                # assembly outline node), says which near-coincidence to
+                # chase.
+                ids = list(ring) + [w for j in holes for w in loops[j]]
+                gap, gi, gj0, gj1 = np.inf, -1, -1, -1
+                for i2 in ids:
+                    for j2 in range(len(ids)):
+                        j3 = (j2 + 1) % len(ids)
+                        if i2 in (ids[j2], ids[j3]):
+                            continue
+                        A, B = P2[ids[j2]], P2[ids[j3]]
+                        e2 = B - A
+                        u2 = float(np.clip((P2[i2] - A) @ e2
+                                           / float(e2 @ e2), 0.0, 1.0))
+                        d2 = float(np.linalg.norm(P2[i2]
+                                                  - (A + u2 * e2)))
+                        if d2 < gap:
+                            gap, gi, gj0, gj1 = d2, i2, ids[j2], ids[j3]
+                raise RuntimeError(
+                    f"an outcrop collar piece failed to mesh ({exc}); "
+                    f"thinnest feature {gap:.3e} between node "
+                    f"{local_nodes[gi]} and segment "
+                    f"{local_nodes[gj0]}-{local_nodes[gj1]}")
+            base = len(local_nodes)
+            extra_row = {}
+            for t in fill_tris:
+                row = []
+                for v in t:
+                    if v < base:
+                        row.append(namespace(*local_nodes[int(v)]))
+                    else:
+                        j = int(v) - base
+                        if j not in extra_row:
+                            x2 = extra2[j]
+                            extra_xyz.append(anchor + x2[0] * e0
+                                             + x2[1] * w0)
+                            extra_row[j] = len(extra_xyz) - 1
+                        row.append(('x', extra_row[j]))
+                tris_out.append(row)
+        if not all(run_assigned):
+            raise RuntimeError(
+                "a trace run lies in no piece of its collar region; the "
+                "trace and the bowl disagree")
+
+    n_m, n_a = len(mesh_nodes), len(skin_nodes)
+
+    def flat(kind, i):
+        if kind == 'm':
+            return i
+        if kind == 'a':
+            return n_m + i
+        return n_m + n_a + i
+
+    tris = np.array([[flat(*v) for v in row] for row in tris_out],
+                    dtype=np.int64)
+    extra = (np.asarray(extra_xyz, dtype=float) if extra_xyz
+             else np.zeros((0, 3), dtype=float))
+    return mesh_nodes, skin_nodes, extra, tris
 
 
 def _single_loop(edges, what):
@@ -3290,7 +4230,8 @@ def _single_loop(edges, what):
 
 def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
                             reach_cell, held_cells, on_wall, shared_chart,
-                            seed_drop=None, open_wall=None):
+                            seed_drop=None, open_deletable=None,
+                            open_near=None):
     """Victims, dropped tets and the closed shell around a FAT object.
 
     Differs from the sheet's carve in two measured ways. The reach is a
@@ -3301,6 +4242,11 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     the drop set is GROWN at every non-manifold shell edge until the shell
     closes; dropping more cells only enlarges the fill (thin_volume_spike:
     converges in a few rounds).
+
+    An OUTCROP passes its frame rule as two vertex masks
+    (:func:`_outcrop_frame_3d`): ``open_deletable`` — wall vertices the
+    carve may take — and ``open_near`` — wall vertices near the outcrop,
+    where the cavity may open into cap faces.
     """
     d_skin = _sheet_distance(X, skin_pts, skin_tris)
 
@@ -3308,9 +4254,8 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     if held_cells:
         for c in held_cells:
             held_vertex[cells[c]] = True
-    on_open = np.zeros(len(X), dtype=bool)
-    if open_wall is not None:
-        on_open = X[:, open_wall[0]] == open_wall[1]
+    on_open = (open_deletable if open_deletable is not None
+               else np.zeros(len(X), dtype=bool))
     victim = ((d_skin < reach_vertex)
               & (~on_wall | on_open) & ~held_vertex)
 
@@ -3339,19 +4284,26 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     shell, cap_faces, drop = _closed_shell_3d(dm, X, cells, drop, victim,
                                               held_cells, shared_chart,
                                               "thin volume",
-                                              open_wall=open_wall)
+                                              open_vertex=open_near)
 
-    # The growth can swallow the whole star of a vertex that is NOT itself a
-    # victim. Such a vertex is on no shell face — a shell face keeps a
-    # surviving cell — so it would come through the rebuild as an ISOLATED
-    # point and the global Euler gate reads 2, not 1 (caught by CI: the
-    # growth pattern follows the assembly mesh and is gmsh-version-
-    # dependent). Every surviving vertex must have a surviving cell.
+    # The carve can swallow the whole star of a vertex that is NOT itself
+    # a victim. An unreferenced survivor would ride through the rebuild as
+    # an isolated point (global Euler 2, not 1 — the class CI caught), so
+    # an interior one is promoted to a victim. A PROTECTED wall vertex
+    # near the outcrop needs no kept cell at all: it is a COLLAR node —
+    # the cap is re-triangulated through the surviving wall vertices,
+    # which is what preserves a faceted boundary's shape, and the gap
+    # fill's tets reference it. On a curved wall this is the common case:
+    # every facet vertex near the band is protected, and each cell of its
+    # small star holds some interior victim.
     referenced = np.zeros(len(X), dtype=bool)
     if (~drop).any():
         referenced[cells[~drop].ravel()] = True
     orphan = ~referenced & ~victim
-    if orphan[on_wall & ~on_open].any():
+    if open_near is not None:
+        collar_kept = orphan & on_wall & ~on_open & open_near
+        orphan &= ~collar_kept
+    if (orphan & on_wall & ~on_open).any():
         raise RuntimeError(
             "the cavity would strand a domain-wall vertex; the volume must "
             "be interior, with clearance to spare")
@@ -3369,11 +4321,11 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
 
     OUTCROPPING zone (``cap`` given): the gap's boundary is ONE closed
     surface of three discrete pieces — the shell, the pre-meshed CAP over
-    the bowl (an annulus in the wall plane whose outer ring is the shell's
-    wall rim and whose HOLE is the zone's band outline), and the INTERIOR
-    part of the skin, which is open and rim-matched to the cap's hole. The
-    band itself is not part of the gap's boundary — the zone touches the
-    wall directly there.
+    the bowl (the wall collar :func:`_outcrop_collar_3d` builds — in the
+    box case an annulus between the shell's wall rim and the zone's band
+    outline), and the INTERIOR part of the skin, which is open and
+    rim-matched to the cap's hole. The band itself is not part of the
+    gap's boundary — the zone touches the wall directly there.
 
     Returns ``(points, tets, moved, skin_out, n_shell, cap_out)`` with the
     fill's nodes ordered shell first, skin second, cap extras third, new
@@ -4370,13 +5322,18 @@ def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
             f"the removal changed the domain volume: "
             f"{volume_before[0]:.12f} -> {volume_after[0]:.12f}")
 
+    # The surgery must CONSERVE the domain's topology, not assume it: a
+    # box is a ball (Euler 1) but a spherical shell is S^2 x I (Euler 2).
+    owned = np.asarray(_owned_stratum_counts(dm), dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
+    euler_before = int(owned[0] - owned[1] + owned[2] - owned[3])
     owned = np.asarray(_owned_stratum_counts(new), dtype=np.int64)
     comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
     nv_g, ne_g, nf_g, nc_g = (int(x) for x in owned)
-    if nv_g - ne_g + nf_g - nc_g != 1:
+    if nv_g - ne_g + nf_g - nc_g != euler_before:
         raise RuntimeError(
-            f"the cleared mesh has global Euler number "
-            f"{nv_g - ne_g + nf_g - nc_g}, not 1")
+            f"the removal changed the global Euler number: "
+            f"{euler_before} -> {nv_g - ne_g + nf_g - nc_g}")
 
     after = _interior_face_counts_3d(new, exclude=removed_pairs)
     for key, before in held_counts.items():
@@ -4856,10 +5813,12 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         In 3-D: one or more PLANAR polygons, ``(N, 3)`` corners each. In
         2-D: one or more polylines, ``(N, 2)`` points each, thickened into
         ribbons. Patches may cross — that is the point — and may run PAST
-        the domain: the assembly is clipped to the box, and a clipped face
-        left in a wall plane (an edge in a wall line, in 2-D) becomes the
-        zone's OUTCROP BAND, carrying both the skin label and the wall's
-        labels. Patches must not touch a surface already embedded.
+        the domain: the assembly is clipped against the mesh's own
+        boundary, and a clipped face left ON the boundary (an edge, in
+        2-D) becomes the zone's OUTCROP BAND, carrying the skin label, the
+        wall's labels and the ``<label>_trace`` label. The boundary need
+        not be axis-aligned, and the band may cross a domain crease (a box
+        edge). Patches must not touch a surface already embedded.
     width : float
         The layer thickness, a real mesh parameter; ``width < h`` is
         supported and measured.
@@ -4897,8 +5856,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     Raises
     ------
     NotImplementedError
-        When the zone meets more than one domain wall (box-edge outcrop
-        bands are not built), or meets one wall in more than one band.
+        When the zone meets the boundary in more than one band, or the
+        band runs along a domain crease with no cavity bowl beyond it.
     RuntimeError, ValueError
         Carve/fill refusals, always collective.
     """
@@ -4922,36 +5881,22 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
 
     # The specify-long contract: patches may extend PAST the domain; the
     # assembly is clipped against the mesh's own boundary, and a clipped
-    # face left in a wall plane becomes the zone's OUTCROP BAND. The
-    # axis-aligned box survives alongside as the frame the band is
-    # identified against; a general-boundary band is the trace-labelling
-    # stage, not this one.
+    # face left ON the boundary becomes the zone's OUTCROP BAND — on any
+    # boundary, axis-aligned or not.
     dom_verts, dom_tris = _domain_boundary_facets(dm)
-    Xb = _coords(dm)
-    lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(3, np.inf),
-                      -(Xb.max(axis=0)) if len(Xb) else np.full(3, np.inf)])
-    comm.Allreduce(MPI.IN_PLACE, lo_hi, op=MPI.MIN)
-    box_lo, box_hi = lo_hi[0], -lo_hi[1]
 
     # ------------------------------------------ the assembly, once, shared
     failure = None
     payload = None
     if comm.rank == 0:
         try:
-            asm_pts, asm_tets, cad_vol = _occ_assembly_3d(
+            # The meshed-vs-CAD volume gate runs inside the assembly
+            # builder, before its boundary snap.
+            asm_pts, asm_tets, _cad_vol = _occ_assembly_3d(
                 patches, width, size, domain=(dom_verts, dom_tris),
                 assembly=assembly)
-            v6 = np.einsum(
-                "ij,ij->i",
-                np.cross(asm_pts[asm_tets][:, 1] - asm_pts[asm_tets][:, 0],
-                         asm_pts[asm_tets][:, 2] - asm_pts[asm_tets][:, 0]),
-                asm_pts[asm_tets][:, 3] - asm_pts[asm_tets][:, 0])
-            mesh_vol = float(np.abs(v6).sum() / 6.0)
-            if abs(mesh_vol - cad_vol) > 1e-9 * cad_vol:
-                raise RuntimeError(
-                    f"the assembly meshed to volume {mesh_vol:.12e} against "
-                    f"CAD {cad_vol:.12e}; the layer mesh does not fill its "
-                    "own solids.")
+            asm_pts, asm_tets = _collapse_boundary_imprints_3d(
+                asm_pts, asm_tets, dom_verts, dom_tris, 0.1 * size)
             payload = (asm_pts, asm_tets)
         # Exception, not just RuntimeError/ValueError: a raw gmsh error
         # (e.g. a PLC intersection) is a plain Exception, and an
@@ -4969,15 +5914,10 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     # The outcrop band: the skin's trace on the domain boundary.
     interior_idx, band_idx = _split_skin_trace(skin_xyz, skin_tris,
                                                dom_verts, dom_tris)
-    wall_code = (None if not len(band_idx)
-                 else _trace_wall_code(skin_xyz, skin_tris, band_idx,
-                                       box_lo, box_hi))
-    open_wall = None
+    outcropping = bool(len(band_idx))
     band_outline = None
-    if wall_code is not None:
-        axis, side = wall_code // 2, wall_code % 2
-        open_wall = (int(axis),
-                     float(box_hi[axis] if side else box_lo[axis]))
+    if outcropping:
+        _refuse_multiple_bands(skin_tris[band_idx])
         from collections import Counter as _Counter
         band_edge = _Counter()
         for t in skin_tris[band_idx]:
@@ -4987,7 +5927,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         band_outline = _single_loop(
             [e for e, k in band_edge.items() if k == 1],
             "zone's outcrop band outline")
-    skin_tris_fill = (skin_tris[interior_idx] if open_wall is not None
+    skin_tris_fill = (skin_tris[interior_idx] if outcropping
                       else skin_tris)
 
     # -------------------------------------------------- mark, then gather
@@ -5045,9 +5985,17 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     fill = shell_vert_ids = None
     if comm.rank == target:
         try:
+            deletable = near = None
+            if outcropping:
+                dom_region, dom_planes = _coplanar_regions(dom_verts,
+                                                           dom_tris)
+                deletable, near, _regions = _outcrop_frame_3d(
+                    X, on_wall, dom_verts, dom_tris, dom_region,
+                    skin_xyz, skin_tris[band_idx])
             victims, drop_ids, shell, cap_faces = _carve_around_volume_3d(
                 dm_work, X, cells, skin_xyz, skin_tris, reach_v, reach_c,
-                held_cells, on_wall, shared, open_wall=open_wall)
+                held_cells, on_wall, shared, open_deletable=deletable,
+                open_near=near)
             touched = set()
             for c in drop_ids:
                 for q in dm_work.getTransitiveClosure(int(c) + cS)[0]:
@@ -5066,46 +6014,51 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                                    for _f, verts in shell], dtype=np.int64)
 
             cap_payload = None
-            wall_pairs = []
+            removed_wall = []
             if cap_faces:
-                from collections import Counter
-                cap_edge = Counter()
-                for _f, verts in cap_faces:
-                    a, b, c = sorted(verts)
-                    for e in ((a, b), (a, c), (b, c)):
-                        cap_edge[e] += 1
-                rim = _single_loop(
-                    [e for e, k in cap_edge.items() if k == 1],
-                    "zone outcrop cap rim")
-                cap_face_pts = [int(f) for f, _v in cap_faces]
-                for i in range(dm_work.getNumLabels()):
-                    name = dm_work.getLabelName(i)
-                    if name in reconnect._TOPOLOGY_LABELS:
-                        continue
-                    lab = dm_work.getLabel(name)
-                    values = lab.getValueIS()
-                    if values is None:
-                        continue
-                    for val in values.getIndices():
-                        if all(lab.getValue(p) == int(val)
-                               for p in cap_face_pts):
-                            wall_pairs.append((name, int(val)))
-                axis = open_wall[0]
-                uv = [a for a in range(3) if a != axis]
-                cap_X2 = np.vstack([X[rim][:, uv],
-                                    skin_xyz[band_outline][:, uv]])
-                cap_tris_local, cap_extra2 = _gmsh_fill_2d(
-                    cap_X2, list(range(len(rim))), None,
-                    holes=[list(range(len(rim),
-                                      len(rim) + len(band_outline)))])
-                extra_xyz = np.zeros((len(cap_extra2), 3))
-                extra_xyz[:, uv] = cap_extra2
-                extra_xyz[:, axis] = open_wall[1]
+                # Labels each removed wall face carried, read PER FACE
+                # before the rebuild forgets them — the bowl can span
+                # several walls (a band across a box edge, a curved
+                # boundary's facets), so each new wall triangle takes the
+                # labels of the old face it lies on, not a set common to
+                # the whole bowl. The 2-D per-segment rule one level up.
+                names = [dm_work.getLabelName(i)
+                         for i in range(dm_work.getNumLabels())
+                         if dm_work.getLabelName(i)
+                         not in reconnect._TOPOLOGY_LABELS]
+                for f, verts in cap_faces:
+                    pairs_f = []
+                    for name in names:
+                        val = dm_work.getLabel(name).getValue(int(f))
+                        if val >= 0:
+                            pairs_f.append((name, int(val)))
+                    removed_wall.append((X[np.asarray(verts)].copy(),
+                                         pairs_f))
+
+                cap_tris_mesh = np.array([verts for _f, verts in cap_faces],
+                                         dtype=np.int64)
+                d_cap, at_cap = _nearest_facet(
+                    X[cap_tris_mesh].mean(axis=1), dom_verts, dom_tris)
+                if (d_cap > 1e-9).any():
+                    raise RuntimeError(
+                        "an outcrop bowl wall face lies off the gathered "
+                        "boundary complex; the wall mask and the complex "
+                        "disagree")
+                _d_band, at_band = _nearest_facet(
+                    skin_xyz[skin_tris[band_idx]].mean(axis=1),
+                    dom_verts, dom_tris)
+                alive = np.ones(len(X), dtype=bool)
+                alive[np.asarray(victims, dtype=np.int64)] = False
+                cap_nodes, hole_nodes, cap_extra, cap_tris = \
+                    _outcrop_collar_3d(
+                        X, alive, cap_tris_mesh, dom_region[at_cap],
+                        dom_planes, skin_xyz, skin_tris[band_idx],
+                        dom_region[at_band], band_outline)
                 cap_payload = {
-                    "rim_shell_local": [local[v] for v in rim],
-                    "hole_skin_local": list(band_outline),
-                    "tris": cap_tris_local,
-                    "extra_xyz": extra_xyz,
+                    "rim_shell_local": [local[v] for v in cap_nodes],
+                    "hole_skin_local": list(hole_nodes),
+                    "tris": cap_tris,
+                    "extra_xyz": cap_extra,
                 }
 
             fill = _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz,
@@ -5208,11 +6161,15 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if real:
         raise RuntimeError(real[0])
 
-    # An outcropping zone's new wall coverage — the cap's annulus AND the
+    # An outcropping zone's new wall coverage — the cap's collar AND the
     # band (the zone's own face on the wall) — is relabelled EXPLICITLY
     # with what the replaced wall faces carried, full closures included.
-    pairs = comm.bcast(wall_pairs if comm.rank == target else None,
-                       root=target)
+    # Each new triangle takes the labels of the removed face it lies on
+    # (the 2-D per-segment rule), so a bowl spanning several walls
+    # restores each wall's own labels.
+    pairs = comm.bcast(
+        sorted({p for _tri, pairs_f in removed_wall for p in pairs_f})
+        if comm.rank == target else None, root=target)
     n_wall_expect = comm.bcast(
         ((len(cap_out) if cap_out is not None else 0) + len(band_idx))
         if comm.rank == target else 0, root=target)
@@ -5220,7 +6177,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         if not new.hasLabel(name):
             new.createLabel(name)
     n_wall_local = 0
-    if comm.rank == target and open_wall is not None:
+    if comm.rank == target and outcropping:
         n_shell_ids = np.asarray(shell_vert_ids, dtype=np.int64)
         n_skin = len(skin_xyz)
 
@@ -5238,23 +6195,40 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         n_cap_tris = len(wall_tris)
         wall_tris += [[int(placed_new[int(skin_row[int(v)])]) for v in t]
                       for t in skin_tris[band_idx]]
-        # The cap's annulus first, then the band — the TRACE, the
-        # intersection itself, labelled as such so the model can form
-        # whatever unions it needs (never a partition of the wall into
-        # named pieces).
-        out_trace = new.getLabel(trace_label)
-        for k, ids in enumerate(wall_tris):
-            joined = new.getFullJoin(ids)
-            if len(joined) != 1:
-                failure = ("an outcrop wall triangle is not a face of the "
-                           "sewn mesh; the cap or band was not sewn.")
-                break
-            for q in new.getTransitiveClosure(int(joined[0]))[0]:
-                for name, val in pairs:
-                    new.getLabel(name).setValue(int(q), int(val))
-                if k >= n_cap_tris:
-                    out_trace.setValue(int(q), int(label_value))
-            n_wall_local += 1
+        centres = np.array(
+            [fill_pts[np.asarray(t)].mean(axis=0) for t in cap_out]
+            if cap_out is not None else np.zeros((0, 3)))
+        if len(band_idx):
+            band_cen = skin_xyz[skin_tris[band_idx]].mean(axis=1)
+            centres = (np.vstack([centres, band_cen]) if len(centres)
+                       else band_cen)
+        old_pts = np.vstack([tri for tri, _p in removed_wall])
+        old_tris = np.arange(3 * len(removed_wall)).reshape(-1, 3)
+        d_old, at_old = _nearest_facet(centres, old_pts, old_tris)
+        # A raise here is rank-local — a hang at np>=2 — so every
+        # refusal in this block goes through the collective failure.
+        if (d_old > 1e-9).any():
+            failure = ("an outcrop wall triangle lies on no removed wall "
+                       "face; the collar and the bowl disagree")
+        else:
+            # The cap's collar first, then the band — the TRACE, the
+            # intersection itself, labelled as such so the model can form
+            # whatever unions it needs (never a partition of the wall
+            # into named pieces).
+            out_trace = new.getLabel(trace_label)
+            for k, ids in enumerate(wall_tris):
+                joined = new.getFullJoin(ids)
+                if len(joined) != 1:
+                    failure = ("an outcrop wall triangle is not a face of "
+                               "the sewn mesh; the cap or band was not "
+                               "sewn.")
+                    break
+                for q in new.getTransitiveClosure(int(joined[0]))[0]:
+                    for name, val in removed_wall[int(at_old[k])][1]:
+                        new.getLabel(name).setValue(int(q), int(val))
+                    if k >= n_cap_tris:
+                        out_trace.setValue(int(q), int(label_value))
+                n_wall_local += 1
     failures = comm.allgather(failure)
     real = [f for f in failures if f]
     if real:
@@ -5286,13 +6260,19 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
             f"the placement changed the domain volume: "
             f"{volume_before[0]:.12f} -> {volume_after[0]:.12f}")
 
+    # The surgery must CONSERVE the domain's topology, not assume it: a
+    # box is a ball (Euler 1) but a spherical shell is S^2 x I (Euler 2),
+    # and the general boundary clip makes such domains reachable.
+    owned = np.asarray(_owned_stratum_counts(dm), dtype=np.int64)
+    comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
+    euler_before = int(owned[0] - owned[1] + owned[2] - owned[3])
     owned = np.asarray(_owned_stratum_counts(new), dtype=np.int64)
     comm.Allreduce(MPI.IN_PLACE, owned, op=MPI.SUM)
     nv_g, ne_g, nf_g, nc_g = (int(x) for x in owned)
-    if nv_g - ne_g + nf_g - nc_g != 1:
+    if nv_g - ne_g + nf_g - nc_g != euler_before:
         raise RuntimeError(
-            f"the sewn mesh has global Euler number "
-            f"{nv_g - ne_g + nf_g - nc_g}, not 1")
+            f"the placement changed the global Euler number: "
+            f"{euler_before} -> {nv_g - ne_g + nf_g - nc_g}")
 
     after = _interior_face_counts_3d(new)
     for key, before in held_counts.items():

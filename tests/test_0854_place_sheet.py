@@ -267,3 +267,39 @@ def test_an_outcropping_sheet_meets_the_top_surface():
     err = np.abs(np.asarray(t.data[:, 0])
                  - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
     assert float(err.max()) < 1e-8
+
+def test_a_sheet_embeds_in_a_spherical_shell_and_removes_again():
+    """The domain's topology is conserved, not assumed.
+
+    A spherical shell is S^2 x I, global Euler number 2, and the old gate
+    demanded 1 — refusing the domain for its topology rather than for any
+    defect of the surgery. Placement and removal both run their own
+    volume, conformity and Euler-conservation gates; asserting the info
+    here proves they ran and agreed. Serial guard matches the suite.
+    """
+    if uw.mpi.size > 1:
+        pytest.skip("serial suite; the parallel form is ptest_0854")
+    from underworld3.utilities.place_surface import remove_embedded
+
+    shell = uw.meshing.SphericalShell(radiusInner=0.25, radiusOuter=1.0,
+                                      cellSize=0.13, qdegree=2)
+    d1 = np.array([0.0, 1.0, 0.0])
+    d2 = np.array([-1.0, 0.0, 1.0]) / np.sqrt(2.0)
+    C = np.array([0.45, 0.0, 0.45])
+    n, s = 5, np.linspace(-0.1, 0.1, 5)
+    pts = np.array([C + a * d1 + b * d2 for a in s for b in s])
+    tris = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a, b = i * n + j, i * n + j + 1
+            c, d = (i + 1) * n + j, (i + 1) * n + j + 1
+            tris += [(a, b, d), (a, d, c)]
+
+    new, info = place_sheet(shell.dm, pts, np.array(tris, dtype=np.int64),
+                            label="Sheet", label_value=3)
+    assert info["n_surface_facets"] == len(tris)
+    assert new.getLabel("Sheet").getStratumSize(3) >= len(tris)
+
+    back, rinfo = remove_embedded(new, "Sheet", label_value=3)
+    assert rinfo["n_removed_cells"] > 0
+    assert back.getLabel("Sheet").getStratumSize(3) == 0
