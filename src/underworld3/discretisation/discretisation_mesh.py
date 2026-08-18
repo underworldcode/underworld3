@@ -8226,6 +8226,34 @@ class Mesh(Stateful, uw_object):
             def eval_metric(centroids):
                 return numpy.asarray(_sampler(metric_sym, centroids)).reshape(-1)
 
+        def marking_metric(centroids):
+            """``eval_metric``, clipped, with "nobody has cells" decided together.
+
+            Returns ``None`` when NO rank owns cells, which the marking loops
+            read as "mark nothing". The point of routing the emptiness question
+            through a reduction is that the loops below then have a collective
+            fact to stop on, instead of each rank deciding for itself whether
+            to leave — which is the defect this replaced (#512).
+
+            Note on what this does NOT fix. #512 describes the rank-local
+            ``if cur_h.size:`` guards as skipping a collective, on the grounds
+            that ``eval_metric`` is ``global_evaluate`` for a field or
+            expression metric. Measured at np=2, that is not so: with one rank
+            asleep for 10 s, the other's ``global_evaluate`` returned in 0.06 s,
+            both for in-domain points and for points that strand outside the
+            mesh entirely. It does not wait for its peers on these shapes, so a
+            cell-less rank skipping it does not hang. The guards are routed
+            through here for uniformity with the stop below, not because they
+            were hanging.
+            """
+
+            # mpi4py allreduce defaults to MPI.SUM, as at the collective stop
+            # further down.
+            if uw.mpi.comm.allreduce(int(centroids.shape[0])) == 0:
+                return None
+
+            return numpy.clip(eval_metric(centroids), 1e-30, None)
+
         def cell_geometry(dm):
             """Per-cell centroid and size for every cell of a simplicial DM.
 
@@ -8458,8 +8486,8 @@ class Mesh(Stateful, uw_object):
             n_gen = dim * max_levels
             for level in range(n_gen):
                 centroids, cur_h, cs = cell_geometry(current_dm)
-                if cur_h.size:
-                    M = numpy.clip(eval_metric(centroids), 1e-30, None)
+                M = marking_metric(centroids)
+                if M is not None and cur_h.size:
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
@@ -8543,8 +8571,8 @@ class Mesh(Stateful, uw_object):
             current_dm = base_finest
             for level in range(n_pass):
                 centroids, _proxy_h, cs = cell_geometry(current_dm)
-                if centroids.shape[0]:
-                    M = numpy.clip(eval_metric(centroids), 1e-30, None)
+                M = marking_metric(centroids)
+                if M is not None and centroids.shape[0]:
                     h_target = 1.0 / numpy.sqrt(M)
                     diameter = edge_split.cell_diameters(current_dm)
                     sel = numpy.where(diameter > h_target)[0]
@@ -8639,6 +8667,13 @@ class Mesh(Stateful, uw_object):
                                   regions=rcarry)
             n_gen = dim * max_levels
             for level in range(n_gen):
+                # Rank-local marking and a rank-local break, deliberately: this
+                # is the pure-Python cell-list engine, reached only when the
+                # native uwnvb transform is absent, and that combination raises
+                # NotImplementedError at np>1 further up. It is serial by
+                # construction, so the collective discipline the other engines
+                # need here (#512) has nothing to protect. Port it before
+                # porting this loop.
                 centroids, cur_h, cids = nvb.centroids_h()
                 M = numpy.clip(eval_metric(centroids), 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)
@@ -8696,17 +8731,30 @@ class Mesh(Stateful, uw_object):
             current_dm = base_finest             # base finest, current geometry
             for level in range(max_levels):
                 centroids, cur_h, cs = cell_geometry(current_dm)
-                if cur_h.size == 0:
-                    break
 
                 # Metric M = 1/h_target² at the cell centroids (parent field).
                 # A callable is evaluated directly on the centroids; a field/expr
                 # goes through global_evaluate (parallel) or evaluate (serial).
-                M = numpy.clip(eval_metric(centroids), 1e-30, None)
-                h_target = 1.0 / numpy.sqrt(M)
+                M = marking_metric(centroids)
+                if M is None:
+                    break                     # no rank has cells: leaving together
 
-                refine = numpy.where(cur_h > h_target)[0]
-                if refine.size == 0:
+                if cur_h.size:
+                    h_target = 1.0 / numpy.sqrt(M)
+                    refine = numpy.where(cur_h > h_target)[0]
+                else:
+                    refine = numpy.empty(0, dtype=int)
+
+                # Collective stop. `refine.size == 0` is a rank-local fact: this
+                # rank's cells are all fine enough, which says nothing about its
+                # peers'. Breaking on it alone takes the rank out of the loop for
+                # good while the others go round again into the DM refinement,
+                # which IS collective — so the job hangs, and not latently.
+                # Measured at np=2 with a callable metric demanding h=0.01 inside
+                # r<0.15 of one corner and nothing elsewhere: the rank holding no
+                # corner cells left at the first level and `mpirun` reached its
+                # timeout with neither rank returning. See test_0873.
+                if uw.mpi.comm.allreduce(int(refine.size)) == 0:
                     if verbose:
                         uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
                     break
