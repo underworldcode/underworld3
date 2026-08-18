@@ -6783,19 +6783,36 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         pushed = self._owned_option_pushes.get(key)
         user = self._owned_option_user.get(key)
-        if self.petsc_options.hasName(key):
-            try:
-                current = type(default)(self.petsc_options.getString(key))
-            except Exception:
-                return default
-            if pushed is None or current != pushed:
-                # Never pushed by us, or the user has moved it since. Latch: from here on
-                # the option is theirs, because the next solve will read back OUR push of
-                # THEIR value and would otherwise mistake it for our own default.
-                self._owned_option_user[key] = current
-                return current
-            if user is not None:
-                return user
+        if not self.petsc_options.hasName(key):
+            # The key is gone from the options DB, so any value latched from a
+            # previous solve is gone with it. Without this the latch outlives
+            # the option: set snes_max_it=200, delete it, and the next solve
+            # correctly uses the default — but the one after that reads back
+            # OUR push of the default, finds `current == pushed`, falls through
+            # to the latched 200 and resurrects it (#490).
+            self._owned_option_user.pop(key, None)
+            return default
+
+        try:
+            current = type(default)(self.petsc_options.getString(key))
+        except Exception:
+            # The stored value will not convert to the option's type: a user who
+            # wrote `snes_max_it = "lots"`, or a key set as a bare flag and so
+            # holding None. Neither is a number this solve can use, so it takes
+            # its own default and leaves the value in the DB for PETSc to object
+            # to in its own terms (Charter: say what is swallowed and why).
+            return default
+
+        if pushed is None or current != pushed:
+            # Never pushed by us, or the user has moved it since. Latch: from here on
+            # the option is theirs, because the next solve will read back OUR push of
+            # THEIR value and would otherwise mistake it for our own default.
+            self._owned_option_user[key] = current
+            return current
+
+        if user is not None:
+            return user
+
         return default
 
     def _push_owned_option(self, key, value):
@@ -9350,13 +9367,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         homotopy_options : dict, optional
             March settings passed to
             :func:`~underworld3.systems.yield_continuation.yield_continuation` —
-            ``smoother``, ``delta0``, ``down``, ``dmin``, ``entry_maxit``,
-            ``step_maxit``, ``retries``. All are defaulted; tuning them is optional.
-            ``smoother`` picks the soft-min family — ``"powermean"`` (default,
-            approaches the yield surface from below) or ``"sqrt"`` (from above). Which
-            gives the better cold entry is problem-dependent, so it is worth trying both
-            when a march will not start. Leave ``delta0`` unset unless you have a
-            reason: each family supplies its own entry, and the two δ are not the same
+            ``smoother``, ``anchor``, ``delta0``, ``down``, ``dmin``,
+            ``entry_maxit``, ``step_maxit``, ``retries``. All are defaulted; tuning
+            them is optional.
+
+            ``smoother`` picks the soft-min family — ``"powermean"`` (default) or
+            ``"sqrt"``. Which gives the better cold entry is problem-dependent, so
+            it is worth trying both when a march will not start.
+
+            Which SIDE of the exact ``Min`` the softened yield sits on belongs to
+            ``anchor``, not to the family: under the default onset anchor both
+            families sit below ``Min`` near yield. See ``yield_anchor`` on the
+            constitutive model. Leave ``delta0`` unset unless you have a reason:
+            each family supplies its own entry, and the two δ are not the same
             parameter.
 
         Returns
