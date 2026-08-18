@@ -414,6 +414,61 @@ def test_bd_integral_spherical_internal_boundary_areas():
         )
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_spherical_internal_boundary_mesh_files_only(tmp_path, monkeypatch):
+    """File generation can bypass Mesh construction and preserve labels."""
+    from enum import Enum
+
+    import underworld3.meshing.spherical as spherical
+    from underworld3.coordinates import CoordinateSystemType
+
+    mesh_file = str(tmp_path / "spherical_internal_mesh_files_only.msh")
+
+    def fail_mesh_construction(*args, **kwargs):
+        raise AssertionError(
+            "write_mesh_files_only=True must not construct an Underworld Mesh"
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(spherical, "Mesh", fail_mesh_construction)
+        h5_file = spherical.SphericalShellInternalBoundary(
+            radiusOuter=_R_SHELL_OUTER,
+            radiusInternal=_R_SHELL_INTERNAL,
+            radiusInner=_R_SHELL_INNER,
+            cellSize=0.25,
+            filename=mesh_file,
+            write_mesh_files_only=True,
+        )
+
+    assert h5_file == f"{mesh_file}.h5"
+    assert (tmp_path / "spherical_internal_mesh_files_only.msh").is_file()
+    assert (tmp_path / "spherical_internal_mesh_files_only.msh.h5").is_file()
+
+    class Boundaries(Enum):
+        Centre = 1
+        Lower = 11
+        Internal = 12
+        Upper = 13
+        All_Boundaries = 1001
+
+    reloaded_mesh = uw.discretisation.Mesh(
+        h5_file,
+        degree=1,
+        qdegree=2,
+        coordinate_system_type=CoordinateSystemType.SPHERICAL,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        boundaries=Boundaries,
+    )
+
+    for boundary in ("Lower", "Internal", "Upper"):
+        label = reloaded_mesh.dm.getLabel(boundary)
+        assert label is not None
+        assert label.getNumValues() > 0
+
+
 def _build_spherical_shell_for_integrals():
     from underworld3.meshing import SphericalShell
 

@@ -96,18 +96,15 @@ def extend_enum(inherited):
 
 
 @timing.routine_timer_decorator
-def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True):
-    """Read a Gmsh .msh file from `filename`.
+def _gmsh_to_h5(
+    filename,
+    markVertices=False,
+    useRegions=True,
+    useMultipleTags=True,
+):
+    """Convert a Gmsh file to PETSc HDF5 without loading the resulting DM."""
 
-    :kwarg comm: Optional communicator to build the mesh on (defaults to
-        COMM_WORLD).
-    """
-
-    ## NOTE: - this should be smart enough to serialise the msh conversion
-    ## and then read back in parallel via h5.  This is currently done
-    ## by every gmesh mesh
-
-    comm = comm or PETSc.COMM_WORLD
+    h5_filename = filename + ".h5"
     options = PETSc.Options()
     options["dm_plex_hash_location"] = None
 
@@ -152,11 +149,11 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
             # this module, so a top-level import would close a cycle.
             from underworld3.meshing._mesh_files import _scratch_name
 
-            scratch = _scratch_name(filename + ".h5")
+            scratch = _scratch_name(h5_filename)
             viewer = PETSc.ViewerHDF5().create(str(scratch), "w", comm=PETSc.COMM_SELF)
             viewer(plex_0)
             viewer.destroy()
-            os.replace(scratch, filename + ".h5")
+            os.replace(scratch, h5_filename)
     finally:
         # The gmsh import options are import-time scratch — meaningful only for
         # the createFromFile above. Clear the whole namespace so a value set by
@@ -166,12 +163,39 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
         # read as 2-D). Runs on success or failure.
         _clear_gmsh_import_options()
 
-    # Now we have an h5 file and we can hand this to _from_plexh5. The barrier
-    # is what the atomic write above makes necessary AND sufficient: the other
-    # ranks must not look for the file before rank 0 has renamed it into place.
+    # The barrier ensures every rank sees the complete atomically-renamed file.
     uw.mpi.barrier()
 
-    return _from_plexh5(filename + ".h5", comm, return_sf=True)
+    return filename + ".h5"
+
+
+@timing.routine_timer_decorator
+def _from_gmsh(
+    filename,
+    comm=None,
+    markVertices=False,
+    useRegions=True,
+    useMultipleTags=True,
+):
+    """Read a Gmsh .msh file from `filename`.
+
+    :kwarg comm: Optional communicator to build the mesh on (defaults to
+        COMM_WORLD).
+    """
+
+    ## NOTE: - this should be smart enough to serialise the msh conversion
+    ## and then read back in parallel via h5.  This is currently done
+    ## by every gmesh mesh
+
+    comm = comm or PETSc.COMM_WORLD
+    h5_filename = _gmsh_to_h5(
+        filename,
+        markVertices=markVertices,
+        useRegions=useRegions,
+        useMultipleTags=useMultipleTags,
+    )
+
+    return _from_plexh5(h5_filename, comm, return_sf=True)
 
 
 @timing.routine_timer_decorator

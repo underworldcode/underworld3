@@ -21,6 +21,7 @@ from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
 from underworld3.discretisation import _from_gmsh as gmsh2dmplex
+from underworld3.discretisation import _gmsh_to_h5 as gmsh2h5
 import underworld3.timing as timing
 import underworld3.cython.petsc_discretisation
 
@@ -509,6 +510,7 @@ def SphericalShellInternalBoundary(
     refinement=None,
     gmsh_verbosity=0,
     verbose=False,
+    write_mesh_files_only=False,
 ):
     """
     Generates a spherical shell with an internal boundary using Gmsh. The function creates a 3D mesh of a spherical shell
@@ -536,11 +538,19 @@ def SphericalShellInternalBoundary(
         Gmsh output verbosity (0=quiet). Default is 0.
     verbose : bool, optional
         If True, print additional information. Default is False.
+    write_mesh_files_only : bool, optional
+        If True, write the Gmsh ``.msh`` and PETSc ``.msh.h5`` files, return
+        the HDF5 path as a string, and stop without constructing an in-memory
+        Underworld mesh. This skips HDF5 reloading, coordinate-system setup,
+        and cell-region classification. If False, return a fully initialized
+        :class:`underworld3.discretisation.Mesh`, including the ``Inner`` and
+        ``Outer`` cell-region labels. Default is False.
 
     Returns
     -------
-    Mesh
-        The generated spherical shell mesh with internal boundary.
+    Mesh or str
+        The PETSc HDF5 path when ``write_mesh_files_only=True``; otherwise, a
+        fully initialized spherical-shell mesh.
 
     Examples
     --------
@@ -695,6 +705,14 @@ def SphericalShellInternalBoundary(
         gmsh.model.mesh.generate(3)
         write_gmsh(uw_filename)
         gmsh.finalize()
+
+    if write_mesh_files_only:
+        return gmsh2h5(
+            uw_filename,
+            markVertices=True,
+            useRegions=True,
+            useMultipleTags=True,
+        )
 
     # Ensure boundaries conform (if refined)
     # This is equivalent to a partial function because it already
