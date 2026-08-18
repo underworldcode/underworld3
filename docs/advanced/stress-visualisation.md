@@ -24,8 +24,10 @@ import sympy
 # Recovered stress components (P1 projections of the deviatoric
 # stress) plus pressure give the full stress. Project once after the
 # solve; do not pass raw solver derivative expressions to a plot.
-stress = sympy.Matrix([[Txx.sym - P.sym, Txy.sym],
-                       [Txy.sym, Tyy.sym - P.sym]])
+# A scalar variable's .sym is a 1x1 Matrix — index it before
+# assembling the tensor.
+stress = sympy.Matrix([[Txx.sym[0] - P.sym[0], Txy.sym[0]],
+                       [Txy.sym[0], Tyy.sym[0] - P.sym[0]]])
 
 pl = vis.plot_stress_glyphs(mesh, stress, num_seeds=24,
                             save_png=True, dir_fname="stress_glyphs.png")
