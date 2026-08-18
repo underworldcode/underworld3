@@ -47,26 +47,87 @@ sitting there.
 
 ## Needed diagnosis (check the manual if you do this)
 
-### Parameter-name collision with `anchor`
+### Parameter names shadowed by `import cetz.draw: *`
+
+A helper that draws needs `import cetz.draw: *` in its own body (see below).
+That import runs *inside* the function, **after** the parameters are bound, and
+shadows any parameter sharing a name with a `cetz.draw` export — `anchor`,
+`fill`, `stroke`. The parameter name then resolves to cetz's function instead of
+your value.
 
 ```typst
 // BROKEN — panic: "Unknown anchor 'anchor' for element 'none'"
 #let dot(p, label, anchor: "west") = {
+  import cetz.draw: *
   circle(p, radius: 0.02, fill: black)
   content(p, label, anchor: anchor)
+}
+
+// BROKEN — "expected color, gradient, tiling, or none, found function",
+// reported inside cetz's own canvas.typ, nowhere near your code
+#let panel(tl, br, fill, edge) = {
+  import cetz.draw: *
+  rect(tl, br, fill: fill, stroke: (paint: edge, thickness: 1pt))
 }
 ```
 
 ```typst
 // FIX — rename the parameter
-#let dot(p, label, align-to: "west") = {
-  circle(p, radius: 0.02, fill: black)
-  content(p, label, anchor: align-to)
-}
+#let dot(p, label, align-to: "west") = { ... content(p, label, anchor: align-to) }
+#let panel(tl, br, bg, edge)        = { ... rect(tl, br, fill: bg, ...) }
 ```
 
-Diagnosis cost: one compile failure, ~5 minutes of confusion, then the
-rename. The error message does not point at your parameter.
+Verified by isolation: the same helper **without** the inner import compiles
+fine, which is what identifies the import as the culprit rather than the
+parameter name itself. So the rule is not a blacklist of names — it is "do not
+name a parameter after anything `cetz.draw` exports", and if the helper does not
+actually draw, drop the inner import instead.
+
+Diagnosis cost: two compile failures across two sessions. Neither error message
+points at the parameter.
+
+### Shadowing a Typst builtin, especially `h`
+
+Same class, wider blast radius. `h` is Typst's horizontal-spacing function, so a
+figure that defines a surface height as `h(x)` breaks every `#h(0.4em)` used for
+spacing in a label — with an error that names neither:
+
+```typst
+let h(x) = 0.9 * calc.exp(-x * x)      // BROKEN
+content(p, [$a$, #h(0.6em) $b$])       // "cannot add length and float"
+```
+
+Rename the domain function (`surf-y`, `depth`, `topo`). `v`, `text`, `line`,
+`rect`, `circle`, `content` and `place` are all live names too.
+
+### `let f(x) = ...` ends at the line break
+
+A multi-line arithmetic expression needs parentheses, or the statement ends at
+the first newline and the continuation is parsed as a fresh expression —
+reported as `unknown variable: x`, which sends you looking in the wrong place:
+
+```typst
+// BROKEN
+let surf-y(x) = 0.95 * calc.exp(-calc.pow((x + 1.75) / 1.3, 2))
+              - 0.80 * calc.exp(-calc.pow((x - 1.70) / 1.15, 2))
+
+// FIX — wrap the whole expression
+let surf-y(x) = (0.95 * calc.exp(-calc.pow((x + 1.75) / 1.3, 2))
+                 - 0.80 * calc.exp(-calc.pow((x - 1.70) / 1.15, 2)))
+```
+
+### Multi-line `content()` anchored `"west"` rides up over what is above it
+
+`"west"` centres the block vertically on the anchor point, so a two- or
+three-line caption placed below a heading grows *upwards* into it. Nothing
+errors; the text simply overlaps and you only notice in the PNG.
+
+```typst
+content((x, y - 0.3), anchor: "west", note)        // overlaps when note wraps
+content((x, y - 0.3), anchor: "north-west", note)  // grows downward — use this
+```
+
+Rule of thumb: any label whose text might wrap gets a `north-*` anchor.
 
 ### Anchor values for `content()`
 
@@ -172,6 +233,23 @@ for tri in mesh.triangles {
        close: true, fill: fill-col, stroke: stroke-mesh)
 }
 ```
+
+### Connect nodes by triangulating, never by distance
+
+A tempting shortcut for a mesh figure is to join node pairs closer than some
+radius. It is not a triangulation: it silently omits nodes near the edge of the
+domain and in sparse regions, and the figure looks *almost* right, which is
+worse than looking wrong. Run a real Delaunay and draw its triangles.
+
+Two follow-on details, both of which show up immediately on a geophysical
+domain:
+
+- **Delaunay fills the convex hull.** A domain bounded above by topography or a
+  free surface is not convex, so triangles appear above the surface. Cull them
+  by centroid: `if centroid_y <= surface_y(centroid_x)`.
+- **A perfect lattice gives degenerate triangles.** Stagger alternate rows by
+  half a spacing (or jitter) so Delaunay has an unambiguous choice and produces
+  triangles rather than near-right-angle slivers.
 
 ### Python generator pattern
 

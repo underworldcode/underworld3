@@ -72,9 +72,14 @@ do the four steps above.
 
 ## Key gotchas (hit during iteration — not hypothetical)
 
-1. **Don't name helper parameters `anchor`.** cetz internals treat `anchor:`
-   specially and you get a cryptic panic: `"Unknown anchor 'anchor' for
-   element 'none'"`. Use `align-to` or similar. See `cetz-cheatsheet.md`.
+1. **Don't give a helper a parameter named after a `cetz.draw` export**
+   — `anchor`, `fill`, `stroke`. The cause is the `import cetz.draw: *` the
+   helper needs (gotcha 6): it runs *inside* the function body and shadows the
+   parameter, so the parameter name resolves to cetz's function rather than to
+   the value you passed. `anchor` panics with `"Unknown anchor 'anchor' for
+   element 'none'"`; `fill` gives `"expected color, gradient, tiling, or none,
+   found function"` pointing into `canvas.typ`, nowhere near your code. Rename
+   to `align-to`, `bg`, `edge`. See `cetz-cheatsheet.md`.
 
 2. **Clipping is a Typst concern, not a cetz one.** cetz has no `\clip`.
    Wrap the canvas in `#box(clip: true, width: ..., height: ..., ...)` and
