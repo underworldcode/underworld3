@@ -346,7 +346,16 @@ def plot_stress_glyphs(
         seeds = seeds[distance < 1.0e-6 * extents.max()]
     else:
         seeds = np.asarray(seeds, dtype=float)
-        spacing = np.ptp(seeds, axis=0).max() / max(num_seeds, 1)
+        # The auto-scale needs the ACTUAL seed spacing — user seeds
+        # owe nothing to num_seeds. Mean nearest-neighbour distance,
+        # subsampled so the pairwise matrix stays small.
+        sample = seeds
+        if len(sample) > 2048:
+            sample = sample[:: len(sample) // 2048 + 1]
+        offsets = sample[:, None, :] - sample[None, :, :]
+        distance2 = np.sum(offsets**2, axis=2)
+        np.fill_diagonal(distance2, np.inf)
+        spacing = float(np.sqrt(distance2.min(axis=1)).mean())
 
     cloud = pv.PolyData(
         np.column_stack([seeds, np.zeros(len(seeds))])
