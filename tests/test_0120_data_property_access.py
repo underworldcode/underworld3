@@ -1,38 +1,59 @@
-import pytest
+"""Writing a swarm variable through `.data`, twice, and reading back what was written.
 
-# All tests in this module are quick core tests
-pytestmark = pytest.mark.level_1
-import underworld3 as uw
+This file used to be a converted debug script: the mesh, swarm and writes ran
+at module level during pytest COLLECTION, and every statement was wrapped in a
+`try/except` that printed the exception. It could not fail — a broken `.data`
+property printed a cross and the run stayed green.
+"""
+
+import pytest
 import numpy as np
 
-# Quick test to see if field access is working
+import underworld3 as uw
 from underworld3.meshing import UnstructuredSimplexBox
 
-mesh = UnstructuredSimplexBox(
-    minCoords=(0.0, 0.0),
-    maxCoords=(1.0, 1.0),
-    cellSize=1.0 / 8.0,
-)
+pytestmark = pytest.mark.level_1
 
-swarm = uw.swarm.Swarm(mesh=mesh)
-s_values = uw.swarm.SwarmVariable("test", swarm, 1, proxy_degree=1)
 
-swarm.populate(fill_param=2)
+@pytest.fixture(scope="module")
+def populated_swarm():
+    mesh = UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=1.0 / 8.0,
+    )
+    swarm = uw.swarm.Swarm(mesh=mesh)
+    values = uw.swarm.SwarmVariable("test", swarm, 1, proxy_degree=1)
+    swarm.populate(fill_param=2)
 
-print("Testing data property access...")
-try:
-    # This should trigger the data property
-    s_values.data[:, 0] = np.cos(np.pi * swarm._particle_coordinates.data[:, 0])
-    print("✓ Data property access successful")
+    return swarm, values
 
-    # Try accessing again to test caching
-    s_values.data[:, 0] = np.sin(np.pi * swarm._particle_coordinates.data[:, 1])
-    print("✓ Second data property access successful")
 
-    print("Field access working correctly!")
+def test_data_property_writes_and_reads_back(populated_swarm):
+    """A write through `.data` is visible on the next read, and is the value written."""
 
-except Exception as e:
-    print(f"✗ Error with data property: {e}")
-    import traceback
+    swarm, values = populated_swarm
+    coords = swarm._particle_coordinates.data
 
-    traceback.print_exc()
+    expected = np.cos(np.pi * coords[:, 0])
+    values.data[:, 0] = expected
+
+    assert np.allclose(values.data[:, 0], expected)
+
+
+def test_second_write_replaces_the_first(populated_swarm):
+    """The second write is not served a cached copy of the first.
+
+    The cache is the point of the test: `.data` hands out a view whose validity
+    is tracked, and a stale view would return the cosine below after the sine
+    has been written.
+    """
+
+    swarm, values = populated_swarm
+    coords = swarm._particle_coordinates.data
+
+    values.data[:, 0] = np.cos(np.pi * coords[:, 0])
+    replacement = np.sin(np.pi * coords[:, 1])
+    values.data[:, 0] = replacement
+
+    assert np.allclose(values.data[:, 0], replacement)

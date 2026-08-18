@@ -2659,6 +2659,8 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         DeprecationWarning; see
         ``SolverBaseClass._value_first_bc_args``.
         """
+        self._reject_mixed_constraint_mechanisms("add_constraint_bc")
+
         conds, boundary = self._value_first_bc_args(
             "add_constraint_bc", conds, boundary, alias=g)
         g = conds if conds is not None else 0.0

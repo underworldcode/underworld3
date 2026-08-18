@@ -33,11 +33,26 @@ from ._base import (
     prescribed_velocity,
 )
 
+from .barr_houseman_96 import FaultedMedium
 from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient
 from .transport import AdvectedFront, ErfcDiffusion, Poisson1D, TwoLayerDarcy
-from .velic import SolA, SolB, SolC, SolCx, SolDA, SolDB2d, SolDB3d, SolH, SolKx, SolKz, SolM, SolNL
+from .velic import (
+    SolA,
+    SolB,
+    SolC,
+    SolCx,
+    SolDA,
+    SolDB2d,
+    SolDB3d,
+    SolH,
+    SolKx,
+    SolKz,
+    SolM,
+    SolNL,
+)
+from .zhong2008 import Zhong2008, Zhong2008Response
 
 __all__ = [
     "AnalyticSolution",
@@ -47,6 +62,7 @@ __all__ = [
     "AdvectedFront",
     "EllipticalInclusion",
     "ErfcDiffusion",
+    "FaultedMedium",
     "CylindricalStokes",
     "GardnerSteady",
     "GardnerTransient",
@@ -64,6 +80,8 @@ __all__ = [
     "SolM",
     "SolNL",
     "TwoLayerDarcy",
+    "Zhong2008",
+    "Zhong2008Response",
     "available",
     "describe",
     "is_available",
@@ -78,6 +96,7 @@ _SOLUTIONS = {
     "CylindricalStokes": CylindricalStokes,
     "EllipticalInclusion": EllipticalInclusion,
     "ErfcDiffusion": ErfcDiffusion,
+    "FaultedMedium": FaultedMedium,
     "GardnerSteady": GardnerSteady,
     "GardnerTransient": GardnerTransient,
     "Poisson1D": Poisson1D,

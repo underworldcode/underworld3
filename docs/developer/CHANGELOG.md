@@ -273,6 +273,16 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   seam sensitivity is unchanged (#404).
 - Recorded as the preferred free-slip BC in the project guidance (#300);
   conda PETSc floor raised to ≥ 3.25 for FMG/rotation API consistency (#304).
+- `uw.postprocessing.geoid` provides generic spherical-shell geoid and
+  self-gravity coefficient functions. Its rotated-Stokes adapter projects the
+  existing boundary traction onto an axisymmetric harmonic; the pure functions
+  also accept coefficients recovered by other methods and an optional internal
+  load.
+- `uw.analytic.Zhong2008` implements the Hager--O'Connell propagator-matrix
+  oracle used for the Zhong et al. spherical-shell response benchmark. It
+  supports piecewise-constant radial viscosity and reproduces every analytical
+  response printed in Zhong Tables 2 and 3; geoid and self-gravity are delegated
+  to the generic postprocessing functions above.
 
 ### Generalized Geometric Multigrid via Custom Prolongation (July 2026)
 

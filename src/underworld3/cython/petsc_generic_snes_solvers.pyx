@@ -3610,8 +3610,6 @@ class SNES_Scalar(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
@@ -3749,9 +3747,6 @@ class SNES_Scalar(SolverBaseClass):
 
             boundary = bc.boundary
             value = mesh.boundaries[bc.boundary].value
-
-            bc_label = mesh.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
 
             if bc.fn_f is not None:
                 
@@ -4556,8 +4551,6 @@ class SNES_Vector(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             # use type 5 bc for `DM_BC_ESSENTIAL_FIELD` enum
@@ -5364,8 +5357,6 @@ class SNES_MultiComponent(SolverBaseClass):
             value = mesh.boundaries[bc.boundary].value
             ind = value
 
-            bc_label = self.dm.getLabel(boundary)
-            bc_is = bc_label.getStratumIS(value)
             self.natural_bcs[index] = self.natural_bcs[index]._replace(boundary_label_val=value)
 
             bc_type = 6
@@ -6190,6 +6181,69 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
+    def _reject_mixed_constraint_mechanisms(self, adding):
+        """Refuse a rotated constraint and a block constraint on one solver (#464).
+
+        The rotated driver builds its own index-set fieldsplit over exactly two
+        fields (``rotated_bc._solve_rotated_iterative``), and ``build_rotation``
+        addresses velocity and pressure by field number. A block constraint
+        registers a multiplier field of its own, and those DOFs are in neither
+        index set — the preconditioner would then be built over a strict subset
+        of the operator's rows, with nothing said about it.
+
+        The two are alternative ways to impose the same wall-normal condition,
+        so asking for both is a configuration error rather than a case to
+        support. Supporting it would need a third split for the multipliers and
+        a ``build_rotation`` that knows about them.
+
+        Parameters
+        ----------
+        adding : str
+            Name of the method being called, so the message can say which
+            mechanism is already in place and which one was refused.
+        """
+
+        rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or []) + list(
+            getattr(self, "_fault_contact_faults", None) or []
+        )
+        multipliers = list(getattr(self, "_multipliers", None) or [])
+
+        if adding == "solve":
+            # The dispatch reads both lists, so it can only report the pair.
+            if not (rotated and multipliers):
+                return
+            raise RuntimeError(
+                f"solve(): this solver carries {len(rotated)} rotated "
+                f"(free-slip or fault contact) and {len(multipliers)} "
+                f"block-constraint boundary condition(s). The rotated solve "
+                f"splits velocity and pressure by field number and the "
+                f"multiplier fields lie outside that split, so the "
+                f"preconditioner would cover only part of the operator. Both "
+                f"impose the same wall-normal condition — use one of them "
+                f"(issue #464)."
+            )
+
+        if adding == "add_constraint_bc":
+            if not rotated:
+                return
+            present, refused = len(rotated), "a block constraint"
+            present_kind = "rotated (free-slip or fault contact)"
+        else:
+            if not multipliers:
+                return
+            present, refused = len(multipliers), "a rotated constraint"
+            present_kind = "block-constraint multiplier"
+
+        raise RuntimeError(
+            f"{adding}(): this solver already carries {present} "
+            f"{present_kind} boundary condition(s), so it cannot also take "
+            f"{refused}. The rotated solve splits velocity and pressure by "
+            f"field number and a block constraint adds a multiplier field "
+            f"outside that split, so the preconditioner would cover only part "
+            f"of the operator. Both impose the same wall-normal condition — "
+            f"use one of them (issue #464)."
+        )
+
     def add_rotated_freeslip_bc(self, conds=None, boundary=None, normal=None):
         r"""Add STRONG free-slip (:math:`\mathbf{u}\cdot\hat{\mathbf n}=0`) by rotating
         the boundary velocity DOFs into a per-node (normal, tangential) frame and
@@ -6245,6 +6299,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         DeprecationWarning: the string becomes ``boundary`` and a second
         positional argument, if present, becomes ``normal``.
         """
+        self._reject_mixed_constraint_mechanisms("add_rotated_freeslip_bc")
+
         if isinstance(conds, str):
             # legacy boundary-first call: (boundary[, normal])
             if boundary is not None:
@@ -6322,6 +6378,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         solver._rotated_freeslip_info)``.
         """
         from underworld3.utilities import fault_contact
+
+        self._reject_mixed_constraint_mechanisms("add_fault_bc")
 
         if not isinstance(boundary, str):
             raise TypeError(
@@ -6807,19 +6865,36 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         pushed = self._owned_option_pushes.get(key)
         user = self._owned_option_user.get(key)
-        if self.petsc_options.hasName(key):
-            try:
-                current = type(default)(self.petsc_options.getString(key))
-            except Exception:
-                return default
-            if pushed is None or current != pushed:
-                # Never pushed by us, or the user has moved it since. Latch: from here on
-                # the option is theirs, because the next solve will read back OUR push of
-                # THEIR value and would otherwise mistake it for our own default.
-                self._owned_option_user[key] = current
-                return current
-            if user is not None:
-                return user
+        if not self.petsc_options.hasName(key):
+            # The key is gone from the options DB, so any value latched from a
+            # previous solve is gone with it. Without this the latch outlives
+            # the option: set snes_max_it=200, delete it, and the next solve
+            # correctly uses the default — but the one after that reads back
+            # OUR push of the default, finds `current == pushed`, falls through
+            # to the latched 200 and resurrects it (#490).
+            self._owned_option_user.pop(key, None)
+            return default
+
+        try:
+            current = type(default)(self.petsc_options.getString(key))
+        except Exception:
+            # The stored value will not convert to the option's type: a user who
+            # wrote `snes_max_it = "lots"`, or a key set as a bare flag and so
+            # holding None. Neither is a number this solve can use, so it takes
+            # its own default and leaves the value in the DB for PETSc to object
+            # to in its own terms (Charter: say what is swallowed and why).
+            return default
+
+        if pushed is None or current != pushed:
+            # Never pushed by us, or the user has moved it since. Latch: from here on
+            # the option is theirs, because the next solve will read back OUR push of
+            # THEIR value and would otherwise mistake it for our own default.
+            self._owned_option_user[key] = current
+            return current
+
+        if user is not None:
+            return user
+
         return default
 
     def _push_owned_option(self, key, value):
@@ -9381,13 +9456,19 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         homotopy_options : dict, optional
             March settings passed to
             :func:`~underworld3.systems.yield_continuation.yield_continuation` —
-            ``smoother``, ``delta0``, ``down``, ``dmin``, ``entry_maxit``,
-            ``step_maxit``, ``retries``. All are defaulted; tuning them is optional.
-            ``smoother`` picks the soft-min family — ``"powermean"`` (default,
-            approaches the yield surface from below) or ``"sqrt"`` (from above). Which
-            gives the better cold entry is problem-dependent, so it is worth trying both
-            when a march will not start. Leave ``delta0`` unset unless you have a
-            reason: each family supplies its own entry, and the two δ are not the same
+            ``smoother``, ``anchor``, ``delta0``, ``down``, ``dmin``,
+            ``entry_maxit``, ``step_maxit``, ``retries``. All are defaulted; tuning
+            them is optional.
+
+            ``smoother`` picks the soft-min family — ``"powermean"`` (default) or
+            ``"sqrt"``. Which gives the better cold entry is problem-dependent, so
+            it is worth trying both when a march will not start.
+
+            Which SIDE of the exact ``Min`` the softened yield sits on belongs to
+            ``anchor``, not to the family: under the default onset anchor both
+            families sit below ``Min`` near yield. See ``yield_anchor`` on the
+            constitutive model. Leave ``delta0`` unset unless you have a reason:
+            each family supplies its own entry, and the two δ are not the same
             parameter.
 
         Returns
@@ -9432,6 +9513,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         constitutive_model : Viscosity and stress definitions.
         """
 
+
+        # Checked here as well as at registration (#464). The registration check
+        # gives the better message — it knows which call was refused — but it
+        # only covers what goes through the solver's own methods, and
+        # `fault_contact` writes `_fault_contact_faults` directly. This runs
+        # before any setup reads either list, so an unsupported pair costs
+        # nothing before it is refused.
+        self._reject_mixed_constraint_mechanisms("solve")
 
         if homotopy:
             # The march runs a SEQUENCE of ordinary solves at successively sharper

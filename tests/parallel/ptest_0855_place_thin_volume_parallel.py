@@ -135,6 +135,58 @@ def test_a_2d_outcropping_ribbon_embeds_in_parallel():
     assert n_bare == 0, "the relabel left top-wall edges without Top"
 
 
+def test_a_2d_outcrop_on_the_annulus_embeds_in_parallel():
+    """The general-boundary outcrop at np>=2, on the annulus.
+
+    The domain loops are gathered from UNSHARED support-1 edges — a
+    partition seam also has local support 1, and taking it would eat the
+    mesh at the seam differently at every rank count — so the clip, the
+    trace and the splice are functions of the mesh, not of the partition.
+    The gathered complex is sorted into a canonical order, so the info
+    dict (trace count included) is identical at any rank count; the
+    np=1 value is asserted equal by running the serial suite.
+    """
+    comm = uw.mpi.comm
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5,
+                              cellSize=0.06, qdegree=2)
+    theta = 0.4
+    ray = np.array([np.cos(theta), np.sin(theta)])
+    line = np.array([0.62 * ray, 1.30 * ray])
+    new, info = place_thin_volume(mesh.dm, [line], width=0.03,
+                                  label="Zone", label_value=5)
+    assert info["n_zone_cells"] > 0
+    assert info["n_trace_facets"] > 0, "the ribbon left no trace"
+    assert _owned_label_count(new, "Zone", 5) == info["n_zone_cells"]
+    assert _owned_label_count(new, "Zone_skin", 5) == info["n_skin_faces"]
+    gathered = comm.allgather(info)
+    assert all(g == gathered[0] for g in gathered)
+
+    # Every true boundary edge still carries a wall label, and the trace
+    # edges among them number exactly what the info advertises. A domain
+    # boundary edge is support 1 AND unshared — a partition-seam edge also
+    # has local support 1, and counting it would report phantom bare edges
+    # (the _true_wall_vertex_mask distinction, met here by the probe).
+    from underworld3.utilities.place_surface import _shared_point_flags
+    pStart, _pEnd = new.getChart()
+    shared = _shared_point_flags(new).astype(bool)
+    fS, fE = new.getHeightStratum(1)
+    lower = new.getLabel("Lower")
+    upper = new.getLabel("Upper")
+    trace = new.getLabel("Zone_trace")
+    n_trace = n_bare = 0
+    for f in range(fS, fE):
+        if shared[f - pStart] or len(new.getSupport(f)) != 1:
+            continue
+        if lower.getValue(f) < 0 and upper.getValue(f) < 0:
+            n_bare += 1
+        if trace.getValue(f) == 5:
+            n_trace += 1
+    n_trace = int(comm.allreduce(n_trace, op=MPI.SUM))
+    n_bare = int(comm.allreduce(n_bare, op=MPI.SUM))
+    assert n_trace == info["n_trace_facets"]
+    assert n_bare == 0, "the relabel left boundary edges without a label"
+
+
 def test_2d_refusals_are_collective():
     """A ribbon stopping short of the wall refuses IDENTICALLY everywhere."""
     comm = uw.mpi.comm

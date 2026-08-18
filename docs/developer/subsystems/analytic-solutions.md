@@ -446,7 +446,7 @@ before this suite existed, so they cannot ride on every PR.
 
 | tier | what it covers | cost | where |
 |---|---|---|---|
-| per-PR | every gate, on every solution that is cheap to validate; one canonical parameter case for SolKx/SolKz | **4m07s** | `tests/test_101[5-9]_analytic_*`, `tests/test_102[0-8]_analytic_*` — matched by the CI batch globs |
+| per-PR | every gate, on every solution that is cheap to validate; one canonical parameter case for SolKx/SolKz | **4m07s** | `tests/test_101[5-9]_analytic_*`, `tests/test_102[0-9]_analytic_*` — matched by the CI batch globs |
 | full family | every gate, on every solution, over the whole parameter table | **8m34s** | `tests/analytic_full/` — matched by nothing in CI |
 
 ```bash
@@ -564,6 +564,95 @@ the cost was imagined.
 | chained assignment | `a = b = c;` read as one statement has `b = c` as its *value*, which is not an expression |
 | C ternary and `&&`/`\|\|` | SolH guards its zero modes with `(n!=0 \|\| m!=0) ? … : …` |
 | `resolve_branches` | guards on loop indices have an answer at transcription time. Left unresolved, `evaluate_block` reads every branch in order and each guarded variable keeps the *last* one — in SolH that silently zeroes two velocity components, which looks plausible rather than broken |
+
+## A solution with a fault in it
+
+`FaultedMedium` (Barr & Houseman 1996, `analytic/barr_houseman_96.py`) is the linear
+plane-strain case of their Appendix: a fault that terminates *inside* a viscous
+medium, on a disc of radius $R_0$ with the tip at the centre and the fault
+running out to the perimeter. It carries zero shear traction on the fault,
+continuous normal velocity and continuous normal stress across it, and slip
+$2U_0\sqrt{r/R_0}$.
+
+The year remains in the module name to distinguish this closed-form 1996
+solution from the related 1992 study, which does not provide the corresponding
+full Cartesian analytical field.
+
+It is here because it is the only absolute standard in the suite for a fault
+calculation. Everything else a fault model can be measured against is another
+discretisation.
+
+The structure is the interesting part. In polar coordinates about the tip the
+stream function separates into a Fourier series in $m = q/2$: whole-integer $m$
+is continuous deformation, half-integer $m$ is the fault discontinuity, and
+boundedness of the velocity at $r = 0$ admits only one negative index,
+$m = -1/2$. That single mode carries the entire singularity, which is *why* slip
+goes as $\sqrt r$ and stress as $1/\sqrt r$ — the exponents are a property of the
+fault's own Fourier mode rather than an assumption. Drop the half-integer term
+and the slip vanishes; there is a test that does exactly that.
+
+### Three ways it does not fit the contract, and what was done about each
+
+**It is not a function of position.** The field is multivalued about the tip —
+that is what a fault is — so it is a function of $(r,\theta)$ with
+$\theta\in[0,2\pi)$, and the branch cut has to lie *on the fault*, which is where
+the field is genuinely discontinuous. A bare `atan2` puts the cut on the negative
+$x$ axis and silently returns the wrong face.
+
+The class therefore carries **two representations of one solution**: the polar
+fault-frame expressions, in which the fault conditions can be stated exactly at
+$\theta = 0$ and $2\pi$, and the contract's `fn_*` fields on `mesh.X`, which is
+what the residual gates and a solver consume. A test pins the second to the
+first.
+
+Getting $\theta$ into the Cartesian form is where the care went. From
+$\tan(\theta/2) = (r-x)/y$, the cut of $2\,\mathrm{atan2}(r-x,\,y)$ falls on the
+positive $x$ axis — the fault — which is right. But near the fault $r - x$ is a
+difference of two nearly equal numbers, and the relative accuracy of $\theta$
+degrades as $1/\theta^2$. Since $(r-x)(r+x) = y^2$, scaling both arguments by the
+positive quantity $(r+x)$ leaves the angle alone and removes the cancellation:
+$2\,\mathrm{atan2}(y^2,\,y(r+x))$, used where $x > 0$. Measured, at $10^{-6}$
+radians off the fault, the momentum residual is **3e-6** formed directly and
+**3e-15** formed this way — so `sample_points` can put a point just off each face
+and the gates still mean something there.
+
+**It has no walls.** `apply_boundary_conditions` **refuses**, and that refusal is
+deliberate. The fault is an internal boundary whose two faces must be separate
+degrees of freedom at coincident coordinates — a property of the mesh, not of the
+solver, and one Underworld cannot yet build for a fault that reaches the domain
+boundary (#549). Its conditions are also per-component (fault-normal velocity
+prescribed on both faces, tangential traction natural), so none of the
+whole-velocity helpers fits. Applying the perimeter datum and quietly
+leaving the fault unconstrained would solve a different problem and report a
+plausible error, which is worse than refusing. The pieces a model needs —
+`boundary_velocity()`, `fault_normal_velocity()`, `slip()` — are exposed instead.
+
+**It has no body force.** Like `EllipticalInclusion` it is driven entirely by its
+boundary, so the family's body-force negative control cannot fire and it is
+excluded from that control by name in both sweeps. It is not left without one:
+for this solution the momentum residual certifies the **pressure sign** instead,
+and just as sharply — 3.6e-16 with UW3's compression-positive pressure, **1.06**
+with the paper's extension-positive one, while $\mathrm{tr}\,\sigma + d\,p$ sits
+at 5.7e-16 either way because `set_fields` cancels that term by construction.
+
+### The erratum
+
+Barr & Houseman's pressure is extension-positive; ours is not, so `fn_pressure`
+is $-1$ times their (A9c). Their printed (A9b) also disagrees with their own
+(A8b) in the sign of the half-integer sine terms, and carries $\cos(3\theta/2)$
+where $\sin(3\theta/2)$ belongs. All three are recorded, with the measurements
+that settle them, in the conventions-and-errata note (§3.8) rather than applied
+silently.
+
+### Credit
+
+The implementation follows @gthyagi's, and he verified it independently three
+ways in PR #550: against both BH papers (which is how the A9b function error was
+found), against a UW3 Stokes model on a Gmsh slit disc (velocity error 1.92% →
+0.74% → 0.40% under refinement, normal-velocity jump at machine zero, and the
+pressure sign confirmed numerically at ~199% error with the paper's own sign),
+and against his BH92 rectangular-fault-zone model, whose near-tip exponent fits
+**-0.498** against the exact **-0.500** on the resolved singular interval.
 
 ## The scalar transport family
 
@@ -749,6 +838,7 @@ Each vendored reference kernel keeps its original copyright header.
 | Underworld2 `Velic_sol*` kernels | LGPL-3 | Yes — same licence |
 | PETSc `ex69.c`, `ex13.c`, `ex24.c`, `ex45.c` | BSD-2-Clause | Yes — permissive; retain the notice |
 | Schmid & Podladchikov MATLAB (`dwschmid/muskhelishvili`) | BSD-3-Clause | Yes — permissive; retain the notice |
+| Barr & Houseman 1996 (GJI 125, 473-490), Appendix | Nothing vendored — transcribed from the published equations | n/a |
 | `assess` (Kramer et al. 2021) | External, optional dependency | Not vendored; wrapped lazily |
 
 ## Optional dependencies
@@ -817,6 +907,98 @@ Two class attributes carry this:
 |---|---|
 | `symbolic` | fields are SymPy on `mesh.X`. False means the residual gates cannot be applied at all |
 | `requires` | name of an optional package, or `None` |
+
+## Numeric response oracles
+
+Not every published analytical benchmark is a pointwise field on a mesh. The
+Zhong et al. (2008) spherical-shell benchmark publishes scalar response
+functions computed by a semi-analytic radial propagator. It belongs in
+`uw.analytic`, but it does **not** subclass `AnalyticSolution` and is not listed
+by `available()` because it cannot satisfy that class's symbolic mesh-field
+contract.
+
+```python
+reference = uw.analytic.Zhong2008(
+    harmonic_degree=2,
+    radius_inner=0.55,
+    radius_outer=1.0,
+    internal_load_radius=0.775,
+)
+response = reference.response()
+
+print(response.surface_characteristic_velocity)
+print(response.self_gravity.surface_topography)
+```
+
+### Radial state and propagator
+
+For one spherical-harmonic degree `l`, define `L = l(l + 1)` and use
+`v = log(r)`. The four-component poloidal state follows Hager and O'Connell
+(1981):
+
+```text
+u = (y1, y2, r sigma_rr / eta0, r sigma_r_perp / eta0)^T
+```
+
+`y1` is radial velocity and `y2` is the characteristic horizontal velocity.
+Within one constant-viscosity layer, with dimensionless viscosity `eta`,
+
+```text
+du/dv = A u
+
+    [ -2          L          0   0     ]
+    [ -1          1          0   1/eta ]
+A = [ 12 eta     -6 L eta    1   L     ]
+    [ -6 eta  2(2L-1) eta   -1  -2     ]
+```
+
+The exact layer transfer is `exp(A log(r_b/r_a))`. Transfers are multiplied in
+increasing-radius order. Because the state stores physical tractions relative
+to one fixed reference viscosity, all four components remain continuous at a
+viscosity interface.
+
+The outward radial delta load of coefficient `a` at `rint` gives the jump
+
+```text
+u(rint+) - u(rint-) = (0, 0, -rint a, 0)^T.
+```
+
+Impermeable free slip requires `u[0] = u[3] = 0` at the CMB and surface. The
+two remaining CMB state components are obtained from a dense two-by-two solve.
+
+### Recovering published quantities
+
+With CMB and surface states `ub` and `us`, respectively:
+
+```text
+surface topography without self-gravity = -us[2] / radius_outer
+CMB topography without self-gravity     =  ub[2] / radius_inner
+surface characteristic velocity         =  us[1]
+CMB characteristic velocity             =  ub[1]
+surface horizontal divergence            = -L us[1] / radius_outer
+CMB horizontal divergence                = -L ub[1] / radius_inner
+```
+
+The topography coefficients then pass through the generic
+`uw.postprocessing.geoid.spherical_shell_geoid_response()` and
+`spherical_shell_self_gravity_response()` functions. The propagator module does
+not carry a second geoid implementation.
+
+`Zhong2008Response.surface_topography` and `.surface_geoid` are the
+no-self-gravity quantities. The corresponding Table 2 or Table 3 quantities
+are under `.self_gravity`. Velocity is unchanged by that postprocessing.
+
+### Validation
+
+`tests/test_1029_analytic_zhong2008.py` checks every parenthesized analytical
+entry in Zhong et al. (2008) Tables 2 and 3: three load depths, four harmonic
+degrees, isoviscous and `10^4`-lid cases, and eight response quantities per
+case. The 192 comparisons agree within the precision printed in the paper. The
+test also checks both free-slip boundary states, load linearity, no-self-gravity
+recovery, and invalid input handling.
+
+This is stronger than copying table values into benchmark scripts: the values
+are independently recomputed from the governing radial system for every case.
 
 ## Adding a new solution
 

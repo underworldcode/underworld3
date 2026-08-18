@@ -47,6 +47,150 @@ if _xdist_worker:
     os.environ.setdefault("UW_MESH_CACHE_DIR", f".meshes/{_xdist_worker}")
 
 
+# ==============================================================================
+# COLLECTION-TIME GLOBAL STATE GUARD (#575)
+# ==============================================================================
+# pytest imports a test module in order to collect it, so anything a module does
+# at import time runs BEFORE any test, any fixture and any isolation the
+# fixtures below provide. Two defects have reached `development` that way:
+#
+#   #567  a module switched the units system on process-wide at import, and the
+#         first module-scoped fixture in that worker built its mesh under
+#         dimensional coordinates;
+#   #505  a module ran two Stokes solves at import, so `--collect-only` sat
+#         inside SNESSolve for 20+ minutes looking like a silent death.
+#
+# The fixtures below fix the consequence. This guard fixes the practice: it
+# fingerprints the process state around each module's import and fails the run,
+# naming the module and what moved, when a module writes to it.
+#
+# The check is skipped when underworld3 is not importable — conftest.py is
+# loaded before the package is necessarily installed in CI.
+#
+# `UW_TEST_COLLECTION_GUARD=off` turns it off. That exists for harnesses which
+# GENERATE an offending module on purpose: `test_0742` copies this conftest into
+# a pytester sub-run together with a module that leaks units at import, because
+# what it pins is that the module-scoped reset survives exactly that. The guard
+# firing there is correct and would stop the test reaching its assertion.
+
+
+_GUARD_ENABLED = os.environ.get("UW_TEST_COLLECTION_GUARD", "on").lower() not in (
+    "0",
+    "off",
+    "false",
+    "no",
+)
+
+
+def _global_state_fingerprint():
+    """Process-global state that importing a test module must leave alone."""
+
+    try:
+        import underworld3 as uw
+        from underworld3 import model as _model
+        from underworld3.utilities._api_tools import uw_object
+    except ImportError:
+        return None
+
+    active_model = _model._default_model
+    reference_quantities = ()
+    if active_model is not None:
+        reference_quantities = tuple(
+            sorted(getattr(active_model, "_reference_quantities", None) or {})
+        )
+
+    return {
+        "uw objects created": uw_object.uw_object_counter(),
+        "units reference quantities": reference_quantities,
+        "strict units": uw.is_strict_units_active(),
+    }
+
+
+# Modules that already do this, measured on `development` at the time the guard
+# was written. They are exempted so the guard can be turned on today; the list
+# is a ratchet, not an approval — nothing may be added to it, and each entry is
+# a module whose module-level work belongs in a fixture (#587).
+#
+# `test_0601_mesh_vector_calc.py` is the one to fix first: alone in this list it
+# moves the units state (`use_strict_units(False)` at import), which is the #567
+# mechanism itself and reaches every module collected after it.
+_KNOWN_COLLECTION_TIME_WORK = (
+    "parallel/test_0765_internal_boundary_integral_mpi.py",
+    "test_0004_pointwise_fns.py",
+    "test_0005_IndexSwarmVariable.py",
+    "test_0501_integrals.py",
+    "test_0502_boundary_integrals.py",
+    "test_0504_projections.py",
+    "test_0601_mesh_vector_calc.py",
+    "test_0810_amr_swarm_migration_regression.py",
+    "test_0830_mesh_adapt_variable_transfer.py",
+    "test_1000_poissonCart.py",
+    "test_1000_poissonNaturalBC.py",
+    "test_1001_poissonSph.py",
+    "test_1004_DarcyCartesian.py",
+    "test_1010_stokesCart.py",
+    "test_1011_stokesSph.py",
+    "test_1014_stokes_multigrid.py",
+    "test_1014_stokes_shell_nullspace.py",
+    "test_1050_VEstokesCart.py",
+)
+
+
+def _is_known_offender(nodeid):
+    path = nodeid.replace(os.sep, "/")
+    return any(path.endswith(known) for known in _KNOWN_COLLECTION_TIME_WORK)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector):
+    """Fingerprint the process around a module's import, which is its collection."""
+
+    if not (_GUARD_ENABLED and isinstance(collector, pytest.Module)):
+        yield
+        return
+
+    before = _global_state_fingerprint()
+    outcome = yield
+
+    if before is None:
+        return
+
+    after = _global_state_fingerprint()
+    if after is None:
+        return
+
+    moved = {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+    if not moved or _is_known_offender(collector.nodeid):
+        return
+
+    report = outcome.get_result()
+    if report.failed:
+        return
+
+    # Reported as a COLLECTION ERROR against the offending module rather than by
+    # aborting the session. An abort (`pytest.exit`, or raising from
+    # `pytest_collection_finish`) leaves an xdist worker part-collected, and the
+    # controller then reports `INTERNALERROR ... assert not crashitem` instead of
+    # anything a reader can act on. A collection error is a state both the serial
+    # and the distributed runner already know how to carry.
+    lines = [
+        f"{collector.nodeid} changed global state while being COLLECTED:",
+        "",
+    ]
+    for key, (was, now) in moved.items():
+        lines.append(f"    {key}: {was} -> {now}")
+    lines += [
+        "",
+        "Work belongs inside a test function or a fixture. Code at module level",
+        "runs at import, before the isolation fixtures in tests/conftest.py can",
+        "act, and it runs even under --collect-only (issues #567, #505, #587).",
+    ]
+
+    report.outcome = "failed"
+    report.longrepr = "\n".join(lines)
+    report.result = []
+
+
 @pytest.fixture(scope="module", autouse=True)
 def isolate_module_state():
     """Reset the global model BEFORE a module's own fixtures are built.

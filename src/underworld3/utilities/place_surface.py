@@ -2677,6 +2677,305 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
 # ``~/+Simulations/mesh_reconnection_study/thin_volume_spike.py`` — widths
 # h, h/2, h/4 and junction angles down to 10 degrees, all gated.
 
+# ------------------------------------------- the domain boundary as a tool
+
+def _domain_boundary_facets(dm):
+    """The DOMAIN boundary as one small global complex, identical everywhere.
+
+    A facet of the domain boundary has support 1 AND is unshared — a
+    partition-seam facet also has local support 1, and clipping against a
+    seam would eat the mesh differently at every rank count (the
+    :func:`_true_wall_vertex_mask` distinction). Each boundary facet lives
+    on exactly one rank, so the gathered set holds each facet once; the
+    facets are stitched by exact coordinate identity, which is sound
+    because a shared vertex's coordinates are copies of the same bytes on
+    every rank. COLLECTIVE.
+
+    Returns ``(verts, facets)``: coordinates ``(nv, dim)`` and vertex-index
+    facets ``(nf, dim)`` — edges in 2-D, triangles in 3-D.
+    """
+    dim = dm.getDimension()
+    vS, vE = dm.getDepthStratum(0)
+    pStart, _pEnd = dm.getChart()
+    X = _coords(dm)[: vE - vS]
+    shared = _shared_point_flags(dm).astype(bool)
+    corners = []
+    for f in range(*dm.getHeightStratum(1)):
+        if len(dm.getSupport(f)) == 1 and not shared[f - pStart]:
+            vv = [int(q) - vS for q in dm.getTransitiveClosure(f)[0]
+                  if vS <= int(q) < vE]
+            corners.append(X[vv])
+    local = (np.asarray(corners, dtype=float) if corners
+             else np.zeros((0, dim, dim), dtype=float))
+    pieces = [g for g in uw.mpi.comm.allgather(local) if len(g)]
+    if not pieces:
+        raise RuntimeError("the mesh has no domain boundary facet")
+    stack = np.concatenate(pieces)
+    verts, inverse = np.unique(stack.reshape(-1, dim), axis=0,
+                               return_inverse=True)
+    return verts, inverse.reshape(-1, dim).astype(np.int64)
+
+
+def _domain_loops_2d(dm):
+    """The 2-D domain boundary as closed coordinate loops. COLLECTIVE."""
+    verts, edges = _domain_boundary_facets(dm)
+    loops = _skin_loops([(int(a), int(b)) for a, b in edges],
+                        what="the domain boundary")
+    return [verts[loop] for loop in loops]
+
+
+def _compress_collinear_loop(loop_xy):
+    """The loop's vertices where the boundary actually TURNS.
+
+    The OCC tool needs the boundary's geometry, not its segmentation: a box
+    wall's collinear run collapses to its corners, so a box builds the same
+    four-sided (six-faced, one dimension up) tool the analytic box gave,
+    and the boolean does not imprint the wall's mesh spacing onto the
+    clipped faces. The compressed polygon carries the identical point set,
+    so the cut itself is unchanged.
+    """
+    P = np.asarray(loop_xy, dtype=float)
+    e1 = P - np.roll(P, 1, axis=0)
+    e2 = np.roll(P, -1, axis=0) - P
+    if P.shape[1] == 2:
+        cross = np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
+    else:
+        cross = np.linalg.norm(np.cross(e1, e2), axis=1)
+    turn = cross > (1e-12 * np.linalg.norm(e1, axis=1)
+                    * np.linalg.norm(e2, axis=1))
+    if turn.sum() < 3:
+        raise RuntimeError(
+            "a domain boundary loop compresses to fewer than three corners")
+    return P[turn]
+
+
+def _occ_domain_2d(occ, loops):
+    """The domain as ONE OCC plane surface built from its boundary loops.
+
+    ``loops`` are the (compressed) boundary polygons of the mesh's own
+    vertices; the largest-area loop is the exterior, the rest are holes —
+    an annulus arrives natively. The tool is exactly the discrete domain,
+    so a boolean against it lands on the mesh's own facets (measured:
+    3.5e-17 from the chords, against the 8.6e-3 sagitta a cut on the smooth
+    circle would have left). Returns the surface tag; the caller
+    synchronizes.
+    """
+    def area(P):
+        return 0.5 * float(P[:, 0] @ np.roll(P[:, 1], -1)
+                           - P[:, 1] @ np.roll(P[:, 0], -1))
+
+    order = sorted(range(len(loops)), key=lambda k: -abs(area(loops[k])))
+    rings = []
+    for k in order:
+        P = loops[k]
+        pts = [occ.addPoint(x, y, 0.0) for x, y in P]
+        lines = [occ.addLine(pts[i], pts[(i + 1) % len(pts)])
+                 for i in range(len(pts))]
+        rings.append(occ.addCurveLoop(lines))
+    return occ.addPlaneSurface(rings)
+
+
+def _snap_to_boundary_2d(xy, loops, tol=1e-9):
+    """Snap nodes within ``tol`` of the domain boundary ONTO it, exactly.
+
+    OCC's clipped edges sit within rounding of the tool; the band logic and
+    the sew need EXACT membership. A node near a boundary corner takes the
+    corner; a node near a segment loses only its normal component — on an
+    axis-aligned wall that is exactly the wall-plane snap the box clip
+    used, the tangential coordinate untouched.
+    """
+    for P in loops:
+        for v in P:
+            xy[np.linalg.norm(xy - v, axis=1) < tol] = v
+        n = len(P)
+        for i in range(n):
+            A, B = P[i], P[(i + 1) % n]
+            e = B - A
+            length = float(np.linalg.norm(e))
+            nrm = np.array([-e[1], e[0]]) / length
+            off = (xy - A) @ nrm
+            u = ((xy - A) @ e) / (length * length)
+            near = (np.abs(off) < tol) & (u > 0.0) & (u < 1.0)
+            xy[near] -= off[near, None] * nrm
+    return xy
+
+
+def _occ_domain_3d(occ, verts, tris):
+    """The domain as ONE OCC solid built from its boundary triangles.
+
+    Adjacent coplanar triangles merge into single planar faces first — a
+    box wall becomes one rectangle, so a box builds the same six-faced tool
+    the analytic box gave, and the boolean does not imprint the wall's mesh
+    spacing onto the clipped faces — and each merged face's rim compresses
+    to its corners. The chain shared by two merged faces lies in both
+    planes, hence on a straight line, so both faces compress it to the same
+    endpoints; a vertex where three or more faces meet is always kept, or
+    two faces whose planes cross the same line would disagree about it.
+    Faces share OCC points and lines, so the shells they close into are
+    topologically sewn. Returns ``(volume_tag, planes)`` with ``planes`` a
+    list of ``(anchor, unit_normal)`` per merged face, for the snap; the
+    caller synchronizes.
+    """
+    tris = np.asarray(tris, dtype=np.int64)
+    T = verts[tris]
+    raw_n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+    nn = np.linalg.norm(raw_n, axis=1)
+    if (nn == 0.0).any():
+        raise RuntimeError("a domain boundary triangle is degenerate")
+    unit_n = raw_n / nn[:, None]
+
+    parent = list(range(len(tris)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    edge_first = {}
+    for t, tri in enumerate(tris):
+        opp = {frozenset((int(tri[0]), int(tri[1]))): int(tri[2]),
+               frozenset((int(tri[1]), int(tri[2]))): int(tri[0]),
+               frozenset((int(tri[2]), int(tri[0]))): int(tri[1])}
+        for key, far in opp.items():
+            if key not in edge_first:
+                edge_first[key] = t
+                continue
+            s = edge_first[key]
+            scale = max(nn[t], nn[s]) ** 0.5
+            coplanar = (np.linalg.norm(np.cross(unit_n[t], unit_n[s]))
+                        < 1e-12
+                        and abs((verts[far] - T[s, 0]) @ unit_n[s])
+                        < 1e-12 * scale)
+            if coplanar:
+                parent[find(t)] = find(s)
+
+    regions = {}
+    for t in range(len(tris)):
+        regions.setdefault(find(t), []).append(t)
+    regions_at = {}
+    for t, tri in enumerate(tris):
+        r = find(t)
+        for v in tri:
+            regions_at.setdefault(int(v), set()).add(r)
+
+    point_tag, line_tag = {}, {}
+
+    def point(v):
+        if v not in point_tag:
+            point_tag[v] = occ.addPoint(*verts[v])
+        return point_tag[v]
+
+    def line(a, b):
+        key = (a, b) if a < b else (b, a)
+        if key not in line_tag:
+            line_tag[key] = occ.addLine(point(key[0]), point(key[1]))
+        return line_tag[key]
+
+    def compress_rim(loop):
+        P = verts[np.asarray(loop)]
+        e1 = P - np.roll(P, 1, axis=0)
+        e2 = np.roll(P, -1, axis=0) - P
+        cross = np.linalg.norm(np.cross(e1, e2), axis=1)
+        turn = cross > (1e-12 * np.linalg.norm(e1, axis=1)
+                        * np.linalg.norm(e2, axis=1))
+        junction = np.array([len(regions_at[int(v)]) >= 3 for v in loop])
+        keep = turn | junction
+        if keep.sum() < 3:
+            raise RuntimeError(
+                "a domain face's rim compresses to fewer than three "
+                "corners")
+        return [int(v) for v, k in zip(loop, keep) if k]
+
+    from collections import Counter
+
+    face_of_region = {}
+    planes = []
+    for r, members in regions.items():
+        rim = Counter()
+        for t in members:
+            a, b, c = (int(v) for v in tris[t])
+            for e in (frozenset((a, b)), frozenset((b, c)),
+                      frozenset((c, a))):
+                rim[e] += 1
+        rim_edges = [tuple(e) for e, k in rim.items() if k == 1]
+        loops = _skin_loops(rim_edges, what="a domain face's rim")
+        m = unit_n[members[0]]
+        anchor = verts[int(tris[members[0]][0])]
+        planes.append((anchor, m))
+        # In-plane coordinates for the outer-vs-hole ranking only.
+        u = T[members[0], 1] - T[members[0], 0]
+        u = u / np.linalg.norm(u)
+        w = np.cross(m, u)
+
+        def rim_area(loop):
+            Q = verts[np.asarray(loop)] - anchor
+            x, y = Q @ u, Q @ w
+            return 0.5 * float(x @ np.roll(y, -1) - y @ np.roll(x, -1))
+
+        loops = sorted((compress_rim(lp) for lp in loops),
+                       key=lambda lp: -abs(rim_area(lp)))
+        rings = []
+        for lp in loops:
+            rings.append(occ.addCurveLoop(
+                [line(lp[i], lp[(i + 1) % len(lp)])
+                 for i in range(len(lp))]))
+        face_of_region[r] = occ.addPlaneSurface(rings)
+
+    # Shells: connected components of the triangulation; the component
+    # enclosing the greatest volume is the outer boundary, the others are
+    # interior cavities (a spherical shell's inner surface).
+    sparent = list(range(len(tris)))
+
+    def sfind(a):
+        while sparent[a] != a:
+            sparent[a] = sparent[sparent[a]]
+            a = sparent[a]
+        return a
+
+    edge_seen = {}
+    for t, tri in enumerate(tris):
+        a, b, c = (int(v) for v in tri)
+        for e in (frozenset((a, b)), frozenset((b, c)), frozenset((c, a))):
+            if e in edge_seen:
+                sparent[sfind(t)] = sfind(edge_seen[e])
+            else:
+                edge_seen[e] = t
+    shells, shell_tris = {}, {}
+    for t in range(len(tris)):
+        s = sfind(t)
+        shells.setdefault(s, set()).add(find(t))
+        shell_tris.setdefault(s, []).append(t)
+    enclosed = {}
+    for s, ts in shell_tris.items():
+        Q = T[ts]
+        enclosed[s] = abs(float(np.einsum(
+            "ij,ij->i", np.cross(Q[:, 0], Q[:, 1]), Q[:, 2]).sum()) / 6.0)
+    order = sorted(shells, key=lambda s: -enclosed[s])
+    loops3 = [occ.addSurfaceLoop([face_of_region[r] for r in shells[s]])
+              for s in order]
+    return occ.addVolume(loops3), planes
+
+
+def _snap_to_boundary_3d(xyz, verts, tris, planes, tol=1e-9):
+    """Snap nodes within ``tol`` of the domain boundary ONTO it, exactly.
+
+    Boundary corners first, then each merged face's plane, each a pure
+    normal-component move — on an axis-aligned wall that is exactly the
+    wall-plane snap the box clip used, the in-plane coordinates untouched.
+    A node near two planes (a domain edge) is snapped by both passes, as
+    the box path snapped both axes at a corner.
+    """
+    for v in np.unique(tris):
+        p = verts[int(v)]
+        xyz[np.linalg.norm(xyz - p, axis=1) < tol] = p
+    for anchor, m in planes:
+        off = (xyz - anchor) @ m
+        near = np.abs(off) < tol
+        xyz[near] -= off[near, None] * m
+    return xyz
+
+
 def _patch_frame(patch):
     """Unit normal of a planar patch, with planarity asserted."""
     P = np.asarray(patch, dtype=float)
@@ -2693,16 +2992,18 @@ def _patch_frame(patch):
     return n
 
 
-def _occ_assembly_3d(patches, width, size, box=None, assembly="fuse"):
+def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
     """Thicken each planar patch by ±width/2, resolve overlaps, mesh.
 
     ``assembly`` is :func:`place_thin_volume`'s: ``"fuse"`` returns the union
     as one solid, ``"fragment"`` keeps every overlap piece.
 
-    ``box = (lo, hi)`` applies the specify-long contract: the thickened
-    solids are INTERSECTED with the domain box, so patches may protrude —
-    an assembly reaching the top surface leaves its clipped face exactly in
-    the wall plane (snapped to the plane value after meshing, defensively).
+    ``domain = (verts, tris)`` — the mesh's boundary complex
+    (:func:`_domain_boundary_facets`) — applies the specify-long contract:
+    the thickened solids are INTERSECTED with the domain built as OCC
+    geometry from those very facets, so patches may protrude — an assembly
+    reaching a boundary leaves its clipped face exactly on the boundary's
+    own facets (snapped onto their planes after meshing, defensively).
 
     Returns ``(points, tets, cad_volume)`` — the assembly mesh in its own
     numbering, and the CAD volume of the (clipped) pieces, against which the
@@ -2736,11 +3037,12 @@ def _occ_assembly_3d(patches, width, size, box=None, assembly="fuse"):
                 occ.fuse([(3, solids[0])], [(3, t) for t in solids[1:]])
             else:
                 occ.fragment([(3, solids[0])], [(3, t) for t in solids[1:]])
-        if box is not None:
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
+        planes = None
+        if domain is not None:
+            dom_verts, dom_tris = domain
             occ.synchronize()
             solids = [t for _d, t in gmsh.model.getEntities(3)]
-            tool = occ.addBox(*lo, *(hi - lo))
+            tool, planes = _occ_domain_3d(occ, dom_verts, dom_tris)
             occ.intersect([(3, t) for t in solids], [(3, tool)])
         occ.synchronize()
 
@@ -2764,15 +3066,11 @@ def _occ_assembly_3d(patches, width, size, box=None, assembly="fuse"):
                                          dtype=np.int64).reshape(-1, 4))
         if not tets:
             raise RuntimeError("the assembly meshed to no tetrahedra")
-        if box is not None:
-            # OCC's clipped faces sit within rounding of the plane; the
-            # band logic and the cap's node sharing need EXACT plane
-            # values, so snap defensively.
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
-            for axis in range(3):
-                for value in (lo[axis], hi[axis]):
-                    near = np.abs(xyz[:, axis] - value) < 1e-9
-                    xyz[near, axis] = value
+        if planes is not None:
+            # OCC's clipped faces sit within rounding of the boundary; the
+            # band logic and the cap's node sharing need EXACT membership,
+            # so snap defensively.
+            xyz = _snap_to_boundary_3d(xyz, dom_verts, dom_tris, planes)
         return xyz, np.vstack(tets), float(cad_volume)
     finally:
         gmsh.finalize()
@@ -2801,30 +3099,171 @@ def _assembly_skin(points, cells):
     return points[node_ids], skin_local, node_ids
 
 
-def _split_skin_band(skin_xyz, skin_facets, box_lo, box_hi):
-    """Split a skin into its interior part and the wall BAND — the strip of
-    the assembly's clipped face lying exactly in a wall plane (the zone's
-    outcrop). One wall only; more refuses (box-edge bands are not built).
-    Returns ``(interior_idx, band_idx, wall_code)`` with wall_code None
-    when nothing touches a wall.
+def _split_skin_trace(skin_xyz, skin_facets, dom_verts, dom_facets,
+                      tol=1e-9):
+    """Split a skin into its interior part and the boundary TRACE — the
+    facets of the assembly's clipped face lying ON the domain's own
+    boundary facets (the zone's outcrop). Membership is metric but
+    unambiguous: the post-clip snap puts a clipped vertex within rounding
+    of the boundary complex, while an interior skin vertex is a layer
+    mesh-size away. Every vertex AND the centroid must be on the boundary,
+    so a facet spanning between two boundary contacts through the interior
+    cannot pass.
 
-    Dimension-free: facets are triangles against wall planes in 3-D, edges
-    against wall lines in 2-D.
+    Dimension-free: edges against boundary edges in 2-D, triangles against
+    boundary triangles in 3-D. Returns ``(interior_idx, trace_idx)``.
     """
-    codes = np.full(len(skin_facets), -1, dtype=np.int64)
+    distance = (_segments_distance if skin_xyz.shape[1] == 2
+                else _sheet_distance)
+    d_vertex = distance(skin_xyz, dom_verts, dom_facets)
+    corners = d_vertex[skin_facets].max(axis=1)
+    d_centre = distance(skin_xyz[skin_facets].mean(axis=1),
+                        dom_verts, dom_facets)
+    on = (corners < tol) & (d_centre < tol)
+    return np.flatnonzero(~on), np.flatnonzero(on)
+
+
+def _collapse_boundary_imprints(asm_pts, asm_tris, loops, delta):
+    """Merge a clipped-corner node into the domain vertex it almost hits.
+
+    The boolean imprints the tool's corners into the clipped face. Where
+    the assembly's own clipped corner lands within ``delta`` of an
+    imprinted domain vertex, two forced nodes sit a hair apart on the same
+    boundary segment and the layer meshes a sliver spanning them
+    (measured: 0.18 degrees on an annulus radial outcrop, against 29.6 for
+    its interior twin). Taking the domain vertex moves the band's end
+    ALONG the boundary, so the domain's shape and area are untouched; the
+    assembly's side edge tilts by under ``delta`` across its last cell —
+    the end-snap contract, one level up. Runs after the meshed-vs-CAD
+    gate: the collapse is our own exact bookkeeping, not the mesher's.
+    """
+    comp = [_compress_collinear_loop(L) for L in loops]
+    seg_pts, seg_edges = [], []
+    for L in comp:
+        base = len(seg_pts)
+        n = len(L)
+        seg_edges += [(base + i, base + (i + 1) % n) for i in range(n)]
+        seg_pts += list(L)
+    on_bound = (_segments_distance(asm_pts, np.asarray(seg_pts), seg_edges)
+                < 1e-9)
+    remap = np.arange(len(asm_pts))
+    for c in np.vstack(loops):
+        hit = np.flatnonzero((asm_pts == c).all(axis=1))
+        if not len(hit):
+            continue
+        j = int(hit[0])
+        d = np.linalg.norm(asm_pts - c, axis=1)
+        for m in np.flatnonzero((d > 0.0) & (d < delta) & on_bound):
+            remap[int(m)] = j
+    if (remap == np.arange(len(asm_pts))).all():
+        return asm_pts, asm_tris
+    tris = remap[asm_tris]
+    degenerate = ((tris[:, 0] == tris[:, 1]) | (tris[:, 1] == tris[:, 2])
+                  | (tris[:, 2] == tris[:, 0]))
+    tris = tris[~degenerate]
+    used = np.unique(tris)
+    compact = np.full(len(asm_pts), -1, dtype=np.int64)
+    compact[used] = np.arange(len(used))
+    return asm_pts[used], compact[tris]
+
+
+def _refuse_multiple_bands(band_facets):
+    """One contiguous band only: a single carve-and-splice is built.
+
+    Two ribbons out of two walls, or one arch out of the same wall twice,
+    both arrive here as more than one connected component of band facets.
+    """
+    parent = {}
+
+    def find(v):
+        while parent[v] != v:
+            parent[v] = parent[parent[v]]
+            v = parent[v]
+        return v
+
+    for facet in band_facets:
+        for v in facet:
+            parent.setdefault(int(v), int(v))
+        roots = {find(int(v)) for v in facet}
+        anchor = roots.pop()
+        for r in roots:
+            parent[r] = anchor
+    if len({find(v) for v in parent}) > 1:
+        raise NotImplementedError(
+            "the zone meets the domain boundary in more than one band; a "
+            "multiply-outcropping zone is not built.")
+
+
+def _outcrop_frame_2d(comp_loops, asm_pts, band_pairs, X, on_wall):
+    """Which mesh boundary vertices an outcrop may DELETE, and which ring
+    vertices count as boundary contact AWAY from the outcrop.
+
+    A boundary vertex may go when the band re-provides its geometry (the
+    vertex lies ON the band — the assembly holds a node at its exact
+    position), or when it lies on a band-touched straight segment of the
+    compressed boundary, where the splice's cap segments stay collinear
+    with the segment and the domain shape is preserved. A compressed
+    CORNER off the band is the domain's shape itself and is never deleted.
+    On a box this reproduces the wall-plane rule exactly: the touched
+    segment is the whole wall, and the box corners are the protected ones.
+
+    Returns ``(deletable, near_touched)`` — masks over the mesh vertices.
+    """
+    band_nodes = sorted({int(v) for pair in band_pairs for v in pair})
+    B = asm_pts[band_nodes]
+    seg_pts, seg_edges, corners = [], [], []
+    for L in comp_loops:
+        corners.append(L)
+        n = len(L)
+        for i in range(n):
+            A, C = L[i], L[(i + 1) % n]
+            e = C - A
+            u = np.clip(((B - A) @ e) / float(e @ e), 0.0, 1.0)
+            d = np.linalg.norm(B - (A + u[:, None] * e), axis=1)
+            if (d < 1e-9).any():
+                seg_edges.append((len(seg_pts), len(seg_pts) + 1))
+                seg_pts += [A, C]
+    if not seg_edges:
+        raise RuntimeError(
+            "the outcrop band lies on no boundary segment; the clip and "
+            "the boundary disagree")
+    d_seg = _segments_distance(X, np.asarray(seg_pts), seg_edges)
+    d_band = _segments_distance(X, asm_pts,
+                                [tuple(p) for p in band_pairs])
+    is_corner = np.zeros(len(X), dtype=bool)
+    for c in np.vstack(corners):
+        is_corner |= np.linalg.norm(X - c, axis=1) < 1e-9
+    near_touched = d_seg < 1e-9
+    deletable = on_wall & near_touched & (~is_corner | (d_band < 1e-9))
+    return deletable, near_touched
+
+
+def _trace_wall_code(skin_xyz, skin_facets, trace_idx, box_lo, box_hi):
+    """The single axis-aligned wall the trace lies in, as the legacy
+    ``2*axis + side`` code — the frame the carve and the sew still run
+    against. One wall only; more refuses (box-edge bands are not built),
+    and a trace on a non-axis-aligned boundary refuses until the general
+    carve/sew exists.
+    """
+    codes = np.full(len(trace_idx), -1, dtype=np.int64)
     for axis in range(skin_xyz.shape[1]):
         for side, value in ((0, box_lo[axis]), (1, box_hi[axis])):
-            on = (skin_xyz[skin_facets][:, :, axis] == value).all(axis=1)
+            on = (skin_xyz[skin_facets[trace_idx]][:, :, axis]
+                  == value).all(axis=1)
             codes[on] = 2 * axis + side
-    walls = set(int(c) for c in codes[codes >= 0])
-    if not walls:
-        return np.arange(len(skin_facets)), np.empty(0, dtype=np.int64), None
+    if (codes < 0).any():
+        # TODO(DESIGN): the general carve/sew (arc-ordered splice, cap
+        # meshed on the boundary facets) lifts this; the trace split above
+        # already finds the band on any boundary.
+        raise NotImplementedError(
+            "the zone outcrops on a non-axis-aligned boundary; the "
+            "general carve/sew is not yet built.")
+    walls = set(int(c) for c in codes)
     if len(walls) > 1:
         raise NotImplementedError(
             "the zone meets more than one domain wall; box-edge outcrop "
             "bands are not built.")
-    band = np.flatnonzero(codes >= 0)
-    return np.flatnonzero(codes < 0), band, walls.pop()
+    return walls.pop()
 
 
 def _single_loop(edges, what):
@@ -3041,7 +3480,7 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
-def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
+def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
     """Thicken each polyline into a ribbon, resolve overlaps, mesh.
 
     The 2-D thin volume: a ribbon is the mitred outline of one polyline, and
@@ -3052,12 +3491,14 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
     honour. Returns ``(points, triangles, cad_area)``, the area being that of
     the resolved faces — the union — under either choice.
 
-    ``box = (lo, hi)`` applies the specify-long contract one dimension down
-    from :func:`_occ_assembly_3d`: the resolved faces are INTERSECTED with
-    the domain rectangle, so polylines may protrude — a ribbon reaching the
-    top surface leaves its clipped edge exactly in the wall line (snapped to
-    the line value after meshing, defensively). ``cad_area`` is then the
-    clipped area, so the meshed-vs-CAD gate holds unchanged.
+    ``domain`` — the mesh's boundary loops (:func:`_domain_loops_2d`) —
+    applies the specify-long contract one dimension down from
+    :func:`_occ_assembly_3d`: the resolved faces are INTERSECTED with the
+    domain built as OCC geometry from those very loops, so polylines may
+    protrude — a ribbon reaching a boundary leaves its clipped edge exactly
+    on the boundary's own facets (snapped onto them after meshing,
+    defensively). ``cad_area`` is then the clipped area, so the
+    meshed-vs-CAD gate holds unchanged.
     """
     import gmsh
 
@@ -3125,12 +3566,13 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
                 occ.fuse([(2, surfs[0])], [(2, t) for t in surfs[1:]])
             else:
                 occ.fragment([(2, surfs[0])], [(2, t) for t in surfs[1:]])
-        if box is not None:
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
+        comp = None
+        if domain is not None:
+            comp = [_compress_collinear_loop(np.asarray(L, dtype=float))
+                    for L in domain]
             occ.synchronize()
             faces = [t for _d, t in gmsh.model.getEntities(2)]
-            tool = occ.addRectangle(lo[0], lo[1], 0.0,
-                                    hi[0] - lo[0], hi[1] - lo[1])
+            tool = _occ_domain_2d(occ, comp)
             occ.intersect([(2, t) for t in faces], [(2, tool)])
         occ.synchronize()
 
@@ -3153,15 +3595,11 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", box=None):
                                          dtype=np.int64).reshape(-1, 3))
         if not tris:
             raise RuntimeError("the ribbon assembly meshed to no triangles")
-        if box is not None:
-            # OCC's clipped edges sit within rounding of the wall line; the
-            # band logic and the wall relabel need EXACT line values, so
+        if comp is not None:
+            # OCC's clipped edges sit within rounding of the boundary; the
+            # band logic and the wall relabel need EXACT membership, so
             # snap defensively (the 3-D path does the same on its planes).
-            lo, hi = (np.asarray(b, dtype=float) for b in box)
-            for axis in range(2):
-                for value in (lo[axis], hi[axis]):
-                    near = np.abs(xy[:, axis] - value) < 1e-9
-                    xy[near, axis] = value
+            xy = _snap_to_boundary_2d(xy, comp)
         return xy, np.vstack(tris), float(cad_area)
     finally:
         gmsh.finalize()
@@ -3179,19 +3617,19 @@ def _segments_distance(X, pts, edges):
     return best
 
 
-def _skin_loops(skin_edges):
+def _skin_loops(skin_edges, what="the assembly's skin"):
     """Order a 2-D skin's edges into closed loops of vertex ids.
 
     A manifold skin gives every vertex exactly two incident edges; anything
-    else is a defect of the assembly mesh and is refused.
+    else is a defect of the mesh the edges bound and is refused.
     """
     adj = {}
     for a, b in skin_edges:
         adj.setdefault(int(a), []).append(int(b))
         adj.setdefault(int(b), []).append(int(a))
     if any(len(v) != 2 for v in adj.values()):
-        raise RuntimeError("the assembly's skin is not a set of closed "
-                           "loops; the layer mesh is defective")
+        raise RuntimeError(f"{what} is not a set of closed loops; "
+                           "the mesh it bounds is defective")
     loops, seen = [], set()
     for start in sorted(adj):
         if start in seen:
@@ -3249,27 +3687,47 @@ def _outcrop_chain_2d(loops, band_pairs):
     return chain, holes
 
 
-def _outcrop_ring_splice(ring, X, open_wall, chain_ids, chain_t):
-    """Replace the cavity ring's wall span with the ribbon's interior chain.
+def _arc_project(polyline, p):
+    """``(distance, arc length)`` of the closest point on an open polyline."""
+    best_d, best_s = np.inf, 0.0
+    s0 = 0.0
+    for i in range(len(polyline) - 1):
+        A, B = polyline[i], polyline[i + 1]
+        e = B - A
+        length = float(np.linalg.norm(e))
+        u = float(np.clip((p - A) @ e / (length * length), 0.0, 1.0))
+        d = float(np.linalg.norm(p - (A + u * e)))
+        if d < best_d:
+            best_d, best_s = d, s0 + u * length
+        s0 += length
+    return best_d, best_s
 
-    The raw ring of an outcropping carve runs ALONG the open wall through
-    vertices about to be deleted. The fill's boundary instead descends
-    around the ribbon: the ring's single contiguous run of wall edges is
-    removed and the chain is spliced between the run's surviving end
-    vertices, oriented to meet them. The two splice segments are the 2-D
-    cap — what remains of the 3-D wall annulus one dimension down.
 
-    ``chain_ids`` are the chain's rows in the fill's combined numbering,
-    ``chain_t`` the along-wall coordinates of its two ends. Returns
-    ``(spliced_ring, removed_wall_pairs)``, the removed pairs as old vertex
-    rows for the wall-label discovery. A second wall run refuses — the
-    carve spilled onto the wall away from the outcrop.
+def _outcrop_ring_splice(ring, X, boundary_pairs, chain_ids, chain_ends):
+    """Replace the cavity ring's boundary span with the ribbon's interior
+    chain.
+
+    The raw ring of an outcropping carve runs ALONG the domain boundary
+    through vertices about to be deleted. The fill's boundary instead
+    descends around the ribbon: the ring's single contiguous run of
+    boundary edges is removed and the chain is spliced between the run's
+    surviving end vertices, oriented to meet them. The two splice segments
+    are the 2-D cap — what remains of the 3-D wall annulus one dimension
+    down.
+
+    ``boundary_pairs`` is the mesh's own boundary-edge vertex pairs, so
+    the span is a topological run, not a coordinate test.  ``chain_ids``
+    are the chain's rows in the fill's combined numbering, ``chain_ends``
+    the coordinates of its two end nodes; coverage and orientation are
+    arc projections onto the removed span's own polyline, so a curved
+    boundary orders exactly as a straight wall did. Returns
+    ``(spliced_ring, removed_wall_pairs)``, the removed pairs as old
+    vertex rows for the wall-label discovery. A second boundary run
+    refuses — the carve spilled onto the boundary away from the outcrop.
     """
-    axis, value = open_wall
-    t = 1 - axis
     n = len(ring)
-    onw = [X[v][axis] == value for v in ring]
-    wall_edge = [onw[i] and onw[(i + 1) % n] for i in range(n)]
+    wall_edge = [frozenset((ring[i], ring[(i + 1) % n])) in boundary_pairs
+                 for i in range(n)]
     if not any(wall_edge):
         raise RuntimeError(
             "the outcrop band does not meet the cavity's wall span; raise "
@@ -3281,20 +3739,24 @@ def _outcrop_ring_splice(ring, X, open_wall, chain_ids, chain_t):
             "reduce `clearance` or move the zone off the wall.")
     i0 = next(i for i in range(n) if wall_edge[i] and not wall_edge[i - 1])
     k = sum(wall_edge)
-    corner_l, corner_r = ring[i0], ring[(i0 + k) % n]
-    lo_t, hi_t = sorted((float(X[corner_l][t]), float(X[corner_r][t])))
-    if not (lo_t < min(chain_t) and max(chain_t) < hi_t):
+    removed = [(ring[(i0 + j) % n], ring[(i0 + j + 1) % n])
+               for j in range(k)]
+    span = X[np.asarray([ring[(i0 + j) % n] for j in range(k + 1)])]
+    ends = [_arc_project(span, np.asarray(c, dtype=float))
+            for c in chain_ends]
+    strictly_inside = all(
+        d < 1e-9
+        and np.linalg.norm(c - span[0]) > 1e-9
+        and np.linalg.norm(c - span[-1]) > 1e-9
+        for (d, _s), c in zip(ends, chain_ends))
+    if not strictly_inside:
         raise RuntimeError(
             "the cavity's wall span does not cover the outcrop band; raise "
             "`clearance`.")
-    removed = [(ring[(i0 + j) % n], ring[(i0 + j + 1) % n])
-               for j in range(k)]
     # The surviving arc, corner_r around to corner_l, then the chain with
     # its corner_l-side end first — the loop's orientation is preserved.
     tail = [ring[(i0 + k + j) % n] for j in range(n - k + 1)]
-    tl = float(X[corner_l][t])
-    seq = (chain_ids if abs(tl - chain_t[0]) <= abs(tl - chain_t[1])
-           else chain_ids[::-1])
+    seq = chain_ids if ends[0][1] <= ends[1][1] else chain_ids[::-1]
     return tail + list(seq), removed
 
 
@@ -3966,20 +4428,19 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     """
     comm = uw.mpi.comm
 
-    # The (axis-aligned) domain box, collectively — the clip target and the
-    # wall lines the band is identified against.
-    Xb = _coords(dm)
-    lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(2, np.inf),
-                      -(Xb.max(axis=0)) if len(Xb) else np.full(2, np.inf)])
-    comm.Allreduce(MPI.IN_PLACE, lo_hi, op=MPI.MIN)
-    box_lo, box_hi = lo_hi[0], -lo_hi[1]
+    # The domain's own boundary, collectively — the clip target and the
+    # complex the outcrop TRACE is identified against.
+    dom_verts, dom_edges = _domain_boundary_facets(dm)
+    domain_loops = [dom_verts[loop] for loop in
+                    _skin_loops([(int(a), int(b)) for a, b in dom_edges],
+                                what="the domain boundary")]
 
     failure = None
     payload = None
     if comm.rank == 0:
         try:
             asm_pts, asm_tris, cad_area = _occ_assembly_2d(
-                polylines, width, size, assembly, box=(box_lo, box_hi))
+                polylines, width, size, assembly, domain=domain_loops)
             P = asm_pts[asm_tris]
             twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
                      - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
@@ -3989,6 +4450,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     f"the ribbon assembly meshed to area {mesh_area:.12e} "
                     f"against CAD {cad_area:.12e}; the layer mesh does not "
                     "fill its own outlines.")
+            asm_pts, asm_tris = _collapse_boundary_imprints(
+                asm_pts, asm_tris, domain_loops, 0.1 * size)
             payload = (asm_pts, asm_tris)
         except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
@@ -4003,21 +4466,20 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                   for a, b in skin_local]
     loops_asm = _skin_loops(skin_edges)
 
-    # The outcrop band: skin edges lying exactly in ONE wall line. The
+    # The outcrop band: the skin's trace on the domain boundary. The
     # outcropping loop splits into band + interior chain; loops away from
-    # the wall stay holes of the fill.
-    _int_idx, band_idx, wall_code = _split_skin_band(
-        asm_pts, np.asarray(skin_edges, dtype=np.int64), box_lo, box_hi)
-    open_wall = None
+    # the boundary stay holes of the fill.
+    skin_edge_arr = np.asarray(skin_edges, dtype=np.int64)
+    _int_idx, band_idx = _split_skin_trace(asm_pts, skin_edge_arr,
+                                           dom_verts, dom_edges)
+    outcropping = bool(len(band_idx))
     chain_asm = None
     hole_loops = loops_asm
     band_pairs = set()
-    if wall_code is not None:
-        w_axis, w_side = divmod(int(wall_code), 2)
-        open_wall = (w_axis,
-                     float(box_hi[w_axis] if w_side else box_lo[w_axis]))
+    if outcropping:
+        _refuse_multiple_bands(skin_edge_arr[band_idx])
         band_pairs = {frozenset((int(a), int(b)))
-                      for a, b in np.asarray(skin_edges)[band_idx]}
+                      for a, b in skin_edge_arr[band_idx]}
         chain_asm, hole_loops = _outcrop_chain_2d(loops_asm, band_pairs)
 
     vS, vE = dm.getDepthStratum(0)
@@ -4064,16 +4526,12 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             beside_held = np.zeros(len(X), dtype=bool)
             beside_held[cells[held_c].ravel()] = True
             deletable_wall = np.zeros(len(X), dtype=bool)
-            if open_wall is not None:
-                # An outcrop deletes wall vertices — in the open wall's
-                # line only. A vertex in a second wall line is a domain
-                # corner and stays protected: deleting it for one wall
-                # would breach the other.
-                deletable_wall = on_wall & (X[:, open_wall[0]]
-                                            == open_wall[1])
-                other = 1 - open_wall[0]
-                for v2 in (box_lo[other], box_hi[other]):
-                    deletable_wall &= ~(X[:, other] == v2)
+            near_touched = None
+            if outcropping:
+                comp_loops = [_compress_collinear_loop(L)
+                              for L in domain_loops]
+                deletable_wall, near_touched = _outcrop_frame_2d(
+                    comp_loops, asm_pts, band_pairs, X, on_wall)
             protected = (on_wall & ~deletable_wall) | held_v | beside_held
             victim = (d_skin < reach_v) & ~protected
 
@@ -4095,25 +4553,26 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
             ring, drop = _ring_growing(cells, drop, held_c)
             removed_wall = []
-            if open_wall is None:
+            if not outcropping:
                 if on_wall[np.asarray(ring)].any():
                     raise RuntimeError(
                         "the ribbon's cavity reached the domain wall; the "
                         "volume must be interior, with clearance to spare")
             else:
+                boundary_pairs = {frozenset((a, b))
+                                  for _e, a, b in _boundary_edges(dm_work)}
                 chain_ids = [len(X) + int(v) for v in chain_asm]
-                t_ax = 1 - open_wall[0]
-                chain_t = (float(asm_pts[chain_asm[0]][t_ax]),
-                           float(asm_pts[chain_asm[-1]][t_ax]))
+                chain_ends = (asm_pts[chain_asm[0]],
+                              asm_pts[chain_asm[-1]])
                 ring, removed_wall = _outcrop_ring_splice(
-                    ring, X, open_wall, chain_ids, chain_t)
-                off_open = [v for v in ring if v < len(X)
-                            and on_wall[v]
-                            and X[v][open_wall[0]] != open_wall[1]]
-                if off_open:
+                    ring, X, boundary_pairs, chain_ids, chain_ends)
+                off_band = [v for v in ring if v < len(X)
+                            and on_wall[v] and not near_touched[v]]
+                if off_band:
                     raise RuntimeError(
-                        "the ribbon's cavity reached a second domain "
-                        "wall; only a one-wall outcrop is built.")
+                        "the ribbon's cavity reached the domain boundary "
+                        "away from the outcrop band; only a one-band "
+                        "outcrop is built.")
             old_ring = np.asarray([v for v in ring if v < len(X)])
             if victim[old_ring].any():
                 raise RuntimeError(
@@ -4129,26 +4588,29 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     "volume must be interior, with clearance to spare")
             victim |= orphan
 
-            # Labels the deleted wall span carried, read before the
-            # rebuild forgets them — the splice segments and the band are
-            # relabelled with exactly these after sewing.
-            wall_pairs = []
+            # Labels the deleted wall span carried, read PER EDGE before
+            # the rebuild forgets them — a span across a domain corner
+            # changes label mid-way (Top on one side, Right on the other),
+            # so each new wall edge must take the labels of the old
+            # segment it lies on, not a set common to the whole span.
+            span_labels = []
+            span_segments = []
             if removed_wall:
-                edge_pts = [int(dm_work.getFullJoin(
-                    [int(a) + vS, int(b) + vS])[0])
-                    for a, b in removed_wall]
-                for i in range(dm_work.getNumLabels()):
-                    name = dm_work.getLabelName(i)
-                    if name in reconnect._TOPOLOGY_LABELS:
-                        continue
-                    lab = dm_work.getLabel(name)
-                    values = lab.getValueIS()
-                    if values is None:
-                        continue
-                    for val in values.getIndices():
-                        if all(lab.getValue(p) == int(val)
-                               for p in edge_pts):
-                            wall_pairs.append((name, int(val)))
+                names = [dm_work.getLabelName(i)
+                         for i in range(dm_work.getNumLabels())
+                         if dm_work.getLabelName(i)
+                         not in reconnect._TOPOLOGY_LABELS]
+                for a, b in removed_wall:
+                    p = int(dm_work.getFullJoin([int(a) + vS,
+                                                 int(b) + vS])[0])
+                    pairs_p = []
+                    for name in names:
+                        val = dm_work.getLabel(name).getValue(p)
+                        if val >= 0:
+                            pairs_p.append((name, int(val)))
+                    span_labels.append(pairs_p)
+                    span_segments.append((X[int(a)].copy(),
+                                          X[int(b)].copy()))
 
             Xall = np.vstack([X, asm_pts])
             holes = [[len(X) + int(v) for v in loop] for loop in hole_loops]
@@ -4171,11 +4633,11 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     "place_thin_volume internal: the gathered region "
                     "touches a shared point; the gather mask under-reached.")
             outcrop = None
-            if open_wall is not None:
+            if outcropping:
                 # The splice ends: the surviving corner vertices and the
                 # chain ends they meet — the chain is the ring's tail, in
                 # the orientation the splice chose.
-                outcrop = (wall_pairs,
+                outcrop = (span_labels, span_segments,
                            int(removed_wall[0][0]),
                            int(removed_wall[-1][1]),
                            int(ring[-len(chain_asm)]) - len(X),
@@ -4203,7 +4665,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
         dm_work, drop_arr, victims_arr, made, placed)
 
     skin_label = label + "_skin"
-    for name in (label, skin_label):
+    trace_label = label + "_trace"
+    for name in (label, skin_label, trace_label):
         if not new_dm.hasLabel(name):
             new_dm.createLabel(name)
     n_zone_local = 0
@@ -4239,31 +4702,58 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     # and the band itself — is relabelled EXPLICITLY with what the deleted
     # wall span carried, full closures included.
     n_wall_local = 0
-    if open_wall is not None:
-        pairs = comm.bcast(outcrop[0] if comm.rank == target else None,
-                           root=target)
-        for name, val in pairs:
+    if outcropping:
+        label_names = comm.bcast(
+            sorted({name for pairs_p in outcrop[0] for name, _v in pairs_p})
+            if comm.rank == target else None, root=target)
+        for name in label_names:
             if not new_dm.hasLabel(name):
                 new_dm.createLabel(name)
         if comm.rank == target:
-            _wp, corner_l, corner_r, a_first, a_last = outcrop
+            (span_lab, span_seg, corner_l, corner_r,
+             a_first, a_last) = outcrop
             wall_ids = [[int(point_map[corner_l + vS - pStart]),
                          int(placed_points[a_first])],
                         [int(placed_points[a_last]),
                          int(point_map[corner_r + vS - pStart])]]
             wall_ids += [[int(placed_points[a]), int(placed_points[b])]
                          for a, b in (tuple(p) for p in band_pairs)]
-            for ids in wall_ids:
+            mids = [0.5 * (X[corner_l] + asm_pts[a_first]),
+                    0.5 * (asm_pts[a_last] + X[corner_r])]
+            mids += [0.5 * (asm_pts[a] + asm_pts[b])
+                     for a, b in (tuple(p) for p in band_pairs)]
+
+            def span_labels_at(m):
+                best, at = np.inf, 0
+                for k2, (A, B) in enumerate(span_seg):
+                    e = B - A
+                    u = np.clip(float((m - A) @ e) / float(e @ e),
+                                0.0, 1.0)
+                    d = float(np.linalg.norm(m - (A + u * e)))
+                    if d < best:
+                        best, at = d, k2
+                return span_lab[at]
+
+            # The first two entries are the splice segments (the 2-D cap);
+            # the rest are the band — the TRACE, the intersection itself,
+            # labelled as such so the model can form whatever unions it
+            # needs (never a partition of the wall into named halves).
+            # Each edge takes the labels of the removed segment it lies
+            # on, so a band across a domain corner restores Top on one
+            # side and Right on the other.
+            out_trace = new_dm.getLabel(trace_label)
+            for k, ids in enumerate(wall_ids):
                 joined = new_dm.getFullJoin(ids)
                 if len(joined) != 1:
                     failure = ("an outcrop wall edge is not an edge of the "
                                "sewn mesh; the splice or band was not "
                                "sewn.")
                     break
-                for name, val in pairs:
-                    lab = new_dm.getLabel(name)
-                    for q in new_dm.getTransitiveClosure(int(joined[0]))[0]:
-                        lab.setValue(int(q), int(val))
+                for q in new_dm.getTransitiveClosure(int(joined[0]))[0]:
+                    for name, val in span_labels_at(mids[k]):
+                        new_dm.getLabel(name).setValue(int(q), int(val))
+                    if k >= 2:
+                        out_trace.setValue(int(q), int(label_value))
                 n_wall_local += 1
         failures = comm.allgather(failure)
         real = [f for f in failures if f]
@@ -4320,6 +4810,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     comm.Allreduce(MPI.IN_PLACE, mins, op=MPI.MIN)
     info = {"n_zone_cells": n_zone, "n_skin_faces": n_skin,
             "n_placed": n_placed, "n_removed": n_removed,
+            "n_trace_facets": int(len(band_idx)),
             "min_area": float(mins[0]), "min_angle": float(mins[1])}
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {n_zone} zone cells, "
@@ -4430,8 +4921,12 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     comm = uw.mpi.comm
 
     # The specify-long contract: patches may extend PAST the domain; the
-    # assembly is clipped against the (axis-aligned) box, and a clipped
-    # face left in a wall plane becomes the zone's OUTCROP BAND.
+    # assembly is clipped against the mesh's own boundary, and a clipped
+    # face left in a wall plane becomes the zone's OUTCROP BAND. The
+    # axis-aligned box survives alongside as the frame the band is
+    # identified against; a general-boundary band is the trace-labelling
+    # stage, not this one.
+    dom_verts, dom_tris = _domain_boundary_facets(dm)
     Xb = _coords(dm)
     lo_hi = np.array([Xb.min(axis=0) if len(Xb) else np.full(3, np.inf),
                       -(Xb.max(axis=0)) if len(Xb) else np.full(3, np.inf)])
@@ -4444,7 +4939,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if comm.rank == 0:
         try:
             asm_pts, asm_tets, cad_vol = _occ_assembly_3d(
-                patches, width, size, box=(box_lo, box_hi), assembly=assembly)
+                patches, width, size, domain=(dom_verts, dom_tris),
+                assembly=assembly)
             v6 = np.einsum(
                 "ij,ij->i",
                 np.cross(asm_pts[asm_tets][:, 1] - asm_pts[asm_tets][:, 0],
@@ -4470,9 +4966,12 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     asm_pts, asm_tets = comm.bcast(payload, root=0)
     skin_xyz, skin_tris, skin_node_ids = _assembly_skin(asm_pts, asm_tets)
 
-    # The outcrop band: skin triangles lying exactly in ONE wall plane.
-    interior_idx, band_idx, wall_code = _split_skin_band(
-        skin_xyz, skin_tris, box_lo, box_hi)
+    # The outcrop band: the skin's trace on the domain boundary.
+    interior_idx, band_idx = _split_skin_trace(skin_xyz, skin_tris,
+                                               dom_verts, dom_tris)
+    wall_code = (None if not len(band_idx)
+                 else _trace_wall_code(skin_xyz, skin_tris, band_idx,
+                                       box_lo, box_hi))
     open_wall = None
     band_outline = None
     if wall_code is not None:
@@ -4677,7 +5176,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     # is invisible to the interface machinery, so the skin faces — which a
     # later placement must hold clear of — go under their own name.
     skin_label = label + "_skin"
-    for name in (label, skin_label):
+    trace_label = label + "_trace"
+    for name in (label, skin_label, trace_label):
         if not new.hasLabel(name):
             new.createLabel(name)
     n_cells_local = 0
@@ -4735,18 +5235,25 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
 
         wall_tris = ([[new_id(int(v)) for v in t] for t in cap_out]
                      if cap_out is not None else [])
+        n_cap_tris = len(wall_tris)
         wall_tris += [[int(placed_new[int(skin_row[int(v)])]) for v in t]
                       for t in skin_tris[band_idx]]
-        for ids in wall_tris:
+        # The cap's annulus first, then the band — the TRACE, the
+        # intersection itself, labelled as such so the model can form
+        # whatever unions it needs (never a partition of the wall into
+        # named pieces).
+        out_trace = new.getLabel(trace_label)
+        for k, ids in enumerate(wall_tris):
             joined = new.getFullJoin(ids)
             if len(joined) != 1:
                 failure = ("an outcrop wall triangle is not a face of the "
                            "sewn mesh; the cap or band was not sewn.")
                 break
-            for name, val in pairs:
-                lab = new.getLabel(name)
-                for q in new.getTransitiveClosure(int(joined[0]))[0]:
-                    lab.setValue(int(q), int(val))
+            for q in new.getTransitiveClosure(int(joined[0]))[0]:
+                for name, val in pairs:
+                    new.getLabel(name).setValue(int(q), int(val))
+                if k >= n_cap_tris:
+                    out_trace.setValue(int(q), int(label_value))
             n_wall_local += 1
     failures = comm.allgather(failure)
     real = [f for f in failures if f]
@@ -4805,6 +5312,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
 
     info = {"n_zone_cells": n_zone, "n_skin_faces": n_skin_faces,
             "n_placed": n_placed, "n_removed": n_removed,
+            "n_trace_facets": int(len(band_idx)),
             "min_volume": float(min_vol[0])}
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {info['n_zone_cells']} "

@@ -67,7 +67,13 @@ def test_the_fixture_saw_the_undimensionalised_unit_box(coordinate_extent):
 '''
 
 
-def test_a_module_scoped_fixture_is_not_built_under_leaked_units(pytester):
+def test_a_module_scoped_fixture_is_not_built_under_leaked_units(pytester, monkeypatch):
+    # The live conftest carries the collection-time guard (#575), which would
+    # correctly refuse the leaking module below and end the sub-run before it
+    # reached its assertion. The leak is this test's fixture, so the guard is
+    # turned off for the sub-run only.
+    monkeypatch.setenv("UW_TEST_COLLECTION_GUARD", "off")
+
     pytester.makeconftest(_LIVE_CONFTEST)
     pytester.makepyfile(test_leaking_module=_LEAKING_MODULE)
 

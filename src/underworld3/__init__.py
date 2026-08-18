@@ -201,6 +201,7 @@ import underworld3.function
 import underworld3.maths
 import underworld3.swarm
 import underworld3.systems
+import underworld3.postprocessing
 import underworld3.maths
 import underworld3.utilities
 import underworld3.model
