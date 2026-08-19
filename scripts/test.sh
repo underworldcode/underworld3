@@ -148,16 +148,41 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     # - Solver operations
     # - Global evaluations
 
-    echo "Testing global statistics and parallel operations..."
-    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py || status=1
+    # The WHOLE directory, not a set of globs. It used to be `test_075*py` and
+    # `test_10*py`, which between them named 14 of the 32 collectible files and
+    # left a hole from 0760 to 0999 — so test_0760, test_0765..test_0790,
+    # test_0855 and test_0873 ran in parallel at NO rank count, in CI or
+    # locally. That is how the np=4 hang in #611 survived unnoticed, and it is
+    # the #570 class: a glob that names ranges will grow holes as files are
+    # added between them.
+    #
+    # Measured on this directory at np=2: 128 passed, 11 skipped, 156 s.
+    echo "Testing parallel operations, swarms and solvers..."
+    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/ || status=1
 
-    # Parallel SOLVER tests. This line was commented out, so test_1017 and
-    # test_1062..test_1069 — the whole rotated / constrained / MG parallel set,
-    # including the partition-independence guards for the rotated nodal normal
-    # (#560) and the mesh boundary normal (#564) — executed at NO rank count
-    # in CI.
-    echo "Testing parallel solvers..."
-    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_10*py || status=1
+    # A SECOND pass at four ranks, because two is a special case. The failure
+    # this suite exists to catch is a collective entered by some ranks and not
+    # others, and with two ranks the mismatched pair often still meets — the
+    # skipped branch does not arise on a two-way partition, or one rank's
+    # internal barrier is satisfied by the other's next collective. Every such
+    # defect found recently passed at np=2 and hung at np=4: the conditional
+    # collective in #609, and #611.
+    #
+    # Measured on this directory: np=2 128 passed / 11 skipped / 156 s; np=4
+    # 135 passed / 3 skipped / 170 s. The skip counts differ because some tests
+    # require four ranks and are skipped at two — which is the other reason to
+    # run both.
+    #
+    # The one deselection is #611: test_global_evaluate_after_migration passes
+    # at np=2 and hangs at np=4 on development. The node id has no `tests/`
+    # prefix because tests/pytest.ini puts rootdir at `tests/`, and a deselect
+    # that does not match is ignored in silence.
+    if [ "$PARALLEL_RANKS" -ne 4 ]; then
+      echo "Testing the same set at 4 ranks (np=2 is a special case)..."
+      mpirun -n 4 python -m pytest --with-mpi tests/parallel/ \
+        --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
+        || status=1
+    fi
 
     # echo "Testing parallel I/O..."
     # mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_io*py || status=1
