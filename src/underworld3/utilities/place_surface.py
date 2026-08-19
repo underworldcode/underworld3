@@ -412,7 +412,7 @@ def _inside_polygon(P, q):
     return inside
 
 
-def _gmsh_fill_2d(Xall, ring, chain, holes=()):
+def _gmsh_fill_2d(Xall, ring, chain, holes=(), size_of=None):
     """Triangulate the cavity with gmsh: the ring verbatim, the chain embedded.
 
     The ring — the cavity boundary, anticlockwise — goes in as a discrete
@@ -428,6 +428,11 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
     ``holes`` are further closed loops of ``Xall`` indices excluded from the
     fill — the 2-D thin volume's skin, meshed elsewhere and sewn on — each a
     discrete curve of its own, verbatim like the ring.
+
+    ``size_of`` is an optional callable ``(x, y) -> h`` giving the target
+    mesh size at a point of the plane — a VARIABLE-resolution fill (a
+    sheet fine near its shallow tip, coarse at depth). Without it the
+    fill takes its size from the constrained curves' own segmentation.
 
     Everything is gated, because a fill that looks plausible and is not
     conforming is worse than a refusal: zero moved nodes, every input segment
@@ -516,7 +521,8 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
 
         # Sizes bracketing what is already there: fine enough to accept the
         # chain's own spacing, coarse enough not to refine the cavity beyond
-        # the surviving mesh around it.
+        # the surviving mesh around it. A size callback, when given, takes
+        # over the interior grading (the bracket stays as the guard rail).
         constrained = (ring + ring[:1], *chains,
                        *[loop + loop[:1] for loop in holes])
         lengths = np.concatenate(
@@ -524,6 +530,9 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=()):
              for c in constrained if len(c) > 1])
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.5 * float(lengths.min()))
         gmsh.option.setNumber("Mesh.MeshSizeMax", 2.0 * float(lengths.max()))
+        if size_of is not None:
+            gmsh.model.mesh.setSizeCallback(
+                lambda dim, tag, x, y, z, lc: float(size_of(x, y)))
         gmsh.model.mesh.generate(2)
 
         out_tags, xyz, _ = gmsh.model.mesh.getNodes()
@@ -1364,6 +1373,81 @@ def _interior_face_counts_3d(dm, exclude=()):
     return counts
 
 
+def _reach_query(X, reach):
+    """A reach-aware spatial hash over ``X``: query(lo, hi) -> indices.
+
+    Points are binned on uniform grids, one per octave of their
+    ``reach`` (the per-point distance beyond which the caller does not
+    care), so a box query returns every point whose reach-padded
+    position could intersect ``[lo, hi]`` — and, on a graded mesh, only
+    those: fine-reach points bin finely and are returned only near the
+    box, the few coarse-reach points bin coarsely. This is what keeps
+    sheet-against-mesh sweeps O(near-band) instead of O(domain x sheet)
+    (#613 — measured 3,217 s of a 3,705 s placement without it).
+    """
+    X = np.asarray(X, dtype=float)
+    reach = np.broadcast_to(np.asarray(reach, dtype=float), (len(X),))
+    if not len(X):
+        return lambda lo, hi: np.empty(0, dtype=np.int64)
+    origin = X.min(axis=0)
+    r_pos = np.maximum(reach, 1e-30)
+    octave = np.floor(np.log2(r_pos / r_pos.min())).astype(np.int64)
+    grids = []
+    for b in np.unique(octave):
+        sel = np.flatnonzero(octave == b)
+        pitch = float(r_pos[sel].max())
+        keys = np.floor((X[sel] - origin) / pitch).astype(np.int64)
+        bins = {}
+        for i, k in zip(sel, map(tuple, keys)):
+            bins.setdefault(k, []).append(int(i))
+        grids.append((pitch, bins))
+
+    def query(lo, hi):
+        out = []
+        for pitch, bins in grids:
+            k_lo = np.floor((np.asarray(lo) - pitch - origin)
+                            / pitch).astype(np.int64)
+            k_hi = np.floor((np.asarray(hi) + pitch - origin)
+                            / pitch).astype(np.int64)
+            for kx in range(k_lo[0], k_hi[0] + 1):
+                for ky in range(k_lo[1], k_hi[1] + 1):
+                    for kz in range(k_lo[2], k_hi[2] + 1):
+                        got = bins.get((kx, ky, kz))
+                        if got:
+                            out.extend(got)
+        return np.asarray(out, dtype=np.int64)
+
+    return query
+
+
+def _sheet_distance_within(X, pts, tris, reach):
+    """Point-to-sheet distance, EXACT wherever it is below ``reach``.
+
+    ``reach`` (scalar or per-point) is the threshold the caller compares
+    against; a point farther than its reach from every triangle gets a
+    sentinel above its reach, never the true distance. Every caller
+    thresholds where it reads this, so decisions match
+    :func:`_sheet_distance` exactly at O(near-band) cost (#613).
+    """
+    X = np.asarray(X, dtype=float)
+    tris = np.asarray(tris, dtype=np.int64)
+    reach = np.broadcast_to(np.asarray(reach, dtype=float),
+                            (len(X),)).copy()
+    best = 2.0 * np.maximum(reach, 1e-30)
+    if not len(X) or not len(tris):
+        return best
+    query = _reach_query(X, reach)
+    for t in tris:
+        A, B, C = pts[t[0]], pts[t[1]], pts[t[2]]
+        P3 = np.array([A, B, C])
+        idx = query(P3.min(axis=0), P3.max(axis=0))
+        if not len(idx):
+            continue
+        best[idx] = np.minimum(
+            best[idx], _sheet_distance(X[idx], pts, [t]))
+    return best
+
+
 def _sheet_distance(X, pts, tris):
     """Distance from each point of ``X`` to a triangulated sheet.
 
@@ -1597,7 +1681,8 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     from underworld3.utilities.edge_split import cell_diameters
 
     h_cell = cell_diameters(dm)
-    d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
+    d_sheet = _sheet_distance_within(X, sheet_pts, sheet_tris,
+                                     clearance * h_vertex)
     on_open = (open_deletable if open_deletable is not None
                else np.zeros(len(X), dtype=bool))
 
@@ -1610,18 +1695,25 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
 
     drop = victim[cells].any(axis=1)
     cen = X[cells].mean(axis=1)
+    cen_query = _reach_query(cen, h_cell)
     for t in sheet_tris:
         A, B, C = sheet_pts[t[0]], sheet_pts[t[1]], sheet_pts[t[2]]
         n = np.cross(B - A, C - A)
         n = n / np.linalg.norm(n)
         diam = max(np.linalg.norm(B - A), np.linalg.norm(C - A),
                    np.linalg.norm(C - B))
-        near = np.linalg.norm(cen - (A + B + C) / 3.0, axis=1) < diam + h_cell
-        if not near.any():
+        centre = (A + B + C) / 3.0
+        cand = cen_query(centre - diam, centre + diam)
+        if not len(cand):
             continue
-        s = (X[cells[near]] - A) @ n
+        near_c = (np.linalg.norm(cen[cand] - centre, axis=1)
+                  < diam + h_cell[cand])
+        sub0 = cand[near_c]
+        if not len(sub0):
+            continue
+        s = (X[cells[sub0]] - A) @ n
         straddle = (s.max(axis=1) > 1e-12) & (s.min(axis=1) < -1e-12)
-        sub = np.flatnonzero(near)[straddle]
+        sub = sub0[straddle]
         if not len(sub):
             continue
         rel = cen[sub] - A
@@ -1640,7 +1732,8 @@ def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
     # and a facet intersect" on a sheet re-placed into a cleared region).
     # The centroid rule from the volume carve closes the gap: any cell whose
     # centre is within reach of the BOUNDED sheet is dropped.
-    drop |= _sheet_distance(cen, sheet_pts, sheet_tris) < 0.6 * h_cell
+    drop |= (_sheet_distance_within(cen, sheet_pts, sheet_tris,
+                                    0.6 * h_cell) < 0.6 * h_cell)
     if held_cells:
         drop[list(held_cells)] = False
 
@@ -1850,6 +1943,12 @@ def _resample_planar_sheet(pts, tris, size):
     in the sheet's own plane. Cut corners and quality are gmsh's
     business afterwards, not the clip's. Non-planar sheets refuse — a
     curved surface needs a parametric remesh, which is not built.
+
+    ``size`` is a length, or a callable ``(x, y, z) -> h`` for a
+    VARIABLE resolution — the middle ground: a fault fine only where it
+    approaches the surface (where the carve needs its clearance) and
+    coarsening with depth to match the mesh it cuts, so the cut never
+    slices a giant cell yet the deep fault is not over-resolved.
     """
     pts = np.asarray(pts, dtype=float)
     tris = np.asarray(tris, dtype=np.int64)
@@ -1874,6 +1973,8 @@ def _resample_planar_sheet(pts, tris, size):
     loops = _skin_loops([e for e, k in edge_use.items() if k == 1],
                         what="the sheet's rim")
 
+    size_at = size if callable(size) else (lambda x, y, z: float(size))
+
     resampled = []
     for loop in loops:
         corners = _compress_collinear_loop(pts[np.asarray(loop)])
@@ -1881,7 +1982,13 @@ def _resample_planar_sheet(pts, tris, size):
         n_c = len(corners)
         for i in range(n_c):
             A, B = corners[i], corners[(i + 1) % n_c]
-            n_seg = max(1, int(np.ceil(np.linalg.norm(B - A) / size)))
+            # Local target along the run: sampled at both ends and the
+            # middle, subdivided to the finest of them — a straight run
+            # spanning shallow to deep takes the shallow (fine) budget,
+            # which errs toward resolution, never toward a giant segment.
+            probes = [A, 0.5 * (A + B), B]
+            h_run = min(float(size_at(*p)) for p in probes)
+            n_seg = max(1, int(np.ceil(np.linalg.norm(B - A) / h_run)))
             ring += [A + (k / n_seg) * (B - A) for k in range(n_seg)]
         resampled.append(np.asarray(ring))
 
@@ -1908,7 +2015,10 @@ def _resample_planar_sheet(pts, tris, size):
             ring_ids = oriented(ids, True)
         else:
             holes.append(oriented(ids, False))
-    new_tris, extra2 = _gmsh_fill_2d(P2, ring_ids, None, holes=holes)
+    size_2d = (None if not callable(size)
+               else (lambda x, y: size_at(*(centre + x * e0 + y * e1))))
+    new_tris, extra2 = _gmsh_fill_2d(P2, ring_ids, None, holes=holes,
+                                     size_of=size_2d)
     lifted = np.vstack([P3, centre + extra2 @ np.vstack([e0, e1])]) \
         if len(extra2) else P3
     return _split_safe_triangulation(
@@ -2767,16 +2877,19 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         returned as ``info["surface_trace"]`` — the locator for the
         damage region above. Use at least a couple of background cells,
         so the carve's cavity clears the wall.
-    size : float or None, keyword-only
+    size : float, callable or None, keyword-only
         Re-triangulate the (clipped) sheet at this size before embedding
         — the counterpart of :func:`place_thin_volume`'s ``size``. The
         authored triangulation is DATA at whatever spacing the source
         provided, but the embedded fault's resolution must match the
         mesh it cuts, or the verbatim embed forces slivers around every
-        mismatched triangle. Planar sheets only, and not with an
-        outcropping sheet (the trace chain must stay on the boundary
-        complex verbatim); the rim's corner geometry is preserved
-        exactly.
+        mismatched triangle. A callable ``(x, y, z) -> h`` gives a
+        VARIABLE resolution — the middle ground for a blind fault: fine
+        only near the surface (where the carve needs its clearance),
+        coarsening with depth to match the graded mesh around it.
+        Planar sheets only, and not with an outcropping sheet (the trace
+        chain must stay on the boundary complex verbatim); the rim's
+        corner geometry is preserved exactly.
 
     Returns
     -------
@@ -2843,7 +2956,8 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                 "chain must stay on the boundary complex verbatim. Place "
                 "blind with a setback, or pass size=None.")
         sheet_pts, sheet_tris = _resample_planar_sheet(
-            sheet_pts, sheet_tris, float(size))
+            sheet_pts, sheet_tris,
+            size if callable(size) else float(size))
 
     # -------------------------------------------------- mark, then gather
     vS, vE = dm.getDepthStratum(0)
@@ -2851,7 +2965,8 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     X = _coords(dm)[: vE - vS]
     cells = _tet_vertices(dm)
     h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
-    d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
+    d_sheet = _sheet_distance_within(X, sheet_pts, sheet_tris,
+                                     (clearance + 2.0) * h_vertex)
     # The gather mask is a SUPERSET of everything the carve may touch: the
     # victims (clearance) plus the crossed cells' vertices, which sit within
     # a cell diameter of the sheet. The +2 margin covers grading between
@@ -2872,7 +2987,8 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         X = _coords(dm_work)[: vE - vS]
         cells = _tet_vertices(dm_work)
         h_vertex, _h_cell = _vertex_h_3d(dm_work, cells, len(X))
-        d_sheet = _sheet_distance(X, sheet_pts, sheet_tris)
+        d_sheet = _sheet_distance_within(X, sheet_pts, sheet_tris,
+                                         (clearance + 2.0) * h_vertex)
 
     on_wall = _true_wall_vertex_mask(dm_work, len(X))
     shared = _shared_point_flags(dm_work).astype(bool)
@@ -4520,7 +4636,7 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     carve may take — and ``open_near`` — wall vertices near the outcrop,
     where the cavity may open into cap faces.
     """
-    d_skin = _sheet_distance(X, skin_pts, skin_tris)
+    d_skin = _sheet_distance_within(X, skin_pts, skin_tris, reach_vertex)
 
     held_vertex = np.zeros(len(X), dtype=bool)
     if held_cells:
@@ -4534,7 +4650,8 @@ def _carve_around_volume_3d(dm, X, cells, skin_pts, skin_tris, reach_vertex,
     drop = victim[cells].any(axis=1)
     # A background cell can straddle the layer's rim with every corner
     # outside the reach; its centroid cannot be far from the skin.
-    cen_d = _sheet_distance(X[cells].mean(axis=1), skin_pts, skin_tris)
+    cen_d = _sheet_distance_within(X[cells].mean(axis=1), skin_pts,
+                                   skin_tris, reach_cell)
     drop |= cen_d < reach_cell
     # A removal seeds the drop with the object's OWN cells — a fat zone's
     # interior can be further from its skin than any reach computes.
@@ -6208,8 +6325,9 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     X = _coords(dm)[: vE - vS]
     cells = _tet_vertices(dm)
     h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
-    d_skin = _sheet_distance(X, skin_xyz, skin_tris)
     reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
+    d_skin = _sheet_distance_within(X, skin_xyz, skin_tris,
+                                    reach_v + 2.0 * h_vertex)
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
     mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
          + vS - pStart] = 1
@@ -6224,8 +6342,9 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         X = _coords(dm_work)[: vE - vS]
         cells = _tet_vertices(dm_work)
         h_vertex, _h_cell = _vertex_h_3d(dm_work, cells, len(X))
-        d_skin = _sheet_distance(X, skin_xyz, skin_tris)
         reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
+        d_skin = _sheet_distance_within(X, skin_xyz, skin_tris,
+                                        reach_v + 2.0 * h_vertex)
 
     on_wall = _true_wall_vertex_mask(dm_work, len(X))
     shared = _shared_point_flags(dm_work).astype(bool)
