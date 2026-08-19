@@ -261,3 +261,69 @@ def test_a_setback_sheet_is_blind_located_and_splittable():
                  if split.getPointDepth(int(p)) == 2)
     assert n_plus == info["n_surface_facets"], (
         f"{n_plus} Plus faces for {info['n_surface_facets']} placed")
+
+
+def test_a_resampled_sheet_matches_the_mesh_it_cuts():
+    """The fault's resolution is a MESH choice, not the data's.
+
+    The authored triangulation arrives at whatever spacing the source
+    provided; embedding it verbatim into a mesh of a different size
+    forces slivers around every mismatched triangle. ``size=``
+    re-triangulates the clipped sheet in its own plane at the embedding
+    resolution — rim corners exact, faces gmsh-quality, still blind and
+    still splittable.
+    """
+    from underworld3.utilities.fault_split import split_along_label_3d
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.12, regular=False, qdegree=2)
+    strike = np.array([1.0, 0.0, 0.0])
+    dip = np.array([0.0, 0.15, -1.0])
+    dip /= np.linalg.norm(dip)
+    top = np.array([0.5, 0.5, 1.1])
+    # Deliberately COARSE authored data: 3 x 3 nodes over the same patch.
+    s = np.linspace(-0.22, 0.22, 3)
+    d = np.linspace(0.0, 0.55, 3)
+    pts = np.array([top + a * strike + b * dip for b in d for a in s])
+    tris = []
+    for i in range(2):
+        for j in range(2):
+            a0 = i * 3 + j
+            tris += [(a0, a0 + 1, a0 + 4), (a0, a0 + 4, a0 + 3)]
+
+    setback, size = 0.25, 0.1
+    placed, info = place_sheet(base.dm, pts, np.array(tris, dtype=np.int64),
+                               label="FltA", label_value=41,
+                               setback=setback, size=size)
+    assert info["n_trace_edges"] == 0
+    assert info["n_surface_facets"] > 3 * len(tris), (
+        "the resample did not refine the coarse authored sheet")
+
+    # Face quality at gmsh level, not clip-sliver level.
+    X = np.asarray(placed.getCoordinatesLocal().array).reshape(-1, 3)
+    fS, fE = placed.getHeightStratum(1)
+    vS, vE = placed.getDepthStratum(0)
+    qmin = 1.0
+    z_max = -np.inf
+    for p in placed.getLabel("FltA").getStratumIS(41).getIndices():
+        if not (fS <= int(p) < fE):
+            continue
+        verts = [int(q) - vS
+                 for q in placed.getTransitiveClosure(int(p))[0]
+                 if vS <= int(q) < vE]
+        A, B, C = (X[v] for v in verts)
+        area = 0.5 * np.linalg.norm(np.cross(B - A, C - A))
+        per = (np.linalg.norm(B - A) + np.linalg.norm(C - B)
+               + np.linalg.norm(A - C))
+        qmin = min(qmin, 4.0 * np.sqrt(3.0) * area / per ** 2)
+        z_max = max(z_max, *(float(X[v][2]) for v in verts))
+    assert qmin > 0.3, f"resampled fault face quality {qmin:.3f}"
+    assert z_max == pytest.approx(1.0 - setback, abs=1e-12), (
+        "the resample moved the blind rim off the offset plane")
+
+    split, _pm, _cm = split_along_label_3d(
+        placed, "FltA", 41, "FltAPlus", 1, "FltAMinus", 2)
+    n_plus = sum(1 for p in split.getLabel("FltAPlus").getStratumIS(1)
+                 .getIndices() if split.getPointDepth(int(p)) == 2)
+    assert n_plus == info["n_surface_facets"]

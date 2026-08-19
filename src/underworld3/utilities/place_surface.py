@@ -1789,6 +1789,132 @@ def _concave_crease_depth(verts, tris):
     return depth
 
 
+def _split_safe_triangulation(pts, tris):
+    """Give every all-rim face an interior vertex, by interior-edge splits.
+
+    A face with ALL THREE vertices on the sheet's rim cannot be
+    split-node duplicated (its two copies would carry the same vertex
+    triple), and both the clip's corner polygons and a gmsh planar mesh
+    of a polygon produce a few however fine the triangulation. Splitting
+    the face's longest INTERIOR edge at its midpoint bisects both
+    sharing faces — the midpoint is a new interior vertex, rim edges
+    (the trace included) are untouched, and no child is worse-shaped
+    than its parent (a centroid inside a sliver corner face was tried
+    and drove the fill to 1e-23 cell volumes).
+    """
+    from collections import Counter
+
+    P = [np.asarray(p, dtype=float) for p in pts]
+    T = [[int(v) for v in t] for t in tris]
+    while True:
+        edge_use = Counter()
+        for a, b, c in T:
+            for e in ((a, b), (b, c), (c, a)):
+                edge_use[(e[0], e[1]) if e[0] < e[1] else (e[1], e[0])] += 1
+        rim_v = {v for e, k in edge_use.items() if k == 1 for v in e}
+        bad = next((k for k, t in enumerate(T)
+                    if all(v in rim_v for v in t)), None)
+        if bad is None:
+            break
+        a, b, c = T[bad]
+        splittable = [(u, w) for u, w in ((a, b), (b, c), (c, a))
+                      if edge_use[(u, w) if u < w else (w, u)] == 2]
+        if not splittable:
+            raise RuntimeError(
+                "a sheet face has no interior vertex and no interior "
+                "edge; the sheet is a single sliver and cannot be placed "
+                "as a splittable fault")
+        u, w = max(splittable,
+                   key=lambda e: float(np.linalg.norm(P[e[0]] - P[e[1]])))
+        m = len(P)
+        P.append(0.5 * (P[u] + P[w]))
+        fresh = []
+        for row in T:
+            if u in row and w in row:
+                fresh.append([m if v == w else v for v in row])
+                row[:] = [m if v == u else v for v in row]
+        T.extend(fresh)
+    return np.asarray(P, dtype=float), np.asarray(T, dtype=np.int64)
+
+
+def _resample_planar_sheet(pts, tris, size):
+    """Re-triangulate a PLANAR sheet at the given size, rim geometry kept.
+
+    The authored triangulation is DATA — its spacing is whatever the
+    source provided — but the embedded fault's resolution must match the
+    mesh it cuts, or the verbatim embed forces sliver cells around every
+    mismatched sheet triangle (the ruling, 2026-08-19). The sheet's rim
+    is compressed to its corners (exact, collinear runs removed — this
+    is where a too-fine authored rim coarsens), each straight run is
+    resampled at the target size, and the interior is re-meshed by gmsh
+    in the sheet's own plane. Cut corners and quality are gmsh's
+    business afterwards, not the clip's. Non-planar sheets refuse — a
+    curved surface needs a parametric remesh, which is not built.
+    """
+    pts = np.asarray(pts, dtype=float)
+    tris = np.asarray(tris, dtype=np.int64)
+    centre = pts.mean(axis=0)
+    rel = pts - centre
+    _u_svd, _s, vt = np.linalg.svd(rel, full_matrices=False)
+    normal = vt[2]
+    span = float(np.linalg.norm(rel, axis=1).max())
+    off = rel @ normal
+    if float(np.abs(off).max()) > 1e-9 * max(span, 1.0):
+        raise NotImplementedError(
+            "resampling a non-planar sheet is not built (deviation "
+            f"{float(np.abs(off).max()):.2e} from the fitted plane); "
+            "author the sheet at the target size instead.")
+    e0, e1 = vt[0], vt[1]
+
+    from collections import Counter
+    edge_use = Counter()
+    for a, b, c in tris:
+        for e in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+            edge_use[tuple(sorted(e))] += 1
+    loops = _skin_loops([e for e, k in edge_use.items() if k == 1],
+                        what="the sheet's rim")
+
+    resampled = []
+    for loop in loops:
+        corners = _compress_collinear_loop(pts[np.asarray(loop)])
+        ring = []
+        n_c = len(corners)
+        for i in range(n_c):
+            A, B = corners[i], corners[(i + 1) % n_c]
+            n_seg = max(1, int(np.ceil(np.linalg.norm(B - A) / size)))
+            ring += [A + (k / n_seg) * (B - A) for k in range(n_seg)]
+        resampled.append(np.asarray(ring))
+
+    def area2(P3):
+        q = np.column_stack([(P3 - centre) @ e0, (P3 - centre) @ e1])
+        return 0.5 * float(q[:, 0] @ np.roll(q[:, 1], -1)
+                           - q[:, 1] @ np.roll(q[:, 0], -1))
+
+    order = sorted(range(len(resampled)),
+                   key=lambda k: -abs(area2(resampled[k])))
+    P3 = np.vstack([resampled[k] for k in order])
+    P2 = np.column_stack([(P3 - centre) @ e0, (P3 - centre) @ e1])
+    def oriented(ids, anticlockwise):
+        q = P2[np.asarray(ids)]
+        a = 0.5 * float(q[:, 0] @ np.roll(q[:, 1], -1)
+                        - q[:, 1] @ np.roll(q[:, 0], -1))
+        return ids if (a > 0.0) == anticlockwise else ids[::-1]
+
+    ring_ids, holes, start = [], [], 0
+    for j, k in enumerate(order):
+        ids = list(range(start, start + len(resampled[k])))
+        start += len(resampled[k])
+        if j == 0:
+            ring_ids = oriented(ids, True)
+        else:
+            holes.append(oriented(ids, False))
+    new_tris, extra2 = _gmsh_fill_2d(P2, ring_ids, None, holes=holes)
+    lifted = np.vstack([P3, centre + extra2 @ np.vstack([e0, e1])]) \
+        if len(extra2) else P3
+    return _split_safe_triangulation(
+        lifted, np.asarray(new_tris, dtype=np.int64))
+
+
 def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
                             setback=0.0):
     """Clip a triangulated sheet against the mesh's OWN boundary complex.
@@ -1961,49 +2087,7 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
     new_tris = np.array([[remap[v] for v in t] for t in out_tris],
                         dtype=np.int64)
 
-    # A face with ALL THREE vertices on the clipped sheet's rim cannot be
-    # split-node duplicated (its two copies would carry the same vertex
-    # triple), and the cut's corner polygons produce a few however fine
-    # the sheet — two side-rim originals plus cut nodes admit no
-    # triangulation without one. Splitting the face's longest INTERIOR
-    # edge at its midpoint bisects both sharing faces — the midpoint is a
-    # new interior vertex, rim edges (the trace included) are untouched,
-    # and no child is worse-shaped than its parent (a centroid inside a
-    # sliver corner face was tried and drove the fill to 1e-23 cell
-    # volumes).
-    from collections import Counter
-    P = [p for p in new_pts]
-    T = [[int(v) for v in t] for t in new_tris]
-    while True:
-        edge_use = Counter()
-        for a, b, c in T:
-            for e in ((a, b), (b, c), (c, a)):
-                edge_use[(e[0], e[1]) if e[0] < e[1] else (e[1], e[0])] += 1
-        rim_v = {v for e, k in edge_use.items() if k == 1 for v in e}
-        bad = next((k for k, t in enumerate(T)
-                    if all(v in rim_v for v in t)), None)
-        if bad is None:
-            break
-        a, b, c = T[bad]
-        splittable = [(u, w) for u, w in ((a, b), (b, c), (c, a))
-                      if edge_use[(u, w) if u < w else (w, u)] == 2]
-        if not splittable:
-            raise RuntimeError(
-                "a clipped sheet face has no interior vertex and no "
-                "interior edge; the clipped sheet is a single sliver and "
-                "cannot be placed as a splittable fault")
-        u, w = max(splittable,
-                   key=lambda e: float(np.linalg.norm(P[e[0]] - P[e[1]])))
-        m = len(P)
-        P.append(0.5 * (P[u] + P[w]))
-        fresh = []
-        for row in T:
-            if u in row and w in row:
-                fresh.append([m if v == w else v for v in row])
-                row[:] = [m if v == u else v for v in row]
-        T.extend(fresh)
-    new_pts = np.asarray(P, dtype=float)
-    new_tris = np.asarray(T, dtype=np.int64)
+    new_pts, new_tris = _split_safe_triangulation(new_pts, new_tris)
 
     sd_out = _boundary_signed_distance(new_pts, dom_verts, oriented)
     if (sd_out > 1e-9 - setback).any():
@@ -2626,7 +2710,7 @@ def _validity_and_orientation_gates(new, comm):
 
 
 def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
-                clearance=0.6, verbose=False, *, setback=0.0):
+                clearance=0.6, verbose=False, *, setback=0.0, size=None):
     """Embed a triangulated sheet in a 3-D mesh by placing its points.
 
     The 3-D form of :func:`place_along_lines`: the sheet's points become mesh
@@ -2683,6 +2767,16 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         returned as ``info["surface_trace"]`` — the locator for the
         damage region above. Use at least a couple of background cells,
         so the carve's cavity clears the wall.
+    size : float or None, keyword-only
+        Re-triangulate the (clipped) sheet at this size before embedding
+        — the counterpart of :func:`place_thin_volume`'s ``size``. The
+        authored triangulation is DATA at whatever spacing the source
+        provided, but the embedded fault's resolution must match the
+        mesh it cuts, or the verbatim embed forces slivers around every
+        mismatched triangle. Planar sheets only, and not with an
+        outcropping sheet (the trace chain must stay on the boundary
+        complex verbatim); the rim's corner geometry is preserved
+        exactly.
 
     Returns
     -------
@@ -2742,6 +2836,14 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     sheet_pts, sheet_tris = _clip_sheet_to_boundary(
         sheet_pts, sheet_tris, dom_verts, dom_tris, setback=setback)
     chain = _outcrop_chain(sheet_pts, sheet_tris, dom_verts, dom_tris)
+    if size is not None:
+        if chain is not None:
+            raise NotImplementedError(
+                "resampling an OUTCROPPING sheet is not built — its trace "
+                "chain must stay on the boundary complex verbatim. Place "
+                "blind with a setback, or pass size=None.")
+        sheet_pts, sheet_tris = _resample_planar_sheet(
+            sheet_pts, sheet_tris, float(size))
 
     # -------------------------------------------------- mark, then gather
     vS, vE = dm.getDepthStratum(0)
