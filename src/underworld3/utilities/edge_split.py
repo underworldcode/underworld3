@@ -90,15 +90,28 @@ def _cell_edges(dm):
     return out
 
 
-def cell_diameters(dm):
+def cell_diameters(dm, return_tables=False):
     """Longest edge length of every cell, in plex cell order.
 
     This is the quantity the interpolation error of a linear element depends on,
     and the one this engine marks against.
+
+    ``return_tables=True`` also returns ``(cell_edges, edge_lengths)`` so
+    a caller marking AND splitting in the same pass reads the topology
+    once — the per-cell closure walk is the expensive part (#610), and
+    the adapt loop was paying it twice per pass.
     """
     L = _edge_lengths(dm)
     eS, _eE = dm.getDepthStratum(1)
-    return np.array([L[edges - eS].max() for edges in _cell_edges(dm)])
+    edges_of = _cell_edges(dm)
+    # A simplex has a fixed edge count, so the ragged list stacks and the
+    # per-cell max vectorises.
+    E = (np.stack(edges_of) if len(edges_of)
+         else np.empty((0, 1), dtype=np.int64))
+    diam = L[E - eS].max(axis=1) if len(edges_of) else np.zeros(0)
+    if return_tables:
+        return diam, (edges_of, L)
+    return diam
 
 
 def _sf_logical_or(dm, flag):
@@ -229,7 +242,7 @@ def _cells_on_edge(dm, edge):
     return sorted(seen)
 
 
-def bisect_longest_edges(dm, cells):
+def bisect_longest_edges(dm, cells, tables=None):
     """Split the longest edge of as many of ``cells`` as one pass allows.
 
     Parameters
@@ -251,13 +264,21 @@ def bisect_longest_edges(dm, cells):
     -----
     Independence caps one pass, so a cell marked here may still exceed the metric
     afterwards. Re-mark from the returned mesh and call again.
+
+    ``tables`` is the ``(cell_edges, edge_lengths)`` pair from
+    ``cell_diameters(dm, return_tables=True)`` computed on the SAME dm —
+    the marking caller already walked the topology, and walking it a
+    second time here doubled the adapt loop's dominant cost (#610).
     """
     _register_transform()
 
     cS, _cE = dm.getHeightStratum(0)
     eS, _eE = dm.getDepthStratum(1)
-    L = _edge_lengths(dm)
-    edges_of = _cell_edges(dm)
+    if tables is not None:
+        edges_of, L = tables
+    else:
+        L = _edge_lengths(dm)
+        edges_of = _cell_edges(dm)
 
     wanted = {int(edges_of[int(c) - cS][np.argmax(L[edges_of[int(c) - cS] - eS])])
               for c in cells}

@@ -8541,12 +8541,25 @@ class Mesh(Stateful, uw_object):
             # so fewer edges are independent per pass.
             n_pass = 8 * dim * max_levels
             current_dm = base_finest
+            _pct5_of_dm = {}
             for level in range(n_pass):
                 centroids, _proxy_h, cs = cell_geometry(current_dm)
+                # The topology tables are read ONCE per pass and shared
+                # with the split — the per-cell closure walk is the
+                # loop's dominant cost and was paid twice (#610).
+                _edge_tables = None
                 if centroids.shape[0]:
                     M = numpy.clip(eval_metric(centroids), 1e-30, None)
                     h_target = 1.0 / numpy.sqrt(M)
-                    diameter = edge_split.cell_diameters(current_dm)
+                    diameter, _edge_tables = edge_split.cell_diameters(
+                        current_dm, return_tables=True)
+                    # The marking pass has just measured this dm; the MG
+                    # level selection re-derives the same 5th percentile
+                    # per retained generation, so it is cached here
+                    # rather than re-walking every level's topology.
+                    _pct5_of_dm[id(current_dm)] = (
+                        float(numpy.percentile(diameter, 5))
+                        if diameter.size else float("inf"))
                     sel = numpy.where(diameter > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
                         order = numpy.argsort(M[sel])[::-1]
@@ -8557,7 +8570,7 @@ class Mesh(Stateful, uw_object):
                 marked = [int(cs + j) for j in sel]
                 _coarse_for_P = current_dm
                 current_dm, n_split = edge_split.bisect_longest_edges(
-                    current_dm, marked)
+                    current_dm, marked, tables=_edge_tables)
                 # n_split is global, so this stop is collective without a further
                 # reduction — a rank with nothing marked still enters the split.
                 if n_split == 0:
@@ -8764,7 +8777,9 @@ class Mesh(Stateful, uw_object):
         if level_dms:
             level_dms, _nested_Ps, _nested_parent_cells = self._subsample_mg_levels(
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
-                ratio=mg_coarsening_ratio, verbose=verbose)
+                ratio=mg_coarsening_ratio, verbose=verbose,
+                resolution_hint=(_pct5_of_dm if engine == "edge_split"
+                                 else None))
 
         # Exact per-generation prolongations when the engine could supply them
         # (cell-list path). Empty for the native transform path, which falls
@@ -8803,7 +8818,8 @@ class Mesh(Stateful, uw_object):
     _MG_RATIO_SLACK = 0.9      # a step of 1.92 counts as a doubling
 
     def _subsample_mg_levels(self, base_finest, level_dms, nested_Ps,
-                             nested_parent_cells, ratio=2.0, verbose=False):
+                             nested_parent_cells, ratio=2.0, verbose=False,
+                             resolution_hint=None):
         """Keep one multigrid level per DOUBLING OF RESOLUTION, not one per pass.
 
         A refinement engine takes as many passes as it needs to reach the size
@@ -8843,10 +8859,16 @@ class Mesh(Stateful, uw_object):
 
             A low percentile rather than the strict minimum, so one thin cell
             cannot declare a level; reduced with MIN so the finest region counts
-            wherever it happens to live.
+            wherever it happens to live. A caller that already measured a
+            dm during its own pass loop supplies the value through
+            ``resolution_hint`` instead of paying a second topology walk.
             """
-            d = edge_split.cell_diameters(dm)
-            local = float(numpy.percentile(d, 5)) if d.size else float("inf")
+            if resolution_hint is not None and id(dm) in resolution_hint:
+                local = resolution_hint[id(dm)]
+            else:
+                d = edge_split.cell_diameters(dm)
+                local = (float(numpy.percentile(d, 5)) if d.size
+                         else float("inf"))
             return uw.mpi.comm.allreduce(local, op=min)
 
         # An engine lands near the target, not on it (1.92, 1.97, 2.19 measured),
