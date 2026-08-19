@@ -1751,23 +1751,24 @@ def _boundary_signed_distance(X, verts, tris):
     return np.where(side >= 0.0, d, -d)
 
 
-def _concave_crease_facets(verts, tris):
-    """Mask of facets of an ORIENTED complex incident to a locally CONCAVE
-    crease.
+def _concave_crease_depth(verts, tris):
+    """Per-facet DEPTH of the deepest locally concave crease it touches.
 
-    A crease between two facets is concave when either facet's far vertex
-    lies on the OUTWARD side of the other's plane: every crease of an inner
-    boundary is, no crease of a convex outer boundary is. The sequential
-    plane clip is exact only across convex creases, so a crossing that can
-    touch a concave one is refused rather than mis-cut. The threshold sits
-    at rounding — a genuinely concave crease's offset is O(h^2/R), many
-    orders above it.
+    A crease between two facets of an ORIENTED complex is concave when
+    either facet's far vertex lies on the OUTWARD side of the other's
+    plane, and its depth is that offset: zero for a convex or coplanar
+    boundary (a box, a uniformly-faceted sphere); the SAGITTA MISMATCH —
+    metres at Earth scale — where a refined-and-snapped curved boundary
+    changes resolution; the facet size itself on an inner boundary. The
+    sequential plane clip over-cuts by at most this depth, so the caller
+    weighs it against the setback rather than refusing on existence. The
+    noise floor sits at rounding.
     """
     tris = np.asarray(tris, dtype=np.int64)
     T = verts[tris]
     n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
     n = n / np.linalg.norm(n, axis=1)[:, None]
-    concave = np.zeros(len(tris), dtype=bool)
+    depth = np.zeros(len(tris))
     edge_first = {}
     for t, tri in enumerate(tris):
         opp = {frozenset((int(tri[0]), int(tri[1]))): int(tri[2]),
@@ -1780,11 +1781,12 @@ def _concave_crease_facets(verts, tris):
             s, far_s = edge_first[e]
             ea, eb = (int(v) for v in e)
             scale = float(np.linalg.norm(verts[eb] - verts[ea]))
-            if (float((verts[far] - T[s, 0]) @ n[s]) > 1e-12 * scale
-                    or float((verts[far_s] - T[t, 0]) @ n[t])
-                    > 1e-12 * scale):
-                concave[t] = concave[s] = True
-    return concave
+            d = max(float((verts[far] - T[s, 0]) @ n[s]),
+                    float((verts[far_s] - T[t, 0]) @ n[t]))
+            if d > 1e-12 * scale:
+                depth[t] = max(depth[t], d)
+                depth[s] = max(depth[s], d)
+    return depth
 
 
 def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
@@ -1805,9 +1807,14 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
     complex; a mixed triangle is cut sequentially by the planes of the
     boundary facets it can cross, keeping the inside — exact where the
     crossed boundary is locally CONVEX (a box wall, a sphere's outer
-    surface), which covers the outcrop cases. A crossing that can touch a
-    locally concave crease (an inner boundary) needs the true polyline cut
-    and is refused. The cutting planes are the COPLANAR REGIONS'
+    surface), which covers the outcrop cases. A locally concave crossing
+    over-cuts by at most the crease's DEPTH
+    (:func:`_concave_crease_depth`), so it is allowed only when the
+    setback dwarfs that depth (a resolution transition of a snapped
+    curved boundary, metres under a kilometres-deep blind tip) and
+    refused otherwise (an inner boundary; ANY concavity at setback zero,
+    where cut nodes must land on the complex exactly — the true polyline
+    cut is not built). The cutting planes are the COPLANAR REGIONS'
     (:func:`_coplanar_regions`) — a box wall cuts as one plane however it
     is faceted — and cut nodes are computed from canonically ordered edge
     endpoints and interned by the ``(edge, region)`` identity, so the two
@@ -1830,7 +1837,7 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
     DT = dom_verts[oriented]
     f_lo = DT.min(axis=1)
     f_hi = DT.max(axis=1)
-    concave = _concave_crease_facets(dom_verts, oriented)
+    concave_depth = _concave_crease_depth(dom_verts, oriented)
     # The cutting planes are the coplanar regions': two coplanar facets of
     # one wall must cut with the IDENTICAL plane, or the two triangles
     # sharing a cut edge key their cut by different facets and the sheet
@@ -1873,12 +1880,24 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
         t_lo = P3.min(axis=0) - tol - setback
         t_hi = P3.max(axis=0) + tol + setback
         near = np.flatnonzero(((f_lo <= t_hi) & (f_hi >= t_lo)).all(axis=1))
-        if concave[near].any():
+        # The sequential plane clip over-cuts a locally concave crossing
+        # by at most the crease DEPTH. Weighed against the setback: metres
+        # of sagitta mismatch on a refined-and-snapped sphere are harmless
+        # under a kilometres-deep blind tip, while an inner boundary's
+        # facet-scale concavity refuses at any realistic setback — and at
+        # setback zero (an outcrop, where cut nodes must land ON the
+        # complex exactly) any concavity at all refuses, as before.
+        delta = float(concave_depth[near].max()) if len(near) else 0.0
+        if delta > 0.2 * setback + 1e-15:
             raise NotImplementedError(
-                "the sheet crosses the domain boundary at a locally "
-                "concave crease (an inner boundary); the sequential plane "
-                "clip is exact only for convex crossings and the polyline "
-                "cut is not built.")
+                f"the sheet crosses the domain boundary near a locally "
+                f"concave crease of depth {delta:.2e} (an inner boundary, "
+                f"or a resolution transition of a snapped curved "
+                f"boundary); the sequential plane clip can over-cut by "
+                f"that much, which setback={setback:.2e} does not cover. "
+                "Raise the setback above ~5x the depth, refine the "
+                "boundary uniformly under the crossing, or wait for the "
+                "polyline cut.")
         # Each polygon vertex carries the ORIGINAL sheet edges it lies on:
         # a cut on a triangle side is re-derived from that side's original
         # endpoints and interned by (edge, region), so the neighbouring
@@ -1994,6 +2013,68 @@ def _clip_sheet_to_boundary(pts, tris, dom_verts, dom_tris, tol=1e-12,
             "crossing's scale, or the crossing spans facets the clip did "
             "not see. A defect, not a tolerance.")
     return new_pts, new_tris
+
+
+def _sheet_boundary_intersection_chain(pts, tris, dom_verts, dom_tris):
+    """The sheet's intersection polyline with the boundary — the
+    surface-trace LOCATOR, by contouring the boundary signed distance
+    over the sheet's own triangulation (marching triangles).
+
+    Robust by construction on ANY boundary — concave, resolution-graded,
+    snapped — because every crossing point is interpolated on a sheet
+    EDGE from that edge's two vertex distances: the two triangles
+    sharing the edge produce the identical point, so the polyline chains
+    exactly with no tolerance welding (a direct triangle-triangle
+    intersection was tried first and fragmented into hundreds of
+    components at crease endpoints). Accuracy is the linear interpolant's
+    — O(spacing^2 / R), metres at Earth scale — which is the locator
+    contract: the deliberate blind-fault workflow needs to know WHERE
+    the sheet would daylight so it can stop short of it and put the
+    damage region there, not to mesh against it. Returns the ordered
+    ``(n, 3)`` polyline, or ``None`` when the sheet never reaches the
+    boundary; refuses when the intersection is not one open chain.
+    """
+    pts = np.asarray(pts, dtype=float)
+    oriented = _orient_boundary_complex(dom_verts, dom_tris)
+    sd = _boundary_signed_distance(pts, dom_verts, oriented)
+    outside = sd >= 0.0            # the tie sits with outside: 0 or 2
+    if outside.all() or not outside.any():
+        return None                # never reaches, or never inside
+
+    cut = {}
+
+    def crossing(a, b):
+        key = (a, b) if a < b else (b, a)
+        if key not in cut:
+            oa, ob = float(sd[key[0]]), float(sd[key[1]])
+            w = oa / (oa - ob)
+            cut[key] = pts[key[0]] + w * (pts[key[1]] - pts[key[0]])
+        return key
+
+    adj = {}
+    for t in np.asarray(tris, dtype=np.int64):
+        a, b, c = (int(v) for v in t)
+        crossed = [crossing(u, w) for u, w in ((a, b), (b, c), (c, a))
+                   if outside[u] != outside[w]]
+        if not crossed:
+            continue
+        k0, k1 = crossed             # a consistent tie-break gives 0 or 2
+        adj.setdefault(k0, []).append(k1)
+        adj.setdefault(k1, []).append(k0)
+    if not adj:
+        return None
+    ends = [k for k, ns in adj.items() if len(ns) == 1]
+    if len(ends) != 2 or any(len(ns) > 2 for ns in adj.values()):
+        raise NotImplementedError(
+            "the sheet's intersection with the boundary is not one open "
+            "chain; multiple or closed traces are not built.")
+    chain, prev, cur = [ends[0]], None, ends[0]
+    while cur != ends[1]:
+        ns = adj[cur]
+        nxt = ns[0] if ns[0] != prev else ns[1]
+        chain.append(nxt)
+        prev, cur = cur, nxt
+    return np.asarray([cut[k] for k in chain])
 
 
 def _outcrop_chain(pts, tris, dom_verts, dom_tris, tol=1e-9):
@@ -2649,15 +2730,15 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     surface_trace = None
     if setback > 0.0:
         # The intersection the sheet is deliberately stopped short of:
-        # computed from the UNCLIPPED input against the true boundary —
-        # the job is still to figure out where daylight would be, so the
-        # damage region above the blind fault can be placed there.
-        trace_pts, trace_tris = _clip_sheet_to_boundary(
+        # computed from the UNCLIPPED input by direct triangle-triangle
+        # intersection — the job is still to figure out where daylight
+        # would be, so the damage region above the blind fault can be
+        # placed there. The direct route needs no convexity, so it works
+        # on the graded, snapped boundaries the blind workflow targets.
+        chain_xyz = _sheet_boundary_intersection_chain(
             sheet_pts, sheet_tris, dom_verts, dom_tris)
-        trace_chain = _outcrop_chain(trace_pts, trace_tris,
-                                     dom_verts, dom_tris)
-        if trace_chain is not None:
-            surface_trace = trace_pts[trace_chain].tolist()
+        if chain_xyz is not None:
+            surface_trace = chain_xyz.tolist()
     sheet_pts, sheet_tris = _clip_sheet_to_boundary(
         sheet_pts, sheet_tris, dom_verts, dom_tris, setback=setback)
     chain = _outcrop_chain(sheet_pts, sheet_tris, dom_verts, dom_tris)
