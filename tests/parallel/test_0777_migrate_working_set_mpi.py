@@ -21,7 +21,7 @@ every rank inside the call.
 Run under MPI::
 
     mpirun -np 4 python -m pytest --with-mpi \
-        tests/parallel/test_0776_migrate_working_set_mpi.py
+        tests/parallel/test_0777_migrate_working_set_mpi.py
 """
 
 import numpy as np
