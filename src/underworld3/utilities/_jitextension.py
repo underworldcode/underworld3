@@ -680,6 +680,7 @@ def getext(
         module = _ext_dict[source_hash]
     else:
         from underworld3.utilities import _jit_cache as _jc
+        from mpi4py import MPI as _MPI
 
         # Disk lookup is cheap and rank-local — every rank checks
         # independently. UW assumes a shared filesystem for the cache dir.
@@ -689,7 +690,23 @@ def getext(
             if module is not None and verbose and underworld3.mpi.rank == 0:
                 print(f"JIT compiled module cached (disk) ... {source_hash}", flush=True)
 
-        if module is None:
+        # COLLECTIVE decision. The disk lookup above is rank-local — its own
+        # comment says so — and the branch below contains a Barrier, so the two
+        # must not be joined by a rank-local predicate: one rank finding the
+        # published module while another does not leaves the second waiting at
+        # a barrier nobody else enters. On the shared filesystems this path
+        # exists for, that divergence is ordinary (attribute caching, metadata
+        # lag, a write not yet visible), and it is what the barrier is meant to
+        # manage rather than something it can assume away.
+        #
+        # `needs_compile` is a global OR: if ANY rank lacks the module, every
+        # rank enters the branch and reaches the barrier. Ranks that already
+        # have it keep it and simply take part.
+        needs_compile = underworld3.mpi.comm.allreduce(
+            module is None, op=_MPI.LOR
+        )
+
+        if needs_compile:
             # Cold compile path. With MPI, only rank 0 invokes cc and
             # publishes; the other ranks barrier-wait and then load the
             # freshly-published .so from disk. This avoids the N× cc
@@ -699,10 +716,17 @@ def getext(
             # cache is disabled (no way to share a build), in which
             # case the wasted cc cost is on the user's chosen path.
             multi_rank = underworld3.mpi.size > 1
-            disk_enabled = cache and _jc.get_cache_dir() is not None
+            # Also collective, and for the same reason: a rank whose cache
+            # directory cannot be resolved would otherwise take the `else`
+            # branch — which has no barrier — while its peers wait in one. A
+            # global AND makes every rank fall back together, at the cost of
+            # each compiling locally, which is the safe direction.
+            disk_enabled = underworld3.mpi.comm.allreduce(
+                cache and _jc.get_cache_dir() is not None, op=_MPI.LAND
+            )
 
             if multi_rank and disk_enabled:
-                if underworld3.mpi.rank == 0:
+                if underworld3.mpi.rank == 0 and module is None:
                     if verbose:
                         print(
                             f"JIT compiling new module on rank 0 ... {source_hash}",
@@ -719,7 +743,7 @@ def getext(
                 # Synchronisation point: rank 0 has now published the
                 # entry; other ranks may load it.
                 underworld3.mpi.comm.Barrier()
-                if underworld3.mpi.rank != 0:
+                if module is None:
                     module = _jc.load_module(
                         source_hash, real_modname, constants_manifest
                     )
@@ -735,17 +759,18 @@ def getext(
                     print(
                         f"JIT compiling new module ... {source_hash}", flush=True
                     )
-                module, tmpdir = compile_and_load(
-                    real_modname, codeguys_final, verbose=verbose
-                )
-                if verbose and underworld3.mpi.rank == 0:
-                    # Tests in test_0004_pointwise_fns parse this exact prefix
-                    # to find the per-call build directory.
-                    print(f"Location of compiled module: {tmpdir}", flush=True)
-                if cache:
-                    _jc.store_module(
-                        source_hash, real_modname, tmpdir, constants_manifest
+                if module is None:
+                    module, tmpdir = compile_and_load(
+                        real_modname, codeguys_final, verbose=verbose
                     )
+                    if verbose and underworld3.mpi.rank == 0:
+                        # Tests in test_0004_pointwise_fns parse this exact
+                        # prefix to find the per-call build directory.
+                        print(f"Location of compiled module: {tmpdir}", flush=True)
+                    if cache:
+                        _jc.store_module(
+                            source_hash, real_modname, tmpdir, constants_manifest
+                        )
 
         if cache:
             _ext_dict[source_hash] = module
