@@ -8604,9 +8604,14 @@ class Mesh(Stateful, uw_object):
                         uw.pprint(0, f"[adapt] edge_split pass {level}: repaired "
                                      f"with {n_flips} flip(s)")
                 else:
-                    _nested_parent_cells.append(
-                        None if _vP is None
-                        else _nested_parents(_coarse_for_P, current_dm, _vP))
+                    # Parent maps are DEFERRED to the retained MG levels:
+                    # the subsampler discarded every per-pass map whose
+                    # span was more than one pass, so building ~76 of
+                    # them to keep 3-4 was almost entirely wasted work —
+                    # and the retained multi-pass spans now get EXACT
+                    # parents from the composed vertex transfer instead
+                    # of falling back to the geometric builder.
+                    _nested_parent_cells.append(None)
                 snap_level_boundaries(current_dm)
                 if _relax_mode == "per-generation":
                     _mg = Mesh(current_dm.clone(),
@@ -8898,15 +8903,9 @@ class Mesh(Stateful, uw_object):
 
         composed, parent_cells = [], []
         start = 0
+        level_coarse = base_finest
         for i in keep:
             span = [P for P in nested_Ps[start:i + 1]]
-            # One generation -> the level IS that pass, so its parent-cell map
-            # still describes it. More -> no single parent per cell. Not every
-            # engine records the maps at all (the native transform and SBR paths
-            # do not), so a short list means "none for this level".
-            parent_cells.append(nested_parent_cells[i]
-                                if i == start and i < len(nested_parent_cells)
-                                else None)
             if any(P is None for P in span) or not span:
                 composed.append(None)
             elif len(span) == 1:
@@ -8918,6 +8917,26 @@ class Mesh(Stateful, uw_object):
                 for P in span[1:]:
                     M = _compose_prolongations(P, M)
                 composed.append(M)
+            # The parent-cell map, for the RETAINED pair only. A map the
+            # engine recorded per pass (a single-pass span) is used as
+            # recorded; otherwise it is derived from the composed vertex
+            # transfer — nested_cell_parents is topological through the
+            # transfer, and a descendant's referenced coarse vertices are
+            # all corners of its ancestor at any depth, so multi-pass
+            # spans now carry exact parents instead of None.
+            recorded = (nested_parent_cells[i]
+                        if i == start and i < len(nested_parent_cells)
+                        else None)
+            if recorded is not None:
+                parent_cells.append(recorded)
+            elif composed[-1] is not None:
+                from underworld3.utilities.nvb import (
+                    nested_cell_parents as _parents_of)
+                parent_cells.append(
+                    _parents_of(level_coarse, level_dms[i], composed[-1]))
+            else:
+                parent_cells.append(None)
+            level_coarse = level_dms[i]
             start = i + 1
 
         if verbose:
