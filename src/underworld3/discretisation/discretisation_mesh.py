@@ -7595,6 +7595,87 @@ class Mesh(Stateful, uw_object):
                       f"removed, min angle now {info['min_angle']:.2f} deg")
         return cut_dm, info
 
+    def _adopt_cut_child(self, cut_dm, boundaries, info, mg_coarsening_ratio,
+                         verbose):
+        """Wrap a DM cut at the finest level as this mesh's child.
+
+        Shared by :meth:`add_conforming_surface` (2-D line cut) and
+        :meth:`add_conforming_sheet` (3-D placed sheet): the cut exists on
+        the finest level only, so this mesh plus everything below it is the
+        child's coarse multigrid tail. The coarse levels do not carry the
+        surface and do not need to — see the measured note in
+        :meth:`add_conforming_surface`.
+        """
+        child = Mesh(
+            cut_dm,
+            simplex=self.dm.isSimplex(),
+            coordinate_system_type=self.CoordinateSystem.coordinate_type,
+            qdegree=self.qdegree,
+            boundaries=boundaries,
+            verbose=False,
+        )
+        child.parent = self
+        child._relationship_kind = "refinement"
+        # ... but NOT a nested one. The cut moves or replaces parent vertices
+        # (the 2-D cut snaps them onto the surface; the 3-D carve deletes and
+        # refills), so a coarse DOF need not have a coincident fine DOF, and
+        # the injection that a bisection child's restriction relies on would
+        # quietly read the field at the displaced position instead.
+        child._refine_dofs_coincide = False
+        child.regions = self.regions
+        child._parent_mesh_version = self._mesh_version
+        child._surface_info = info
+
+        # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
+        # mesh, so this mesh plus everything below it is a valid coarse tail and
+        # the solver appends the child as the finest level. The transfers are
+        # coordinate-based and do not need the levels to nest — just as well,
+        # since a cut vertex is not an edge midpoint and the exact 1/2,1/2
+        # prolongation does not apply to it.
+        #
+        # A mesh that is ITSELF a child (a second surface, or an adapt child) has
+        # to EXTEND its own tail rather than read `dm_hierarchy`, which for a child
+        # holds only its own DM: reading it there would silently discard every
+        # level below and leave a two-level hierarchy calling itself multigrid.
+        #
+        # Tested with `is not None`, not for truthiness. A child whose own tail
+        # is EMPTY is still a child, and reading `dm_hierarchy` there returns
+        # just its own DM — the two-level collapse this comment warns about,
+        # reached by the one input the truth test cannot distinguish from a
+        # parent.
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        tail = (list(own_tail) + [self]) if own_tail is not None \
+            else self._coarse_level_meshes()
+
+        # A cut is not necessarily a refinement. It re-represents the same grid
+        # with the surface conformed, so `self` earns its place as a separate
+        # level only if the child is genuinely finer — the same question `adapt`
+        # asks of an engine pass, so ask it with the same routine rather than a
+        # second rule that could drift from it.
+        #
+        # Measured on a box fault before this: nine levels, of which the two
+        # added by the two cuts coarsened h by 1.11x and 1.17x on the 5th
+        # percentile against a threshold of 1.8 — each costing a full Galerkin
+        # RAP and smoother sweep for no correction. Worse, transfer 7->8, BETWEEN
+        # those two, is where the barycentric builder ran out of coarse DOFs with
+        # a fine image and fell back to the dense RBF one (#424).
+        #
+        # `_subsample_mg_levels` already does "replace the level below rather
+        # than append to it" for its own finest generation; handing it the pair
+        # (self, child) against the level beneath them puts that decision here
+        # too. One level back means it kept only the child.
+        if len(tail) >= 2:
+            kept, _Ps, _pc = self._subsample_mg_levels(
+                tail[-2].dm, [tail[-1].dm, cut_dm], [None, None], [],
+                ratio=mg_coarsening_ratio, verbose=verbose)
+            if len(kept) == 1:
+                tail = tail[:-1]
+        child._custom_mg_coarse_meshes = tail
+        child._custom_mg_builder = self._custom_mg_builder
+
+        self._registered_children.add(child)
+        return child
+
     def add_conforming_surface(self, surface, snap_frac=0.10, verbose=False,
                                snap_quality=0.15, snap_dist=0.0,
                                mg_coarsening_ratio=2.0, repair=False,
@@ -7759,9 +7840,10 @@ class Mesh(Stateful, uw_object):
 
         Notes
         -----
-        Two dimensions only. A surface **ending inside** the mesh (a fault tip) is
-        refused rather than silently mis-meshed, as is a triangle the surface
-        crosses three times.
+        Two dimensions only — in 3-D use :meth:`add_conforming_sheet`, where
+        a free rim (a fault tip) is the normal case. Here a surface **ending
+        inside** the mesh is refused rather than silently mis-meshed, as is a
+        triangle the surface crosses three times.
 
         See Also
         --------
@@ -7801,74 +7883,83 @@ class Mesh(Stateful, uw_object):
                       f"{info['n_cut_edges']} surface facets, "
                       f"min angle {info['min_angle']:.2f} deg")
 
-        child = Mesh(
-            cut_dm,
-            simplex=self.dm.isSimplex(),
-            coordinate_system_type=self.CoordinateSystem.coordinate_type,
-            qdegree=self.qdegree,
-            boundaries=boundaries,
-            verbose=False,
-        )
-        child.parent = self
-        child._relationship_kind = "refinement"
-        # ... but NOT a nested one. Snapping moves parent vertices onto the
-        # surface, so a coarse DOF need not have a coincident fine DOF, and the
-        # injection that a bisection child's restriction relies on would quietly
-        # read the field at the displaced position instead.
-        child._refine_dofs_coincide = False
-        child.regions = self.regions
-        child._parent_mesh_version = self._mesh_version
-        child._surface_info = info
+        return self._adopt_cut_child(cut_dm, boundaries, info,
+                                     mg_coarsening_ratio, verbose)
 
-        # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
-        # mesh, so this mesh plus everything below it is a valid coarse tail and
-        # the solver appends the child as the finest level. The transfers are
-        # coordinate-based and do not need the levels to nest — just as well,
-        # since a cut vertex is not an edge midpoint and the exact 1/2,1/2
-        # prolongation does not apply to it.
-        #
-        # A mesh that is ITSELF a child (a second surface, or an adapt child) has
-        # to EXTEND its own tail rather than read `dm_hierarchy`, which for a child
-        # holds only its own DM: reading it there would silently discard every
-        # level below and leave a two-level hierarchy calling itself multigrid.
-        #
-        # Tested with `is not None`, not for truthiness. A child whose own tail
-        # is EMPTY is still a child, and reading `dm_hierarchy` there returns
-        # just its own DM — the two-level collapse this comment warns about,
-        # reached by the one input the truth test cannot distinguish from a
-        # parent.
-        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
-        tail = (list(own_tail) + [self]) if own_tail is not None \
-            else self._coarse_level_meshes()
+    def add_conforming_sheet(self, points, triangles, name, *,
+                             clearance=0.6, setback=0.0, size=None,
+                             verbose=False, mg_coarsening_ratio=2.0):
+        r"""Add a triangulated sheet that the mesh conforms to (3-D).
 
-        # A cut is not necessarily a refinement. It re-represents the same grid
-        # with the surface conformed, so `self` earns its place as a separate
-        # level only if the child is genuinely finer — the same question `adapt`
-        # asks of an engine pass, so ask it with the same routine rather than a
-        # second rule that could drift from it.
-        #
-        # Measured on a box fault before this: nine levels, of which the two
-        # added by the two cuts coarsened h by 1.11x and 1.17x on the 5th
-        # percentile against a threshold of 1.8 — each costing a full Galerkin
-        # RAP and smoother sweep for no correction. Worse, transfer 7->8, BETWEEN
-        # those two, is where the barycentric builder ran out of coarse DOFs with
-        # a fine image and fell back to the dense RBF one (#424).
-        #
-        # `_subsample_mg_levels` already does "replace the level below rather
-        # than append to it" for its own finest generation; handing it the pair
-        # (self, child) against the level beneath them puts that decision here
-        # too. One level back means it kept only the child.
-        if len(tail) >= 2:
-            kept, _Ps, _pc = self._subsample_mg_levels(
-                tail[-2].dm, [tail[-1].dm, cut_dm], [None, None], [],
-                ratio=mg_coarsening_ratio, verbose=verbose)
-            if len(kept) == 1:
-                tail = tail[:-1]
-        child._custom_mg_coarse_meshes = tail
-        child._custom_mg_builder = self._custom_mg_builder
+        The 3-D twin of :meth:`add_conforming_surface`, and the Mesh-level
+        form of :func:`~underworld3.utilities.place_surface.place_sheet`:
+        the sheet's points become mesh vertices, every sheet triangle an
+        interior face labelled ``name``, and the rim is free inside the
+        mesh — a fault tip is the normal case here, not a refusal.
 
-        self._registered_children.add(child)
-        return child
+        The cut runs at the finest level ONLY. This mesh and every
+        multigrid level under it are untouched and become the child's
+        coarse tail, exactly as in 2-D: the coarse levels do not carry the
+        sheet and do not need to (custom-P sets ``pc_mg_galerkin=both``,
+        so every coarse operator is :math:`P^\mathsf{T} A P` from the fine
+        operator — see the measured note in :meth:`add_conforming_surface`,
+        whose warning about ESSENTIAL conditions on the surface applies
+        here unchanged; a material contrast across the sheet is the
+        supported use).
+
+        Everything :func:`place_sheet` documents holds: the sheet may run
+        PAST the domain (it is clipped against the mesh's own boundary,
+        and an outcrop trace is labelled ``<name>_trace``); ``setback``
+        stops it short as a BLIND fault with the would-be intersection
+        returned in ``child._surface_info["surface_trace"]``; ``size``
+        re-triangulates the sheet to match the mesh it cuts.
+
+        Parameters
+        ----------
+        points, triangles : array_like
+            The sheet: ``(N, 3)`` vertices and ``(M, 3)`` triangle
+            indices. Explicit arrays rather than an object, because a
+            sheet is DATA — a slab model, an authored parameter-space
+            triangulation — whose connectivity must be embedded verbatim
+            (:class:`~underworld3.meshing.FaultSurface` re-derives its
+            triangulation, so it cannot carry an authored one).
+        name : str
+            Becomes a boundary of the returned mesh, so a solver can
+            resolve the facets by name and :meth:`cells_supporting`
+            marks the fault zone.
+        clearance, setback, size, verbose
+            Passed through to :func:`place_sheet`.
+        mg_coarsening_ratio : float
+            As in :meth:`add_conforming_surface`: the cut replaces this
+            mesh in the tail unless it is genuinely finer.
+
+        Returns
+        -------
+        Mesh
+            A new mesh; this one is not modified. Placement metadata is
+            on ``child._surface_info``. Call again on the result to add
+            another sheet — a network is built one branch at a time.
+
+        See Also
+        --------
+        add_conforming_surface : the 2-D form.
+        add_fault : cut AND split, for a velocity discontinuity.
+        cells_supporting : the fault zone of the labelled facets.
+        """
+        from underworld3.utilities.place_surface import place_sheet
+
+        if self.dim != 3:
+            raise NotImplementedError(
+                "add_conforming_sheet is 3-D; in 2-D use "
+                "add_conforming_surface.")
+
+        boundaries = self._boundaries_with(name)
+        cut_dm, info = place_sheet(
+            self.dm, points, triangles, label=name,
+            label_value=boundaries[name].value, clearance=clearance,
+            verbose=verbose, setback=setback, size=size)
+        return self._adopt_cut_child(cut_dm, boundaries, info,
+                                     mg_coarsening_ratio, verbose)
 
     def add_fault(self, faults, verbose=False):
         """Cut AND split one or more faults; return the split mesh.
