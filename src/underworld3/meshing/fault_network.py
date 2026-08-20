@@ -191,12 +191,16 @@ class FaultNetwork:
 
         The place route on a UNIFORM base is healthy and
         parallel-validated (ptest_0852: place -> split -> contact,
-        22 s including the solve). On edge_split ADAPT CHILDREN the
-        composed mesh builds and converges but the solve is
-        pathological (measured 3850 s vs 125 s embed) — an
-        operator-health interaction between the graded transitions,
-        the placement cavity, and the split, recorded as an open work
-        item. Until that is resolved, place is opt-in here.
+        22 s including the solve). On edge_split ADAPT CHILDREN it is
+        SLOW but not sick: re-measured 2026-08-20 (#621), the composed
+        chain built 27x the cells embed did for the same nominal sizes
+        and solved 41x slower — proportionate under 3-D Stokes scaling
+        (per-cell cost comparable, one nonlinear iteration, machine-zero
+        leak, agreeing slip). The over-build is this route's sizing: the
+        base box is built at ``cellSize=h_far`` WITH ``refinement=1``,
+        so the far field is ``h_far/2`` everywhere. Until #621 lands,
+        place is opt-in here, and expect embed to be much cheaper at
+        matched request.
         """
         from underworld3.utilities.fault_split import split_fault
 
