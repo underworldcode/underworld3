@@ -977,6 +977,10 @@ class CustomMGHierarchy:
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
         _install_transfers(solver, self.transfers, verbose=verbose)
+        # Record what is live on this solver's PC, so a repeat solve can
+        # skip the re-install (see _pcmg_still_installed).
+        solver._custom_mg_live = {"h": id(self),
+                                  "nlev": len(self.transfers) + 1}
 
 
 class _DMLevelView:
@@ -1283,6 +1287,38 @@ def auto_inject_custom_mg(solver, field_id=None):
                          "auto_cached": True}
 
 
+def _pcmg_still_installed(solver, h):
+    """Is THIS hierarchy still live on the solver's managed PC block?
+
+    The marker written by :meth:`CustomMGHierarchy.install` says an install
+    happened; it cannot say the PC still carries it — a rebuilt SNES, an
+    explicit ``preconditioner=`` change, or anything that reset the PC leaves
+    the marker stale. So the marker is only the cheap first test, and the
+    verdict comes from the LIVE object: the managed block must exist, be a
+    PCMG, and have the hierarchy's level count. Any doubt (unreachable PC,
+    un-set-up fieldsplit) answers False — the cost of a wrong False is one
+    redundant install, the cost of a wrong True is a solve on a stale PC.
+    """
+    mark = getattr(solver, "_custom_mg_live", None)
+    if not mark or mark.get("h") != id(h):
+        return False
+    try:
+        pfx = solver._pc_option_prefix or ""
+        if pfx == "":
+            pc = solver.snes.getKSP().getPC()
+        elif pfx == "fieldsplit_velocity_":
+            outer = solver.snes.getKSP().getPC()
+            if outer.getType() != "fieldsplit":
+                return False
+            pc = outer.getFieldSplitSubKSP()[0].getPC()
+        else:
+            return False
+        return (pc.getType() == "mg"
+                and pc.getMGLevels() == mark.get("nlev"))
+    except PETSc.Error:
+        return False
+
+
 def inject_custom_mg(solver):
     """Build + install the custom-P FMG. Called from ``solve()`` (after ``_build``,
     before the SNES solve) when ``solver._custom_mg`` is set. Dispatches:
@@ -1293,6 +1329,16 @@ def inject_custom_mg(solver):
 
     if isinstance(cfg, dict) and cfg.get("mode") == "hierarchy":
         h = cfg["hierarchy"]
+        if _pcmg_still_installed(solver, h):
+            # The hierarchy is already live on this solver's PC. PETSc
+            # re-Galerkins the coarse operators when the fine operator's
+            # values change at the next PCSetUp, so a repeat solve needs
+            # NO re-install — and the install is expensive: measured
+            # (#622) at 55 s of a 61 s warm Stokes solve on an 85k-cell
+            # cut child, 49.5 s of it a DUPLICATE Jacobian assembly done
+            # only to make the fieldsplit reachable, 5.8 s rebuilding
+            # transfers that depend only on the meshes.
+            return
         h.build(solver)              # parallel-capable (nested co-partitioned)
         h.install(solver, verbose=cfg.get("verbose", False))
         return
