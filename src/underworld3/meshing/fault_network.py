@@ -217,12 +217,8 @@ class FaultNetwork:
             raise ValueError(f"mesher must be 'place' or 'embed', "
                              f"got {mesher!r}")
 
-        from enum import Enum
         from .cartesian import UnstructuredSimplexBox
-        from underworld3.utilities.place_surface import (place_sheet,
-                                                         _sheet_distance)
-        import underworld3 as uw
-        from underworld3 import discretisation
+        from underworld3.utilities.place_surface import _sheet_distance
 
         sheets = [(n, *self._triangulate_rim(p, h))
                   for n, p in self.prepared]
@@ -244,23 +240,15 @@ class FaultNetwork:
         child = base.adapt(metric, max_levels=max_levels,
                            engine="edge_split")
 
-        members = {bd.name: bd.value for bd in child.boundaries}
-        for k, (n, _sp, _st) in enumerate(sheets):
-            members[n] = max(members.values()) + 4
-        boundaries = Enum("boundaries", members)
-
-        dm = child.dm
+        mesh = child
         for n, sp, st in sheets:
             # clearance 0.8 measured as the working window on
             # edge_split children (0.6 under-reaches the graded
             # transition shell and pinches; >=1.0 over-swallows).
-            dm, _info = place_sheet(dm, sp, st, label=n,
-                                    label_value=boundaries[n].value,
-                                    clearance=clearance)
-        mesh = discretisation.Mesh(
-            dm, simplex=True,
-            coordinate_system_type=child.CoordinateSystem.coordinate_type,
-            qdegree=qdegree, boundaries=boundaries, verbose=False)
+            # Mesh-level placement, so each cut child inherits the adapt
+            # hierarchy as its coarse multigrid tail (the 2-D contract;
+            # the split below still forfeits it — see add_fault).
+            mesh = mesh.add_conforming_sheet(sp, st, n, clearance=clearance)
         for n, _sp, _st in sheets:
             mesh = split_fault(mesh, n)
         self.mesh = mesh
