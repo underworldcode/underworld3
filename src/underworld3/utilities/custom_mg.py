@@ -156,31 +156,31 @@ def barycentric_prolongation(coarse_coords, fine_coords):
 
 
 def rbf_prolongation(coarse_coords, fine_coords, smooth=0.0):
-    """RBF prolongation: polyharmonic (r² log r) kernel + affine polynomial tail
-    (reproduces linear fields), Shepard row-normalised to a partition of unity.
-    Works for arbitrary (non-nested) point sets; software-equivalent to the
-    barycentric builder as an MG transfer operator."""
-    import scipy.sparse as sp
-    from scipy.spatial.distance import cdist
+    """RBF prolongation via the STANDARD local interpolator (#429).
 
-    def phi(r):
-        # r² log r → 0 as r → 0; the clamp only keeps log(0) finite at
-        # coincident points — it does not perturb the kernel value.
-        r = np.where(r == 0.0, 1e-30, r)
-        return r ** 2 * np.log(r)
+    The sparse, linear-exact, kd-tree-based local RBF the rest of the code
+    uses (``kdtree.interpolation_matrix``, ``order=1``: polyharmonic
+    r² log r kernel + affine tail solved per target over its nearest
+    neighbours — see ``docs/developer/subsystems/interpolation.md``).
+    Replaces the original GLOBAL builder, which assembled and solved the
+    dense coarse-cloud kernel matrix and returned a transfer with
+    ``nnz/row == n_coarse`` — a rescue whose Galerkin coarse operators
+    were dense too, and which had no conditioning path on large clouds
+    (#429). Same kernel, same reproduction guarantees (constants and
+    linears to machine precision), sparse support.
 
-    nc, dim = coarse_coords.shape
-    Pc = np.hstack([np.ones((nc, 1)), coarse_coords])          # affine tail
-    Acc = phi(cdist(coarse_coords, coarse_coords)) + smooth * np.eye(nc)
-    M = np.block([[Acc, Pc], [Pc.T, np.zeros((dim + 1, dim + 1))]])
-    B = np.hstack([phi(cdist(fine_coords, coarse_coords)),
-                   np.ones((fine_coords.shape[0], 1)), fine_coords])
-    # Solve M Xᵀ = Bᵀ rather than forming M⁻¹ explicitly (faster, more stable). M is
-    # symmetric, so B M⁻¹ = solve(M, Bᵀ)ᵀ.
-    Praw = np.linalg.solve(M, B.T).T[:, :nc]
-    rs = Praw.sum(axis=1, keepdims=True)
-    rs[np.abs(rs) < 1e-12] = 1.0
-    return sp.csr_matrix(Praw / rs)
+    A row-wise kNN builder guarantees nonzeros per ROW, never per COLUMN
+    (#424): a coarse DOF outside every fine stencil still yields an empty
+    column and a singular PᵀAP. The build loop's zero-column repair
+    (nearest-fine-DOF injection) is the counterpart, for this builder and
+    the barycentric one alike. ``smooth`` is accepted for signature
+    compatibility and unused — locality is the conditioning here.
+    """
+    from underworld3 import kdtree
+
+    kdt = kdtree.KDTree(np.ascontiguousarray(coarse_coords, dtype=float))
+    return kdt.interpolation_matrix(
+        np.ascontiguousarray(fine_coords, dtype=float), order=1)
 
 
 _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
@@ -595,6 +595,47 @@ def _assert_no_zero_columns_serial(P_csr, level):
             f"operator would be singular.")
 
 
+def _repair_zero_columns_serial(P_csr, coords_c, coords_f, map_c, map_f,
+                                nc, level):
+    """Give each unreached coarse DOF a nearest-fine-DOF entry (serial).
+
+    The barycentric builder has LOCAL support, so on NON-NESTED level pairs
+    — two independently PLACED meshes (#626), a relaxed child (#424) — a
+    coarse DOF can lose every fine image and its Galerkin column goes
+    singular. The dense-RBF rescue fixes that globally at a performance
+    cliff; when only a handful of columns are empty, a surgical injection
+    entry (weight 1 at the nearest fine DOF of the same component) makes
+    the RAP nonsingular at zero cost. These are preconditioner transfers,
+    not the discretisation — a few injected rows cost iterations at worst,
+    never correctness. Returns the (possibly repaired) matrix and the
+    repair count; a column it cannot repair is left empty for the guard
+    to refuse loudly.
+    """
+    colsum = np.asarray((P_csr != 0).sum(axis=0)).ravel()
+    zero = np.flatnonzero(colsum == 0)
+    if not len(zero):
+        return P_csr, 0
+    from scipy.spatial import cKDTree
+
+    n_full_f = coords_f.shape[0] * nc
+    inv_f = -np.ones(n_full_f, dtype=np.int64)
+    inv_f[np.asarray(map_f, dtype=np.int64)] = np.arange(len(map_f))
+    tree = cKDTree(coords_f)
+    P = P_csr.tolil()
+    repaired = 0
+    for j in zero:
+        full_c = int(map_c[j])
+        node_c, comp = divmod(full_c, nc)
+        k = min(8, coords_f.shape[0])
+        for i in np.atleast_1d(tree.query(coords_c[node_c], k=k)[1]):
+            full_f = int(i) * nc + comp
+            if inv_f[full_f] >= 0:
+                P[int(inv_f[full_f]), int(j)] = 1.0
+                repaired += 1
+                break
+    return P.tocsr(), repaired
+
+
 def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
                     ksp=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
@@ -931,6 +972,16 @@ class CustomMGHierarchy:
                 else:
                     Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
                                            maps[l], nc, self.builder)
+                Pr, n_rep = _repair_zero_columns_serial(
+                    Pr, coords[l - 1], coords[l], maps[l - 1], maps[l],
+                    nc, l)
+                if n_rep:
+                    import warnings
+                    warnings.warn(
+                        f"custom_mg: transfer {l - 1}->{l} had {n_rep} coarse "
+                        f"DOF(s) with no fine image (non-nested levels); "
+                        f"repaired by nearest-fine-DOF injection. Costs "
+                        f"iterations at worst, never correctness.")
                 _assert_no_zero_columns_serial(Pr, l)
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
