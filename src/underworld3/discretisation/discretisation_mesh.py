@@ -7539,13 +7539,24 @@ class Mesh(Stateful, uw_object):
         if label is None or label.getStratumSize(value) == 0:
             return zone
 
+        fS, fE = dm.getHeightStratum(1)
         for f in label.getStratumIS(value).getIndices():
-            # `_cells_on_edge` rather than `getSupport` directly: in 2-D an edge
-            # IS a facet and its support is already the cells, but in 3-D the
-            # support holds faces and the cells are one level further up.
-            # Applying the 2-D walk in 3-D returns nothing at all, silently.
-            for c in _cells_on_edge(dm, int(f)):
-                zone[c - cS] = True
+            p = int(f)
+            if fS <= p < fE:
+                # A FACET's support is the cells, in any dimension — a 2-D
+                # facet is an edge, a 3-D facet is a face. (This method only
+                # ever saw 2-D meshes before the 3-D conforming sheet, and
+                # the edge walk below returns NOTHING from a 3-D face,
+                # silently — the same trap `_cells_on_edge` documents, one
+                # level up.)
+                for c in dm.getSupport(p):
+                    if cS <= c < cE:
+                        zone[c - cS] = True
+            else:
+                # A labelled EDGE in 3-D (a trace chain): cells are one
+                # level further up.
+                for c in _cells_on_edge(dm, p):
+                    zone[c - cS] = True
         return zone
 
     @staticmethod
