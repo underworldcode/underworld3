@@ -4,11 +4,13 @@
 #
 # Usage: ./test.sh [OPTIONS]
 #   --p N            Run parallel tests with N MPI ranks (default: skip parallel tests)
+#   --full-parallel  Add a second parallel pass at 4 ranks (see below; slow on CI)
 #   --parallel-only  Run ONLY parallel tests (skip all serial tests)
 #
 # Examples:
 #   ./test.sh                     # All serial tests only
 #   ./test.sh --p 2               # All serial + parallel (2 ranks)
+#   ./test.sh --p 2 --full-parallel   # ... and again at 4 ranks
 #   ./test.sh --parallel-only --p 2   # Only parallel tests (debugging)
 #
 # We do not run one monolithic pytest because tests produce a large number of
@@ -20,11 +22,19 @@ status=0
 # Parse arguments
 PARALLEL_RANKS=0
 PARALLEL_ONLY=0
+# Second parallel pass at four ranks. OFF by default: on a 2-core CI runner
+# np=4 is oversubscribed and the pass costs far more than the ~3 minutes it
+# takes on a workstation — enough to exceed the 120-minute job cap (#573).
+FULL_PARALLEL=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         --p)
             PARALLEL_RANKS="$2"
             shift 2
+            ;;
+        --full-parallel)
+            FULL_PARALLEL=1
+            shift
             ;;
         --parallel-only)
             PARALLEL_ONLY=1
@@ -32,7 +42,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--p N] [--parallel-only]"
+            echo "Usage: $0 [--p N] [--full-parallel] [--parallel-only]"
             exit 1
             ;;
     esac
@@ -168,16 +178,21 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     # defect found recently passed at np=2 and hung at np=4: the conditional
     # collective in #609, and #611.
     #
-    # Measured on this directory: np=2 128 passed / 11 skipped / 156 s; np=4
+    # Measured on a workstation: np=2 128 passed / 11 skipped / 156 s; np=4
     # 135 passed / 3 skipped / 170 s. The skip counts differ because some tests
     # require four ranks and are skipped at two — which is the other reason to
     # run both.
+    #
+    # Opt-in via --full-parallel. A CI runner has two cores, so np=4 is
+    # oversubscribed there and this pass costs far more than it does locally:
+    # run unconditionally it took the test job past the 120-minute cap. It
+    # belongs in a nightly or a separate job (#573) rather than on every PR.
     #
     # The one deselection is #611: test_global_evaluate_after_migration passes
     # at np=2 and hangs at np=4 on development. The node id has no `tests/`
     # prefix because tests/pytest.ini puts rootdir at `tests/`, and a deselect
     # that does not match is ignored in silence.
-    if [ "$PARALLEL_RANKS" -ne 4 ]; then
+    if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
       echo "Testing the same set at 4 ranks (np=2 is a special case)..."
       mpirun -n 4 python -m pytest --with-mpi tests/parallel/ \
         --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
