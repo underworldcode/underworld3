@@ -6025,6 +6025,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
 
+        # The OUTER Krylov must be flexible: the Schur-full fieldsplit below
+        # runs variable-iteration fgmres sub-solves, so the preconditioner is
+        # non-constant and standard GMRES's recurrence does not hold under it
+        # — the same reasoning as the velocity-block FGMRES note (#147), one
+        # level up. Left unset, PETSc's default is plain gmres, and a genuine
+        # solve GRINDS: measured 14,400 inner iterations / ~540 s on an
+        # 85k-cell contrast problem, for both velocity preconditioners (#624).
+        # Managed, so an explicit user ksp_type still wins.
+        self._push_managed_option("ksp_type", "fgmres")
+
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
         self.petsc_options["pc_fieldsplit_schur_fact_type"] = "full"     # diag is an alternative (quick/dirty)
@@ -6859,6 +6869,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
+
+        # The OUTER Krylov must be flexible: the Schur-full fieldsplit below
+        # runs variable-iteration fgmres sub-solves, so the preconditioner is
+        # non-constant and standard GMRES's recurrence does not hold under it
+        # — the same reasoning as the velocity-block FGMRES note (#147), one
+        # level up. Left unset, PETSc's default is plain gmres, and a genuine
+        # solve GRINDS: measured 14,400 inner iterations / ~540 s on an
+        # 85k-cell contrast problem, for both velocity preconditioners (#624).
+        # Managed, so an explicit user ksp_type still wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
