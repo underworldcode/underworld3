@@ -158,49 +158,53 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     # - Solver operations
     # - Global evaluations
 
-    # The WHOLE directory, not a set of globs. It used to be `test_075*py` and
-    # `test_10*py`, which between them named 14 of the 32 collectible files and
-    # left a hole from 0760 to 0999 — so test_0760, test_0765..test_0790,
-    # test_0855 and test_0873 ran in parallel at NO rank count, in CI or
-    # locally. That is how the np=4 hang in #611 survived unnoticed, and it is
-    # the #570 class: a glob that names ranges will grow holes as files are
-    # added between them.
+    # Every file under tests/parallel/, in BATCHES. Two things matter here and
+    # they pull in opposite directions.
     #
-    # Measured on this directory at np=2: 128 passed, 11 skipped, 156 s.
-    echo "Testing parallel operations, swarms and solvers..."
-    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/ || status=1
+    # Coverage: the batches used to be `test_075*py` and `test_10*py`, which
+    # between them named 14 of the 32 files and left a hole from 0760 to 0999 —
+    # test_0760, test_0765..test_0790, test_0855 and test_0873 ran in parallel
+    # at NO rank count, in CI or locally. That is how the np=4 hang in #611
+    # survived unnoticed, and it is the #570 class: a glob naming ranges grows
+    # holes as files are added between them. So the list is ENUMERATED, and
+    # covers the directory by construction.
+    #
+    # Batching: this script does not run one monolithic pytest, for the reason
+    # in its header — PETSc objects accumulate across files and tests start
+    # interacting. Handing the whole directory to a single mpirun took the CI
+    # job past its 120-minute cap while the same set in batches costs a couple
+    # of minutes. So the enumeration is chunked rather than passed in one go.
+    PARALLEL_BATCH=${PARALLEL_BATCH:-6}
+    PARALLEL_FILES=(tests/parallel/test_*.py)
+    echo "Testing parallel operations, swarms and solvers"
+    echo "  ${#PARALLEL_FILES[@]} files in batches of $PARALLEL_BATCH"
+    for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+      mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+        "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
+    done
 
-    # A SECOND pass at four ranks, because two is a special case. The failure
+    # A SECOND pass at four ranks, because two is a special case: the failure
     # this suite exists to catch is a collective entered by some ranks and not
-    # others, and with two ranks the mismatched pair often still meets — the
-    # skipped branch does not arise on a two-way partition, or one rank's
-    # internal barrier is satisfied by the other's next collective. Every such
-    # defect found recently passed at np=2 and hung at np=4: the conditional
-    # collective in #609, and #611.
-    #
-    # Measured on a workstation: np=2 128 passed / 11 skipped / 156 s; np=4
-    # 135 passed / 3 skipped / 170 s. The skip counts differ because some tests
-    # require four ranks and are skipped at two — which is the other reason to
-    # run both.
+    # others, and with two ranks the mismatched pair often still meets. Both
+    # recent instances passed at np=2 and hung at np=4 (#609's conditional
+    # collective, and #611).
     #
     # Opt-in via --full-parallel. A CI runner has two cores, so np=4 is
-    # oversubscribed there and this pass costs far more than it does locally:
-    # run unconditionally it took the test job past the 120-minute cap. It
-    # belongs in a nightly or a separate job (#573) rather than on every PR.
+    # oversubscribed there; this belongs in a nightly or a separate job (#573).
     #
-    # The one deselection is #611: test_global_evaluate_after_migration passes
-    # at np=2 and hangs at np=4 on development. The node id has no `tests/`
-    # prefix because tests/pytest.ini puts rootdir at `tests/`, and a deselect
-    # that does not match is ignored in silence.
+    # The deselection is #611: that test passes at np=2 and hangs at np=4 on
+    # development. The node id has no `tests/` prefix because tests/pytest.ini
+    # puts rootdir at `tests/`, and a deselect that does not match is ignored in
+    # silence — confirm "1 deselected" in the output when changing it.
     if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
       echo "Testing the same set at 4 ranks (np=2 is a special case)..."
-      mpirun -n 4 python -m pytest --with-mpi tests/parallel/ \
-        --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
-        || status=1
+      for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+        mpirun -n 4 python -m pytest --with-mpi \
+          "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" \
+          --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
+          || status=1
+      done
     fi
-
-    # echo "Testing parallel I/O..."
-    # mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_io*py || status=1
 
     echo "Parallel tests complete"
     echo "=========================================="
