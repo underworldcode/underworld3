@@ -8365,14 +8365,14 @@ class Mesh(Stateful, uw_object):
                     arr[mask] = s.restore(arr[mask])
                     snapped_any |= mask
             dm.setCoordinatesLocal(vec)
+            # A snap moves boundary vertices by the chord sagitta
+            # (~h²/8R); on a base coarse enough that h ≈ R this could
+            # invert a sliver silently. Fail loudly instead: no cell
+            # incident to a snapped vertex may flip orientation.
+            flipped = 0
             if snapped_any.any():
-                # A snap moves boundary vertices by the chord sagitta
-                # (~h²/8R); on a base coarse enough that h ≈ R this could
-                # invert a sliver silently. Fail loudly instead: no cell
-                # incident to a snapped vertex may flip orientation.
                 cs_, ce_ = dm.getHeightStratum(0)
                 vS_, vE_ = dm.getDepthStratum(0)
-                flipped = 0
                 for c in range(cs_, ce_):
                     vs = [p - vS_ for p in dm.getTransitiveClosure(c)[0]
                           if vS_ <= p < vE_]
@@ -8383,16 +8383,22 @@ class Mesh(Stateful, uw_object):
                     if (numpy.sign(numpy.linalg.det(e0))
                             != numpy.sign(numpy.linalg.det(e1))):
                         flipped += 1
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
-                if flipped:
-                    raise RuntimeError(
-                        f"adapt: snapping boundary vertices to the analytic "
-                        f"surfaces inverted {flipped} cell(s) — the base mesh "
-                        "is too coarse for the boundary curvature (chord "
-                        "sagitta ~ cell size). Refine the base mesh or adapt "
-                        "without registered bounding surfaces.")
+
+            # The count is rank-local, so the REDUCTION must be reached
+            # unconditionally: a rank whose partition holds no vertex on a
+            # registered surface has an all-False `snapped_any`, and guarding
+            # the reduction on it starves the peers that are already in it
+            # (#627).
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
+            if flipped:
+                raise RuntimeError(
+                    f"adapt: snapping boundary vertices to the analytic "
+                    f"surfaces inverted {flipped} cell(s) — the base mesh "
+                    "is too coarse for the boundary curvature (chord "
+                    "sagitta ~ cell size). Refine the base mesh or adapt "
+                    "without registered bounding surfaces.")
 
         # Refine from the mesh's CURRENT geometry. Node redistribution
         # (redistribute_nodes) moves mesh.dm's coordinates while the static
