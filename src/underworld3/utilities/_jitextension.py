@@ -1163,8 +1163,8 @@ def generate_c_source(
         # expressions (measured: monster Jacobian output ~460k nodes -> ~30k).
         # Semantics-preserving: temps are exact aliases of repeated
         # subexpressions, so the generated kernel evaluates identical values.
-        # Opt out with UW_JIT_NOCSE=1 if a pathological case regresses.
-        if os.environ.get("UW_JIT_NOCSE") not in ("1", "true", "True"):
+        # Opt in with UW_JIT_CSE=1 (default is off to preserve original behavior).
+        if os.environ.get("UW_JIT_CSE") in ("1", "true", "True", "yes", "YES"):
             from sympy.simplify.cse_main import cse
             from sympy.vector.scalar import BaseScalar
 
