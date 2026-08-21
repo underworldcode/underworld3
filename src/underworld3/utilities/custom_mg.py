@@ -627,13 +627,27 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     node_is_patch = np.zeros(nn, dtype=bool)
     node_is_patch[node_f[patch_row]] = True
     # split duplicates: >1 distinct background fine node onto one coarse node
+    dup_nodes = np.zeros(nn, dtype=bool)
     bgr = np.flatnonzero(bg_col >= 0)
     if bgr.size:
         pairs = np.unique(np.stack([bg_col[bgr], node_f[bgr]], axis=1), axis=0)
         counts = np.bincount(pairs[:, 0])
         dup = np.flatnonzero(counts > 1)
         if dup.size:
-            node_is_patch[pairs[np.isin(pairs[:, 0], dup), 1]] = True
+            dup_nodes[pairs[np.isin(pairs[:, 0], dup), 1]] = True
+            node_is_patch |= dup_nodes
+
+    # TODO(MEASURE): #629 campaign knob — "slit" keys the strong patch on the
+    # PHYSICS (the split-duplicated fault nodes), not the refinement
+    # structure: the smooth refined bulk stays on whole-level smoothing (it
+    # is well served by ordinary multigrid), and only the fault trace gets
+    # the subdomain solve. The halo comes from ASM overlap through the
+    # operator sparsity (set UW_FAC_OVERLAP). Remove when settled.
+    if os.environ.get("UW_FAC_PATCH") == "slit":
+        rows = np.flatnonzero(dup_nodes[node_f])
+        if rows.size == 0:
+            return None                    # unsplit level: whole-level smoothing
+        return rows.astype(np.int64), rows.astype(np.int64)
 
     row_is_patch = node_is_patch[node_f]
     # halo: background rows whose coarse node is referenced by a patch row
