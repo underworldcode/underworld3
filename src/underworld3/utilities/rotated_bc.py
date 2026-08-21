@@ -1743,14 +1743,28 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 A_vv, P_vv = vel_pc.getOperators()
                 vel_pc.reset()
                 vel_pc.setOperators(A_vv, P_vv)
-                # coarse="svd": the Galerkin-coarsened ROTATED velocity block
-                # inherits every rigid-rotation nullspace mode of the constrained
-                # problem (a closed circle: one; a spherical shell: three), and
-                # the default redundant/LU coarse solve hits a zero pivot there
-                # (SUBPC_ERROR, outer reason -11). Everything else in the bundle
-                # is identical to the native and standard custom-P routes.
+                # coarse="svd" ONLY when the rotated problem carries VERIFIED
+                # null modes (nsp): the Galerkin-coarsened ROTATED velocity
+                # block inherits every rigid-rotation mode of the constrained
+                # problem (a closed circle: one; a spherical shell: three),
+                # and the redundant/LU coarse solve hits a zero pivot there
+                # (SUBPC_ERROR, outer reason -11). When there are NO null
+                # modes — Dirichlet walls, a split-fault contact box — the
+                # blanket SVD is pure cost: a 3-D P2 coarse level is a DENSE
+                # factorisation (measured: most of ~0.8 s per V-cycle
+                # application at healthy iteration counts, #622). Everything
+                # else in the bundle is identical to the native and standard
+                # custom-P routes.
+                # nsp alone cannot discriminate: it is non-None whenever the
+                # constant-PRESSURE mode is attached (enclosed domains), which
+                # says nothing about the velocity block. The recorded count of
+                # verified ROTATION modes does.
+                _coarse = ("svd"
+                           if getattr(solver, "_rotated_velocity_null_modes",
+                                      1 if nsp is not None else 0)
+                           else "redundant")
                 custom_mg._configure_pcmg(
-                    vel_pc, custom_Pl, coarse="svd",
+                    vel_pc, custom_Pl, coarse=_coarse,
                     smoother=solver._mg_smoother_variant)
                 vel_pc.setUp()
                 # The bundle went into the GLOBAL options DB under the velocity
@@ -1760,7 +1774,7 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 vopts = PETSc.Options()
                 vpfx = vel_pc.getOptionsPrefix() or ""
                 for key in multigrid_options.geometric_mg_bundle(
-                        coarse="svd",
+                        coarse=_coarse,
                         smoother=solver._mg_smoother_variant).settings:
                     vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
@@ -1887,12 +1901,20 @@ def _rotated_nullspace(solver, Q, normal_rows):
         vecs.append(pv)
     # rigid rotations (rotated), each only if it satisfies the constraints.
     # COLLECTIVE: all ranks walk the same mode list, same order.
+    n_rot = 0
     for tg in _rigid_rotation_modes(solver):
         if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
+            n_rot += 1
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
+    # The VELOCITY-block null-mode count, recorded for the coarse-solve
+    # choice in _solve_rotated_iterative: only a rotation mode makes the
+    # Galerkin-coarsened velocity block singular (the constant-pressure
+    # mode lives in the pressure block), so only then is the SVD coarse
+    # solve required.
+    solver._rotated_velocity_null_modes = n_rot
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
