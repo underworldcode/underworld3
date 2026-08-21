@@ -924,6 +924,11 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     opts = PETSc.Options()
     multigrid_options.geometric_mg_bundle(coarse=coarse, smoother=smoother).apply(
         opts, prefix, owned=owned)
+    # TODO(MEASURE): #629 contrast-campaign knob — smoother iteration count
+    # override (the bundle's gmres/4 vs /8 discriminator); remove when settled.
+    _sm_its = os.environ.get("UW_MG_SMOOTH_ITS")
+    if _sm_its:
+        opts[prefix + "mg_levels_ksp_max_it"] = _sm_its
     # Per-level override BEFORE setFromOptions: the numbered key beats the
     # generic mg_levels_pc_type from the bundle, and having it in the DB keeps
     # any later setFromOptions from reverting the live setType below.
@@ -1002,6 +1007,14 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             # the constraint; PC_FAILED -11 before the first iteration).
             opts[prefix + f"mg_levels_{l}_sub_pc_type"] = _sub_pc or "sor"
             fac_keys.append(f"mg_levels_{l}_sub_pc_type")
+            if (_sub_pc or "sor") in ("lu", "ilu", "cholesky"):
+                # The rotated Galerkin patch block carries near-zero pivots
+                # (constraint-zeroed transfer rows leave weakly-attached
+                # coarse DOFs, min diag ~1e-5); an unshifted factorization
+                # takes NUMERIC_ZEROPIVOT even as exact LU.
+                key = f"mg_levels_{l}_sub_pc_factor_shift_type"
+                opts[prefix + key] = "nonzero"
+                fac_keys.append(key)
             is_sub.destroy()             # the PC holds its own references
             is_own.destroy()
     return fac_keys
