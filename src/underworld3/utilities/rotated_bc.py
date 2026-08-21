@@ -1763,10 +1763,25 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                            if getattr(solver, "_rotated_velocity_null_modes",
                                       1 if nsp is not None else 0)
                            else "redundant")
-                custom_mg._configure_pcmg(
+                # FAC patch smoothing (#629): the hierarchy that built custom_Pl
+                # recorded each level's patch/halo rows; row numbering is the
+                # velocity-block reduced numbering on both paths, and the split
+                # is per-node so the per-node rotation Q does not disturb it.
+                _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _fac_keys = custom_mg._configure_pcmg(
                     vel_pc, custom_Pl, coarse=_coarse,
-                    smoother=solver._mg_smoother_variant)
+                    smoother=solver._mg_smoother_variant,
+                    patch_rows=getattr(_hier, "level_patch_rows", None))
                 vel_pc.setUp()
+                # Force the FAC levels' smoother setup NOW: PCASM creates its
+                # sub-KSP (which reads mg_levels_<l>_sub_* from the DB) lazily
+                # at first application, which on this path is AFTER the key
+                # cleanup below — the sub options would silently never apply
+                # (measured: a sub_pc_type override had no effect).
+                for _l in range(1, vel_pc.getMGLevels()):
+                    if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
+                                         for k in _fac_keys):
+                        vel_pc.getMGSmoother(_l).setUp()
                 # The bundle went into the GLOBAL options DB under the velocity
                 # sub-PC's prefix, which is derived from `pfx` and so is unique to
                 # this solve — drop it again now it is consumed, as the `finally`
@@ -1776,6 +1791,8 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 for key in multigrid_options.geometric_mg_bundle(
                         coarse=_coarse,
                         smoother=solver._mg_smoother_variant).settings:
+                    vopts.delValue(vpfx + key)
+                for key in _fac_keys or ():
                     vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled

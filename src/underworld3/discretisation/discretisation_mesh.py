@@ -7155,10 +7155,22 @@ class Mesh(Stateful, uw_object):
     def _coarse_level_meshes(self):
         """The static coarse-mesh tail (one Mesh per base hierarchy level,
         coarsest..base-finest), built once and cached — they never change
-        because the base hierarchy is static across adapts."""
+        because the base hierarchy is static across adapts.
+
+        Each wrap is tagged with its ``(hierarchy token, level)`` slot — and so
+        is this mesh itself, whose ``dm`` is the finest hierarchy level. Two
+        levels whose slots are consecutive under the same token are a native
+        ``refine()`` pair, which is what lets ``custom_mg`` give that pair the
+        EXACT nested prolongation instead of a point-located one (#425/#629).
+        The token is a plain sentinel object: identity ties the family together
+        without a reference cycle back to this mesh."""
         cached = getattr(self, "_coarse_level_meshes_cache", None)
         if cached is None:
             cached = [self._wrap_coarse_level(d) for d in self.dm_hierarchy]
+            token = object()
+            for k, w in enumerate(cached):
+                w._refine_slot = (token, k)
+            self._refine_slot = (token, len(cached) - 1)
             self._coarse_level_meshes_cache = cached
         return cached
 
