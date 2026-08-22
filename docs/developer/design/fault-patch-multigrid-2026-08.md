@@ -180,6 +180,41 @@ API: the zone mask (or a fault-network object) as the patch key, the
 basic-ASM/shifted-LU configuration as the default for fault patches, and
 the A/B flags removed.
 
+## The ribbon is part of the FMG (ruling, 2026-08-22)
+
+The placed ribbon — the finite band of fault-scale resolution around
+each fault, with its modest adaptation — is not an alternative to the
+patch methodology; it is **part of the multigrid design**, playing
+three roles at once:
+
+* **The bridge between the standard mesh and the patch.** The ribbon's
+  band is the natural intermediate structure: coarse ladder below,
+  band-resolved level(s) in the middle, the cut/split finest on top.
+  Its cell burden is minimal by construction (the band is a few local-h
+  wide), and its levels are exactly the composite-grid structure the
+  FAC machinery was built for.
+* **The damage-zone identifier — authored, not detected.** The
+  placement machinery labels the band's cells, and the zone label
+  survives the cut/split as cell children. The strong patch keys on
+  that label directly: an exact, mesh-conforming, modeler-authored
+  region — never the ragged staircase of a distance mask, never the
+  one-cell zipper comb of ``cells_supporting`` around the split.
+* **One mesh discipline for every fault representation.** The same
+  ribbon carries split-contact faults (cut down the transfinite
+  centreline — three nodes across, so nothing snaps, #595), painted
+  TI, or painted weak rheology; the representation choice stops
+  dictating the mesh strategy.
+
+Junctions follow the revised ruling: split segments stop a short
+distance apart and the **intact gap is the linkage** — no painted core
+by default (a damage core is opt-in physics). The ribbon simply
+encloses the whole stepping system, gaps included, at fault resolution.
+
+The open engineering question is **parallel balance**: the ribbon
+concentrates cells, so the partitioner must weight them — and the same
+partition pass must keep split pairs co-resident (rule 1 above). One
+mechanism should satisfy both constraints.
+
 ## The 2-D rig
 
 `~/+Simulations/place_route_health/line_mg.py`: 2-D box, interior line
