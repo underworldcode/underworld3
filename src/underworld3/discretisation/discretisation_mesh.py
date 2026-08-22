@@ -7643,6 +7643,58 @@ class Mesh(Stateful, uw_object):
                     zone[c - cS] = True
         return zone
 
+    def cells_labelled(self, name, value=None):
+        """The cells carrying DM label ``name`` (optionally stratum ``value``).
+
+        The cell-label partner of :meth:`cells_supporting`: where that method
+        derives a zone from a FACET label (a conforming surface's support),
+        this one reads a CELL label directly — the region a placement call
+        painted (:func:`~underworld3.utilities.place_surface.place_thin_volume`
+        labels its layer's cells), an imported region marker, or any other
+        authored cell stratum. It is the empty-safe way to build a fault-zone
+        patch key for ``set_custom_fmg(..., fac_zone=...)`` (#629): an absent
+        label or an empty stratum returns an all-``False`` mask rather than
+        touching the null IS that segfaults ``getIndices()`` (#589).
+
+        Parameters
+        ----------
+        name : str
+            The DM label name (e.g. the ``label=`` given to a placement call).
+        value : int or None
+            The stratum value; ``None`` takes the union over every value the
+            label carries.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean, one entry per cell, in **plex cell order** — also the DOF
+            order of a ``degree=0`` :class:`MeshVariable`. Points of the label
+            that are not cells (faces, edges) are ignored.
+
+        Examples
+        --------
+        >>> zone = mesh.cells_labelled("Band")
+        >>> set_custom_fmg(stokes, tail, field_id=0, fac_zone=zone)
+        """
+        from underworld3.utilities.dm_labels import label_stratum_indices
+
+        dm = self.dm
+        cS, cE = dm.getHeightStratum(0)
+        zone = numpy.zeros(cE - cS, dtype=bool)
+        label = dm.getLabel(name)
+        if label is None:
+            return zone
+        if value is None:
+            vis = label.getValueIS()
+            values = [int(v) for v in vis.getIndices()] if vis is not None else []
+        else:
+            values = [int(value)]
+        for v in values:
+            pts = label_stratum_indices(label, v)
+            pts = pts[(pts >= cS) & (pts < cE)]
+            zone[pts - cS] = True
+        return zone
+
     @staticmethod
     def _repair_cut(cut_dm, lines, info, reach, verbose):
         """Flip, then delete, the cells a conforming cut left thin.

@@ -62,6 +62,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3.utilities.dm_labels import label_stratum_indices
 from underworld3.utilities.reconnect import (
     _TOPOLOGY_LABELS, _cell_vertices_and_seam, _coords, _copy_labels,
     _rebuild_point_sf, _shared_points, _write_coordinates)
@@ -285,10 +286,10 @@ def _clone_labels(new, dm, clone_map):
         if values is None:
             continue
         for val in values.getIndices():
-            points = source.getStratumIS(int(val))
-            if points is None:
-                continue
-            for p in points.getIndices():
+            # Empty-safe (#589): an absent stratum hands back a NULL IS
+            # wrapper, never None — the old `is None` guard was dead and
+            # getIndices() on the wrapper segfaults.
+            for p in label_stratum_indices(source, val):
                 for q in twins.get(int(p), ()):
                     target.setValue(q, int(val))
 

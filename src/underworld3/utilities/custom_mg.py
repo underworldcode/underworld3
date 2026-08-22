@@ -1206,10 +1206,18 @@ class CustomMGHierarchy:
         (default) uses the fast path and, if it produces a zero-column transfer
         (the signature of a cross-partition point-location miss), rebuilds that
         level cross-partition. Serial builds ignore this.
+    fac_zone : array_like of bool, or list of such, or None
+        The fault-zone patch key for the FINEST level's strong (ASM) patch
+        smoother (#629): a boolean mask over the finest mesh's cells — the
+        painted / placed band the modeler authored — or a LIST of masks for
+        one ASM block per fault segment (masks may overlap; a junction cell
+        in two masks sits inside both blocks). The structural patch (the
+        cut/split-inserted rows the transfer cannot represent) is unioned in
+        automatically. ``None`` keys the patch on the structural rows alone.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
-                 cross_partition="auto"):
+                 cross_partition="auto", fac_zone=None):
         if builder not in _BUILDERS:
             raise ValueError("builder must be 'barycentric' or 'rbf'")
         if len(level_meshes) < 2:
@@ -1221,7 +1229,32 @@ class CustomMGHierarchy:
         self.builder_name = builder
         self.field_id = field_id
         self.cross_partition = cross_partition
+        self.fac_zone = self._validated_fac_zone(fac_zone)
         self.transfers = None
+
+    def _validated_fac_zone(self, fac_zone):
+        """Normalise ``fac_zone`` to None or a list of boolean cell masks.
+
+        Validated against the FINEST level's cell count at construction —
+        a mask of the wrong length would otherwise surface as a silently
+        empty (or wrong) patch, which is exactly the declining-quietly
+        failure mode the ASM probe discipline exists to catch."""
+        if fac_zone is None:
+            return None
+        masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
+                 else [fac_zone])
+        finest = self.level_meshes[-1]
+        cS, cE = finest.dm.getHeightStratum(0)
+        out = []
+        for k, mk in enumerate(masks):
+            arr = np.asarray(mk, dtype=bool)
+            if arr.ndim != 1 or arr.shape[0] != cE - cS:
+                raise ValueError(
+                    f"fac_zone mask {k}: expected a 1-D boolean mask over the "
+                    f"finest mesh's {cE - cS} cells (plex cell order), got "
+                    f"shape {arr.shape}.")
+            out.append(arr)
+        return out
 
     def _recorded_node_transfer(self, level, nlev, degree, n_coarse, n_fine):
         """The EXACT nested prolongation recorded by ``mesh.adapt`` for this
@@ -1399,18 +1432,23 @@ class CustomMGHierarchy:
                 if not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC"):
                     # An EXPLICIT zone beats detection: a painted weak/TI
                     # band has no split topology to detect, but the modeler
-                    # knows exactly which cells were painted. A boolean cell
-                    # mask on the solver keys the finest level's strong
-                    # patch to those cells' DOFs (#629 — the patch solve is
-                    # rheology-agnostic; only detection was split-specific).
-                    zone = getattr(solver, "_fac_zone_cells", None)
-                    if zone is not None and l == nlev - 1:
+                    # knows exactly which cells were painted. The fac_zone
+                    # masks key the finest level's strong patch to those
+                    # cells' DOFs (#629 — the patch solve is rheology-
+                    # agnostic; only detection was split-specific).
+                    if getattr(solver, "_fac_zone_cells", None) is not None:
+                        raise RuntimeError(
+                            "solver._fac_zone_cells is retired; pass the "
+                            "mask(s) as set_custom_fmg(..., fac_zone=...). "
+                            "(A silently ignored zone would leave the patch "
+                            "structural-only — the declining-quietly failure "
+                            "the #629 campaign was bitten by.)")
+                    masks = self.fac_zone
+                    if masks is not None and l == nlev - 1:
                         # one mask -> one block; a LIST of masks -> one ASM
                         # block per mask. Masks may overlap (a junction cell
-                        # in two segments' masks sits inside both blocks —
-                        # the junction-coupling design).
-                        masks = (zone if isinstance(zone, (list, tuple))
-                                 else [zone])
+                        # in two masks sits inside both blocks — the
+                        # junction-coupling design).
                         cn = self.level_meshes[l]._cell_node_indices(
                             degree, continuous)
                         node_of_row = np.asarray(maps[l]) // nc
@@ -1563,7 +1601,8 @@ class _DMLevelView:
 #  Entry points
 # --------------------------------------------------------------------------- #
 def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
-                   field_id=None, cross_partition="auto", verbose=False):
+                   field_id=None, cross_partition="auto", fac_zone=None,
+                   verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
     Registers a :class:`CustomMGHierarchy` on the solver so that the next
@@ -1576,12 +1615,21 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
 
     ``cross_partition`` selects the parallel (np>1) transfer strategy (see
     :class:`CustomMGHierarchy`); the default ``"auto"`` handles both nested and
-    non-nested coarse tails."""
+    non-nested coarse tails.
+
+    ``fac_zone`` keys the finest level's strong patch smoother on the fault
+    zone (#629): a boolean mask over the solver mesh's cells — e.g.
+    ``mesh.cells_labelled("Band")`` for a placed ribbon, or
+    ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
+    list of masks for per-segment ASM blocks. The structural (cut/split)
+    rows are unioned in automatically; the patch is solved strongly once
+    per smoother application (basic ASM, shifted factorization)."""
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
                                        builder=builder, field_id=field_id,
-                                       cross_partition=cross_partition),
+                                       cross_partition=cross_partition,
+                                       fac_zone=fac_zone),
         "verbose": verbose,
     }
     solver.is_setup = False

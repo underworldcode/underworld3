@@ -4821,6 +4821,98 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
+def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
+                            domain=None):
+    """The cut-ready band: transfinite, THREE nodes across, spine included.
+
+    The default (frontal-meshed) band's spine cut works but SNAPS — the cut
+    machinery pulls the nearest vertex onto the line, and in a band whose
+    half-width is inside the snap reach of the local cell size that nearest
+    vertex can be a RAIL: measured, one rail vertex dragged onto the spine,
+    pinching the band shut (#595). There is no snap parameter that
+    guarantees rail safety, because snapping is measured along edges and is
+    blind to a vertex's distance from the line.
+
+    Prevention instead of tuning: mesh the band TRANSFINITE with three
+    nodes across. That builds the rails plus an exact centreline row of
+    vertices, edge-connected, at the rail spacing; a spine cut sampled AT
+    those vertices crosses only existing vertices — nothing snaps, nothing
+    is inserted, and the rails cannot be touched because nothing needs to
+    move. This is the mandatory band for a centreline cut/split (the
+    composed ribbon hierarchy, #629) and the reason the across-band node
+    count sets the thinnest paintable interior layer.
+
+    Same hook signature as :func:`_occ_assembly_2d`. Restrictions, each
+    checked: exactly ONE polyline, and a STRAIGHT one (the transfinite
+    frame is a single ruled rectangle). ``assembly`` is irrelevant to a
+    single face and ignored. ``domain`` is accepted but NOT used to clip —
+    the ladder must lie inside the domain; a protruding band is refused
+    here rather than silently losing its transfinite structure to an OCC
+    intersection.
+    """
+    import gmsh
+
+    if len(polylines) != 1:
+        raise ValueError("the ladder band takes exactly one polyline")
+    P = np.asarray(polylines[0], dtype=float)[:, :2]
+    a, b = P[0], P[-1]
+    t = b - a
+    L = float(np.linalg.norm(t))
+    if L <= 0.0:
+        raise ValueError("the ladder polyline needs two distinct end points")
+    t = t / L
+    n = np.array([-t[1], t[0]])
+    off = np.abs((P - a) @ n)
+    if off.max() > 1e-9 * max(L, 1.0):
+        raise ValueError(
+            "the ladder band takes a STRAIGHT polyline (transfinite frame); "
+            f"this one deviates {off.max():.3e} from its chord. Split a bent "
+            "trace into straight segments, one ladder each.")
+    corners = np.array([a + 0.5 * width * n, b + 0.5 * width * n,
+                        b - 0.5 * width * n, a - 0.5 * width * n])
+    if domain is not None:
+        lo = np.min([np.min(np.asarray(Lp, dtype=float), axis=0)
+                     for Lp in domain], axis=0)
+        hi = np.max([np.max(np.asarray(Lp, dtype=float), axis=0)
+                     for Lp in domain], axis=0)
+        if (corners < lo - 1e-12).any() or (corners > hi + 1e-12).any():
+            raise ValueError(
+                "the ladder band protrudes past the domain; it is meshed "
+                "transfinite and cannot be clipped. Shorten the trace or "
+                "use the default band (which clips).")
+    n_along = max(2, int(round(L / size)))
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    try:
+        gmsh.model.add("uw_ladder_band")
+        occ = gmsh.model.occ
+        pts = [occ.addPoint(q[0], q[1], 0.0) for q in corners]
+        lines = [occ.addLine(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+        surf = occ.addPlaneSurface([occ.addCurveLoop(lines)])
+        occ.synchronize()
+        cad_area = occ.getMass(2, surf)
+        gmsh.model.mesh.setTransfiniteCurve(lines[0], n_along + 1)
+        gmsh.model.mesh.setTransfiniteCurve(lines[2], n_along + 1)
+        gmsh.model.mesh.setTransfiniteCurve(lines[1], 3)   # 3 across:
+        gmsh.model.mesh.setTransfiniteCurve(lines[3], 3)   # rails + spine
+        gmsh.model.mesh.setTransfiniteSurface(surf, "AlternateLeft")
+        gmsh.model.mesh.generate(2)
+
+        tags, xyz, _ = gmsh.model.mesh.getNodes()
+        xy = np.asarray(xyz).reshape(-1, 3)[:, :2]
+        renum = {int(tg): i for i, tg in enumerate(tags)}
+        et, _ei, en = gmsh.model.mesh.getElements(2, surf)
+        tris = []
+        for ty, nodes in zip(et, en):
+            if ty == 2:
+                tris.append(np.array([renum[int(x)] for x in nodes],
+                                     dtype=np.int64).reshape(-1, 3))
+        return xy, np.vstack(tris), float(cad_area)
+    finally:
+        gmsh.finalize()
+
+
 def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
     """Thicken each polyline into a ribbon, resolve overlaps, mesh.
 
@@ -5756,7 +5848,7 @@ ZONE_LABEL = "uw_zone"
 
 
 def _place_thin_volume_2d(dm, polylines, width, label, label_value,
-                          clearance, size, assembly, verbose):
+                          clearance, size, assembly, verbose, mesher=None):
     """The ribbon: the identical construction one dimension down.
 
     Serial AND parallel through the same gather-first mechanism as the 3-D
@@ -5785,7 +5877,9 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     payload = None
     if comm.rank == 0:
         try:
-            asm_pts, asm_tris, cad_area = _occ_assembly_2d(
+            assemble = (_occ_ladder_assembly_2d if mesher == "ladder"
+                        else _occ_assembly_2d)
+            asm_pts, asm_tris, cad_area = assemble(
                 polylines, width, size, assembly, domain=domain_loops)
             P = asm_pts[asm_tris]
             twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
@@ -6169,7 +6263,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
 def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                       clearance=0.7, size=None, *, assembly="fuse",
-                      verbose=False):
+                      mesher=None, verbose=False):
     """Embed a THIN VOLUME of the given width around each patch, junctions free.
 
     The finite-width fault representation: each planar patch is thickened by
@@ -6231,6 +6325,14 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         boundaries are themselves of interest. Two zones converging at a
         shallow angle make the overlap a spike, and its fragmented tip meshes
         to arbitrarily bad angles; the fused union has no such tip.
+    mesher : {None, "ladder"}, keyword-only
+        How the band itself is meshed (2-D only). ``None`` (default) is the
+        frontal band. ``"ladder"`` is the TRANSFINITE band, three nodes
+        across — rails plus an exact centreline row — the mandatory choice
+        when the band's spine is to be cut/split (#595: a spine cut through
+        a frontal band snaps rail vertices and can pinch the band shut).
+        Ladder bands take exactly one straight polyline and must lie inside
+        the domain. See :func:`_occ_ladder_assembly_2d`.
     verbose : bool
         Report the counts.
 
@@ -6257,10 +6359,17 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if assembly not in ("fuse", "fragment"):
         raise ValueError(
             f"assembly must be 'fuse' or 'fragment', not {assembly!r}")
+    if mesher not in (None, "ladder"):
+        raise ValueError(f"mesher must be None or 'ladder', not {mesher!r}")
 
     if dm.getDimension() == 2:
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
-                                     clearance, size, assembly, verbose)
+                                     clearance, size, assembly, verbose,
+                                     mesher=mesher)
+    if mesher is not None:
+        raise NotImplementedError(
+            "mesher='ladder' is the 2-D transfinite band; the 3-D volume "
+            "has no ladder mesher yet.")
     if dm.getDimension() != 3:
         raise NotImplementedError(
             f"place_thin_volume takes a 2-D or 3-D simplex mesh; this mesh "

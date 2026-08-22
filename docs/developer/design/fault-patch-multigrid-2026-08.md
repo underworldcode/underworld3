@@ -66,6 +66,18 @@ to 14 — part of the recorded #625 pathology is downstream of an
 incomplete velocity PC, and the Schur diagnosis should be re-baselined
 against a healthy velocity block.
 
+**Confirmed in 3-D** (2026-08-23, pure contact, the composed
+place_thin_volume ribbon + authored slit + split at 19,911 cells): the
+Band-keyed zone patch + automatic structural union gives 7 velocity
+iterations against GAMG's 56, physics identical (slip 0.1509, leak 0
+both). The remaining 3-D gap is wall-clock, not iterations: the 3-D
+tail's transfers are non-nested point-located builds (138–173 nnz/row
+against the 2-D composed stack's native 24–28), so each V-cycle is
+expensive and GAMG still wins warm wall time at rig scale — the same
+level economics as the 2-D two-level parity result, with the payoff
+regime unchanged (contrast and production proportions, pressure gated
+on #625).
+
 ## Configuration rules (each learned from a failure)
 
 0. **The finest patch always contains the structural patch.** The patch
@@ -183,10 +195,22 @@ to permit it.)
 
 The campaign ran on TODO(MEASURE)-marked environment variables
 (`UW_FAC_*`, `UW_CUSTOM_MG_*`, `UW_MG_SMOOTH_ITS`) plus one explicit
-hook (`solver._fac_zone_cells`). Before 3-D production these settle into
-API: the zone mask (or a fault-network object) as the patch key, the
-basic-ASM/shifted-LU configuration as the default for fault patches, and
-the A/B flags removed.
+hook (`solver._fac_zone_cells`). The hook has since settled into API
+(2026-08-23): the patch key is `set_custom_fmg(..., fac_zone=...)` — a
+boolean cell mask or a list of per-segment masks, validated against the
+finest mesh at registration — and the `_fac_zone_cells` attribute
+spelling is retired loudly (setting it raises rather than declining
+silently). `mesh.cells_labelled(name, value)` builds the mask from a
+placement's cell label empty-safely (the #589 null-IS segfault is fixed
+at source in `utilities/dm_labels.py`, and the dead `is None` stratum
+guards in `nvb`/`reconnect`/`fault_split` are routed through it). The
+transfinite ladder band is in-repo as
+`place_thin_volume(..., mesher="ladder")`, and the composed 2-D
+benchmark is enshrined as `tests/test_1022_composed_ribbon_fmg.py`
+(tier B: level densities, 2-block finest patch, iteration bounds,
+slip/leak). Still environment variables, to be settled by the remaining
+measurements: the `UW_FAC_*` sub-solver choices and the
+`UW_CUSTOM_MG_*` / `UW_MG_SMOOTH_ITS` A/B flags.
 
 ## What the fault ribbon is for (ruling, 2026-08-23)
 
