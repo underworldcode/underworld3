@@ -182,6 +182,7 @@ def view():
 # Needed everywhere
 import underworld3.mpi
 from .mpi import pprint, selective_ranks, collective_operation, CollectiveOperationError
+from .mpi import watch, unwatch, watching, checkpoint, ranks_agree
 from ._var_types import *
 from .utilities._petsc_tools import *
 from .utilities._nb_tools import *
