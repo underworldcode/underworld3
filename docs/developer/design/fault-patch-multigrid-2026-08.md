@@ -188,6 +188,41 @@ API: the zone mask (or a fault-network object) as the patch key, the
 basic-ASM/shifted-LU configuration as the default for fault patches, and
 the A/B flags removed.
 
+## What the fault ribbon is for (ruling, 2026-08-23)
+
+The finite-width ribbon around a fault is a **modelling object in its
+own right**, not just mesh scaffolding. Its sanctioned uses:
+
+* **A damage zone** — when a damage *evolution equation* is part of the
+  physics. Damage is then a solved field whose rheology follows from
+  the field; it localises where the mechanics puts it. Damage does not
+  exist in a model that does not evolve it.
+* **A nonlinear plastic / yielding material** — the ribbon's material
+  given a yield rheology, so that **failure patterns can emerge within
+  the resolved band**. This is the mechanism by which junctions *form*:
+  localisation finds its own geometry inside the ribbon instead of the
+  modeller authoring it. (The gradient-plasticity caveats apply when
+  this is built: the regularising length must enter the plasticity, and
+  mesh objectivity needs more than one resolution — the ribbon width
+  supplies a geometric length scale but does not by itself regularise.)
+* **A permeable zone** — a localized pathway for fluid flow, carrying
+  the permeability structure a fault zone has and the surrounding rock
+  does not.
+
+What the ribbon region is **not**: a hand-painted static weak
+viscosity. "Fake damage" is neither gouge nor a fault — a wide soft
+channel needs no split nodes and no fancy solver, and tells us nothing.
+The fault itself is the **split surface in the mesh**, always; ribbon
+physics complements the slip surface, never substitutes for it. In a
+model with none of the three physics above, the ribbon carries
+background rheology and is purely resolution.
+
+These roles compose with the solver design below unchanged: whichever
+physics the ribbon carries, the band is the authored patch key, the
+levels are the FMG bridge, and the machinery is measured
+contrast-robust for whatever coefficient structure the physics
+produces.
+
 ## The ribbon is part of the FMG (ruling, 2026-08-22)
 
 The placed ribbon — the finite band of fault-scale resolution around
