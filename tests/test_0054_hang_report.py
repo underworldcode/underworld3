@@ -173,11 +173,23 @@ def test_end_to_end_names_the_divergent_rank(tmp_path):
         UW_HANG_WATCHDOG_DIR=str(dumps),
         UW_NO_USAGE_METRICS="1",
     )
-    # A non-zero exit is EXPECTED -- mpirun kills a job that never finishes.
-    subprocess.run(
-        ["mpirun", "--timeout", "25", "-n", "4", sys.executable, "-u", str(script)],
+    # `--oversubscribe` because a CI runner has two cores and this wants four
+    # ranks. They spend the whole test blocked or asleep, so the cores are not
+    # the constraint -- but without it OpenMPI declines to start and the job
+    # produces no dumps at all.
+    #
+    # A non-zero exit is EXPECTED: mpirun kills a job that never finishes.
+    finished = subprocess.run(
+        ["mpirun", "--oversubscribe", "--timeout", "25", "-n", "4",
+         sys.executable, "-u", str(script)],
         env=environment, capture_output=True, text=True, timeout=120,
     )
+
+    if not dumps.is_dir():
+        pytest.fail(
+            "the job wrote no dumps at all, so it never reached "
+            f"`import underworld3`:\n{finished.stderr[-2000:]}"
+        )
 
     states = hang_report.read_directory(dumps)
     assert len(states) == 4, f"expected four dump files, got {sorted(states)}"
