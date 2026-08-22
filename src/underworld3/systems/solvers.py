@@ -1715,10 +1715,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: (
-            self.stress
-            + self.penalty * self.constitutive_model.K * self.div_u * sympy.eye(self.mesh.dim)
-        ),
+        lambda self: self.stress,
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
@@ -1862,13 +1859,32 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     def stress(self):
         r"""Total Cauchy stress tensor.
 
-        The total stress combines the deviatoric stress and pressure:
+        The total stress combines the deviatoric stress, the pressure, and the
+        grad-div penalty:
 
         .. math::
-            \boldsymbol{\sigma} = \boldsymbol{\tau} - p\mathbf{I}
+            \boldsymbol{\sigma} = \boldsymbol{\tau}
+                - \left( p - \lambda\mu\,\nabla\cdot\mathbf{u} \right)\mathbf{I}
 
-        where :math:`\boldsymbol{\tau}` is the deviatoric stress and
-        :math:`p` is the pressure (positive in compression).
+        where :math:`\boldsymbol{\tau}` is the deviatoric stress and :math:`p`
+        is the pressure (positive in compression).
+
+        **Why the penalty lives here.** When :attr:`penalty` is non-zero the
+        solved ``p`` is the Lagrange multiplier, and the mechanical pressure is
+        :math:`p - \lambda\mu\,\nabla\cdot\mathbf{u}`. The term used to be
+        added to :math:`\mathbf{F}_1` at assembly instead, *outside* the stress
+        definition — so the operator being solved carried it while every
+        recovered quantity did not, and each consumer had to remember to correct
+        by hand. Measured cost of that split: the spherical dynamic topography
+        recovered from the rotated free-slip reaction was 28% low
+        (0.3021 against 0.4192), because :func:`boundary_normal_traction` builds
+        :math:`\sigma_{nn}` from a stress that omitted a term the operator
+        included.
+
+        The term is **isotropic**, so it belongs in the total stress and not in
+        :attr:`stress_deviator` — which is also why the viscoelastic history,
+        which tracks the deviator through ``constitutive_model.flux``, correctly
+        does not see it.
 
         Returns
         -------
@@ -1877,9 +1893,14 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         See Also
         --------
-        stress_deviator : Deviatoric (traceless) part.
+        stress_deviator : Deviatoric (traceless) part, penalty-free.
+        penalty : The augmentation, and its effect on the recovered pressure.
         """
-        return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+        mechanical_pressure = (
+            self.p.sym[0]
+            - self.penalty * self.constitutive_model.K * self.div_u
+        )
+        return self.stress_deviator - sympy.eye(self.mesh.dim) * mechanical_pressure
 
     @property
     def stress_1d(self):
