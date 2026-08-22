@@ -1405,14 +1405,45 @@ class CustomMGHierarchy:
                     # rheology-agnostic; only detection was split-specific).
                     zone = getattr(solver, "_fac_zone_cells", None)
                     if zone is not None and l == nlev - 1:
+                        # one mask -> one block; a LIST of masks -> one ASM
+                        # block per mask. Masks may overlap (a junction cell
+                        # in two segments' masks sits inside both blocks —
+                        # the junction-coupling design).
+                        masks = (zone if isinstance(zone, (list, tuple))
+                                 else [zone])
                         cn = self.level_meshes[l]._cell_node_indices(
                             degree, continuous)
-                        node_in = np.zeros(coords[l].shape[0], dtype=bool)
-                        node_in[np.unique(cn[np.asarray(zone, dtype=bool)])] = True
-                        rows = np.flatnonzero(
-                            node_in[np.asarray(maps[l]) // nc])
-                        self.level_patch_rows[l] = (rows.astype(np.int64),
-                                                    rows.astype(np.int64))
+                        node_of_row = np.asarray(maps[l]) // nc
+                        blocks = []
+                        covered = np.zeros(len(node_of_row), dtype=bool)
+                        for mk in masks:
+                            node_in = np.zeros(coords[l].shape[0], dtype=bool)
+                            node_in[np.unique(
+                                cn[np.asarray(mk, dtype=bool)])] = True
+                            rows = np.flatnonzero(
+                                node_in[node_of_row]).astype(np.int64)
+                            if rows.size:
+                                blocks.append((rows, rows))
+                                covered[rows] = True
+                        # The patch smoother REPLACES whole-level smoothing,
+                        # so it inherits every row the coarse level cannot
+                        # represent — the STRUCTURAL (non-identity) transfer
+                        # patch — whether or not the physics zone covers it.
+                        # A zone away from the cut/split leaves those rows
+                        # smoothed nowhere and the velocity solve stalls at
+                        # its cap (measured: any off-cut zone, #629). Add
+                        # the uncovered structural rows as one more block.
+                        split = _fac_patch_split(
+                            Pr, coords[l - 1], coords[l], maps[l - 1],
+                            maps[l], nc, cover_max=1.01)
+                        if split is not None:
+                            _own, sub = split
+                            extra = sub[~covered[sub]].astype(np.int64)
+                            if extra.size:
+                                blocks.append((extra, extra))
+                        self.level_patch_rows[l] = (
+                            None if not blocks
+                            else blocks[0] if len(blocks) == 1 else blocks)
                     else:
                         self.level_patch_rows[l] = _fac_patch_split(
                             Pr, coords[l - 1], coords[l], maps[l - 1],
