@@ -1397,8 +1397,26 @@ class CustomMGHierarchy:
                 # TODO(MEASURE): A/B affordance for the #629 campaign, like
                 # the nested-native flag above; remove when settled.
                 if not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC"):
-                    self.level_patch_rows[l] = _fac_patch_split(
-                        Pr, coords[l - 1], coords[l], maps[l - 1], maps[l], nc)
+                    # An EXPLICIT zone beats detection: a painted weak/TI
+                    # band has no split topology to detect, but the modeler
+                    # knows exactly which cells were painted. A boolean cell
+                    # mask on the solver keys the finest level's strong
+                    # patch to those cells' DOFs (#629 — the patch solve is
+                    # rheology-agnostic; only detection was split-specific).
+                    zone = getattr(solver, "_fac_zone_cells", None)
+                    if zone is not None and l == nlev - 1:
+                        cn = self.level_meshes[l]._cell_node_indices(
+                            degree, continuous)
+                        node_in = np.zeros(coords[l].shape[0], dtype=bool)
+                        node_in[np.unique(cn[np.asarray(zone, dtype=bool)])] = True
+                        rows = np.flatnonzero(
+                            node_in[np.asarray(maps[l]) // nc])
+                        self.level_patch_rows[l] = (rows.astype(np.int64),
+                                                    rows.astype(np.int64))
+                    else:
+                        self.level_patch_rows[l] = _fac_patch_split(
+                            Pr, coords[l - 1], coords[l], maps[l - 1],
+                            maps[l], nc)
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         return Ps
