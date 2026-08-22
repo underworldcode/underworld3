@@ -143,11 +143,19 @@ to permit it.)
 
 ## Parallel design rules for 3-D
 
-1. **Rank cuts along strike are free** (the k-ladder is that
-   decomposition, rehearsed in serial). Rank cuts **across the band are
-   the hazard**: they sever the stiff pair coupling the block solve
-   exists for. The partition must keep coincident pairs co-resident —
-   we author the split mesh, so we can weight or gate the partitioner.
+1. **Split in the local frame, after distribution — then pair
+   co-residency is automatic.** A pair is the duplication of one owned
+   facet's nodes and is born on that facet's rank; no partitioner
+   constraint is needed (Louis's correction of an earlier draft of this
+   rule). The two real items instead: (a) **never distribute a
+   pre-split mesh** — the slit is a zero-cost cut in the mesh graph, so
+   a partitioner would *preferentially* separate the sides while the
+   contact coupling lives outside the graph; gate that pipeline rather
+   than engineer around it. (b) **Seam consistency**: where the fault
+   crosses a rank boundary along strike, on-rank duplication must
+   update the star forest consistently (the known np>=3 line-cut issue;
+   the independent-pass design is the template). Along-strike block
+   cuts at seams are measured free (the k-ladder).
 2. **PCASM is rank-local.** Blocks become per-rank lists with local
    indices; faultless ranks carry `nsd = 0`, and every IS-building path
    must survive empty sets (the empty-stratum `getIndices()` SEGV
@@ -211,9 +219,10 @@ by default (a damage core is opt-in physics). The ribbon simply
 encloses the whole stepping system, gaps included, at fault resolution.
 
 The open engineering question is **parallel balance**: the ribbon
-concentrates cells, so the partitioner must weight them — and the same
-partition pass must keep split pairs co-resident (rule 1 above). One
-mechanism should satisfy both constraints.
+concentrates cells, so the partitioner must weight them. With split
+surgery done in the local frame (rule 1), pair residency is automatic
+and this reduces to ordinary cell-count weighting, uncoupled from any
+fault-topology constraint.
 
 ## The 2-D rig
 
