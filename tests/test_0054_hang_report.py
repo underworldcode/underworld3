@@ -11,6 +11,7 @@ Everything above that is ordinary text processing and is tested directly.
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
@@ -130,6 +131,49 @@ def test_empty_directory_says_so_rather_than_passing_quietly(tmp_path):
     )
 
 
+def _launcher(ranks):
+    """An `mpirun` command line that works on both MPI families.
+
+    The launch flags are NOT portable. OpenMPI refuses to start more ranks than
+    cores without `--oversubscribe`; MPICH oversubscribes by default and rejects
+    the flag outright, taking the whole command down with it. `--timeout` is
+    likewise OpenMPI-only. So the family is detected, and the time limit is
+    enforced from Python instead of by the launcher.
+    """
+    command = ["mpirun", "-n", str(ranks)]
+    try:
+        banner = subprocess.run(["mpirun", "--version"], capture_output=True,
+                                text=True, timeout=30)
+        flavour = (banner.stdout + banner.stderr)
+    except (OSError, subprocess.SubprocessError):
+        flavour = ""
+    if "Open MPI" in flavour or "OpenRTE" in flavour:
+        # The ranks are blocked or asleep throughout, so cores are not the
+        # constraint -- but OpenMPI counts slots, not activity.
+        command.insert(1, "--oversubscribe")
+    return command
+
+
+def _run_until_it_hangs(argv, ranks, seconds, environment):
+    """Launch under MPI, kill the whole job after `seconds`, return stderr.
+
+    The job under test is MEANT never to finish, so the time limit is the
+    normal exit path rather than an error. `start_new_session` puts the ranks in
+    their own process group so the kill reaches all of them -- terminating only
+    `mpirun` can leave orphaned ranks holding the dump files open.
+    """
+    process = subprocess.Popen(
+        _launcher(ranks) + argv, env=environment, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    try:
+        _out, err = process.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        _out, err = process.communicate()
+    return err or ""
+
+
 DIVERGENT = """
 import time
 import underworld3 as uw
@@ -173,22 +217,15 @@ def test_end_to_end_names_the_divergent_rank(tmp_path):
         UW_HANG_WATCHDOG_DIR=str(dumps),
         UW_NO_USAGE_METRICS="1",
     )
-    # `--oversubscribe` because a CI runner has two cores and this wants four
-    # ranks. They spend the whole test blocked or asleep, so the cores are not
-    # the constraint -- but without it OpenMPI declines to start and the job
-    # produces no dumps at all.
-    #
-    # A non-zero exit is EXPECTED: mpirun kills a job that never finishes.
-    finished = subprocess.run(
-        ["mpirun", "--oversubscribe", "--timeout", "25", "-n", "4",
-         sys.executable, "-u", str(script)],
-        env=environment, capture_output=True, text=True, timeout=120,
+    stderr = _run_until_it_hangs(
+        [sys.executable, "-u", str(script)], ranks=4, seconds=25,
+        environment=environment,
     )
 
     if not dumps.is_dir():
         pytest.fail(
             "the job wrote no dumps at all, so it never reached "
-            f"`import underworld3`:\n{finished.stderr[-2000:]}"
+            f"`import underworld3`:\n{stderr[-2000:]}"
         )
 
     states = hang_report.read_directory(dumps)
