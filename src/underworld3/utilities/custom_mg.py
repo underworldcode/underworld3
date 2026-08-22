@@ -644,10 +644,44 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
     # the subdomain solve. The halo comes from ASM overlap through the
     # operator sparsity (set UW_FAC_OVERLAP). Remove when settled.
     if os.environ.get("UW_FAC_PATCH") == "slit":
-        rows = np.flatnonzero(dup_nodes[node_f])
+        # The fault trace = COINCIDENT FINE PAIRS — the split's plus/minus
+        # nodes at bit-identical coordinates. Detected in the fine cloud
+        # itself, not through the transfer: a cut inserts NEW vertices at
+        # edge crossings, so slit nodes need not coincide with any coarse
+        # node and the transfer-dup rule (above) can be empty.
+        slit_nodes = np.zeros(nn, dtype=bool)
+        cf = np.ascontiguousarray(np.asarray(coords_f, dtype=float))
+        _, first, counts = np.unique(
+            cf.round(decimals=9)[:nn], axis=0,
+            return_index=True, return_counts=True)
+        if (counts > 1).any():
+            keys = {cf.round(decimals=9)[i].tobytes()
+                    for i in first[counts > 1]}
+            for i in range(nn):
+                if cf.round(decimals=9)[i].tobytes() in keys:
+                    slit_nodes[i] = True
+        slit_nodes |= dup_nodes
+        rows = np.flatnonzero(slit_nodes[node_f])
         if rows.size == 0:
             return None                    # unsplit level: whole-level smoothing
-        return rows.astype(np.int64), rows.astype(np.int64)
+        rows = rows.astype(np.int64)
+        # TODO(MEASURE): #629 segmentation experiment — split the fault
+        # subdomain into k along-strike blocks (contiguous chunks of the
+        # coordinate along the trace's principal direction) to measure the
+        # iteration cost of block-wise solving vs one trace-wide solve; the
+        # discriminator for the fault-network coarse-space question.
+        k = int(os.environ.get("UW_FAC_SEGMENTS", "1"))
+        if k <= 1:
+            return rows, rows
+        pts = coords_f[node_f[rows]]
+        c0 = pts - pts.mean(axis=0)
+        # leading principal component = the strike direction
+        _, _, Vt = np.linalg.svd(c0, full_matrices=False)
+        s = c0 @ Vt[0]
+        order = np.argsort(s, kind="stable")
+        return [(chunk, chunk) for chunk in
+                (rows[idx] for idx in np.array_split(order, k))
+                if chunk.size]
 
     row_is_patch = node_is_patch[node_f]
     # halo: background rows whose coarse node is referenced by a patch row
@@ -990,27 +1024,30 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             entry = patch_rows[l] if l < len(patch_rows) else None
             if entry is None or (_only is not None and l not in _only):
                 continue
-            owned_rows, sub_rows = entry
             if _whole:
                 pc.getMGSmoother(l).getPC().setType("asm")
                 continue
+            # An entry is one (owned, subdomain) pair, or a LIST of them —
+            # one ASM subdomain per block (the segmented-fault shape).
+            blocks = entry if isinstance(entry, list) else [entry]
             sm = pc.getMGSmoother(l)
             spc = sm.getPC()
             spc.setType("asm")
-            is_sub = PETSc.IS().createGeneral(
-                np.asarray(sub_rows, dtype=PETSc.IntType), comm=PETSc.COMM_SELF)
-            is_own = PETSc.IS().createGeneral(
-                np.asarray(owned_rows, dtype=PETSc.IntType),
-                comm=PETSc.COMM_SELF)
-            # One subdomain = patch + halo; corrections land on the patch
-            # (restricted ASM). Overlap 0: the halo IS the overlap, one
-            # coarse-cell layer through the transfer graph, so no algebraic
-            # extension at PCSetUp.
+            is_subs = [PETSc.IS().createGeneral(
+                np.asarray(sub_rows, dtype=PETSc.IntType),
+                comm=PETSc.COMM_SELF) for _own, sub_rows in blocks]
+            is_owns = [PETSc.IS().createGeneral(
+                np.asarray(own_rows, dtype=PETSc.IntType),
+                comm=PETSc.COMM_SELF) for own_rows, _sub in blocks]
+            # Subdomain = patch + halo; BASIC applies corrections on the
+            # whole subdomain (restricted stalls — see the class note).
+            # Overlap 0: the transfer-graph halo is the overlap; the env
+            # knob adds operator-sparsity layers at PCSetUp instead.
             if _asm_type == "basic":
                 spc.setASMType(PETSc.PC.ASMType.BASIC)
-                spc.setASMLocalSubdomains(1, [is_sub])
+                spc.setASMLocalSubdomains(len(blocks), is_subs)
             else:
-                spc.setASMLocalSubdomains(1, [is_sub], [is_own])
+                spc.setASMLocalSubdomains(len(blocks), is_subs, is_owns)
             # Extra operator-sparsity overlap layers on top of the transfer
             # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
             spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "0")))
@@ -1029,8 +1066,8 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
                 key = f"mg_levels_{l}_sub_pc_factor_shift_type"
                 opts[prefix + key] = "nonzero"
                 fac_keys.append(key)
-            is_sub.destroy()             # the PC holds its own references
-            is_own.destroy()
+            for _is in is_subs + is_owns:   # the PC holds its own references
+                _is.destroy()
     return fac_keys
 
 
