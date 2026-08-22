@@ -209,12 +209,19 @@ own right**, not just mesh scaffolding. Its sanctioned uses:
   the permeability structure a fault zone has and the surrounding rock
   does not.
 
-What the ribbon region is **not**: a hand-painted static weak
-viscosity. "Fake damage" is neither gouge nor a fault — a wide soft
-channel needs no split nodes and no fancy solver, and tells us nothing.
-The fault itself is the **split surface in the mesh**, always; ribbon
-physics complements the slip surface, never substitutes for it. In a
-model with none of the three physics above, the ribbon carries
+And a fault may itself be **represented as a weak or TI weak zone** —
+a legitimate model in its own right, carried by the ribbon. The
+discipline that separates it from "fake damage" is the status of the
+width: **in a weak/TI-zone fault model, w is a physical parameter** —
+it *is* the fault-zone width, must be chosen appropriately, and the
+mesh must resolve it (~2 elements across whatever w is chosen). **In a
+split-node model, w is a mesh-bridging convenience** — a resolution
+transition with no physical reading, and nothing rheological may be
+keyed to it. The incoherent thing — the error this campaign made three
+times — is mixing the readings: split nodes *plus* band-wide weakness
+with w chosen as a mesh number is neither model. Pick the
+representation; w's meaning follows from the choice. In a model with
+none of the physics above and a split fault, the ribbon carries
 background rheology and is purely resolution.
 
 These roles compose with the solver design below unchanged: whichever
