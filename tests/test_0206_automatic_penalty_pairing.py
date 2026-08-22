@@ -1,15 +1,18 @@
-"""The penalty is paired with the velocity preconditioner, automatically.
+"""The penalty default, and the silent fall off the multigrid.
 
-Grad-div augmentation only pays under the custom-P multigrid. Measured on SolCx
-(eta 1e6, P2-P0disc, 2592 cells, #625): with FMG, `penalty = 10` is 21% faster,
-cuts the Schur count per application 59 -> 18 and total velocity iterations
-546 -> 270. With GAMG the identical value makes the solve SLOWER, 15.5 -> 20.7 s,
-because augmentation is exactly what drives GAMG into its iteration cap.
+Grad-div augmentation pays under the custom-P multigrid and costs under GAMG.
+Measured on SolCx (eta 1e6, P2-P0disc, 2592 cells, #625): with FMG,
+`penalty = 10` is 21% faster and cuts total velocity iterations 546 -> 270;
+with GAMG the identical value makes the solve slower, 15.5 -> 20.7 s, because
+augmentation is what drives GAMG into its iteration cap.
 
-So the penalty defaults on where FMG will be used and off where it will not, and
-the harmful pairing warns rather than sitting there costing time. The trap this
-closes: FMG needs a mesh hierarchy, and on an unrefined base the velocity block
-silently falls back to GAMG.
+The penalty is applied **unconditionally** anyway, and that is the point of this
+file. Selecting it from the preconditioner was tried and rejected: a
+preconditioner must change the path, not the answer, and `test_1017`,
+`test_0835` and `test_0836` assert exactly that by comparing FMG and GAMG
+solutions to 1e-4. So the penalty is a discretisation choice, and the real
+defect -- a velocity block that drops off the multigrid with nothing said -- is
+made loud instead.
 """
 
 import warnings
@@ -50,64 +53,70 @@ def _stokes(refinement, penalty=None, preconditioner=None):
 
 
 def _solve(stokes):
-    """Solve, returning the installed velocity PC and any penalty warnings."""
+    """Solve, returning the installed velocity PC, the penalty, and warnings."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         stokes.solve()
     installed = stokes.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC().getType()
-    mine = [c for c in caught if "penalty" in str(c.message)]
+    mine = [c for c in caught
+            if "velocity block fell back" in str(c.message)]
     return installed, float(stokes.penalty.sym), mine
 
 
-def test_penalty_switches_on_where_fmg_will_run():
-    """A refined base has a hierarchy, so FMG runs and the penalty pays."""
-    installed, penalty, warned = _solve(_stokes(refinement=2))
-    assert installed == "mg"
-    assert penalty == uw.systems.Stokes.AUTO_PENALTY_WITH_FMG
-    assert not warned
+def test_the_penalty_default_does_not_depend_on_the_preconditioner():
+    """The invariant. Same default whichever velocity PC ends up installed.
 
-
-def test_penalty_stays_off_where_it_would_cost():
-    """An unrefined base falls back to GAMG, where augmentation is harmful.
-
-    This is the trap: nothing about the call says GAMG, and before this the
-    penalty would have been applied into the pairing measured slowest.
+    This is the property the rejected design broke: an operator term chosen by
+    the solver means the preconditioner changes the answer.
     """
-    installed, penalty, warned = _solve(_stokes(refinement=0))
-    assert installed == "gamg"
-    assert penalty == 0.0
-    assert not warned, "the automatic value stood down; there is nothing to warn about"
+    on_fmg, penalty_fmg, _ = _solve(_stokes(refinement=2))
+    on_gamg, penalty_gamg, _ = _solve(_stokes(refinement=0))
+
+    assert on_fmg == "mg" and on_gamg == "gamg"
+    assert penalty_fmg == penalty_gamg == uw.systems.Stokes.DEFAULT_PENALTY
 
 
-def test_an_explicit_gamg_choice_also_turns_the_penalty_off():
-    """Asking for GAMG on a mesh that could do FMG must not keep the penalty."""
-    installed, penalty, _warned = _solve(_stokes(refinement=2, preconditioner="gamg"))
-    assert installed == "gamg"
-    assert penalty == 0.0
-
-
-def test_an_explicit_penalty_is_honoured_over_the_automatic_one():
+def test_an_explicit_penalty_is_honoured():
     """The latch: once set, the value is the user's."""
-    installed, penalty, _warned = _solve(_stokes(refinement=2, penalty=0.0))
-    assert installed == "mg"
+    _installed, penalty, _warned = _solve(_stokes(refinement=2, penalty=0.0))
     assert penalty == 0.0, "an explicit 0 must not be overwritten by the default"
 
 
-def test_the_harmful_pairing_warns_and_is_recorded():
-    """Explicit penalty on GAMG: measured slower, so it must not be silent.
+def test_falling_off_the_multigrid_is_loud():
+    """The recurring defect: no hierarchy, so GAMG, and nothing said.
 
-    The warning is on the PAIRING, not on who chose it -- a user who asks for
-    augmentation on an unrefined mesh gets the same slow solve as one who had it
-    chosen for them.
+    FMG needs a mesh hierarchy. Without one the velocity block drops to GAMG,
+    which degrades under refinement until it hits its cap -- and a capped
+    velocity solve corrupts the Schur operator and stalls the pressure block
+    (976 s vs 25.6 s at h=1/30). Silence there is what makes it recur.
     """
-    stokes = _stokes(refinement=0, penalty=3.0)
-    installed, penalty, warned = _solve(stokes)
+    stokes = _stokes(refinement=0)
+    installed, _penalty, warned = _solve(stokes)
 
     assert installed == "gamg"
-    assert penalty == 3.0, "the requested value is still honoured"
-    assert warned, "the measured-harmful pairing was applied silently"
-    assert "SLOWER" in str(warned[0].message)
-    assert "penalty.expected_fmg" in stokes.pc_fallbacks, (
-        "pc_fallbacks is the place to read PC degradations; this one must "
-        "appear there and not only as a warning"
+    assert warned, "the velocity block fell off the multigrid silently"
+    assert "refinement>=1" in str(warned[0].message), "the message must say how to fix it"
+    assert "velocity.fell_back_from_fmg" in stokes.pc_fallbacks, (
+        "pc_fallbacks is where PC degradations are read; this one must appear "
+        "there and not only as a warning"
     )
+
+
+def test_a_hierarchy_means_no_warning():
+    """Negative control. Without it, a warning that always fires would pass."""
+    _installed, _penalty, warned = _solve(_stokes(refinement=2))
+    assert not warned
+
+
+def test_asking_for_gamg_is_a_choice_not_a_fallback():
+    """An explicit `preconditioner="gamg"` must not be nagged about.
+
+    A warning that fires on a deliberate choice trains people to ignore it,
+    which costs the case it exists for.
+    """
+    stokes = _stokes(refinement=2, preconditioner="gamg")
+    installed, _penalty, warned = _solve(stokes)
+
+    assert installed == "gamg"
+    assert not warned
+    assert "velocity.fell_back_from_fmg" not in stokes.pc_fallbacks

@@ -1598,7 +1598,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 self._setup_pointwise_functions(verbose)
                 self._setup_discretisation(verbose)
                 self._setup_solver(verbose)
-                self._check_penalty_matched_the_preconditioner()
+                self._check_velocity_preconditioner()
 
             # 1. ADVECT stress history along characteristics
             if uw.mpi.rank == 0 and verbose:
@@ -1683,7 +1683,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 divergence_retries=divergence_retries,
             )
             # Confirm the preconditioner the automatic penalty was chosen for.
-            self._check_penalty_matched_the_preconditioner()
+            self._check_velocity_preconditioner()
 
     @property
     def tau(self):
@@ -2135,72 +2135,64 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         self._penalty_is_automatic = False
         self._penalty.sym = value
 
-    #: Penalty used automatically when the velocity block will be solved by the
-    #: custom-P geometric multigrid. Measured on SolCx (eta 1e6, P2-P0disc,
-    #: 2592 cells, #625): with FMG this improves every axis at once -- 21%
-    #: faster, Schur count per application 59 -> 18, total velocity iterations
-    #: 546 -> 270 -- because FMG absorbs the grad-div augmentation (8.8 -> 13.5
-    #: iterations per application). With GAMG the identical value makes the
-    #: solve SLOWER (15.5 -> 20.7 s), because augmentation is exactly what
-    #: drives GAMG into its iteration cap. So it is applied only where it was
-    #: measured to pay, and `penalty = 0` turns it off.
+    #: Default grad-div augmentation, applied unless ``penalty`` is set.
+    #:
+    #: Measured on SolCx (eta 1e6, P2-P0disc, 2592 cells, #625): under the
+    #: custom-P multigrid this improves every axis at once -- 21% faster, Schur
+    #: count per application 59 -> 18, total velocity iterations 546 -> 270 --
+    #: because FMG absorbs the augmentation (8.8 -> 13.5 iterations per
+    #: application). Under GAMG the same value makes the solve SLOWER
+    #: (15.5 -> 20.7 s): augmentation is exactly what drives GAMG into its
+    #: iteration cap.
+    #:
+    #: It is applied **unconditionally** all the same, and deliberately. Making
+    #: it depend on the preconditioner was tried and rejected: a preconditioner
+    #: must change the path to the solution, not the solution, and three tests
+    #: (``test_1017``, ``test_0835``, ``test_0836``) assert exactly that by
+    #: comparing FMG and GAMG answers to 1e-4. Selecting an operator term from
+    #: the solver broke them, by 5.1e-4 to 1.4e-3. So the penalty is a
+    #: discretisation choice, and the GAMG fallback is made loud instead --
+    #: which is the real defect, since that fallback is silent on any mesh
+    #: without a hierarchy.
     #:
     #: The accuracy cost is a consistent perturbation rather than a changed
     #: answer: same convergence rate, and the gap to the unaugmented solution
     #: shrinks under refinement (1.102 -> 1.087 -> 1.066 over three levels).
     #: UW3's penalty is grad-div, not a true augmented Lagrangian -- div(P2) is
     #: not inside P0, so the term does not vanish at the discrete solution --
-    #: but it converges away.
-    AUTO_PENALTY_WITH_FMG = 10.0
+    #: but it converges away. ``penalty = 0`` restores the unaugmented operator.
+    DEFAULT_PENALTY = 10.0
 
-    def _fmg_is_expected(self):
-        """Will the velocity block be solved by the custom-P multigrid?
-
-        Predicted from the mesh and the solver's own settings, because the
-        penalty enters the compiled weak form and so must be decided BEFORE the
-        KSP that would answer this exists. The conditions mirror
-        `custom_mg.build_transfers`: a mesh-owned hierarchy, no explicit GAMG,
-        no user-owned pc_type. :meth:`_check_penalty_matched_the_preconditioner`
-        confirms the prediction afterwards, when the truth is knowable.
-        """
-        if getattr(self, "_custom_mg", None) is not None:
-            return True                      # set_custom_fmg: asked for outright
-        if getattr(self, "_preconditioner", "auto") == "gamg":
-            return False
-        if getattr(self, "_pc_user_override", False):
-            return False
-        if getattr(self.mesh, "_custom_mg_coarse_meshes", None):
-            return True
-        # A refined base carries its own hierarchy; an unrefined one has a
-        # single level and falls back to GAMG. Measured: refinement=0 -> gamg,
-        # refinement=2 -> mg.
-        return len(getattr(self.mesh, "dm_hierarchy", []) or []) > 1
 
     def _apply_automatic_penalty(self):
-        """Set the penalty from the expected preconditioner, unless told otherwise."""
+        """Install :attr:`DEFAULT_PENALTY`, unless the user set one."""
         if not self._penalty_is_automatic:
             return
-        wanted = self.AUTO_PENALTY_WITH_FMG if self._fmg_is_expected() else 0.0
-        if not _penalty_value(self._penalty) == wanted:
+        if not _penalty_value(self._penalty) == self.DEFAULT_PENALTY:
             self._needs_function_rewire = True
-            self._penalty.sym = wanted
-        # Assigning through the expression directly leaves the latch alone, so
-        # the value stays automatic and can be revised if the mesh changes.
+            self._penalty.sym = self.DEFAULT_PENALTY
+        # Assigned through the expression, so the latch is untouched and the
+        # value stays automatic.
 
-    def _check_penalty_matched_the_preconditioner(self):
-        """After setup: did the preconditioner we bet on actually turn up?
+    def _check_velocity_preconditioner(self):
+        """After setup: did the velocity block fall back off the multigrid?
 
-        The bet is made before the KSP exists, so it can be wrong -- a
-        hierarchy that fails to build, a dimensional guard that declines it.
-        Augmentation under GAMG is the one combination measured to be actively
-        harmful, so it must not happen quietly.
+        This is the defect behind the recurring "the Schur solve wandered again"
+        session. FMG needs a mesh hierarchy, and on a mesh without one the
+        velocity block drops to GAMG with nothing said -- measured,
+        ``refinement=0`` gives one hierarchy level and ``gamg``, ``refinement=2``
+        gives ``mg``. GAMG then degrades under refinement until it hits its
+        iteration cap, which corrupts ``S = -B A^-1 B^T`` and takes the pressure
+        block down with it (976 s vs 25.6 s at h=1/30, #625).
+
+        A fallback is worth saying out loud. An explicit
+        ``preconditioner = "gamg"`` is a decision, not a fallback, and is left
+        alone.
         """
-        # Whoever chose it, augmentation under anything but the multigrid is
-        # the combination measured to be actively harmful -- so the check is on
-        # the PAIRING, not on its provenance.
-        current = _penalty_value(self._penalty)
-        if current == 0.0:
-            return
+        if getattr(self, "_preconditioner", "auto") == "gamg":
+            return                            # asked for, not fallen back to
+        if getattr(self, "_pc_user_override", False):
+            return                            # the user owns this block's pc_type
         try:
             velocity = self.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
             installed = velocity.getPC().getType()
@@ -2210,27 +2202,28 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             return
 
         import warnings
-        whose = "automatic" if self._penalty_is_automatic else "requested"
-        remedy = ("build the base mesh with refinement>=1 so a hierarchy exists"
-                  if self._penalty_is_automatic else
-                  "set `solver.penalty = 0`, or give the mesh a hierarchy "
-                  "(build the base with refinement>=1)")
+        penalty = _penalty_value(self._penalty)
+        cost = (f" The default penalty {penalty:g} is also active, and grad-div "
+                f"augmentation is exactly what drives '{installed}' into its "
+                f"iteration cap — set `solver.penalty = 0` if you must stay on "
+                f"'{installed}'." if penalty else "")
         self._record_pc_fallback(
-            "penalty.expected_fmg",
-            requested=f"custom-P geometric MG (with {whose} penalty {current:g})",
+            "velocity.fell_back_from_fmg",
+            requested="custom-P geometric MG (no explicit choice was made)",
             installed=installed,
             reason="unavailable",
-            detail=f"penalty {current:g} is active but the velocity block is "
-                   f"running '{installed}'. That pairing is measured SLOWER "
-                   f"than no penalty at all (#625): grad-div augmentation is "
-                   f"exactly what drives {installed} into its iteration cap. "
-                   f"{remedy}.")
+            detail=f"the velocity block is running '{installed}' because no "
+                   f"mesh hierarchy was available. Build the base mesh with "
+                   f"refinement>=1, or adapt onto a child, to get FMG."
+                   + cost)
         warnings.warn(
-            f"Stokes: {whose} penalty {current:g} is active, but the velocity "
-            f"block is running '{installed}' rather than the custom-P "
-            f"multigrid. Augmentation drives {installed} into its iteration cap "
-            f"and is measured SLOWER than no penalty at all (#625). To fix, "
-            f"{remedy}.",
+            f"Stokes: the velocity block fell back to '{installed}' — no mesh "
+            f"hierarchy was available, so the custom-P multigrid could not be "
+            f"built. FMG is 4x faster on this class of problem and does ~45x "
+            f"less velocity work (#625); '{installed}' degrades under "
+            f"refinement until it hits its iteration cap, which corrupts the "
+            f"Schur operator and stalls the pressure solve. Build the base mesh "
+            f"with refinement>=1 to get a hierarchy." + cost,
             RuntimeWarning, stacklevel=3)
 
     # @property
@@ -5092,106 +5085,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     def penalty(self, value):
         """Set the augmented Lagrangian penalty parameter."""
         self._needs_function_rewire = True
-        self._penalty_is_automatic = False
         self._penalty.sym = value
-
-    #: Penalty used automatically when the velocity block will be solved by the
-    #: custom-P geometric multigrid. Measured on SolCx (eta 1e6, P2-P0disc,
-    #: 2592 cells, #625): with FMG this improves every axis at once -- 21%
-    #: faster, Schur count per application 59 -> 18, total velocity iterations
-    #: 546 -> 270 -- because FMG absorbs the grad-div augmentation (8.8 -> 13.5
-    #: iterations per application). With GAMG the identical value makes the
-    #: solve SLOWER (15.5 -> 20.7 s), because augmentation is exactly what
-    #: drives GAMG into its iteration cap. So it is applied only where it was
-    #: measured to pay, and `penalty = 0` turns it off.
-    #:
-    #: The accuracy cost is a consistent perturbation rather than a changed
-    #: answer: same convergence rate, and the gap to the unaugmented solution
-    #: shrinks under refinement (1.102 -> 1.087 -> 1.066 over three levels).
-    #: UW3's penalty is grad-div, not a true augmented Lagrangian -- div(P2) is
-    #: not inside P0, so the term does not vanish at the discrete solution --
-    #: but it converges away.
-    AUTO_PENALTY_WITH_FMG = 10.0
-
-    def _fmg_is_expected(self):
-        """Will the velocity block be solved by the custom-P multigrid?
-
-        Predicted from the mesh and the solver's own settings, because the
-        penalty enters the compiled weak form and so must be decided BEFORE the
-        KSP that would answer this exists. The conditions mirror
-        `custom_mg.build_transfers`: a mesh-owned hierarchy, no explicit GAMG,
-        no user-owned pc_type. :meth:`_check_penalty_matched_the_preconditioner`
-        confirms the prediction afterwards, when the truth is knowable.
-        """
-        if getattr(self, "_custom_mg", None) is not None:
-            return True                      # set_custom_fmg: asked for outright
-        if getattr(self, "_preconditioner", "auto") == "gamg":
-            return False
-        if getattr(self, "_pc_user_override", False):
-            return False
-        if getattr(self.mesh, "_custom_mg_coarse_meshes", None):
-            return True
-        # A refined base carries its own hierarchy; an unrefined one has a
-        # single level and falls back to GAMG. Measured: refinement=0 -> gamg,
-        # refinement=2 -> mg.
-        return len(getattr(self.mesh, "dm_hierarchy", []) or []) > 1
-
-    def _apply_automatic_penalty(self):
-        """Set the penalty from the expected preconditioner, unless told otherwise."""
-        if not self._penalty_is_automatic:
-            return
-        wanted = self.AUTO_PENALTY_WITH_FMG if self._fmg_is_expected() else 0.0
-        if not _penalty_value(self._penalty) == wanted:
-            self._needs_function_rewire = True
-            self._penalty.sym = wanted
-        # Assigning through the expression directly leaves the latch alone, so
-        # the value stays automatic and can be revised if the mesh changes.
-
-    def _check_penalty_matched_the_preconditioner(self):
-        """After setup: did the preconditioner we bet on actually turn up?
-
-        The bet is made before the KSP exists, so it can be wrong -- a
-        hierarchy that fails to build, a dimensional guard that declines it.
-        Augmentation under GAMG is the one combination measured to be actively
-        harmful, so it must not happen quietly.
-        """
-        # Whoever chose it, augmentation under anything but the multigrid is
-        # the combination measured to be actively harmful -- so the check is on
-        # the PAIRING, not on its provenance.
-        current = _penalty_value(self._penalty)
-        if current == 0.0:
-            return
-        try:
-            velocity = self.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
-            installed = velocity.getPC().getType()
-        except Exception:
-            return                            # no fieldsplit to inspect
-        if installed == "mg":
-            return
-
-        import warnings
-        whose = "automatic" if self._penalty_is_automatic else "requested"
-        remedy = ("build the base mesh with refinement>=1 so a hierarchy exists"
-                  if self._penalty_is_automatic else
-                  "set `solver.penalty = 0`, or give the mesh a hierarchy "
-                  "(build the base with refinement>=1)")
-        self._record_pc_fallback(
-            "penalty.expected_fmg",
-            requested=f"custom-P geometric MG (with {whose} penalty {current:g})",
-            installed=installed,
-            reason="unavailable",
-            detail=f"penalty {current:g} is active but the velocity block is "
-                   f"running '{installed}'. That pairing is measured SLOWER "
-                   f"than no penalty at all (#625): grad-div augmentation is "
-                   f"exactly what drives {installed} into its iteration cap. "
-                   f"{remedy}.")
-        warnings.warn(
-            f"Stokes: {whose} penalty {current:g} is active, but the velocity "
-            f"block is running '{installed}' rather than the custom-P "
-            f"multigrid. Augmentation drives {installed} into its iteration cap "
-            f"and is measured SLOWER than no penalty at all (#625). To fix, "
-            f"{remedy}.",
-            RuntimeWarning, stacklevel=3)
 
     @timing.routine_timer_decorator
     @memprobe.instrument("NavierStokes.solve")
