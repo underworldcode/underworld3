@@ -2182,7 +2182,18 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     #: UW3's penalty is grad-div, not a true augmented Lagrangian -- div(P2) is
     #: not inside P0, so the term does not vanish at the discrete solution --
     #: but it converges away. ``penalty = 0`` restores the unaugmented operator.
-    DEFAULT_PENALTY = 10.0
+    #:
+    #: **Held at 0 pending the pointwise-traction question.** At 10 the
+    #: spherical dynamic topography recovered from the rotated free-slip
+    #: reaction drops 0.4192 -> 0.3021, 28%, on the *vertex-sampled* value while
+    #: the facet-integrated value stays correct (``test_1018``). So augmentation
+    #: corrupts the de-smearing from reaction loads to pointwise stress —
+    #: presumably because lambda*mu*(div u) is non-zero cell-by-cell for P2-P0
+    #: and averages out over a facet integral but not at a vertex. Dynamic
+    #: topography is the main product of that machinery, so the value stays 0
+    #: until that is resolved; everything needed for the change is in place and
+    #: it is this constant.
+    DEFAULT_PENALTY = 0.0
 
 
     def _apply_automatic_penalty(self):

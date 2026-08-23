@@ -63,17 +63,24 @@ def _solve(stokes):
     return installed, float(stokes.penalty.sym), mine
 
 
-def test_the_penalty_default_does_not_depend_on_the_preconditioner():
+def test_the_penalty_default_does_not_depend_on_the_preconditioner(monkeypatch):
     """The invariant. Same default whichever velocity PC ends up installed.
 
     This is the property the rejected design broke: an operator term chosen by
-    the solver means the preconditioner changes the answer.
+    the solver means the preconditioner changes the answer, and `test_1017`,
+    `test_0835` and `test_0836` all assert it does not.
+
+    The default is patched to a non-zero value for the duration, so the test
+    still means something while `DEFAULT_PENALTY` is held at 0 — otherwise it
+    would pass by comparing 0 to 0 however the value were chosen.
     """
+    monkeypatch.setattr(uw.systems.Stokes, "DEFAULT_PENALTY", 7.0)
+
     on_fmg, penalty_fmg, _ = _solve(_stokes(refinement=2))
     on_gamg, penalty_gamg, _ = _solve(_stokes(refinement=0))
 
     assert on_fmg == "mg" and on_gamg == "gamg"
-    assert penalty_fmg == penalty_gamg == uw.systems.Stokes.DEFAULT_PENALTY
+    assert penalty_fmg == penalty_gamg == 7.0
 
 
 def test_an_explicit_penalty_is_honoured():
