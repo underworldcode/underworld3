@@ -194,7 +194,7 @@ else:
 """
 
 
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 @pytest.mark.skipif(shutil.which("mpirun") is None, reason="needs mpirun")
 def test_end_to_end_names_the_divergent_rank(tmp_path):
     """A real four-rank job that really hangs, killed, then analysed.
@@ -211,14 +211,20 @@ def test_end_to_end_names_the_divergent_rank(tmp_path):
     script.write_text(textwrap.dedent(DIVERGENT))
     dumps = tmp_path / "uw-hang-dumps"
 
+    # The watchdog must be longer than a plausible `import underworld3` and the
+    # window long enough for the blocked phase to dominate. At 1.0 s / 25 s this
+    # passed here and failed on CI with the majority located in
+    # `importlib._bootstrap`: four oversubscribed ranks take longer to import
+    # than the watchdog allowed, so the file filled with import dumps and the
+    # job was killed before the collective produced enough to outvote them.
     environment = dict(
         os.environ,
-        UW_HANG_WATCHDOG="1.0",
+        UW_HANG_WATCHDOG="5.0",
         UW_HANG_WATCHDOG_DIR=str(dumps),
         UW_NO_USAGE_METRICS="1",
     )
     stderr = _run_until_it_hangs(
-        [sys.executable, "-u", str(script)], ranks=4, seconds=25,
+        [sys.executable, "-u", str(script)], ranks=4, seconds=75,
         environment=environment,
     )
 
@@ -241,8 +247,9 @@ def test_end_to_end_names_the_divergent_rank(tmp_path):
     # slower machine, not a defect. What the tool must get right is WHICH RANK
     # IS BLAMED, so that is what is asserted.
     assert biggest_where[2] == "reduce_the_count", (
-        f"the majority was located at {biggest_where}, not at the collective:\n"
-        f"{report}"
+        f"the majority was located at {biggest_where[0]}:{biggest_where[1]} in "
+        f"{biggest_where[2]}, not at the collective. If that is an import frame "
+        f"the watchdog fired before the ranks got there.\n{report}"
     )
     assert 1 not in biggest_ranks, (
         f"rank 1 branched around the collective and must not be in the waiting "
