@@ -67,16 +67,28 @@ incomplete velocity PC, and the Schur diagnosis should be re-baselined
 against a healthy velocity block.
 
 **Confirmed in 3-D** (2026-08-23, pure contact, the composed
-place_thin_volume ribbon + authored slit + split at 19,911 cells): the
-Band-keyed zone patch + automatic structural union gives 7 velocity
-iterations against GAMG's 56, physics identical (slip 0.1509, leak 0
-both). The remaining 3-D gap is wall-clock, not iterations: the 3-D
-tail's transfers are non-nested point-located builds (138–173 nnz/row
-against the 2-D composed stack's native 24–28), so each V-cycle is
-expensive and GAMG still wins warm wall time at rig scale — the same
-level economics as the 2-D two-level parity result, with the payoff
-regime unchanged (contrast and production proportions, pressure gated
-on #625).
+place_thin_volume ribbon + authored slit + split at 19,911 cells): 7
+velocity iterations against GAMG's 56, physics identical (slip 0.1509,
+leak 0 both) — and identically 7 with the zone patch, with the
+structural patch alone, and with **no finest patch at all** (the cover
+gate declines the band-shaped structural patch, leaving whole-level
+smoothing): under pure contact the patch is redundant, consistent with
+the keying ruling above. The remaining 3-D gap is wall-clock, not
+iterations, and its cause is now precise: **the 2-D composed stack's
+band levels nest by construction — the 3-D ones share nothing.** The
+2-D transfinite ladder at 2:1 spacing (36 → 72 rungs, rails and spine
+at identical offsets) makes every mid-band vertex a fine-band vertex,
+so the placed pairs behave like native refinement: native densities
+(24–28 nnz/row), a small structural patch. The 3-D ribbon layers are
+two independent unstructured gmsh fills at unrelated sizes (0.025 /
+0.015 — 5:3), so every band row is a non-identity transfer row: fat
+Galerkin products (119–173 nnz/row against the native ~90 of the
+finest), a band-wide "structural" patch (~82% of the level, correctly
+gated off), and an expensive V-cycle — GAMG keeps warm wall time at
+rig scale (17.5 vs 48 s). The engineering consequence: to give 3-D the
+2-D economics, the band levels must nest — build the fine ribbon as a
+refinement of the mid ribbon (one fill, refined 2:1) or as a
+structured/extruded slab, rather than as two unrelated fills.
 
 ## Configuration rules (each learned from a failure)
 
@@ -109,7 +121,15 @@ on #625).
    crossings that coincide with no coarse node, and that detection
    declines silently.) Painted models: an explicit boolean cell mask —
    the modeler painted the band and knows the cells; nothing needs
-   detecting.
+   detecting. **Which key for which model (ruling, 2026-08-24): the
+   zone key (`fac_zone`) is for VOLUMETRIC fault representations only**
+   — a weak / TI / damage zone whose width is physics. A split-node
+   fault runs the structural patch alone: splitting exists to be
+   efficient, its patch is the trace, and it is installed
+   automatically. The ribbon is never the key — it is resolution, not
+   rheology (measured: under pure contact the zone block is redundant —
+   8 structural-only vs 9 zone-keyed iterations in 2-D — while inflating
+   the finest block from the trace to most of the band).
 5. **Blocks per fault-network connected component; junction cells in
    every adjacent block.** Distant segments couple through the medium,
    which is smooth and belongs to the multigrid. Along-strike division
