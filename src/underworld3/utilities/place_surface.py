@@ -3689,6 +3689,139 @@ def _patch_frame(patch):
     return n
 
 
+def _prism_tets(prism, gids):
+    """Split one prism into three tets, quad diagonals globally consistent.
+
+    ``prism`` is six point indices — bottom triangle then top, ``i+3``
+    above ``i`` — and ``gids`` their global ids. The subdivision is
+    Dompierre et al.'s: normalise so the smallest global id sits at
+    bottom position 0 (cyclic rotations; an upside-down flip is the
+    orientation-preserving ``(3,5,4|0,2,1)``), then each quad face's
+    diagonal passes through that face's smallest-id vertex — which is a
+    face-local rule, so the two prisms sharing a quad face cut it the
+    same way. Compatibility is verified globally by the face-pairing
+    check in :func:`_ladder_assembly_3d`, not assumed here.
+    """
+    order = list(prism)
+    g = list(gids)
+    if min(g[3:]) < min(g[:3]):                 # smallest on top: flip
+        order = [order[k] for k in (3, 5, 4, 0, 2, 1)]
+        g = [g[k] for k in (3, 5, 4, 0, 2, 1)]
+    r = int(np.argmin(g[:3]))                   # rotate smallest to slot 0
+    rot = [(0, 1, 2, 3, 4, 5), (1, 2, 0, 4, 5, 3), (2, 0, 1, 5, 3, 4)][r]
+    v = [order[k] for k in rot]
+    g = [g[k] for k in rot]
+    if min(g[1], g[5]) < min(g[2], g[4]):
+        return [(v[0], v[1], v[2], v[5]),
+                (v[0], v[1], v[5], v[4]),
+                (v[0], v[4], v[5], v[3])]
+    return [(v[0], v[1], v[2], v[4]),
+            (v[0], v[4], v[2], v[5]),
+            (v[0], v[4], v[5], v[3])]
+
+
+def _ladder_assembly_3d(grid, normals, width):
+    """The extruded band: the sheet triangulation offset to prisms (#629).
+
+    The 3-D transfinite ladder, built from the surface's own
+    discretisation instead of a CAD remesh: the ``(nu, nv, 3)`` sheet
+    grid is offset by ``-w/2, 0, +w/2`` along its per-vertex ``normals``
+    (three vertex sheets — rails plus an exact mid-surface, the #595
+    structure one dimension up), each grid quad becomes two triangles,
+    each triangle a prism per layer, each prism three tets. Because the
+    band inherits the sheet's vertices, a 2:1 sub-sampled grid produces
+    a band whose every vertex is a vertex of the fine band — the placed
+    level pairs NEST, which is what keeps the Galerkin chain native
+    (measured: two independent CAD fills share nothing and fatten the
+    chain 1.3–2x per level while making the patch band-wide).
+
+    The mid-surface sheet is the split target: its faces are interior
+    faces BY CONSTRUCTION, so a fault label needs only vertex-coordinate
+    selection, no rim erosion geometry.
+
+    Normals are the CALLER's: for nested levels they must be sampled
+    from one parametrisation (subsample the fine grid's normals — two
+    independently computed normal fields differ at shared points and
+    break vertex coincidence). Raises when the extrusion inverts (sheet
+    curvature too tight for the width) and when the prism subdivision
+    leaves an incompatible interior face.
+    """
+    G = np.asarray(grid, dtype=float)
+    N = np.asarray(normals, dtype=float)
+    if G.ndim != 3 or G.shape[2] != 3 or min(G.shape[:2]) < 2:
+        raise ValueError(
+            f"the ladder sheet must be an (nu, nv, 3) grid with nu, nv >= 2; "
+            f"got shape {G.shape}")
+    if N.shape != G.shape:
+        raise ValueError(
+            f"normals must match the grid shape {G.shape}; got {N.shape}")
+    nu, nv = G.shape[:2]
+    N = N / np.linalg.norm(N, axis=2)[..., None]
+
+    sheets = [G + s * (0.5 * width) * N for s in (-1.0, 0.0, 1.0)]
+    pts = np.concatenate([s.reshape(-1, 3) for s in sheets], axis=0)
+    nsheet = nu * nv
+
+    def vid(sheet, i, j):
+        return sheet * nsheet + i * nv + j
+
+    # Grid quads -> two triangles, fixed diagonal (i,j)-(i+1,j+1). Winding
+    # is set so the triangle is CCW seen from the +normal side, making
+    # every prism right-handed and its canonical tets positively oriented
+    # — an inverted (over-curved) extrusion then shows up as a NEGATIVE
+    # volume rather than being silently "fixed" by reordering.
+    tris = []
+    for i in range(nu - 1):
+        for j in range(nv - 1):
+            a, b = (i, j), (i + 1, j)
+            c, d = (i + 1, j + 1), (i, j + 1)
+            e1 = G[b] - G[a]
+            e2 = G[d] - G[a]
+            flip = float(np.dot(np.cross(e1, e2), N[a])) < 0.0
+            for tri in ((a, b, c), (a, c, d)):
+                tris.append(tri[::-1] if flip else tri)
+
+    tets = []
+    for layer in (0, 1):
+        for tri in tris:
+            prism = ([vid(layer, i, j) for i, j in tri]
+                     + [vid(layer + 1, i, j) for i, j in tri])
+            tets.extend(_prism_tets(prism, prism))
+    tets = np.asarray(tets, dtype=np.int64)
+
+    P = pts[tets]
+    vol6 = np.einsum(
+        "ij,ij->i", np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+        P[:, 3] - P[:, 0])
+    if (vol6 <= 0.0).any():
+        raise ValueError(
+            f"the ladder extrusion inverts {int((vol6 <= 0).sum())} of "
+            f"{len(tets)} tets: the sheet's curvature is too tight for "
+            f"width {width} (offset sheets cross), or the normals are "
+            f"inconsistent with the grid orientation.")
+
+    # Face-pairing check: the whole-mesh proof that every shared quad
+    # face was cut the same way. A mismatched diagonal leaves its two
+    # half-faces UNMATCHED (each used by one tet), so it shows up as
+    # surplus boundary faces against the analytic skin count — which is
+    # exactly the failure that would poison the skin extraction.
+    from collections import Counter
+    face_use = Counter()
+    for t in tets:
+        a, b, c, d = (int(q) for q in t)
+        for f in ((a, b, c), (a, b, d), (a, c, d), (b, c, d)):
+            face_use[tuple(sorted(f))] += 1
+    n_boundary = sum(1 for k in face_use.values() if k == 1)
+    expected = 4 * (nu - 1) * (nv - 1) + 8 * ((nu - 1) + (nv - 1))
+    if n_boundary != expected or any(k > 2 for k in face_use.values()):
+        raise RuntimeError(
+            f"ladder prism subdivision internal: {n_boundary} boundary "
+            f"faces against the analytic skin's {expected} (and "
+            f"{sum(1 for k in face_use.values() if k > 2)} over-shared) — "
+            f"incompatible quad diagonals.")
+    return pts, tets
+
+
 def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
     """Thicken each planar patch by ±width/2, resolve overlaps, mesh.
 
@@ -6326,13 +6459,20 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         shallow angle make the overlap a spike, and its fragmented tip meshes
         to arbitrarily bad angles; the fused union has no such tip.
     mesher : {None, "ladder"}, keyword-only
-        How the band itself is meshed (2-D only). ``None`` (default) is the
-        frontal band. ``"ladder"`` is the TRANSFINITE band, three nodes
-        across — rails plus an exact centreline row — the mandatory choice
-        when the band's spine is to be cut/split (#595: a spine cut through
-        a frontal band snaps rail vertices and can pinch the band shut).
-        Ladder bands take exactly one straight polyline and must lie inside
-        the domain. See :func:`_occ_ladder_assembly_2d`.
+        How the band itself is meshed. ``None`` (default) is the CAD-built
+        band (frontal fill). ``"ladder"`` is the STRUCTURED band with an
+        exact mid-surface vertex sheet — the mandatory choice when the
+        band's spine/mid-surface is to be cut/split (#595: a cut through a
+        remeshed band snaps rail vertices), and the choice that makes
+        placed level pairs NEST (a 2:1 sub-sampled ladder shares every
+        vertex with the fine one — the composed-hierarchy economics,
+        #629). In 2-D it takes one straight polyline (transfinite, three
+        nodes across; :func:`_occ_ladder_assembly_2d`); in 3-D it takes
+        one ``(grid, normals)`` pair of ``(nu, nv, 3)`` arrays — the
+        sheet's own discretisation, offset ``±width/2`` into two prism
+        layers and split to tets, no remesh
+        (:func:`_ladder_assembly_3d`). Ladder bands must lie inside the
+        domain.
     verbose : bool
         Report the counts.
 
@@ -6366,10 +6506,14 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
                                      clearance, size, assembly, verbose,
                                      mesher=mesher)
-    if mesher is not None:
-        raise NotImplementedError(
-            "mesher='ladder' is the 2-D transfinite band; the 3-D volume "
-            "has no ladder mesher yet.")
+    if mesher == "ladder" and (
+            len(patches) != 1 or not isinstance(patches[0], (tuple, list))
+            or len(patches[0]) != 2):
+        raise ValueError(
+            "the 3-D ladder takes exactly one patch, given as a "
+            "(grid, normals) pair of (nu, nv, 3) arrays — the sheet's own "
+            "structured discretisation and its per-vertex normals (for "
+            "nested levels, subsample BOTH from the fine grid).")
     if dm.getDimension() != 3:
         raise NotImplementedError(
             f"place_thin_volume takes a 2-D or 3-D simplex mesh; this mesh "
@@ -6388,11 +6532,18 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     payload = None
     if comm.rank == 0:
         try:
-            # The meshed-vs-CAD volume gate runs inside the assembly
-            # builder, before its boundary snap.
-            asm_pts, asm_tets, _cad_vol = _occ_assembly_3d(
-                patches, width, size, domain=(dom_verts, dom_tris),
-                assembly=assembly)
+            if mesher == "ladder":
+                # The extruded band: no CAD, no remesh — the sheet's own
+                # triangulation offset to prisms. Interior bands only
+                # (no domain clip); a protruding ladder fails the carve.
+                asm_pts, asm_tets = _ladder_assembly_3d(
+                    patches[0][0], patches[0][1], width)
+            else:
+                # The meshed-vs-CAD volume gate runs inside the assembly
+                # builder, before its boundary snap.
+                asm_pts, asm_tets, _cad_vol = _occ_assembly_3d(
+                    patches, width, size, domain=(dom_verts, dom_tris),
+                    assembly=assembly)
             asm_pts, asm_tets = _collapse_boundary_imprints_3d(
                 asm_pts, asm_tets, dom_verts, dom_tris, 0.1 * size)
             payload = (asm_pts, asm_tets)

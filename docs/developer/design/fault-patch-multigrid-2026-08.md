@@ -90,6 +90,31 @@ rig scale (17.5 vs 48 s). The engineering consequence: to give 3-D the
 refinement of the mid ribbon (one fill, refined 2:1) or as a
 structured/extruded slab, rather than as two unrelated fills.
 
+**The extruded ladder, measured (2026-08-24), and the corrected
+diagnosis.** `place_thin_volume(mesher="ladder")` now builds the 3-D
+band from the fault sheet's own discretisation — the grid offset ±w/2
+along one set of analytic normals into two prism layers, split to tets
+(Dompierre; quad-diagonal compatibility proven by the analytic-skin
+face count), no remesh — and it is exact where exactness is checkable:
+planar volume to 1e-12, curvature inversion a refusal, and a 2:1
+subsampled grid's band sharing every vertex with the fine band all the
+way through placement and split. Measured on a curved fault
+(sinusoidal bulge): physics identical to GAMG, 6–7 iterations against
+60–65. But vertex nesting alone did NOT collapse the chain, for two
+measured reasons that correct the paragraph above: **the fill shell,
+not the band, is the node majority** — the unstructured annulus gmsh
+builds between the band skin and the coarse background carried 51% of
+the finest level's P2 nodes (nesting 3%) against the band's 23%; and
+**vertex nesting is not P2 nesting** — only 10% of the band's P2 DOFs
+coincide (edge-midpoint DOFs differ between scales). Thinning the
+shell (`clearance=0.3`, the 0.6·w floor governing) brought level 1 to
+native density and the count to 6; the residual warm-time gap is the
+rotated path's per-solve transfer rebuild (the un-guarded rotated twin
+of #622), which is the prerequisite fix for any wall-clock claim on
+the contact chain. Remaining levers in value order: cache the rotated
+transfers; graded outer sheets on the ladder so the fill mates
+coarse-to-coarse; P2-aware nesting last.
+
 ## Configuration rules (each learned from a failure)
 
 0. **The finest patch always contains the structural patch.** The patch

@@ -612,3 +612,71 @@ def test_a_ribbon_meeting_the_wall_in_two_bands_is_refused():
                      [0.70, 1.10]])
     with pytest.raises(NotImplementedError, match="more than one band"):
         place_thin_volume(mesh.dm, [arch], width=0.03, label="Zone")
+
+
+# --------------------------------------------------------------------- #
+#  The 3-D ladder band (#629): extruded prism-tets, no remesh
+# --------------------------------------------------------------------- #
+def _curved_sheet(nu, nv, amp=0.06):
+    """A sinusoidal bulge on [0.3,0.7]^2 with ANALYTIC normals — one
+    parametrisation for every level, so subsampled grids nest exactly."""
+    u = np.linspace(0.3, 0.7, nu)
+    v = np.linspace(0.3, 0.7, nv)
+    U, V = np.meshgrid(u, v, indexing="ij")
+    su, sv = np.pi * (U - 0.3) / 0.4, np.pi * (V - 0.3) / 0.4
+    G = np.stack([U, 0.5 + amp * np.sin(su) * np.sin(sv), V], axis=2)
+    dyu = amp * (np.pi / 0.4) * np.cos(su) * np.sin(sv)
+    dyv = amp * (np.pi / 0.4) * np.sin(su) * np.cos(sv)
+    N = np.stack([-dyu, np.ones_like(U), -dyv], axis=2)
+    return G, N
+
+
+def test_ladder_assembly_3d_volume_positivity_and_nesting():
+    """The extruded band is exact where it can be checked exactly: a planar
+    sheet's volume is area x width to machine precision, a curved sheet
+    extrudes without inversion (positive tets, the curvature gate), the
+    boundary face count matches the analytic skin (the quad-diagonal
+    compatibility proof), and a 2:1 subsampled grid's band shares EVERY
+    vertex with the fine band — the nesting the composed hierarchy is for."""
+    from underworld3.utilities.place_surface import _ladder_assembly_3d
+
+    # planar: exact volume
+    u = np.linspace(0.3, 0.7, 9)
+    v = np.linspace(0.3, 0.7, 7)
+    U, V = np.meshgrid(u, v, indexing="ij")
+    G = np.stack([U, np.full_like(U, 0.5), V], axis=2)
+    N = np.zeros_like(G)
+    N[..., 1] = 1.0
+    pts, tets = _ladder_assembly_3d(G, N, 0.06)
+    P = pts[tets]
+    vol = np.einsum("ij,ij->i",
+                    np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                    P[:, 3] - P[:, 0]).sum() / 6.0
+    assert abs(vol - 0.4 * 0.4 * 0.06) < 1e-12
+
+    # curved: positivity is asserted inside the builder; nesting checked here
+    Gf, Nf = _curved_sheet(17, 17)
+    pf, _tf = _ladder_assembly_3d(Gf, Nf, 0.06)
+    pm, _tm = _ladder_assembly_3d(Gf[::2, ::2], Nf[::2, ::2], 0.06)
+    fine = {tuple(q) for q in pf.round(12).tolist()}
+    assert all(tuple(q) in fine for q in pm.round(12).tolist())
+
+
+def test_ladder_assembly_3d_refuses_overtight_curvature():
+    """Offsetting past the curvature radius crosses the sheets; the builder
+    must refuse (positive-volume gate), never silently reorder."""
+    from underworld3.utilities.place_surface import _ladder_assembly_3d
+
+    Gf, Nf = _curved_sheet(17, 17, amp=0.3)      # radius ~ amp*(pi/0.4)^2
+    with pytest.raises(ValueError, match="curvature"):
+        _ladder_assembly_3d(Gf, Nf, 0.4)
+
+
+def test_ladder_3d_placement_takes_a_grid_normals_pair():
+    """The 3-D ladder input contract: exactly one (grid, normals) patch."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.3,
+        regular=False, qdegree=2)
+    with pytest.raises(ValueError, match="grid, normals"):
+        place_thin_volume(mesh.dm, [np.zeros((4, 3))], width=0.06,
+                          mesher="ladder")
