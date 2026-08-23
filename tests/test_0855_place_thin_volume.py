@@ -684,31 +684,44 @@ def test_ladder_3d_placement_takes_a_grid_normals_pair():
 
 def test_place_fault_ribbon_one_call_stack():
     """The production path (#629): one call, one parametrisation — the
-    curved sheet grid in, a split fault-resolving mesh plus the nested
-    2:1 bridge level out. Normals are derived (none passed); the fault
-    label is a boundary ready for add_fault_bc; the band cells carry
-    the Band label; every mid band vertex is a finest-mesh vertex."""
-    from underworld3.utilities.place_surface import place_fault_ribbon
+    curved FAULT grid in (honoured exactly: the band is built on the
+    grid EXTRAPOLATED margin_rings outward, never by shrinking the
+    request), a split fault-resolving mesh plus the nested 2:1 bridge
+    level out. Normals are derived (none passed); the fault label is a
+    boundary ready for add_fault_bc; the band cells carry the Band
+    label; every mid band vertex is a finest-mesh vertex, and every
+    requested fault point is a finest-mesh vertex."""
+    from underworld3.utilities.place_surface import (
+        _extend_grid, _grid_normals, place_fault_ribbon)
 
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.24,
         regular=False, qdegree=2, refinement=1)
     G, _N = _curved_sheet(9, 9)
     mesh, mid, info = place_fault_ribbon(base, G, 0.06, label="Fault",
-                                         inset_rings=1)
-    assert info["n_slit_faces"] > 0
+                                         margin_rings=1)
+    # the requested fault is honoured: all interior faces of the sheet
+    # survive (corner triangles only may be eroded — 8x8 quads x 2 tris
+    # minus at most a few corner faces)
+    assert info["n_slit_faces"] >= 2 * 8 * 8 - 4
     assert "Fault" in [b.name for b in mesh.boundaries]
     assert mesh.cells_labelled("Band", 71).any()
     assert mid is not None and info["n_mid_cells"] > 0
 
     import underworld3.utilities.place_surface as ps
     fine = {tuple(q) for q in ps._coords(mesh.dm).round(9).tolist()}
-    from underworld3.utilities.place_surface import _grid_normals
-    Nn = _grid_normals(G)
+    # every REQUESTED fault point is a mesh vertex (the honoured contract)
+    assert all(tuple(q) in fine for q in G.reshape(-1, 3).round(9).tolist())
+    # nesting: the mid band = 2:1 subsample of the EXTENDED band grid
+    Gb = _extend_grid(G, 1)
+    Nb = _extend_grid(_grid_normals(G), 1)
+    Nb = Nb / np.linalg.norm(Nb, axis=2)[..., None]
     band = np.concatenate(
-        [(G[::2, ::2] + s * 0.03 * Nn[::2, ::2]).reshape(-1, 3)
+        [(Gb[::2, ::2] + s * 0.03 * Nb[::2, ::2]).reshape(-1, 3)
          for s in (-1.0, 0.0, 1.0)])
     assert all(tuple(q) in fine for q in band.round(9).tolist())
 
     with pytest.raises(ValueError, match="ODD"):
         place_fault_ribbon(base, G[:8], 0.06)
+    with pytest.raises(ValueError, match="margin_rings"):
+        place_fault_ribbon(base, G, 0.06, margin_rings=0)

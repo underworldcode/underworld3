@@ -7011,6 +7011,26 @@ def _owned_min_cell_volume(dm):
     return float(v.min()) if len(v) else np.inf
 
 
+def _extend_grid(grid, rings):
+    """Continue a sheet grid ``rings`` rows/columns outward, linearly.
+
+    The tip-margin builder for :func:`place_fault_ribbon`: the user's
+    grid IS the fault and must be honoured exactly, so the resolved
+    band around it is grown from INVENTED surround — each grid line
+    continued along its own end tangent at the local spacing, one ring
+    at a time (corners fill consistently because the column pass also
+    extends the freshly added rows). Deliberately linear: the data ends
+    where it ends, and a tangent continuation adds no curvature the
+    structural model never asserted."""
+    G = np.asarray(grid, dtype=float)
+    for _ in range(int(rings)):
+        G = np.concatenate([(2.0 * G[0] - G[1])[None], G,
+                            (2.0 * G[-1] - G[-2])[None]], axis=0)
+        G = np.concatenate([(2.0 * G[:, 0] - G[:, 1])[:, None], G,
+                            (2.0 * G[:, -1] - G[:, -2])[:, None]], axis=1)
+    return G
+
+
 def _label_mid_surface(dm, spine_points, label, value):
     """Label the ladder band's mid-surface faces by coordinate selection.
 
@@ -7066,37 +7086,53 @@ def _label_mid_surface(dm, spine_points, label, value):
 
 def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
                        label="Fault", label_value=41, band_label="Band",
-                       band_value=71, inset_rings=2, mid_level=True,
+                       band_value=71, margin_rings=2, mid_level=True,
                        clearance=0.3, split=True, verbose=False):
     """A split-ready fault ribbon from the fault surface's OWN mesh (#629).
 
     The conceptually simple fault-prep path: the user supplies the fault
     surface as a structured grid of points — their own discretisation of
-    it — and this function thickens THAT into the resolved band (no
-    remeshing, :func:`_ladder_assembly_3d`), embeds it in the mesh,
-    labels the mid-surface (which is a real vertex sheet, inset from the
-    rim by the tip rule), splits it into a frictionless-ready fault, and
-    builds the matching UNSPLIT intermediate level for the multigrid
-    hierarchy — all from ONE parametrisation, so every level nests
+    it, e.g. sampled from a structural model — and this function
+    thickens it into the resolved band (no remeshing,
+    :func:`_ladder_assembly_3d`), embeds it in the mesh, labels and
+    splits the mid-surface into a frictionless-ready fault, and builds
+    the matching UNSPLIT intermediate level for the multigrid hierarchy
+    — all from ONE parametrisation, so every level nests
     vertex-for-vertex by construction.
+
+    **The grid IS the fault, honoured exactly.** The tip rule (a split
+    must never reach the band's rim, and its tip needs band-resolution
+    material on every side) is satisfied by EXTRAPOLATION, not by
+    shrinking the request: the band is built on the sheet continued
+    ``margin_rings`` rings outward along its own end tangents
+    (:func:`_extend_grid` — linear, no invented curvature), and the
+    slip surface is labelled on precisely the points supplied. The
+    intact extrapolated frame around the fault is the 3-D analogue of
+    the junction ruling's intact gap. (One machinery caveat: the
+    splitter refuses a face with no interior vertex, so a corner
+    TRIANGLE of the slip patch — all three vertices on the patch's own
+    perimeter — is eroded; on a structured sheet that is at most a few
+    half-cells at the corners, reported via ``n_slit_faces``.)
 
     Parameters
     ----------
     base_mesh : uw.discretisation.Mesh
         The background mesh (3-D simplex). Not modified.
     sheet : array_like, (nu, nv, 3)
-        The fault surface as a structured point grid — curved is fine;
-        the sheet must lie inside the domain. With ``mid_level=True``,
-        ``nu`` and ``nv`` must be odd so the 2:1 subsample
-        ``sheet[::2, ::2]`` exists.
+        THE FAULT surface as a structured point grid — curved is fine;
+        the sheet (plus its extrapolated margin) must lie inside the
+        domain. With ``mid_level=True``, ``nu`` and ``nv`` must be odd
+        so the 2:1 subsample of the band grid exists.
     width : float
         Ribbon thickness (the mesh-bridging width of a split-node model:
         a resolution parameter, nothing rheological — see the design
         note's w ruling).
     normals : array_like, (nu, nv, 3), optional
         Per-vertex sheet normals. Default: derived from the grid
-        (central differences). The intermediate level always subsamples
-        the SAME field, which is what keeps the levels nested.
+        (central differences). Extended over the margin by the same
+        tangent continuation as the points; the intermediate level
+        always subsamples the SAME field, which is what keeps the
+        levels nested.
     label, label_value : str, int
         The fault label carried by the mid-surface faces; after the
         split this is the boundary for ``add_fault_bc``.
@@ -7104,9 +7140,10 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
         The label carried by the ribbon's cells (the ``fac_zone`` key if
         volumetric rheology is later painted into the band; under pure
         contact it is reporting only).
-    inset_rings : int
-        The fault stops this many grid rings inside the band (the tip
-        rule: never split to the band rim).
+    margin_rings : int
+        Tip margin: the band extends this many grid rings BEYOND the
+        fault on every side, built by extrapolation. Must be >= 1 (the
+        tip rule; 2 is the measured default).
     mid_level : bool
         Also build the band at 2:1 (UNSPLIT) on the base mesh — the
         bridge level of the composed hierarchy.
@@ -7154,23 +7191,31 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
     if mid_level and (nu % 2 == 0 or nv % 2 == 0):
         raise ValueError(
             f"mid_level=True needs ODD grid dimensions so the 2:1 "
-            f"subsample sheet[::2, ::2] exists; got {nu} x {nv}.")
+            f"subsample of the band grid exists; got {nu} x {nv}.")
+    m = int(margin_rings)
+    if m < 1:
+        raise ValueError(
+            "margin_rings must be >= 1: the split cannot reach the band "
+            "rim (the tip rule), and the margin comes from extrapolated "
+            "surround — the requested fault is honoured either way.")
     N = (_grid_normals(G) if normals is None
          else np.asarray(normals, dtype=float))
     if N.shape != G.shape:
         raise ValueError(f"normals must match the sheet shape {G.shape}")
-    N = N / np.linalg.norm(N, axis=2)[..., None]
+    # The BAND grid: the fault continued m rings outward; normals extended
+    # by the same tangent continuation, then renormalised.
+    Gb = _extend_grid(G, m)
+    Nb = _extend_grid(N, m)
+    Nb = Nb / np.linalg.norm(Nb, axis=2)[..., None]
     spacing = float(np.mean([
         np.linalg.norm(np.diff(G, axis=0), axis=2).mean(),
         np.linalg.norm(np.diff(G, axis=1), axis=2).mean()]))
 
     dm_fine, info_f = place_thin_volume(
-        base_mesh.dm, [(G, N)], width, label=band_label,
+        base_mesh.dm, [(Gb, Nb)], width, label=band_label,
         label_value=band_value, clearance=clearance, size=spacing,
         mesher="ladder", verbose=verbose)
-    m = int(inset_rings)
-    spine = G[m:-m, m:-m] if m > 0 else G
-    n_slit = _label_mid_surface(dm_fine, spine, label, label_value)
+    n_slit = _label_mid_surface(dm_fine, G, label, label_value)
 
     members = {b.name: b.value for b in base_mesh.boundaries}
     members[label] = int(label_value)
@@ -7185,8 +7230,10 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
     mid = None
     n_mid = 0
     if mid_level:
+        # 2:1 subsample of the BAND grid (odd user dims + even 2m stay
+        # odd), same extended parametrisation -> the levels nest.
         dm_mid, _info_m = place_thin_volume(
-            base_mesh.dm, [(G[::2, ::2], N[::2, ::2])], width,
+            base_mesh.dm, [(Gb[::2, ::2], Nb[::2, ::2])], width,
             label=band_label, label_value=band_value, clearance=clearance,
             size=2.0 * spacing, mesher="ladder", verbose=verbose)
         mid = discretisation.Mesh(
