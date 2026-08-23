@@ -134,7 +134,19 @@ Galerkin fat was the mid level alone. The mid level's role is
 production proportions (a real gap between background h and band
 spacing); at rig proportions the tail of choice is [L0, L1] + finest.
 With parity warm and 8x iteration headroom, any contrast regime wins
-outright.** Remaining mesh-side levers unchanged: graded outer sheets
+outright. The augmented-Lagrangian penalty then shortens the Schur
+loop on top — at γ=1: pressure 22 → 17 with the velocity count
+unmoved, warm 19.1 s against GAMG's 23.0, FMG ahead outright at flat
+viscosity (the #625 mechanism: AL pays when the velocity PC is
+healthy; no Schur plumbing was needed — the penalty is
+viscosity-scaled, so the 1/K mass preconditioner stays spectrally
+correct by design). γ=10 over-stiffens the velocity block (7 → 12)
+and reverses the gain. Two caveats travel with the penalty: the
+recovered p is the multiplier (use p_mech = p − λμ∇·u for
+pressure-dependent rheology), and derived quantities drift — peak
+slip 1% at γ=1, 3% at γ=10 at rig resolution, the same bias family as
+#633's vertex-sampled dynamic topography. γ=1 is the sanctioned
+choice.** Remaining mesh-side levers unchanged: graded outer sheets
 on the ladder; P2-aware nesting last.
 
 The user-facing entry (the production ruling: conceptual simplicity is
