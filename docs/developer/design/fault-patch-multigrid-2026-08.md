@@ -108,12 +108,34 @@ the finest level's P2 nodes (nesting 3%) against the band's 23%; and
 **vertex nesting is not P2 nesting** — only 10% of the band's P2 DOFs
 coincide (edge-midpoint DOFs differ between scales). Thinning the
 shell (`clearance=0.3`, the 0.6·w floor governing) brought level 1 to
-native density and the count to 6; the residual warm-time gap is the
-rotated path's per-solve transfer rebuild (the un-guarded rotated twin
-of #622), which is the prerequisite fix for any wall-clock claim on
-the contact chain. Remaining levers in value order: cache the rotated
-transfers; graded outer sheets on the ladder so the fill mates
-coarse-to-coarse; P2-aware nesting last.
+native density and the count to 6.
+
+**Correction (2026-08-24, profiled): the warm-time gap is NOT a
+transfer rebuild.** The rotated path already caches the transfers and
+the whole KSP/PC context across solves (`_rotated_linear_cache`:
+geometry tier carries Q and `custom_Pl`; the operator tier skips
+assembly and PCSetUp on an unchanged matrix) — a cProfile of the
+repeat solve shows its ~46 s entirely inside the composite Krylov
+solve, with no build anywhere. An earlier campaign note described the
+pre-fix state and was repeated here without re-measuring; retracted.
+The warm cost structure is the Schur loop times the V-cycle price:
+full Schur factorization runs one velocity solve per pressure
+iteration (~23 velocity solves × 6–7 V-cycles at the recorded
+0.25 s/cycle ≈ the measured 46 s), against GAMG's 0.015 s cycles
+(≈ 23 s). The wall-clock levers are therefore level economics (the
+item-15 two-level result: near-fine-sized intermediate levels are
+negative value at rig scale) and the per-cycle cost of the robust
+smoother stack — plus the #625 pressure-iteration count under
+contrast. **Measured on the ladder stack (tail-depth A/B, physics
+identical in every arm): dropping the mid level reaches GAMG parity
+warm (24.0 s vs GAMG 23.0) at 7 iterations against GAMG's 65, and the
+remaining chain is entirely native density (81/75/93 nnz/row) — the
+Galerkin fat was the mid level alone. The mid level's role is
+production proportions (a real gap between background h and band
+spacing); at rig proportions the tail of choice is [L0, L1] + finest.
+With parity warm and 8x iteration headroom, any contrast regime wins
+outright.** Remaining mesh-side levers unchanged: graded outer sheets
+on the ladder; P2-aware nesting last.
 
 The user-facing entry (the production ruling: conceptual simplicity is
 the feature — a band built from the user's own fault-surface mesh
