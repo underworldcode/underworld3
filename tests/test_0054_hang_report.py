@@ -10,11 +10,13 @@ Everything above that is ordinary text processing and is tested directly.
 """
 
 import os
+import pathlib
 import shutil
 import signal
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -154,27 +156,69 @@ def _launcher(ranks):
     return command
 
 
-def _run_until_it_hangs(argv, ranks, seconds, environment):
-    """Launch under MPI, kill the whole job after `seconds`, return stderr.
+def _wait_for(condition, what, cap=600.0, poll=0.25):
+    """Block until `condition()` is true. Returns how long it took.
 
-    The job under test is MEANT never to finish, so the time limit is the
-    normal exit path rather than an error. `start_new_session` puts the ranks in
-    their own process group so the kill reaches all of them -- terminating only
-    `mpirun` can leave orphaned ranks holding the dump files open.
+    The cap is a backstop against a genuinely broken run, not a measurement --
+    it is set far above any plausible duration precisely so that reaching it
+    means something is wrong rather than something is slow.
+    """
+    deadline = time.monotonic() + cap
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(poll)
+    raise AssertionError(f"gave up after {cap:g} s waiting for {what}")
+
+
+def _dump_count(dumps, rank):
+    """How many times this rank has dumped so far."""
+    path = dumps / f"rank{rank:04d}.log"
+    if not path.exists():
+        return 0
+    return path.read_text(errors="replace").count("Timeout (")
+
+
+def _run_until_the_evidence_exists(argv, ranks, environment, dumps, ready,
+                                   blocked_ranks):
+    """Launch under MPI, wait for the evidence, then kill the job.
+
+    Nothing here is timed against the clock, and that is the point. Two earlier
+    versions of this test raced a fixed window against machine speed and failed
+    on CI twice for reasons that were true reports of a slower runner rather
+    than defects: first the waiting group came back short because a rank had not
+    been scheduled enough to dump, then the whole file filled with
+    `importlib._bootstrap` frames because four oversubscribed ranks took longer
+    to import than the watchdog allowed.
+
+    So the script signals when it has armed its watchdog -- after import, at a
+    known program point -- and this waits for that, then waits for the blocked
+    ranks to have dumped twice, then kills. Import may take as long as it likes.
+    The blocked ranks are blocked until killed, so the second wait always
+    completes; only a real failure reaches the cap.
     """
     process = subprocess.Popen(
         _launcher(ranks) + argv, env=environment, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
     )
     try:
-        _out, err = process.communicate(timeout=seconds)
-    except subprocess.TimeoutExpired:
+        _wait_for(lambda: len(list(ready.glob("ready.*"))) == ranks
+                  or process.poll() is not None,
+                  f"all {ranks} ranks to import and arm the watchdog")
+        assert process.poll() is None, "the job exited before arming"
+
+        # Two dumps, not one: one says "slow", two says "stuck", and the roll
+        # call places a rank by the mode of its recent dumps.
+        _wait_for(lambda: all(_dump_count(dumps, r) >= 2 for r in blocked_ranks),
+                  f"ranks {sorted(blocked_ranks)} to dump twice while blocked")
+    finally:
         os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         _out, err = process.communicate()
     return err or ""
 
 
 DIVERGENT = """
+import pathlib
 import time
 import underworld3 as uw
 
@@ -186,6 +230,17 @@ def reduce_the_count(undecided):
     '''The un-noticed collective, behind a rank-local guard.'''
     return uw.mpi.comm.allreduce(len(undecided))
 
+# Armed HERE, not from the environment: at a known point in the program rather
+# than at import, so how long the import took cannot decide what the dumps
+# contain.
+dumps = pathlib.Path(DUMPS)
+dumps.mkdir(parents=True, exist_ok=True)
+log = open(dumps / ("rank%04d.log" % uw.mpi.rank), "w", buffering=1)
+uw.mpi.watch(seconds=1.0, stream=log)
+
+# Tell the test the watchdog is live. It waits for this instead of guessing.
+(pathlib.Path(READY) / ("ready.%d" % uw.mpi.rank)).write_text("armed")
+
 undecided = classify()
 if undecided:
     reduce_the_count(undecided)
@@ -194,45 +249,38 @@ else:
 """
 
 
-@pytest.mark.timeout(600)
+@pytest.mark.timeout(900)
 @pytest.mark.skipif(shutil.which("mpirun") is None, reason="needs mpirun")
 def test_end_to_end_names_the_divergent_rank(tmp_path):
     """A real four-rank job that really hangs, killed, then analysed.
 
-    This is the workflow the tool is for: the job does NOT recover, mpirun
-    times it out, and the dumps are all that is left. An earlier version had
-    the divergent rank join late so the job exited cleanly, which tested a
-    situation nobody is ever in and made termination the flaky part.
+    This is the workflow the tool is for: the job does NOT recover, it is killed,
+    and the dumps are all that is left.
 
-    Ranks 0, 2 and 3 block in the collective; rank 1 branches around it and
-    sleeps. Both groups dump, so the roll call has to separate them.
+    Nothing is timed against the clock. The script arms its own watchdog after
+    import and writes a marker; the test waits for those markers, then waits for
+    the blocked ranks to have dumped twice, then kills. Two earlier versions
+    raced a fixed window against machine speed and failed on CI twice — both
+    times reporting a slower runner rather than a defect.
     """
-    script = tmp_path / "divergent.py"
-    script.write_text(textwrap.dedent(DIVERGENT))
+    ready = tmp_path / "ready"
     dumps = tmp_path / "uw-hang-dumps"
+    ready.mkdir()
 
-    # The watchdog must be longer than a plausible `import underworld3` and the
-    # window long enough for the blocked phase to dominate. At 1.0 s / 25 s this
-    # passed here and failed on CI with the majority located in
-    # `importlib._bootstrap`: four oversubscribed ranks take longer to import
-    # than the watchdog allowed, so the file filled with import dumps and the
-    # job was killed before the collective produced enough to outvote them.
-    environment = dict(
-        os.environ,
-        UW_HANG_WATCHDOG="5.0",
-        UW_HANG_WATCHDOG_DIR=str(dumps),
-        UW_NO_USAGE_METRICS="1",
+    script = tmp_path / "divergent.py"
+    script.write_text(
+        f"DUMPS = {str(dumps)!r}\nREADY = {str(ready)!r}\n"
+        + textwrap.dedent(DIVERGENT)
     )
-    stderr = _run_until_it_hangs(
-        [sys.executable, "-u", str(script)], ranks=4, seconds=75,
-        environment=environment,
+
+    stderr = _run_until_the_evidence_exists(
+        [sys.executable, "-u", str(script)], ranks=4,
+        environment=dict(os.environ, UW_NO_USAGE_METRICS="1"),
+        dumps=dumps, ready=ready, blocked_ranks=(0, 2, 3),
     )
 
     if not dumps.is_dir():
-        pytest.fail(
-            "the job wrote no dumps at all, so it never reached "
-            f"`import underworld3`:\n{stderr[-2000:]}"
-        )
+        pytest.fail(f"the job wrote no dumps at all:\n{stderr[-2000:]}")
 
     states = hang_report.read_directory(dumps)
     assert len(states) == 4, f"expected four dump files, got {sorted(states)}"
@@ -241,29 +289,67 @@ def test_end_to_end_names_the_divergent_rank(tmp_path):
     biggest_where, biggest_ranks, _stack = groups[0]
     report = hang_report.format_report(states)
 
-    # NOT `biggest_ranks == [0, 2, 3]`. On an oversubscribed runner a rank can
-    # be scheduled too little to dump inside the window, and requiring all three
-    # made this fail on CI with the waiting group [0] -- a true report of a
-    # slower machine, not a defect. What the tool must get right is WHICH RANK
-    # IS BLAMED, so that is what is asserted.
     assert biggest_where[2] == "reduce_the_count", (
         f"the majority was located at {biggest_where[0]}:{biggest_where[1]} in "
-        f"{biggest_where[2]}, not at the collective. If that is an import frame "
-        f"the watchdog fired before the ranks got there.\n{report}"
+        f"{biggest_where[2]}, not at the collective.\n{report}"
     )
-    assert 1 not in biggest_ranks, (
-        f"rank 1 branched around the collective and must not be in the waiting "
-        f"group {biggest_ranks}:\n{report}"
+    assert sorted(biggest_ranks) == [0, 2, 3], (
+        f"the waiting group was {biggest_ranks}; every blocked rank was waited "
+        f"for, so all three must be present.\n{report}"
     )
-    assert set(biggest_ranks) <= {0, 2, 3} and biggest_ranks, (
-        f"the waiting group {biggest_ranks} contains a rank that never entered "
-        f"the collective:\n{report}"
-    )
-
     odd_ones_out = sorted(r for _w, ranks, _s in groups[1:] for r in ranks) + moving
-    assert 1 in odd_ones_out, (
-        f"rank 1 took the branch and must be named as the odd one out; the "
-        f"report blamed {odd_ones_out}:\n{report}"
+    assert odd_ones_out == [1], (
+        f"rank 1 took the branch; the report blamed {odd_ones_out}.\n{report}"
     )
     # The verdict has to point at the branch, not merely list stacks.
     assert "where the bug is" in report
+
+
+ARMED_BY_ENVIRONMENT = """
+import time
+import underworld3 as uw
+time.sleep(3600)
+"""
+
+
+@pytest.mark.timeout(300)
+def test_the_environment_variable_arms_the_watchdog_at_import():
+    """`UW_HANG_WATCHDOG=...` must arm without the script asking.
+
+    The end-to-end test above arms from the script, deliberately — that is what
+    makes it independent of how long the import takes. So this covers the other
+    entry point, which is the documented one and the reason arming happens at
+    import at all: a rank that diverges or dies before reaching a `watch()` call
+    reports nothing.
+
+    One rank, no MPI launcher: this is about the environment being read, not
+    about ranks.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as workspace:
+        root = pathlib.Path(workspace)
+        script = root / "sleepy.py"
+        script.write_text(textwrap.dedent(ARMED_BY_ENVIRONMENT))
+        dumps = root / "dumps"
+
+        process = subprocess.Popen(
+            [sys.executable, "-u", str(script)],
+            env=dict(os.environ, UW_HANG_WATCHDOG="1.0",
+                     UW_HANG_WATCHDOG_DIR=str(dumps), UW_NO_USAGE_METRICS="1"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
+        try:
+            _wait_for(
+                lambda: _dump_count(dumps, 0) >= 2 or process.poll() is not None,
+                "the environment-armed watchdog to dump twice",
+            )
+            assert process.poll() is None, "the script exited instead of hanging"
+            assert _dump_count(dumps, 0) >= 2
+            assert "sleepy.py" in (dumps / "rank0000.log").read_text(), (
+                "the dump did not carry the stack of the script that hung"
+            )
+        finally:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            process.communicate()
