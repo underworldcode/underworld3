@@ -1221,6 +1221,19 @@ class SNES_Richards(SNES_TransientDarcy):
 ## --------------------------------
 
 
+def _penalty_value(penalty_expression):
+    """The penalty as a plain float.
+
+    `expression.sym` is a sympy object, and comparing one to a Python number
+    does not reliably return a bool -- a guard written as `sym == 0` let a zero
+    penalty through and warned about itself.
+    """
+    try:
+        return float(penalty_expression.sym)
+    except (TypeError, ValueError):
+        return float("nan")      # symbolic: not a number, so not zero
+
+
 class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     r"""
     Stokes equation solver for incompressible viscous flow.
@@ -1336,6 +1349,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         self._Estar = None
 
         self._penalty = expression(R"\uplambda", 0, "Numerical Penalty")
+        # Whether `penalty` still holds its automatic value. An explicit
+        # assignment latches this False and the auto default stands down --
+        # the same discipline as the tolerance-derived option keys (#477/#483).
+        self._penalty_is_automatic = True
         self._constraints = sympy.Matrix((self.div_u,))  # by default, incompressibility constraint
 
         self._bodyforce = expression(
@@ -1539,6 +1556,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 homotopy_options, verbose=verbose, solve_kwargs=inner
             )
 
+        # The penalty enters the compiled weak form, so it must be decided
+        # BEFORE setup -- and it depends on which velocity preconditioner
+        # will be used, which is only certain afterwards. Bet here; the
+        # bet is confirmed after setup, on either path.
+        self._apply_automatic_penalty()
+
         has_stress_history = self.Unknowns.DFDt is not None
 
         if has_stress_history:
@@ -1575,6 +1598,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 self._setup_pointwise_functions(verbose)
                 self._setup_discretisation(verbose)
                 self._setup_solver(verbose)
+                self._check_velocity_preconditioner()
 
             # 1. ADVECT stress history along characteristics
             if uw.mpi.rank == 0 and verbose:
@@ -1658,6 +1682,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 time=time,
                 divergence_retries=divergence_retries,
             )
+            # Confirm the preconditioner the automatic penalty was chosen for.
+            self._check_velocity_preconditioner()
 
     @property
     def tau(self):
@@ -1689,10 +1715,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: (
-            self.stress
-            + self.penalty * self.constitutive_model.K * self.div_u * sympy.eye(self.mesh.dim)
-        ),
+        lambda self: self.stress,
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,
@@ -1836,13 +1859,32 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     def stress(self):
         r"""Total Cauchy stress tensor.
 
-        The total stress combines the deviatoric stress and pressure:
+        The total stress combines the deviatoric stress, the pressure, and the
+        grad-div penalty:
 
         .. math::
-            \boldsymbol{\sigma} = \boldsymbol{\tau} - p\mathbf{I}
+            \boldsymbol{\sigma} = \boldsymbol{\tau}
+                - \left( p - \lambda\mu\,\nabla\cdot\mathbf{u} \right)\mathbf{I}
 
-        where :math:`\boldsymbol{\tau}` is the deviatoric stress and
-        :math:`p` is the pressure (positive in compression).
+        where :math:`\boldsymbol{\tau}` is the deviatoric stress and :math:`p`
+        is the pressure (positive in compression).
+
+        **Why the penalty lives here.** When :attr:`penalty` is non-zero the
+        solved ``p`` is the Lagrange multiplier, and the mechanical pressure is
+        :math:`p - \lambda\mu\,\nabla\cdot\mathbf{u}`. The term used to be
+        added to :math:`\mathbf{F}_1` at assembly instead, *outside* the stress
+        definition — so the operator being solved carried it while every
+        recovered quantity did not, and each consumer had to remember to correct
+        by hand. Measured cost of that split: the spherical dynamic topography
+        recovered from the rotated free-slip reaction was 28% low
+        (0.3021 against 0.4192), because :func:`boundary_normal_traction` builds
+        :math:`\sigma_{nn}` from a stress that omitted a term the operator
+        included.
+
+        The term is **isotropic**, so it belongs in the total stress and not in
+        :attr:`stress_deviator` — which is also why the viscoelastic history,
+        which tracks the deviator through ``constitutive_model.flux``, correctly
+        does not see it.
 
         Returns
         -------
@@ -1851,9 +1893,14 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         See Also
         --------
-        stress_deviator : Deviatoric (traceless) part.
+        stress_deviator : Deviatoric (traceless) part, penalty-free.
+        penalty : The augmentation, and its effect on the recovered pressure.
         """
-        return self.stress_deviator - sympy.eye(self.mesh.dim) * (self.p.sym[0])
+        mechanical_pressure = (
+            self.p.sym[0]
+            - self.penalty * self.constitutive_model.K * self.div_u
+        )
+        return self.stress_deviator - sympy.eye(self.mesh.dim) * mechanical_pressure
 
     @property
     def stress_1d(self):
@@ -2106,7 +2153,110 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     def penalty(self, value):
         """Set the augmented Lagrangian penalty parameter."""
         self._needs_function_rewire = True
+        self._penalty_is_automatic = False
         self._penalty.sym = value
+
+    #: Default grad-div augmentation, applied unless ``penalty`` is set.
+    #:
+    #: Measured on SolCx (eta 1e6, P2-P0disc, 2592 cells, #625): under the
+    #: custom-P multigrid this improves every axis at once -- 21% faster, Schur
+    #: count per application 59 -> 18, total velocity iterations 546 -> 270 --
+    #: because FMG absorbs the augmentation (8.8 -> 13.5 iterations per
+    #: application). Under GAMG the same value makes the solve SLOWER
+    #: (15.5 -> 20.7 s): augmentation is exactly what drives GAMG into its
+    #: iteration cap.
+    #:
+    #: It is applied **unconditionally** all the same, and deliberately. Making
+    #: it depend on the preconditioner was tried and rejected: a preconditioner
+    #: must change the path to the solution, not the solution, and three tests
+    #: (``test_1017``, ``test_0835``, ``test_0836``) assert exactly that by
+    #: comparing FMG and GAMG answers to 1e-4. Selecting an operator term from
+    #: the solver broke them, by 5.1e-4 to 1.4e-3. So the penalty is a
+    #: discretisation choice, and the GAMG fallback is made loud instead --
+    #: which is the real defect, since that fallback is silent on any mesh
+    #: without a hierarchy.
+    #:
+    #: The accuracy cost is a consistent perturbation rather than a changed
+    #: answer: same convergence rate, and the gap to the unaugmented solution
+    #: shrinks under refinement (1.102 -> 1.087 -> 1.066 over three levels).
+    #: UW3's penalty is grad-div, not a true augmented Lagrangian -- div(P2) is
+    #: not inside P0, so the term does not vanish at the discrete solution --
+    #: but it converges away. ``penalty = 0`` restores the unaugmented operator.
+    #:
+    #: **Held at 0 pending the pointwise-traction question.** At 10 the
+    #: spherical dynamic topography recovered from the rotated free-slip
+    #: reaction drops 0.4192 -> 0.3021, 28%, on the *vertex-sampled* value while
+    #: the facet-integrated value stays correct (``test_1018``). So augmentation
+    #: corrupts the de-smearing from reaction loads to pointwise stress —
+    #: presumably because lambda*mu*(div u) is non-zero cell-by-cell for P2-P0
+    #: and averages out over a facet integral but not at a vertex. Dynamic
+    #: topography is the main product of that machinery, so the value stays 0
+    #: until that is resolved; everything needed for the change is in place and
+    #: it is this constant.
+    DEFAULT_PENALTY = 0.0
+
+
+    def _apply_automatic_penalty(self):
+        """Install :attr:`DEFAULT_PENALTY`, unless the user set one."""
+        if not self._penalty_is_automatic:
+            return
+        if not _penalty_value(self._penalty) == self.DEFAULT_PENALTY:
+            self._needs_function_rewire = True
+            self._penalty.sym = self.DEFAULT_PENALTY
+        # Assigned through the expression, so the latch is untouched and the
+        # value stays automatic.
+
+    def _check_velocity_preconditioner(self):
+        """After setup: did the velocity block fall back off the multigrid?
+
+        This is the defect behind the recurring "the Schur solve wandered again"
+        session. FMG needs a mesh hierarchy, and on a mesh without one the
+        velocity block drops to GAMG with nothing said -- measured,
+        ``refinement=0`` gives one hierarchy level and ``gamg``, ``refinement=2``
+        gives ``mg``. GAMG then degrades under refinement until it hits its
+        iteration cap, which corrupts ``S = -B A^-1 B^T`` and takes the pressure
+        block down with it (976 s vs 25.6 s at h=1/30, #625).
+
+        A fallback is worth saying out loud. An explicit
+        ``preconditioner = "gamg"`` is a decision, not a fallback, and is left
+        alone.
+        """
+        if getattr(self, "_preconditioner", "auto") == "gamg":
+            return                            # asked for, not fallen back to
+        if getattr(self, "_pc_user_override", False):
+            return                            # the user owns this block's pc_type
+        try:
+            velocity = self.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
+            installed = velocity.getPC().getType()
+        except Exception:
+            return                            # no fieldsplit to inspect
+        if installed == "mg":
+            return
+
+        import warnings
+        penalty = _penalty_value(self._penalty)
+        cost = (f" The default penalty {penalty:g} is also active, and grad-div "
+                f"augmentation is exactly what drives '{installed}' into its "
+                f"iteration cap — set `solver.penalty = 0` if you must stay on "
+                f"'{installed}'." if penalty else "")
+        self._record_pc_fallback(
+            "velocity.fell_back_from_fmg",
+            requested="custom-P geometric MG (no explicit choice was made)",
+            installed=installed,
+            reason="unavailable",
+            detail=f"the velocity block is running '{installed}' because no "
+                   f"mesh hierarchy was available. Build the base mesh with "
+                   f"refinement>=1, or adapt onto a child, to get FMG."
+                   + cost)
+        warnings.warn(
+            f"Stokes: the velocity block fell back to '{installed}' — no mesh "
+            f"hierarchy was available, so the custom-P multigrid could not be "
+            f"built. FMG is 4x faster on this class of problem and does ~45x "
+            f"less velocity work (#625); '{installed}' degrades under "
+            f"refinement until it hits its iteration cap, which corrupts the "
+            f"Schur operator and stalls the pressure solve. Build the base mesh "
+            f"with refinement>=1 to get a hierarchy." + cost,
+            RuntimeWarning, stacklevel=3)
 
     # @property
     # def continuity_rhs(self):
