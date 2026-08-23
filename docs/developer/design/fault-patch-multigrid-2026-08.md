@@ -115,6 +115,15 @@ the contact chain. Remaining levers in value order: cache the rotated
 transfers; graded outer sheets on the ladder so the fill mates
 coarse-to-coarse; P2-aware nesting last.
 
+The user-facing entry (the production ruling: conceptual simplicity is
+the feature — a band built from the user's own fault-surface mesh
+cannot be mis-prepped) is **`place_fault_ribbon(base, sheet_grid,
+width)`**: one call, one parametrisation — derived normals, the
+mid-surface labelled and split (a boundary ready for `add_fault_bc`),
+the nested 2:1 bridge level returned alongside, thin-shell clearance
+by default, `split=False` for painted weak/TI models on identical
+geometry. It reproduces the campaign rig's numbers bit-for-bit.
+
 ## Configuration rules (each learned from a failure)
 
 0. **The finest patch always contains the structural patch.** The patch

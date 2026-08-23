@@ -3689,6 +3689,25 @@ def _patch_frame(patch):
     return n
 
 
+def _grid_normals(grid):
+    """Per-vertex unit normals of an ``(nu, nv, 3)`` sheet grid.
+
+    Central differences along the two grid directions, crossed. One
+    field, computed once: nested levels must SUBSAMPLE this (never
+    recompute on the coarse grid — two independently computed normal
+    fields differ at shared points and break vertex coincidence, the
+    whole point of the ladder)."""
+    G = np.asarray(grid, dtype=float)
+    du = np.gradient(G, axis=0)
+    dv = np.gradient(G, axis=1)
+    N = np.cross(du, dv)
+    n = np.linalg.norm(N, axis=2)
+    if (n <= 0.0).any():
+        raise ValueError("the sheet grid is degenerate (zero-area quads); "
+                         "cannot derive normals.")
+    return N / n[..., None]
+
+
 def _prism_tets(prism, gids):
     """Split one prism into three tets, quad diagonals globally consistent.
 
@@ -6506,14 +6525,23 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
                                      clearance, size, assembly, verbose,
                                      mesher=mesher)
-    if mesher == "ladder" and (
-            len(patches) != 1 or not isinstance(patches[0], (tuple, list))
-            or len(patches[0]) != 2):
-        raise ValueError(
-            "the 3-D ladder takes exactly one patch, given as a "
-            "(grid, normals) pair of (nu, nv, 3) arrays — the sheet's own "
-            "structured discretisation and its per-vertex normals (for "
-            "nested levels, subsample BOTH from the fine grid).")
+    if mesher == "ladder":
+        if len(patches) != 1:
+            raise ValueError("the 3-D ladder takes exactly one patch")
+        p0 = patches[0]
+        if isinstance(p0, (tuple, list)) and len(p0) == 2:
+            grid, grid_normals = p0
+        else:
+            grid = np.asarray(p0, dtype=float)
+            if grid.ndim != 3 or grid.shape[-1] != 3:
+                raise ValueError(
+                    "the 3-D ladder patch is an (nu, nv, 3) sheet grid, or "
+                    "a (grid, normals) pair of such arrays — the sheet's "
+                    "own structured discretisation. (For nested levels, "
+                    "subsample grid AND normals from the fine level's, or "
+                    "use place_fault_ribbon, which does.)")
+            grid_normals = _grid_normals(grid)
+        patches = [(grid, grid_normals)]
     if dm.getDimension() != 3:
         raise NotImplementedError(
             f"place_thin_volume takes a 2-D or 3-D simplex mesh; this mesh "
@@ -6981,3 +7009,200 @@ def _owned_cell_volume(dm):
 def _owned_min_cell_volume(dm):
     v = np.abs(_cell_volumes_signed6(dm)) / 6.0
     return float(v.min()) if len(v) else np.inf
+
+
+def _label_mid_surface(dm, spine_points, label, value):
+    """Label the ladder band's mid-surface faces by coordinate selection.
+
+    The ladder's mid-surface is a real vertex sheet, so a fault face is
+    simply an interior face whose three vertices all lie on the (inset)
+    spine point set — no plane test, so a curved sheet needs nothing
+    special. All-rim erosion follows (#626): the splitter refuses a face
+    with no interior vertex, so faces whose every vertex is on the
+    selection's rim are dropped until none remain.
+    """
+    from collections import Counter
+
+    keep = {tuple(q) for q in
+            np.asarray(spine_points, dtype=float).reshape(-1, 3)
+            .round(9).tolist()}
+    X = _coords(dm)
+    fS, fE = dm.getHeightStratum(1)
+    vS, vE = dm.getDepthStratum(0)
+    sel = {}
+    for f in range(fS, fE):
+        if dm.getSupportSize(f) != 2:
+            continue
+        verts = [int(q) - vS for q in dm.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        if all(tuple(X[v].round(9)) in keep for v in verts):
+            sel[f] = tuple(verts)
+    while True:
+        edge_use = Counter()
+        for verts in sel.values():
+            a, b, c = sorted(verts)
+            for e in ((a, b), (a, c), (b, c)):
+                edge_use[e] += 1
+        rim_v = set()
+        for (a, b), k in edge_use.items():
+            if k == 1:
+                rim_v.update((a, b))
+        bad = [f for f, verts in sel.items()
+               if all(v in rim_v for v in verts)]
+        if not bad:
+            break
+        for f in bad:
+            del sel[f]
+    if not sel:
+        raise ValueError(
+            f"no {label!r} faces survive on the mid-surface: the inset "
+            f"leaves too small an interior (enlarge the sheet grid or "
+            f"reduce inset_rings).")
+    dm.createLabel(label)
+    for f in sel:
+        dm.getLabel(label).setValue(f, int(value))
+    return len(sel)
+
+
+def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
+                       label="Fault", label_value=41, band_label="Band",
+                       band_value=71, inset_rings=2, mid_level=True,
+                       clearance=0.3, split=True, verbose=False):
+    """A split-ready fault ribbon from the fault surface's OWN mesh (#629).
+
+    The conceptually simple fault-prep path: the user supplies the fault
+    surface as a structured grid of points — their own discretisation of
+    it — and this function thickens THAT into the resolved band (no
+    remeshing, :func:`_ladder_assembly_3d`), embeds it in the mesh,
+    labels the mid-surface (which is a real vertex sheet, inset from the
+    rim by the tip rule), splits it into a frictionless-ready fault, and
+    builds the matching UNSPLIT intermediate level for the multigrid
+    hierarchy — all from ONE parametrisation, so every level nests
+    vertex-for-vertex by construction.
+
+    Parameters
+    ----------
+    base_mesh : uw.discretisation.Mesh
+        The background mesh (3-D simplex). Not modified.
+    sheet : array_like, (nu, nv, 3)
+        The fault surface as a structured point grid — curved is fine;
+        the sheet must lie inside the domain. With ``mid_level=True``,
+        ``nu`` and ``nv`` must be odd so the 2:1 subsample
+        ``sheet[::2, ::2]`` exists.
+    width : float
+        Ribbon thickness (the mesh-bridging width of a split-node model:
+        a resolution parameter, nothing rheological — see the design
+        note's w ruling).
+    normals : array_like, (nu, nv, 3), optional
+        Per-vertex sheet normals. Default: derived from the grid
+        (central differences). The intermediate level always subsamples
+        the SAME field, which is what keeps the levels nested.
+    label, label_value : str, int
+        The fault label carried by the mid-surface faces; after the
+        split this is the boundary for ``add_fault_bc``.
+    band_label, band_value : str, int
+        The label carried by the ribbon's cells (the ``fac_zone`` key if
+        volumetric rheology is later painted into the band; under pure
+        contact it is reporting only).
+    inset_rings : int
+        The fault stops this many grid rings inside the band (the tip
+        rule: never split to the band rim).
+    mid_level : bool
+        Also build the band at 2:1 (UNSPLIT) on the base mesh — the
+        bridge level of the composed hierarchy.
+    clearance : float
+        Carve clearance, in local-h units. The default 0.3 is the
+        measured production choice: the ``0.6 * width`` floor governs,
+        keeping the unstructured fill shell thin (at the default 0.7 the
+        shell was the majority of the fine level's nodes).
+    split : bool
+        Split the fault (:func:`~underworld3.utilities.fault_split.split_fault`).
+        ``False`` returns the labelled, unsplit mesh (e.g. for painted
+        weak/TI models on the same geometry).
+    verbose : bool
+        Report counts.
+
+    Returns
+    -------
+    mesh : uw.discretisation.Mesh
+        The fault-resolving mesh, split (or labelled) and ready for
+        ``add_fault_bc(..., boundary=label)``.
+    mid : uw.discretisation.Mesh or None
+        The unsplit 2:1 band level (``mid_level=False`` gives None).
+    info : dict
+        ``n_slit_faces``, ``n_cells``, ``n_mid_cells``, ``spacing``.
+
+    Examples
+    --------
+    >>> mesh, mid, info = place_fault_ribbon(base, sheet_grid, width=0.06)
+    >>> stokes = uw.systems.Stokes(mesh, ...)
+    >>> stokes.add_fault_bc(0, boundary="Fault")
+    >>> set_custom_fmg(stokes, base._coarse_level_meshes()[:-1] + [base, mid],
+    ...                field_id=0)     # pure contact: no fac_zone
+    """
+    from enum import Enum
+
+    from underworld3 import discretisation
+    from underworld3.utilities.fault_split import split_fault
+
+    G = np.asarray(sheet, dtype=float)
+    if G.ndim != 3 or G.shape[2] != 3 or min(G.shape[:2]) < 3:
+        raise ValueError(
+            f"sheet must be an (nu, nv, 3) grid with nu, nv >= 3; got "
+            f"shape {G.shape}")
+    nu, nv = G.shape[:2]
+    if mid_level and (nu % 2 == 0 or nv % 2 == 0):
+        raise ValueError(
+            f"mid_level=True needs ODD grid dimensions so the 2:1 "
+            f"subsample sheet[::2, ::2] exists; got {nu} x {nv}.")
+    N = (_grid_normals(G) if normals is None
+         else np.asarray(normals, dtype=float))
+    if N.shape != G.shape:
+        raise ValueError(f"normals must match the sheet shape {G.shape}")
+    N = N / np.linalg.norm(N, axis=2)[..., None]
+    spacing = float(np.mean([
+        np.linalg.norm(np.diff(G, axis=0), axis=2).mean(),
+        np.linalg.norm(np.diff(G, axis=1), axis=2).mean()]))
+
+    dm_fine, info_f = place_thin_volume(
+        base_mesh.dm, [(G, N)], width, label=band_label,
+        label_value=band_value, clearance=clearance, size=spacing,
+        mesher="ladder", verbose=verbose)
+    m = int(inset_rings)
+    spine = G[m:-m, m:-m] if m > 0 else G
+    n_slit = _label_mid_surface(dm_fine, spine, label, label_value)
+
+    members = {b.name: b.value for b in base_mesh.boundaries}
+    members[label] = int(label_value)
+    boundaries = Enum("boundaries", members)
+    mesh = discretisation.Mesh(
+        dm_fine, simplex=True, qdegree=base_mesh.qdegree,
+        coordinate_system_type=base_mesh.CoordinateSystem.coordinate_type,
+        boundaries=boundaries, verbose=False)
+    if split:
+        mesh = split_fault(mesh, label)
+
+    mid = None
+    n_mid = 0
+    if mid_level:
+        dm_mid, _info_m = place_thin_volume(
+            base_mesh.dm, [(G[::2, ::2], N[::2, ::2])], width,
+            label=band_label, label_value=band_value, clearance=clearance,
+            size=2.0 * spacing, mesher="ladder", verbose=verbose)
+        mid = discretisation.Mesh(
+            dm_mid, simplex=True, qdegree=base_mesh.qdegree,
+            coordinate_system_type=base_mesh.CoordinateSystem.coordinate_type,
+            boundaries=base_mesh.boundaries, verbose=False)
+        n_mid = mid.dm.getHeightStratum(0)[1]
+
+    info = {"n_slit_faces": int(n_slit),
+            "n_cells": int(mesh.dm.getHeightStratum(0)[1]),
+            "n_mid_cells": int(n_mid),
+            "spacing": spacing}
+    if verbose:
+        import underworld3 as _uw
+        _uw.pprint(f"[place_fault_ribbon {label!r}] {info['n_cells']} cells "
+                   f"({info['n_slit_faces']} fault faces"
+                   f"{', split' if split else ''})"
+                   + (f", mid level {n_mid} cells" if mid_level else ""))
+    return mesh, mid, info

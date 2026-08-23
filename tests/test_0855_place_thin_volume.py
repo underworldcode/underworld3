@@ -680,3 +680,35 @@ def test_ladder_3d_placement_takes_a_grid_normals_pair():
     with pytest.raises(ValueError, match="grid, normals"):
         place_thin_volume(mesh.dm, [np.zeros((4, 3))], width=0.06,
                           mesher="ladder")
+
+
+def test_place_fault_ribbon_one_call_stack():
+    """The production path (#629): one call, one parametrisation — the
+    curved sheet grid in, a split fault-resolving mesh plus the nested
+    2:1 bridge level out. Normals are derived (none passed); the fault
+    label is a boundary ready for add_fault_bc; the band cells carry
+    the Band label; every mid band vertex is a finest-mesh vertex."""
+    from underworld3.utilities.place_surface import place_fault_ribbon
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.24,
+        regular=False, qdegree=2, refinement=1)
+    G, _N = _curved_sheet(9, 9)
+    mesh, mid, info = place_fault_ribbon(base, G, 0.06, label="Fault",
+                                         inset_rings=1)
+    assert info["n_slit_faces"] > 0
+    assert "Fault" in [b.name for b in mesh.boundaries]
+    assert mesh.cells_labelled("Band", 71).any()
+    assert mid is not None and info["n_mid_cells"] > 0
+
+    import underworld3.utilities.place_surface as ps
+    fine = {tuple(q) for q in ps._coords(mesh.dm).round(9).tolist()}
+    from underworld3.utilities.place_surface import _grid_normals
+    Nn = _grid_normals(G)
+    band = np.concatenate(
+        [(G[::2, ::2] + s * 0.03 * Nn[::2, ::2]).reshape(-1, 3)
+         for s in (-1.0, 0.0, 1.0)])
+    assert all(tuple(q) in fine for q in band.round(9).tolist())
+
+    with pytest.raises(ValueError, match="ODD"):
+        place_fault_ribbon(base, G[:8], 0.06)
