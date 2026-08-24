@@ -4973,6 +4973,38 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
+def _cell_centroids_of(dm, cell_mask):
+    """Vertex-mean centroids of the masked cells (plex cell order)."""
+    X = _coords(dm)
+    vS, vE = dm.getDepthStratum(0)
+    cS, _cE = dm.getHeightStratum(0)
+    ids = np.flatnonzero(cell_mask)
+    out = np.empty((len(ids), X.shape[1]))
+    for k, c in enumerate(ids):
+        verts = [int(q) - vS for q in dm.getTransitiveClosure(int(c) + cS)[0]
+                 if vS <= int(q) < vE]
+        out[k] = X[verts].mean(axis=0)
+    return ids, out
+
+
+def _footprint_from_samples(dm, band_mask, samples_ext, is_user_sample):
+    """Band cells whose NEAREST extended-parametrisation sample is a USER
+    point — the fault-footprint mask (#629, the honoured-paint rule): a
+    painted rheology must stop at the fault the user specified, never
+    extend into the extrapolated tip margin (measured: whole-band paint
+    put the tip lobes ~2 elements past the mapped tips). Geometry-free:
+    works for any curved strand because the parametrisation itself
+    carries the user/extension distinction."""
+    out = np.zeros_like(band_mask)
+    ids, cen = _cell_centroids_of(dm, band_mask)
+    if len(ids) == 0:
+        return out
+    d = cen[:, None, :] - samples_ext[None, :, :]
+    nearest = np.argmin(np.einsum("ijk,ijk->ij", d, d), axis=1)
+    out[ids[is_user_sample[nearest]]] = True
+    return out
+
+
 def _extend_polyline_2d(P, rings):
     """Continue a polyline ``rings`` points outward at both ends, linearly
     — the 2-D tip-margin builder (:func:`_extend_grid` one dimension
@@ -7302,7 +7334,10 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
     mid : uw.discretisation.Mesh or None
         The unsplit 2:1 band level (``mid_level=False`` gives None).
     info : dict
-        ``n_slit_faces``, ``n_cells``, ``n_mid_cells``, ``spacing``.
+        ``n_slit_faces``, ``n_cells``, ``n_mid_cells``, ``spacing``,
+        and ``footprint`` — the FAULT-footprint cell mask (band cells
+        nearest a USER grid point, not the extrapolated margin): what
+        a painted rheology or ``fac_zone`` key should use.
 
     Examples
     --------
@@ -7377,10 +7412,23 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
             boundaries=base_mesh.boundaries, verbose=False)
         n_mid = mid.dm.getHeightStratum(0)[1]
 
+    # The FAULT FOOTPRINT mask (the honoured-paint rule): band cells
+    # whose nearest extended-grid node is a USER grid point — what a
+    # volumetric rheology or fac_zone key should use, never the whole
+    # band (the margin is extrapolated surround).
+    nu_b, nv_b = Gb.shape[:2]
+    ii, jj = np.meshgrid(np.arange(nu_b), np.arange(nv_b), indexing="ij")
+    is_user = ((ii >= m) & (ii < nu_b - m)
+               & (jj >= m) & (jj < nv_b - m)).ravel()
+    footprint = _footprint_from_samples(
+        mesh.dm, mesh.cells_labelled(band_label, band_value),
+        Gb.reshape(-1, 3), is_user)
+
     info = {"n_slit_faces": int(n_slit),
             "n_cells": int(mesh.dm.getHeightStratum(0)[1]),
             "n_mid_cells": int(n_mid),
-            "spacing": spacing}
+            "spacing": spacing,
+            "footprint": footprint}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon {label!r}] {info['n_cells']} cells "
@@ -7439,7 +7487,10 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     mesh : uw.discretisation.Mesh
         The fault-resolving mesh (split when ``split=True``).
     info : dict
-        ``n_cells``, ``spacing`` (per trace), ``n_rungs`` (per trace).
+        ``n_cells``, ``spacing`` / ``n_rungs`` (per trace), and
+        ``footprints`` — per-label FAULT-footprint cell masks (the
+        honoured-paint rule): what painted rheology / ``fac_zone``
+        keys should use, never the whole band.
 
     Notes
     -----
@@ -7454,8 +7505,13 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         raise ValueError(
             "margin_rings must be >= 1: the split cannot reach the band "
             "rim (the tip rule); the margin is extrapolated surround.")
+    labels = [label for label, _P in traces]
+    if len(set(labels)) != len(labels):
+        raise ValueError(
+            f"trace labels must be unique (each becomes a boundary); got "
+            f"{labels}")
     dm = base_mesh.dm
-    spacing_all, rungs_all = [], []
+    spacing_all, rungs_all, extended = [], [], []
     for k, (label, P) in enumerate(traces):
         P = np.asarray(P, dtype=float)
         if P.ndim != 2 or P.shape[1] != 2 or len(P) < 3:
@@ -7471,6 +7527,7 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
             size=spacing, mesher="ladder", verbose=verbose)
         spacing_all.append(spacing)
         rungs_all.append(len(P))
+        extended.append(S)
 
     mesh = discretisation.Mesh(
         dm, simplex=True, qdegree=base_mesh.qdegree,
@@ -7483,8 +7540,22 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         mesh = mesh.add_fault([(label, np.asarray(P, dtype=float))
                                for label, P in traces])
 
+    # Per-strand FAULT FOOTPRINT masks (the honoured-paint rule): band
+    # cells whose nearest extended sample is a USER point. This is the
+    # mask a volumetric rheology (or a fac_zone key) should use — never
+    # the whole band, whose margin is extrapolated surround.
+    footprints = {}
+    for k, (label, P) in enumerate(traces):
+        band_k = mesh.cells_labelled(band_label, band_value + k)
+        m = margin_rings
+        is_user = np.zeros(len(extended[k]), dtype=bool)
+        is_user[m:len(extended[k]) - m] = True
+        footprints[label] = _footprint_from_samples(
+            mesh.dm, band_k, extended[k], is_user)
+
     info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
-            "spacing": spacing_all, "n_rungs": rungs_all}
+            "spacing": spacing_all, "n_rungs": rungs_all,
+            "footprints": footprints}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "

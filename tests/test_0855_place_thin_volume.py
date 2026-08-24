@@ -707,6 +707,10 @@ def test_place_fault_ribbon_one_call_stack():
     assert "Fault" in [b.name for b in mesh.boundaries]
     assert mesh.cells_labelled("Band", 71).any()
     assert mid is not None and info["n_mid_cells"] > 0
+    foot = info["footprint"]
+    band = mesh.cells_labelled("Band", 71)
+    assert foot.any() and foot.sum() < band.sum()
+    assert not (foot & ~band).any()
 
     import underworld3.utilities.place_surface as ps
     fine = {tuple(q) for q in ps._coords(mesh.dm).round(9).tolist()}
@@ -790,6 +794,17 @@ def test_place_fault_ribbon_2d_two_strand_network():
     names = [b.name for b in mesh.boundaries]
     assert "Main" in names and "Branch" in names
     assert mesh.cells_labelled("Band").any()
+    # the honoured-paint rule is API: per-strand FAULT footprints exclude
+    # the extrapolated margin (strictly smaller than the band) and are
+    # what rheology / fac_zone keys should use
+    for k, lbl in enumerate(("Main", "Branch")):
+        band_k = mesh.cells_labelled("Band", 71 + k)
+        foot = info["footprints"][lbl]
+        assert foot.any() and foot.sum() < band_k.sum()
+        assert not (foot & ~band_k).any()
+    with pytest.raises(ValueError, match="unique"):
+        place_fault_ribbon_2d(base, [("Main", main), ("Main", branch)],
+                              0.03)
     # honoured: every trace point is a mesh vertex
     import underworld3.utilities.place_surface as ps
     verts = {tuple(q) for q in ps._coords(mesh.dm).round(9).tolist()}
