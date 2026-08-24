@@ -225,9 +225,13 @@ def test_a_setback_sheet_is_blind_located_and_splittable():
             tris += [(a, b, e), (a, e, c)]
 
     setback = 0.25
+    # clearance 0.3, not the 0.6 default: the setback margin must hold at
+    # the WORST local h a gmsh version deals this box (cavity extent ~
+    # (clearance+1)*h_local; at 0.6 and an unlucky h ~ 1.5x nominal the
+    # cavity overruns the 0.25 setback — measured as a CI-only refusal).
     placed, info = place_sheet(base.dm, pts, np.array(tris, dtype=np.int64),
                                label="FltA", label_value=41,
-                               setback=setback)
+                               setback=setback, clearance=0.3)
     assert info["n_trace_edges"] == 0, "a setback sheet must not outcrop"
     assert info["n_surface_facets"] > 0
 
@@ -293,9 +297,10 @@ def test_a_resampled_sheet_matches_the_mesh_it_cuts():
             tris += [(a0, a0 + 1, a0 + 4), (a0, a0 + 4, a0 + 3)]
 
     setback, size = 0.25, 0.1
+    # clearance 0.3 for the same worst-local-h headroom as the setback test
     placed, info = place_sheet(base.dm, pts, np.array(tris, dtype=np.int64),
                                label="FltA", label_value=41,
-                               setback=setback, size=size)
+                               setback=setback, size=size, clearance=0.3)
     assert info["n_trace_edges"] == 0
     assert info["n_surface_facets"] > 3 * len(tris), (
         "the resample did not refine the coarse authored sheet")
