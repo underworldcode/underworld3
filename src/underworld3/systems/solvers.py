@@ -2225,11 +2225,21 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             return                            # asked for, not fallen back to
         if getattr(self, "_pc_user_override", False):
             return                            # the user owns this block's pc_type
+        # The rotated free-slip path builds its OWN fieldsplit KSP and leaves
+        # this one un-set-up, so asking it for sub-KSPs raises -- and PETSc
+        # prints a full error banner before the exception can be caught, which
+        # makes a healthy solve look broken. Skip it by the path rather than by
+        # catching. (Suppressing with pushErrorHandler was tried: it is global
+        # state and broke 23 unrelated tests.)
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            return
+        pc = self.snes.getKSP().getPC()
+        if pc.getType() != "fieldsplit":
+            return
         try:
-            velocity = self.snes.getKSP().getPC().getFieldSplitSubKSP()[0]
-            installed = velocity.getPC().getType()
+            installed = pc.getFieldSplitSubKSP()[0].getPC().getType()
         except Exception:
-            return                            # no fieldsplit to inspect
+            return                            # not set up: nothing to inspect
         if installed == "mg":
             return
 
