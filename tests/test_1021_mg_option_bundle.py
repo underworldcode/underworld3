@@ -123,7 +123,12 @@ def test_bundles_clear_each_others_keys():
     """Bundles share an options prefix, so switching between them must leave no
     key behind — every key a bundle does not set, a sibling does, and it must
     appear in that bundle's stale list."""
-    bundles = [multigrid_options.gamg_bundle()]
+    # gamg_bundle(block_size=...) is a sibling like any other: it shares the
+    # prefix, and it is the one that sets `mat_block_size`. Left out, `owned`
+    # misses that key while every bundle's stale list carries it, and the
+    # assertion fails for bundles that are behaving correctly.
+    bundles = [multigrid_options.gamg_bundle(),
+               multigrid_options.gamg_bundle(block_size=2)]
     bundles += [multigrid_options.geometric_mg_bundle(coarse=c)
                 for c in multigrid_options.GEOMETRIC_MG_COARSE_SOLVERS]
     owned = set().union(*(set(b.settings) for b in bundles))

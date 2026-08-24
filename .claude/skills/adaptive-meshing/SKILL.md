@@ -71,8 +71,10 @@ adapt a mesh to a field `T` each step:
 ```python
 import underworld3 as uw
 
-# metric from |grad T|: refinement = finest:coarsest cell-size ratio (~5).
-# Use refinement=R, NOT strategy= (strategy caps at ~2 and under-grades).
+# metric from |grad T|: refinement=R is a factor on the BACKGROUND spacing h0,
+# not a finest:coarsest ratio. The envelope is h in [h0/R, h0*coarsening], and
+# coarsening="auto" is R**(1/d) — so R=5 in 2-D spans h0/5 to 2.2*h0, a ratio
+# of R**(1+1/d) ~ 11. Use refinement=R, NOT strategy= (caps at ~2, under-grades).
 rho = uw.meshing.metric_density_from_gradient(
     mesh, T, refinement=5, coarsening="auto", metric_choice="front-following")
 
@@ -124,10 +126,15 @@ method_kwargs=dict(step_frac=0.2, accel="cg", momentum=0.0), slip_surfaces=True)
 
 ### 2. Metric
 - Thermal: `metric_density_from_gradient(mesh, T, refinement=R,
-  metric_choice="front-following")` — `refinement=R` (≈5) is the finest:coarsest
-  grading ratio; named `strategy=` caps at ~2 and under-grades. R≈5 extracts ~all
-  the grading the node budget/layout allows; don't over-tune R (benign no-op above
-  budget).
+  metric_choice="front-following")`. `refinement=R` (≈5) is the maximum local
+  refinement **on the background cell size h0**, not the finest:coarsest ratio:
+  the metric targets `h ∈ [h0/R, h0·coarsening]`, and `coarsening="auto"` takes
+  the budget-conserving `R**(1/d)`. So R=5 in 2-D asks for h0/5 up to 2.2·h0 —
+  a finest:coarsest ratio of `R**(1+1/d)` ≈ 11, and ≈ 8.5 in 3-D. Named
+  `strategy=` caps at ~2 and under-grades. R≈5 extracts ~all the grading the
+  node budget/layout allows; don't over-tune R (benign no-op above budget).
+  Passing `refinement` takes the **envelope branch**, which ignores `amp`,
+  `lo/hi_percentile`, `mode` and `power`.
 - Fault / sharp feature: a **hand-built anisotropic SPD tensor**
   `M = ρ·I + (Rf²−1)·exp(−(d/w)²)·n nᵀ` (thin ACROSS the feature normal n). A
   scalar bump refines a fat isotropic corridor and leaves the centre-line coarse.

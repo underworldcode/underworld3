@@ -221,6 +221,84 @@ Companion skills: **`adapt-on-top-faults`** (building the child, engines, repair
 band sizing), **`adaptive-meshing`** (the mover, and `relax(pin_bands=...)` for
 relaxing a mesh that was refined onto an interface).
 
+## The Schur complement: pair the penalty with FMG, never with GAMG
+
+**Symptom this is for**: the velocity block's iteration count is rock solid but
+the pressure sub-solve wanders into the hundreds and eventually stops
+converging.
+
+**First: it is probably not the pressure block.** `S = -B A^-1 B^T` is applied
+*through* the velocity solve, so a velocity solve that exits at its iteration
+cap makes the Schur operator inconsistent between applications — and no Krylov
+method converges against an operator that moves under it. The pressure block
+then caps too, and the outer flounders. Measured on SolCx (eta 1e6, P2-P0disc,
+h=1/30), changing **only** `fieldsplit_velocity_ksp_max_it`:
+
+| velocity cap | sec | outer | pressure/app | velocity/app |
+|---|---|---|---|---|
+| 200 (default) | 976.0 | 44 | **200.0** | **200.0** |
+| 5000 | **25.6** | **2** | **30.0** | 618.0 |
+
+**38x from a number that is not in the pressure block**, and the velocity error
+is identical in both rows. Before tuning the Schur solve, check whether either
+block sat at exactly its cap — `solve_report.sub` gives iterations and
+applications per block, and a per-application count equal to the cap to the
+digit is the tell.
+
+**Then: the penalty is the lever on the Schur count, and it needs FMG.**
+`stokes.penalty = lambda` adds `lambda*mu*(div u)(div v)`, which makes the
+eta-scaled mass matrix a better approximation to S. Matched on one mesh
+(2592 cells), same discrete solve, only the velocity preconditioner differs:
+
+| lambda | velocity PC | sec | outer | Schur/app | velocity/app | velocity total |
+|---|---|---|---|---|---|---|
+| 0  | GAMG | 15.49 | 2 | 125.5 | 94.7 | 24802 |
+| 0  | **FMG** | **3.88** | 1 | **59.0** | **8.8** | **546** |
+| 10 | GAMG | 20.68 | 7 | 22.3 | **199.9 capped** | 33976 |
+| 10 | **FMG** | **3.06** | 1 | **18.0** | **13.5** | **270** |
+
+- **With FMG, `penalty = 10` improves every axis at once**: 21% faster, Schur
+  count 3.3x smaller, total velocity work halved. FMG absorbs grad-div
+  augmentation (8.8 -> 13.5 iterations per application); GAMG does not
+  (94.7 -> capped).
+- **With GAMG, do not use it at all.** The same `penalty = 10` makes the solve
+  *slower* (15.49 -> 20.68 s), because augmentation is exactly what drives GAMG
+  into its cap. Uncapping rescues it to 11.03 s but it still needs **833**
+  iterations per application, and FMG is 3.6x faster on the same mesh.
+  Feasible is not competitive.
+
+**The accuracy cost is consistent, so it is safe to pair by default.** The
+penalty is grad-div, not a true augmented Lagrangian — `div(P2)` is not inside
+`P0`, so the term does not vanish at the discrete solution and it does perturb
+the answer. But the perturbation converges away: same rate, and the gap shrinks
+under refinement.
+
+| cells | lambda=0 v err | rate | lambda=10 v err | rate | gap |
+|---|---|---|---|---|---|
+| 648   | 2.112e-1 | —    | 2.327e-1 | —    | 1.102 |
+| 2592  | 1.266e-1 | 1.67 | 1.376e-1 | 1.69 | 1.087 |
+| 10368 | 8.727e-2 | 1.45 | 9.305e-2 | 1.48 | **1.066** |
+
+For a pressure-dependent constitutive law use the mechanical pressure,
+`p_mech = p - lambda*mu*(div u)`; the raw `p` is the multiplier.
+
+**Traps.**
+
+- **FMG needs a refined base or you silently get GAMG.** Measured:
+  `refinement=0` -> one hierarchy level -> default velocity PC is `gamg`;
+  `refinement=2` -> `mg`. So `penalty` set "with FMG" on an unrefined mesh is
+  actually the harmful GAMG pairing. Check
+  `snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC().getType()`, or read
+  `solver.pc_fallbacks`.
+- **Scaling `saddle_preconditioner` by a constant does nothing** — it does not
+  change the Krylov subspace. `1/eta` and `101/eta` both give 28 iterations,
+  identical to every digit, so an "AL-matched" `1/(eta*(1+lambda))` cannot help.
+  The 1/eta *weighting* itself is worth 1.9x (28 vs 52 with a flat `1`).
+- **Eisenstat-Walker is inert under `snes_type=ksponly`** — identical iterations
+  and error on or off. And `outer 1` is not an EW artefact: it is what a full
+  Schur factorisation gives when the Schur complement is solved well.
+- Measurements: `~/+Simulations/pressure_schur_625/` (#625).
+
 ## Gotchas
 
 - **`./uw build` → `amr-dev` env**; verify `uw.__file__` is the worktree site-packages.

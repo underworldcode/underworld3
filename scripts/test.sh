@@ -83,7 +83,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
 
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
   $PYTEST tests/test_00[0-4]*py || status=1
-  #$PYTEST tests/test_0050*py    || status=1 # disable auditor test for now
+  $PYTEST tests/test_0050*py || status=1
   $PYTEST tests/test_005[1-9]*py tests/test_006[0-1]*py || status=1
   $PYTEST tests/test_01*py || status=1
   $PYTEST tests/test_02*py || status=1

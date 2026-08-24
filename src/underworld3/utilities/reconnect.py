@@ -830,19 +830,36 @@ def _rebuild_point_sf(new, dm, point_map, nroots):
     # petsc4py will not narrow an index array for us — the graph must arrive as
     # PETSc's own integer type or `setGraph` raises an unsafe-cast TypeError.
     new_sf = PETSc.SF().create(comm=dm.comm)
-    if ilocal is None or not len(ilocal):
+
+    # A rank that shares nothing has no leaves to renumber, but it still has to
+    # reach the verdict below with its peers — which is why the emptiness test
+    # is read here and acted on after, rather than returning straight out of it.
+    shares_nothing = ilocal is None or not len(ilocal)
+    if shares_nothing:
+        leaves = local = remote_index = None
+        deleted_here = False
+    else:
+        leaves = np.asarray(ilocal, dtype=np.int64)
+        local = point_map[leaves - pStart]
+        remote_index = leaf_new[leaves - pStart]
+        deleted_here = bool((local < 0).any() or (remote_index < 0).any())
+
+    # Assert-class: fires only on an internal contract violation. It is still
+    # raised collectively — one rank raising while its peers carry on into the
+    # next collective is a hang on top of the error, and the error is the thing
+    # worth seeing (#512).
+    offenders = [rank for rank, bad
+                 in enumerate(dm.comm.tompi4py().allgather(deleted_here)) if bad]
+    if offenders:
+        raise RuntimeError(
+            f"reconnect: a shared point was deleted on rank(s) {offenders}. "
+            "The removal pass must freeze the seam; see remove_vertices.")
+
+    if shares_nothing:
         new_sf.setGraph(nroots, np.zeros(0, dtype=PETSc.IntType),
                         np.zeros(0, dtype=PETSc.IntType))
         _install_point_sf(new, new_sf)
         return
-
-    leaves = np.asarray(ilocal, dtype=np.int64)
-    local = point_map[leaves - pStart]
-    remote_index = leaf_new[leaves - pStart]
-    if (local < 0).any() or (remote_index < 0).any():
-        raise RuntimeError(
-            "reconnect: a shared point was deleted. The removal pass must "
-            "freeze the seam; see remove_vertices.")
 
     remote = np.empty((len(leaves), 2), dtype=PETSc.IntType)
     remote[:, 0] = np.asarray(iremote).reshape(-1, 2)[:, 0]

@@ -12,8 +12,10 @@ gathering, the boundary-mass de-smear (lumped / consistent), and the field hand-
 The equation-specific bit — extracting the nodal reaction — is the solver method
 ``_assemble_volume_reaction``, which returns each rank's RAW (per-rank) volume FEM
 residual; the complete reaction at a boundary node shared across a partition cut is then
-assembled here in ``_desmear`` by SUMMING each rank's partial contribution by coordinate
-(the same rock-solid gather used for the boundary mass — no hand-rolled global assembly).
+assembled here in ``_desmear`` by SUMMING each rank's partial contribution by coordinate.
+In 3D, the complete boundary mass is assembled and solved once on rank zero; only the
+recovered values needed by each rank are scattered back. This avoids replicating the
+global P2 surface mesh and sparse solve on every rank.
 
 ``mass="auto"`` (default) uses a diagonal lumped mass where lumping is pointwise
 sound (the 2D P1/P2 line traces and the 3D P1 triangle trace), and the consistent
@@ -280,8 +282,10 @@ def _node_reactions(xs, R, dim, boundary):
 def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
              edge_node_coords=None):
     """De-smear per-node reaction loads R (aligned with xs) into a pointwise flux via the
-    boundary mass, assembled globally by a coordinate-keyed allgather so every rank forms
-    the identical system. Returns the flux at this rank's local nodes (xs order).
+    boundary mass. In 3D, coordinate-keyed reactions and trace elements are gathered to
+    rank zero, which forms and solves the global system once; the flux values requested
+    by each rank are then scattered in local ``xs`` order. Returns the flux at this
+    rank's local nodes.
 
     ``partial_reaction`` controls how a boundary node shared across a partition cut is
     reconciled across ranks: ``True`` (default) SUMS each rank's contribution — correct
@@ -369,126 +373,147 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
                 )
             )
 
-        R_by = {}
-        for rank_values in comm.allgather(nodeR):
-            for key, value in rank_values.items():
-                R_by[key] = (
-                    R_by.get(key, 0.0) + value if partial_reaction else value
-                )
+        local_keys = [_key(x, dim) for x in xs]
+        gathered = comm.gather((nodeR, local_elements, local_keys), root=0)
+        flux_by_rank = None
+        root_error = None
 
-        elements = {}
-        for rank_elements in comm.allgather(local_elements):
-            for order, nodes, area in rank_elements:
-                elements[(order, tuple(sorted(nodes)))] = (order, nodes, area)
+        if comm.rank == 0:
+            try:
+                requested_keys = [rank_keys for _rank_r, _rank_e, rank_keys in gathered]
 
-        orders = {order for order, _nodes, _area in elements.values()}
-        if len(orders) != 1:
-            raise RuntimeError(
-                f"Expected one trace order on boundary {boundary!r}, found {sorted(orders)}."
-            )
-        order = orders.pop()
-        if mass == "auto":
-            mass = "consistent" if order == 2 else "lumped"
-        if order == 2 and mass == "lumped":
-            raise ValueError(
-                "A 3D P2 triangular trace has zero row-sum mass at its vertices; "
-                "use mass='consistent' (pointwise, carries the vertex-integral "
-                "checkerboard risk) or mass='p1' (P1-projected, monotone — the "
-                "choice for driving a P1 surface field) for boundary-flux recovery."
-            )
-        mid_owners = {}
-        if mass == "p1":
-            if order != 2:
-                mass = "lumped"                    # P1 trace: p1 IS lumped
-            else:
-                # P1-PROJECTED recovery on a P2 trace: the consistent P2 path has
-                # the ∫φ_vertex = 0 vertex checkerboard (#404 hold), while the P1
-                # trace is sound — and a P1 surface field only consumes vertex
-                # values anyway. Fold each edge-midpoint load onto its two edge
-                # vertices (φ^{P1}(edge-mid) = 1/2 exactly, P1 ⊂ P2 — the load
-                # transfer is the interpolation transpose, so the total load is
-                # conserved), then de-smear with the P1 lumped triangle mass.
-                # Midpoint outputs are read back as the P1 interpolant (vertex
-                # average).
-                new_elements = {}
-                for _order, nodes, area in elements.values():
-                    vk = nodes[:3]
-                    m01, m12, m20 = nodes[3:]
-                    mid_owners[m01] = (vk[0], vk[1])
-                    mid_owners[m12] = (vk[1], vk[2])
-                    mid_owners[m20] = (vk[2], vk[0])
-                    new_elements[(1, tuple(sorted(vk)))] = (1, vk, area)
-                folded = {}
-                for key, value in R_by.items():
-                    if key in mid_owners:
-                        va, vb = mid_owners[key]
-                        folded[va] = folded.get(va, 0.0) + 0.5 * value
-                        folded[vb] = folded.get(vb, 0.0) + 0.5 * value
+                R_by = {}
+                elements = {}
+                for rank_values, rank_elements, _rank_keys in gathered:
+                    for key, value in rank_values.items():
+                        R_by[key] = R_by.get(key, 0.0) + value if partial_reaction else value
+                    for order, nodes, area in rank_elements:
+                        elements[(order, tuple(sorted(nodes)))] = (order, nodes, area)
+                del gathered
+
+                orders = {order for order, _nodes, _area in elements.values()}
+                if len(orders) != 1:
+                    raise RuntimeError(
+                        f"Expected one trace order on boundary {boundary!r}, "
+                        f"found {sorted(orders)}."
+                    )
+                order = orders.pop()
+                if mass == "auto":
+                    mass = "consistent" if order == 2 else "lumped"
+                if order == 2 and mass == "lumped":
+                    raise ValueError(
+                        "A 3D P2 triangular trace has zero row-sum mass at its "
+                        "vertices; use mass='consistent' (pointwise, carries the "
+                        "vertex-integral checkerboard risk) or mass='p1' "
+                        "(P1-projected, monotone — the choice for driving a P1 "
+                        "surface field) for boundary-flux recovery."
+                    )
+                mid_owners = {}
+                if mass == "p1":
+                    if order != 2:
+                        mass = "lumped"  # P1 trace: p1 IS lumped
                     else:
-                        folded[key] = folded.get(key, 0.0) + value
-                R_by = folded
-                elements = new_elements
-                order = 1
-                mass = "lumped"
+                        # Fold each P2 midpoint load onto its two P1 vertices, then
+                        # de-smear with the monotone P1 lumped triangle mass.
+                        new_elements = {}
+                        for _order, nodes, area in elements.values():
+                            vk = nodes[:3]
+                            m01, m12, m20 = nodes[3:]
+                            mid_owners[m01] = (vk[0], vk[1])
+                            mid_owners[m12] = (vk[1], vk[2])
+                            mid_owners[m20] = (vk[2], vk[0])
+                            new_elements[(1, tuple(sorted(vk)))] = (1, vk, area)
+                        folded = {}
+                        for key, value in R_by.items():
+                            if key in mid_owners:
+                                va, vb = mid_owners[key]
+                                folded[va] = folded.get(va, 0.0) + 0.5 * value
+                                folded[vb] = folded.get(vb, 0.0) + 0.5 * value
+                            else:
+                                folded[key] = folded.get(key, 0.0) + value
+                        R_by = folded
+                        elements = new_elements
+                        order = 1
+                        mass = "lumped"
 
-        keys = sorted(R_by)
-        global_index = {key: i for i, key in enumerate(keys)}
-        reaction = np.array([R_by[key] for key in keys], dtype=float)
-        if mass == "lumped":
-            boundary_mass = np.zeros(len(keys), dtype=float)
-            for _order, nodes, area in elements.values():
-                for key in nodes:
-                    boundary_mass[global_index[key]] += area / 3.0
-            missing = np.flatnonzero(boundary_mass <= 0.0)
-            if missing.size:
-                raise RuntimeError(
-                    f"Boundary mass is zero at {missing.size} nodes on {boundary!r}."
-                )
-            flux = reaction / boundary_mass
-        elif mass == "consistent":
-            from scipy.sparse import coo_matrix
-            from scipy.sparse.linalg import spsolve
+                keys = sorted(R_by)
+                global_index = {key: i for i, key in enumerate(keys)}
+                reaction = np.array([R_by[key] for key in keys], dtype=float)
+                if mass == "lumped":
+                    boundary_mass = np.zeros(len(keys), dtype=float)
+                    for _order, nodes, area in elements.values():
+                        for key in nodes:
+                            boundary_mass[global_index[key]] += area / 3.0
+                    missing = np.flatnonzero(boundary_mass <= 0.0)
+                    if missing.size:
+                        raise RuntimeError(
+                            f"Boundary mass is zero at {missing.size} nodes on " f"{boundary!r}."
+                        )
+                    flux = reaction / boundary_mass
+                elif mass == "consistent":
+                    from scipy.sparse import coo_matrix
+                    from scipy.sparse.linalg import spsolve
 
-            rows = []
-            cols = []
-            values = []
-            reference_mass = (
-                _P1_TRIANGLE_MASS if order == 1 else _P2_TRIANGLE_MASS
-            )
-            mass_scale = 12.0 if order == 1 else 180.0
-            for _order, nodes, area in elements.values():
-                indices = [global_index[key] for key in nodes]
-                element_mass = (area / mass_scale) * reference_mass
-                for i, row in enumerate(indices):
-                    for j, col in enumerate(indices):
-                        rows.append(row)
-                        cols.append(col)
-                        values.append(element_mass[i, j])
-            surface_mass = coo_matrix(
-                (values, (rows, cols)), shape=(len(keys), len(keys))
-            ).tocsr()
-            surface_mass.sum_duplicates()
-            flux = np.asarray(spsolve(surface_mass, reaction), dtype=float)
-            boundary_mass = np.asarray(
-                surface_mass @ np.ones(len(keys), dtype=float)
-            )
-            if not np.all(np.isfinite(flux)):
-                raise RuntimeError(
-                    f"Consistent boundary-mass solve failed on boundary {boundary!r}."
-                )
-        if remove_mean:
-            mean = float(np.dot(flux, boundary_mass) / np.sum(boundary_mass))
-            flux -= mean
+                    reference_mass = _P1_TRIANGLE_MASS if order == 1 else _P2_TRIANGLE_MASS
+                    mass_scale = 12.0 if order == 1 else 180.0
+                    nodes_per_element = reference_mass.shape[0]
+                    entries_per_element = nodes_per_element**2
+                    entry_count = len(elements) * entries_per_element
+                    rows = np.empty(entry_count, dtype=np.int64)
+                    cols = np.empty(entry_count, dtype=np.int64)
+                    values = np.empty(entry_count, dtype=float)
+                    cursor = 0
+                    for _order, nodes, area in elements.values():
+                        indices = np.fromiter(
+                            (global_index[key] for key in nodes),
+                            dtype=np.int64,
+                            count=nodes_per_element,
+                        )
+                        next_cursor = cursor + entries_per_element
+                        rows[cursor:next_cursor] = np.repeat(indices, nodes_per_element)
+                        cols[cursor:next_cursor] = np.tile(indices, nodes_per_element)
+                        values[cursor:next_cursor] = ((area / mass_scale) * reference_mass).ravel()
+                        cursor = next_cursor
+                    surface_mass = coo_matrix(
+                        (values, (rows, cols)), shape=(len(keys), len(keys))
+                    ).tocsr()
+                    del rows, cols, values
+                    surface_mass.sum_duplicates()
+                    flux = np.asarray(spsolve(surface_mass, reaction), dtype=float)
+                    boundary_mass = np.asarray(surface_mass @ np.ones(len(keys), dtype=float))
+                    if not np.all(np.isfinite(flux)):
+                        raise RuntimeError(
+                            "Consistent boundary-mass solve failed on boundary " f"{boundary!r}."
+                        )
+                if remove_mean:
+                    mean = float(np.dot(flux, boundary_mass) / np.sum(boundary_mass))
+                    flux -= mean
 
-        def value_at(x):
-            key = _key(x, dim)
-            if key in global_index:
-                return flux[global_index[key]]
-            # P1-projected mode: a P2 edge midpoint reads the P1 interpolant
-            va, vb = mid_owners[key]
-            return 0.5 * (flux[global_index[va]] + flux[global_index[vb]])
+                def value_at(key):
+                    if key in global_index:
+                        return flux[global_index[key]]
+                    # P1-projected mode: a P2 midpoint reads the P1 interpolant.
+                    va, vb = mid_owners[key]
+                    return 0.5 * (flux[global_index[va]] + flux[global_index[vb]])
 
-        return np.array([value_at(x) for x in xs])
+                flux_by_rank = [
+                    np.array([value_at(key) for key in rank_keys], dtype=float)
+                    for rank_keys in requested_keys
+                ]
+            except Exception as error:
+                root_error = (type(error).__name__, str(error))
+
+        root_error = comm.bcast(root_error, root=0)
+        if root_error is not None:
+            error_name, error_message = root_error
+            error_type = {
+                "ValueError": ValueError,
+                "NotImplementedError": NotImplementedError,
+                "RuntimeError": RuntimeError,
+            }.get(error_name, RuntimeError)
+            raise error_type(error_message)
+
+        return np.asarray(comm.scatter(flux_by_rank, root=0), dtype=float)
 
     if dim != 2:
         raise NotImplementedError(

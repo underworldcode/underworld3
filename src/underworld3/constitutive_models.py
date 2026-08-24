@@ -1034,6 +1034,15 @@ class ViscousFlowModel(Constitutive_Model):
         # rebuilt, not merely revalued — and _get_yield_softness only builds it
         # alongside δ. (The power mean carries the anchor in _combine_yield itself, so
         # for that family the _reset is the whole of the update.)
+        #
+        # Discarding the softness atom ORPHANS the δ held by any
+        # YieldHomotopyControl built before this call: the control still ramps
+        # the atom it captured, and the model now reads a fresh one. That cannot
+        # bite a march, because `yield_continuation` refuses `anchor=` together
+        # with a ready-made control — so the only way to reach it is to build a
+        # control by hand, set the anchor afterwards, and read δ back off the
+        # control for diagnostics. Set the anchor BEFORE building the control
+        # (#490).
         self._yield_offset_expr = None
         self._yield_softness_expr = None
         self._reset()
@@ -1191,6 +1200,18 @@ class ViscousFlowModel(Constitutive_Model):
 
     @viscosity_min_rounding.setter
     def viscosity_min_rounding(self, value):
+        # A rounding scale is a width, so it is non-negative by construction:
+        # zero is the exact hard Max, positive rounds the corner. A negative
+        # value has no reading — it would sharpen the corner past Max — and
+        # since it reaches the tangent only through the compiled expression,
+        # the symptom of setting one is a solver that will not converge rather
+        # than anything naming this property (#490).
+        if value is not None and not isinstance(value, sympy.Basic):
+            if float(value) < 0.0:
+                raise ValueError(
+                    f"viscosity_min_rounding is a rounding WIDTH and cannot be "
+                    f"negative; got {value}. Use 0 for the exact Max.")
+
         self._viscosity_min_rounding = value
         self._reset()
 

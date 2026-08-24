@@ -281,23 +281,65 @@ def _geometric_mg_settings(coarse, smoother="robust"):
     return settings
 
 
-def _gamg_settings():
+def _gamg_settings(block_size=1):
     """The algebraic-multigrid (GAMG) settings — the fallback whenever no
-    geometric hierarchy is available."""
-    return {
+    geometric hierarchy is available.
+
+    ``block_size`` is the number of components per node in the field this block
+    solves. See :func:`gamg_bundle`.
+    """
+    settings = {
         "pc_type": "gamg",
         "pc_gamg_type": "agg",
         "pc_gamg_repartition": True,
-        "pc_mg_type": "additive",
+        # PETSc's own default cycle for GAMG, set rather than inherited so that
+        # a block previously configured for geometric MG (which sets "full")
+        # cannot leak its cycle through setFromOptions.
+        #
+        # This was "additive" from 2022 until #579. Additive multigrid applies
+        # the levels independently and sums the corrections, so no level sees
+        # what another has already removed. It entered alongside
+        # `pc_mg_levels = 2`, where there is one coarse level and the two cycles
+        # nearly coincide, and stayed as the hierarchy got deeper and they did
+        # not. Measured on SolKz at 11 727 unknowns, additive cost 243-347
+        # cycles per velocity solve against 74-118 multiplicative.
+        "pc_mg_type": "multiplicative",
         "pc_gamg_agg_nsmooths": 2,
         "mg_levels_ksp_max_it": 3,
         "mg_levels_ksp_converged_maxits": None,
     }
+    if block_size > 1:
+        # Tell GAMG the field has `block_size` components per node, so that it
+        # aggregates NODES rather than individual scalar degrees of freedom.
+        #
+        # PETSc works this out for itself wherever it can, and does: with no
+        # velocity boundary conditions, or with a full vector Dirichlet
+        # condition, the field IS and the fieldsplit sub-matrix both come out
+        # with block size 2. It collapses to 1 under a COMPONENT-WISE Dirichlet
+        # condition, because the field then genuinely carries one degree of
+        # freedom at a constrained wall node and two inside, and the matrix is
+        # not uniformly node-blocked. Block size 1 is the correct description
+        # there -- and component-wise Dirichlet is free slip, which is the
+        # standard geodynamics boundary condition, so the case PETSc cannot
+        # help with is the ordinary one.
+        #
+        # Setting it anyway asks GAMG to aggregate on a pairing that does not
+        # align with nodes at the walls. That cannot change the answer: a
+        # preconditioner alters the route to the solution and not the solution
+        # itself, and measured on free-slip SolKz the two configurations agree
+        # to 2e-7 relative, well inside a 1e-6 solve. What it changes is the
+        # cost. Free-slip SolKz at 11 727 unknowns: 74-118 cycles per velocity
+        # solve and 3.48e9 flops against 34-47 and 1.60e9. With the viscosity
+        # contrast concentrated in a band rather than spread smoothly it is
+        # larger still -- 2.61e11 flops against 2.97e10, and 32.7 s against
+        # 4.9 s.
+        settings["mat_block_size"] = block_size
+    return settings
 
 
 def _all_keys():
     """Every option key any bundle here owns — the basis for the stale lists."""
-    keys = set(_gamg_settings())
+    keys = set(_gamg_settings()) | set(_gamg_settings(2))
     for coarse in GEOMETRIC_MG_COARSE_SOLVERS:
         keys |= set(_geometric_mg_settings(coarse))
     return keys
@@ -355,12 +397,21 @@ def geometric_mg_bundle(coarse="redundant", smoother="robust"):
     return _bundle(_geometric_mg_settings(coarse, smoother))
 
 
-def gamg_bundle():
+def gamg_bundle(block_size=1):
     """Algebraic multigrid — the fallback when no geometric hierarchy exists.
+
+    Parameters
+    ----------
+    block_size : int
+        Components per node in the field this block solves — ``mesh.dim`` for a
+        velocity or other vector field, ``1`` (the default) for a scalar. On a
+        vector field this is worth a factor of two to nine; see the commentary
+        in :func:`_gamg_settings`. Pass ``1`` rather than guessing: telling GAMG
+        the wrong node size on a scalar block would be a pure loss.
 
     Returns
     -------
     MGSettings
         Settings and stale keys; see :meth:`MGSettings.apply`.
     """
-    return _bundle(_gamg_settings())
+    return _bundle(_gamg_settings(block_size))

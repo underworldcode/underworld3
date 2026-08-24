@@ -723,6 +723,14 @@ def _destroy_rotated_linear_cache(cache):
 # --------------------------------------------------------------------------- #
 #  The rotated solve
 # --------------------------------------------------------------------------- #
+# PETSc SNESConvergedReason values, named rather than spelled as integers at
+# the point of use.
+_SNES_CONVERGED_FNORM_RELATIVE = 2
+_SNES_CONVERGED_SNORM_RELATIVE = 4
+_SNES_DIVERGED_MAX_IT = -5
+_SNES_DIVERGED_LINE_SEARCH = -6
+
+
 def _naive_pressure_pin(dm):
     """One owned pressure DOF (datum) for the direct-LU gauge pin — row only, so
     the B^T coupling is kept. Only the direct solve needs it; the iterative path
@@ -1023,6 +1031,15 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # Direct LU per increment: no FMG prolongation / null space to build — the
     # gauge is fixed by the naive pressure pin instead (see _naive_pressure_pin).
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
+    # The pin is decided ONCE, here, because the residual has to agree with the
+    # operator about it. The direct path replaces the pinned pressure row with
+    # the identity, so that equation is no longer part of the system being
+    # solved; a residual that still counts it can never fall below whatever sits
+    # there, and the loop then iterates to max_it against a floor it has itself
+    # defined as unreachable. Measured before this was hoisted: the velocity
+    # residual reached 6e-12 at the first increment and the remaining |F̂| was
+    # the pinned DOF alone, bit-identical for eight further no-op iterations.
+    lu_pin = _naive_pressure_pin(dm) if use_lu else None
     interface_laws = bool(getattr(solver, "_fault_interface_laws", {}))
 
     # ---- cross-solve workspace cache (issue #417; see the block comment
@@ -1217,6 +1234,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             # in the rotated frame)
             interface.residual_add(solver, uvec, Fh)
         _zero_rows_local(Fh, normal_rows)
+        if lu_pin is not None:
+            # Same reason as normal_rows: the pinned row is not an equation the
+            # solve is trying to satisfy, so it is not evidence about convergence.
+            _zero_rows_local(Fh, [lu_pin])
         if use_pnull:
             sp = Fh.getSubVector(pres_is)
             n_p = sp.getSize()
@@ -1248,6 +1269,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     iters = 0
     did_assemble = False
     converged = False
+    # Reported on the SNES at the end. The loop, not the SNES, is the nonlinear
+    # solve for a rotated problem: every SNES call inside it evaluates ONE
+    # residual or tangent, so the SNES's own reason describes a linear step and
+    # stays 0 for the solve as a whole. The generic solver's convergence check
+    # reads ``snes.getConvergedReason() > 0``, so leaving it unset reports every
+    # rotated solve as unconverged — including ones that converged at rel 1e-8.
+    exit_reason = _SNES_DIVERGED_MAX_IT
     phase = "picard" if continuation else "newton"
     for iters in range(max_it):
         Fhat = rotated_residual(u, keep_cartesian=True)
@@ -1262,6 +1290,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # floor so an already-converged warm start does not chase machine noise).
         if rnorm <= rtol * ref + atol:
             converged = True
+            exit_reason = _SNES_CONVERGED_FNORM_RELATIVE
             Fhat.destroy()
             break
         # Continuation: switch the frozen (Picard, α=0) tangent to the consistent
@@ -1341,8 +1370,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 pc_lu = ksp_lu.getPC()
                 pc_lu.setType("lu")
                 pc_lu.setFactorSolverType("mumps")
-                ctx = {"ksp": ksp_lu, "Mp": None,
-                       "pin": _naive_pressure_pin(dm)}
+                # The SAME pin the residual excludes — one decision, not two.
+                ctx = {"ksp": ksp_lu, "Mp": None, "pin": lu_pin}
             pin = ctx["pin"]
             if pin is not None:
                 Aop.zeroRows([pin], diag=1.0)
@@ -1405,8 +1434,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         Fhat.destroy()
         if step_converged:
             converged = True
+            exit_reason = _SNES_CONVERGED_SNORM_RELATIVE
             break
         if not improved:
+            exit_reason = _SNES_DIVERGED_LINE_SEARCH
             break
 
     # Restore a clean frozen (Picard) tangent for any subsequent solve (next time
@@ -1419,6 +1450,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # by one on the step-norm / line-search-stall / max_it exits (the increment of the
     # final pass is solved before the break) and matches only on the residual exit.
     newton_its = len(lin_its)
+
+    # Publish the loop's verdict on the SNES, so that reading the converged
+    # reason after a rotated solve reports the rotated solve.
+    snes.setConvergedReason(exit_reason)
 
     # The loop can exhaust max_it or stall in the line search (`not improved`) without
     # meeting the residual / step-norm criteria. Warn — as the standard SNES path does
@@ -2061,9 +2096,10 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
         ``"lumped"``.
 
     Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
-    section offset; the boundary mass is assembled globally by a coordinate-keyed
-    allgather of the boundary elements, so every rank produces the same de-smear and the
-    mean-removal gauge is global. In 3D, only triangular P1/P2 traces are supported.
+    section offset. In 3D, coordinate-keyed reactions and boundary elements are gathered
+    to rank zero, which assembles and solves the global boundary-mass system once before
+    scattering each rank's recovered values. The mean-removal gauge remains global. Only
+    triangular P1/P2 traces are supported in 3D.
     """
     dm = solver.dm
     dim = solver.mesh.dim

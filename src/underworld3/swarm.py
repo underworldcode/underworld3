@@ -76,6 +76,25 @@ class _ReadOnlyCoordinateSnapshot(np.ndarray):
         raise ValueError(self._GUIDANCE)
 
 
+def _coordinate_row_keys(coords):
+    """One opaque key per coordinate row, for exact set membership.
+
+    Used by :meth:`Swarm.migrate` to remember which points a rank has already
+    claimed, so the round loop does not reclassify them. The identity has to be
+    the coordinate rather than the index: ``dm.migrate`` does not preserve the
+    local ordering, so an index from the previous round refers to a different
+    particle after the move.
+
+    The comparison is on the exact bit pattern, so this matches only points
+    whose coordinates are identical — which is what migration produces, since
+    it moves values without touching them.
+    """
+
+    a = np.ascontiguousarray(coords, dtype=np.float64)
+
+    return a.view(np.dtype((np.void, a.dtype.itemsize * a.shape[1]))).reshape(-1)
+
+
 class SwarmType(Enum):
     """
     PETSc swarm type specification.
@@ -3728,6 +3747,11 @@ class Swarm(Stateful, uw_object):
             swarm_coord_array,
         )
 
+        # The working set for the round loop below. Seeded with what this first
+        # pass claimed; it only ever grows, because a point in this rank's
+        # domain stays in it.
+        claimed_keys = _coordinate_row_keys(swarm_coord_array[in_or_not])
+
         num_points_in_domain = np.count_nonzero(in_or_not == True)
         num_points_not_in_domain = np.count_nonzero(in_or_not == False)
         not_my_points = np.where(in_or_not == False)[0]
@@ -3787,7 +3811,43 @@ class Swarm(Stateful, uw_object):
                 uw.mpi.barrier()
 
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
-                in_or_not = self.mesh.points_in_domain(swarm_coord_array)
+
+                # Only classify what we have not already claimed. A point this
+                # rank has found to be in its domain stays in its domain: the
+                # coordinates do not change during migration and neither does
+                # the mesh. Re-testing it on every round is what made the
+                # per-rank classification work grow with the round count (a
+                # fixed 47k-point global set was offered to points_in_domain
+                # 238k times at np=4).
+                #
+                # The bookkeeping is by COORDINATE rather than by index because
+                # `dm.migrate` does not preserve the local ordering — measured,
+                # retained points are not left at the front — so an index from
+                # the previous round means nothing after the move. Two
+                # particles sharing a coordinate share the answer, so a
+                # collision is harmless.
+                keys_now = _coordinate_row_keys(swarm_coord_array)
+                already = np.isin(keys_now, claimed_keys)
+
+                # UNCONDITIONAL: points_in_domain is COLLECTIVE — it reaches
+                # get_max_radius() before any short-circuit, precisely so that a
+                # rank with nothing to classify still joins the reduction (the
+                # #405 treatment, stated in its own source). Calling it only
+                # when this rank has undecided points deadlocks as soon as one
+                # rank runs out of them, which is what an earlier draft of this
+                # did at np=4.
+                in_or_not = already.copy()
+                undecided = np.where(~already)[0]
+                in_or_not[undecided] = self.mesh.points_in_domain(
+                    swarm_coord_array[undecided]
+                )
+
+                newly_claimed = np.where(in_or_not & ~already)[0]
+                if newly_claimed.size:
+                    claimed_keys = np.concatenate(
+                        [claimed_keys, keys_now[newly_claimed]]
+                    )
+
                 self.dm.restoreField("DMSwarmPIC_coor")
 
                 num_points_in_domain = np.count_nonzero(in_or_not == True)

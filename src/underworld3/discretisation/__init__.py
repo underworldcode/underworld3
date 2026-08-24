@@ -23,3 +23,4 @@ from .discretisation_mesh import checkpoint_xdmf
 from .discretisation_mesh import meshVariable_lookup_by_symbol
 from .discretisation_mesh import petsc_dm_find_labeled_points_local
 from .discretisation_mesh import _from_gmsh
+from .discretisation_mesh import _gmsh_to_h5
