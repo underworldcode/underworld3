@@ -4973,6 +4973,102 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
+def _mitred_reach_2d(S):
+    """Per-vertex mitred unit-reach vectors of a sampled polyline.
+
+    The outline() mechanics kept as a spine: segment normals averaged
+    to the bisector, scaled 1/cos(θ/2) so the offset band keeps
+    constant width through a turn. Sharp turns (interior angle under
+    ~30°) are refused — no snap parameter, the #595 discipline."""
+    t = np.diff(S, axis=0)
+    t /= np.linalg.norm(t, axis=1)[:, None]
+    n = np.column_stack([-t[:, 1], t[:, 0]])
+    reach = np.empty_like(S)
+    reach[0], reach[-1] = n[0], n[-1]
+    for k in range(1, len(S) - 1):
+        m = n[k - 1] + n[k]
+        nm = float(np.linalg.norm(m))
+        half_cos = 0.5 * nm
+        if half_cos < 0.25:
+            raise ValueError(
+                "the ladder polyline turns too sharply to rail with a "
+                "mitre join (interior angle under ~30 degrees); smooth "
+                "the trace or sample it finer.")
+        reach[k] = m / nm / half_cos
+    return reach
+
+
+def _ladder_curved_assembly_2d(P, width, size, reach=None):
+    """The curved 2-D ladder: rails + exact spine, built in numpy (#629).
+
+    The 3-D extrusion (:func:`_ladder_assembly_3d`) one dimension down,
+    for polylines the transfinite rectangle cannot represent (an
+    S-bend, a mapped trace). The polyline is resampled equispaced in
+    ARCLENGTH at ``size`` (ends always included — extent honoured;
+    interior samples lie on the given chords), each sample offset
+    ``±width/2`` along its mitred vertex normal — three rails of shared
+    vertices, so a spine cut consumes existing vertices (#595) and a
+    2:1 coarser band (``2 * size`` on the same polyline) nests
+    vertex-for-vertex when the interval count halves exactly.
+
+    Quads split to triangles with ALTERNATING diagonals (the
+    transfinite band's pattern); every triangle's signed area must be
+    positive — an over-tight bend for the width is a refusal, never a
+    reorder. No gmsh, no CAD: the returned area is the mesh's own, so
+    the meshed-vs-CAD gate holds trivially.
+    """
+    if reach is None:
+        P = np.asarray(P, dtype=float)[:, :2]
+        seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+        arc = np.concatenate([[0.0], np.cumsum(seg)])
+        L = float(arc[-1])
+        if L <= 0.0:
+            raise ValueError("the ladder polyline needs two distinct points")
+        n_along = max(2, int(round(L / size)))
+        s = np.linspace(0.0, L, n_along + 1)
+        S = np.column_stack([np.interp(s, arc, P[:, 0]),
+                             np.interp(s, arc, P[:, 1])])
+        reach = _mitred_reach_2d(S)
+    else:
+        # Precomputed samples + reach: the NESTING contract. Coarser
+        # levels must SUBSAMPLE one fine parametrisation (S[::2],
+        # reach[::2]) — independently recomputed reach vectors differ
+        # at shared points and break rail coincidence (measured: only
+        # the spine nested).
+        S = np.asarray(P, dtype=float)[:, :2]
+        reach = np.asarray(reach, dtype=float)
+        if reach.shape != S.shape:
+            raise ValueError("reach must match the sample shape")
+    n_along = len(S) - 1
+    pts = np.concatenate([S + 0.5 * width * reach, S,
+                          S - 0.5 * width * reach], axis=0)
+
+    nv = n_along + 1
+    tris = []
+    for strip in (0, 1):                     # upper: rail+..spine; lower
+        a0, b0 = strip * nv, (strip + 1) * nv
+        for i in range(n_along):
+            a, b = a0 + i, b0 + i
+            if (i + strip) % 2 == 0:         # alternating diagonals
+                tris += [[a, b, b + 1], [a, b + 1, a + 1]]
+            else:
+                tris += [[a, b, a + 1], [a + 1, b, b + 1]]
+    tris = np.asarray(tris, dtype=np.int64)
+
+    Q = pts[tris]
+    twice = ((Q[:, 1, 0] - Q[:, 0, 0]) * (Q[:, 2, 1] - Q[:, 0, 1])
+             - (Q[:, 1, 1] - Q[:, 0, 1]) * (Q[:, 2, 0] - Q[:, 0, 0]))
+    if (twice >= 0.0).any() and (twice <= 0.0).any():
+        raise ValueError(
+            f"the curved ladder inverts "
+            f"{int(min((twice >= 0).sum(), (twice <= 0).sum()))} of "
+            f"{len(tris)} triangles: the bend is too tight for width "
+            f"{width} (offset rails cross).")
+    if (twice < 0.0).all():                  # normalise winding to CCW
+        tris[:, [1, 2]] = tris[:, [2, 1]]
+    return pts, tris, float(np.abs(twice).sum() / 2.0)
+
+
 def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
                             domain=None):
     """The cut-ready band: transfinite, THREE nodes across, spine included.
@@ -5016,10 +5112,22 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
     n = np.array([-t[1], t[0]])
     off = np.abs((P - a) @ n)
     if off.max() > 1e-9 * max(L, 1.0):
-        raise ValueError(
-            "the ladder band takes a STRAIGHT polyline (transfinite frame); "
-            f"this one deviates {off.max():.3e} from its chord. Split a bent "
-            "trace into straight segments, one ladder each.")
+        # A CURVED trace (an S-bend, a mapped fault): the numpy ladder —
+        # same three-rail structure, mitred. The straight path below
+        # stays on gmsh transfinite so the recorded composed benchmark
+        # remains bit-identical.
+        pts_c, tris_c, area_c = _ladder_curved_assembly_2d(P, width, size)
+        if domain is not None:
+            lo = np.min([np.min(np.asarray(Lp, dtype=float), axis=0)
+                         for Lp in domain], axis=0)
+            hi = np.max([np.max(np.asarray(Lp, dtype=float), axis=0)
+                         for Lp in domain], axis=0)
+            if (pts_c < lo - 1e-12).any() or (pts_c > hi + 1e-12).any():
+                raise ValueError(
+                    "the ladder band protrudes past the domain; it is "
+                    "structured and cannot be clipped. Shorten the trace "
+                    "or use the default band (which clips).")
+        return pts_c, tris_c, area_c
     corners = np.array([a + 0.5 * width * n, b + 0.5 * width * n,
                         b - 0.5 * width * n, a - 0.5 * width * n])
     if domain is not None:
