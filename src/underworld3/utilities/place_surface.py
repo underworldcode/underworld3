@@ -4973,6 +4973,16 @@ def _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz, skin_tris,
         gmsh.finalize()
 
 
+def _extend_polyline_2d(P, rings):
+    """Continue a polyline ``rings`` points outward at both ends, linearly
+    — the 2-D tip-margin builder (:func:`_extend_grid` one dimension
+    down): end tangents at the local spacing, no invented curvature."""
+    P = np.asarray(P, dtype=float)
+    for _ in range(int(rings)):
+        P = np.vstack([2.0 * P[0] - P[1], P, 2.0 * P[-1] - P[-2]])
+    return P
+
+
 def _mitred_reach_2d(S):
     """Per-vertex mitred unit-reach vectors of a sampled polyline.
 
@@ -5069,6 +5079,21 @@ def _ladder_curved_assembly_2d(P, width, size, reach=None):
     return pts, tris, float(np.abs(twice).sum() / 2.0)
 
 
+def _ladder_domain_gate_2d(pts, domain):
+    """Refuse a structured band that protrudes past the domain bbox."""
+    if domain is None:
+        return
+    lo = np.min([np.min(np.asarray(Lp, dtype=float), axis=0)
+                 for Lp in domain], axis=0)
+    hi = np.max([np.max(np.asarray(Lp, dtype=float), axis=0)
+                 for Lp in domain], axis=0)
+    if (pts < lo - 1e-12).any() or (pts > hi + 1e-12).any():
+        raise ValueError(
+            "the ladder band protrudes past the domain; it is structured "
+            "and cannot be clipped. Shorten the trace or use the default "
+            "band (which clips).")
+
+
 def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
                             domain=None):
     """The cut-ready band: transfinite, THREE nodes across, spine included.
@@ -5102,7 +5127,18 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
 
     if len(polylines) != 1:
         raise ValueError("the ladder band takes exactly one polyline")
-    P = np.asarray(polylines[0], dtype=float)[:, :2]
+    p0 = polylines[0]
+    if (isinstance(p0, tuple) and len(p0) == 2
+            and np.asarray(p0[0]).ndim == 2):
+        # A precomputed (samples, reach) pair: the NESTING contract —
+        # rung positions and mitred reach vectors from ONE parametrisation
+        # (a coarser level passes S[::2], reach[::2]). Used verbatim.
+        S, R = (np.asarray(q, dtype=float) for q in p0)
+        pts_c, tris_c, area_c = _ladder_curved_assembly_2d(
+            S, width, size, reach=R)
+        _ladder_domain_gate_2d(pts_c, domain)
+        return pts_c, tris_c, area_c
+    P = np.asarray(p0, dtype=float)[:, :2]
     a, b = P[0], P[-1]
     t = b - a
     L = float(np.linalg.norm(t))
@@ -5117,16 +5153,7 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
         # stays on gmsh transfinite so the recorded composed benchmark
         # remains bit-identical.
         pts_c, tris_c, area_c = _ladder_curved_assembly_2d(P, width, size)
-        if domain is not None:
-            lo = np.min([np.min(np.asarray(Lp, dtype=float), axis=0)
-                         for Lp in domain], axis=0)
-            hi = np.max([np.max(np.asarray(Lp, dtype=float), axis=0)
-                         for Lp in domain], axis=0)
-            if (pts_c < lo - 1e-12).any() or (pts_c > hi + 1e-12).any():
-                raise ValueError(
-                    "the ladder band protrudes past the domain; it is "
-                    "structured and cannot be clipped. Shorten the trace "
-                    "or use the default band (which clips).")
+        _ladder_domain_gate_2d(pts_c, domain)
         return pts_c, tris_c, area_c
     corners = np.array([a + 0.5 * width * n, b + 0.5 * width * n,
                         b - 0.5 * width * n, a - 0.5 * width * n])
@@ -7361,3 +7388,106 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
                    f"{', split' if split else ''})"
                    + (f", mid level {n_mid} cells" if mid_level else ""))
     return mesh, mid, info
+
+
+def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
+                          band_label="Band", band_value=71,
+                          clearance=0.3, split=True, verbose=False):
+    """Split-ready 2-D fault ribbons from the traces' OWN sampling (#629).
+
+    The 2-D production fault-prep path, honouring the same contract set
+    as :func:`place_fault_ribbon`: each supplied polyline IS a fault —
+    its points, sampled by the user at fault scale, become the band's
+    spine vertices verbatim (curved is fine; the ladder rails are mitred
+    offsets) — the tip margin is EXTRAPOLATED ``margin_rings`` points
+    along the end tangents (never confiscated), and the cut consumes the
+    spine's own vertices (#595: nothing snaps). Multiple traces are
+    placed sequentially — a fault network of stop-short strands per the
+    junction ruling (the intact gap is the linkage; strands must not
+    touch).
+
+    Parameters
+    ----------
+    base_mesh : uw.discretisation.Mesh
+        The background mesh (2-D simplex). Not modified.
+    traces : list of (label, polyline)
+        Each polyline an ``(n, 2)`` array — THE FAULT, sampled at the
+        rung scale the band should have (≈2 elements across ``width``
+        keeps prism aspect near 1). After the split each ``label`` is a
+        boundary for ``add_fault_bc``.
+    width : float
+        Band thickness (split-node models: a resolution parameter).
+    margin_rings : int
+        The band extends this many points beyond each fault end, by
+        linear tangent continuation. Must be >= 1 (the tip rule).
+    band_label, band_value : str, int
+        Cell label of each band; trace ``k`` gets ``band_value + k`` so
+        per-fault zones stay distinguishable
+        (``mesh.cells_labelled(band_label)`` unions them).
+    clearance : float
+        Carve clearance (the measured thin-shell default 0.3).
+    split : bool
+        Cut + split each trace (``mesh.add_fault``). ``False`` returns
+        the placed, unlabelled-fault mesh for painted (volumetric)
+        models on identical geometry — remember the paint stops at the
+        fault FOOTPRINT, not the band.
+    verbose : bool
+        Report counts.
+
+    Returns
+    -------
+    mesh : uw.discretisation.Mesh
+        The fault-resolving mesh (split when ``split=True``).
+    info : dict
+        ``n_cells``, ``spacing`` (per trace), ``n_rungs`` (per trace).
+
+    Notes
+    -----
+    No intermediate (2:1) level is built: the measured tail of choice at
+    rig proportions is ``[L0, L1] + finest`` (the no-mid economics). A
+    nested mid band, when wanted, subsamples the same extended
+    parametrisation — ``(S[::2], reach[::2])`` patches — by hand.
+    """
+    from underworld3 import discretisation
+
+    if margin_rings < 1:
+        raise ValueError(
+            "margin_rings must be >= 1: the split cannot reach the band "
+            "rim (the tip rule); the margin is extrapolated surround.")
+    dm = base_mesh.dm
+    spacing_all, rungs_all = [], []
+    for k, (label, P) in enumerate(traces):
+        P = np.asarray(P, dtype=float)
+        if P.ndim != 2 or P.shape[1] != 2 or len(P) < 3:
+            raise ValueError(
+                f"trace {label!r}: expected an (n, 2) polyline with "
+                f"n >= 3, got shape {P.shape}")
+        S = _extend_polyline_2d(P, margin_rings)
+        R = _mitred_reach_2d(S)
+        spacing = float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean())
+        dm, _info = place_thin_volume(
+            dm, [(S, R)], width, label=band_label,
+            label_value=band_value + k, clearance=clearance,
+            size=spacing, mesher="ladder", verbose=verbose)
+        spacing_all.append(spacing)
+        rungs_all.append(len(P))
+
+    mesh = discretisation.Mesh(
+        dm, simplex=True, qdegree=base_mesh.qdegree,
+        coordinate_system_type=base_mesh.CoordinateSystem.coordinate_type,
+        boundaries=base_mesh.boundaries, verbose=False)
+    if split:
+        # ONE network call — cut all, then split all (chained add_fault
+        # calls do not compose: each split re-derives the pairing records
+        # and drops the earlier fault's).
+        mesh = mesh.add_fault([(label, np.asarray(P, dtype=float))
+                               for label, P in traces])
+
+    info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
+            "spacing": spacing_all, "n_rungs": rungs_all}
+    if verbose:
+        import underworld3 as _uw
+        _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "
+                   f"{len(traces)} fault(s)"
+                   f"{' (split)' if split else ''}")
+    return mesh, info
