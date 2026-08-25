@@ -31,6 +31,13 @@ Trajectories are stopped before they reach a fault: the field is
 genuinely discontinuous across a slipping surface, so drawing through
 it would be a lie.
 
+underworld3 gained a general version of this after these figures were
+made -- visualisation/glyphs.py: direction_trajectories (evenly spaced,
+Jobard & Lehmann placement) and principal_stress_glyphs. It is on
+feature/stress-glyphs and NOT yet merged to main, so this script keeps
+its own integrator; the colours and terminology here follow it, and
+this should be switched over once that branch lands.
+
 Run:  python california_trajectories.py     (~1 solve; then cached)
 """
 import os
@@ -90,8 +97,10 @@ MINORS = {
 COLOUR = {"Garlock": "#6a1b9a", "E1": "#1a6b1a", "E2": "#1a6b1a",
           "E3": "#1a6b1a", "SJF": "#e65100"}
 
-C_S1 = "#c62828"      # most-compressive principal direction
-C_S3 = "#1565c0"      # least-compressive
+C_COMP = "#2166ac"    # most-compressive direction  (blue)
+C_EXT = "#b2182b"     # most-extensional direction (red)
+# Colours follow underworld3 visualisation/glyphs.py: "blue compressive,
+# red tensile, matching the RdBu_r field convention".
 
 
 # --------------------------------------------------------------- solve
@@ -159,7 +168,7 @@ sxx, syy, sxy = -sxx, -syy, -sxy
 # double angle of the most-compressive direction, per cell
 two_theta = np.arctan2(2.0 * sxy, sxx - syy)
 c2, s2 = np.cos(two_theta), np.sin(two_theta)
-tau_max = np.hypot(0.5 * (sxx - syy), sxy)      # Mohr radius, per cell
+diff_stress = 2.0 * np.hypot(0.5 * (sxx - syy), sxy)   # sigma_1 - sigma_3
 
 # ------------------------------------------------------- director grid
 NG = 320
@@ -169,7 +178,7 @@ GX, GY = np.meshgrid(gx, gy)
 grid = np.column_stack([GX.ravel(), GY.ravel()])
 C2 = griddata(cent, c2, grid, method="linear").reshape(NG, NG)
 S2 = griddata(cent, s2, grid, method="linear").reshape(NG, NG)
-TAU = griddata(cent, tau_max, grid, method="linear").reshape(NG, NG)
+TAU = griddata(cent, diff_stress, grid, method="linear").reshape(NG, NG)
 
 
 from scipy.ndimage import gaussian_filter
@@ -209,7 +218,11 @@ def dist_field(GX, GY):
 
 
 DIST = dist_field(GX, GY)
-KEEPOUT = 0.026
+# The blank band is NOT a damage zone: it is the smoothing length. The
+# double-angle field is Gaussian-smoothed over ~3 grid cells, which
+# blurs across the fault, so nothing is drawn within ~2 sigma of the
+# one surface that is actually slipping.
+KEEPOUT = 0.016
 MASK = DIST < KEEPOUT
 
 # A director field has no global sign, which is why streamplot cannot be
@@ -237,13 +250,13 @@ ax.set_xticks([])
 ax.set_yticks([])
 
 ax.contourf(GX, GY, np.ma.array(TAU, mask=MASK), levels=18,
-            cmap="Greys", alpha=0.22, zorder=0)
+            cmap="Greys", alpha=0.16, zorder=0)
 
-for theta, ref, col in ((THETA, REF1, C_S1),
+for theta, ref, col in ((THETA, REF1, C_COMP),
                         (THETA + 0.5 * np.pi,
-                         np.array([-REF1[1], REF1[0]]), C_S3)):
+                         np.array([-REF1[1], REF1[0]]), C_EXT)):
     vx, vy = vector_field(theta, ref)
-    ax.streamplot(gx, gy, vx, vy, density=0.85, color=col, linewidth=1.0,
+    ax.streamplot(gx, gy, vx, vy, density=0.85, color=col, linewidth=0.9,
                   arrowsize=0, minlength=0.18, zorder=2)
 
 ax.plot(SAF_PTS[:, 0], SAF_PTS[:, 1], "-", color="black", lw=3.4,
@@ -264,7 +277,7 @@ def direction_at(x, y, family):
 ANCHORS = [(0.13, 0.20), (0.17, 0.83), (0.90, 0.90), (0.90, 0.55),
            (0.45, 0.33), (0.47, 0.63), (0.72, 0.44), (0.30, 0.10)]
 for a in ANCHORS:
-    for family, col in ((0, C_S1), (1, C_S3)):
+    for family, col in ((0, C_COMP), (1, C_EXT)):
         d = direction_at(*a, family)
         L = 0.052
         ax.plot([a[0] - L * d[0], a[0] + L * d[0]],
@@ -283,23 +296,20 @@ for xy, s, ha in (((0.245, 0.455), "San Andreas (N)", "center"),
             zorder=8,
             bbox=dict(fc="white", ec="none", alpha=0.75, pad=1.5))
 
-ax.plot([], [], "-", color=C_S1, lw=2.6, label=r"$\sigma_1$ trajectories")
-ax.plot([], [], "-", color=C_S3, lw=2.6, label=r"$\sigma_3$ trajectories")
+ax.plot([], [], "-", color=C_COMP, lw=2.6, label="most compressive")
+ax.plot([], [], "-", color=C_EXT, lw=2.6, label="most extensional")
 ax.plot([], [], "-", color="black", lw=2.6, label="San Andreas (slipping)")
 ax.legend(loc="lower left", fontsize=9, framealpha=0.93)
 
-ax.set_title("Stress trajectories: the regional field, bent by a "
-             "slipping fault\n"
-             r"far away, straight lines at $45^\circ$ to the "
-             "plate-boundary shear; near the fault, not",
-             fontsize=12)
+# No figure title: the slide it lives on carries one, and the space is
+# better given to the map.
 ax.text(0.5, -0.030,
         "trajectories: curves everywhere tangent to a principal direction   "
         "\u00b7   crosses: both principal directions at a point, equal arms",
         transform=ax.transAxes, fontsize=8.2, color="0.3", ha="center")
 ax.text(0.5, -0.062,
-        "grey: Mohr radius   \u00b7   blank band: the field is discontinuous "
-        "across the slipping San Andreas, so no trajectory crosses it",
+        "grey: differential stress   \u00b7   trajectories stop at the "
+        "San Andreas because it is slipping: the field is discontinuous there",
         transform=ax.transAxes, fontsize=8.2, color="0.3", ha="center")
 
 fig.tight_layout()
