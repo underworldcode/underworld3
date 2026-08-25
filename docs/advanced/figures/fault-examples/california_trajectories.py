@@ -92,7 +92,7 @@ MINORS = {
     "E1": np.array([[0.62, 0.64], [0.56, 0.78]]),
     "E2": np.array([[0.72, 0.62], [0.66, 0.76]]),
     "E3": np.array([[0.81, 0.68], [0.75, 0.82]]),
-    "SJF": np.array([[0.84, 0.24], [0.70, 0.38]]),
+    "SJF": np.array([[0.71, 0.13], [0.57, 0.27]]),
 }
 COLOUR = {"Garlock": "#6a1b9a", "E1": "#1a6b1a", "E2": "#1a6b1a",
           "E3": "#1a6b1a", "SJF": "#e65100"}
@@ -289,8 +289,8 @@ for xy, s, ha in (((0.245, 0.455), "San Andreas (N)", "center"),
                   ((0.895, 0.115), "San Andreas (S)", "center"),
                   ((0.655, 0.492), "Garlock", "center"),
                   ((0.60, 0.855), "ECSZ", "center"),
-                  ((0.795, 0.245), "San Jacinto", "center"),
-                  ((0.325, 0.235), "Transverse Ranges\n(restraining bend)",
+                  ((0.585, 0.112), "San Jacinto", "center"),
+                  ((0.315, 0.285), "Transverse Ranges\n(restraining bend)",
                    "center")):
     ax.text(*xy, s, fontsize=9, color="black", ha=ha, va="center",
             zorder=8,

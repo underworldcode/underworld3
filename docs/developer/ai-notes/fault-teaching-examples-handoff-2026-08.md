@@ -220,6 +220,16 @@ file three times larger (1.5 MB dithered vs 0.65 MB not).
   under differencing) — they place the failure line where teaching
   needs it, and the pages say so.
 - mu' = 0.4 (King's value) for all Delta CFF.
+- The California geography is SCHEMATIC but it is not arbitrary:
+  which SIDE of the San Andreas a named fault sits on is a real
+  claim, and students check it. The Garlock and the three ECSZ
+  strands are inboard (NE, North American side); the SAN JACINTO
+  is OUTBOARD (SW, Pacific side) -- it took a share of the
+  boundary slip on the far side of the master fault. This was
+  wrong until 2026-08-25 (the San Jacinto sat NE with the ECSZ,
+  where a fourth ECSZ strand would go) and it propagated into
+  five published figures. If you add or move a fault, check its
+  perpendicular offset against saf_trace() before solving.
 - Fields render in pyvista (RdBu_r, white background, lighting off);
   line/scatter plots in matplotlib. Method-paper figures (cetz) use
   sans labels (Noto Sans -> Helvetica fallback) at small sizes.

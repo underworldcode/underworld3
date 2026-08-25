@@ -57,10 +57,11 @@ SITES = [
 LABEL = {"Garlock": "Garlock", "ECSZ": "ECSZ",
          "SJF": "San Jacinto"}
 # label offsets from the gauge centre — the San Jacinto site sits close
-# to the trace, so its label goes outboard rather than underneath
+# to the trace (and SW of it, on the Pacific side), so its label goes
+# south, away from the trace
 LAB_OFF = {"Garlock": (0.0, -0.085, "center", "top"),
            "ECSZ": (0.0, -0.085, "center", "top"),
-           "SJF": (0.085, 0.0, "left", "center")}
+           "SJF": (0.0, -0.085, "center", "top")}
 
 # pressure reference: fixed, far from the trace, in the quiet corner
 REF_C = np.array([0.16, 0.20])

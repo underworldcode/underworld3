@@ -226,7 +226,13 @@ for col_i, (key, lab, col) in enumerate(SOURCES):
     for sp in ax.spines.values():
         sp.set_visible(False)
     verb = "loads" if DC[key][j] > 0 else "relaxes"
-    ax.set_title(f"{lab} slips\n→ {verb} the bend", fontsize=10.5,
+    # WHERE the peak falls is a result, not a given: only a source
+    # that sits alongside the bend peaks on it. Read it off the data
+    # rather than asserting "the bend" for both.
+    ds = s[j] - BEND_S
+    where = ("at the bend" if abs(ds) < 0.06
+             else ("SE of the bend" if ds < 0 else "NW of the bend"))
+    ax.set_title(f"{lab} slips\n→ {verb} it {where}", fontsize=10.5,
                  color=col)
     if col_i == 1:
         cb = fig.colorbar(lc, ax=ax, fraction=0.046, pad=0.02)
@@ -242,7 +248,10 @@ for key, lab, col in SOURCES:
     axp.plot(s, DC[key], "-", color=col, lw=2.0, label=f"{lab} slips")
 axp.set_xlabel("distance along the San Andreas  (SE $\\rightarrow$ NW)")
 axp.set_ylabel(r"$\Delta$CFF")
-axp.set_title("Both events focus on the bend — with opposite sign",
+_pk = {k: s[int(np.argmax(np.abs(DC[k])))] for k, _l, _c in SOURCES}
+axp.set_title("Opposite signs — and each peaks beside its own source"
+              if max(abs(v - BEND_S) for v in _pk.values()) >= 0.06
+              else "Both events focus on the bend — with opposite sign",
               fontsize=10)
 axp.legend(fontsize=8.5, loc="lower right")
 axp.set_xlim(s.min(), s.max())

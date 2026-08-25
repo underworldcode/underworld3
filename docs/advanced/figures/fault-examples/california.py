@@ -7,7 +7,10 @@ smoothed version of a left-stepping stepover. Under right-lateral shear
 the bend is RESTRAINING: the bend zone is where the TRANSVERSE RANGES
 belong, right beside the Garlock. The GARLOCK (resolving sinistral —
 the real sense, from the kinematics), three EAST CALIFORNIA SHEAR ZONE
-strands and a SAN JACINTO-like fault sit inboard as welded probes.
+strands sit inboard (NE, North American side) as welded probes,
+while the SAN JACINTO sits OUTBOARD, on the SW / Pacific side of the
+trace, where the real one is -- it is the SAF's inboard neighbour only
+in the sense of taking a share of the same boundary slip.
 
 The curved trace is sampled as a polyline, and the fault's constraint
 frame uses the curve's ANALYTIC normal (``add_fault_bc(normal=...)``).
@@ -92,7 +95,7 @@ MINORS = {
     "E1": np.array([[0.62, 0.64], [0.56, 0.78]]),
     "E2": np.array([[0.72, 0.62], [0.66, 0.76]]),
     "E3": np.array([[0.81, 0.68], [0.75, 0.82]]),
-    "SJF": np.array([[0.84, 0.24], [0.70, 0.38]]),
+    "SJF": np.array([[0.71, 0.13], [0.57, 0.27]]),
 }
 GROUPS = (("Garlock (sinistral)", ("Garlock",), "#6a1b9a"),
           ("ECSZ, 3 strands (dextral)", ("E1", "E2", "E3"), "#1a6b1a"),
@@ -250,7 +253,7 @@ for pm in (+1.0, -1.0):
 pl.add_point_labels(
     np.array([[0.30, 0.44, 0.002], [0.86, 0.12, 0.002],
               [0.68, 0.50, 0.002], [0.60, 0.82, 0.002],
-              [0.84, 0.20, 0.002], [0.40, 0.24, 0.002]]),
+              [0.585, 0.112, 0.002], [0.35, 0.28, 0.002]]),
     ["San Andreas (N)", "San Andreas (S)", "Garlock", "ECSZ",
      "San Jacinto", "Transverse Ranges\n(restraining bend)"],
     font_size=20, text_color="black", shape=None, always_visible=True,
