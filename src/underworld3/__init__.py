@@ -772,3 +772,9 @@ __pdoc__["systems.constitutive_models.Constitutive_Model.Parameters"] = False
 # Note: SymPy converter registration approach doesn't work reliably in strict mode
 # The better approach is to ensure UWexpression arithmetic operations return SymPy objects
 # This is handled by the __rmul__, __radd__ etc. methods in the mathematical mixin
+
+# The environment-armed hang watchdog (UW_HANG_WATCHDOG), armed HERE —
+# after every module above has finished importing — because
+# faulthandler's repeating C dump against a still-importing interpreter
+# was measured to livelock or SIGSEGV (see mpi._watch_from_environment).
+mpi._arm_environment_watchdog()
