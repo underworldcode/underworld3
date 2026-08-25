@@ -8,8 +8,9 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ### A Singular Recovery Mass, Mistaken for a Penalty Defect (August 2026)
 
-**The grad-div penalty default is now on (`Stokes.DEFAULT_PENALTY = 10.0`)**, and the
-reason it was held off turned out to be a defect somewhere else entirely (#633).
+**The grad-div penalty default stays off**, but the reason it was held off turned out to
+be a defect somewhere else entirely (#633) — so the objection that had blocked it is gone,
+and a different one took its place.
 
 With the penalty at 10, the spherical dynamic topography recovered from the rotated
 free-slip reaction dropped 28% at *vertices* while the facet-integrated value stayed
@@ -44,6 +45,19 @@ dimension, curvature and the rotated constraint were all red herrings.
 - Filed #637: 3-D recovery accepts only P1/P2 triangular traces, so dynamic topography
   has exactly one supported discretisation there and cannot be cross-validated. That
   blocked the P3/hex arm of this investigation.
+- `Stokes.DEFAULT_PENALTY` was flipped to 10 on the #625 evidence and then **reverted**.
+  Three tier-A/B tests fail at 10 and pass at 0, and the same three run **8.3x slower**
+  (9.27 s to 76.92 s, warm cache both ways). The #625 win needs an FMG hierarchy; without
+  `refinement>=1` the velocity block falls back to GAMG, which is where grad-div
+  augmentation drives the solve into its iteration cap. The default path is the one
+  without a hierarchy, so the default serves it; set `penalty=10` explicitly where FMG
+  is available.
+- Two of those three failures are not penalty defects. The Nitsche free-slip leak
+  (1.234e-4 against a 1e-4 bound) is augmentation perturbing a *weakly* imposed
+  constraint — a strong rotated constraint is untouched. The swarm one exposed #641:
+  `evaluate` returns −0.4976 for `sqrt((E**2).trace()/2)` at in-domain points near the
+  lid-corner singularity, at `penalty=0` as well; the penalty merely moved an accumulated
+  total across zero.
 
 ### The Free Surface Reaches the Spherical Shell (July 2026)
 
