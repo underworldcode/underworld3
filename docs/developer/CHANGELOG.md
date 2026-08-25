@@ -30,16 +30,32 @@ while the shell's stays flat at ~0.28 over a 3.2× node-count range. The 2-D P2 
 mass has positive vertex row sums, which is why 2-D never showed the defect and why
 dimension, curvature and the rotated constraint were all red herrings.
 
-- `mass="auto"` now selects the monotone **P1-projected** recovery on a 3-D P2 trace.
-  This is a trade, not a free win: `"consistent"` midpoint values are superconvergent
-  (0.1–1.5% at every penalty) and the P1 projection gives that up. It is the default
-  because its error *converges* (worst node 0.170 → 0.049 over cellSize 0.30 → 0.16)
-  where the consistent vertex error does not. `"consistent"` remains the right choice
-  for a caller sampling only midpoints, and the docstrings now say which is which.
+- The row-sum result is a statement about the **element**, not the code. Row sum *i* of
+  a mass matrix is `∫φᵢ`, since `Σⱼ∫φᵢφⱼ = ∫φᵢ·Σⱼφⱼ = ∫φᵢ` for a partition of unity. So
+  `[0,0,0,60,60,60]` says **the P2 triangle vertex basis function has zero mean**. Its
+  DOF carries no mass; an L2 recovery fixes it by cancellation. Reliable pointwise
+  topography at those vertices is not something we failed to implement — it is not
+  available from an L2 recovery at all.
+- So `mass="auto"` stops asking. On a 3-D P2 trace it now takes the **consistent** solve,
+  keeps its superconvergent midpoints, and **reconstructs the vertices from them**: the
+  three midpoints of a facet determine a unique linear function, so a vertex reads its
+  two adjacent midpoints and subtracts the opposite one, averaged over incident facets.
+  Worst-node error against the analytic coefficient, over cellSize 0.25 → 0.11:
+
+  | | 0.25 | 0.20 | 0.16 | 0.13 | 0.11 |
+  |---|---|---|---|---|---|
+  | surface, P1-projected | 0.041 | 0.026 | 0.018 | 0.013 | 0.008 |
+  | surface, reconstructed | 0.016 | 0.012 | 0.012 | 0.003 | 0.004 |
+  | CMB, P1-projected | 0.116 | 0.067 | 0.047 | 0.030 | 0.025 |
+  | CMB, reconstructed | 0.094 | 0.058 | 0.043 | 0.024 | 0.015 |
+
+  Better at every resolution on both boundaries, by 1.8x to 4.9x, and converging. The
+  simpler P1-projected recovery stays available as `mass="p1"` — it is sound, it just
+  discards the good data along with the bad.
 - `FreeSurface` already used the P1-projected recovery in 3-D, so production dynamic
   topography was never affected. The exposure was `mass="auto"`.
 - The spherical topography test is refined (cellSize 0.25 → 0.13) and its tolerances
-  tightened from 0.10/0.12 to 0.03/0.05, set from measured discretisation error with
+  tightened from 0.10/0.12 to 0.01/0.05, set from measured discretisation error with
   ~2× headroom, and now assert every node class rather than the aggregate — the failure
   was confined to one class and an aggregate assertion passed straight through it.
 - Filed #637: 3-D recovery accepts only P1/P2 triangular traces, so dynamic topography

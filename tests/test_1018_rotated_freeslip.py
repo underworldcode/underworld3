@@ -703,6 +703,11 @@ def test_p2_triangle_mass_has_zero_vertex_row_sums():
     from underworld3.utilities.boundary_flux import _P2_TRIANGLE_MASS
 
     row_sums = _P2_TRIANGLE_MASS.sum(axis=1)
+    # Row sum i IS the integral of basis function i: sum_j INT(phi_i phi_j) =
+    # INT(phi_i sum_j phi_j) = INT(phi_i), the basis being a partition of unity.
+    # So this asserts INT(phi_vertex) = 0 — the P2 triangle vertex basis has ZERO
+    # MEAN, which is why its DOF carries no mass and why 'auto' reconstructs the
+    # vertices from the midpoints instead of recovering them.
     assert np.allclose(row_sums[:3], 0.0), (
         f"P2 triangle vertex row sums {row_sums[:3]} are no longer zero — the "
         "reason mass='auto' avoids the consistent solve has changed")
@@ -720,17 +725,17 @@ def test_rotated_freeslip_spherical3d_reaction_topography():
     aggregate alone passes straight through that.
 
     Tolerances are the measured discretisation error at this resolution with ~2x
-    headroom, not round numbers: at cellSize=0.13 the P1-projected recovery lands
-    within 1.3% on the surface and 3.1% at the CMB. They were 0.10/0.12 at
+    headroom, not round numbers: at cellSize=0.13 the midpoint-reconstructed recovery
+    lands within 0.26% on the surface and 2.4% at the CMB. They were 0.10/0.12 at
     cellSize=0.25, loose enough to pass a recovery that was 7.6% wrong.
     """
 
     surface, surface_vertices, surface_midpoints, cmb, cmb_vertices, cmb_midpoints = (
         _spherical3d_reaction_topography()
     )
-    assert np.isclose(surface, 0.41920, rtol=0.03)
-    assert np.isclose(surface_vertices, 0.41920, rtol=0.03)
-    assert np.isclose(surface_midpoints, 0.41920, rtol=0.03)
+    assert np.isclose(surface, 0.41920, rtol=0.01)
+    assert np.isclose(surface_vertices, 0.41920, rtol=0.01)
+    assert np.isclose(surface_midpoints, 0.41920, rtol=0.01)
     assert np.isclose(cmb, 0.77060, rtol=0.05)
     assert np.isclose(cmb_vertices, 0.77060, rtol=0.05)
     assert np.isclose(cmb_midpoints, 0.77060, rtol=0.05)
