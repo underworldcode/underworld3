@@ -3168,11 +3168,12 @@ class SolverBaseClass(uw_object):
         number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
         ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
 
-        ``mass`` de-smears the nodal reaction with ``"lumped"`` or ``"consistent"``
-        boundary mass. ``"auto"`` (default) selects lumped recovery for 2D P1/P2
-        traces and 3D P1 triangles, and the consistent solve for 3D P2 triangles and
-        2D traces of degree >= 3 (where row-sum lumping is respectively invalid and
-        only O(h) pointwise).
+        ``mass`` de-smears the nodal reaction with ``"lumped"``, ``"consistent"`` or
+        ``"p1"`` boundary mass. ``"auto"`` (default) selects lumped recovery for 2D
+        P1/P2 traces and 3D P1 triangles, P1-PROJECTED recovery for 3D P2 triangles
+        (row-sum lumping is invalid there and the consistent solve amplifies at
+        vertices — #633), and the consistent solve for 2D traces of degree >= 3
+        (where lumping is only O(h) pointwise).
         ``remove_mean`` subtracts the boundary mean — leave ``False`` for a physical
         flux (the mean is the Nusselt number); ``True`` gives a gauge-free field.
 
@@ -6453,13 +6454,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         :meth:`solve`.
 
         ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
-        triangles, and the consistent surface-mass solve for 3D P2 triangles.
-        Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
-        mathematically valid, and ``"p1"`` selects P1-PROJECTED recovery on a 3D
-        P2 trace (edge-midpoint loads folded onto vertices, lumped P1 triangle
-        mass — sound where the consistent P2 path carries the vertex-integral
-        checkerboard; the FreeSurface default in 3D). Three-dimensional recovery
-        currently supports triangular P1/P2 traces only.
+        triangles, and P1-PROJECTED recovery for 3D P2 triangles (edge-midpoint
+        loads folded onto vertices, lumped P1 triangle mass). Explicit ``"lumped"``
+        and ``"consistent"`` choices remain available where mathematically valid;
+        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
+        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
+        independently of h (#404, measured in #633). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only (#637).
 
         .. warning::
            On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
@@ -6484,8 +6485,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         interior left untouched.
 
         ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
-        ``mass="auto"`` selects lumped recovery where valid and the consistent
-        surface-mass solve for 3D P2 triangles. Requires a prior
+        ``mass="auto"`` selects lumped recovery where valid and P1-projected
+        recovery for 3D P2 triangles. Requires a prior
         :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
 
         .. warning::

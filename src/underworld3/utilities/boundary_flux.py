@@ -399,7 +399,27 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
                     )
                 order = orders.pop()
                 if mass == "auto":
-                    mass = "consistent" if order == 2 else "lumped"
+                    # A P2 TRIANGLE mass has vertex rows that sum to EXACTLY zero
+                    # (_P2_TRIANGLE_MASS, row sums [0,0,0,60,60,60]), so those rows
+                    # annihilate a constant and M^-1 amplifies any component of the
+                    # load near that direction — at vertices only, by O(1), and
+                    # independently of h. Measured on the Zhong l=2 shell (#633):
+                    # 'consistent' recovers 0.38723 at penalty=0 and 0.08793 at
+                    # penalty=100 against an analytic 0.41920, where 'p1' holds
+                    # 0.40989 / 0.40232.
+                    #
+                    # The choice is NOT that p1 is more accurate — it is not. It
+                    # trades: p1's midpoints are the P1 interpolant of its vertices,
+                    # where 'consistent' midpoints are superconvergent (0.1-1.5% at
+                    # every penalty). What decides it is that p1's error CONVERGES
+                    # (worst node 0.170 -> 0.049 over cellSize 0.30 -> 0.16) while
+                    # the consistent vertex error is FLAT at ~0.30 — an instability,
+                    # not a discretisation error. A default should not be unstable.
+                    # 'consistent' stays available, and is the right call for a
+                    # caller who samples ONLY midpoints (#404 checkerboard aside).
+                    # The 2-D P2 LINE mass has vertex row sums of 5 and needs none
+                    # of this.
+                    mass = "p1" if order == 2 else "lumped"
                 if order == 2 and mass == "lumped":
                     raise ValueError(
                         "A 3D P2 triangular trace has zero row-sum mass at its "

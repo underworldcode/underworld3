@@ -2183,17 +2183,15 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     #: not inside P0, so the term does not vanish at the discrete solution --
     #: but it converges away. ``penalty = 0`` restores the unaugmented operator.
     #:
-    #: **Held at 0 pending the pointwise-traction question.** At 10 the
-    #: spherical dynamic topography recovered from the rotated free-slip
-    #: reaction drops 0.4192 -> 0.3021, 28%, on the *vertex-sampled* value while
-    #: the facet-integrated value stays correct (``test_1018``). So augmentation
-    #: corrupts the de-smearing from reaction loads to pointwise stress —
-    #: presumably because lambda*mu*(div u) is non-zero cell-by-cell for P2-P0
-    #: and averages out over a facet integral but not at a vertex. Dynamic
-    #: topography is the main product of that machinery, so the value stays 0
-    #: until that is resolved; everything needed for the change is in place and
-    #: it is this constant.
-    DEFAULT_PENALTY = 0.0
+    #: This was held at 0 while #633 was open — at 10 the spherical dynamic
+    #: topography recovered from the rotated free-slip reaction dropped
+    #: 0.4192 -> 0.3021 on the *vertex-sampled* value. That turned out not to be
+    #: the penalty: the 3-D P2 TRIANGLE de-smearing mass has vertex rows summing
+    #: to exactly zero, so ``mass="consistent"`` amplified the perturbation at
+    #: vertices by O(1) regardless of h, and was already 7.6% low at
+    #: ``penalty = 0``. ``mass="auto"`` now picks the monotone P1-projected
+    #: recovery there, which holds to 0.6% at 10 and 1.8% at 100.
+    DEFAULT_PENALTY = 10.0
 
 
     def _apply_automatic_penalty(self):

@@ -6,6 +6,45 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### A Singular Recovery Mass, Mistaken for a Penalty Defect (August 2026)
+
+**The grad-div penalty default is now on (`Stokes.DEFAULT_PENALTY = 10.0`)**, and the
+reason it was held off turned out to be a defect somewhere else entirely (#633).
+
+With the penalty at 10, the spherical dynamic topography recovered from the rotated
+free-slip reaction dropped 28% at *vertices* while the facet-integrated value stayed
+correct. The natural reading — that grad-div augmentation corrupts the de-smearing from
+reaction loads to pointwise stress — was wrong.
+
+The de-smearing mass for a 3-D **P2 triangular** trace has vertex rows that sum to
+**exactly zero**. Those rows annihilate a constant, so solving `M σ = R` amplifies any
+perturbation of the nodal load at vertices by O(1) — and, being an instability rather
+than a discretisation error, does so independently of mesh resolution. The recovery was
+already 7.6% low with no penalty at all; the penalty only made it large enough to fail a
+test whose 12% tolerance had been hiding it.
+
+The discrimination needed a case that was curved but not 3-D. A 2-D annulus reproduces
+the signature exactly and then parts company under refinement: its error falls ~O(h²)
+while the shell's stays flat at ~0.28 over a 3.2× node-count range. The 2-D P2 **line**
+mass has positive vertex row sums, which is why 2-D never showed the defect and why
+dimension, curvature and the rotated constraint were all red herrings.
+
+- `mass="auto"` now selects the monotone **P1-projected** recovery on a 3-D P2 trace.
+  This is a trade, not a free win: `"consistent"` midpoint values are superconvergent
+  (0.1–1.5% at every penalty) and the P1 projection gives that up. It is the default
+  because its error *converges* (worst node 0.170 → 0.049 over cellSize 0.30 → 0.16)
+  where the consistent vertex error does not. `"consistent"` remains the right choice
+  for a caller sampling only midpoints, and the docstrings now say which is which.
+- `FreeSurface` already used the P1-projected recovery in 3-D, so production dynamic
+  topography was never affected. The exposure was `mass="auto"`.
+- The spherical topography test is refined (cellSize 0.25 → 0.13) and its tolerances
+  tightened from 0.10/0.12 to 0.03/0.05, set from measured discretisation error with
+  ~2× headroom, and now assert every node class rather than the aggregate — the failure
+  was confined to one class and an aggregate assertion passed straight through it.
+- Filed #637: 3-D recovery accepts only P1/P2 triangular traces, so dynamic topography
+  has exactly one supported discretisation there and cannot be cross-validated. That
+  blocked the P3/hex arm of this investigation.
+
 ### The Free Surface Reaches the Spherical Shell (July 2026)
 
 **`uw.systems.FreeSurface` now runs in 3D on a spherical shell** — the same
