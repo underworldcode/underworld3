@@ -97,13 +97,27 @@ response = uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
     planet_radius=6370000.0,
     gravity=9.8,
     gravitational_constant=6.67e-11,
+    projection="reaction",
 )
 ```
 
-The adapter delegates stress recovery to the existing rotated-free-slip API;
-it does not implement a second CBF, constrained-multiplier, or topography
-recovery path. `internal_load_coefficient` must use the same harmonic
-normalisation and sign convention as the model's internal load.
+The adapter supports two projection paths. `projection="centroid"` retains the
+original pointwise-recovery workflow: recover `sigma_nn`, gather the samples to
+rank zero, reconstruct a spherical triangulation, and integrate centroid
+values. `projection="reaction"` contracts the assembled normal-reaction load
+directly with the harmonic test function through
+`Stokes.boundary_normal_traction_integral()`. The latter is distributed, avoids
+the rank-zero surface reconstruction, and is an integral/fitted quantity rather
+than a consumer of the slowly converging P2 vertex values on curved boundaries
+(#414). Its fitted coefficient uses the matching discrete boundary norm, not an
+analytical spherical norm, so the numerator and denominator share the same
+faceted geometry.
+
+Both paths reuse the existing rotated-free-slip reaction; neither implements a
+second CBF, constrained-multiplier, or topography recovery. `centroid` remains
+the compatibility default while the direct reaction path accumulates benchmark
+coverage. `internal_load_coefficient` must use the same harmonic normalisation
+and sign convention as the model's internal load.
 
 When surface and CMB topography coefficients are already available, call
 `uw.postprocessing.geoid.spherical_shell_geoid_response()` or
@@ -137,10 +151,11 @@ Published reference solvers, such as the Zhong et al. propagator-matrix method,
 belong in `uw.analytic`; their computed topography coefficients can be passed to
 the pure post-processing functions above.
 
-The rotated harmonic projector gathers boundary samples to rank zero and
-reconstructs their spherical triangulation. A future boundary-reaction
-functional could replace this step with a direct distributed finite-element
-projection without changing the coefficient API.
+`Stokes.boundary_normal_traction_integral(boundary, fn)` is useful beyond the
+geoid adapter whenever only an integrated or fitted normal-traction diagnostic
+is required. Pointwise consumers should continue to call
+`boundary_normal_traction()` or `dynamic_topography()` and follow their curved
+P2 midpoint/field guidance.
 
 ## See also
 

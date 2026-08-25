@@ -6500,6 +6500,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return _dtf(self, boundary, self._rotated_freeslip_info, field,
                     buoyancy_scale=buoyancy_scale, mass=mass)
 
+    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
+        r"""Return the boundary integral of ``sigma_nn * fn`` directly from the
+        rotated-free-slip constraint reaction.
+
+        With ``remove_mean=True`` (default), the constant normal-traction gauge
+        is removed before projection.  Unlike pointwise
+        :meth:`boundary_normal_traction`, this weak projection does not recover
+        nodal traction values or gather a global surface mesh.  It is therefore
+        suitable for harmonic/integral diagnostics on curved P2 boundaries,
+        whose recovered vertex values converge slowly (issue #414).
+        """
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction_integral requires a completed "
+                "rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction_integral as _bnti
+        return _bnti(self, boundary, self._rotated_freeslip_info, fn,
+                     remove_mean=remove_mean)
+
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=10.0, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.

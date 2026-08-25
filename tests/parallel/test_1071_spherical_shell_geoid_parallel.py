@@ -56,6 +56,7 @@ def test_rotated_spherical_shell_geoid_matches_serial_reference():
         planet_radius=6370000.0,
         gravity=9.8,
         gravitational_constant=6.67e-11,
+        projection="reaction",
     )
     values = np.array(
         [

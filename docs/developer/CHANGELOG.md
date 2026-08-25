@@ -278,6 +278,12 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   existing boundary traction onto an axisymmetric harmonic; the pure functions
   also accept coefficients recovered by other methods and an optional internal
   load.
+- Rotated free slip now exposes
+  `Stokes.boundary_normal_traction_integral(boundary, fn)` for a distributed
+  weak contraction of the assembled normal reaction. The spherical-shell geoid
+  adapter accepts `projection="reaction"` to use this fitted quantity without
+  pointwise P2 recovery or a rank-zero surface triangulation; the existing
+  `projection="centroid"` behavior remains the default.
 - `uw.analytic.Zhong2008` implements the Hager--O'Connell propagator-matrix
   oracle used for the Zhong et al. spherical-shell response benchmark. It
   supports piecewise-constant radial viscosity and reproduces every analytical

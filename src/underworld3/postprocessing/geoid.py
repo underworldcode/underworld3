@@ -275,10 +275,35 @@ def _rotated_topography_coefficient(
     harmonic_degree: int,
     buoyancy_scale: float,
     response_sign: float,
+    projection: str,
 ) -> float:
     buoyancy_scale = float(buoyancy_scale)
     if not np.isfinite(buoyancy_scale) or buoyancy_scale == 0.0:
         raise ValueError("Boundary buoyancy scales must be finite and nonzero.")
+
+    if projection == "reaction":
+        import sympy
+        from underworld3.maths import BdIntegral
+
+        theta = stokes.mesh.CoordinateSystem.xR[1]
+        harmonic = sympy.assoc_legendre(harmonic_degree, 0, sympy.cos(theta))
+        traction_integral = stokes.boundary_normal_traction_integral(
+            boundary,
+            harmonic,
+            remove_mean=True,
+        )
+        # The reaction is the load functional assembled on the faceted FE
+        # boundary.  Use the matching discrete inner product for the fitted
+        # coefficient; an analytical spherical norm would mix geometries and
+        # introduce a chord-area bias, especially on the smaller CMB.
+        harmonic_norm = float(
+            BdIntegral(stokes.mesh, fn=harmonic**2, boundary=boundary).evaluate()
+        )
+        return float(
+            -response_sign * traction_integral / (buoyancy_scale * harmonic_norm)
+        )
+    if projection != "centroid":
+        raise ValueError("projection must be 'centroid' or 'reaction'.")
 
     coords, sigma_nn = stokes.boundary_normal_traction(boundary, mass="auto")
     local_rows = np.column_stack(
@@ -339,16 +364,18 @@ def spherical_shell_response_from_rotated_stokes(
     planet_radius: float | None = None,
     gravity: float | None = None,
     gravitational_constant: float = 6.67430e-11,
+    projection: str = "centroid",
 ) -> SphericalShellResponse:
     r"""Compute spherical-shell response from a rotated-free-slip Stokes solve.
 
-    Normal traction recovery is delegated to the existing
-    :meth:`Stokes.boundary_normal_traction` implementation. This adapter only
-    projects the two boundary responses onto the unnormalised
-    axisymmetric :math:`P_l^0` harmonic.  Use the pure coefficient functions
-    directly for other harmonic orders or topography-recovery methods. Density
-    contrasts, planet radius, and gravity are required when
-    ``include_self_gravity`` is true.
+    ``projection="centroid"`` (default) recovers pointwise traction and fits it
+    over a triangulation of the boundary samples. ``projection="reaction"``
+    contracts the assembled nodal reaction directly with the harmonic test
+    function. The latter is a distributed weak/integral quantity that avoids
+    consuming slowly converging P2 vertex values on curved boundaries (issue
+    #414). Use the pure coefficient functions directly for other harmonic
+    orders or topography-recovery methods. Density contrasts, planet radius,
+    and gravity are required when ``include_self_gravity`` is true.
     """
 
     ri, ro, degree = _validate_geometry(
@@ -358,6 +385,8 @@ def spherical_shell_response_from_rotated_stokes(
     )
     if not isinstance(include_self_gravity, bool):
         raise TypeError("include_self_gravity must be True or False.")
+    if projection not in ("centroid", "reaction"):
+        raise ValueError("projection must be 'centroid' or 'reaction'.")
     if degree == 0:
         raise ValueError(
             "The rotated-Stokes adapter requires harmonic_degree >= 1 because "
@@ -386,6 +415,7 @@ def spherical_shell_response_from_rotated_stokes(
         degree,
         surface_buoyancy_scale,
         1.0,
+        projection,
     )
     cmb_topography = _rotated_topography_coefficient(
         stokes,
@@ -394,6 +424,7 @@ def spherical_shell_response_from_rotated_stokes(
         degree,
         cmb_buoyancy_scale,
         -1.0,
+        projection,
     )
     geoid = spherical_shell_geoid_response(
         radius_inner=ri,
