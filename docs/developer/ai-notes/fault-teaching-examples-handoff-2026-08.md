@@ -230,6 +230,18 @@ file three times larger (1.5 MB dithered vs 0.65 MB not).
   where a fourth ECSZ strand would go) and it propagated into
   five published figures. If you add or move a fault, check its
   perpendicular offset against saf_trace() before solving.
+- Two figures are pure RE-READS of a committed cache and import no
+  solver at all: fault_frame.py and invariants.py both build from
+  _mohr2_probes_A.npz, written by mohr_two_fields.py. That is
+  deliberate -- they restyle anywhere numpy and matplotlib exist, with
+  no PETSc. The price is a coupling: they assume the sweep is 0..180
+  inclusive at 7.5 degrees (invariants.py needs sigma_n at theta - 90,
+  so the grid must close on itself). If you change ANGLES in
+  mohr_two_fields.py, both assert rather than quietly interpolating.
+- invariants.py adds its confining pressure ANALYTICALLY rather than
+  driving with one. In a closed velocity-driven box the solver's own
+  pressure is fixed only to an arbitrary constant, so a stated P is the
+  more honest number, and it makes the first invariant non-zero.
 - Fields render in pyvista (RdBu_r, white background, lighting off);
   line/scatter plots in matplotlib. Method-paper figures (cetz) use
   sans labels (Noto Sans -> Helvetica fallback) at small sizes.
