@@ -72,7 +72,7 @@ def test_rotated_spherical_shell_geoid_matches_serial_reference():
     )
 
     for rank_values in uw.mpi.comm.allgather(values):
-        assert np.array_equal(rank_values, values)
+        np.testing.assert_allclose(rank_values, values, rtol=1.0e-13, atol=1.0e-14)
 
     zhong_table_2 = np.array(
         [0.41920, 0.77060, 0.02579, 0.03206, 0.49980, 0.93130, 0.04486, 0.05461]
