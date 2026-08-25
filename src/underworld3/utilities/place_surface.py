@@ -5232,7 +5232,8 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
         gmsh.finalize()
 
 
-def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
+def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None,
+                     embed=None):
     """Thicken each polyline into a ribbon, resolve overlaps, mesh.
 
     The 2-D thin volume: a ribbon is the mitred outline of one polyline, and
@@ -5251,6 +5252,16 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
     on the boundary's own facets (snapped onto them after meshing,
     defensively). ``cad_area`` is then the clipped area, so the
     meshed-vs-CAD gate holds unchanged.
+
+    ``embed`` — polylines (each ``(n, 2)``, strictly inside the resolved
+    faces) whose points and segments are EMBEDDED in the face before
+    meshing, so they are vertices and edges of the mesh exactly. This is
+    the NETWORK path (``mesher="network"``): the fuse resolves junctions
+    between touching ribbons as ordinary cells, and the embedded spines
+    give a split cut its own vertices to walk (#595: nothing snaps) —
+    the two properties the sequential ladder and the plain fuse each
+    had only one of. Each embedded point carries its local segment
+    length as mesh size so gmsh does not subdivide the spine.
     """
     import gmsh
 
@@ -5330,6 +5341,31 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
 
         faces = gmsh.model.getEntities(2)
         cad_area = sum(occ.getMass(2, t) for _d, t in faces)
+
+        if embed:
+            face_tags = [t for _d, t in faces]
+            for P in embed:
+                P = np.asarray(P, dtype=float)[:, :2]
+                if len(P) < 2:
+                    continue
+                seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+                hp = np.concatenate([[seg[0]], 0.5 * (seg[1:] + seg[:-1]),
+                                     [seg[-1]]])
+                ptags = [occ.addPoint(q[0], q[1], 0.0, meshSize=float(h))
+                         for q, h in zip(P, hp)]
+                ltags = [occ.addLine(ptags[i], ptags[i + 1])
+                         for i in range(len(ptags) - 1)]
+                occ.synchronize()
+                mid = P[len(P) // 2]
+                host = [t for t in face_tags
+                        if gmsh.model.isInside(2, t, [mid[0], mid[1], 0.0])]
+                if not host:
+                    raise RuntimeError(
+                        "network assembly: an embedded spine lies outside "
+                        "the resolved ribbon faces (trim its ends inside "
+                        "the caps).")
+                gmsh.model.mesh.embed(0, ptags, 2, host[0])
+                gmsh.model.mesh.embed(1, ltags, 2, host[0])
 
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.7 * size)
         gmsh.option.setNumber("Mesh.MeshSizeMax", 1.3 * size)
@@ -6196,10 +6232,21 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     payload = None
     if comm.rank == 0:
         try:
-            assemble = (_occ_ladder_assembly_2d if mesher == "ladder"
-                        else _occ_assembly_2d)
-            asm_pts, asm_tris, cad_area = assemble(
-                polylines, width, size, assembly, domain=domain_loops)
+            if mesher == "ladder":
+                asm_pts, asm_tris, cad_area = _occ_ladder_assembly_2d(
+                    polylines, width, size, assembly, domain=domain_loops)
+            elif mesher == "network":
+                # fuse + embedded spines: each polyline's interior points
+                # (the end points sit ON the caps) become mesh vertices;
+                # junctions between touching ribbons are free
+                spines = [np.asarray(P, dtype=float)[1:-1]
+                          for P in polylines]
+                asm_pts, asm_tris, cad_area = _occ_assembly_2d(
+                    polylines, width, size, assembly, domain=domain_loops,
+                    embed=spines)
+            else:
+                asm_pts, asm_tris, cad_area = _occ_assembly_2d(
+                    polylines, width, size, assembly, domain=domain_loops)
             P = asm_pts[asm_tris]
             twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
                      - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
@@ -6644,9 +6691,14 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         boundaries are themselves of interest. Two zones converging at a
         shallow angle make the overlap a spike, and its fragmented tip meshes
         to arbitrarily bad angles; the fused union has no such tip.
-    mesher : {None, "ladder"}, keyword-only
+    mesher : {None, "ladder", "network"}, keyword-only
         How the band itself is meshed. ``None`` (default) is the CAD-built
-        band (frontal fill). ``"ladder"`` is the STRUCTURED band with an
+        band (frontal fill). ``"network"`` (2-D) is the CAD-built band of
+        a whole NETWORK of polylines in one call — ribbons fused (touching
+        strands, junctions free) with every spine EMBEDDED so cuts walk
+        exact vertices at any resolution; the one path for kissing joins,
+        shared-band stepovers and plain strands alike. ``"ladder"`` is
+        the STRUCTURED band with an
         exact mid-surface vertex sheet — the mandatory choice when the
         band's spine/mid-surface is to be cut/split (#595: a cut through a
         remeshed band snaps rail vertices), and the choice that makes
@@ -6685,8 +6737,9 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if assembly not in ("fuse", "fragment"):
         raise ValueError(
             f"assembly must be 'fuse' or 'fragment', not {assembly!r}")
-    if mesher not in (None, "ladder"):
-        raise ValueError(f"mesher must be None or 'ladder', not {mesher!r}")
+    if mesher not in (None, "ladder", "network"):
+        raise ValueError(
+            f"mesher must be None, 'ladder' or 'network', not {mesher!r}")
 
     if dm.getDimension() == 2:
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
