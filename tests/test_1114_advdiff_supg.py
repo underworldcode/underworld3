@@ -37,6 +37,25 @@ def test_simplex_geometry_is_reused_between_automatic_operations():
 
     assert all(a is b for a, b in zip(first, second))
 
+    sample_velocity = np.column_stack(
+        (
+            np.linspace(0.1, 0.9, len(first[0])),
+            np.linspace(-0.3, 0.4, len(first[0])),
+        )
+    )
+    expected_rate = np.abs(
+        np.einsum("cad,cd->ca", first[1], sample_velocity)
+    ).sum(axis=1)
+    first_rate = thermal._streamline_directional_rate(
+        first[1], sample_velocity
+    )
+    second_rate = thermal._streamline_directional_rate(
+        first[1], sample_velocity
+    )
+
+    np.testing.assert_allclose(first_rate, expected_rate)
+    assert first_rate is second_rate
+
     deformed = mesh.X.coords.copy()
     deformed[:, 0] *= 1.1
     mesh.deform(deformed)
@@ -44,6 +63,9 @@ def test_simplex_geometry_is_reused_between_automatic_operations():
 
     assert all(a is not b for a, b in zip(first, third))
     assert not np.isclose(first[2].sum(), third[2].sum())
+    assert thermal._streamline_directional_rate(
+        third[1], sample_velocity
+    ) is not first_rate
 
 
 def _high_peclet_solution(tau, name):

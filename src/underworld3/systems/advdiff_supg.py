@@ -164,6 +164,8 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._citcoms_work_mesh_version = None
         self._simplex_data_cache = None
         self._simplex_data_mesh_version = None
+        self._directional_rate_work = None
+        self._directional_rate_mesh_version = None
         self._diffusion_dt_cache = None
         self._rate_initialised = False
 
@@ -287,6 +289,34 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._simplex_data_mesh_version = mesh_version
         return self._simplex_data_cache
 
+    def _streamline_directional_rate(self, gradients, velocity):
+        """Return ``sum_a |u.grad(N_a)|`` using reusable cell work arrays."""
+        mesh_version = getattr(self.mesh, "_mesh_version", 0)
+        cell_count = velocity.shape[0]
+        if (
+            self._directional_rate_work is None
+            or self._directional_rate_mesh_version != mesh_version
+            or self._directional_rate_work[0].shape != (cell_count,)
+        ):
+            self._directional_rate_work = (
+                np.empty(cell_count, dtype=float),
+                np.empty(cell_count, dtype=float),
+            )
+            self._directional_rate_mesh_version = mesh_version
+
+        directional_rate, projection = self._directional_rate_work
+        directional_rate.fill(0.0)
+        for basis_index in range(gradients.shape[1]):
+            np.einsum(
+                "cd,cd->c",
+                gradients[:, basis_index, :],
+                velocity,
+                out=projection,
+            )
+            np.abs(projection, out=projection)
+            np.add(directional_rate, projection, out=directional_rate)
+        return directional_rate
+
     def _cell_diffusivity(self, cell_count):
         """Evaluate non-negative scalar diffusivity at cell centroids."""
         diffusivity_expr = sympy.sympify(self.constitutive_model.K)
@@ -352,9 +382,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
 
         velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
         speed = np.linalg.norm(velocity, axis=1)
-        directional_rate = np.abs(np.einsum("cad,cd->ca", gradients, velocity)).sum(
-            axis=1
-        )
+        directional_rate = self._streamline_directional_rate(gradients, velocity)
         h_stream = np.divide(
             2.0 * speed,
             directional_rate,
@@ -502,9 +530,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
 
         cells, gradients, volumes = self._simplex_data()
         velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
-        directional_rate = np.abs(np.einsum("cad,cd->ca", gradients, velocity)).sum(
-            axis=1
-        )
+        directional_rate = self._streamline_directional_rate(gradients, velocity)
         local_adv_rate = (
             float(np.max(directional_rate)) if directional_rate.size else 0.0
         )
