@@ -108,6 +108,21 @@ advective timesteps are more important than trace-back cost. For every method,
 verify timestep and mesh convergence using the physical diagnostics of the
 problem; the solver name alone does not establish accuracy.
 
+## Conservation and boundedness
+
+SUPG is a consistent residual stabilization, but continuous Galerkin SUPG is
+not automatically monotone and does not guarantee nodal maximum principles.
+The CitcomS path uses positive row-sum mass, which improves the explicit
+update, but temperature bounds must still be checked. Semi-Lagrangian methods
+can remain stable at large advective Courant number, but departure-point
+interpolation is not strictly conservative. For either solver family, monitor
+the volume-integrated scalar, recovered boundary fluxes, source integral, and
+their discrete balance in addition to minimum and maximum nodal values.
+
+Parallel execution does not change these definitions. Compare global
+integrals between serial and MPI runs on the same mesh; do not compare local
+rank extrema or partition-dependent raw boundary-node sums.
+
 ## Stabilization controls
 
 - Omit `tau` for automatic stabilization.
@@ -124,4 +139,3 @@ problem; the solver name alone does not establish accuracy.
 - [Semi-Lagrangian time integration](semi-lagrangian-time-integration.md)
 - [State snapshots and restore](snapshot-restore.md)
 - [Parallel computing](parallel-computing.md)
-
