@@ -99,3 +99,57 @@ def test_an_unknown_mesher_is_refused():
     with pytest.raises(ValueError, match="network"):
         place_thin_volume(mesh.dm, _kissing_pair(), width=WIDTH,
                           mesher="lattice")
+
+
+def test_a_placed_mesh_owns_the_base_hierarchy_and_the_cut_inherits_it():
+    """A placement built on a refined base OWNS the base's geometric-MG
+    tail with the band as FAC zone; the split child inherits the tail
+    (the cut is the same grid) but not the zone (a split fault needs no
+    patch). A Stokes solve on either drives custom-P multigrid with no
+    set_custom_fmg — the configuration a nonlinear solve must get by
+    default, never GAMG by silent fallback."""
+    from underworld3.utilities.place_surface import place_fault_ribbon_2d
+
+    def fresh_base():                 # a placement marks its base DM
+        return uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.125,
+            regular=False, qdegree=2, refinement=1)
+
+    pair = _kissing_pair()
+    traces = [("Main", pair[0][2:-2]), ("Splay", pair[1][2:-2])]
+    base = fresh_base()
+    n_base = len(base._coarse_level_meshes())
+    assert n_base >= 2
+    placed, _info = place_fault_ribbon_2d(base, traces, WIDTH, split=False,
+                                          mesher="network")
+    assert placed._custom_mg_coarse_meshes is not None
+    assert len(placed._custom_mg_coarse_meshes) == n_base
+    assert placed._custom_mg_fac_zone is not None
+    assert int(placed._custom_mg_fac_zone.sum()) > 0
+
+    cut, _info = place_fault_ribbon_2d(fresh_base(), traces, WIDTH,
+                                       split=True, mesher="network")
+    assert cut._custom_mg_coarse_meshes is not None
+    assert len(cut._custom_mg_coarse_meshes) == n_base
+    assert cut._custom_mg_fac_zone is None
+
+    for mesh in (placed, cut):
+        v = uw.discretisation.MeshVariable("v", mesh, 2, degree=2)
+        p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1,
+                                           continuous=True)
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        x, y = mesh.X
+        for wall in ("Bottom", "Top", "Left", "Right"):
+            stokes.add_dirichlet_bc((y - 0.5, 0.0), wall)
+        stokes.petsc_use_pressure_nullspace = True
+        stokes.tolerance = 1e-5
+        stokes.solve()
+        assert stokes.snes.getConvergedReason() > 0
+        velpc = stokes.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC()
+        assert velpc.getType() == "mg", (
+            f"velocity block runs {velpc.getType()}: the mesh-owned "
+            "hierarchy was not picked up")
+        assert velpc.getMGLevels() == n_base + 1
+        assert not getattr(stokes, "pc_fallbacks", {})

@@ -7618,12 +7618,21 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         dm, simplex=True, qdegree=base_mesh.qdegree,
         coordinate_system_type=base_mesh.CoordinateSystem.coordinate_type,
         boundaries=base_mesh.boundaries, verbose=False)
+    # The placed mesh OWNS the base's multigrid tail (the coarse levels do
+    # not need the fault): every solver on it drives FMG automatically,
+    # and the band label is its FAC patch key for volumetric rheologies.
+    from underworld3.utilities.custom_mg import adopt_hierarchy
+    band_all = np.zeros(int(mesh.dm.getHeightStratum(0)[1]), dtype=bool)
+    for k in range(len(traces)):
+        band_all |= mesh.cells_labelled(band_label, band_value + k)
+    adopt_hierarchy(mesh, base_mesh, fac_zone=band_all)
     if split:
         # ONE network call — cut all, then split all (chained add_fault
         # calls do not compose: each split re-derives the pairing records
         # and drops the earlier fault's).
         mesh = mesh.add_fault([(label, np.asarray(P, dtype=float))
                                for label, P in traces])
+        mesh._custom_mg_fac_zone = None     # a split fault needs no patch
 
     # Per-strand FAULT FOOTPRINT masks (the honoured-paint rule): band
     # cells whose nearest extended sample is a USER point. This is the
