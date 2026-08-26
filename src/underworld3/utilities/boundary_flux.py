@@ -633,10 +633,38 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
     return np.array([sig[gi[_key(x, dim)]] for x in xs])
 
 
+def _refuse_a_constrained_boundary(solver, boundary):
+    """CBF recovery reads the VELOCITY residual. On a boundary held by
+    ``add_constraint_bc`` the traction has been moved into the multiplier block, so
+    what remains in the velocity rows is a CONSTANT traction — the reaction comes back
+    exactly proportional to the nodal boundary mass, and de-smearing hands that constant
+    straight back (#614).
+
+    That is not an approximation, it is the wrong quantity: measured on SolCx the
+    recovered flux had a standard deviation of 2e-15 across the boundary while the
+    equivalent ``Stokes`` solve varied correctly and correlated -0.997 with the exact
+    topography. It returns a plausible-looking number, which is why it went unnoticed.
+
+    Refuse rather than mislead. The traction on such a boundary is the multiplier
+    (plus its augmented-Lagrangian share — #607)."""
+    constraints = getattr(solver, "_block_constraint_bcs", None)
+    if not constraints:
+        return
+    if any(getattr(c, "boundary", None) == boundary for c in constraints):
+        raise NotImplementedError(
+            f"boundary_flux cannot recover the traction on {boundary!r}: it is held "
+            "by add_constraint_bc, so the traction is carried by the multiplier and "
+            "the velocity residual this reads holds only a constant (#614). Use "
+            f"solver.multiplier({boundary!r}) or solver.topography({boundary!r}) "
+            "instead."
+        )
+
+
 def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None):
     """See ``SolverBaseClass.boundary_flux``. Returns ``(xs, flux)`` for this rank's
     boundary nodes; scalar solver → normal flux, vector solver → traction (or its normal
     component if ``normal`` is given)."""
+    _refuse_a_constrained_boundary(solver, boundary)
     dm = solver.dm; dim = solver.mesh.dim
     ra = np.asarray(solver._assemble_volume_reaction()).ravel()
     nodes, lsec, csec, cvec, v0, v1, edge_nodes = _boundary_field_nodes(
