@@ -3125,20 +3125,7 @@ class SolverBaseClass(uw_object):
                     self._subdict[name][1].localToGlobal(var.vec, sgvec)
                     gvec.restoreSubVector(self._subdict[name][0], sgvec)
             else:
-                if not self._subdict:
-                    _names, _iss, _subdms = self.dm.createFieldDecomposition()
-                    self._subdict = {
-                        name: (_iss[index], _subdms[index])
-                        for index, name in enumerate(_names)
-                    }
-                if len(self._subdict) != 1:
-                    raise RuntimeError(
-                        "Scalar volume reaction requires one cached field decomposition."
-                    )
-                _field_is, _field_dm = next(iter(self._subdict.values()))
-                sgvec = gvec.getSubVector(_field_is)
-                _field_dm.localToGlobal(self.Unknowns.u.vec, sgvec)
-                gvec.restoreSubVector(_field_is, sgvec)
+                self.dm.localToGlobal(self.Unknowns.u.vec, gvec)
 
             self.dm.globalToLocal(gvec, xlocal)
 

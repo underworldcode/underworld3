@@ -276,18 +276,14 @@ def test_boundary_flux_p3_collapse_guard(monkeypatch):
         poisson.boundary_flux("Top")
 
 
-def test_boundary_flux_reuses_scalar_field_decomposition():
-    """Repeated reaction recovery must retain one solver-owned decomposition."""
+def test_boundary_flux_scalar_reaction_needs_no_field_decomposition():
+    """A scalar reaction scatters its sole field without allocating a sub-DM."""
     poisson = _unit_flux_2d(1, res=4)
 
     poisson.boundary_flux("Top")
-    first = tuple(poisson._subdict.values())
     poisson.boundary_flux("Bottom")
-    second = tuple(poisson._subdict.values())
 
-    assert len(first) == 1
-    assert first[0][0] is second[0][0]
-    assert first[0][1] is second[0][1]
+    assert not poisson._subdict
 
 
 def test_volume_residual_fields_insert_essential_values():
