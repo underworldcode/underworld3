@@ -158,3 +158,87 @@ def test_spherical_shell_supg_is_parallel_safe():
     assert np.all(np.isfinite(temperature.data))
     assert np.all(np.isfinite(thermal._supg_tau.data))
     assert temperature_l2_squared == pytest.approx(0.833491030982, rel=1.0e-8)
+
+
+def test_bdf2_snapshot_restore_leaves_no_discarded_step_trace():
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=0.3,
+        regular=True,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "T_supg_restart", mesh, 1, degree=1
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "U_supg_restart", mesh, mesh.dim, degree=1
+    )
+    with mesh.access(temperature, velocity):
+        temperature.data[:, 0] = np.sin(np.pi * temperature.coords[:, 0])
+        velocity.data[:, 0] = 0.1
+        velocity.data[:, 1] = 0.0
+
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        order=2,
+    )
+    thermal.constitutive_model = uw.constitutive_models.DiffusionModel
+    thermal.constitutive_model.Parameters.diffusivity = 0.05
+    thermal.add_dirichlet_bc(0.0, "Left")
+    thermal.add_dirichlet_bc(0.0, "Right")
+
+    for _ in range(3):
+        thermal.solve(timestep=0.01, zero_init_guess=False)
+    snapshot = model.save_state()
+
+    model.load_state(snapshot)
+    for _ in range(3):
+        thermal.solve(timestep=0.01, zero_init_guess=False)
+    reference = temperature.data.copy()
+
+    model.load_state(snapshot)
+    thermal.solve(timestep=0.2, zero_init_guess=False)
+    model.load_state(snapshot)
+    for _ in range(3):
+        thermal.solve(timestep=0.01, zero_init_guess=False)
+    resumed = temperature.data.copy()
+
+    np.testing.assert_array_equal(resumed, reference)
+    uw.reset_default_model()
+
+
+def test_repeated_solves_keep_histories_and_transient_state_bounded():
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=0.3,
+        regular=True,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "T_supg_lifecycle", mesh, 1, degree=1
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "U_supg_lifecycle", mesh, mesh.dim, degree=1
+    )
+    with mesh.access(temperature, velocity):
+        temperature.data[:, 0] = temperature.coords[:, 0]
+        velocity.data[:, 0] = 0.1
+        velocity.data[:, 1] = 0.0
+
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh, u_Field=temperature, V_fn=velocity.sym
+    )
+    thermal.constitutive_model = uw.constitutive_models.DiffusionModel
+    thermal.constitutive_model.Parameters.diffusivity = 0.05
+    live_swarms = len(mesh._registered_swarms)
+
+    for _ in range(38):
+        thermal.solve(timestep=0.001, zero_init_guess=False)
+        assert len(mesh._registered_swarms) == live_swarms
+
+    assert len(thermal.solve_history) == 32
+    assert np.all(np.isfinite(temperature.data))

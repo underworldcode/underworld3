@@ -116,6 +116,29 @@ class DDtSymbolicState(_DDtCoreState):
 
     psi_star: list = field(default_factory=list)
 
+    def __deepcopy__(self, memo):
+        """Copy history containers without reconstructing symbolic atoms.
+
+        SymPy matrices are value containers but their expression atoms include
+        UWexpression objects whose identity binds them to live parameter and
+        coefficient registries. Generic ``copy.deepcopy`` reconstructs those
+        Symbol subclasses without their wrapped value, producing invalid atoms
+        after snapshot restore. Matrix ``copy()`` keeps the immutable symbolic
+        atoms while separating the mutable history list and matrices.
+        """
+        import copy
+
+        duplicate = type(self)(
+            _schema_version=self._schema_version,
+            dt_history=copy.deepcopy(self.dt_history, memo),
+            history_initialised=self.history_initialised,
+            n_solves_completed=self.n_solves_completed,
+            dt=copy.deepcopy(self.dt, memo),
+            psi_star=[value.copy() for value in self.psi_star],
+        )
+        memo[id(self)] = duplicate
+        return duplicate
+
 
 @dataclass
 class DDtEulerianState(_DDtCoreState):
@@ -3472,4 +3495,3 @@ class Lagrangian_Swarm(_DDtBase):
             self._n_solves_completed += 1
 
         return
-

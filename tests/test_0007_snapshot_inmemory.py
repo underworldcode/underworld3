@@ -402,6 +402,37 @@ def test_eulerian_ddt_roundtrip():
     assert ddt.state.psi_star_var_names == state_pre.psi_star_var_names
 
 
+def test_symbolic_flux_history_remains_valid_after_solver_restore():
+    """Deep-copying symbolic history must preserve live UWexpression atoms."""
+    import numpy as np
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.3
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "T_symbolic_restore", mesh, 1, degree=1
+    )
+    with mesh.access(temperature):
+        temperature.data[:, 0] = temperature.coords[:, 0]
+
+    diffusion = uw.systems.Diffusion(
+        mesh, u_Field=temperature, order=2, theta=1.0
+    )
+    diffusion.constitutive_model = uw.constitutive_models.DiffusionModel
+    diffusion.constitutive_model.Parameters.diffusivity = 0.05
+    for _ in range(3):
+        diffusion.solve(timestep=0.01, zero_init_guess=False)
+
+    snapshot = model.save_state()
+    model.load_state(snapshot)
+    diffusion.solve(timestep=0.01, zero_init_guess=False)
+
+    assert np.all(np.isfinite(temperature.data))
+
+
 def test_semilagrangian_ddt_roundtrip():
     import underworld3 as uw
     from underworld3.systems.ddt import DDtSemiLagrangianState
@@ -765,5 +796,4 @@ def test_continuation_bit_identical_across_stash_and_recover():
     stash = _capture_full_state(T, swarm, material, ddt)
 
     _assert_bit_identical(ctrl, stash, "stash-and-recover")
-
 
