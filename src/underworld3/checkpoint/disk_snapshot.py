@@ -461,6 +461,15 @@ def read_snapshot(model, path: str) -> None:
     import h5py
 
     md = read_snapshot_metadata(path)
+    write_size = int(md.get("mpi_ranks_at_write", 1))
+    if write_size != int(uw.mpi.size):
+        raise ValueError(
+            f"snapshot at {path} was written on {write_size} MPI rank(s); "
+            f"this run uses {uw.mpi.size}. Exact disk restart requires the "
+            "same rank count; use mesh.write_timestep/read_timestep for "
+            "coordinate-remapped field transfer."
+        )
+
     bulk_dir = _bulk_dir_for(path)
     if not os.path.isdir(bulk_dir):
         raise FileNotFoundError(
