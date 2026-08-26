@@ -106,6 +106,23 @@ def test_the_weak_plane_is_painted_on_the_fault_footprint():
         "the directors are not perpendicular to the trace")
 
 
+def test_the_band_is_damage_material_in_either_realisation():
+    """The band is a meshed region of material around the fault, not
+    scaffolding for the weak plane: the split gets the same mask and the
+    same band-confined yield."""
+    for realisation in ("split", "ti"):
+        net = _network(realisation, _base())
+        assert net.band.sum() > 0
+        assert set(net.footprints) == {n for n, _p in net.prepared}
+        assert net.footprints["Main"].sum() <= net.band.sum()
+
+        tau = net.band_yield(tau_y=4.0)
+        painted = net._band_yield_var.array[:, 0, 0]
+        assert np.allclose(painted[net.band], 4.0)
+        assert np.allclose(painted[~net.band], 1.0e8)
+        assert tau.free_symbols                     # a usable expression
+
+
 def test_a_weak_plane_needs_a_layer_to_be_weak_in():
     net = uw.meshing.FaultNetwork([("Main", _trace())])
     net.prepare(h=H, verbose=False)

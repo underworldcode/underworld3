@@ -72,6 +72,39 @@ strands.
 cut directly. It is split-only, and its mesh is not the one a weak
 plane would use, so do not compare across that choice.
 
+**The band is material, not scaffolding.** It is easy to read the band
+as something the weak plane needs and the split merely tolerates. It is
+not: the band is a meshed region of material *around* the fault, and a
+segmented fault does its interesting work exactly there — at the strand
+tips, and in the ligaments where one cut stops short of the next. Damage
+in those places needs cells to live in, and the band is where they are.
+`net.band` is the mask, `net.footprints` the per-strand ones, in either
+realisation.
+
+`net.band_yield(tau_y)` gives the corresponding rheology: von Mises
+yield confined to the band, everything outside it set far too strong to
+yield.
+
+```python
+stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+stokes.constitutive_model.Parameters.yield_stress = net.band_yield(4.0)
+stokes.consistent_jacobian = True
+```
+
+A released fault flank sits far below `tau_y` and is untouched; the
+places that sit far above it — tips, welds, the sliver at a junction —
+yield by themselves. The breakdown appears where the mechanics puts it,
+rather than where a geometric plug was placed. `damage_yield` remains
+the right tool when the junction glue itself is the object of study,
+since it places the plugs by construction.
+
+The two realisations' interface parameters correspond, which is worth
+keeping in view when comparing them: the zero-thickness limit of a band
+of viscosity `eta_band` and width `w` is an interface viscosity
+`eta_f = eta_band / w`, which is the `conds` argument of
+`add_fault_bc`. The weak plane's `V = 2 e_nt w` is precisely what the
+contact replaces with a genuine slip rate.
+
 **Properties belong to the fault.** `net.surface(name)` returns the
 retained {class}`~underworld3.meshing.surfaces.Surface` for a piece.
 Friction, accumulated slip, a damage state live there, on the fault,

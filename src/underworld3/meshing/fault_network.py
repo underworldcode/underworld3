@@ -151,6 +151,7 @@ class FaultNetwork:
         self.fault_surfaces = {}
         self.ti = None
         self._eta0_var = None
+        self._band_yield_var = None
 
     # ------------------------------------------------------------------
     def prepare(self, h, ligament=2.0, through=None, verbose=True):
@@ -649,6 +650,68 @@ class FaultNetwork:
         ndir.array[...] = dvals.reshape(ndir.array.shape)
         self.ti = {"eta_1": eta1, "director": ndir, "footprint": foot}
         return eta1, ndir, foot
+
+    # ------------------------------------------------------------------
+    @property
+    def band(self):
+        """The band's cell mask — the material the fault is embedded in.
+
+        The band is not scaffolding for the weak plane. It is a meshed
+        region of material AROUND the fault, and the split wants it as
+        much: a segmented fault does its interesting work at the tips and
+        in the ligaments between strands, and damage there needs cells to
+        live in. This mask (and :attr:`footprints`, per strand) is how a
+        rheology addresses that region in either realisation.
+        """
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first")
+        return self.info["band"]
+
+    @property
+    def footprints(self):
+        """Per-strand FAULT footprints — the band cells whose nearest
+        spine sample is a USER point, never the extrapolated margin."""
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first")
+        return self.info["footprints"]
+
+    def band_yield(self, tau_y, tau_far=1.0e8, tag=""):
+        """Von Mises yield confined to the band, as an expression.
+
+        The band's cells yield at ``tau_y``; everything else is given
+        ``tau_far``, high enough never to yield. Pair it with a
+        :class:`~underworld3.constitutive_models.ViscoPlasticFlowModel`
+        and ``consistent_jacobian = True``::
+
+            stokes.constitutive_model.Parameters.yield_stress = \
+                net.band_yield(tau_y=4.0)
+
+        This is the damage the SPLIT realisation wants. A released fault
+        flank sits far below ``tau_y`` and is untouched; the places that
+        sit far above it — a strand's tips, the weld where a cut stops
+        short, the sliver at a junction — yield by themselves, so the
+        breakdown appears where the mechanics puts it rather than where a
+        geometric plug was placed. Compare :meth:`damage_yield`, which
+        places plugs at the junctions by construction and is the right
+        tool when the junction glue itself is the object of study.
+
+        The region is a sharp mask, not a blend: never taper a
+        rheological parameter towards a large sentinel.
+        """
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first (the "
+                "damage needs cells to live in)")
+        import underworld3 as uw
+
+        ybar = uw.discretisation.MeshVariable(
+            f"fnTauY{tag}", self.mesh, 1, degree=0)
+        ybar.array[:, 0, 0] = np.where(self.info["band"], float(tau_y),
+                                       float(tau_far))
+        self._band_yield_var = ybar
+        return ybar.sym[0]
 
     # ------------------------------------------------------------------
     def damage_yield(self, velocity, dial=0.05, radius=None,
