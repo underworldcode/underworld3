@@ -30,12 +30,13 @@ while the shell's stays flat at ~0.28 over a 3.2× node-count range. The 2-D P2 
 mass has positive vertex row sums, which is why 2-D never showed the defect and why
 dimension, curvature and the rotated constraint were all red herrings.
 
-- The row-sum result is a statement about the **element**, not the code. Row sum *i* of
-  a mass matrix is `∫φᵢ`, since `Σⱼ∫φᵢφⱼ = ∫φᵢ·Σⱼφⱼ = ∫φᵢ` for a partition of unity. So
-  `[0,0,0,60,60,60]` says **the P2 triangle vertex basis function has zero mean**. Its
-  DOF carries no mass; an L2 recovery fixes it by cancellation. Reliable pointwise
-  topography at those vertices is not something we failed to implement — it is not
-  available from an L2 recovery at all.
+- The zero-mean P2 vertex basis was **already known and documented in #414**, which
+  recorded the same drift-away-under-refinement we re-measured here. Its mechanism is
+  the sharper one and is adopted: because the vertex basis has zero surface mean, the
+  vertex reaction carries essentially only the O(h) facet-normal/geometry error, and the
+  consistent solve *faithfully reconstructs that error* — it is not amplifying noise.
+  What #633 adds is the separation from the grad-div penalty (which was blamed for it)
+  and the fix below, which is #414's own unactioned recommendation (2).
 - So `mass="auto"` stops asking. On a 3-D P2 trace it now takes the **consistent** solve,
   keeps its superconvergent midpoints, and **reconstructs the vertices from them**: the
   three midpoints of a facet determine a unique linear function, so a vertex reads its

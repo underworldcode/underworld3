@@ -726,8 +726,16 @@ def test_rotated_freeslip_spherical3d_reaction_topography():
 
     Tolerances are the measured discretisation error at this resolution with ~2x
     headroom, not round numbers: at cellSize=0.13 the midpoint-reconstructed recovery
-    lands within 0.26% on the surface and 2.4% at the CMB. They were 0.10/0.12 at
-    cellSize=0.25, loose enough to pass a recovery that was 7.6% wrong.
+    lands within 0.26% on the surface and 2.4% at the CMB.
+
+    #414 asked that these goldens NOT be tightened, because at rtol 0.10-0.12 they were
+    absorbing the curved-boundary vertex bias and tightening them would have been
+    tightening against the wrong reference. That caveat is discharged rather than
+    ignored: `mass="auto"` no longer consumes the biased vertex reactions at all. It
+    reconstructs vertices from the superconvergent midpoints, which is #414's own
+    action item (2) — "consider having dynamic_topography on curved boundaries return a
+    midpoint-weighted or fitted field". The quantity under test changed; the tolerance
+    follows it.
     """
 
     surface, surface_vertices, surface_midpoints, cmb, cmb_vertices, cmb_midpoints = (
