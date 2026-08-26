@@ -531,6 +531,12 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=(), size_of=None):
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.5 * float(lengths.min()))
         gmsh.option.setNumber("Mesh.MeshSizeMax", 2.0 * float(lengths.max()))
         if size_of is not None:
+            # the callback is AUTHORITATIVE for the interior: without these
+            # gmsh extends the constrained curves' segmentation inward and
+            # takes the minimum, and a graded callback has no effect
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
             gmsh.model.mesh.setSizeCallback(
                 lambda dim, tag, x, y, z, lc: float(size_of(x, y)))
         gmsh.model.mesh.generate(2)
@@ -6420,7 +6426,34 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
             Xall = np.vstack([X, asm_pts])
             holes = [[len(X) + int(v) for v in loop] for loop in hole_loops]
-            gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes)
+            # GRADED fill: the annulus between the assembly's skin and the
+            # cavity ring is meshed from the skin's own size out to the
+            # ring's edge length, interpolated by relative distance. Without
+            # this the fill inherits the skin segmentation throughout, and
+            # where several ribbons sit within a cavity of each other the
+            # merged cavity fills at band resolution end to end (measured on
+            # the S-fault rig: the fill cost as many cells as the bands —
+            # the #629 "fill shell was the fat" finding on the network path).
+            size_of = None
+            if hole_loops:
+                from scipy.spatial import cKDTree as _KDT
+                _skin = asm_pts[np.unique(np.concatenate(
+                    [np.asarray(l, dtype=int) for l in hole_loops]))]
+                _ring_pts = Xall[np.asarray(ring, dtype=int)]
+                _rl = np.linalg.norm(np.diff(
+                    np.vstack([_ring_pts, _ring_pts[:1]]), axis=0), axis=1)
+                _h_ring, _h_skin = float(np.median(_rl)), float(size)
+                if _h_ring > 1.2 * _h_skin:
+                    _kd_s, _kd_r = _KDT(_skin), _KDT(_ring_pts)
+
+                    def size_of(x, y, _s=_h_skin, _h=_h_ring,
+                                _ks=_kd_s, _kr=_kd_r):
+                        q = np.array([[x, y]])
+                        ds = float(_ks.query(q)[0][0])
+                        dr = float(_kr.query(q)[0][0])
+                        return _s + (_h - _s) * ds / (ds + dr + 1e-30)
+            gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes,
+                                            size_of=size_of)
             placed = np.vstack([asm_pts, extra]) if len(extra) else asm_pts
 
             def mixed(v):
