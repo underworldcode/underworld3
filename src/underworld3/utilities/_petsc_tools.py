@@ -27,8 +27,16 @@ def parse_cmd_line_options():
     options = PETSc.Options()
 
     def is_petsc_key(item):
-        # petsc options have single hyphen prefix
-        return len(item) >= 2 and item[0] == "-" and item[1] != "-"
+        # PETSc options have a single hyphen prefix followed by a LETTER. The
+        # letter matters: `PetscOptionsValidKey` requires it, which is how PETSc
+        # itself tells `-uw_sense` (a key) from `-2` (a negative value). Testing
+        # only for `item[1] != "-"` accepted `-2` as a key, so `-uw_sense -2`
+        # stored `uw_sense` with no value and registered a stray option `2` --
+        # the negative never arrived and Params fell back to its default in
+        # silence (#642). Leading `_` is allowed for symmetry with the names
+        # PETSc accepts; `--long` stays excluded, as before.
+        return (len(item) >= 2 and item[0] == "-"
+                and (item[1].isalpha() or item[1] == "_"))
 
     for index, opt in enumerate(sys.argv):
         if is_petsc_key(opt):
