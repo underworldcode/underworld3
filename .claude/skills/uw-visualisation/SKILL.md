@@ -56,6 +56,15 @@ pl.screenshot(out); pl.close()
    high-order DOFs → blocky. **Attach `T.data[:,0]` directly** to the DOF-cloud
    mesh from `meshVariable_to_pv_mesh_object` (it is correct for annulus/box/disc
    — do NOT avoid it). `clim` MUST be passed (default `clim=""` trips `np.any`).
+5. Resampling ANY field (even P1) onto a regular pixel grid via
+   `uw.function.evaluate` **dapples at element boundaries** — grid points that
+   straddle a facet get located into a neighbouring cell with slightly-off
+   reference coords (Louis: "artefacts across the elements", S-fault rig).
+   Render derived fields NODALLY on the mesh's own triangulation instead:
+   evaluate at `mesh_to_pv_mesh(mesh).points` (exact at vertices for P1,
+   whichever cell the locator picks), attach as point_data, let VTK
+   interpolate WITHIN elements. On a SPLIT mesh never Delaunay the DOF cloud
+   (it re-triangulates across the slit) — use the mesh's own cells.
 
 ## Seeing the MESH (adaptation / moving mesh)
 

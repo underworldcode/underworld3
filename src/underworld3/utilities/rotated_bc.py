@@ -1778,16 +1778,45 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 A_vv, P_vv = vel_pc.getOperators()
                 vel_pc.reset()
                 vel_pc.setOperators(A_vv, P_vv)
-                # coarse="svd": the Galerkin-coarsened ROTATED velocity block
-                # inherits every rigid-rotation nullspace mode of the constrained
-                # problem (a closed circle: one; a spherical shell: three), and
-                # the default redundant/LU coarse solve hits a zero pivot there
-                # (SUBPC_ERROR, outer reason -11). Everything else in the bundle
-                # is identical to the native and standard custom-P routes.
-                custom_mg._configure_pcmg(
-                    vel_pc, custom_Pl, coarse="svd",
-                    smoother=solver._mg_smoother_variant)
+                # coarse="svd" ONLY when the rotated problem carries VERIFIED
+                # null modes (nsp): the Galerkin-coarsened ROTATED velocity
+                # block inherits every rigid-rotation mode of the constrained
+                # problem (a closed circle: one; a spherical shell: three),
+                # and the redundant/LU coarse solve hits a zero pivot there
+                # (SUBPC_ERROR, outer reason -11). When there are NO null
+                # modes — Dirichlet walls, a split-fault contact box — the
+                # blanket SVD is pure cost: a 3-D P2 coarse level is a DENSE
+                # factorisation (measured: most of ~0.8 s per V-cycle
+                # application at healthy iteration counts, #622). Everything
+                # else in the bundle is identical to the native and standard
+                # custom-P routes.
+                # nsp alone cannot discriminate: it is non-None whenever the
+                # constant-PRESSURE mode is attached (enclosed domains), which
+                # says nothing about the velocity block. The recorded count of
+                # verified ROTATION modes does.
+                _coarse = ("svd"
+                           if getattr(solver, "_rotated_velocity_null_modes",
+                                      1 if nsp is not None else 0)
+                           else "redundant")
+                # FAC patch smoothing (#629): the hierarchy that built custom_Pl
+                # recorded each level's patch/halo rows; row numbering is the
+                # velocity-block reduced numbering on both paths, and the split
+                # is per-node so the per-node rotation Q does not disturb it.
+                _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _fac_keys = custom_mg._configure_pcmg(
+                    vel_pc, custom_Pl, coarse=_coarse,
+                    smoother=solver._mg_smoother_variant,
+                    patch_rows=getattr(_hier, "level_patch_rows", None))
                 vel_pc.setUp()
+                # Force the FAC levels' smoother setup NOW: PCASM creates its
+                # sub-KSP (which reads mg_levels_<l>_sub_* from the DB) lazily
+                # at first application, which on this path is AFTER the key
+                # cleanup below — the sub options would silently never apply
+                # (measured: a sub_pc_type override had no effect).
+                for _l in range(1, vel_pc.getMGLevels()):
+                    if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
+                                         for k in _fac_keys):
+                        vel_pc.getMGSmoother(_l).setUp()
                 # The bundle went into the GLOBAL options DB under the velocity
                 # sub-PC's prefix, which is derived from `pfx` and so is unique to
                 # this solve — drop it again now it is consumed, as the `finally`
@@ -1795,8 +1824,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 vopts = PETSc.Options()
                 vpfx = vel_pc.getOptionsPrefix() or ""
                 for key in multigrid_options.geometric_mg_bundle(
-                        coarse="svd",
+                        coarse=_coarse,
                         smoother=solver._mg_smoother_variant).settings:
+                    vopts.delValue(vpfx + key)
+                for key in _fac_keys or ():
                     vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
@@ -1922,12 +1953,20 @@ def _rotated_nullspace(solver, Q, normal_rows):
         vecs.append(pv)
     # rigid rotations (rotated), each only if it satisfies the constraints.
     # COLLECTIVE: all ranks walk the same mode list, same order.
+    n_rot = 0
     for tg in _rigid_rotation_modes(solver):
         if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
+            n_rot += 1
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
+    # The VELOCITY-block null-mode count, recorded for the coarse-solve
+    # choice in _solve_rotated_iterative: only a rotation mode makes the
+    # Galerkin-coarsened velocity block singular (the constant-pressure
+    # mode lives in the pressure block), so only then is the SVD coarse
+    # solve required.
+    solver._rotated_velocity_null_modes = n_rot
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0

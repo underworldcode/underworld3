@@ -39,6 +39,8 @@ finite number of similarity classes.
 import numpy as np
 from petsc4py import PETSc
 
+from underworld3.utilities.dm_labels import label_stratum_indices
+
 __all__ = ["NVBMesh", "TaggedBisectionMesh", "write_tagged_state_label"]
 
 #: Per-cell refinement-state label consumed by the native 3D driver
@@ -521,10 +523,9 @@ class NVBMesh:
         for name, value in boundaries:
             if not dm.hasLabel(name):
                 continue
-            iset = dm.getStratumIS(name, value)
-            if iset is None:
-                continue
-            for p in iset.getIndices():
+            # Empty-safe (#589): an absent stratum hands back a NULL IS
+            # wrapper, never None — getIndices() on it segfaults.
+            for p in label_stratum_indices(dm.getLabel(name), value):
                 if eS <= p < eE:                          # a boundary edge
                     a, b = (int(v - vS) for v in dm.getCone(p))
                     self.edge_label[_fs(a, b)] = int(value)
@@ -534,10 +535,9 @@ class NVBMesh:
             for name, value in regions:
                 if not dm.hasLabel(name):
                     continue
-                iset = dm.getStratumIS(name, value)
-                if iset is None:
-                    continue
-                for p in iset.getIndices():
+                # Empty-safe (#589): an absent stratum hands back a NULL
+                # IS wrapper, never None — getIndices() on it segfaults.
+                for p in label_stratum_indices(dm.getLabel(name), value):
                     if p in cell_of_pt:
                         self.region[cell_of_pt[p]] = int(value)
         return self
@@ -885,10 +885,8 @@ class TaggedBisectionMesh:
         for name, value in boundaries:
             if not dm.hasLabel(name):
                 continue
-            iset = dm.getStratumIS(name, value)
-            if iset is None:
-                continue
-            for p in iset.getIndices():
+            # Empty-safe (#589), as in the 2-D from_dm above.
+            for p in label_stratum_indices(dm.getLabel(name), value):
                 if fS <= p < fE:                      # a labelled facet
                     clos = dm.getTransitiveClosure(p)[0]
                     fverts = tuple(sorted(
@@ -900,10 +898,9 @@ class TaggedBisectionMesh:
             for name, value in regions:
                 if not dm.hasLabel(name):
                     continue
-                iset = dm.getStratumIS(name, value)
-                if iset is None:
-                    continue
-                for p in iset.getIndices():
+                # Empty-safe (#589): an absent stratum hands back a NULL
+                # IS wrapper, never None — getIndices() on it segfaults.
+                for p in label_stratum_indices(dm.getLabel(name), value):
                     if p in cell_of_pt:
                         self.region[cell_of_pt[p]] = int(value)
         return self
