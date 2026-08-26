@@ -140,12 +140,15 @@ def test_the_3d_snap_restores_wall_values_exactly():
                       [0.0, 1.0, 0.0]])
     tris = np.array([[0, 1, 2], [0, 2, 3]])
     planes = [(verts[0], np.array([0.0, 0.0, 1.0]))]
+    # The control sits ABOVE the snap tolerance (1e-6 since the snap was
+    # widened to cover OCC's ~4e-7 boolean placement noise) and below any
+    # real feature scale — it must come through untouched.
     xyz = np.array([[0.3, 0.4, 1e-10],
                     [0.6, 0.2, -1e-10],
-                    [0.5, 0.5, 2e-9],
+                    [0.5, 0.5, 2e-5],
                     [0.5, 0.5, 0.5]])
     out = _snap_to_boundary_3d(xyz.copy(), verts, tris, planes)
     assert out[0, 2] == 0.0 and out[0, 0] == 0.3 and out[0, 1] == 0.4
     assert out[1, 2] == 0.0
-    assert out[2, 2] == 2e-9              # untouched: the control
+    assert out[2, 2] == 2e-5              # untouched: the control
     assert np.array_equal(out[3], xyz[3])

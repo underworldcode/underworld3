@@ -32,6 +32,22 @@ import threading as _threading
 import time as _time
 from contextlib import contextmanager as _contextmanager
 
+# Pre-import EVERYTHING the watchdog reporter thread can touch. The
+# reporter (`_Watchdog.report` -> `_stack_dump` -> traceback/linecache)
+# runs on a daemon thread, and with `UW_HANG_WATCHDOG` armed at import
+# it can fire WHILE the main thread is still inside `import underworld3`.
+# `traceback.format_stack` lazily imports through `linecache` (which
+# reaches for `tokenize` on first use); a lazy import on a secondary
+# thread while the main thread holds per-module import locks is the
+# classic cross-thread import deadlock — measured: a 0.2 s watchdog
+# livelocks `import underworld3` locally (the main thread pinned
+# mid-import, reporter cycling), and CI's 1.0 s watchdog dies at -11 in
+# the same window (test_0054). With these loaded before any reporter
+# can run, the reporter never enters the import system.
+import traceback as _traceback_preload            # noqa: F401
+import linecache as _linecache_preload            # noqa: F401
+import tokenize as _tokenize_preload              # noqa: F401
+
 
 comm = _MPI.COMM_WORLD
 size = comm.size
@@ -313,6 +329,16 @@ def _stack_dump():
     interpreter lock, which mpi4py releases around blocking calls -- so a rank
     sitting in ``allreduce`` does still report. If some extension ever holds
     the lock through a block, nothing running in Python can report on it.
+
+    ``lookup_lines=False`` is load-bearing, not cosmetic: the reporter runs
+    on a daemon thread, and with the environment-armed watchdog it can fire
+    while the MAIN thread is still importing. ``format_stack`` reads every
+    frame's SOURCE through ``linecache`` — file IO and loader calls against
+    modules mid-import, from a second thread — and that interleaving was
+    measured to freeze the import outright (a 0.2 s watchdog livelocked
+    `import underworld3` 12 times in 15; CI's 1 s watchdog died at -11 in
+    the same window, test_0054). File names, line numbers and function
+    names carry the hang report; the source text was the deadlock.
     """
     import traceback
 
@@ -325,10 +351,11 @@ def _stack_dump():
         who = "MainThread (this is the one that is stuck)" if ident == main \
             else names.get(ident, "unknown")
         out.append(f"\n  --- thread {ident}: {who} ---")
-        out.extend(
-            "  " + line.rstrip()
-            for line in traceback.format_stack(frames[ident])
-        )
+        summary = traceback.StackSummary.extract(
+            traceback.walk_stack(frames[ident]), lookup_lines=False)
+        summary.reverse()                 # walk_stack yields innermost first
+        out.extend("  " + line.rstrip()
+                   for line in summary.format())
     return "\n".join(out)
 
 
@@ -387,9 +414,25 @@ class _Watchdog:
         _faulthandler.dump_traceback_later(
             self.seconds, repeat=True, file=self.stream, exit=self.abort
         )
+        self._rearm_timer()
 
+    def _rearm_timer(self):
         # Secondary, and only for hangs that leave the interpreter lock free.
         # It adds the checkpoint label, which faulthandler cannot know about.
+        #
+        # The REPORTER re-arms through this method ALONE, never through
+        # arm(): dump_traceback_later() internally cancels the running C
+        # watchdog thread and waits on its lock, and when that thread is
+        # mid-dump — walking frames the main thread is churning (an
+        # import in progress) — the wait never returns. Measured as the
+        # test_0054 deadlock triangle (native `sample`): the C thread
+        # pinned in dump_traceback, the reporter cond-waiting inside
+        # cancel_dump_traceback_later, the main thread starved in the
+        # import machinery — 12 of 15 runs frozen at a 0.2 s watchdog.
+        # faulthandler was armed with repeat=True; it needs no re-arm
+        # from the reporter. Checkpoints (watch()) still go through
+        # arm(), where resetting the countdown is the point and the main
+        # thread is in ordinary running state.
         if self.timer is not None:
             self.timer.cancel()
         self.timer = _threading.Timer(self.seconds, self.report)
@@ -422,8 +465,8 @@ class _Watchdog:
             file=self.stream,
             flush=True,
         )
-        if not self.abort:
-            self.arm()      # a no-op once cancel() has run
+        if not self.abort and not self.cancelled:
+            self._rearm_timer()     # timer only — see _rearm_timer
 
 
 def watch(seconds=300, stream=None, abort=False):
@@ -743,13 +786,21 @@ class call_pattern:
 
 
 def _watch_from_environment():
-    """Arm the watchdog from ``UW_HANG_WATCHDOG``, at import.
+    """Arm the watchdog from ``UW_HANG_WATCHDOG``.
 
-    Arming here rather than from the user's script is the point: a rank that
-    dies, or diverges, before reaching a ``watch()`` call reports nothing, and
-    "before the script got going" covers mesh construction and most of the
-    import graph. This runs as ``underworld3.mpi`` is imported, which is about
-    as early as anything can.
+    Arming from the environment rather than the user's script is the point: a
+    rank that dies, or diverges, before reaching a ``watch()`` call reports
+    nothing, and arming at import time covers mesh construction and
+    everything after. It is invoked from the END of ``import underworld3``
+    (the bottom of ``underworld3/__init__``), NOT from this module's import —
+    deliberately: ``faulthandler.dump_traceback_later``'s repeating C dump
+    walks live frames without synchronisation, and against an interpreter
+    that is still importing (frames churning, bytecode compiling) that walk
+    was measured to loop forever or die at SIGSEGV (test_0054 on CI; locally
+    a 0.2 s watchdog froze ``import underworld3`` on the first piped run).
+    The price is that a hang INSIDE the import graph itself goes unreported;
+    everything the tool exists for — meshing, solves, collectives — runs
+    after import and is covered.
 
     ``UW_HANG_WATCHDOG``
         Seconds of silence that count as stuck. Unset or 0 disables.
@@ -801,4 +852,11 @@ def _watch_from_environment():
 
 
 #: Path this rank will dump to, or None when the environment did not ask.
-environment_dump_path = _watch_from_environment()
+#: Set by _arm_environment_watchdog(), called at the END of
+#: ``import underworld3`` — see _watch_from_environment for why not here.
+environment_dump_path = None
+
+
+def _arm_environment_watchdog():
+    global environment_dump_path
+    environment_dump_path = _watch_from_environment()
