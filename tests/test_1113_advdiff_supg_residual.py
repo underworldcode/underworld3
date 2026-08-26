@@ -16,12 +16,8 @@ def _mesh_temperature_velocity(prefix, velocity=(1.0, 0.0)):
         cellSize=0.3,
         regular=False,
     )
-    temperature = uw.discretisation.MeshVariable(
-        f"T_{prefix}", mesh, 1, degree=1
-    )
-    flow = uw.discretisation.MeshVariable(
-        f"U_{prefix}", mesh, mesh.dim, degree=1
-    )
+    temperature = uw.discretisation.MeshVariable(f"T_{prefix}", mesh, 1, degree=1)
+    flow = uw.discretisation.MeshVariable(f"U_{prefix}", mesh, mesh.dim, degree=1)
     with mesh.access(temperature, flow):
         temperature.data[:, 0] = temperature.coords[:, 0]
         flow.data[:, 0] = velocity[0]
@@ -81,9 +77,7 @@ def test_rejects_nonimplicit_flux_history(theta):
 
 def test_automatic_tau_is_finite_and_bounded_by_transient_scale():
     mesh, temperature, velocity = _mesh_temperature_velocity("tau")
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, u_Field=temperature, V_fn=velocity.sym
-    )
+    thermal = uw.systems.AdvDiffusionSUPG(mesh, u_Field=temperature, V_fn=velocity.sym)
     _configure_diffusion(thermal, diffusivity=0.1)
     thermal.delta_t = 0.02
     thermal._update_automatic_tau()
@@ -95,9 +89,7 @@ def test_automatic_tau_is_finite_and_bounded_by_transient_scale():
 
 def test_negative_diffusivity_is_rejected():
     mesh, temperature, velocity = _mesh_temperature_velocity("negative_k")
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, u_Field=temperature, V_fn=velocity.sym
-    )
+    thermal = uw.systems.AdvDiffusionSUPG(mesh, u_Field=temperature, V_fn=velocity.sym)
     _configure_diffusion(thermal, diffusivity=-0.1)
     thermal.delta_t = 0.01
 
@@ -116,9 +108,7 @@ def test_zero_velocity_matches_diffusion_solver():
         temperature_a.data[:, 0] = np.sin(np.pi * temperature_a.coords[:, 0])
         temperature_b.data[:, 0] = np.sin(np.pi * temperature_b.coords[:, 0])
 
-    supg = uw.systems.AdvDiffusionSUPG(
-        mesh_a, u_Field=temperature_a, V_fn=velocity.sym
-    )
+    supg = uw.systems.AdvDiffusionSUPG(mesh_a, u_Field=temperature_a, V_fn=velocity.sym)
     diffusion = uw.systems.Diffusion(mesh_b, u_Field=temperature_b, theta=1.0)
     _configure_diffusion(supg, diffusivity=0.1)
     _configure_diffusion(diffusion, diffusivity=0.1)
@@ -137,9 +127,7 @@ def test_zero_velocity_matches_diffusion_solver():
 
 def test_citcoms_integrator_requires_continuous_p1_temperature():
     mesh, temperature, velocity = _mesh_temperature_velocity("citcoms_p1")
-    temperature_p2 = uw.discretisation.MeshVariable(
-        "T_citcoms_p2", mesh, 1, degree=2
-    )
+    temperature_p2 = uw.discretisation.MeshVariable("T_citcoms_p2", mesh, 1, degree=2)
 
     with pytest.raises(ValueError, match="continuous P1"):
         uw.systems.AdvDiffusionSUPG(
@@ -192,9 +180,7 @@ def test_citcoms_constant_source_is_exact_from_first_step():
     thermal.solve(timestep=0.1)
 
     np.testing.assert_allclose(temperature.data, 0.1, atol=1.0e-14)
-    np.testing.assert_allclose(
-        thermal._temperature_rate.data, 1.0, atol=1.0e-14
-    )
+    np.testing.assert_allclose(thermal._temperature_rate.data, 1.0, atol=1.0e-14)
 
 
 def test_citcoms_reuses_predictor_corrector_work_vectors():
@@ -214,9 +200,10 @@ def test_citcoms_reuses_predictor_corrector_work_vectors():
     vector_handles = tuple(vector.handle for vector in thermal._citcoms_work_vectors)
     thermal.solve(timestep=0.01)
 
-    assert tuple(
-        vector.handle for vector in thermal._citcoms_work_vectors
-    ) == vector_handles
+    assert (
+        tuple(vector.handle for vector in thermal._citcoms_work_vectors)
+        == vector_handles
+    )
 
 
 def test_citcoms_timestep_uses_advection_and_lumped_diffusion_limits():
@@ -232,8 +219,25 @@ def test_citcoms_timestep_uses_advection_and_lumped_diffusion_limits():
     timestep = thermal.estimate_dt()
 
     assert np.isfinite(timestep)
-    assert timestep == pytest.approx(
-        0.9 * min(thermal.dt_adv, thermal.dt_diff)
-    )
+    assert timestep == pytest.approx(0.9 * min(thermal.dt_adv, thermal.dt_diff))
     assert thermal.dt_adv > 0.0
+    assert thermal.dt_diff > 0.0
+
+
+def test_timestep_diffusivity_branch_is_collective():
+    mesh, temperature, velocity = _mesh_temperature_velocity("collective_diffusivity")
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+    )
+    _configure_diffusion(thermal, diffusivity=0.1)
+    thermal.delta_t = 0.01
+    thermal._cell_diffusivity = lambda count: (
+        np.ones(count) if uw.mpi.rank == 0 else np.zeros(count)
+    )
+
+    timestep = thermal.estimate_dt()
+
+    assert np.isfinite(timestep)
     assert thermal.dt_diff > 0.0

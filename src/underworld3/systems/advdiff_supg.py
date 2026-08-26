@@ -209,9 +209,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
     def V_fn(self, value):
         self.is_setup = False
         self._V_fn = (
-            value.sym
-            if isinstance(value, uw.discretisation.MeshVariable)
-            else value
+            value.sym if isinstance(value, uw.discretisation.MeshVariable) else value
         )
 
     @property
@@ -256,14 +254,11 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         cells = (
             _tri_cells(self.mesh.dm)
             if self.mesh.dim == 2
-            else _tet_cells(self.mesh.dm)
-            if self.mesh.dim == 3
-            else None
+            else _tet_cells(self.mesh.dm) if self.mesh.dim == 3 else None
         )
         if cells is None or self.mesh.dim != self.mesh.cdim:
             raise NotImplementedError(
-                "Automatic SUPG operations require a 2-D or 3-D volume "
-                "simplex mesh."
+                "Automatic SUPG operations require a 2-D or 3-D volume " "simplex mesh."
             )
 
         coords = np.asarray(self.mesh.X.coords)
@@ -337,15 +332,17 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         if not self._automatic_tau:
             return
         if self.constitutive_model is None:
-            raise RuntimeError("Set constitutive_model before solving AdvDiffusionSUPG.")
+            raise RuntimeError(
+                "Set constitutive_model before solving AdvDiffusionSUPG."
+            )
 
         _, gradients, _ = self._simplex_data()
 
         velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
         speed = np.linalg.norm(velocity, axis=1)
-        directional_rate = np.abs(
-            np.einsum("cad,cd->ca", gradients, velocity)
-        ).sum(axis=1)
+        directional_rate = np.abs(np.einsum("cad,cd->ca", gradients, velocity)).sum(
+            axis=1
+        )
         h_stream = np.divide(
             2.0 * speed,
             directional_rate,
@@ -361,19 +358,11 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         nondiffusive = moving & ~diffusive
 
         if np.any(diffusive):
-            pe = (
-                speed[diffusive]
-                * h_stream[diffusive]
-                / (2.0 * diffusivity[diffusive])
-            )
+            pe = speed[diffusive] * h_stream[diffusive] / (2.0 * diffusivity[diffusive])
             xi = np.empty_like(pe)
             small = np.abs(pe) < 1.0e-3
             pe_small = pe[small]
-            xi[small] = (
-                pe_small / 3.0
-                - pe_small**3 / 45.0
-                + 2.0 * pe_small**5 / 945.0
-            )
+            xi[small] = pe_small / 3.0 - pe_small**3 / 45.0 + 2.0 * pe_small**5 / 945.0
             xi[~small] = 1.0 / np.tanh(pe[~small]) - 1.0 / pe[~small]
             if self.tau_model == "generic":
                 tau_steady[diffusive] = (
@@ -501,9 +490,9 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
 
         cells, gradients, volumes = self._simplex_data()
         velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
-        directional_rate = np.abs(
-            np.einsum("cad,cd->ca", gradients, velocity)
-        ).sum(axis=1)
+        directional_rate = np.abs(np.einsum("cad,cd->ca", gradients, velocity)).sum(
+            axis=1
+        )
         local_adv_rate = (
             float(np.max(directional_rate)) if directional_rate.size else 0.0
         )
@@ -511,17 +500,28 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         dt_adv = 1.0 / adv_rate if adv_rate > 0.0 else np.inf
 
         diffusivity = self._cell_diffusivity(len(cells))
-        if not np.any(diffusivity > 0.0):
+        has_diffusivity = bool(
+            uw.mpi.comm.allreduce(
+                int(np.any(diffusivity > 0.0)),
+                op=MPI.MAX,
+            )
+        )
+        if not has_diffusivity:
             dt_diff = np.inf
         elif self.time_integrator != "citcoms":
-            local_diff_rate = np.max(
-                2.0 * self.mesh.dim * diffusivity / np.maximum(
-                    self.mesh._radii**2, np.finfo(float).tiny
+            local_diff_rate = (
+                float(
+                    np.max(
+                        2.0
+                        * self.mesh.dim
+                        * diffusivity
+                        / np.maximum(self.mesh._radii**2, np.finfo(float).tiny)
+                    )
                 )
+                if diffusivity.size
+                else 0.0
             )
-            diff_rate = uw.mpi.comm.allreduce(
-                float(local_diff_rate), op=MPI.MAX
-            )
+            diff_rate = uw.mpi.comm.allreduce(local_diff_rate, op=MPI.MAX)
             dt_diff = 2.0 / diff_rate
         else:
             self._setup_citcoms_residual()
@@ -530,10 +530,14 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
                 getattr(self.mesh, "_mesh_version", 0),
                 hash(diffusivity.tobytes()),
             )
-            if (
+            local_cache_valid = (
                 self._diffusion_dt_cache is not None
                 and self._diffusion_dt_cache[0] == diffusion_signature
-            ):
+            )
+            cache_valid = bool(
+                uw.mpi.comm.allreduce(int(local_cache_valid), op=MPI.MIN)
+            )
+            if cache_valid:
                 dt_diff = self._diffusion_dt_cache[1]
                 self.dt_adv = dt_adv
                 self.dt_diff = dt_diff
@@ -546,9 +550,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
             owned = _owned_cell_mask(self.mesh.dm)
 
             for cell_index in np.flatnonzero(owned):
-                points = [
-                    vertex_start + int(index) for index in cells[cell_index]
-                ]
+                points = [vertex_start + int(index) for index in cells[cell_index]]
                 local_dofs = [section.getOffset(point) for point in points]
                 element_stiffness = (
                     diffusivity[cell_index]
@@ -608,9 +610,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._update_automatic_tau()
         self._setup_citcoms_residual(verbose)
         mass = self._assemble_lumped_mass()
-        temperature_global, residual, delta_rate, rate_global = (
-            self._citcoms_vectors()
-        )
+        temperature_global, residual, delta_rate, rate_global = self._citcoms_vectors()
 
         if not self._rate_initialised:
             self._temperature_rate.data[:, 0] = 0.0
@@ -638,9 +638,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
             delta_rate.scale(-1.0)
 
             rate_global.set(0.0)
-            self.dm.localToGlobal(
-                self._temperature_rate.vec, rate_global, addv=False
-            )
+            self.dm.localToGlobal(self._temperature_rate.vec, rate_global, addv=False)
             rate_global.axpy(1.0, delta_rate)
             temperature_global.axpy(self.adv_gamma * dt, delta_rate)
 
