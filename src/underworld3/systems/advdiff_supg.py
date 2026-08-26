@@ -162,6 +162,8 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._lumped_mass_mesh_version = None
         self._citcoms_work_vectors = None
         self._citcoms_work_mesh_version = None
+        self._simplex_data_cache = None
+        self._simplex_data_mesh_version = None
         self._diffusion_dt_cache = None
         self._rate_initialised = False
 
@@ -252,6 +254,13 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         """Return local simplex connectivity, basis gradients, and volumes."""
         from underworld3.meshing.smoothing import _tet_cells, _tri_cells
 
+        mesh_version = getattr(self.mesh, "_mesh_version", 0)
+        if (
+            self._simplex_data_cache is not None
+            and self._simplex_data_mesh_version == mesh_version
+        ):
+            return self._simplex_data_cache
+
         cells = (
             _tri_cells(self.mesh.dm)
             if self.mesh.dim == 2
@@ -274,7 +283,9 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         gradients[:, 1:, :] = np.transpose(inverse_edges, (0, 2, 1))
         gradients[:, 0, :] = -gradients[:, 1:, :].sum(axis=1)
         volumes = np.abs(np.linalg.det(edges)) / math.factorial(self.mesh.dim)
-        return cells, gradients, volumes
+        self._simplex_data_cache = (cells, gradients, volumes)
+        self._simplex_data_mesh_version = mesh_version
+        return self._simplex_data_cache
 
     def _cell_diffusivity(self, cell_count):
         """Evaluate non-negative scalar diffusivity at cell centroids."""

@@ -10,6 +10,34 @@ import underworld3 as uw
 pytestmark = pytest.mark.level_2
 
 
+def test_simplex_geometry_is_reused_between_automatic_operations():
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=0.25,
+        regular=True,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "T_geometry_cache", mesh, 1, degree=1
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "U_geometry_cache", mesh, mesh.dim, degree=1
+    )
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+    )
+    thermal.constitutive_model = uw.constitutive_models.DiffusionModel
+    thermal.constitutive_model.Parameters.diffusivity = 1.0
+
+    first = thermal._simplex_data()
+    second = thermal._simplex_data()
+
+    assert all(a is b for a, b in zip(first, second))
+
+
 def _high_peclet_solution(tau, name):
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
