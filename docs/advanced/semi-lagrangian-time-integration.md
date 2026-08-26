@@ -15,6 +15,9 @@ treating diffusion implicitly. This page explains the **two independent
 order knobs** in the scheme and how to pair them correctly — the common
 pitfall is mixing them.
 
+For local finite-element streamline stabilization without characteristic
+trace-back, see [SUPG scalar transport](supg-transport.md).
+
 ## The scheme has two time-integration choices
 
 The discrete residual assembled by the solver is

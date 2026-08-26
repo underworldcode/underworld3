@@ -82,6 +82,12 @@ time-derivative and Adams-Moulton/θ flux knobs, and how to pair them
 
 **[→ Semi-Lagrangian Time Integration](semi-lagrangian-time-integration.md)**
 
+### SUPG Scalar Transport
+Use local streamline-upwind stabilization with implicit BDF integration or
+the continuous-P1 CitcomS-compatible predictor-corrector.
+
+**[→ SUPG Scalar Transport](supg-transport.md)**
+
 ### Porous Media Flow
 Darcy flow, Richards equation, and variably-saturated groundwater modelling.
 
@@ -139,6 +145,7 @@ custom-meshes
 curved-boundary-conditions
 mesh-adaptation
 semi-lagrangian-time-integration
+supg-transport
 porous-flow
 snapshot-restore
 troubleshooting

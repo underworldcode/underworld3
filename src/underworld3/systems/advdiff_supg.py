@@ -83,8 +83,9 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
     -----
     Automatic tau currently supports volume simplex meshes and scalar
     isotropic diffusivity. Supply ``tau`` explicitly for other meshes or
-    constitutive models. This class provides the generic implicit SUPG path;
-    it is not CitcomS's row-lumped predictor-corrector time integrator.
+    constitutive models. The default ``bdf`` integrator is implicit. The
+    ``citcoms`` integrator provides the continuous-P1 row-lumped
+    predictor-corrector used by CitcomS-style mantle-convection benchmarks.
     """
 
     @timing.routine_timer_decorator
