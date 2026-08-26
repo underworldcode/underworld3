@@ -197,6 +197,28 @@ def test_citcoms_constant_source_is_exact_from_first_step():
     )
 
 
+def test_citcoms_reuses_predictor_corrector_work_vectors():
+    mesh, temperature, velocity = _mesh_temperature_velocity(
+        "citcoms_workspace", velocity=(0.0, 0.0)
+    )
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+        tau=0.0,
+    )
+    _configure_diffusion(thermal, diffusivity=0.0)
+
+    thermal.solve(timestep=0.01)
+    vector_handles = tuple(vector.handle for vector in thermal._citcoms_work_vectors)
+    thermal.solve(timestep=0.01)
+
+    assert tuple(
+        vector.handle for vector in thermal._citcoms_work_vectors
+    ) == vector_handles
+
+
 def test_citcoms_timestep_uses_advection_and_lumped_diffusion_limits():
     mesh, temperature, velocity = _mesh_temperature_velocity("citcoms_dt")
     thermal = uw.systems.AdvDiffusionSUPG(

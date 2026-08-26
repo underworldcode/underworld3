@@ -159,6 +159,8 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._temperature_rate = None
         self._lumped_mass = None
         self._lumped_mass_mesh_version = None
+        self._citcoms_work_vectors = None
+        self._citcoms_work_mesh_version = None
         self._diffusion_dt_cache = None
         self._rate_initialised = False
 
@@ -464,6 +466,27 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._lumped_mass_mesh_version = mesh_version
         return self._lumped_mass
 
+    def _citcoms_vectors(self):
+        """Return reusable global vectors for predictor-corrector updates."""
+        mesh_version = getattr(self.mesh, "_mesh_version", 0)
+        if (
+            self._citcoms_work_vectors is not None
+            and self._citcoms_work_mesh_version == mesh_version
+        ):
+            return self._citcoms_work_vectors
+
+        if self._citcoms_work_vectors is not None:
+            for vector in self._citcoms_work_vectors:
+                vector.destroy()
+
+        solution = self.dm.createGlobalVector()
+        residual = solution.duplicate()
+        delta_rate = solution.duplicate()
+        rate = solution.duplicate()
+        self._citcoms_work_vectors = (solution, residual, delta_rate, rate)
+        self._citcoms_work_mesh_version = mesh_version
+        return self._citcoms_work_vectors
+
     @timing.routine_timer_decorator
     def estimate_dt(self):
         """Estimate a simplex advection-diffusion timestep.
@@ -558,12 +581,14 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self.dt_diff = dt_diff
         return 0.9 * min(dt_adv, dt_diff)
 
-    def _compute_citcoms_residual(self):
-        """Return the globally assembled residual at the current T and dT/dt."""
-        solution = self.dm.createGlobalVector()
+    def _compute_citcoms_residual(self, solution=None, residual=None):
+        """Assemble the residual at the current temperature and rate."""
+        if solution is None:
+            solution = self.dm.createGlobalVector()
+        if residual is None:
+            residual = solution.duplicate()
         solution.set(0.0)
         self.dm.localToGlobal(self.u.vec, solution, addv=False)
-        residual = solution.duplicate()
         residual.set(0.0)
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
@@ -583,19 +608,18 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._update_automatic_tau()
         self._setup_citcoms_residual(verbose)
         mass = self._assemble_lumped_mass()
+        temperature_global, residual, delta_rate, rate_global = (
+            self._citcoms_vectors()
+        )
 
         if not self._rate_initialised:
             self._temperature_rate.data[:, 0] = 0.0
-            temperature_global, residual = self._compute_citcoms_residual()
-            initial_rate = residual.duplicate()
-            initial_rate.pointwiseDivide(residual, mass)
-            initial_rate.scale(-1.0)
+            self._compute_citcoms_residual(temperature_global, residual)
+            delta_rate.pointwiseDivide(residual, mass)
+            delta_rate.scale(-1.0)
             self._temperature_rate.vec.set(0.0)
-            self.dm.globalToLocal(initial_rate, self._temperature_rate.vec)
+            self.dm.globalToLocal(delta_rate, self._temperature_rate.vec)
             self.mesh._stale_lvec = True
-            temperature_global.destroy()
-            residual.destroy()
-            initial_rate.destroy()
             self._rate_initialised = True
 
         self.u.data[:, 0] += (
@@ -609,12 +633,10 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         )
 
         for _ in range(self.corrector_steps):
-            temperature_global, residual = self._compute_citcoms_residual()
-            delta_rate = residual.duplicate()
+            self._compute_citcoms_residual(temperature_global, residual)
             delta_rate.pointwiseDivide(residual, mass)
             delta_rate.scale(-1.0)
 
-            rate_global = temperature_global.duplicate()
             rate_global.set(0.0)
             self.dm.localToGlobal(
                 self._temperature_rate.vec, rate_global, addv=False
@@ -628,11 +650,6 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
             self.dm.globalToLocal(temperature_global, self.u.vec)
             petsc_dm_insert_boundary_values(self.dm, self.u.vec)
             self.mesh._stale_lvec = True
-
-            residual.destroy()
-            delta_rate.destroy()
-            rate_global.destroy()
-            temperature_global.destroy()
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
