@@ -83,3 +83,47 @@ def test_bdf_temporal_convergence(order, minimum_rate):
 
     assert errors[0] > errors[1] > errors[2]
     assert min(rates) > minimum_rate
+
+
+def _citcoms_decay_error(timestep):
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=0.5,
+        regular=True,
+    )
+    token = str(timestep).replace(".", "p")
+    temperature = uw.discretisation.MeshVariable(
+        f"T_citcoms_decay_{token}", mesh, 1, degree=1
+    )
+    velocity = uw.discretisation.MeshVariable(
+        f"U_citcoms_decay_{token}", mesh, mesh.dim, degree=1
+    )
+    temperature.data[:, 0] = 1.0
+
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+        tau=0.0,
+    )
+    thermal.constitutive_model = uw.constitutive_models.DiffusionModel
+    thermal.constitutive_model.Parameters.diffusivity = 0.0
+    thermal.f = -temperature.sym[0]
+
+    for _ in range(round(1.0 / timestep)):
+        thermal.solve(timestep=timestep)
+
+    return abs(float(np.mean(temperature.data[:, 0])) - np.exp(-1.0))
+
+
+def test_citcoms_predictor_corrector_is_second_order_for_scalar_decay():
+    errors = [_citcoms_decay_error(dt) for dt in (0.1, 0.05, 0.025)]
+    rates = [
+        np.log(errors[index] / errors[index + 1]) / np.log(2.0)
+        for index in range(2)
+    ]
+
+    assert errors[0] > errors[1] > errors[2]
+    assert min(rates) > 1.9

@@ -133,3 +133,85 @@ def test_zero_velocity_matches_diffusion_solver():
         rtol=1.0e-11,
         atol=1.0e-11,
     )
+
+
+def test_citcoms_integrator_requires_continuous_p1_temperature():
+    mesh, temperature, velocity = _mesh_temperature_velocity("citcoms_p1")
+    temperature_p2 = uw.discretisation.MeshVariable(
+        "T_citcoms_p2", mesh, 1, degree=2
+    )
+
+    with pytest.raises(ValueError, match="continuous P1"):
+        uw.systems.AdvDiffusionSUPG(
+            mesh,
+            u_Field=temperature_p2,
+            V_fn=velocity.sym,
+            time_integrator="citcoms",
+        )
+
+
+def test_citcoms_lumped_mass_matches_constant_residual():
+    mesh, temperature, velocity = _mesh_temperature_velocity(
+        "citcoms_mass", velocity=(0.0, 0.0)
+    )
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+        tau=0.0,
+    )
+    _configure_diffusion(thermal, diffusivity=0.0)
+    thermal.delta_t = 0.01
+    thermal._setup_citcoms_residual()
+    mass = thermal._assemble_lumped_mass()
+    thermal._temperature_rate.data[:, 0] = 1.0
+    solution, residual = thermal._compute_citcoms_residual()
+
+    np.testing.assert_allclose(residual.array / mass.array, 1.0, atol=1.0e-14)
+    assert mass.min()[1] > 0.0
+    solution.destroy()
+    residual.destroy()
+
+
+def test_citcoms_constant_source_is_exact_from_first_step():
+    mesh, temperature, velocity = _mesh_temperature_velocity(
+        "citcoms_source", velocity=(0.0, 0.0)
+    )
+    temperature.data[:, 0] = 0.0
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+        tau=0.0,
+    )
+    _configure_diffusion(thermal, diffusivity=0.0)
+    thermal.f = 1.0
+
+    thermal.solve(timestep=0.1)
+
+    np.testing.assert_allclose(temperature.data, 0.1, atol=1.0e-14)
+    np.testing.assert_allclose(
+        thermal._temperature_rate.data, 1.0, atol=1.0e-14
+    )
+
+
+def test_citcoms_timestep_uses_advection_and_lumped_diffusion_limits():
+    mesh, temperature, velocity = _mesh_temperature_velocity("citcoms_dt")
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+    )
+    _configure_diffusion(thermal, diffusivity=0.1)
+
+    timestep = thermal.estimate_dt()
+
+    assert np.isfinite(timestep)
+    assert timestep == pytest.approx(
+        0.9 * min(thermal.dt_adv, thermal.dt_diff)
+    )
+    assert thermal.dt_adv > 0.0
+    assert thermal.dt_diff > 0.0

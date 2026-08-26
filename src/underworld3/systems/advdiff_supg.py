@@ -1,15 +1,27 @@
 r"""Streamline-upwind Petrov-Galerkin scalar transport."""
 
 from typing import Optional
+import math
+from dataclasses import dataclass
 
 import numpy as np
 import sympy
+from petsc4py import PETSc
 
 import underworld3 as uw
 import underworld3.timing as timing
 from underworld3.function import expression
 from underworld3.systems.ddt import Eulerian as Eulerian_DDt
 from underworld3.systems.solvers import SNES_Diffusion, _centroid_velocities_nd
+from underworld3.checkpoint.state import SnapshottableState
+
+
+@dataclass
+class AdvDiffusionSUPGState(SnapshottableState):
+    """Snapshot metadata not carried by SUPG mesh variables."""
+
+    time_integrator: str = "bdf"
+    rate_initialised: bool = False
 
 
 class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
@@ -51,11 +63,15 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         User-provided stabilization parameter. When omitted, a transient
         isotropic parameter is computed from a cell-constant streamline
         length, local velocity, diffusivity, and timestep.
-    tau_model : {"generic", "citcoms"}, default="generic"
+    tau_model : {"generic", "citcoms"}, optional
         Automatic stabilization model. ``generic`` uses the optimal 1-D
         coth(Pe)-1/Pe relation with a transient scale. ``citcoms`` uses the
         clipped steady relation on simplex streamline lengths. This option
         does not change the implicit BDF time integrator.
+    time_integrator : {"bdf", "citcoms"}, default="bdf"
+        ``bdf`` uses the implicit Eulerian BDF solver. ``citcoms`` uses a
+        positive P1 row-sum mass, gamma=0.5 predictor, and two fixed residual
+        corrections. The latter is restricted to continuous P1 fields.
     DuDt, DFDt : optional
         Existing history operators. A supplied ``DuDt`` must be Eulerian and
         must not contain a velocity, because advection is represented in R.
@@ -77,7 +93,10 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         order: int = 1,
         theta: float = 1.0,
         tau=None,
-        tau_model: str = "generic",
+        tau_model: Optional[str] = None,
+        time_integrator: str = "bdf",
+        adv_gamma: float = 0.5,
+        corrector_steps: int = 2,
         evalf: Optional[bool] = False,
         verbose: bool = False,
         DuDt: Optional[Eulerian_DDt] = None,
@@ -85,6 +104,10 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
     ):
         if float(theta) != 1.0:
             raise ValueError("AdvDiffusionSUPG currently requires theta=1.0.")
+        if time_integrator not in ("bdf", "citcoms"):
+            raise ValueError("time_integrator must be 'bdf' or 'citcoms'.")
+        if tau_model is None:
+            tau_model = "citcoms" if time_integrator == "citcoms" else "generic"
         if tau_model not in ("generic", "citcoms"):
             raise ValueError("tau_model must be 'generic' or 'citcoms'.")
         if DuDt is not None and not isinstance(DuDt, Eulerian_DDt):
@@ -94,6 +117,21 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
                 "DuDt.V_fn must be None; AdvDiffusionSUPG includes advection "
                 "in its strong residual."
             )
+        if time_integrator == "citcoms":
+            if u_Field.degree != 1 or not u_Field.continuous:
+                raise ValueError(
+                    "The CitcomS predictor-corrector requires continuous P1 "
+                    "temperature."
+                )
+            if DuDt is not None or DFDt is not None:
+                raise ValueError(
+                    "The CitcomS predictor-corrector manages its own derivative "
+                    "state; do not supply DuDt or DFDt."
+                )
+            if not 0.0 < float(adv_gamma) <= 1.0:
+                raise ValueError("adv_gamma must be in (0, 1].")
+            if int(corrector_steps) < 1:
+                raise ValueError("corrector_steps must be positive.")
 
         super().__init__(
             mesh,
@@ -108,9 +146,26 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
 
         self.V_fn = V_fn
         self.tau_model = tau_model
+        self.time_integrator = time_integrator
+        self.adv_gamma = float(adv_gamma)
+        self.corrector_steps = int(corrector_steps)
         self._automatic_tau = tau is None
         self._supg_h = None
         self._supg_tau = None
+        self._temperature_rate = None
+        self._lumped_mass = None
+        self._rate_initialised = False
+
+        if self.time_integrator == "citcoms":
+            self._temperature_rate = uw.discretisation.MeshVariable(
+                f"_supg_dTdt_{self.instance_number}",
+                mesh,
+                1,
+                degree=1,
+                continuous=True,
+            )
+
+        uw.get_default_model()._register_state_bearer(self)
 
         if self._automatic_tau:
             suffix = self.instance_number
@@ -143,10 +198,83 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         """SUPG stabilization parameter used in the residual."""
         return self._tau
 
+    @property
+    def state(self):
+        """Return predictor-corrector initialization metadata."""
+        return AdvDiffusionSUPGState(
+            time_integrator=self.time_integrator,
+            rate_initialised=self._rate_initialised,
+        )
+
+    @state.setter
+    def state(self, state):
+        if not isinstance(state, AdvDiffusionSUPGState):
+            raise TypeError("AdvDiffusionSUPG state has the wrong type.")
+        if state.time_integrator != self.time_integrator:
+            raise ValueError("AdvDiffusionSUPG time integrator changed since snapshot.")
+        self._rate_initialised = bool(state.rate_initialised)
+
     def _strong_transport_residual(self):
         gradient = self.mesh.vector.gradient(self.u.sym)
         advection = sympy.Matrix((self.V_fn.dot(gradient),))
-        return self.DuDt.bdf() / self.delta_t + advection - self.f
+        if self.time_integrator == "citcoms":
+            time_derivative = self._temperature_rate.sym
+        else:
+            time_derivative = self.DuDt.bdf() / self.delta_t
+        return time_derivative + advection - self.f
+
+    def _simplex_data(self):
+        """Return local simplex connectivity, basis gradients, and volumes."""
+        from underworld3.meshing.smoothing import _tet_cells, _tri_cells
+
+        cells = (
+            _tri_cells(self.mesh.dm)
+            if self.mesh.dim == 2
+            else _tet_cells(self.mesh.dm)
+            if self.mesh.dim == 3
+            else None
+        )
+        if cells is None or self.mesh.dim != self.mesh.cdim:
+            raise NotImplementedError(
+                "Automatic SUPG operations require a 2-D or 3-D volume "
+                "simplex mesh."
+            )
+
+        coords = np.asarray(self.mesh.X.coords)
+        cell_coords = coords[cells]
+        edges = cell_coords[:, 1:, :] - cell_coords[:, :1, :]
+        try:
+            inverse_edges = np.linalg.inv(edges)
+        except np.linalg.LinAlgError as error:
+            raise RuntimeError("Cannot operate on a singular simplex.") from error
+
+        gradients = np.empty_like(cell_coords)
+        gradients[:, 1:, :] = np.transpose(inverse_edges, (0, 2, 1))
+        gradients[:, 0, :] = -gradients[:, 1:, :].sum(axis=1)
+        volumes = np.abs(np.linalg.det(edges)) / math.factorial(self.mesh.dim)
+        return cells, gradients, volumes
+
+    def _cell_diffusivity(self, cell_count):
+        """Evaluate non-negative scalar diffusivity at cell centroids."""
+        diffusivity_expr = sympy.sympify(self.constitutive_model.K)
+        if isinstance(diffusivity_expr, sympy.MatrixBase):
+            raise NotImplementedError(
+                "Automatic SUPG operations require scalar isotropic "
+                "diffusivity; supply tau explicitly for tensor diffusivity."
+            )
+        diffusivity = uw.function.evaluate(diffusivity_expr, self.mesh._centroids)
+        if hasattr(diffusivity, "units") and diffusivity.units is not None:
+            diffusivity = uw.non_dimensionalise(diffusivity)
+        elif hasattr(diffusivity, "magnitude"):
+            diffusivity = diffusivity.magnitude
+        diffusivity = np.asarray(diffusivity, dtype=float).reshape(-1)
+        if diffusivity.size == 1:
+            diffusivity = np.full(cell_count, diffusivity.item())
+        if diffusivity.shape != (cell_count,):
+            raise ValueError("Diffusivity must evaluate to one scalar per cell.")
+        if np.any(diffusivity < 0.0):
+            raise ValueError("SUPG diffusivity must be non-negative.")
+        return diffusivity
 
     @property
     def F0(self):
@@ -164,9 +292,14 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
     def F1(self):
         """Galerkin diffusion flux plus streamline stabilization flux."""
         residual = self._strong_transport_residual()[0]
+        diffusion_flux = (
+            self.constitutive_model.flux.T
+            if self.time_integrator == "citcoms"
+            else self.DFDt.adams_moulton_flux()
+        )
         value = expression(
             r"\mathbf{F}_1^{SUPG}",
-            self.DFDt.adams_moulton_flux() + self.tau * self.V_fn * residual,
+            diffusion_flux + self.tau * self.V_fn * residual,
             "Diffusive and SUPG streamline flux",
             _unique_name_generation=True,
         )
@@ -180,30 +313,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         if self.constitutive_model is None:
             raise RuntimeError("Set constitutive_model before solving AdvDiffusionSUPG.")
 
-        from underworld3.meshing.smoothing import _tet_cells, _tri_cells
-
-        if self.mesh.dim == 2:
-            cells = _tri_cells(self.mesh.dm)
-        elif self.mesh.dim == 3:
-            cells = _tet_cells(self.mesh.dm)
-        else:
-            cells = None
-        if cells is None or self.mesh.dim != self.mesh.cdim:
-            raise NotImplementedError(
-                "Automatic SUPG tau currently requires a 2-D or 3-D volume simplex mesh."
-            )
-
-        coords = np.asarray(self.mesh.X.coords)
-        cell_coords = coords[cells]
-        edges = cell_coords[:, 1:, :] - cell_coords[:, :1, :]
-        try:
-            inverse_edges = np.linalg.inv(edges)
-        except np.linalg.LinAlgError as error:
-            raise RuntimeError("Cannot compute SUPG length on a singular simplex.") from error
-
-        gradients = np.empty_like(cell_coords)
-        gradients[:, 1:, :] = np.transpose(inverse_edges, (0, 2, 1))
-        gradients[:, 0, :] = -gradients[:, 1:, :].sum(axis=1)
+        _, gradients, _ = self._simplex_data()
 
         velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
         speed = np.linalg.norm(velocity, axis=1)
@@ -217,24 +327,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
             where=directional_rate > 0.0,
         )
 
-        diffusivity_expr = sympy.sympify(self.constitutive_model.K)
-        if isinstance(diffusivity_expr, sympy.MatrixBase):
-            raise NotImplementedError(
-                "Automatic SUPG tau requires scalar isotropic diffusivity; "
-                "supply tau explicitly for tensor diffusivity."
-            )
-        diffusivity = uw.function.evaluate(diffusivity_expr, self.mesh._centroids)
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            diffusivity = diffusivity.magnitude
-        diffusivity = np.asarray(diffusivity, dtype=float).reshape(-1)
-        if diffusivity.size == 1:
-            diffusivity = np.full_like(speed, diffusivity.item())
-        if diffusivity.shape != speed.shape:
-            raise ValueError("Diffusivity must evaluate to one scalar per simplex cell.")
-        if np.any(diffusivity < 0.0):
-            raise ValueError("SUPG diffusivity must be non-negative.")
+        diffusivity = self._cell_diffusivity(speed.size)
 
         tau_steady = np.zeros_like(speed)
         moving = speed > np.finfo(float).eps
@@ -294,6 +387,211 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._supg_h.data[:, 0] = h_stream
         self._supg_tau.data[:, 0] = tau_values
 
+    def _setup_citcoms_residual(self, verbose=False):
+        """Build the reusable residual assembler for predictor-corrector steps."""
+        if not self.constitutive_model._solver_is_setup:
+            self._needs_function_rewire = True
+        self._build(verbose, False, None)
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+    def _assemble_lumped_mass(self):
+        """Assemble positive P1 simplex row-sum masses on free global DOFs."""
+        if self._lumped_mass is not None:
+            return self._lumped_mass
+
+        from underworld3.meshing.smoothing import _owned_cell_mask
+
+        cells, _, volumes = self._simplex_data()
+        owned = _owned_cell_mask(self.mesh.dm)
+
+        local_mass = self.dm.createLocalVector()
+        global_mass = self.dm.createGlobalVector()
+        local_mass.set(0.0)
+        global_mass.set(0.0)
+        section = self.dm.getLocalSection()
+        vertex_start, _ = self.mesh.dm.getDepthStratum(0)
+
+        for cell_index in np.flatnonzero(owned):
+            contribution = volumes[cell_index] / (self.mesh.dim + 1)
+            for vertex_index in cells[cell_index]:
+                offset = section.getOffset(vertex_start + int(vertex_index))
+                if offset >= 0:
+                    local_mass.array[offset] += contribution
+
+        self.dm.localToGlobal(
+            local_mass,
+            global_mass,
+            addv=PETSc.InsertMode.ADD_VALUES,
+        )
+        local_mass.destroy()
+        if global_mass.getLocalSize() and np.any(global_mass.array <= 0.0):
+            global_mass.destroy()
+            raise RuntimeError("CitcomS P1 lumped mass contains non-positive rows.")
+
+        self._lumped_mass = global_mass
+        return self._lumped_mass
+
+    @timing.routine_timer_decorator
+    def estimate_dt(self):
+        """Estimate a simplex advection-diffusion timestep.
+
+        The CitcomS-compatible predictor-corrector uses
+        ``0.9 * min(1/max(lambda_adv), 2/max(rowsum(abs(M_L^-1 K))))``.
+        The same conservative value is also available for the implicit BDF
+        path as a resolution-accuracy estimate.
+        """
+        from mpi4py import MPI
+        from underworld3.meshing.smoothing import _owned_cell_mask
+
+        cells, gradients, volumes = self._simplex_data()
+        velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
+        directional_rate = np.abs(
+            np.einsum("cad,cd->ca", gradients, velocity)
+        ).sum(axis=1)
+        local_adv_rate = (
+            float(np.max(directional_rate)) if directional_rate.size else 0.0
+        )
+        adv_rate = uw.mpi.comm.allreduce(local_adv_rate, op=MPI.MAX)
+        dt_adv = 1.0 / adv_rate if adv_rate > 0.0 else np.inf
+
+        diffusivity = self._cell_diffusivity(len(cells))
+        if not np.any(diffusivity > 0.0):
+            dt_diff = np.inf
+        elif self.time_integrator != "citcoms":
+            local_diff_rate = np.max(
+                2.0 * self.mesh.dim * diffusivity / np.maximum(
+                    self.mesh._radii**2, np.finfo(float).tiny
+                )
+            )
+            diff_rate = uw.mpi.comm.allreduce(
+                float(local_diff_rate), op=MPI.MAX
+            )
+            dt_diff = 2.0 / diff_rate
+        else:
+            self._setup_citcoms_residual()
+            mass = self._assemble_lumped_mass()
+            stiffness = self.dm.createMatrix()
+            stiffness.setOption(PETSc.Mat.Option.NEW_NONZERO_LOCATION_ERR, False)
+            section = self.dm.getLocalSection()
+            vertex_start, _ = self.mesh.dm.getDepthStratum(0)
+            owned = _owned_cell_mask(self.mesh.dm)
+
+            for cell_index in np.flatnonzero(owned):
+                points = [
+                    vertex_start + int(index) for index in cells[cell_index]
+                ]
+                local_dofs = [section.getOffset(point) for point in points]
+                element_stiffness = (
+                    diffusivity[cell_index]
+                    * volumes[cell_index]
+                    * gradients[cell_index].dot(gradients[cell_index].T)
+                )
+                stiffness.setValuesLocal(
+                    local_dofs,
+                    local_dofs,
+                    element_stiffness,
+                    addv=PETSc.InsertMode.ADD_VALUES,
+                )
+            stiffness.assemble()
+
+            row_start, row_end = stiffness.getOwnershipRange()
+            local_diff_rate = 0.0
+            for row in range(row_start, row_end):
+                _, values = stiffness.getRow(row)
+                row_sum = float(np.sum(np.abs(values)))
+                local_diff_rate = max(
+                    local_diff_rate,
+                    row_sum / mass.array[row - row_start],
+                )
+            diff_rate = uw.mpi.comm.allreduce(local_diff_rate, op=MPI.MAX)
+            stiffness.destroy()
+            dt_diff = 2.0 / diff_rate if diff_rate > 0.0 else np.inf
+
+        self.dt_adv = dt_adv
+        self.dt_diff = dt_diff
+        return 0.9 * min(dt_adv, dt_diff)
+
+    def _compute_citcoms_residual(self):
+        """Return the globally assembled residual at the current T and dT/dt."""
+        solution = self.dm.createGlobalVector()
+        solution.set(0.0)
+        self.dm.localToGlobal(self.u.vec, solution, addv=False)
+        residual = solution.duplicate()
+        residual.set(0.0)
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+        self.snes.computeFunction(solution, residual)
+        return solution, residual
+
+    def _solve_citcoms(self, timestep, verbose=False):
+        """Advance one CitcomS-compatible predictor-corrector timestep."""
+        if timestep is None:
+            timestep = float(self.delta_t.data)
+        self.delta_t = timestep
+        dt = float(self.delta_t.data)
+        if dt <= 0.0:
+            raise ValueError("AdvDiffusionSUPG requires a positive timestep.")
+
+        self._update_automatic_tau()
+        self._setup_citcoms_residual(verbose)
+        mass = self._assemble_lumped_mass()
+
+        if not self._rate_initialised:
+            self._temperature_rate.data[:, 0] = 0.0
+            temperature_global, residual = self._compute_citcoms_residual()
+            initial_rate = residual.duplicate()
+            initial_rate.pointwiseDivide(residual, mass)
+            initial_rate.scale(-1.0)
+            self._temperature_rate.vec.set(0.0)
+            self.dm.globalToLocal(initial_rate, self._temperature_rate.vec)
+            self.mesh._stale_lvec = True
+            temperature_global.destroy()
+            residual.destroy()
+            initial_rate.destroy()
+            self._rate_initialised = True
+
+        self.u.data[:, 0] += (
+            (1.0 - self.adv_gamma) * dt * self._temperature_rate.data[:, 0]
+        )
+        self._temperature_rate.data[:, 0] = 0.0
+        self.mesh._stale_lvec = True
+
+        from underworld3.cython.petsc_discretisation import (
+            petsc_dm_insert_boundary_values,
+        )
+
+        for _ in range(self.corrector_steps):
+            temperature_global, residual = self._compute_citcoms_residual()
+            delta_rate = residual.duplicate()
+            delta_rate.pointwiseDivide(residual, mass)
+            delta_rate.scale(-1.0)
+
+            rate_global = temperature_global.duplicate()
+            rate_global.set(0.0)
+            self.dm.localToGlobal(
+                self._temperature_rate.vec, rate_global, addv=False
+            )
+            rate_global.axpy(1.0, delta_rate)
+            temperature_global.axpy(self.adv_gamma * dt, delta_rate)
+
+            self._temperature_rate.vec.set(0.0)
+            self.u.vec.set(0.0)
+            self.dm.globalToLocal(rate_global, self._temperature_rate.vec)
+            self.dm.globalToLocal(temperature_global, self.u.vec)
+            petsc_dm_insert_boundary_values(self.dm, self.u.vec)
+            self.mesh._stale_lvec = True
+
+            residual.destroy()
+            delta_rate.destroy()
+            rate_global.destroy()
+            temperature_global.destroy()
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+        return
+
     @timing.routine_timer_decorator
     def solve(
         self,
@@ -305,6 +603,8 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         divergence_retries: int = 0,
     ):
         """Update automatic stabilization and solve one implicit timestep."""
+        if self.time_integrator == "citcoms":
+            return self._solve_citcoms(timestep, verbose=verbose)
         if timestep is not None:
             self.delta_t = timestep
         self._update_automatic_tau()

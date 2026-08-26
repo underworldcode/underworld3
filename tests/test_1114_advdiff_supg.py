@@ -242,3 +242,89 @@ def test_repeated_solves_keep_histories_and_transient_state_bounded():
 
     assert len(thermal.solve_history) == 32
     assert np.all(np.isfinite(temperature.data))
+
+
+def test_citcoms_spherical_shell_is_parallel_safe():
+    mesh = uw.meshing.SphericalShell(
+        radiusInner=0.55,
+        radiusOuter=1.0,
+        cellSize=0.25,
+        qdegree=2,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "T_citcoms_spherical", mesh, 1, degree=1
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "U_citcoms_spherical", mesh, mesh.dim, degree=1
+    )
+    with mesh.access(temperature, velocity):
+        coords = temperature.coords
+        radii = np.linalg.norm(coords, axis=1)
+        temperature.data[:, 0] = (1.0 - radii) / 0.45 + 0.01 * coords[:, 0]
+        velocity.data[:, 0] = -0.02 * coords[:, 1]
+        velocity.data[:, 1] = 0.02 * coords[:, 0]
+        velocity.data[:, 2] = 0.0
+
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+    )
+    thermal.constitutive_model = uw.constitutive_models.DiffusionModel
+    thermal.constitutive_model.Parameters.diffusivity = 0.01
+    thermal.add_dirichlet_bc(0.0, "Upper")
+    thermal.add_dirichlet_bc(1.0, "Lower")
+    thermal.solve(timestep=1.0e-3)
+
+    temperature_l2_squared = float(
+        uw.maths.Integral(mesh, fn=temperature.sym[0] ** 2).evaluate()
+    )
+    assert thermal._lumped_mass.getSize() > 0
+    assert np.all(np.isfinite(temperature.data))
+    assert temperature_l2_squared == pytest.approx(0.814491155536, rel=1.0e-8)
+
+
+def test_citcoms_snapshot_restores_startup_state_exactly():
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=0.3,
+        regular=True,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "T_citcoms_restart", mesh, 1, degree=1
+    )
+    velocity = uw.discretisation.MeshVariable(
+        "U_citcoms_restart", mesh, mesh.dim, degree=1
+    )
+    with mesh.access(temperature, velocity):
+        temperature.data[:, 0] = 1.0
+
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+        tau=0.0,
+    )
+    thermal.constitutive_model = uw.constitutive_models.DiffusionModel
+    thermal.constitutive_model.Parameters.diffusivity = 0.0
+    thermal.f = -temperature.sym[0]
+
+    initial = model.save_state()
+    thermal.solve(timestep=0.05)
+    reference_temperature = temperature.data.copy()
+    reference_rate = thermal._temperature_rate.data.copy()
+
+    model.load_state(initial)
+    assert not thermal._rate_initialised
+    thermal.solve(timestep=0.05)
+
+    np.testing.assert_array_equal(temperature.data, reference_temperature)
+    np.testing.assert_array_equal(
+        thermal._temperature_rate.data, reference_rate
+    )
+    uw.reset_default_model()
