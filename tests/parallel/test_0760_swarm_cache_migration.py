@@ -101,3 +101,35 @@ def test_global_evaluate_displaced_nodes():
         f"Rank {uw.mpi.rank}: expected {node_coords.shape[0]} results, "
         f"got {result.shape[0]}"
     )
+
+
+@pytest.mark.mpi(min_size=2)
+@pytest.mark.level_2
+@pytest.mark.tier_a
+def test_global_evaluate_fallback_diagnostics_count_replicated_storage():
+    """Opt-in diagnostics report actual collective fallback allocation."""
+    from underworld3.function._function import (
+        _get_global_evaluate_fallback_stats,
+        _reset_global_evaluate_fallback_stats,
+    )
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0)
+    )
+    field = uw.discretisation.MeshVariable("fallback_field", mesh, 1, degree=1)
+    field.data[:, 0] = field.coords[:, 0] + field.coords[:, 1]
+    coords = np.array([[-0.05, 0.5], [1.05, 0.5]], dtype=np.float64)
+
+    _reset_global_evaluate_fallback_stats(enabled=True)
+    values = uw.function.global_evaluate(field.sym, coords)
+    stats = _get_global_evaluate_fallback_stats()
+    _reset_global_evaluate_fallback_stats(enabled=False)
+
+    assert np.all(np.isfinite(values))
+    assert stats["calls"] == 1
+    assert stats["calls_with_points"] == 1
+    assert stats["local_extrapolated_points"] == coords.shape[0]
+    assert stats["replicated_points_per_rank"] == coords.shape[0] * uw.mpi.size
+    assert stats["max_replicated_points_per_call"] == coords.shape[0] * uw.mpi.size
+    assert stats["temporary_bytes_per_rank"] > 0
+    assert stats["max_temporary_bytes_per_call"] > 0

@@ -48,6 +48,33 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode DMSwarmSetMigrateType(PetscDM dm, DMSwarmMigrateType mtype)
     PetscErrorCode DMSwarmGetMigrateType(PetscDM dm, DMSwarmMigrateType *mtype)
 
+
+_fallback_stats_enabled = False
+_fallback_stats = {}
+
+
+def _reset_global_evaluate_fallback_stats(enabled=True):
+    """Reset and optionally enable internal MPI fallback diagnostics."""
+
+    global _fallback_stats_enabled, _fallback_stats
+    _fallback_stats_enabled = bool(enabled)
+    _fallback_stats = {
+        "calls": 0,
+        "calls_with_points": 0,
+        "local_extrapolated_points": 0,
+        "replicated_points_per_rank": 0,
+        "max_replicated_points_per_call": 0,
+        "temporary_bytes_per_rank": 0,
+        "max_temporary_bytes_per_call": 0,
+    }
+
+
+def _get_global_evaluate_fallback_stats():
+    """Return one rank's internal MPI fallback diagnostics."""
+
+    return dict(_fallback_stats)
+
+
 class UnderworldAppliedFunction(sympy.core.function.AppliedUndef):
     """
     Applied Underworld function representing a mesh variable evaluated at coordinates.
@@ -595,7 +622,21 @@ def global_evaluate_nd(   expr,
         counts = np.array(comm.allgather(ext_coords.shape[0]), dtype=int)
         n_ext_total = int(counts.sum())
 
+        if _fallback_stats_enabled:
+            _fallback_stats["calls"] += 1
+            _fallback_stats["local_extrapolated_points"] += int(
+                ext_coords.shape[0]
+            )
+            _fallback_stats["replicated_points_per_rank"] += n_ext_total
+            _fallback_stats["max_replicated_points_per_call"] = max(
+                _fallback_stats["max_replicated_points_per_call"],
+                n_ext_total,
+            )
+
         if n_ext_total > 0:
+            if _fallback_stats_enabled:
+                _fallback_stats["calls_with_points"] += 1
+
             parts = comm.allgather(ext_coords)
             all_ext = np.concatenate(
                 [p for p in parts if p.size], axis=0).reshape(n_ext_total, -1)
@@ -631,6 +672,30 @@ def global_evaluate_nd(   expr,
             contrib_flag = np.where(i_win, ext_flag, 0).astype(np.int32)
             best_flag = np.empty(n_ext_total, dtype=np.int32)
             comm.Allreduce([contrib_flag, MPI.INT], [best_flag, MPI.INT], op=MPI.SUM)
+
+            if _fallback_stats_enabled:
+                temporary_bytes = sum(
+                    int(array.nbytes)
+                    for array in (
+                        all_ext,
+                        ext_vals,
+                        ext_flag,
+                        dist2,
+                        min_dist2,
+                        my_claim,
+                        win_rank,
+                        contrib_val,
+                        best_val,
+                        contrib_flag,
+                        best_flag,
+                    )
+                )
+                temporary_bytes += sum(int(part.nbytes) for part in parts)
+                _fallback_stats["temporary_bytes_per_rank"] += temporary_bytes
+                _fallback_stats["max_temporary_bytes_per_call"] = max(
+                    _fallback_stats["max_temporary_bytes_per_call"],
+                    temporary_bytes,
+                )
 
             # Scatter this rank's segment of the global set back to its points.
             offset = int(counts[:comm.rank].sum())
