@@ -15,7 +15,7 @@ net = uw.meshing.FaultNetwork(
     [("Main", main_pts), ("Splay", splay_pts), ("Cross", cross_pts)],
     hierarchy=["Main", "Splay", "Cross"])   # seniority order
 
-mesh = net.prepare(h=0.006).build()          # junctions -> mesh -> split
+mesh = net.prepare(h=0.006).build(width=0.01)  # junctions -> mesh -> split
 
 v = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=0,
@@ -27,10 +27,56 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
 stokes.constitutive_model.Parameters.yield_stress = \
     net.damage_yield(v, dial=0.05)           # the junction glue
 stokes.consistent_jacobian = True
-net.apply_contact(stokes)                    # no-opening pairs, all pieces
+net.apply(stokes)                            # no-opening pairs, all pieces
 # ... wall boundary conditions ...
 info = net.solve(stokes)
 print(net.slips(stokes))                     # peak slip per piece
+```
+
+## One specification, two realisations
+
+A fault is specified once — a trace, its rank in the hierarchy, and the
+properties it carries — and then *realised*. Which realisation you get
+is a keyword on `build`, not a different set of calls:
+
+```python
+net.prepare(h=0.006)
+mesh = net.build(width=0.01)                      # cut, node-pair contact
+mesh = net.build(width=0.002, realisation="ti")   # volumetric weak plane
+net.apply(stokes, eta_1=0.01)                     # eta_1: TI only
+```
+
+Both realisations place the same ribbon band along the same prepared
+pieces, so the cells are identical and results from the two may be
+compared directly. What differs is what `width` *means*. For the split
+it is a resolution parameter: the band exists to give the cut its own
+vertices, and its thickness is not physics. For the weak plane it is
+constitutive — the layer thickness that sets the slip rate through
+`V = 2 e_nt w` — so it wants two or three elements across, and at that
+width there may be no room left to cut. That is the only real
+asymmetry between them, and it is a property of the discretisation
+rather than of the fault.
+
+`slips()` reports each realisation in its own quantity: the tangential
+jump between the two nodes of a cut pair, or the jump in tangential
+velocity across the layer, sampled one half-width plus a cell either
+side of the spine. Both are the fault's own throughput; a probe placed
+further out reads the surrounding flow as well and over-reads short
+strands.
+
+`build(width=None)` keeps the older no-band path — graded refinement
+cut directly. It is split-only, and its mesh is not the one a weak
+plane would use, so do not compare across that choice.
+
+**Properties belong to the fault.** `net.surface(name)` returns the
+retained {class}`~underworld3.meshing.surfaces.Surface` for a piece.
+Friction, accumulated slip, a damage state live there, on the fault,
+and outlive any one realisation of it:
+
+```python
+main = net.surface("Main")
+friction = main.add_variable("mu", size=1)
+friction.data[:] = 0.6
 ```
 
 ## The recipe, and why each piece is the way it is
@@ -128,7 +174,9 @@ through redistribution — single faults are parallel-validated).
 
 ## Limitations
 
-- 3-D: planar convex patches, X crossings only, serial (above).
+- 3-D: planar convex patches, X crossings only, serial (above); the
+  weak-plane realisation is 2-D for now — place 3-D zones with
+  `place_thin_volume` directly.
 - One damage dial per network in `damage_yield` (per-junction values:
   build the expression with `uw.meshing.damage_zone_yield` directly).
 - Time-dependent damage (wear-in/healing) is study-level for now: see

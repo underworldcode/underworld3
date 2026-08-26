@@ -7493,7 +7493,8 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
 
 def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                           band_label="Band", band_value=71,
-                          clearance=0.3, split=True, verbose=False):
+                          clearance=0.3, split=True, mesher="ladder",
+                          verbose=False):
     """Split-ready 2-D fault ribbons from the traces' OWN sampling (#629).
 
     The 2-D production fault-prep path, honouring the same contract set
@@ -7522,11 +7523,25 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         The band extends this many points beyond each fault end, by
         linear tangent continuation. Must be >= 1 (the tip rule).
     band_label, band_value : str, int
-        Cell label of each band; trace ``k`` gets ``band_value + k`` so
-        per-fault zones stay distinguishable
-        (``mesh.cells_labelled(band_label)`` unions them).
+        Cell label of the band. With ``mesher="ladder"`` trace ``k`` gets
+        ``band_value + k`` so per-fault zones stay distinguishable
+        (``mesh.cells_labelled(band_label)`` unions them); with
+        ``mesher="network"`` the fused band is ONE region carrying
+        ``band_value``. Either way ``info["band"]`` is the union mask and
+        ``info["footprints"]`` the per-fault ones.
     clearance : float
         Carve clearance (the measured thin-shell default 0.3).
+    mesher : {"ladder", "network"}
+        How the band is meshed. ``"ladder"`` (default) places each trace
+        SEQUENTIALLY as a structured band: bands may not touch, and level
+        pairs NEST (a 2:1 sub-sampled ladder shares every vertex — the
+        composed-hierarchy economics, #629). ``"network"`` places the
+        whole set in ONE call: the ribbons are fused in CAD so strands may
+        touch — a kissing junction, a shared stepover band — and every
+        spine is embedded, so the cuts still walk exact vertices at any
+        resolution. Choose ``"network"`` whenever the traces come within a
+        band width of one another; choose ``"ladder"`` when the placed
+        levels must nest.
     split : bool
         Cut + split each trace (``mesh.add_fault``). ``False`` returns
         the placed, unlabelled-fault mesh for painted (volumetric)
@@ -7540,10 +7555,13 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     mesh : uw.discretisation.Mesh
         The fault-resolving mesh (split when ``split=True``).
     info : dict
-        ``n_cells``, ``spacing`` / ``n_rungs`` (per trace), and
-        ``footprints`` — per-label FAULT-footprint cell masks (the
-        honoured-paint rule): what painted rheology / ``fac_zone``
-        keys should use, never the whole band.
+        ``n_cells``, ``spacing`` / ``n_rungs`` (per trace), the
+        ``mesher`` used, the ``extended`` spines (user samples plus the
+        margin) and the band ``width``; ``footprints`` — per-label
+        FAULT-footprint cell masks (the honoured-paint rule): what
+        painted rheology / ``fac_zone`` keys should use, never the whole
+        band; and ``band`` — the union band mask, for a band-confined
+        yield or a structural patch key.
 
     Notes
     -----
@@ -7558,6 +7576,9 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         raise ValueError(
             "margin_rings must be >= 1: the split cannot reach the band "
             "rim (the tip rule); the margin is extrapolated surround.")
+    if mesher not in ("ladder", "network"):
+        raise ValueError(
+            f"mesher must be 'ladder' or 'network', not {mesher!r}")
     labels = [label for label, _P in traces]
     if len(set(labels)) != len(labels):
         raise ValueError(
@@ -7565,22 +7586,33 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
             f"{labels}")
     dm = base_mesh.dm
     spacing_all, rungs_all, extended = [], [], []
-    for k, (label, P) in enumerate(traces):
+    for label, P in traces:
         P = np.asarray(P, dtype=float)
         if P.ndim != 2 or P.shape[1] != 2 or len(P) < 3:
             raise ValueError(
                 f"trace {label!r}: expected an (n, 2) polyline with "
                 f"n >= 3, got shape {P.shape}")
-        S = _extend_polyline_2d(P, margin_rings)
-        R = _mitred_reach_2d(S)
-        spacing = float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean())
-        dm, _info = place_thin_volume(
-            dm, [(S, R)], width, label=band_label,
-            label_value=band_value + k, clearance=clearance,
-            size=spacing, mesher="ladder", verbose=verbose)
-        spacing_all.append(spacing)
+        extended.append(_extend_polyline_2d(P, margin_rings))
+        spacing_all.append(
+            float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean()))
         rungs_all.append(len(P))
-        extended.append(S)
+
+    if mesher == "network":
+        # ONE placement call for the whole network: the ribbons are fused
+        # in CAD, so touching strands and shared bands are ordinary cells
+        # of the union, and every spine is EMBEDDED, so the cut below
+        # walks its own vertices (#595). The fused band is one region and
+        # therefore carries one label value.
+        dm, _info = place_thin_volume(
+            dm, extended, width, label=band_label, label_value=band_value,
+            clearance=clearance, size=float(np.mean(spacing_all)),
+            mesher="network", verbose=verbose)
+    else:
+        for k, S in enumerate(extended):
+            dm, _info = place_thin_volume(
+                dm, [(S, _mitred_reach_2d(S))], width, label=band_label,
+                label_value=band_value + k, clearance=clearance,
+                size=spacing_all[k], mesher="ladder", verbose=verbose)
 
     mesh = discretisation.Mesh(
         dm, simplex=True, qdegree=base_mesh.qdegree,
@@ -7598,17 +7630,34 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     # mask a volumetric rheology (or a fac_zone key) should use — never
     # the whole band, whose margin is extrapolated surround.
     footprints = {}
-    for k, (label, P) in enumerate(traces):
-        band_k = mesh.cells_labelled(band_label, band_value + k)
-        m = margin_rings
-        is_user = np.zeros(len(extended[k]), dtype=bool)
-        is_user[m:len(extended[k]) - m] = True
-        footprints[label] = _footprint_from_samples(
-            mesh.dm, band_k, extended[k], is_user)
+    m = margin_rings
+    if mesher == "network":
+        # one fused band, so each strand's footprint is read off the
+        # CONCATENATED samples: a band cell belongs to the strand whose
+        # user point is nearest to it.
+        band = mesh.cells_labelled(band_label, band_value)
+        S_all = np.vstack(extended)
+        off = np.cumsum([0] + [len(S) for S in extended])
+        for k, (label, _P) in enumerate(traces):
+            is_user = np.zeros(len(S_all), dtype=bool)
+            is_user[off[k] + m:off[k + 1] - m] = True
+            footprints[label] = _footprint_from_samples(
+                mesh.dm, band, S_all, is_user)
+    else:
+        masks = [mesh.cells_labelled(band_label, band_value + k)
+                 for k in range(len(traces))]
+        band = np.zeros_like(masks[0])
+        for k, (label, _P) in enumerate(traces):
+            is_user = np.zeros(len(extended[k]), dtype=bool)
+            is_user[m:len(extended[k]) - m] = True
+            footprints[label] = _footprint_from_samples(
+                mesh.dm, masks[k], extended[k], is_user)
+            band |= masks[k]
 
     info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
             "spacing": spacing_all, "n_rungs": rungs_all,
-            "footprints": footprints}
+            "footprints": footprints, "band": band, "mesher": mesher,
+            "extended": extended, "width": float(width)}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "
