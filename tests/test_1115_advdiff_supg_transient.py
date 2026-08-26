@@ -127,3 +127,62 @@ def test_citcoms_predictor_corrector_is_second_order_for_scalar_decay():
 
     assert errors[0] > errors[1] > errors[2]
     assert min(rates) > 1.9
+
+
+def _citcoms_rotation_return_error(cell_size):
+    mesh = uw.meshing.Annulus(
+        radiusOuter=1.0,
+        radiusInner=0.5,
+        cellSize=cell_size,
+        qdegree=4,
+    )
+    token = str(cell_size).replace(".", "p")
+    temperature = uw.discretisation.MeshVariable(
+        f"T_citcoms_rotation_{token}", mesh, 1, degree=1
+    )
+    velocity = uw.discretisation.MeshVariable(
+        f"U_citcoms_rotation_{token}", mesh, mesh.dim, degree=1
+    )
+    x, y = mesh.X
+    initial = sympy.exp(-30.0 * (x**2 + (y - 0.75) ** 2))
+
+    with mesh.access(temperature, velocity):
+        temperature.data[:, 0] = uw.function.evaluate(
+            initial, temperature.coords
+        ).reshape(-1)
+        velocity.data[:, 0] = -2.0 * np.pi * velocity.coords[:, 1]
+        velocity.data[:, 1] = 2.0 * np.pi * velocity.coords[:, 0]
+
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="citcoms",
+    )
+    thermal.constitutive_model = uw.constitutive_models.DiffusionModel
+    thermal.constitutive_model.Parameters.diffusivity = 0.0
+
+    step_count = int(np.ceil(1.0 / thermal.estimate_dt()))
+    timestep = 1.0 / step_count
+    for _ in range(step_count):
+        thermal.solve(timestep=timestep)
+
+    error = float(
+        np.sqrt(
+            uw.maths.Integral(
+                mesh, fn=(temperature.sym[0] - initial) ** 2
+            ).evaluate()
+        )
+    )
+    initial_norm = float(
+        np.sqrt(uw.maths.Integral(mesh, fn=initial**2).evaluate())
+    )
+    return error / initial_norm
+
+
+def test_citcoms_rotation_return_error_decreases_with_refinement():
+    coarse_error = _citcoms_rotation_return_error(0.2)
+    fine_error = _citcoms_rotation_return_error(0.1)
+
+    assert fine_error < 0.9 * coarse_error
+    assert fine_error < 0.7
