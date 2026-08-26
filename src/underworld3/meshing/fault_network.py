@@ -5,11 +5,13 @@ the properties it carries — and then realised. The realisation is a
 keyword, not a different subsystem: the same specification, the same
 prepared pieces and the same meshed band become either a cut with
 node-pair contact (``realisation="split"``) or a volumetric weak plane
-(``realisation="ti"``). What differs is what the band width means and
-what it permits: for the split, ``width`` is a resolution parameter
-that gives the cut its own vertices, while for the weak plane it is
-constitutive (``V = 2 e_nt w``) and wants two or three elements across,
-a width at which there may be no room left to cut.
+(``realisation="ti"``). The band carries the fault's own points and
+segments as mesh vertices and edges, so it can be cut whatever its
+width — the choice of realisation is not constrained by the mesh.
+What differs is what the width MEANS: for the split it is a resolution
+parameter that gives the cut its vertices, while for the weak plane it
+is constitutive (``V = 2 e_nt w``) and wants two or three elements
+across it.
 
 One object carries the validated network recipe end to end:
 
@@ -201,9 +203,12 @@ class FaultNetwork:
         What ``width`` MEANS differs: for the split it is a resolution
         parameter — the band exists to give the cut its own vertices —
         while for TI it is constitutive, the layer thickness that sets
-        the slip rate ``V = 2 e_nt w``. TI therefore wants a ``width``
-        resolved by two or three elements across, and at that width there
-        may be no room left to cut.
+        the slip rate ``V = 2 e_nt w``, so it wants two or three elements
+        across it. The width does NOT decide whether the fault can be
+        cut: the band is meshed around the trace's own points and
+        segments, so the cut chain is part of the mesh by construction at
+        any width (measured to ``w = h_far / 10``; see
+        ``~/+Simulations/fault_split_at_ti_width``).
 
         ``width=None`` keeps the original no-band path: graded refinement
         cut directly. It is split-only, and its mesh is NOT the one a TI

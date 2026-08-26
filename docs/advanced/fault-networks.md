@@ -48,14 +48,18 @@ net.apply(stokes, eta_1=0.01)                     # eta_1: TI only
 
 Both realisations place the same ribbon band along the same prepared
 pieces, so the cells are identical and results from the two may be
-compared directly. What differs is what `width` *means*. For the split
-it is a resolution parameter: the band exists to give the cut its own
-vertices, and its thickness is not physics. For the weak plane it is
-constitutive — the layer thickness that sets the slip rate through
-`V = 2 e_nt w` — so it wants two or three elements across, and at that
-width there may be no room left to cut. That is the only real
-asymmetry between them, and it is a property of the discretisation
-rather than of the fault.
+compared directly. The band is meshed around the trace's own points and
+segments, which become mesh vertices and edges, so **the mesh can be cut
+whatever the width is** — measured complete, with exact vertex
+coincidence, down to a band a tenth of the background element size. The
+realisation is a free choice, not something the mesh grants or refuses.
+
+What differs is what `width` *means*. For the split it is a resolution
+parameter: the band exists to give the cut its own vertices, and its
+thickness is not physics. For the weak plane it is constitutive — the
+layer thickness that sets the slip rate through `V = 2 e_nt w` — so it
+wants two or three elements across it. That is the whole asymmetry, and
+it is about the rheology rather than the mesh.
 
 `slips()` reports each realisation in its own quantity: the tangential
 jump between the two nodes of a cut pair, or the jump in tangential

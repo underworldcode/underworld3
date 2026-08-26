@@ -60,6 +60,32 @@ def test_the_two_realisations_share_one_mesh():
             > ti.mesh.dm.getDepthStratum(0)[1])
 
 
+def test_the_band_can_be_cut_at_any_width():
+    """The realisation is a free choice, not something the mesh grants:
+    the band is meshed around the trace's own points and segments, so a
+    band a tenth of the background element still holds the whole cut
+    chain. Measured over w/h from 1 to 1/10 in
+    ``~/+Simulations/fault_split_at_ti_width``; two widths here.
+    """
+    from scipy.spatial import cKDTree
+    from underworld3.utilities.place_surface import place_fault_ribbon_2d
+
+    h_far = 4 * H
+    for width in (h_far / 2, h_far / 10):
+        s = np.arange(0.3, 0.7 + 1e-12, width / 2)
+        P = np.column_stack([s, np.full_like(s, 0.5)])
+        mesh, _info = place_fault_ribbon_2d(
+            _base(), [("F", P)], width, mesher="network", split=False)
+        X = np.asarray(mesh.dm.getCoordinatesLocal().array).reshape(-1, 2)
+        assert cKDTree(X).query(P)[0].max() < 1e-12, (
+            f"w={width:g}: the trace is not on the mesh")
+        n_before = mesh.dm.getDepthStratum(0)[1]
+        cut = mesh.add_fault([("F", P)])
+        # every interior node duplicated; the two tips stay welded
+        assert cut.dm.getDepthStratum(0)[1] - n_before == len(P) - 2, (
+            f"w={width:g}: the cut chain is incomplete")
+
+
 def test_the_weak_plane_is_painted_on_the_fault_footprint():
     ti = _network("ti", _base())
     eta1, ndir, foot = ti.ti_fields(eta_1=0.01, eta_0=1.0)
