@@ -23,6 +23,8 @@ NavierStokes : class
     Navier-Stokes equations with inertia.
 Diffusion : class
     Pure diffusion (no advection).
+AdvDiffusionSUPG : class
+    Eulerian advection-diffusion with SUPG spatial stabilization.
 TransientDarcy : class
     Transient groundwater flow with constant storage.
 Richards : class
@@ -67,6 +69,7 @@ from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
 
 # import diffusion-only solver
 from .solvers import SNES_Diffusion as Diffusion
+from .advdiff_supg import SNES_AdvectionDiffusionSUPG as AdvDiffusionSUPG
 
 # Transient Darcy and Richards solvers
 from .solvers import SNES_TransientDarcy as TransientDarcy
