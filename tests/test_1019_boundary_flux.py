@@ -276,6 +276,20 @@ def test_boundary_flux_p3_collapse_guard(monkeypatch):
         poisson.boundary_flux("Top")
 
 
+def test_boundary_flux_reuses_scalar_field_decomposition():
+    """Repeated reaction recovery must retain one solver-owned decomposition."""
+    poisson = _unit_flux_2d(1, res=4)
+
+    poisson.boundary_flux("Top")
+    first = tuple(poisson._subdict.values())
+    poisson.boundary_flux("Bottom")
+    second = tuple(poisson._subdict.values())
+
+    assert len(first) == 1
+    assert first[0][0] is second[0][0]
+    assert first[0][1] is second[0][1]
+
+
 def test_volume_residual_fields_insert_essential_values():
     """#411: compute_volume_residual_fields (Stokes-only diagnostic) missed the
     #407 insert — its residual must now match _assemble_volume_reaction (the
