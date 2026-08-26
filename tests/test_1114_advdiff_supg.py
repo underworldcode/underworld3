@@ -37,6 +37,14 @@ def test_simplex_geometry_is_reused_between_automatic_operations():
 
     assert all(a is b for a, b in zip(first, second))
 
+    deformed = mesh.X.coords.copy()
+    deformed[:, 0] *= 1.1
+    mesh.deform(deformed)
+    third = thermal._simplex_data()
+
+    assert all(a is not b for a, b in zip(first, third))
+    assert not np.isclose(first[2].sum(), third[2].sum())
+
 
 def _high_peclet_solution(tau, name):
     mesh = uw.meshing.UnstructuredSimplexBox(
