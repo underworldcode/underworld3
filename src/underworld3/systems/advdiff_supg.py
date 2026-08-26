@@ -72,6 +72,9 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         ``bdf`` uses the implicit Eulerian BDF solver. ``citcoms`` uses a
         positive P1 row-sum mass, gamma=0.5 predictor, and two fixed residual
         corrections. The latter is restricted to continuous P1 fields.
+    temperature_rate_field : MeshVariable, optional
+        Stored temperature derivative for the CitcomS predictor-corrector.
+        Supplying this field gives production checkpoint files a stable name.
     DuDt, DFDt : optional
         Existing history operators. A supplied ``DuDt`` must be Eulerian and
         must not contain a velocity, because advection is represented in R.
@@ -97,6 +100,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         time_integrator: str = "bdf",
         adv_gamma: float = 0.5,
         corrector_steps: int = 2,
+        temperature_rate_field: Optional[uw.discretisation.MeshVariable] = None,
         evalf: Optional[bool] = False,
         verbose: bool = False,
         DuDt: Optional[Eulerian_DDt] = None,
@@ -154,16 +158,31 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         self._supg_tau = None
         self._temperature_rate = None
         self._lumped_mass = None
+        self._lumped_mass_mesh_version = None
+        self._diffusion_dt_cache = None
         self._rate_initialised = False
 
         if self.time_integrator == "citcoms":
-            self._temperature_rate = uw.discretisation.MeshVariable(
-                f"_supg_dTdt_{self.instance_number}",
-                mesh,
-                1,
-                degree=1,
-                continuous=True,
-            )
+            if temperature_rate_field is not None:
+                if (
+                    temperature_rate_field.mesh is not mesh
+                    or temperature_rate_field.degree != 1
+                    or not temperature_rate_field.continuous
+                    or temperature_rate_field.num_components != 1
+                ):
+                    raise ValueError(
+                        "temperature_rate_field must be a continuous scalar P1 "
+                        "variable on the solver mesh."
+                    )
+                self._temperature_rate = temperature_rate_field
+            else:
+                self._temperature_rate = uw.discretisation.MeshVariable(
+                    f"_supg_dTdt_{self.instance_number}",
+                    mesh,
+                    1,
+                    degree=1,
+                    continuous=True,
+                )
 
         uw.get_default_model()._register_state_bearer(self)
 
@@ -197,6 +216,11 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
     def tau(self):
         """SUPG stabilization parameter used in the residual."""
         return self._tau
+
+    @property
+    def temperature_rate(self):
+        """Stored derivative used by the CitcomS predictor-corrector."""
+        return self._temperature_rate
 
     @property
     def state(self):
@@ -397,8 +421,15 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
 
     def _assemble_lumped_mass(self):
         """Assemble positive P1 simplex row-sum masses on free global DOFs."""
-        if self._lumped_mass is not None:
+        mesh_version = getattr(self.mesh, "_mesh_version", 0)
+        if (
+            self._lumped_mass is not None
+            and self._lumped_mass_mesh_version == mesh_version
+        ):
             return self._lumped_mass
+        if self._lumped_mass is not None:
+            self._lumped_mass.destroy()
+            self._lumped_mass = None
 
         from underworld3.meshing.smoothing import _owned_cell_mask
 
@@ -430,6 +461,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
             raise RuntimeError("CitcomS P1 lumped mass contains non-positive rows.")
 
         self._lumped_mass = global_mass
+        self._lumped_mass_mesh_version = mesh_version
         return self._lumped_mass
 
     @timing.routine_timer_decorator
@@ -471,6 +503,19 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
         else:
             self._setup_citcoms_residual()
             mass = self._assemble_lumped_mass()
+            diffusion_signature = (
+                getattr(self.mesh, "_mesh_version", 0),
+                hash(diffusivity.tobytes()),
+            )
+            if (
+                self._diffusion_dt_cache is not None
+                and self._diffusion_dt_cache[0] == diffusion_signature
+            ):
+                dt_diff = self._diffusion_dt_cache[1]
+                self.dt_adv = dt_adv
+                self.dt_diff = dt_diff
+                return 0.9 * min(dt_adv, dt_diff)
+
             stiffness = self.dm.createMatrix()
             stiffness.setOption(PETSc.Mat.Option.NEW_NONZERO_LOCATION_ERR, False)
             section = self.dm.getLocalSection()
@@ -507,6 +552,7 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
             diff_rate = uw.mpi.comm.allreduce(local_diff_rate, op=MPI.MAX)
             stiffness.destroy()
             dt_diff = 2.0 / diff_rate if diff_rate > 0.0 else np.inf
+            self._diffusion_dt_cache = (diffusion_signature, dt_diff)
 
         self.dt_adv = dt_adv
         self.dt_diff = dt_diff
