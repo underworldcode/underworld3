@@ -191,12 +191,16 @@ class FaultNetwork:
 
         The place route on a UNIFORM base is healthy and
         parallel-validated (ptest_0852: place -> split -> contact,
-        22 s including the solve). On edge_split ADAPT CHILDREN the
-        composed mesh builds and converges but the solve is
-        pathological (measured 3850 s vs 125 s embed) — an
-        operator-health interaction between the graded transitions,
-        the placement cavity, and the split, recorded as an open work
-        item. Until that is resolved, place is opt-in here.
+        22 s including the solve). On edge_split ADAPT CHILDREN it is
+        SLOW but not sick: re-measured 2026-08-20 (#621), the composed
+        chain built 27x the cells embed did for the same nominal sizes
+        and solved 41x slower — proportionate under 3-D Stokes scaling
+        (per-cell cost comparable, one nonlinear iteration, machine-zero
+        leak, agreeing slip). The over-build is this route's sizing: the
+        base box is built at ``cellSize=h_far`` WITH ``refinement=1``,
+        so the far field is ``h_far/2`` everywhere. Until #621 lands,
+        place is opt-in here, and expect embed to be much cheaper at
+        matched request.
         """
         from underworld3.utilities.fault_split import split_fault
 
@@ -217,12 +221,8 @@ class FaultNetwork:
             raise ValueError(f"mesher must be 'place' or 'embed', "
                              f"got {mesher!r}")
 
-        from enum import Enum
         from .cartesian import UnstructuredSimplexBox
-        from underworld3.utilities.place_surface import (place_sheet,
-                                                         _sheet_distance)
-        import underworld3 as uw
-        from underworld3 import discretisation
+        from underworld3.utilities.place_surface import _sheet_distance
 
         sheets = [(n, *self._triangulate_rim(p, h))
                   for n, p in self.prepared]
@@ -244,23 +244,15 @@ class FaultNetwork:
         child = base.adapt(metric, max_levels=max_levels,
                            engine="edge_split")
 
-        members = {bd.name: bd.value for bd in child.boundaries}
-        for k, (n, _sp, _st) in enumerate(sheets):
-            members[n] = max(members.values()) + 4
-        boundaries = Enum("boundaries", members)
-
-        dm = child.dm
+        mesh = child
         for n, sp, st in sheets:
             # clearance 0.8 measured as the working window on
             # edge_split children (0.6 under-reaches the graded
             # transition shell and pinches; >=1.0 over-swallows).
-            dm, _info = place_sheet(dm, sp, st, label=n,
-                                    label_value=boundaries[n].value,
-                                    clearance=clearance)
-        mesh = discretisation.Mesh(
-            dm, simplex=True,
-            coordinate_system_type=child.CoordinateSystem.coordinate_type,
-            qdegree=qdegree, boundaries=boundaries, verbose=False)
+            # Mesh-level placement, so each cut child inherits the adapt
+            # hierarchy as its coarse multigrid tail (the 2-D contract;
+            # the split below still forfeits it — see add_fault).
+            mesh = mesh.add_conforming_sheet(sp, st, n, clearance=clearance)
         for n, _sp, _st in sheets:
             mesh = split_fault(mesh, n)
         self.mesh = mesh

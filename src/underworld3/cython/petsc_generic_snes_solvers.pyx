@@ -6085,19 +6085,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
 
-        # The outer Krylov must be FLEXIBLE, because both sub-blocks below are
-        # themselves Krylov solves run to a tolerance. Inside the Schur
-        # factorisation the velocity sub-solve computes the search direction, so
-        # the operator the outer method applies differs from one outer iteration
-        # to the next, and plain GMRES's residual recurrence assumes it does not.
-        # PETSc's default is `gmres`, and that default is invisible on easy
-        # problems -- isoviscous SolKz converges in two outer iterations -- and
-        # expensive on hard ones: on the Spiegelman notch at refinement 3, 983
-        # velocity iterations per step and DIVERGED_LINEAR_SOLVE, against 58 for
-        # fgmres and 23 with a loosened inner tolerance. Raising the velocity
-        # iteration cap changes nothing (byte-identical residuals), so the failure
-        # is inconsistency rather than too few iterations. See #576.
-        self.petsc_options["ksp_type"] = "fgmres"
+        # The OUTER Krylov must be FLEXIBLE: both sub-blocks below are
+        # themselves Krylov solves run to a tolerance, so the operator the
+        # outer method applies differs from one outer iteration to the next
+        # and plain GMRES's residual recurrence does not hold — the
+        # velocity-block FGMRES reasoning (#147), one level up. PETSc's
+        # default is `gmres`; invisible on easy problems (isoviscous SolKz
+        # converges in two outer iterations), ruinous on hard ones: 14,400
+        # inner iterations / ~540 s on an 85k-cell contrast problem for both
+        # velocity preconditioners (#624), and on the Spiegelman notch at
+        # refinement 3, 983 velocity iterations per step and
+        # DIVERGED_LINEAR_SOLVE against 58 for fgmres — raising the velocity
+        # cap changes nothing (byte-identical residuals), so the failure is
+        # inconsistency, not iteration count (#576). Managed, so an explicit
+        # user ksp_type still wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -7017,9 +7019,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
 
-        # Flexible for the same reason as in __init__ (#576): the sub-blocks are
-        # inexact Krylov solves, so the outer operator varies between iterations.
-        self.petsc_options["ksp_type"] = "fgmres"
+        # Flexible for the same reason as in __init__ (#576/#624): the
+        # sub-blocks are inexact Krylov solves, so the outer operator varies
+        # between iterations. Managed, so an explicit user ksp_type wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"

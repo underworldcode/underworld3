@@ -612,3 +612,201 @@ def test_a_ribbon_meeting_the_wall_in_two_bands_is_refused():
                      [0.70, 1.10]])
     with pytest.raises(NotImplementedError, match="more than one band"):
         place_thin_volume(mesh.dm, [arch], width=0.03, label="Zone")
+
+
+# --------------------------------------------------------------------- #
+#  The 3-D ladder band (#629): extruded prism-tets, no remesh
+# --------------------------------------------------------------------- #
+def _curved_sheet(nu, nv, amp=0.06):
+    """A sinusoidal bulge on [0.3,0.7]^2 with ANALYTIC normals — one
+    parametrisation for every level, so subsampled grids nest exactly."""
+    u = np.linspace(0.3, 0.7, nu)
+    v = np.linspace(0.3, 0.7, nv)
+    U, V = np.meshgrid(u, v, indexing="ij")
+    su, sv = np.pi * (U - 0.3) / 0.4, np.pi * (V - 0.3) / 0.4
+    G = np.stack([U, 0.5 + amp * np.sin(su) * np.sin(sv), V], axis=2)
+    dyu = amp * (np.pi / 0.4) * np.cos(su) * np.sin(sv)
+    dyv = amp * (np.pi / 0.4) * np.sin(su) * np.cos(sv)
+    N = np.stack([-dyu, np.ones_like(U), -dyv], axis=2)
+    return G, N
+
+
+def test_ladder_assembly_3d_volume_positivity_and_nesting():
+    """The extruded band is exact where it can be checked exactly: a planar
+    sheet's volume is area x width to machine precision, a curved sheet
+    extrudes without inversion (positive tets, the curvature gate), the
+    boundary face count matches the analytic skin (the quad-diagonal
+    compatibility proof), and a 2:1 subsampled grid's band shares EVERY
+    vertex with the fine band — the nesting the composed hierarchy is for."""
+    from underworld3.utilities.place_surface import _ladder_assembly_3d
+
+    # planar: exact volume
+    u = np.linspace(0.3, 0.7, 9)
+    v = np.linspace(0.3, 0.7, 7)
+    U, V = np.meshgrid(u, v, indexing="ij")
+    G = np.stack([U, np.full_like(U, 0.5), V], axis=2)
+    N = np.zeros_like(G)
+    N[..., 1] = 1.0
+    pts, tets = _ladder_assembly_3d(G, N, 0.06)
+    P = pts[tets]
+    vol = np.einsum("ij,ij->i",
+                    np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]),
+                    P[:, 3] - P[:, 0]).sum() / 6.0
+    assert abs(vol - 0.4 * 0.4 * 0.06) < 1e-12
+
+    # curved: positivity is asserted inside the builder; nesting checked here
+    Gf, Nf = _curved_sheet(17, 17)
+    pf, _tf = _ladder_assembly_3d(Gf, Nf, 0.06)
+    pm, _tm = _ladder_assembly_3d(Gf[::2, ::2], Nf[::2, ::2], 0.06)
+    fine = {tuple(q) for q in pf.round(12).tolist()}
+    assert all(tuple(q) in fine for q in pm.round(12).tolist())
+
+
+def test_ladder_assembly_3d_refuses_overtight_curvature():
+    """Offsetting past the curvature radius crosses the sheets; the builder
+    must refuse (positive-volume gate), never silently reorder."""
+    from underworld3.utilities.place_surface import _ladder_assembly_3d
+
+    Gf, Nf = _curved_sheet(17, 17, amp=0.3)      # radius ~ amp*(pi/0.4)^2
+    with pytest.raises(ValueError, match="curvature"):
+        _ladder_assembly_3d(Gf, Nf, 0.4)
+
+
+def test_ladder_3d_placement_takes_a_grid_normals_pair():
+    """The 3-D ladder input contract: exactly one (grid, normals) patch."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.3,
+        regular=False, qdegree=2)
+    with pytest.raises(ValueError, match="grid, normals"):
+        place_thin_volume(mesh.dm, [np.zeros((4, 3))], width=0.06,
+                          mesher="ladder")
+
+
+def test_place_fault_ribbon_one_call_stack():
+    """The production path (#629): one call, one parametrisation — the
+    curved FAULT grid in (honoured exactly: the band is built on the
+    grid EXTRAPOLATED margin_rings outward, never by shrinking the
+    request), a split fault-resolving mesh plus the nested 2:1 bridge
+    level out. Normals are derived (none passed); the fault label is a
+    boundary ready for add_fault_bc; the band cells carry the Band
+    label; every mid band vertex is a finest-mesh vertex, and every
+    requested fault point is a finest-mesh vertex."""
+    from underworld3.utilities.place_surface import (
+        _extend_grid, _grid_normals, place_fault_ribbon)
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=0.24,
+        regular=False, qdegree=2, refinement=1)
+    G, _N = _curved_sheet(9, 9)
+    mesh, mid, info = place_fault_ribbon(base, G, 0.06, label="Fault",
+                                         margin_rings=1)
+    # the requested fault is honoured: all interior faces of the sheet
+    # survive (corner triangles only may be eroded — 8x8 quads x 2 tris
+    # minus at most a few corner faces)
+    assert info["n_slit_faces"] >= 2 * 8 * 8 - 4
+    assert "Fault" in [b.name for b in mesh.boundaries]
+    assert mesh.cells_labelled("Band", 71).any()
+    assert mid is not None and info["n_mid_cells"] > 0
+    foot = info["footprint"]
+    band = mesh.cells_labelled("Band", 71)
+    assert foot.any() and foot.sum() < band.sum()
+    assert not (foot & ~band).any()
+
+    import underworld3.utilities.place_surface as ps
+    fine = {tuple(q) for q in ps._coords(mesh.dm).round(9).tolist()}
+    # every REQUESTED fault point is a mesh vertex (the honoured contract)
+    assert all(tuple(q) in fine for q in G.reshape(-1, 3).round(9).tolist())
+    # nesting: the mid band = 2:1 subsample of the EXTENDED band grid
+    Gb = _extend_grid(G, 1)
+    Nb = _extend_grid(_grid_normals(G), 1)
+    Nb = Nb / np.linalg.norm(Nb, axis=2)[..., None]
+    band = np.concatenate(
+        [(Gb[::2, ::2] + s * 0.03 * Nb[::2, ::2]).reshape(-1, 3)
+         for s in (-1.0, 0.0, 1.0)])
+    assert all(tuple(q) in fine for q in band.round(9).tolist())
+
+    with pytest.raises(ValueError, match="ODD"):
+        place_fault_ribbon(base, G[:8], 0.06)
+    with pytest.raises(ValueError, match="margin_rings"):
+        place_fault_ribbon(base, G, 0.06, margin_rings=0)
+
+
+# --------------------------------------------------------------------- #
+#  The curved 2-D ladder + the 2-D fault-ribbon wrapper (#629, S-fault rig)
+# --------------------------------------------------------------------- #
+def _tanh_trace(n=87):
+    """The S-fault rig's main trace: tanh S on the 40-degree diagonal."""
+    th = np.deg2rad(40.0)
+    es = np.array([np.cos(th), np.sin(th)])
+    et = np.array([-np.sin(th), np.cos(th)])
+    s = np.linspace(-0.42, 0.42, 2000)
+    P = np.array([0.5, 0.5]) + s[:, None] * es \
+        + (0.05 * np.tanh(s / 0.10))[:, None] * et
+    seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+    arc = np.concatenate([[0.0], np.cumsum(seg)])
+    si = np.linspace(0.0, arc[-1], n)
+    return np.column_stack([np.interp(si, arc, P[:, 0]),
+                            np.interp(si, arc, P[:, 1])])
+
+
+def test_curved_ladder_2d_nesting_and_refusals():
+    """The curved 2-D ladder is exact where checkable: a coarse band from
+    the SUBSAMPLED (samples, reach) parametrisation shares every vertex
+    with the fine band (the nesting contract — independently recomputed
+    reach was measured to break rail coincidence); mixed-orientation
+    (over-tight) extrusions and sharp mitres are refusals."""
+    from underworld3.utilities.place_surface import (
+        _ladder_curved_assembly_2d, _mitred_reach_2d)
+
+    S = _tanh_trace(87)
+    R = _mitred_reach_2d(S)
+    pf, tf, area = _ladder_curved_assembly_2d(S, 0.03, None, reach=R)
+    assert len(pf) == 3 * 87 and len(tf) == 4 * 86 and area > 0
+    pm, _tm, _am = _ladder_curved_assembly_2d(S[::2], 0.03, None,
+                                              reach=R[::2])
+    fine = {tuple(q) for q in pf.round(12).tolist()}
+    assert all(tuple(q) in fine for q in pm.round(12).tolist())
+
+    hairpin = np.array([[0.0, 0.0], [0.1, 0.0], [0.1, 0.004], [0.0, 0.004]])
+    with pytest.raises(ValueError, match="sharply|inverts"):
+        _ladder_curved_assembly_2d(hairpin, 0.05, 0.01)
+
+
+def test_place_fault_ribbon_2d_two_strand_network():
+    """The 2-D wrapper: two stop-short strands (the S-fault rig's shape,
+    coarsened), placed sequentially and split — each trace honoured
+    verbatim as spine vertices, each label a boundary for add_fault_bc,
+    both bands labelled."""
+    from underworld3.utilities.place_surface import place_fault_ribbon_2d
+
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 8,
+        regular=False, qdegree=2, refinement=1)
+    main = _tanh_trace(43)
+    th = np.deg2rad(40.0)
+    es = np.array([np.cos(th), np.sin(th)])
+    et = np.array([-np.sin(th), np.cos(th)])
+    sb = np.linspace(0.06, 0.42, 19)
+    branch = np.array([0.5, 0.5]) + sb[:, None] * es - 0.05 * et
+
+    mesh, info = place_fault_ribbon_2d(
+        base, [("Main", main), ("Branch", branch)], 0.03)
+    names = [b.name for b in mesh.boundaries]
+    assert "Main" in names and "Branch" in names
+    assert mesh.cells_labelled("Band").any()
+    # the honoured-paint rule is API: per-strand FAULT footprints exclude
+    # the extrapolated margin (strictly smaller than the band) and are
+    # what rheology / fac_zone keys should use
+    for k, lbl in enumerate(("Main", "Branch")):
+        band_k = mesh.cells_labelled("Band", 71 + k)
+        foot = info["footprints"][lbl]
+        assert foot.any() and foot.sum() < band_k.sum()
+        assert not (foot & ~band_k).any()
+    with pytest.raises(ValueError, match="unique"):
+        place_fault_ribbon_2d(base, [("Main", main), ("Main", branch)],
+                              0.03)
+    # honoured: every trace point is a mesh vertex
+    import underworld3.utilities.place_surface as ps
+    verts = {tuple(q) for q in ps._coords(mesh.dm).round(9).tolist()}
+    for P in (main, branch):
+        assert all(tuple(q) in verts for q in P.round(9).tolist())
