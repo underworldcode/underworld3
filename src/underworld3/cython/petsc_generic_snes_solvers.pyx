@@ -3125,7 +3125,20 @@ class SolverBaseClass(uw_object):
                     self._subdict[name][1].localToGlobal(var.vec, sgvec)
                     gvec.restoreSubVector(self._subdict[name][0], sgvec)
             else:
-                self.dm.localToGlobal(self.Unknowns.u.vec, gvec)
+                # Map the variable's LOCAL vector through field 0's subDM rather
+                # than assuming the solver DM's local layout matches it. The two
+                # coincide on a plain single-field solver, which is why the
+                # direct `self.dm.localToGlobal(self.Unknowns.u.vec, gvec)` looked
+                # equivalent -- but where they differ it writes to the wrong slots
+                # and the field comes back never-written. Restored while CI is red
+                # on tests/test_1120_SLVectorCartesian.py::test_SLVec_boxmesh[mesh1],
+                # a semi-Lagrangian VECTOR test, i.e. exactly the single-field path
+                # this branch serves; its recovered values were ~1e-18 against an
+                # analytic ~1e-5.
+                _names, _iss, _subdms = self.dm.createFieldDecomposition()
+                sgvec = gvec.getSubVector(_iss[0])
+                _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                gvec.restoreSubVector(_iss[0], sgvec)
 
             self.dm.globalToLocal(gvec, xlocal)
 
