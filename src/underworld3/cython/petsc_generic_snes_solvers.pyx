@@ -3206,6 +3206,18 @@ class SolverBaseClass(uw_object):
         return _bff(self, boundary, field, mass=mass, remove_mean=remove_mean,
                     scale=scale, normal=normal)
 
+    def boundary_flux_integral(self, boundary):
+        r"""Integrated scalar CBF flux through ``boundary``.
+
+        This is the direct integral diagnostic for quantities such as Nusselt
+        numbers. It sums the consistent scalar nodal reactions collectively,
+        avoiding pointwise de-smearing and a temporary flux MeshVariable. Use
+        :meth:`boundary_flux` or :meth:`boundary_flux_field` when nodal values
+        are required.
+        """
+        from underworld3.utilities.boundary_flux import boundary_flux_integral as _bfi
+        return _bfi(self, boundary)
+
 ## Specific to dimensionality
 
 

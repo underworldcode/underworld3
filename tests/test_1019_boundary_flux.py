@@ -38,17 +38,18 @@ def _heatflux_diagnostics(res=48):
     poisson.boundary_flux_field("Bottom", q)
     # field is symbolically usable
     bd_q = float(uw.maths.BdIntegral(mesh=mesh, fn=q.sym[0], boundary="Bottom").evaluate())
+    direct_integral = poisson.boundary_flux_integral("Bottom")
 
     xc = np.asarray(xs)[:, 0] if len(xs) else np.zeros(0)
     q_an = np.pi * np.sin(np.pi * xc) / np.sinh(np.pi)       # analytic outward flux
-    return np.asarray(flux), q_an, bd_q
+    return np.asarray(flux), q_an, bd_q, direct_integral
 
 
 @pytest.mark.skipif(uw.mpi.size > 1, reason="serial diagnostic: rank-local flux norms are 0/0 on non-owning ranks")
 def test_boundary_flux_scalar_heatflux_serial():
     """Surface heat flux reproduces the analytic flux to high accuracy, and its mean is
     the (analytic) Nusselt number — NOT removed."""
-    flux, q_an, bd_q = _heatflux_diagnostics(res=48)
+    flux, q_an, bd_q, direct_integral = _heatflux_diagnostics(res=48)
     corr = np.dot(flux, q_an) / (np.linalg.norm(flux) * np.linalg.norm(q_an))
     fa = flux if corr >= 0 else -flux
     relL2 = np.linalg.norm(fa - q_an) / np.linalg.norm(q_an)
@@ -58,6 +59,11 @@ def test_boundary_flux_scalar_heatflux_serial():
     assert np.isclose(abs(fa.mean()), 2.0 / np.sinh(np.pi), rtol=0.02), (
         f"mean flux {fa.mean():.4f} != Nusselt {2.0/np.sinh(np.pi):.4f}")
     assert abs(bd_q) > 0.0                                    # field populated + usable
+    # The reaction sum is the integral itself, whereas integrating the recovered
+    # pointwise field includes its finite-resolution projection error.
+    assert np.isclose(
+        abs(direct_integral), 2.0 / np.sinh(np.pi), rtol=1.0e-7, atol=0.0
+    )
 
 
 def _uniform_flux_3d(degree, mass):
@@ -102,7 +108,7 @@ def test_boundary_flux_3d_p2_lumped_rejected():
 
 
 if __name__ == "__main__":
-    _f, _a, _b = _heatflux_diagnostics()
+    _f, _a, _b, _i = _heatflux_diagnostics()
     c = np.dot(_f, _a) / (np.linalg.norm(_f) * np.linalg.norm(_a))
     print(f"corr={abs(c):.4f} relL2={np.linalg.norm((_f if c>=0 else -_f)-_a)/np.linalg.norm(_a):.4f}")
 

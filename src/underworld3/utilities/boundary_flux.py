@@ -672,6 +672,37 @@ def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None)
     return xs, (np.column_stack(cols) if nodes else np.zeros((0, ncomp)))
 
 
+def boundary_flux_integral(solver, boundary):
+    r"""Return the integrated scalar flux through ``boundary``.
+
+    For a scalar solver, summing the consistent nodal reactions on the queried
+    boundary gives :math:`\int_\Gamma F\cdot\hat n\,d\Gamma` directly because
+    the boundary basis is a partition of unity. The raw reactions are partial
+    on partition-cut nodes, so the final sum is collective across ranks.
+
+    This path is intended for integral diagnostics such as Nusselt numbers. It
+    avoids pointwise boundary-mass recovery and a temporary MeshVariable. Use
+    :meth:`boundary_flux` or :meth:`boundary_flux_field` when nodal values are
+    required.
+    """
+    dm = solver.dm
+    ra = np.asarray(solver._assemble_volume_reaction()).ravel()
+    nodes, lsec, _csec, _cvec, _v0, _v1, _edge_nodes = _boundary_field_nodes(
+        solver, boundary, field_id=0
+    )
+    ncomp = lsec.getFieldComponents(0)
+    if ncomp != 1:
+        raise ValueError(
+            "boundary_flux_integral requires a scalar solver field; use "
+            "boundary_flux(..., normal=...) for vector traction."
+        )
+    local_integral = sum(
+        float(ra[lsec.getFieldOffset(point, 0) + slot])
+        for point, slot, _coordinate in nodes
+    )
+    return float(dm.comm.tompi4py().allreduce(local_integral, op=MPI.SUM))
+
+
 def write_boundary_scalar_field(solver, field, value_by_key, dim):
     """Write ``value_by_key`` (coordinate-key → scalar) onto a scalar MeshVariable
     ``field`` at the matching nodes; interior nodes untouched. Returns ``field``.

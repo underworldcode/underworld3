@@ -21,6 +21,8 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(180)]
 
 # SERIAL reference: BdIntegral of the flux field over Bottom. `python <thisfile>`.
 GOLDEN_BDFLUX = -1.731543e-01
+ANALYTIC_DIRECT_INTEGRAL = -2.0 / np.sinh(np.pi)
+GOLDEN_DIRECT_INTEGRAL = -1.731790673330021e-01
 
 
 def _flux_diagnostics(res=48):
@@ -44,6 +46,7 @@ def _flux_diagnostics(res=48):
     xs, flux = poisson.boundary_flux("Bottom")
     poisson.boundary_flux_field("Bottom", q)
     bd_q = float(uw.maths.BdIntegral(mesh=mesh, fn=q.sym[0], boundary="Bottom").evaluate())
+    direct_integral = poisson.boundary_flux_integral("Bottom")
 
     # gather + dedup for a whole-boundary relL2 vs analytic (on rank 0, then bcast)
     comm = uw.mpi.comm
@@ -61,17 +64,26 @@ def _flux_diagnostics(res=48):
         c = np.dot(F, q_an) / (np.linalg.norm(F) * np.linalg.norm(q_an))
         F = F if c >= 0 else -F
         relL2 = float(np.linalg.norm(F - q_an) / np.linalg.norm(q_an))
-    return bd_q, comm.bcast(relL2, root=0)
+    return bd_q, direct_integral, comm.bcast(relL2, root=0)
 
 
 def test_boundary_flux_partition_independent():
     """boundary_flux reproduces the serial reference at np=2 and np=4 (flux boundary cut
     at np=4): both the collective BdIntegral of the flux field and the whole-boundary
     accuracy vs analytic."""
-    bd_q, relL2 = _flux_diagnostics(res=48)
+    bd_q, direct_integral, relL2 = _flux_diagnostics(res=48)
     assert np.isclose(bd_q, GOLDEN_BDFLUX, rtol=1e-5, atol=0), (
         f"BdIntegral flux differs serial vs np={uw.mpi.size}: {GOLDEN_BDFLUX} vs {bd_q}")
     assert relL2 < 0.01, f"heat flux relL2 vs analytic {relL2:.4f} too large at np={uw.mpi.size}"
+    assert np.isclose(
+        direct_integral, GOLDEN_DIRECT_INTEGRAL, rtol=1.0e-10, atol=0.0
+    ), (
+        "Direct reaction integral differs from the serial reference at "
+        f"np={uw.mpi.size}: {GOLDEN_DIRECT_INTEGRAL} vs {direct_integral}"
+    )
+    assert np.isclose(
+        direct_integral, ANALYTIC_DIRECT_INTEGRAL, rtol=1.0e-7, atol=0.0
+    )
 
 
 def _uniform_flux_3d_error(degree, mass):
@@ -133,6 +145,6 @@ def test_boundary_flux_degree3_partition_independent():
 
 
 if __name__ == "__main__":
-    _b, _r = _flux_diagnostics()
+    _b, _i, _r = _flux_diagnostics()
     if uw.mpi.rank == 0:
         print(f"DIAG_FLUX bd_q={_b:.9e} relL2={_r:.4f}")
