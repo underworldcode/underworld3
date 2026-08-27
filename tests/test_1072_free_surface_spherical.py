@@ -4,8 +4,18 @@ owned-facet trace-mass gauge, P1-projected sigma_nn recovery, radial deform).
 
 The quantitative benchmarking (analytic Y_lm shell rate, convergence of the
 h_inf modal bias, 3D parallel) is the review-team's scope — this test pins the
-CAPABILITY: construction, one solve/advance cycle, finite mean-free h_inf, and
-the explicit refusal of the 2D-only features.
+CAPABILITY: construction, one solve/advance cycle, finite mean-free h_inf, the
+DIRECTION of the surface response, and the explicit refusal of the 2D-only
+features.
+
+Still NOT pinned here, and the remaining half of #496: the spherical relaxation
+RATE. Measured in the review at cell size 0.35 with Y20 initial topography, the
+fitted decay rate was 0.0842 against a half-space Cathles rate rho*g/(2*eta*k),
+k = sqrt(6)/R, of 0.204 — a ratio of 0.41, an O(1) shell correction below the
+half-space value and in the physically correct direction. Asserting that band
+needs an initial-topography relaxation setup, which no test here has: every
+free-surface test starts flat and is driven by a load. A rate regression is
+therefore still invisible to CI.
 """
 import numpy as np
 import pytest
@@ -44,10 +54,22 @@ def test_freesurface_spherical_shell_end_to_end():
         "h_inf datum is not mean-free under the trace-mass gauge"
     assert np.abs(h_inf).max() > 1.0e-4, "no topographic response to the load"
     fs.advance(fs.estimate_dt(advect_scale=10.0))
-    shape = fs._current_shape()
+    shape = np.asarray(fs._current_shape())
     assert np.isfinite(shape).all()
     assert 0.0 < np.abs(shape).max() <= 1.5 * np.abs(h_inf).max(), \
         "surface did not move toward (or overshot) equilibrium"
+
+    # DIRECTION, not just magnitude. The bound above is symmetric in sign: flip
+    # the 3-D recovery and |shape| is unchanged, so it passes while the surface
+    # moves the wrong way (#496). Starting from flat, the displacement IS the
+    # shape, so it must correlate POSITIVELY with the equilibrium it is moving
+    # toward. Measured +0.995 here; a sign error gives about -0.995.
+    interesting = np.abs(h_inf) > 1.0e-12
+    direction = float(np.corrcoef(shape.ravel()[interesting.ravel()],
+                                  np.asarray(h_inf).ravel()[interesting.ravel()])[0, 1])
+    assert direction > 0.9, (
+        f"surface moved away from equilibrium (corr {direction:+.3f}) — the "
+        "magnitude bound above cannot see a sign error")
 
 
 def test_freesurface_spherical_refuses_2d_only_features():
