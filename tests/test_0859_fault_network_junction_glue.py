@@ -93,6 +93,21 @@ def test_junction_cells_sit_at_the_joints_and_not_at_the_free_tips():
             f"a free tip {tip} was treated as a junction")
 
 
+def test_a_near_miss_is_pulled_back_to_one_ligament_not_three():
+    """Two collinear pieces closer than the ligament are an offset
+    junction: the join opens to ONE ligament, shared between the two
+    ends — not a ligament on each side on top of the gap it had."""
+    main = np.column_stack([np.linspace(0.25, 0.50, 12), np.full(12, 0.5)])
+    cont = np.column_stack([np.linspace(0.53, 0.75, 9), np.full(9, 0.5)])
+    net = uw.meshing.FaultNetwork([("Main", main), ("Cont", cont)])
+    net.prepare(h=H, ligament=2.0, verbose=False)
+    ends = dict((n, P) for n, P in net.prepared)
+    gap = ends["Cont"][0, 0] - ends["Main"][-1, 0]
+    assert gap == pytest.approx(2.0 * H, rel=0.15), (
+        f"the join opened to {gap:.3f}, not the ligament {2 * H:.3f}")
+    assert [j["kind"] for j in net.junctions] == ["near-miss", "near-miss"]
+
+
 def test_the_weak_plane_has_no_junction_cells():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=8 * H,

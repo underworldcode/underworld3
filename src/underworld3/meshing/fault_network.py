@@ -174,13 +174,6 @@ class FaultNetwork:
         self._band_yield_var = None
 
     # ------------------------------------------------------------------
-    # TODO(DESIGN): a collinear pair closer than ligament * h is a
-    # "near-miss" and BOTH ends are pulled back by ligament * h, so the
-    # join grows to 2 ligament h + gap (a 0.05 gap at h = 0.03 became
-    # 0.17); a pair further apart is not a junction at all. The junction
-    # glue reads the ribbons, so it still covers whatever the margins
-    # reach, but the doubled pull-back contradicts "make the join as
-    # small as the mesh allows". Found 2026-08-27 writing test_0859.
     def prepare(self, h, ligament=2.0, through=None, verbose=True):
         """Convert crossings/abutments to offset junctions.
 
