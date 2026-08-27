@@ -105,8 +105,9 @@ axa.text(0.03, 0.965,
          transform=axa.transAxes, fontsize=12, va="top",
          bbox=dict(fc="white", ec="0.8", pad=4.0))
 axa.text(0.03, 0.035,
-         "CFF is the signed gap to the envelope: negative below it,\n"
-         r"zero on it. $\Delta$CFF is how much that gap CLOSED.",
+         "CFF is the signed VERTICAL gap to the envelope — a shear\n"
+         "stress minus a shear strength, both on the same plane.\n"
+         r"Negative below the line, zero on it; $\Delta$CFF is how" " much it CLOSED.",
          transform=axa.transAxes, fontsize=9.5, va="bottom", color="0.25")
 axa.set_xlim(0.0, 2.6)
 axa.set_ylim(-0.25, 1.85)
