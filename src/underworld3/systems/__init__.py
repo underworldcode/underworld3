@@ -91,3 +91,5 @@ from .ddt import Eulerian as Eulerian_DDt
 # δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
 from .yield_continuation import yield_continuation, YieldHomotopyControl
 from .solve_report import SolveReport
+
+from .solver_supg import SNES_AdvectionDiffusion_SUPG as AdvDiffusionSUPG
