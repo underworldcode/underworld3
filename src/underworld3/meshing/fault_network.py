@@ -96,19 +96,17 @@ def _nearest_segment_normals(P, X):
     return np.column_stack([-T[:, 1], T[:, 0]])
 
 
-def _densify_polyline(E, margin, per_segment=4):
-    """Points along an extended polyline, ``per_segment`` per edge, each
-    flagged as lying on the CUT (an edge between two user points) or in
-    the extrapolated margin. ``margin`` is the ``(start, end)`` count of
-    margin points of ``E``."""
+def _densify_polyline(E, piece, per_segment=4):
+    """Points along an extended spine, ``per_segment`` per edge, each
+    flagged as lying on a CUT — an edge whose two vertices belong to the
+    same cut piece (``piece`` is the piece index per vertex of ``E``;
+    -1 for margin and gap vertices)."""
     E = np.asarray(E, dtype=float)
-    n = len(E)
-    m0, m1 = margin
+    piece = np.asarray(piece)
     f = np.linspace(0.0, 1.0, per_segment, endpoint=False)
     Q = (E[:-1, None, :] + f[None, :, None] * np.diff(E, axis=0)[:, None, :])
     Q = np.vstack([Q.reshape(-1, E.shape[1]), E[-1:]])
-    edge_on_cut = np.array([m0 <= i and i + 1 <= n - 1 - m1
-                            for i in range(n - 1)])
+    edge_on_cut = (piece[:-1] == piece[1:]) & (piece[:-1] >= 0)
     on_cut = np.concatenate([np.repeat(edge_on_cut, per_segment),
                              [False]])
     return Q, on_cut
@@ -170,6 +168,7 @@ class FaultNetwork:
         self.ti = None
         self.glue = None
         self.margin_rings = None
+        self.spines = None            # (name, polyline, piece index per vertex)
         self._eta0_var = None
         self._band_yield_var = None
 
@@ -311,29 +310,95 @@ class FaultNetwork:
             # through a junction where the cut stops short, and that
             # difference is what junction_cells() reads. So the tip
             # margin reaches at least as far as the longest pull-back.
+            # Collinear abutting pieces share ONE spine (two ribbons
+            # overlapping along a line interleave their vertices into
+            # slivers); the cut still stops at each piece's own ends, and
+            # the gap between them is spine the split does not cut.
+            self.spines = self._shared_spines(margin_rings)
             margin_rings = self._junction_margins(int(margin_rings))
             self.margin_rings = margin_rings
             self.mesh, self.info = place_fault_ribbon_2d(
                 child, [(n, p.copy()) for n, p in self.prepared],
                 self.width, margin_rings=margin_rings,
                 clearance=carve_clearance,
-                split=(realisation == "split"), mesher=mesher)
+                split=(realisation == "split"), mesher=mesher,
+                spines=[(n, S) for n, S, _idx in self.spines])
         self._make_surfaces()
         return self.mesh
 
+    def _shared_spines(self, rings):
+        """Group the prepared pieces into spines: a piece whose end faces
+        the start of another within the margins' reach, along the same
+        line (end tangents within ~25 degrees, the far start within half
+        a width of the line), continues onto that piece's spine. Returns
+        ``(name, polyline, piece_index_per_vertex)`` per spine; vertices
+        inserted across a gap carry index -1 (spine the split does not
+        cut)."""
+        pieces = [np.asarray(P, dtype=float) for _n, P in self.prepared]
+        n = len(pieces)
+        follower = {}
+        for i, A in enumerate(pieces):
+            tA = A[-1] - A[-2]
+            tA /= np.linalg.norm(tA)
+            sA = float(np.linalg.norm(np.diff(A, axis=0), axis=1).mean())
+            best = None
+            for j, B in enumerate(pieces):
+                if j == i:
+                    continue
+                gap = B[0] - A[-1]
+                dist = float(np.linalg.norm(gap))
+                sB = float(np.linalg.norm(np.diff(B, axis=0), axis=1).mean())
+                if dist > rings * (sA + sB) + self.width:
+                    continue
+                tB = B[1] - B[0]
+                tB /= np.linalg.norm(tB)
+                along = float(gap @ tA)
+                lateral = float(abs(gap[0] * tA[1] - gap[1] * tA[0]))
+                if (tA @ tB < np.cos(np.radians(25)) or along < 0.0
+                        or lateral > 0.5 * self.width):
+                    continue
+                if best is None or dist < best[1]:
+                    best = (j, dist)
+            if best is not None and best[0] not in follower.values():
+                follower[i] = best[0]
+        heads = [i for i in range(n) if i not in follower.values()]
+        spines = []
+        for h in heads:
+            chain = [h]
+            while chain[-1] in follower:
+                chain.append(follower[chain[-1]])
+            S, idx = [pieces[chain[0]]], [np.full(len(pieces[chain[0]]), chain[0])]
+            for a, b in zip(chain[:-1], chain[1:]):
+                A, B = pieces[a], pieces[b]
+                s = 0.5 * (np.linalg.norm(A[-1] - A[-2])
+                           + np.linalg.norm(B[1] - B[0]))
+                gap = float(np.linalg.norm(B[0] - A[-1]))
+                # bridge the gap at the local rung, at least one vertex:
+                # the edges to it are the spine's own, not any cut's
+                k = max(1, int(round(gap / s)) - 1)
+                f = np.linspace(0.0, 1.0, k + 2)[1:-1]
+                S.append(A[-1] + f[:, None] * (B[0] - A[-1]))
+                idx.append(np.full(k, -1))
+                S.append(B)
+                idx.append(np.full(len(B), b))
+            name = "+".join(self.prepared[c][0] for c in chain)
+            spines.append((name, np.vstack(S), np.concatenate(idx)))
+        return spines
+
     def _junction_margins(self, rings):
-        """Per-end margin counts: ``rings`` at a free tip; at an end that
-        sits on a prepared junction, enough rings for the ribbon to reach
-        the OTHER piece's cut (plus half a width) — the whole ligament
-        lies in both ribbons, so the junction cells cover it end to end.
-        The margin is built by continuing the end segment, so the count
-        depends on that segment's length."""
+        """Per-end margin counts per SPINE: ``rings`` at a free tip; at
+        an end that sits on a prepared junction, enough rings for the
+        ribbon to reach the OTHER piece's cut (plus half a width) — the
+        whole ligament lies in both ribbons, so the junction cells cover
+        it end to end. The margin is built by continuing the end
+        segment, so the count depends on that segment's length."""
         pieces = {n: np.asarray(P, dtype=float) for n, P in self.prepared}
         out = []
-        for name, P in self.prepared:
-            P = pieces[name]
+        for _sname, S, idx in self.spines:
             ends = []
-            for end, seg in ((P[0], P[1] - P[0]), (P[-1], P[-1] - P[-2])):
+            for end, seg, piece in ((S[0], S[1] - S[0], idx[0]),
+                                    (S[-1], S[-1] - S[-2], idx[-1])):
+                name = self.prepared[int(piece)][0]
                 reach = 0.0
                 for j in (self.junctions or []):
                     if name not in j["faults"]:
@@ -780,11 +845,11 @@ class FaultNetwork:
         everything the weak-plane realisation treats as fault; the cut
         chains are what the split actually sliced. A band cell whose
         nearest point on a piece's extended spine lies in that piece's
-        margin is fault the split did not cut. Where such a cell also
-        lies inside a SECOND piece's ribbon, and on neither piece's cut,
-        two pieces meet there and the split has left them welded — a
-        stop-short abutment, a kissing branch, the intact bridge of a
-        stepover. Those cells, dilated by ``ring`` vertex rings within
+        margin (or on the gap of a shared spine) is fault the split did
+        not cut. Where such a cell also lies inside a SECOND piece's
+        ribbon, two pieces meet there and the split has left them welded
+        — a stop-short abutment, a kissing branch, the intact bridge of
+        a stepover. Those cells, dilated by ``ring`` vertex rings within
         the band, are the junction cells.
 
         The rule is geometric and comes entirely from the placement: no
@@ -818,22 +883,41 @@ class FaultNetwork:
         if len(ids) == 0:
             return mask
         half_width = 0.5 * self.width
-        on_any_cut = np.zeros(len(ids), dtype=bool)
-        ribbons = np.zeros(len(ids), dtype=int)
-        for k, (_name, P) in enumerate(self.prepared):
-            E = np.asarray(self.info["extended"][k], dtype=float)
-            Q, on_cut = _densify_polyline(E, self.info["margin_rings"][k])
+        from underworld3.utilities.place_surface import _extend_polyline_2d
+
+        def nearest(Q):
             d = cen[:, None, :] - Q[None, :, :]
             d2 = np.einsum("ijk,ijk->ij", d, d)
             j = np.argmin(d2, axis=1)
+            return j, np.sqrt(d2[np.arange(len(ids)), j])
+
+        # off the cut, read spine by spine: a cell in a spine's ribbon
+        # whose nearest spine point is a gap edge or a tip margin is fault
+        # that spine's split did not cut. (It may well sit on ANOTHER
+        # spine's cut — the senior's flank beside a kissing tip is exactly
+        # where the glue belongs.)
+        off_cut = np.zeros(len(ids), dtype=bool)
+        for k, (_sname, _S, idx) in enumerate(self.spines):
+            E = np.asarray(self.info["extended"][k], dtype=float)
+            m0, m1 = self.info["margin_rings"][k]
+            piece = np.concatenate([np.full(m0, -1), idx, np.full(m1, -1)])
+            Q, on_cut = _densify_polyline(E, piece)
+            j, dist = nearest(Q)
             # a sample spacing's worth of tolerance: the densified spine
             # is a polyline, the cell centroid a point beside it
-            tol = 0.35 * float(self.info["spacing"][k])
-            inside = np.sqrt(d2[np.arange(len(ids)), j]) <= half_width + tol
-            ribbons += inside
-            on_any_cut |= inside & on_cut[j]
-        # unjoined = in two ribbons and on nobody's cut
-        mask[ids[(ribbons >= 2) & ~on_any_cut]] = True
+            inside = dist <= half_width + 0.35 * float(self.info["spacing"][k])
+            off_cut |= inside & ~on_cut[j]
+        # two pieces meet: the cell lies in the ribbons of two CUT pieces,
+        # each continued by the default margin
+        ribbons = np.zeros(len(ids), dtype=int)
+        for name, P in self.prepared:
+            P = np.asarray(P, dtype=float)
+            E = _extend_polyline_2d(P, 2)
+            spacing = float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean())
+            _j, dist = nearest(E)
+            ribbons += dist <= half_width + 0.5 * spacing
+        # unjoined = off some cut, where two pieces' ribbons meet
+        mask[ids[off_cut & (ribbons >= 2)]] = True
         for _ in range(int(ring)):
             mask = self._vertex_ring(mask) & band
         return mask

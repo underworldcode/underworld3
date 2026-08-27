@@ -108,6 +108,25 @@ def test_a_near_miss_is_pulled_back_to_one_ligament_not_three():
     assert [j["kind"] for j in net.junctions] == ["near-miss", "near-miss"]
 
 
+def test_a_collinear_pair_shares_one_spine_and_makes_no_slivers():
+    """Two ribbons placed along one line interleave their vertices into
+    sliver cells (measured: 7800 cells below 1e-6 in area on the rig).
+    The pieces of a collinear abutting pair are placed on ONE spine, cut
+    at their own ends, with the gap as spine the split does not cut."""
+    net = _network()
+    assert [n for n, _S, _i in net.spines] == ["Main+Cont", "Splay"]
+    main_cont = net.spines[0]
+    assert (main_cont[2] == -1).sum() >= 1, "no gap vertex on the shared spine"
+
+    dm = net.mesh.dm
+    cS, _cE = dm.getHeightStratum(0)
+    ids = np.flatnonzero(net.info["band"])
+    areas = np.array([dm.computeCellGeometryFVM(int(c) + cS)[0] for c in ids])
+    assert areas.min() > 1e-3 * np.median(areas), (
+        f"sliver cells in the band: min area {areas.min():.2e} against a "
+        f"median of {np.median(areas):.2e}")
+
+
 def test_the_weak_plane_has_no_junction_cells():
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=8 * H,

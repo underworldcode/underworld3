@@ -151,6 +151,16 @@ not optional: the weld's stiffness lives in the intact material
 around the two tips, and the bare junction cells recover only a
 fifth to a quarter of the deficit even when fully plastic.
 
+Two pieces that continue one another along a line — an abutting pair,
+a stepover's continuation — are placed on **one spine**: two ribbons
+laid along the same line interleave their vertices into sliver cells
+(measured: 7800 cells below 1e-6 in area, and the velocity solve
+five times slower). `build()` groups such pieces (end tangents within
+25 degrees, the far start within half a width of the line, within the
+margins' reach), bridges the gap with spine vertices at the local rung,
+and cuts each piece at its own ends; the gap is spine the split does
+not cut, which is exactly what the junction rule reads.
+
 For the rule to see a joint, the ribbons have to meet across it.
 `build()` sees to that: at an end that sits on a prepared junction the
 tip margin is extended until the ribbon reaches the other piece's cut,

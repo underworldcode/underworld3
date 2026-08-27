@@ -7532,7 +7532,7 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
 def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                           band_label="Band", band_value=71,
                           clearance=0.3, split=True, mesher="ladder",
-                          verbose=False):
+                          spines=None, verbose=False):
     """Split-ready 2-D fault ribbons from the traces' OWN sampling (#629).
 
     The 2-D production fault-prep path, honouring the same contract set
@@ -7570,6 +7570,13 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         ``info["footprints"]`` the per-fault ones.
     clearance : float
         Carve clearance (the measured thin-shell default 0.3).
+    spines : list of (label, polyline), optional
+        The polylines to PLACE, when they differ from the traces to cut:
+        a collinear abutting pair must share one spine (two ribbons
+        overlapping along one line interleave their vertices into
+        slivers), with the cut stopping at each piece's own ends. Every
+        trace vertex must be a vertex of some spine. Default: the
+        traces themselves.
     mesher : {"ladder", "network"}
         How the band is meshed. ``"ladder"`` (default) places each trace
         SEQUENTIALLY as a structured band: bands may not touch, and level
@@ -7611,10 +7618,12 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     """
     from underworld3 import discretisation
 
+    if spines is None:
+        spines = [(label, np.asarray(P, dtype=float)) for label, P in traces]
     if np.ndim(margin_rings) == 0:
-        margin_rings = [(int(margin_rings), int(margin_rings))] * len(traces)
+        margin_rings = [(int(margin_rings), int(margin_rings))] * len(spines)
     margin_rings = [(int(a), int(b)) for a, b in margin_rings]
-    if len(margin_rings) != len(traces) or min(min(m) for m in margin_rings) < 1:
+    if len(margin_rings) != len(spines) or min(min(m) for m in margin_rings) < 1:
         raise ValueError(
             "margin_rings must be >= 1 at every end of every trace: the "
             "split cannot reach the band rim (the tip rule); the margin is "
@@ -7627,9 +7636,11 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         raise ValueError(
             f"trace labels must be unique (each becomes a boundary); got "
             f"{labels}")
+    if spines is None:
+        spines = [(label, np.asarray(P, dtype=float)) for label, P in traces]
     dm = base_mesh.dm
     spacing_all, rungs_all, extended = [], [], []
-    for label, P in traces:
+    for label, P in spines:
         P = np.asarray(P, dtype=float)
         if P.ndim != 2 or P.shape[1] != 2 or len(P) < 3:
             raise ValueError(
@@ -7666,7 +7677,7 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     # and the band label is its FAC patch key for volumetric rheologies.
     from underworld3.utilities.custom_mg import adopt_hierarchy
     band_all = np.zeros(int(mesh.dm.getHeightStratum(0)[1]), dtype=bool)
-    for k in range(len(traces)):
+    for k in range(len(spines)):
         band_all |= mesh.cells_labelled(band_label, band_value + k)
     adopt_hierarchy(mesh, base_mesh, fac_zone=band_all)
     if split:
@@ -7678,40 +7689,36 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         mesh._custom_mg_fac_zone = None     # a split fault needs no patch
 
     # Per-strand FAULT FOOTPRINT masks (the honoured-paint rule): band
-    # cells whose nearest extended sample is a USER point. This is the
-    # mask a volumetric rheology (or a fac_zone key) should use — never
-    # the whole band, whose margin is extrapolated surround.
+    # cells whose nearest extended sample is one of THAT trace's own
+    # vertices. This is the mask a volumetric rheology (or a fac_zone
+    # key) should use — never the whole band, whose margin is
+    # extrapolated surround (and, on a shared spine, whose gap edges
+    # belong to no trace). A band cell belongs to the trace whose vertex
+    # is nearest to it, read off the CONCATENATED spine samples.
+    band = np.zeros_like(band_all)
+    for k in range(len(spines)):
+        band |= mesh.cells_labelled(band_label, band_value + k)
+    S_all = np.vstack(extended)
+    scale = 1e-9 * float(np.mean(spacing_all))
     footprints = {}
-    if mesher == "network":
-        # one fused band, so each strand's footprint is read off the
-        # CONCATENATED samples: a band cell belongs to the strand whose
-        # user point is nearest to it.
-        band = mesh.cells_labelled(band_label, band_value)
-        S_all = np.vstack(extended)
-        off = np.cumsum([0] + [len(S) for S in extended])
-        for k, (label, _P) in enumerate(traces):
-            m0, m1 = margin_rings[k]
-            is_user = np.zeros(len(S_all), dtype=bool)
-            is_user[off[k] + m0:off[k + 1] - m1] = True
-            footprints[label] = _footprint_from_samples(
-                mesh.dm, band, S_all, is_user)
-    else:
-        masks = [mesh.cells_labelled(band_label, band_value + k)
-                 for k in range(len(traces))]
-        band = np.zeros_like(masks[0])
-        for k, (label, _P) in enumerate(traces):
-            m0, m1 = margin_rings[k]
-            is_user = np.zeros(len(extended[k]), dtype=bool)
-            is_user[m0:len(extended[k]) - m1] = True
-            footprints[label] = _footprint_from_samples(
-                mesh.dm, masks[k], extended[k], is_user)
-            band |= masks[k]
+    for label, P in traces:
+        P = np.asarray(P, dtype=float)
+        d = S_all[:, None, :] - P[None, :, :]
+        is_user = (np.einsum("ijk,ijk->ij", d, d).min(axis=1) < scale ** 2)
+        if is_user.sum() != len(P):
+            raise ValueError(
+                f"trace {label!r}: {int(is_user.sum())} of its {len(P)} "
+                f"vertices lie on a spine; every trace vertex must be a "
+                f"spine vertex")
+        footprints[label] = _footprint_from_samples(
+            mesh.dm, band, S_all, is_user)
 
     info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
             "spacing": spacing_all, "n_rungs": rungs_all,
             "footprints": footprints, "band": band, "mesher": mesher,
             "extended": extended, "width": float(width),
-            "margin_rings": margin_rings}
+            "margin_rings": margin_rings,
+            "spines": [label for label, _P in spines]}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "
