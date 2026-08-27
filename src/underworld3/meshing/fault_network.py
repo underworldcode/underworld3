@@ -230,6 +230,12 @@ class FaultNetwork:
         any width (measured to ``w = h_far / 10``; see
         ``~/+Simulations/fault_split_at_ti_width``).
 
+        ``carve_clearance`` sizes the cells cleared around the ribbons
+        before they are meshed in. On a graded base (``max_levels > 0``
+        refining toward the traces) the default can fail to leave one
+        simple cavity at fine widths; raise it (1.0 worked where 0.3 did
+        not) or build on the uniform base with ``max_levels=0``.
+
         ``width=None`` keeps the original no-band path: graded refinement
         cut directly. It is split-only, and its mesh is NOT the one a TI
         run would use, so do not compare the two across that choice.
@@ -373,9 +379,10 @@ class FaultNetwork:
                 s = 0.5 * (np.linalg.norm(A[-1] - A[-2])
                            + np.linalg.norm(B[1] - B[0]))
                 gap = float(np.linalg.norm(B[0] - A[-1]))
-                # bridge the gap at the local rung, at least one vertex:
-                # the edges to it are the spine's own, not any cut's
-                k = max(1, int(round(gap / s)) - 1)
+                # bridge the gap at the local rung; a gap of one rung is
+                # one edge between the two cut ends, which is already
+                # spine no cut owns (its ends belong to different pieces)
+                k = max(0, int(round(gap / s)) - 1)
                 f = np.linspace(0.0, 1.0, k + 2)[1:-1]
                 S.append(A[-1] + f[:, None] * (B[0] - A[-1]))
                 idx.append(np.full(k, -1))

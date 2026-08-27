@@ -5584,6 +5584,12 @@ def _ring_growing(cells, drop, held_mask):
         if not pinch:
             ring = _cavity_ring(cells, np.flatnonzero(drop))
             if ring is None:
+                # TODO(BUG): on a GRADED base (adapt() toward the traces) the cleared
+                # cells stop forming one simple hole at the default clearance: the
+                # S-fault rig at fine width (w = 0.01) builds on the uniform base at
+                # clearance 0.3 but on the one-level graded base only at 1.0. The
+                # clearing should be sized by the LOCAL cell size, not one factor.
+                # Found 2026-08-27 running FaultNetwork.build on the rig.
                 raise RuntimeError(
                     "the cells cleared for the thin volume do not leave one "
                     "simple hole. Raise `clearance`.")
