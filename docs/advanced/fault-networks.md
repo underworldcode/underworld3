@@ -21,12 +21,9 @@ v = uw.discretisation.MeshVariable("V", mesh, 2, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=0,
                                    continuous=False)
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
-stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
-stokes.constitutive_model.yield_mode = "min"
-stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-stokes.constitutive_model.Parameters.yield_stress = \
-    net.damage_yield(v, dial=0.05)           # the junction glue
-stokes.consistent_jacobian = True
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes.constitutive_model.Parameters.shear_viscosity_0 = \
+    net.junction_patch(eta_0=1.0)            # the junction glue (linear)
 net.apply(stokes)                            # no-opening pairs, all pieces
 # ... wall boundary conditions ...
 info = net.solve(stokes)
@@ -81,9 +78,9 @@ in those places needs cells to live in, and the band is where they are.
 `net.band` is the mask, `net.footprints` the per-strand ones, in either
 realisation.
 
-`net.band_yield(tau_y)` gives the corresponding rheology: von Mises
-yield confined to the band, everything outside it set far too strong to
-yield.
+`net.band_yield(tau_y)` gives a rheology for the whole band: von
+Mises yield confined to it, everything outside set far too strong to
+yield. Read the next paragraph before using it as glue.
 
 ```python
 stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
@@ -91,12 +88,15 @@ stokes.constitutive_model.Parameters.yield_stress = net.band_yield(4.0)
 stokes.consistent_jacobian = True
 ```
 
-A released fault flank sits far below `tau_y` and is untouched; the
-places that sit far above it — tips, welds, the sliver at a junction —
-yield by themselves. The breakdown appears where the mechanics puts it,
-rather than where a geometric plug was placed. `damage_yield` remains
-the right tool when the junction glue itself is the object of study,
-since it places the plugs by construction.
+A released fault flank sits far below `tau_y` and is untouched, so
+the breakdown appears where the mechanics puts it — but that is tips
+and bends as much as joints. Measured on the S-fault rig: at the
+strength that repairs a stepover, more than half the yielded band cells
+were on strand flanks and free tips, and one step weaker the whole
+main strand had become a weak fault. A uniform threshold cannot pick
+out the welds alone, because the stress concentration at a weld is not
+far enough above the tip and bend concentrations. `band_yield` is a
+damage model for the band; the junction glue is `junction_patch`.
 
 The two realisations' interface parameters correspond, which is worth
 keeping in view when comparing them: the zero-thickness limit of a band
@@ -131,17 +131,60 @@ same answer when the junction patch is refined 2x. Make the join as
 small as the mesh allows; buy fidelity with elements, not physical
 size.
 
-**The glue.** `damage_yield` places a compact viscoplastic plug at
-each junction: yield `dial * (1 + 2 * edot_II)` inside, effectively
-rigid outside, sharp `Piecewise` boundaries. The strength and the
-rate-regularisation move together on ONE dial (separating them makes
-the solve harsh without making the zone weaker). Zone stress is
-proportional to the dial down to a ~100x viscosity contrast with
-Newton-from-cold still converging — the compact plug conditions like a
-hole, not like a thin weak layer, so the classic thin-inclusion
-Schur breakdown never appears. `dial=0.05` is near-invisible in the
-stress field at unchanged cost; `dial=0.01` reaches the transmission
-ceiling of an inviscid plug at roughly double cost.
+**The glue, and where it goes.** The split only goes wrong at the
+joints: away from them the cut *is* the target every volumetric
+representation converges to, and adding weakness along a whole strand
+makes the fault over-weak in a way that depends on the band width. So
+the glue is placed, not found. `junction_cells()` reads the places off
+the mesh itself: the ribbon (the band with its extrapolated margins)
+is everything the weak-plane realisation would treat as fault, the cut
+chains are what the split sliced, and a band cell whose nearest spine
+point lies in a piece's margin *and* which sits inside a second
+piece's ribbon is where two pieces meet without being joined — a
+kissing branch, an abutting pair, the intact bridge of a stepover.
+Free tips are excluded on purpose: a margin that runs into intact
+material is a tip, and damage there lengthens the fault instead of
+joining it (measured: with the free tips included, nearly every
+yielded cell was at a tip and the main strand grew 1-6% longer in
+slip). The cells are dilated by one vertex ring, and that ring is
+not optional: the weld's stiffness lives in the intact material
+around the two tips, and the bare junction cells recover only a
+fifth to a quarter of the deficit even when fully plastic.
+
+For the rule to see a joint, the ribbons have to meet across it.
+`build()` sees to that: at an end that sits on a prepared junction the
+tip margin is extended until the ribbon reaches the other piece's cut,
+so the whole ligament lies in both ribbons; free tips keep the default
+margin. An abutting pair that `prepare()` did not record as a junction
+(a gap wider than the ligament) is covered as far as the default
+margins overlap — a gap wider than that is two faults, and stays
+welded, which is what a gap of intact rock means.
+
+`junction_patch(eta_0, ratio=0.01)` then makes those cells weak
+isotropic material, `eta = ratio * eta_0`. A viscosity ratio rather
+than a yield stress, because the joint only has to be broken and a
+ratio needs no stress scale — nothing about the block or the loading
+has to be known to set it. Measured against the two end members on
+the S-fault rig (the fault *longer*, one continuous cut, and the fault
+*cut*, abutting cuts, at two resolutions): the patch recovers
+0.8-0.97 of the continuous fault's transmission across the joint; the
+slip crosses on the cut itself (the segment's pair jump reaches the
+continuous fault's); the rest of the network keeps the split's answer
+(main strand within 2.5%); the weak patch reproduces a fully plastic
+patch on the same cells to 1-2% and is insensitive to the ratio from
+0.01 to 0.001; the solve is linear and costs the split's velocity
+iterations, with only the pressure block noticing the contrast
+(hence 0.01, not smaller). Gluing a joint does change the partition
+between the strands that meet there — a reconnected main line takes
+back slip a through-going branch was carrying past the weld — which
+is the junction working, not the patch leaking.
+
+`damage_yield` is the older glue: a viscoplastic plug of radius
+`max(2.5 h, 1.2 pull)` at each *prepared* junction point, yield
+`dial * (1 + 2 * edot_II)` inside, strength and rate-regularisation on
+one dial, sharp `Piecewise` boundaries. It stays available for
+studies of the glue itself, and it does not see stepover bridges,
+which are not prepared junctions.
 
 **No prescribed reconnection.** Nothing tells the network how to link
 up: the stress lobes of the abutting tips decide. A collinear gap

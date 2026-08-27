@@ -5014,10 +5014,15 @@ def _footprint_from_samples(dm, band_mask, samples_ext, is_user_sample):
 def _extend_polyline_2d(P, rings):
     """Continue a polyline ``rings`` points outward at both ends, linearly
     — the 2-D tip-margin builder (:func:`_extend_grid` one dimension
-    down): end tangents at the local spacing, no invented curvature."""
+    down): end tangents at the local spacing, no invented curvature.
+    ``rings`` is one count for both ends or a ``(start, end)`` pair (a
+    junction end wants a longer reach than a free tip)."""
     P = np.asarray(P, dtype=float)
-    for _ in range(int(rings)):
-        P = np.vstack([2.0 * P[0] - P[1], P, 2.0 * P[-1] - P[-2]])
+    r0, r1 = (rings, rings) if np.ndim(rings) == 0 else rings
+    for _ in range(int(r0)):
+        P = np.vstack([2.0 * P[0] - P[1], P])
+    for _ in range(int(r1)):
+        P = np.vstack([P, 2.0 * P[-1] - P[-2]])
     return P
 
 
@@ -7552,9 +7557,10 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         boundary for ``add_fault_bc``.
     width : float
         Band thickness (split-node models: a resolution parameter).
-    margin_rings : int
+    margin_rings : int or sequence of (int, int)
         The band extends this many points beyond each fault end, by
-        linear tangent continuation. Must be >= 1 (the tip rule).
+        linear tangent continuation. Must be >= 1 (the tip rule). One
+        count for every end, or a ``(start, end)`` pair per trace.
     band_label, band_value : str, int
         Cell label of the band. With ``mesher="ladder"`` trace ``k`` gets
         ``band_value + k`` so per-fault zones stay distinguishable
@@ -7605,10 +7611,14 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     """
     from underworld3 import discretisation
 
-    if margin_rings < 1:
+    if np.ndim(margin_rings) == 0:
+        margin_rings = [(int(margin_rings), int(margin_rings))] * len(traces)
+    margin_rings = [(int(a), int(b)) for a, b in margin_rings]
+    if len(margin_rings) != len(traces) or min(min(m) for m in margin_rings) < 1:
         raise ValueError(
-            "margin_rings must be >= 1: the split cannot reach the band "
-            "rim (the tip rule); the margin is extrapolated surround.")
+            "margin_rings must be >= 1 at every end of every trace: the "
+            "split cannot reach the band rim (the tip rule); the margin is "
+            "extrapolated surround.")
     if mesher not in ("ladder", "network"):
         raise ValueError(
             f"mesher must be 'ladder' or 'network', not {mesher!r}")
@@ -7625,7 +7635,7 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
             raise ValueError(
                 f"trace {label!r}: expected an (n, 2) polyline with "
                 f"n >= 3, got shape {P.shape}")
-        extended.append(_extend_polyline_2d(P, margin_rings))
+        extended.append(_extend_polyline_2d(P, margin_rings[len(extended)]))
         spacing_all.append(
             float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean()))
         rungs_all.append(len(P))
@@ -7672,7 +7682,6 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     # mask a volumetric rheology (or a fac_zone key) should use — never
     # the whole band, whose margin is extrapolated surround.
     footprints = {}
-    m = margin_rings
     if mesher == "network":
         # one fused band, so each strand's footprint is read off the
         # CONCATENATED samples: a band cell belongs to the strand whose
@@ -7681,8 +7690,9 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         S_all = np.vstack(extended)
         off = np.cumsum([0] + [len(S) for S in extended])
         for k, (label, _P) in enumerate(traces):
+            m0, m1 = margin_rings[k]
             is_user = np.zeros(len(S_all), dtype=bool)
-            is_user[off[k] + m:off[k + 1] - m] = True
+            is_user[off[k] + m0:off[k + 1] - m1] = True
             footprints[label] = _footprint_from_samples(
                 mesh.dm, band, S_all, is_user)
     else:
@@ -7690,8 +7700,9 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                  for k in range(len(traces))]
         band = np.zeros_like(masks[0])
         for k, (label, _P) in enumerate(traces):
+            m0, m1 = margin_rings[k]
             is_user = np.zeros(len(extended[k]), dtype=bool)
-            is_user[m:len(extended[k]) - m] = True
+            is_user[m0:len(extended[k]) - m1] = True
             footprints[label] = _footprint_from_samples(
                 mesh.dm, masks[k], extended[k], is_user)
             band |= masks[k]
@@ -7699,7 +7710,8 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
             "spacing": spacing_all, "n_rungs": rungs_all,
             "footprints": footprints, "band": band, "mesher": mesher,
-            "extended": extended, "width": float(width)}
+            "extended": extended, "width": float(width),
+            "margin_rings": margin_rings}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "

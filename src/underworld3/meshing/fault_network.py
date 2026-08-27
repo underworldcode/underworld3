@@ -96,6 +96,24 @@ def _nearest_segment_normals(P, X):
     return np.column_stack([-T[:, 1], T[:, 0]])
 
 
+def _densify_polyline(E, margin, per_segment=4):
+    """Points along an extended polyline, ``per_segment`` per edge, each
+    flagged as lying on the CUT (an edge between two user points) or in
+    the extrapolated margin. ``margin`` is the ``(start, end)`` count of
+    margin points of ``E``."""
+    E = np.asarray(E, dtype=float)
+    n = len(E)
+    m0, m1 = margin
+    f = np.linspace(0.0, 1.0, per_segment, endpoint=False)
+    Q = (E[:-1, None, :] + f[None, :, None] * np.diff(E, axis=0)[:, None, :])
+    Q = np.vstack([Q.reshape(-1, E.shape[1]), E[-1:]])
+    edge_on_cut = np.array([m0 <= i and i + 1 <= n - 1 - m1
+                            for i in range(n - 1)])
+    on_cut = np.concatenate([np.repeat(edge_on_cut, per_segment),
+                             [False]])
+    return Q, on_cut
+
+
 class FaultNetwork:
     """A hierarchy of fault traces (2-D) or planar patches (3-D)
     meshed, split, and glued.
@@ -150,10 +168,19 @@ class FaultNetwork:
         self.info = None
         self.fault_surfaces = {}
         self.ti = None
+        self.glue = None
+        self.margin_rings = None
         self._eta0_var = None
         self._band_yield_var = None
 
     # ------------------------------------------------------------------
+    # TODO(DESIGN): a collinear pair closer than ligament * h is a
+    # "near-miss" and BOTH ends are pulled back by ligament * h, so the
+    # join grows to 2 ligament h + gap (a 0.05 gap at h = 0.03 became
+    # 0.17); a pair further apart is not a junction at all. The junction
+    # glue reads the ribbons, so it still covers whatever the margins
+    # reach, but the doubled pull-back contradicts "make the join as
+    # small as the mesh allows". Found 2026-08-27 writing test_0859.
     def prepare(self, h, ligament=2.0, through=None, verbose=True):
         """Convert crossings/abutments to offset junctions.
 
@@ -286,6 +313,13 @@ class FaultNetwork:
         else:
             from underworld3.utilities.place_surface import (
                 place_fault_ribbon_2d)
+            # The ribbons must MEET across every junction ligament: the
+            # ribbon is the fault as the weak plane sees it, continuous
+            # through a junction where the cut stops short, and that
+            # difference is what junction_cells() reads. So the tip
+            # margin reaches at least as far as the longest pull-back.
+            margin_rings = self._junction_margins(int(margin_rings))
+            self.margin_rings = margin_rings
             self.mesh, self.info = place_fault_ribbon_2d(
                 child, [(n, p.copy()) for n, p in self.prepared],
                 self.width, margin_rings=margin_rings,
@@ -293,6 +327,38 @@ class FaultNetwork:
                 split=(realisation == "split"), mesher=mesher)
         self._make_surfaces()
         return self.mesh
+
+    def _junction_margins(self, rings):
+        """Per-end margin counts: ``rings`` at a free tip; at an end that
+        sits on a prepared junction, enough rings for the ribbon to reach
+        the OTHER piece's cut (plus half a width) — the whole ligament
+        lies in both ribbons, so the junction cells cover it end to end.
+        The margin is built by continuing the end segment, so the count
+        depends on that segment's length."""
+        pieces = {n: np.asarray(P, dtype=float) for n, P in self.prepared}
+        out = []
+        for name, P in self.prepared:
+            P = pieces[name]
+            ends = []
+            for end, seg in ((P[0], P[1] - P[0]), (P[-1], P[-1] - P[-2])):
+                reach = 0.0
+                for j in (self.junctions or []):
+                    if name not in j["faults"]:
+                        continue
+                    pull = float(j["pull"])
+                    near = (np.linalg.norm(np.asarray(j["point"]) - end)
+                            <= pull + self.width)
+                    if not near:
+                        continue
+                    other = [n for n in j["faults"] if n != name][0]
+                    gap = float(np.linalg.norm(pieces[other] - end,
+                                               axis=1).min())
+                    reach = max(reach, gap + 0.5 * self.width)
+                seg_len = float(np.linalg.norm(seg))
+                ends.append(max(rings, int(np.ceil(reach / seg_len)) + 1)
+                            if reach > 0 else rings)
+            out.append((ends[0], ends[1]))
+        return out
 
     def _build_3d(self, h_far=None, qdegree=2, mesher="embed",
                   minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
@@ -712,6 +778,130 @@ class FaultNetwork:
                                        float(tau_far))
         self._band_yield_var = ybar
         return ybar.sym[0]
+
+    # ------------------------------------------------------------------
+    def junction_cells(self, ring=1):
+        """The cells where the split cannot join: the ribbon minus the cut.
+
+        The ribbon (the band, with its extrapolated tip margins) is
+        everything the weak-plane realisation treats as fault; the cut
+        chains are what the split actually sliced. A band cell whose
+        nearest point on a piece's extended spine lies in that piece's
+        margin is fault the split did not cut. Where such a cell also
+        lies inside a SECOND piece's ribbon, and on neither piece's cut,
+        two pieces meet there and the split has left them welded — a
+        stop-short abutment, a kissing branch, the intact bridge of a
+        stepover. Those cells, dilated by ``ring`` vertex rings within
+        the band, are the junction cells.
+
+        The rule is geometric and comes entirely from the placement: no
+        stress threshold, and the free tips are excluded on purpose (a
+        margin that runs into intact material rather than another
+        ribbon is a tip, not a junction; damage placed there lengthens
+        the fault instead of joining it).
+
+        ``ring=1`` is not optional in practice. Measured on the S-fault
+        rig (2026-08-27): the bare junction cells cannot repair the weld
+        even when fully plastic (a fifth to a quarter of the deficit),
+        because the weld's stiffness lives in the ring of intact material
+        around the two tips; one ring restores 0.8-0.97 of a continuous
+        fault's transmission at both resolutions tested.
+
+        Returns a boolean cell mask over the mesh's cells.
+        """
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first (the "
+                "junction cells are read off the ribbon)")
+        if self.realisation != "split":
+            raise RuntimeError(
+                "junction cells are the SPLIT realisation's joints; the "
+                "weak plane has no cut to fall off")
+        from underworld3.utilities.place_surface import _cell_centroids_of
+
+        band = self.info["band"]
+        ids, cen = _cell_centroids_of(self.mesh.dm, band)
+        mask = np.zeros_like(band)
+        if len(ids) == 0:
+            return mask
+        half_width = 0.5 * self.width
+        on_any_cut = np.zeros(len(ids), dtype=bool)
+        ribbons = np.zeros(len(ids), dtype=int)
+        for k, (_name, P) in enumerate(self.prepared):
+            E = np.asarray(self.info["extended"][k], dtype=float)
+            Q, on_cut = _densify_polyline(E, self.info["margin_rings"][k])
+            d = cen[:, None, :] - Q[None, :, :]
+            d2 = np.einsum("ijk,ijk->ij", d, d)
+            j = np.argmin(d2, axis=1)
+            # a sample spacing's worth of tolerance: the densified spine
+            # is a polyline, the cell centroid a point beside it
+            tol = 0.35 * float(self.info["spacing"][k])
+            inside = np.sqrt(d2[np.arange(len(ids)), j]) <= half_width + tol
+            ribbons += inside
+            on_any_cut |= inside & on_cut[j]
+        # unjoined = in two ribbons and on nobody's cut
+        mask[ids[(ribbons >= 2) & ~on_any_cut]] = True
+        for _ in range(int(ring)):
+            mask = self._vertex_ring(mask) & band
+        return mask
+
+    def _vertex_ring(self, mask):
+        """Cells sharing a vertex with a masked cell (rank-local)."""
+        dm = self.mesh.dm
+        cS, cE = dm.getHeightStratum(0)
+        vS, vE = dm.getDepthStratum(0)
+        out = mask.copy()
+        for c in np.flatnonzero(mask):
+            for q in dm.getTransitiveClosure(int(c) + cS)[0]:
+                if vS <= int(q) < vE:
+                    for c2 in dm.getTransitiveClosure(int(q), useCone=False)[0]:
+                        if cS <= int(c2) < cE:
+                            out[int(c2) - cS] = True
+        return out
+
+    def junction_patch(self, eta_0=1.0, ratio=0.01, ring=1, tag=""):
+        """The junction glue: a weak isotropic patch on the junction cells.
+
+        Returns the viscosity to give an isotropic flow model, as a P0
+        field expression: ``eta_0`` everywhere, ``ratio * eta_0`` on
+        :meth:`junction_cells`. ``eta_0`` is a float or a per-cell array
+        (a painted background). Use it as the split realisation's
+        background viscosity::
+
+            stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+            stokes.constitutive_model.Parameters.shear_viscosity_0 = \
+                net.junction_patch(eta_0=1.0)
+            net.apply(stokes)
+
+        The glue is a viscosity RATIO rather than a yield stress because
+        the joint only has to be broken, and a ratio needs no stress
+        scale. Measured on the S-fault rig (2026-08-27, coarse and fine):
+        the weak patch reproduces a fully plastic patch on the same cells
+        to 1-2%, is insensitive to ``ratio`` from 0.01 to 0.001, carries
+        the segment's slip through the cut itself (the segment's pair
+        jump reaches a continuous fault's), leaves the rest of the
+        network the split's own answer (main strand within 2.5%), and
+        costs the split's velocity iterations. The pressure block alone
+        notices the contrast, which is why 0.01 is the default rather
+        than something smaller. The solve stays linear.
+
+        Isotropic on purpose: inside a junction there is no single plane
+        to be weak on (see :meth:`damage_yield`, whose plugs are placed
+        at the prepared junction POINTS by radius; this patch is read off
+        the mesh instead and also catches stepover bridges, which are not
+        prepared junctions).
+        """
+        import underworld3 as uw
+
+        cells = self.junction_cells(ring=ring)
+        eta = uw.discretisation.MeshVariable(
+            f"fnGlue{tag}", self.mesh, 1, degree=0)
+        eta0_vals = np.broadcast_to(np.asarray(eta_0, dtype=float),
+                                    (len(eta.coords),))
+        eta.array[:, 0, 0] = np.where(cells, float(ratio) * eta0_vals,
+                                      eta0_vals)
+        self.glue = {"cells": cells, "viscosity": eta, "ratio": float(ratio)}
+        return eta.sym[0]
 
     # ------------------------------------------------------------------
     def damage_yield(self, velocity, dial=0.05, radius=None,
