@@ -199,6 +199,14 @@ def test_freesurface_spherical_relaxation_rate():
 
     rate, floor, resid = _fit_relaxation(t, A)
 
+    # gmsh triangulates differently across platforms (serial_reference.py:202
+    # records e.g. 1417 vs 1395 cells for a spherical shell), so a band failure
+    # has to name the mesh it was measured on or it is not diagnosable.
+    # Reference: 585 cells, macOS/arm64.
+    ncells = uw.mpi.comm.allreduce(mesh.dm.getStratumSize("depth", mesh.dim))
+    where = (f"[{ncells} cells, A0 = {A[0]:.4e}, "
+             f"floor {floor / A[0] * 100:.1f}% of A0]")
+
     # A rate is only meaningful if the decay IS an exponential; a fit rammed
     # through a non-exponential record would otherwise report a number and pass.
     assert resid < 5.0e-3 * A[0], (
@@ -214,6 +222,7 @@ def test_freesurface_spherical_relaxation_rate():
     ratio = rate / cathles
     assert 0.45 < ratio < 0.62, (
         f"Y20 relaxation rate {rate:.4f} is {ratio:.3f} of the half-space Cathles "
+        f"rate, on this mesh {where}.\n"
         f"rate {cathles:.4f}; expected an O(1) shell correction below 1 (finite "
         "depth over a no-slip base relaxes slower than a half-space).\n"
         "Measured: 0.528 at cell 0.35 and 0.516 at cell 0.25 (so the ratio is "
