@@ -531,6 +531,12 @@ def _gmsh_fill_2d(Xall, ring, chain, holes=(), size_of=None):
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.5 * float(lengths.min()))
         gmsh.option.setNumber("Mesh.MeshSizeMax", 2.0 * float(lengths.max()))
         if size_of is not None:
+            # the callback is AUTHORITATIVE for the interior: without these
+            # gmsh extends the constrained curves' segmentation inward and
+            # takes the minimum, and a graded callback has no effect
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
             gmsh.model.mesh.setSizeCallback(
                 lambda dim, tag, x, y, z, lc: float(size_of(x, y)))
         gmsh.model.mesh.generate(2)
@@ -5008,10 +5014,15 @@ def _footprint_from_samples(dm, band_mask, samples_ext, is_user_sample):
 def _extend_polyline_2d(P, rings):
     """Continue a polyline ``rings`` points outward at both ends, linearly
     — the 2-D tip-margin builder (:func:`_extend_grid` one dimension
-    down): end tangents at the local spacing, no invented curvature."""
+    down): end tangents at the local spacing, no invented curvature.
+    ``rings`` is one count for both ends or a ``(start, end)`` pair (a
+    junction end wants a longer reach than a free tip)."""
     P = np.asarray(P, dtype=float)
-    for _ in range(int(rings)):
-        P = np.vstack([2.0 * P[0] - P[1], P, 2.0 * P[-1] - P[-2]])
+    r0, r1 = (rings, rings) if np.ndim(rings) == 0 else rings
+    for _ in range(int(r0)):
+        P = np.vstack([2.0 * P[0] - P[1], P])
+    for _ in range(int(r1)):
+        P = np.vstack([P, 2.0 * P[-1] - P[-2]])
     return P
 
 
@@ -5232,7 +5243,8 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
         gmsh.finalize()
 
 
-def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
+def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None,
+                     embed=None):
     """Thicken each polyline into a ribbon, resolve overlaps, mesh.
 
     The 2-D thin volume: a ribbon is the mitred outline of one polyline, and
@@ -5251,6 +5263,16 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
     on the boundary's own facets (snapped onto them after meshing,
     defensively). ``cad_area`` is then the clipped area, so the
     meshed-vs-CAD gate holds unchanged.
+
+    ``embed`` — polylines (each ``(n, 2)``, strictly inside the resolved
+    faces) whose points and segments are EMBEDDED in the face before
+    meshing, so they are vertices and edges of the mesh exactly. This is
+    the NETWORK path (``mesher="network"``): the fuse resolves junctions
+    between touching ribbons as ordinary cells, and the embedded spines
+    give a split cut its own vertices to walk (#595: nothing snaps) —
+    the two properties the sequential ladder and the plain fuse each
+    had only one of. Each embedded point carries its local segment
+    length as mesh size so gmsh does not subdivide the spine.
     """
     import gmsh
 
@@ -5330,6 +5352,31 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None):
 
         faces = gmsh.model.getEntities(2)
         cad_area = sum(occ.getMass(2, t) for _d, t in faces)
+
+        if embed:
+            face_tags = [t for _d, t in faces]
+            for P in embed:
+                P = np.asarray(P, dtype=float)[:, :2]
+                if len(P) < 2:
+                    continue
+                seg = np.linalg.norm(np.diff(P, axis=0), axis=1)
+                hp = np.concatenate([[seg[0]], 0.5 * (seg[1:] + seg[:-1]),
+                                     [seg[-1]]])
+                ptags = [occ.addPoint(q[0], q[1], 0.0, meshSize=float(h))
+                         for q, h in zip(P, hp)]
+                ltags = [occ.addLine(ptags[i], ptags[i + 1])
+                         for i in range(len(ptags) - 1)]
+                occ.synchronize()
+                mid = P[len(P) // 2]
+                host = [t for t in face_tags
+                        if gmsh.model.isInside(2, t, [mid[0], mid[1], 0.0])]
+                if not host:
+                    raise RuntimeError(
+                        "network assembly: an embedded spine lies outside "
+                        "the resolved ribbon faces (trim its ends inside "
+                        "the caps).")
+                gmsh.model.mesh.embed(0, ptags, 2, host[0])
+                gmsh.model.mesh.embed(1, ltags, 2, host[0])
 
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.7 * size)
         gmsh.option.setNumber("Mesh.MeshSizeMax", 1.3 * size)
@@ -5537,6 +5584,12 @@ def _ring_growing(cells, drop, held_mask):
         if not pinch:
             ring = _cavity_ring(cells, np.flatnonzero(drop))
             if ring is None:
+                # TODO(BUG): on a GRADED base (adapt() toward the traces) the cleared
+                # cells stop forming one simple hole at the default clearance: the
+                # S-fault rig at fine width (w = 0.01) builds on the uniform base at
+                # clearance 0.3 but on the one-level graded base only at 1.0. The
+                # clearing should be sized by the LOCAL cell size, not one factor.
+                # Found 2026-08-27 running FaultNetwork.build on the rig.
                 raise RuntimeError(
                     "the cells cleared for the thin volume do not leave one "
                     "simple hole. Raise `clearance`.")
@@ -6196,10 +6249,21 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     payload = None
     if comm.rank == 0:
         try:
-            assemble = (_occ_ladder_assembly_2d if mesher == "ladder"
-                        else _occ_assembly_2d)
-            asm_pts, asm_tris, cad_area = assemble(
-                polylines, width, size, assembly, domain=domain_loops)
+            if mesher == "ladder":
+                asm_pts, asm_tris, cad_area = _occ_ladder_assembly_2d(
+                    polylines, width, size, assembly, domain=domain_loops)
+            elif mesher == "network":
+                # fuse + embedded spines: each polyline's interior points
+                # (the end points sit ON the caps) become mesh vertices;
+                # junctions between touching ribbons are free
+                spines = [np.asarray(P, dtype=float)[1:-1]
+                          for P in polylines]
+                asm_pts, asm_tris, cad_area = _occ_assembly_2d(
+                    polylines, width, size, assembly, domain=domain_loops,
+                    embed=spines)
+            else:
+                asm_pts, asm_tris, cad_area = _occ_assembly_2d(
+                    polylines, width, size, assembly, domain=domain_loops)
             P = asm_pts[asm_tris]
             twice = ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
                      - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
@@ -6373,7 +6437,34 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
             Xall = np.vstack([X, asm_pts])
             holes = [[len(X) + int(v) for v in loop] for loop in hole_loops]
-            gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes)
+            # GRADED fill: the annulus between the assembly's skin and the
+            # cavity ring is meshed from the skin's own size out to the
+            # ring's edge length, interpolated by relative distance. Without
+            # this the fill inherits the skin segmentation throughout, and
+            # where several ribbons sit within a cavity of each other the
+            # merged cavity fills at band resolution end to end (measured on
+            # the S-fault rig: the fill cost as many cells as the bands —
+            # the #629 "fill shell was the fat" finding on the network path).
+            size_of = None
+            if hole_loops:
+                from scipy.spatial import cKDTree as _KDT
+                _skin = asm_pts[np.unique(np.concatenate(
+                    [np.asarray(l, dtype=int) for l in hole_loops]))]
+                _ring_pts = Xall[np.asarray(ring, dtype=int)]
+                _rl = np.linalg.norm(np.diff(
+                    np.vstack([_ring_pts, _ring_pts[:1]]), axis=0), axis=1)
+                _h_ring, _h_skin = float(np.median(_rl)), float(size)
+                if _h_ring > 1.2 * _h_skin:
+                    _kd_s, _kd_r = _KDT(_skin), _KDT(_ring_pts)
+
+                    def size_of(x, y, _s=_h_skin, _h=_h_ring,
+                                _ks=_kd_s, _kr=_kd_r):
+                        q = np.array([[x, y]])
+                        ds = float(_ks.query(q)[0][0])
+                        dr = float(_kr.query(q)[0][0])
+                        return _s + (_h - _s) * ds / (ds + dr + 1e-30)
+            gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes,
+                                            size_of=size_of)
             placed = np.vstack([asm_pts, extra]) if len(extra) else asm_pts
 
             def mixed(v):
@@ -6644,9 +6735,14 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         boundaries are themselves of interest. Two zones converging at a
         shallow angle make the overlap a spike, and its fragmented tip meshes
         to arbitrarily bad angles; the fused union has no such tip.
-    mesher : {None, "ladder"}, keyword-only
+    mesher : {None, "ladder", "network"}, keyword-only
         How the band itself is meshed. ``None`` (default) is the CAD-built
-        band (frontal fill). ``"ladder"`` is the STRUCTURED band with an
+        band (frontal fill). ``"network"`` (2-D) is the CAD-built band of
+        a whole NETWORK of polylines in one call — ribbons fused (touching
+        strands, junctions free) with every spine EMBEDDED so cuts walk
+        exact vertices at any resolution; the one path for kissing joins,
+        shared-band stepovers and plain strands alike. ``"ladder"`` is
+        the STRUCTURED band with an
         exact mid-surface vertex sheet — the mandatory choice when the
         band's spine/mid-surface is to be cut/split (#595: a cut through a
         remeshed band snaps rail vertices), and the choice that makes
@@ -6685,8 +6781,9 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if assembly not in ("fuse", "fragment"):
         raise ValueError(
             f"assembly must be 'fuse' or 'fragment', not {assembly!r}")
-    if mesher not in (None, "ladder"):
-        raise ValueError(f"mesher must be None or 'ladder', not {mesher!r}")
+    if mesher not in (None, "ladder", "network"):
+        raise ValueError(
+            f"mesher must be None, 'ladder' or 'network', not {mesher!r}")
 
     if dm.getDimension() == 2:
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
@@ -7440,7 +7537,8 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
 
 def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                           band_label="Band", band_value=71,
-                          clearance=0.3, split=True, verbose=False):
+                          clearance=0.3, split=True, mesher="ladder",
+                          spines=None, verbose=False):
     """Split-ready 2-D fault ribbons from the traces' OWN sampling (#629).
 
     The 2-D production fault-prep path, honouring the same contract set
@@ -7465,15 +7563,37 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         boundary for ``add_fault_bc``.
     width : float
         Band thickness (split-node models: a resolution parameter).
-    margin_rings : int
+    margin_rings : int or sequence of (int, int)
         The band extends this many points beyond each fault end, by
-        linear tangent continuation. Must be >= 1 (the tip rule).
+        linear tangent continuation. Must be >= 1 (the tip rule). One
+        count for every end, or a ``(start, end)`` pair per trace.
     band_label, band_value : str, int
-        Cell label of each band; trace ``k`` gets ``band_value + k`` so
-        per-fault zones stay distinguishable
-        (``mesh.cells_labelled(band_label)`` unions them).
+        Cell label of the band. With ``mesher="ladder"`` trace ``k`` gets
+        ``band_value + k`` so per-fault zones stay distinguishable
+        (``mesh.cells_labelled(band_label)`` unions them); with
+        ``mesher="network"`` the fused band is ONE region carrying
+        ``band_value``. Either way ``info["band"]`` is the union mask and
+        ``info["footprints"]`` the per-fault ones.
     clearance : float
         Carve clearance (the measured thin-shell default 0.3).
+    spines : list of (label, polyline), optional
+        The polylines to PLACE, when they differ from the traces to cut:
+        a collinear abutting pair must share one spine (two ribbons
+        overlapping along one line interleave their vertices into
+        slivers), with the cut stopping at each piece's own ends. Every
+        trace vertex must be a vertex of some spine. Default: the
+        traces themselves.
+    mesher : {"ladder", "network"}
+        How the band is meshed. ``"ladder"`` (default) places each trace
+        SEQUENTIALLY as a structured band: bands may not touch, and level
+        pairs NEST (a 2:1 sub-sampled ladder shares every vertex — the
+        composed-hierarchy economics, #629). ``"network"`` places the
+        whole set in ONE call: the ribbons are fused in CAD so strands may
+        touch — a kissing junction, a shared stepover band — and every
+        spine is embedded, so the cuts still walk exact vertices at any
+        resolution. Choose ``"network"`` whenever the traces come within a
+        band width of one another; choose ``"ladder"`` when the placed
+        levels must nest.
     split : bool
         Cut + split each trace (``mesh.add_fault``). ``False`` returns
         the placed, unlabelled-fault mesh for painted (volumetric)
@@ -7487,10 +7607,13 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     mesh : uw.discretisation.Mesh
         The fault-resolving mesh (split when ``split=True``).
     info : dict
-        ``n_cells``, ``spacing`` / ``n_rungs`` (per trace), and
-        ``footprints`` — per-label FAULT-footprint cell masks (the
-        honoured-paint rule): what painted rheology / ``fac_zone``
-        keys should use, never the whole band.
+        ``n_cells``, ``spacing`` / ``n_rungs`` (per trace), the
+        ``mesher`` used, the ``extended`` spines (user samples plus the
+        margin) and the band ``width``; ``footprints`` — per-label
+        FAULT-footprint cell masks (the honoured-paint rule): what
+        painted rheology / ``fac_zone`` keys should use, never the whole
+        band; and ``band`` — the union band mask, for a band-confined
+        yield or a structural patch key.
 
     Notes
     -----
@@ -7501,61 +7624,107 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     """
     from underworld3 import discretisation
 
-    if margin_rings < 1:
+    if spines is None:
+        spines = [(label, np.asarray(P, dtype=float)) for label, P in traces]
+    if np.ndim(margin_rings) == 0:
+        margin_rings = [(int(margin_rings), int(margin_rings))] * len(spines)
+    margin_rings = [(int(a), int(b)) for a, b in margin_rings]
+    if len(margin_rings) != len(spines) or min(min(m) for m in margin_rings) < 1:
         raise ValueError(
-            "margin_rings must be >= 1: the split cannot reach the band "
-            "rim (the tip rule); the margin is extrapolated surround.")
+            "margin_rings must be >= 1 at every end of every trace: the "
+            "split cannot reach the band rim (the tip rule); the margin is "
+            "extrapolated surround.")
+    if mesher not in ("ladder", "network"):
+        raise ValueError(
+            f"mesher must be 'ladder' or 'network', not {mesher!r}")
     labels = [label for label, _P in traces]
     if len(set(labels)) != len(labels):
         raise ValueError(
             f"trace labels must be unique (each becomes a boundary); got "
             f"{labels}")
+    if spines is None:
+        spines = [(label, np.asarray(P, dtype=float)) for label, P in traces]
     dm = base_mesh.dm
     spacing_all, rungs_all, extended = [], [], []
-    for k, (label, P) in enumerate(traces):
+    for label, P in spines:
         P = np.asarray(P, dtype=float)
         if P.ndim != 2 or P.shape[1] != 2 or len(P) < 3:
             raise ValueError(
                 f"trace {label!r}: expected an (n, 2) polyline with "
                 f"n >= 3, got shape {P.shape}")
-        S = _extend_polyline_2d(P, margin_rings)
-        R = _mitred_reach_2d(S)
-        spacing = float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean())
-        dm, _info = place_thin_volume(
-            dm, [(S, R)], width, label=band_label,
-            label_value=band_value + k, clearance=clearance,
-            size=spacing, mesher="ladder", verbose=verbose)
-        spacing_all.append(spacing)
+        extended.append(_extend_polyline_2d(P, margin_rings[len(extended)]))
+        spacing_all.append(
+            float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean()))
         rungs_all.append(len(P))
-        extended.append(S)
+
+    if mesher == "network":
+        # ONE placement call for the whole network: the ribbons are fused
+        # in CAD, so touching strands and shared bands are ordinary cells
+        # of the union, and every spine is EMBEDDED, so the cut below
+        # walks its own vertices (#595). The fused band is one region and
+        # therefore carries one label value.
+        dm, _info = place_thin_volume(
+            dm, extended, width, label=band_label, label_value=band_value,
+            clearance=clearance, size=float(np.mean(spacing_all)),
+            mesher="network", verbose=verbose)
+    else:
+        for k, S in enumerate(extended):
+            dm, _info = place_thin_volume(
+                dm, [(S, _mitred_reach_2d(S))], width, label=band_label,
+                label_value=band_value + k, clearance=clearance,
+                size=spacing_all[k], mesher="ladder", verbose=verbose)
 
     mesh = discretisation.Mesh(
         dm, simplex=True, qdegree=base_mesh.qdegree,
         coordinate_system_type=base_mesh.CoordinateSystem.coordinate_type,
         boundaries=base_mesh.boundaries, verbose=False)
+    # The placed mesh OWNS the base's multigrid tail (the coarse levels do
+    # not need the fault): every solver on it drives FMG automatically,
+    # and the band label is its FAC patch key for volumetric rheologies.
+    from underworld3.utilities.custom_mg import adopt_hierarchy
+    band_all = np.zeros(int(mesh.dm.getHeightStratum(0)[1]), dtype=bool)
+    for k in range(len(spines)):
+        band_all |= mesh.cells_labelled(band_label, band_value + k)
+    adopt_hierarchy(mesh, base_mesh, fac_zone=band_all)
     if split:
         # ONE network call — cut all, then split all (chained add_fault
         # calls do not compose: each split re-derives the pairing records
         # and drops the earlier fault's).
         mesh = mesh.add_fault([(label, np.asarray(P, dtype=float))
                                for label, P in traces])
+        mesh._custom_mg_fac_zone = None     # a split fault needs no patch
 
     # Per-strand FAULT FOOTPRINT masks (the honoured-paint rule): band
-    # cells whose nearest extended sample is a USER point. This is the
-    # mask a volumetric rheology (or a fac_zone key) should use — never
-    # the whole band, whose margin is extrapolated surround.
+    # cells whose nearest extended sample is one of THAT trace's own
+    # vertices. This is the mask a volumetric rheology (or a fac_zone
+    # key) should use — never the whole band, whose margin is
+    # extrapolated surround (and, on a shared spine, whose gap edges
+    # belong to no trace). A band cell belongs to the trace whose vertex
+    # is nearest to it, read off the CONCATENATED spine samples.
+    band = np.zeros_like(band_all)
+    for k in range(len(spines)):
+        band |= mesh.cells_labelled(band_label, band_value + k)
+    S_all = np.vstack(extended)
+    scale = 1e-9 * float(np.mean(spacing_all))
     footprints = {}
-    for k, (label, P) in enumerate(traces):
-        band_k = mesh.cells_labelled(band_label, band_value + k)
-        m = margin_rings
-        is_user = np.zeros(len(extended[k]), dtype=bool)
-        is_user[m:len(extended[k]) - m] = True
+    for label, P in traces:
+        P = np.asarray(P, dtype=float)
+        d = S_all[:, None, :] - P[None, :, :]
+        is_user = (np.einsum("ijk,ijk->ij", d, d).min(axis=1) < scale ** 2)
+        if is_user.sum() != len(P):
+            raise ValueError(
+                f"trace {label!r}: {int(is_user.sum())} of its {len(P)} "
+                f"vertices lie on a spine; every trace vertex must be a "
+                f"spine vertex")
         footprints[label] = _footprint_from_samples(
-            mesh.dm, band_k, extended[k], is_user)
+            mesh.dm, band, S_all, is_user)
 
     info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
             "spacing": spacing_all, "n_rungs": rungs_all,
-            "footprints": footprints}
+            "footprints": footprints, "band": band, "mesher": mesher,
+            "extended": extended, "width": float(width),
+            "margin_rings": margin_rings,
+            "spines": [label for label, _P in spines]}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "

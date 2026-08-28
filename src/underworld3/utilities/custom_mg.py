@@ -1760,8 +1760,12 @@ def build_transfers(solver, field_id=None):
     _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
     h = Ps = None
     for _i, _b in enumerate(_attempts):
-        h = CustomMGHierarchy(level_tail + [solver.mesh], builder=_b,
-                              field_id=field_id)
+        h = CustomMGHierarchy(
+            level_tail + [solver.mesh], builder=_b, field_id=field_id,
+            # a MESH-OWNED FAC zone (set by the placement that built the
+            # mesh — the fault band): the finest level's strong patch
+            # smoother keys on it with no per-solver set_custom_fmg call
+            fac_zone=getattr(solver.mesh, "_custom_mg_fac_zone", None))
         try:
             Ps = h.build(solver)
             break
@@ -1951,3 +1955,33 @@ def inject_custom_mg(solver):
     levels.append(fine)
     Ps = [_to_petsc_aij(builder(levels[l - 1], levels[l])) for l in range(1, len(levels))]
     _install_transfers(solver, Ps, verbose=cfg.get("verbose", False))
+
+
+def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):
+    """Make ``mesh`` OWN the multigrid hierarchy of ``base_mesh`` — the
+    static coarse tail every solver built on ``mesh`` then drives
+    automatically (standard and rotated paths alike, through
+    :func:`build_transfers`'s mesh-owned route), with ``fac_zone`` as the
+    finest level's FAC patch key. For a mesh produced by SURGERY on a
+    refined base (a placed fault band, a network of ribbons): the coarse
+    levels do not need the fault — the finest level inherits the tail
+    (#620/#629). Without this, a fresh Mesh from a surgery DM owns no
+    hierarchy and every solver on it silently falls back to GAMG (whose
+    Chebyshev smoother is the configuration a nonlinear solve should not
+    be handed by default). A later ``mesh.add_fault`` child inherits the
+    tail itself; the FAC zone is NOT inherited by the cut child (a split
+    fault needs no patch — the keying ruling).
+    """
+    # a base that is itself an adapt()/cut child owns its tail: extend it
+    # with the base (the child's finest level) — the same rule
+    # Mesh._adopt_cut_child applies; a plain refined base contributes its
+    # static level wraps (coarsest .. base-finest)
+    own = getattr(base_mesh, "_custom_mg_coarse_meshes", None)
+    mesh._custom_mg_coarse_meshes = (list(own) + [base_mesh] if own is not None
+                                     else list(base_mesh._coarse_level_meshes()))
+    mesh._custom_mg_builder = (builder if builder is not None
+                               else getattr(base_mesh, "_custom_mg_builder",
+                                            "barycentric"))
+    mesh._custom_mg_fac_zone = (None if fac_zone is None
+                                else np.asarray(fac_zone, dtype=bool))
+    return mesh
