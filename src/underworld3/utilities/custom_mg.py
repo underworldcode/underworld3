@@ -867,6 +867,65 @@ def _count_zero_columns_parallel(P, comm):
     return nzero
 
 
+def _repair_zero_columns_parallel(P, coords_f, fine_layout, coords_u, cols_u,
+                                  ncomp, comm):
+    """Give each unreached coarse DOF a nearest-fine-DOF entry (parallel).
+
+    The counterpart of :func:`_repair_zero_columns_serial` for the
+    cross-partition build: a coarse DOF no fine node reaches (the fine
+    mesh gathered onto a surgery rank, a placed band, a relaxed child)
+    leaves an empty column and a singular Galerkin coarse operator. Each
+    rank reads the empty columns it OWNS off P^T.1, the orphan list is
+    all-gathered (small), every rank offers its nearest OWNED fine DOF
+    of the same component, and the rank holding the nearest one sets the
+    injection entry. Returns ``(P, n_repaired)``; ``P`` is re-assembled.
+    """
+    m4 = comm.tompi4py()
+    ones_f = P.createVecLeft()
+    ones_f.set(1.0)
+    colsum = P.createVecRight()
+    P.multTranspose(ones_f, colsum)
+    cstart, _cend = colsum.getOwnershipRange()
+    zero_local = np.flatnonzero(colsum.array == 0.0) + cstart
+    ones_f.destroy()
+    colsum.destroy()
+    zero = np.concatenate(m4.allgather(zero_local.astype(np.int64)))
+    if zero.size == 0:
+        return P, 0
+    # global column -> (coarse node coordinate, component) via the gathered cloud
+    where = {int(cols_u[n, c]): (n, c)
+             for n in range(cols_u.shape[0]) for c in range(ncomp)
+             if cols_u[n, c] >= 0}
+    from scipy.spatial import cKDTree
+    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
+    tree = cKDTree(coords_f) if coords_f.shape[0] else None
+    offers = []                                   # (distance, global fine row)
+    for col in zero.tolist():
+        node_c, comp = where[int(col)]
+        best = (np.inf, -1)
+        if tree is not None:
+            k = min(8, coords_f.shape[0])
+            d, idx = tree.query(coords_u[node_c], k=k)
+            for dd, i in zip(np.atleast_1d(d), np.atleast_1d(idx)):
+                grow = int(l2g_f[int(i) * ncomp + comp])
+                if fstart <= grow < fend:          # an OWNED fine row
+                    best = (float(dd), grow)
+                    break
+        offers.append(best)
+    # the nearest offer across ranks wins each orphan
+    dist = np.array([o[0] for o in offers])
+    rows = np.array([o[1] for o in offers], dtype=np.int64)
+    all_dist = np.vstack(m4.allgather(dist))
+    all_rows = np.vstack(m4.allgather(rows))
+    winner = np.argmin(all_dist, axis=0)
+    for j, col in enumerate(zero.tolist()):
+        if winner[j] == m4.rank and np.isfinite(all_dist[winner[j], j]):
+            P.setValues([int(all_rows[winner[j], j])], [int(col)], [1.0],
+                        addv=PETSc.InsertMode.INSERT_VALUES)
+    P.assemble()
+    return P, int(zero.size)
+
+
 def _assert_no_zero_columns_parallel(P, comm):
     """Parallel zero-column guard: a coarse DOF with no fine image -> singular
     Galerkin coarse operator."""
@@ -1388,6 +1447,20 @@ class CustomMGHierarchy:
                     if (self.cross_partition == "auto"
                             and _count_zero_columns_parallel(P, comm) > 0):
                         P = _build_crosspart_transfer(*args)
+                # the same orphan repair the serial path has: a coarse DOF no
+                # fine node reaches gets its nearest fine DOF as an injection
+                if _count_zero_columns_parallel(P, comm) > 0:
+                    coords_u, cols_u = _gather_coarse_cloud(
+                        coords[l - 1], maps[l - 1], nc, comm)
+                    P, n_rep = _repair_zero_columns_parallel(
+                        P, coords[l], maps[l], coords_u, cols_u, nc, comm)
+                    if n_rep:
+                        import warnings
+                        warnings.warn(
+                            f"custom_mg: parallel transfer {l - 1}->{l} had "
+                            f"{n_rep} coarse DOF(s) with no fine image "
+                            f"(non-nested levels); repaired by "
+                            f"nearest-fine-DOF injection.")
                 _assert_no_zero_columns_parallel(P, comm)
                 Ps.append(P)
             else:
@@ -1775,20 +1848,19 @@ def build_transfers(solver, field_id=None):
                 solver._record_pc_fallback(
                     "custom_mg.transfer_builder",
                     requested=_b,
-                    installed=f"{_attempts[_i + 1]} (DENSE transfer)",
+                    installed=f"{_attempts[_i + 1]} (local kd-tree RBF)",
                     reason="build_failed",
-                    detail=f"{exc}; the RBF rescue is a performance cliff — "
-                           f"its transfer is dense (nnz/row == n_coarse), see #424")
+                    detail=f"{exc}; the local RBF stencils are wider than the "
+                           f"barycentric ones, so the Galerkin coarse "
+                           f"operators fatten (#429)")
                 warnings.warn(
                     f"custom_mg: {_b} transfer build failed ({exc}); "
-                    f"retrying with the '{_attempts[_i + 1]}' builder, which "
-                    f"has global support and cannot leave a coarse DOF "
-                    f"without a fine image. NOTE the RBF transfer is DENSE "
-                    f"(nnz/row == n_coarse), so the Galerkin coarse operators "
-                    f"are dense too — this rescues correctness but does not "
-                    f"scale. If it fires on a production-sized problem, treat "
-                    f"it as a performance cliff and fix the cause, not the "
-                    f"symptom (#424).")
+                    f"retrying with the '{_attempts[_i + 1]}' builder — the "
+                    f"sparse, linear-exact local kd-tree RBF (#429), whose "
+                    f"kNN stencils reach coarse DOFs the barycentric simplex "
+                    f"does not. Its wider stencils fatten the Galerkin coarse "
+                    f"operators; if this fires routinely, fix the level "
+                    f"geometry rather than live with the fallback.")
                 continue
             solver._record_pc_fallback(
                 "custom_mg.build",
@@ -1957,6 +2029,63 @@ def inject_custom_mg(solver):
     _install_transfers(solver, Ps, verbose=cfg.get("verbose", False))
 
 
+def _colocate_level(coarse_mesh, fine_mesh):
+    """Redistribute one coarse level so each coarse cell lives on the rank
+    that holds the fine cells over it (nearest owned fine centroid, by a
+    global minimum). A placed fine mesh is gathered onto its surgery rank
+    while the tail stays load-balanced; the transfer then pairs a fine
+    node with a coarse cell on another rank and coarse DOFs lose every
+    fine image (measured: 488 of 5614 on the S-fault rig at np=2, and the
+    repaired transfer does not precondition). Co-resident levels are the
+    same construction ptest_0004 uses for a reloaded hierarchy. Returns a
+    new Mesh, or ``coarse_mesh`` itself when nothing moves."""
+    import underworld3 as uw
+    from scipy.spatial import cKDTree
+
+    dm = coarse_mesh.dm
+    comm = dm.getComm().tompi4py()
+    if comm.size == 1:
+        return coarse_mesh
+    cS, cE = dm.getHeightStratum(0)
+    cen_c = np.array([dm.computeCellGeometryFVM(c)[1] for c in range(cS, cE)])
+    fdm = fine_mesh.dm
+    fS, fE = fdm.getHeightStratum(0)
+    # OWNED fine cells only: a ghost cell belongs to another rank
+    fsf = fdm.getPointSF()
+    try:
+        _n, ileaf, _r = fsf.getGraph()
+        ghost = set(int(q) for q in ileaf)
+    except (ValueError, TypeError):
+        ghost = set()
+    owned_f = [c for c in range(fS, fE) if c not in ghost]
+    cen_f = (np.array([fdm.computeCellGeometryFVM(c)[1] for c in owned_f])
+             if owned_f else np.zeros((0, cen_c.shape[1])))
+    # every rank offers its nearest owned fine cell to EVERY coarse centroid
+    # in the mesh (all-gathered: the coarse levels are small)
+    cen_all = np.vstack(comm.allgather(cen_c))
+    if cen_f.shape[0]:
+        d_local = cKDTree(cen_f).query(cen_all)[0]
+    else:
+        d_local = np.full(len(cen_all), np.inf)
+    d_all = np.vstack(comm.allgather(d_local))
+    owner_all = np.argmin(d_all, axis=0).astype(np.int32)
+    off = np.cumsum([0] + comm.allgather(len(cen_c)))
+    assign = owner_all[off[comm.rank]:off[comm.rank + 1]]
+    if not comm.allreduce(int((assign != comm.rank).sum())):
+        return coarse_mesh
+    work = dm.clone()
+    part = work.getPartitioner()
+    part.setType(PETSc.Partitioner.Type.SHELL)
+    order = np.argsort(assign, kind="stable").astype(np.int32)
+    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
+    part.setShellPartition(comm.size, sizes=sizes, points=order)
+    work.distribute()
+    return uw.discretisation.Mesh(
+        work, simplex=coarse_mesh.dm.isSimplex(), qdegree=coarse_mesh.qdegree,
+        coordinate_system_type=coarse_mesh.CoordinateSystem.coordinate_type,
+        boundaries=coarse_mesh.boundaries, verbose=False)
+
+
 def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):
     """Make ``mesh`` OWN the multigrid hierarchy of ``base_mesh`` — the
     static coarse tail every solver built on ``mesh`` then drives
@@ -1977,8 +2106,15 @@ def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):
     # Mesh._adopt_cut_child applies; a plain refined base contributes its
     # static level wraps (coarsest .. base-finest)
     own = getattr(base_mesh, "_custom_mg_coarse_meshes", None)
-    mesh._custom_mg_coarse_meshes = (list(own) + [base_mesh] if own is not None
-                                     else list(base_mesh._coarse_level_meshes()))
+    tail = (list(own) + [base_mesh] if own is not None
+            else list(base_mesh._coarse_level_meshes()))
+    # In parallel the placed mesh is gathered onto its surgery rank while
+    # the tail is load-balanced: co-locate every level with the finest so
+    # the transfers pair rank-locally (the coarse levels are small; the
+    # fine mesh and its FAC patch never move).
+    if mesh.dm.getComm().getSize() > 1:
+        tail = [_colocate_level(level, mesh) for level in tail]
+    mesh._custom_mg_coarse_meshes = tail
     mesh._custom_mg_builder = (builder if builder is not None
                                else getattr(base_mesh, "_custom_mg_builder",
                                             "barycentric"))
