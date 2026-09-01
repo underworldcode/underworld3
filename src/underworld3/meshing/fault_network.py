@@ -96,14 +96,25 @@ def _nearest_segment_normals(P, X):
     return np.column_stack([-T[:, 1], T[:, 0]])
 
 
+def _patch_normal(P):
+    """Unit normal of a planar polygon by Newell's method — robust to
+    collinear leading vertices, which a clipped rim can carry (the
+    two-edge cross product is not)."""
+    P = np.asarray(P, dtype=float)
+    n = np.cross(P, np.roll(P, -1, axis=0)).sum(axis=0)
+    norm = float(np.linalg.norm(n))
+    if norm == 0.0:
+        raise ValueError("degenerate patch: the rim spans no plane")
+    return n / norm
+
+
 def _expand_convex_polygon(P, dist):
     """Offset a convex planar polygon outward in its own plane: each edge
     moves ``dist`` along its in-plane outward normal, adjacent edge lines
     re-intersected — the 3-D tip margin (the band extends past the fault;
     the mid-surface is the fault itself, honoured exactly)."""
     P = np.asarray(P, dtype=float)
-    n_hat = np.cross(P[1] - P[0], P[2] - P[0])
-    n_hat /= np.linalg.norm(n_hat)
+    n_hat = _patch_normal(P)
     m = len(P)
     anchors, dirs = [], []
     for i in range(m):
@@ -119,6 +130,12 @@ def _expand_convex_polygon(P, dist):
         a1, d1 = anchors[i], dirs[i]
         w = np.cross(d0, d1)
         denom = float(w @ w)
+        if denom < 1e-24:
+            # collinear adjacent edges (a clipped rim keeps such
+            # points): both edges offset onto one line, and the corner
+            # is simply the offset point itself
+            out[i] = a1
+            continue
         t = float(np.cross(a1 - a0, d1) @ w) / denom
         out[i] = a0 + t * d0
     return out
@@ -315,11 +332,8 @@ class FaultNetwork:
                     h_far=h_far, qdegree=qdegree, realisation=realisation,
                     margin_rings=margin_rings,
                     carve_clearance=carve_clearance)
-            if realisation != "split":
-                raise NotImplementedError(
-                    "a volumetric 3-D realisation is a LAYER: pass width= "
-                    "(the weak plane's thickness is constitutive, exactly "
-                    "as in 2-D).")
+            # width=None here implies realisation == "split": the
+            # ti-needs-width check above already refused the other case
             return self._build_3d(h_far=h_far, qdegree=qdegree,
                                   mesher=mesher)
         from .cartesian import UnstructuredSimplexBox
@@ -514,8 +528,7 @@ class FaultNetwork:
         lo = np.asarray(minCoords, dtype=float)
         hi = np.asarray(maxCoords, dtype=float)
         for (name, _P), E in zip(self.prepared, expanded):
-            n_hat = np.cross(E[1] - E[0], E[2] - E[0])
-            n_hat /= np.linalg.norm(n_hat)
+            n_hat = _patch_normal(E)
             slab = np.vstack([E + 0.5 * self.width * n_hat,
                               E - 0.5 * self.width * n_hat])
             if (slab <= lo).any() or (slab >= hi).any():
@@ -575,8 +588,7 @@ class FaultNetwork:
         plane_dist = np.full((len(self.prepared), len(ids)), np.inf)
         for j, (_name, P) in enumerate(self.prepared):
             P = np.asarray(P, dtype=float)
-            n_hat = np.cross(P[1] - P[0], P[2] - P[0])
-            n_hat /= np.linalg.norm(n_hat)
+            n_hat = _patch_normal(P)
             d = (cen - P[0]) @ n_hat
             inside = np.abs(d) <= 0.5 * self.width + 0.35 * h
             in_plane = cen - np.outer(d, n_hat)
@@ -958,9 +970,7 @@ class FaultNetwork:
             if not m_.any():
                 continue
             if dim == 3:                    # planar patch: ONE normal
-                P = np.asarray(P, dtype=float)
-                n_hat = np.cross(P[1] - P[0], P[2] - P[0])
-                dvals[m_] = n_hat / np.linalg.norm(n_hat)
+                dvals[m_] = _patch_normal(P)
             else:
                 dvals[m_] = _nearest_segment_normals(P, cen[m_])
         ndir.array[...] = dvals.reshape(ndir.array.shape)
@@ -1289,8 +1299,7 @@ class FaultNetwork:
                 # (corners, edge midpoints, centroid) and keep the
                 # in-plane part of the jump — the plane form of the 2-D
                 # tangential projection
-                n_hat = np.cross(P[1] - P[0], P[2] - P[0])
-                n_hat /= np.linalg.norm(n_hat)
+                n_hat = _patch_normal(P)
                 S = np.vstack([P, 0.5 * (P + np.roll(P, -1, axis=0)),
                                P.mean(axis=0)])
                 vp = np.asarray(uw.function.evaluate(

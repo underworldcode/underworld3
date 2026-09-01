@@ -158,6 +158,25 @@ def test_embed_belongs_to_the_network_mesher():
         place_thin_volume(box.dm, [P_A], 0.05, embed=[P_A])
 
 
+def test_the_expansion_survives_collinear_rim_points():
+    """A clipped rim may carry collinear consecutive points (the
+    convexity gate passes them); the in-plane offset must not divide
+    by zero there — on a straight rim the corner is the edge's own
+    offset — and the plane normal must not come from a collinear
+    leading triple (Newell's method)."""
+    from underworld3.meshing.fault_network import _expand_convex_polygon
+
+    P = np.array([[0.30, 0.50, 0.30], [0.50, 0.50, 0.30],
+                  [0.70, 0.50, 0.30],
+                  [0.70, 0.50, 0.70], [0.30, 0.50, 0.70]])
+    E = _expand_convex_polygon(P, 0.08)
+    assert np.isfinite(E).all()
+    # the straight rim's midpoint moves exactly one offset outward,
+    # staying in the patch plane
+    assert E[1] == pytest.approx([0.50, 0.50, 0.22])
+    assert np.allclose(E[:, 1], 0.50)
+
+
 def test_the_weak_plane_gauges_the_jump_across_its_layer():
     """The 3-D weak plane's slip is the in-plane velocity jump across
     the layer. Read on a PRESCRIBED linear shear, where the jump is
