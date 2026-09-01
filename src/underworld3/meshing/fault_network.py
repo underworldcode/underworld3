@@ -549,15 +549,19 @@ class FaultNetwork:
         if realisation == "split":
             mesh = split_faults(mesh, [n for n, _P in self.prepared])
             # reduce first, then branch: the defect must raise on every
-            # rank together or not at all
-            n_self = sum(1 for pairs in mesh._fault_point_pairs.values()
-                         for q, p in pairs.items() if q == p)
-            n_self = mesh.dm.comm.tompi4py().allreduce(n_self)
-            if n_self:
+            # rank together or not at all. A healthy pairing is a
+            # bijection between disjoint sides: a node paired with
+            # itself OR appearing as both a minus and a plus (a chain)
+            # is the same degeneracy.
+            n_bad = sum(len(set(pairs) & set(pairs.values()))
+                        for pairs in mesh._fault_point_pairs.values())
+            n_bad = mesh.dm.comm.tompi4py().allreduce(n_bad)
+            if n_bad:
                 raise RuntimeError(
-                    f"the network split produced {n_self} self-paired "
-                    "node(s) — the embedded mid-surfaces are degenerate "
-                    "(a defect, not a configuration error).")
+                    f"the network split produced {n_bad} node(s) on "
+                    "both sides of a pairing — the embedded "
+                    "mid-surfaces are degenerate (a defect, not a "
+                    "configuration error).")
             mesh._custom_mg_fac_zone = None   # a split fault needs no patch
             band = mesh.cells_labelled("Band", 71)
         # honoured footprints: band cells within the USER patch's own
