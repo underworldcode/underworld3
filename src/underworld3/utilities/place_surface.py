@@ -3847,7 +3847,8 @@ def _ladder_assembly_3d(grid, normals, width):
     return pts, tets
 
 
-def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
+def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse",
+                     embed=None):
     """Thicken each planar patch by ±width/2, resolve overlaps, mesh.
 
     ``assembly`` is :func:`place_thin_volume`'s: ``"fuse"`` returns the union
@@ -3860,10 +3861,23 @@ def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
     reaching a boundary leaves its clipped face exactly on the boundary's
     own facets (snapped onto their planes after meshing, defensively).
 
-    Returns ``(points, tets, cad_volume)`` — the assembly mesh in its own
-    numbering, and the CAD volume of the (clipped) pieces, against which the
-    meshed volume is gated (planar-faced solids mesh to their exact volume).
+    ``embed`` is the 2-D network lesson one dimension up: a sequence of
+    planar polygons (typically the patches themselves, un-thickened)
+    FRAGMENTED INTO the fused solid before meshing, so each becomes a
+    conforming interior surface of the band — the mid-surface a split
+    walks, at any width. Requires ``domain=None`` for now (an embedded
+    surface with an outcropping band would need the same clip — refused).
+
+    Returns ``(points, tets, cad_volume, embedded)`` — the assembly mesh
+    in its own numbering, the CAD volume of the (clipped) pieces against
+    which the meshed volume is gated (planar-faced solids mesh to their
+    exact volume), and per ``embed`` entry the ``(m, 3)`` triangles of
+    its embedded faces in assembly numbering (``None`` without ``embed``).
     """
+    if embed is not None and domain is not None:
+        raise NotImplementedError(
+            "embedded mid-surfaces with a domain clip (outcropping bands) "
+            "are not built yet — the surfaces would need the same clip.")
     import gmsh
 
     gmsh.initialize()
@@ -3899,6 +3913,23 @@ def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
             solids = [t for _d, t in gmsh.model.getEntities(3)]
             tool, planes = _occ_domain_3d(occ, dom_verts, dom_tris)
             occ.intersect([(3, t) for t in solids], [(3, tool)])
+        per_embed = None
+        if embed is not None:
+            occ.synchronize()
+            host = [t for _d, t in gmsh.model.getEntities(3)]
+            mids = []
+            for poly in embed:
+                Q = np.asarray(poly, dtype=float)
+                mpts = [occ.addPoint(*q) for q in Q]
+                mlines = [occ.addLine(mpts[i], mpts[(i + 1) % len(Q)])
+                          for i in range(len(Q))]
+                mids.append(occ.addPlaneSurface([occ.addCurveLoop(mlines)]))
+            _frag, frag_map = occ.fragment([(3, t) for t in host],
+                                           [(2, t) for t in mids])
+            # frag_map aligns with the input: host volumes first, then
+            # each mid-surface's descendants
+            per_embed = [[t for d, t in frag_map[len(host) + k] if d == 2]
+                         for k in range(len(mids))]
         occ.synchronize()
 
         vols = gmsh.model.getEntities(3)
@@ -3943,7 +3974,23 @@ def _occ_assembly_3d(patches, width, size, domain=None, assembly="fuse"):
             # band logic and the cap's node sharing need EXACT membership,
             # so snap defensively.
             xyz = _snap_to_boundary_3d(xyz, dom_verts, dom_tris, planes)
-        return xyz, tets, float(cad_volume)
+        embedded = None
+        if embed is not None:
+            embedded = []
+            for k, faces in enumerate(per_embed):
+                tris = []
+                for sf in faces:
+                    et, _ei, en = gmsh.model.mesh.getElements(2, sf)
+                    for ty, nodes in zip(et, en):
+                        if ty == 2:
+                            tris.append(np.array(
+                                [renum[int(x)] for x in nodes],
+                                dtype=np.int64).reshape(-1, 3))
+                if not tris:
+                    raise RuntimeError(
+                        f"embedded surface {k} meshed to no faces")
+                embedded.append(np.vstack(tris))
+        return xyz, tets, float(cad_volume), embedded
     finally:
         gmsh.finalize()
 
@@ -6673,7 +6720,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
 def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                       clearance=0.7, size=None, *, assembly="fuse",
-                      mesher=None, verbose=False):
+                      mesher=None, embed=None, verbose=False):
     """Embed a THIN VOLUME of the given width around each patch, junctions free.
 
     The finite-width fault representation: each planar patch is thickened by
@@ -6755,6 +6802,15 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         layers and split to tets, no remesh
         (:func:`_ladder_assembly_3d`). Ladder bands must lie inside the
         domain.
+    embed : sequence of array_like, keyword-only, 3-D ``mesher="network"``
+        Planar polygons FRAGMENTED INTO the fused band as conforming
+        interior surfaces — the mid-surfaces a split walks, at any width
+        (the 2-D network mesher's embedded spines, one dimension up).
+        Typically the un-expanded fault patches while ``patches`` carry
+        their margin-expanded bands. Interior assemblies only (no
+        outcrop clip yet). ``info["embedded_nodes"]`` returns one
+        ``(m, 3)`` node-coordinate array per entry — the point set
+        :func:`_label_mid_surface` labels a placed fault from.
     verbose : bool
         Report the counts.
 
@@ -6764,7 +6820,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         A new mesh with the assembly's cells embedded verbatim.
     info : dict
         Global counts: ``n_zone_cells``, ``n_skin_faces``, ``n_placed``
-        (vertices added), ``n_removed`` (vertices deleted), ``min_volume``.
+        (vertices added), ``n_removed`` (vertices deleted), ``min_volume``;
+        with ``embed``, also ``embedded_nodes``.
 
     Raises
     ------
@@ -6784,6 +6841,11 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if mesher not in (None, "ladder", "network"):
         raise ValueError(
             f"mesher must be None, 'ladder' or 'network', not {mesher!r}")
+    if embed is not None and mesher != "network":
+        raise ValueError(
+            "embed= belongs to mesher='network' (mid-surfaces fragmented "
+            "into the fused band); any other mesher would silently "
+            "ignore it.")
 
     if dm.getDimension() == 2:
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
@@ -6824,21 +6886,35 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     payload = None
     if comm.rank == 0:
         try:
+            embedded_nodes = None
             if mesher == "ladder":
                 # The extruded band: no CAD, no remesh — the sheet's own
                 # triangulation offset to prisms. Interior bands only
                 # (no domain clip); a protruding ladder fails the carve.
                 asm_pts, asm_tets = _ladder_assembly_3d(
                     patches[0][0], patches[0][1], width)
+            elif mesher == "network":
+                # fuse + embedded mid-surfaces (interior assemblies only):
+                # the fault surfaces become conforming faces of the band,
+                # so the split walks them at any width
+                asm_pts, asm_tets, _cad_vol, embedded = _occ_assembly_3d(
+                    patches, width, size, domain=None, assembly=assembly,
+                    embed=embed)
+                if embedded is not None:
+                    # coordinates, not indices: the imprint collapse below
+                    # may renumber, but interior points do not move
+                    embedded_nodes = [
+                        np.asarray(asm_pts[np.unique(t)], dtype=float)
+                        for t in embedded]
             else:
                 # The meshed-vs-CAD volume gate runs inside the assembly
                 # builder, before its boundary snap.
-                asm_pts, asm_tets, _cad_vol = _occ_assembly_3d(
+                asm_pts, asm_tets, _cad_vol, _no_embed = _occ_assembly_3d(
                     patches, width, size, domain=(dom_verts, dom_tris),
                     assembly=assembly)
             asm_pts, asm_tets = _collapse_boundary_imprints_3d(
                 asm_pts, asm_tets, dom_verts, dom_tris, 0.1 * size)
-            payload = (asm_pts, asm_tets)
+            payload = (asm_pts, asm_tets, embedded_nodes)
         # Exception, not just RuntimeError/ValueError: a raw gmsh error
         # (e.g. a PLC intersection) is a plain Exception, and an
         # uncaught raise on the surgery rank is a HANG for its peers —
@@ -6849,7 +6925,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     real = [f for f in failures if f]
     if real:
         raise RuntimeError(f"place_thin_volume assembly failed: {real[0]}")
-    asm_pts, asm_tets = comm.bcast(payload, root=0)
+    asm_pts, asm_tets, embedded_nodes = comm.bcast(payload, root=0)
     skin_xyz, skin_tris, skin_node_ids = _assembly_skin(asm_pts, asm_tets)
 
     # The outcrop band: the skin's trace on the domain boundary.
@@ -7237,6 +7313,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
             "n_placed": n_placed, "n_removed": n_removed,
             "n_trace_facets": int(len(band_idx)),
             "min_volume": float(min_vol[0])}
+    if embedded_nodes is not None:
+        info["embedded_nodes"] = embedded_nodes
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {info['n_zone_cells']} "
                   f"zone cells, {info['n_skin_faces']} skin faces; placed "
@@ -7337,15 +7415,22 @@ def _label_mid_surface(dm, spine_points, label, value):
             break
         for f in bad:
             del sel[f]
-    if not sel:
+    # Gather-first placement: the placed band lives on ONE rank, so the
+    # other ranks legitimately select no face. The refusal is judged on
+    # the GLOBAL count and raised collectively — a rank-local raise on
+    # an empty selection is a hang for the peers.
+    comm = dm.getComm().tompi4py()
+    n_global = int(comm.allreduce(len(sel)))
+    if n_global == 0:
         raise ValueError(
             f"no {label!r} faces survive on the mid-surface: the inset "
             f"leaves too small an interior (enlarge the sheet grid or "
             f"reduce inset_rings).")
     dm.createLabel(label)
+    lbl = dm.getLabel(label)
     for f in sel:
-        dm.getLabel(label).setValue(f, int(value))
-    return len(sel)
+        lbl.setValue(f, int(value))
+    return n_global
 
 
 def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,

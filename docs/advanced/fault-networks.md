@@ -256,17 +256,36 @@ directly. Place is currently OPT-IN for networks: on graded
 solve is pathological — an open operator-health work item; on uniform
 bases it is healthy.
 
+`build(width=...)` gives the 3-D network the same finite-width
+contract as 2-D: the margin-expanded patches are thickened by
+`±width/2` into ONE fused band (junctions free), and each un-expanded
+patch is embedded in the band as a conforming mid-surface — so the
+same mesh is cut and split (`realisation="split"`) or left whole for
+the volumetric weak plane (`realisation="ti"`), exactly as in 2-D.
+The honoured footprints are exact for planar patches (band cells
+within the patch's own in-plane outline and half a width of its
+plane), the weak-plane director is the patch normal, and `slips()`
+reports the plane form of each gauge: the tangential pair jump for
+the split, the in-plane velocity jump across the layer for the weak
+plane. Junction glue in 3-D remains `damage_yield`'s tubes about the
+junction segments — `junction_cells` is the 2-D ribbon rule and
+refuses in 3-D. Interior networks only: a band that reaches the
+domain boundary is refused loudly (its embedded mid-surface cannot
+yet be clipped against the boundary).
+
 v1 scope, refused loudly outside it: planar patches (the
 `rim_polygon` contract), convex rims, genuine X crossings (a
 near-miss — close but not crossing — is refused rather than guessed
-at); parallel MULTI-fault splitting (the pairing does not yet migrate
-through redistribution — single faults are parallel-validated).
+at). Multi-fault networks split and solve in parallel: `split_faults`
+redistributes ONCE, keyed on the union of the network's facets, and
+every split then runs with serial topology.
 
 ## Limitations
 
-- 3-D: planar convex patches, X crossings only, serial (above); the
-  weak-plane realisation is 2-D for now — place 3-D zones with
-  `place_thin_volume` directly.
+- 3-D: planar convex patches, X crossings only (above). Finite-width
+  bands are interior-only (an outcropping band is refused), and
+  `junction_cells` is the 2-D ribbon rule — 3-D junction glue is
+  `damage_yield`'s tubes.
 - One damage dial per network in `damage_yield` (per-junction values:
   build the expression with `uw.meshing.damage_zone_yield` directly).
 - Time-dependent damage (wear-in/healing) is study-level for now: see

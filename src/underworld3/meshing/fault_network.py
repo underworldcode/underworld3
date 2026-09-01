@@ -96,6 +96,34 @@ def _nearest_segment_normals(P, X):
     return np.column_stack([-T[:, 1], T[:, 0]])
 
 
+def _expand_convex_polygon(P, dist):
+    """Offset a convex planar polygon outward in its own plane: each edge
+    moves ``dist`` along its in-plane outward normal, adjacent edge lines
+    re-intersected — the 3-D tip margin (the band extends past the fault;
+    the mid-surface is the fault itself, honoured exactly)."""
+    P = np.asarray(P, dtype=float)
+    n_hat = np.cross(P[1] - P[0], P[2] - P[0])
+    n_hat /= np.linalg.norm(n_hat)
+    m = len(P)
+    anchors, dirs = [], []
+    for i in range(m):
+        e = P[(i + 1) % m] - P[i]
+        out_dir = np.cross(e, n_hat)
+        out_dir /= np.linalg.norm(out_dir)
+        anchors.append(P[i] + dist * out_dir)
+        dirs.append(e / np.linalg.norm(e))
+    out = np.empty_like(P)
+    for i in range(m):
+        # corner i: intersect edge line i-1 with edge line i (in-plane)
+        a0, d0 = anchors[i - 1], dirs[i - 1]
+        a1, d1 = anchors[i], dirs[i]
+        w = np.cross(d0, d1)
+        denom = float(w @ w)
+        t = float(np.cross(a1 - a0, d1) @ w) / denom
+        out[i] = a0 + t * d0
+    return out
+
+
 def _densify_polyline(E, piece, per_segment=4):
     """Points along an extended spine, ``per_segment`` per edge, each
     flagged as lying on a CUT — an edge whose two vertices belong to the
@@ -156,6 +184,7 @@ class FaultNetwork:
             raise ValueError(f"hierarchy names not in the network: "
                              f"{sorted(unknown)}")
         self.h_near = None
+        self.ligament = None
         self.prepared = None
         self.junctions = None
         self.report = None
@@ -184,6 +213,7 @@ class FaultNetwork:
         cut anywhere); the hierarchy handles everything else pairwise.
         """
         self.h_near = float(h)
+        self.ligament = float(ligament)
         if self.dim == 3:
             from .fault_network_3d import prepare_fault_surfaces
             if through:
@@ -251,13 +281,20 @@ class FaultNetwork:
         """
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
-        meshers = {2: ("network", "ladder"), 3: ("embed", "place")}[self.dim]
-        if mesher is None:
-            mesher = meshers[0]
-        if mesher not in meshers:
-            raise ValueError(
-                f"mesher must be one of {meshers} in {self.dim}-D, not "
-                f"{mesher!r}")
+        if self.dim == 3 and width is not None:
+            if mesher not in (None, "network"):
+                raise ValueError(
+                    "the 3-D band has one mesher, 'network' — the fused "
+                    f"band with embedded mid-surfaces — not {mesher!r}")
+        else:
+            meshers = {2: ("network", "ladder"),
+                       3: ("embed", "place")}[self.dim]
+            if mesher is None:
+                mesher = meshers[0]
+            if mesher not in meshers:
+                raise ValueError(
+                    f"mesher must be one of {meshers} in {self.dim}-D, "
+                    f"not {mesher!r}")
         if realisation not in ("split", "ti"):
             raise ValueError(
                 f"realisation must be 'split' or 'ti', not {realisation!r}")
@@ -269,17 +306,20 @@ class FaultNetwork:
         self.realisation = realisation
         self.width = None if width is None else float(width)
         if self.dim == 3:
+            if width is not None:
+                if base is not None:
+                    raise NotImplementedError(
+                        "the 3-D band builds its own base box; adapting "
+                        "a supplied base is not built yet")
+                return self._build_3d_band(
+                    h_far=h_far, qdegree=qdegree, realisation=realisation,
+                    margin_rings=margin_rings,
+                    carve_clearance=carve_clearance)
             if realisation != "split":
                 raise NotImplementedError(
-                    "the 3-D network builds the split realisation only; "
-                    "place the patches with place_thin_volume for a "
-                    "volumetric zone.")
-            if width is not None:
-                raise NotImplementedError(
-                    "the 3-D network does not place a band: its patches "
-                    "are meshed conforming (mesher='embed') or placed as "
-                    "sheets (mesher='place'), both of zero thickness. For "
-                    "a finite-width 3-D zone call place_thin_volume.")
+                    "a volumetric 3-D realisation is a LAYER: pass width= "
+                    "(the weak plane's thickness is constitutive, exactly "
+                    "as in 2-D).")
             return self._build_3d(h_far=h_far, qdegree=qdegree,
                                   mesher=mesher)
         from .cartesian import UnstructuredSimplexBox
@@ -424,6 +464,140 @@ class FaultNetwork:
                             if reach > 0 else rings)
             out.append((ends[0], ends[1]))
         return out
+
+    def _build_3d_band(self, h_far=None, qdegree=2, realisation="split",
+                       margin_rings=2, carve_clearance=0.3,
+                       minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0)):
+        """The finite-width 3-D network: ONE band, both realisations.
+
+        The prepared patches, expanded in-plane by the tip margin, are
+        thickened by ``±width/2`` and fused (junctions free); each
+        UN-expanded patch is embedded in the band as a conforming
+        mid-surface, so the same mesh is cut and split
+        (``realisation="split"``) or left whole for the weak plane
+        (``"ti"``) — the 2-D contract, one dimension up. Interior
+        networks only for now (an outcropping band cannot yet carry an
+        embedded mid-surface), and the MARGIN-EXPANDED band must clear
+        the walls by about a base cell for the carve to succeed —
+        shrink ``margin_rings`` or refine ``h_far`` when a patch sits
+        close to a boundary (the carve refuses loudly)."""
+        import underworld3 as uw
+        from enum import Enum
+        from underworld3.utilities.place_surface import (
+            place_thin_volume, _label_mid_surface, _cell_centroids_of)
+        from underworld3.utilities.custom_mg import adopt_hierarchy
+        from underworld3.utilities.fault_split import split_faults
+        from .cartesian import UnstructuredSimplexBox
+
+        h = self.h_near
+        h_far = 4.0 * h if h_far is None else float(h_far)
+        if self.junctions and float(margin_rings) > self.ligament - 0.5:
+            # the junction gap is PHYSICS (the intact ligament); the tip
+            # margin is convenience. A margin that reaches within half a
+            # cell of the gap welds the expanded bands at the junction
+            # line and the split then produces degenerate self-paired
+            # nodes there (measured: a bit-frozen residual floor).
+            raise ValueError(
+                f"margin_rings={float(margin_rings):g} closes the "
+                f"junction gap (ligament={self.ligament:g}): the "
+                "expanded bands weld at the junction and the split "
+                "degenerates. Keep margin_rings <= ligament - 0.5.")
+        base = UnstructuredSimplexBox(
+            cellSize=h_far, minCoords=minCoords, maxCoords=maxCoords,
+            refinement=1, qdegree=qdegree)
+        margin = float(margin_rings) * h
+        expanded = [_expand_convex_polygon(P, margin)
+                    for _n, P in self.prepared]
+        # interior networks only: an outcropping band cannot yet carry
+        # its embedded mid-surface (the surface would need the same
+        # boundary clip), so refuse before any meshing happens
+        lo = np.asarray(minCoords, dtype=float)
+        hi = np.asarray(maxCoords, dtype=float)
+        for (name, _P), E in zip(self.prepared, expanded):
+            n_hat = np.cross(E[1] - E[0], E[2] - E[0])
+            n_hat /= np.linalg.norm(n_hat)
+            slab = np.vstack([E + 0.5 * self.width * n_hat,
+                              E - 0.5 * self.width * n_hat])
+            if (slab <= lo).any() or (slab >= hi).any():
+                raise NotImplementedError(
+                    f"the band of {name!r} reaches the domain boundary; "
+                    "an outcropping 3-D band cannot yet carry its "
+                    "embedded mid-surface. Keep the network interior, "
+                    "or place the zone with place_thin_volume directly "
+                    "(no embed).")
+        dm, info = place_thin_volume(
+            base.dm, expanded, self.width, label="Band", label_value=71,
+            clearance=carve_clearance, size=h, mesher="network",
+            embed=[np.asarray(P, dtype=float) for _n, P in self.prepared])
+        values = {}
+        for k, (name, _P) in enumerate(self.prepared):
+            values[name] = 41 + k
+            n_faces = _label_mid_surface(dm, info["embedded_nodes"][k],
+                                         name, values[name])
+            if n_faces == 0:
+                raise RuntimeError(
+                    f"the embedded mid-surface of {name!r} labelled no "
+                    f"faces in the placed mesh")
+        members = [(b.name, b.value) for b in base.boundaries]
+        members += [(n, v) for n, v in values.items()]
+        mesh = uw.discretisation.Mesh(
+            dm, simplex=True, qdegree=qdegree,
+            coordinate_system_type=base.CoordinateSystem.coordinate_type,
+            boundaries=Enum("boundaries", members), verbose=False)
+        band = mesh.cells_labelled("Band", 71)
+        adopt_hierarchy(mesh, base, fac_zone=band)
+        if realisation == "split":
+            mesh = split_faults(mesh, [n for n, _P in self.prepared])
+            # reduce first, then branch: the defect must raise on every
+            # rank together or not at all
+            n_self = sum(1 for pairs in mesh._fault_point_pairs.values()
+                         for q, p in pairs.items() if q == p)
+            n_self = mesh.dm.comm.tompi4py().allreduce(n_self)
+            if n_self:
+                raise RuntimeError(
+                    f"the network split produced {n_self} self-paired "
+                    "node(s) — the embedded mid-surfaces are degenerate "
+                    "(a defect, not a configuration error).")
+            mesh._custom_mg_fac_zone = None   # a split fault needs no patch
+            band = mesh.cells_labelled("Band", 71)
+        # honoured footprints: band cells within the USER patch's own
+        # in-plane outline and half a width of its plane — planar patches
+        # make the rule exact; the expanded margin stays unpainted. Near a
+        # junction a cell can satisfy two patches' rules, so ownership is
+        # NEAREST PLANE among them (the 2-D nearest-spine ownership, one
+        # dimension up): footprints are disjoint and the weak-plane
+        # director is well-defined.
+        ids, cen = _cell_centroids_of(mesh.dm, band)
+        plane_dist = np.full((len(self.prepared), len(ids)), np.inf)
+        for j, (_name, P) in enumerate(self.prepared):
+            P = np.asarray(P, dtype=float)
+            n_hat = np.cross(P[1] - P[0], P[2] - P[0])
+            n_hat /= np.linalg.norm(n_hat)
+            d = (cen - P[0]) @ n_hat
+            inside = np.abs(d) <= 0.5 * self.width + 0.35 * h
+            in_plane = cen - np.outer(d, n_hat)
+            for i in range(len(P)):             # convex: inside every edge
+                e = P[(i + 1) % len(P)] - P[i]
+                out_dir = np.cross(e, n_hat)
+                out_dir /= np.linalg.norm(out_dir)
+                inside &= (in_plane - P[i]) @ out_dir <= 0.35 * h
+            plane_dist[j, inside] = np.abs(d[inside])
+        owner = np.argmin(plane_dist, axis=0)
+        owned = np.isfinite(plane_dist.min(axis=0))
+        footprints = {}
+        for j, (name, _P) in enumerate(self.prepared):
+            m = np.zeros_like(band)
+            m[ids[(owner == j) & owned]] = True
+            footprints[name] = m
+        self.info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
+                     "band": band, "footprints": footprints,
+                     "spacing": [h] * len(self.prepared),
+                     "width": float(self.width), "mesher": "network",
+                     "margin_rings": [(margin_rings, margin_rings)]
+                     * len(self.prepared)}
+        self.mesh = mesh
+        self._make_surfaces()
+        return self.mesh
 
     def _build_3d(self, h_far=None, qdegree=2, mesher="embed",
                   minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
@@ -779,7 +953,12 @@ class FaultNetwork:
             m_ = foots[name]                # there, so TI is isotropic
             if not m_.any():
                 continue
-            dvals[m_] = _nearest_segment_normals(P, cen[m_])
+            if dim == 3:                    # planar patch: ONE normal
+                P = np.asarray(P, dtype=float)
+                n_hat = np.cross(P[1] - P[0], P[2] - P[0])
+                dvals[m_] = n_hat / np.linalg.norm(n_hat)
+            else:
+                dvals[m_] = _nearest_segment_normals(P, cen[m_])
         ndir.array[...] = dvals.reshape(ndir.array.shape)
         self.ti = {"eta_1": eta1, "director": ndir, "footprint": foot}
         return eta1, ndir, foot
@@ -884,6 +1063,11 @@ class FaultNetwork:
             raise RuntimeError(
                 "junction cells are the SPLIT realisation's joints; the "
                 "weak plane has no cut to fall off")
+        if self.dim == 3:
+            raise NotImplementedError(
+                "junction_cells is the 2-D ribbon rule (spines and cut "
+                "chains); in 3-D place the junction glue with "
+                "damage_yield — tubes about the junction segments.")
         from underworld3.utilities.place_surface import _cell_centroids_of
 
         band = self.info["band"]
@@ -1086,18 +1270,37 @@ class FaultNetwork:
 
     def _slips_ti(self, solver):
         """The weak plane's slip: the tangential velocity jump across the
-        band, one half-width plus a cell either side of each spine."""
+        band, one half-width plus a cell either side of each spine (2-D)
+        or patch (3-D, where the jump is projected onto the plane)."""
         import underworld3 as uw
 
         if self.info is None:
             raise RuntimeError("no band on this mesh: build(width=...)")
         out = {}
         for k, (name, P) in enumerate(self.prepared):
-            P = np.asarray(P, dtype=float)[:, :2]
+            P = np.asarray(P, dtype=float)
+            skirt = 0.5 * self.width + float(self.info["spacing"][k])
+            if self.dim == 3:
+                # planar patch, one normal: probe the patch's own points
+                # (corners, edge midpoints, centroid) and keep the
+                # in-plane part of the jump — the plane form of the 2-D
+                # tangential projection
+                n_hat = np.cross(P[1] - P[0], P[2] - P[0])
+                n_hat /= np.linalg.norm(n_hat)
+                S = np.vstack([P, 0.5 * (P + np.roll(P, -1, axis=0)),
+                               P.mean(axis=0)])
+                vp = np.asarray(uw.function.evaluate(
+                    solver.u.sym, S + skirt * n_hat)).reshape(len(S), -1)
+                vm = np.asarray(uw.function.evaluate(
+                    solver.u.sym, S - skirt * n_hat)).reshape(len(S), -1)
+                dv = (vp - vm)[:, :3]
+                dv -= np.outer(dv @ n_hat, n_hat)
+                out[name] = float(np.linalg.norm(dv, axis=1).max())
+                continue
+            P = P[:, :2]
             t = np.gradient(P, axis=0)
             t /= np.linalg.norm(t, axis=1)[:, None]
             n = np.column_stack([-t[:, 1], t[:, 0]])
-            skirt = 0.5 * self.width + float(self.info["spacing"][k])
             vp = np.asarray(uw.function.evaluate(
                 solver.u.sym, P + skirt * n)).reshape(len(P), -1)[:, :2]
             vm = np.asarray(uw.function.evaluate(
