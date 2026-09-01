@@ -462,12 +462,14 @@ class FaultNetwork:
 
         if mesher == "embed":
             from .cartesian import BoxInternalPatch
+            from underworld3.utilities.fault_split import split_faults
             mesh = BoxInternalPatch(
                 cellSize=h_far, minCoords=minCoords, maxCoords=maxCoords,
                 patch_points=[(n, p) for n, p in self.prepared],
                 patch_cellSize=h, qdegree=qdegree)
-            for name, _p in self.prepared:
-                mesh = split_fault(mesh, name)
+            # ONE redistribution for the whole network, then serial-
+            # topology splits: a prior pairing never migrates
+            mesh = split_faults(mesh, [n for n, _p in self.prepared])
             self.mesh = mesh
             self._make_surfaces()
             return self.mesh
@@ -507,8 +509,8 @@ class FaultNetwork:
             # hierarchy as its coarse multigrid tail (the 2-D contract;
             # the split below still forfeits it — see add_fault).
             mesh = mesh.add_conforming_sheet(sp, st, n, clearance=clearance)
-        for n, _sp, _st in sheets:
-            mesh = split_fault(mesh, n)
+        from underworld3.utilities.fault_split import split_faults
+        mesh = split_faults(mesh, [n for n, _sp, _st in sheets])
         self.mesh = mesh
         self._make_surfaces()
         return self.mesh

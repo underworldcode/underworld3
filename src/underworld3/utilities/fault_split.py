@@ -1205,7 +1205,8 @@ def _fault_labels_touch_seam(dm, labels):
             if not (fS <= f < fE):
                 continue
             if shared[f - pStart] or any(
-                    shared[int(q) - pStart] for q in dm.getCone(f)):
+                    shared[int(q) - pStart]
+                    for q in dm.getTransitiveClosure(f)[0]):
                 touch = True
                 break
     return bool(uw.mpi.comm.allreduce(touch, op=MPI.LOR))
@@ -1321,6 +1322,44 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
     return work
 
 
+def split_faults(mesh, names, verbose=False):
+    """Split a NETWORK of already-labelled faults, any dimension, any np.
+
+    The parallel obstruction to sequential :func:`split_fault` calls is
+    the redistribution each one performs: a prior fault's pairing holds
+    point ids of the current distribution and cannot yet migrate. So the
+    network redistributes ONCE, keyed on the union of every fault's
+    facets (each star moves to the rank already owning most of it), and
+    every split that follows runs with serial topology — the same
+    pre-pass the 2-D ``add_fault`` performs for freshly cut chains, made
+    available for faults that already carry labels (the 3-D embedded
+    patches, a reloaded mesh).
+    """
+    import underworld3 as uw
+    from underworld3.discretisation import Mesh
+
+    out = mesh
+    if uw.mpi.size > 1:
+        labels = [(n, int(mesh.boundaries[n].value)) for n in names]
+        if _fault_labels_touch_seam(mesh.dm, labels):
+            dm = _redistribute_fault_interior(mesh.dm, labels,
+                                              verbose=verbose)
+            out = Mesh(dm, simplex=mesh.dm.isSimplex(),
+                       coordinate_system_type=(
+                           mesh.CoordinateSystem.coordinate_type),
+                       qdegree=mesh.qdegree, boundaries=mesh.boundaries,
+                       verbose=False)
+            out.parent = mesh
+            out._relationship_kind = "refinement"
+            out._refine_dofs_coincide = False
+            out.regions = mesh.regions
+            out._parent_mesh_version = mesh._mesh_version
+            mesh._registered_children.add(out)
+    for n in names:
+        out = split_fault(out, n, verbose=verbose)
+    return out
+
+
 def split_fault(mesh, name, orientation=None, verbose=False):
     """Split the nodes along the conforming surface ``name``; return the mesh.
 
@@ -1372,8 +1411,7 @@ def split_fault(mesh, name, orientation=None, verbose=False):
         # touches the seam, which is what lets add_fault's one-shot
         # union redistribution make every subsequent per-fault split a
         # no-move here. Both branches of the decision are collective.
-        if source_dm.getDimension() == 3 \
-                or _fault_labels_touch_seam(source_dm, labels):
+        if _fault_labels_touch_seam(source_dm, labels):
             if getattr(mesh, "_fault_point_pairs", {}):
                 # a prior fault's pairing holds point ids of the CURRENT
                 # distribution; redistribution renumbers every point, so
