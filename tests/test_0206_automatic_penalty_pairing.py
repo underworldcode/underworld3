@@ -70,9 +70,10 @@ def test_the_penalty_default_does_not_depend_on_the_preconditioner(monkeypatch):
     the solver means the preconditioner changes the answer, and `test_1017`,
     `test_0835` and `test_0836` all assert it does not.
 
-    The default is patched to a non-zero value for the duration, so the test
-    still means something while `DEFAULT_PENALTY` is held at 0 — otherwise it
-    would pass by comparing 0 to 0 however the value were chosen.
+    The default is patched to a value that is not the shipped one, so the test
+    cannot pass by accident if `DEFAULT_PENALTY` is ever changed to whatever is
+    asserted here — and could not pass by comparing 0 to 0 back when it shipped
+    at 0.
     """
     monkeypatch.setattr(uw.systems.Stokes, "DEFAULT_PENALTY", 7.0)
 
