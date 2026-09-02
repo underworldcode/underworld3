@@ -68,6 +68,59 @@ def test_simplex_geometry_is_reused_between_automatic_operations():
     ) is not first_rate
 
 
+def test_tetrahedron_streamline_length_is_geometry_invariant():
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0),
+        maxCoords=(1.0, 1.0, 1.0),
+        cellSize=1.0,
+        regular=True,
+    )
+    temperature = uw.discretisation.MeshVariable(
+        "T_tet_streamline", mesh, 1, degree=1
+    )
+    velocity_field = uw.discretisation.MeshVariable(
+        "U_tet_streamline", mesh, mesh.dim, degree=1
+    )
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity_field.sym,
+        time_integrator="citcoms",
+    )
+
+    lengths = np.array((2.0, 1.0, 0.5))
+    gradients = np.vstack((-1.0 / lengths, np.diag(1.0 / lengths)))[None, :, :]
+    velocity = np.array(((0.8, 0.3, 0.2),))
+    speed = np.linalg.norm(velocity, axis=1)
+    expected_length = speed / np.sum(velocity / lengths, axis=1)
+
+    directional_rate = thermal._streamline_directional_rate(
+        gradients, velocity
+    ).copy()
+    streamline_length = 2.0 * speed / directional_rate
+    np.testing.assert_allclose(streamline_length, expected_length)
+
+    permutation = (2, 0, 3, 1)
+    permuted_rate = thermal._streamline_directional_rate(
+        gradients[:, permutation, :], velocity
+    )
+    np.testing.assert_allclose(permuted_rate, directional_rate)
+
+    rotation = np.array(
+        (
+            (0.0, -1.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+    )
+    rotated_gradients = gradients @ rotation.T
+    rotated_velocity = velocity @ rotation.T
+    rotated_rate = thermal._streamline_directional_rate(
+        rotated_gradients, rotated_velocity
+    )
+    np.testing.assert_allclose(rotated_rate, directional_rate)
+
+
 def _high_peclet_solution(tau, name):
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),

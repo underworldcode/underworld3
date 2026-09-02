@@ -83,9 +83,14 @@ class SNES_AdvectionDiffusionSUPG(SNES_Diffusion):
     -----
     Automatic tau currently supports volume simplex meshes and scalar
     isotropic diffusivity. Supply ``tau`` explicitly for other meshes or
-    constitutive models. The default ``bdf`` integrator is implicit. The
-    ``citcoms`` integrator provides the continuous-P1 row-lumped
-    predictor-corrector used by CitcomS-style mantle-convection benchmarks.
+    constitutive models. Diffusion is deliberately excluded from the strong
+    SUPG residual and remains in the Galerkin flux. This is the low-order
+    CitcomS formulation used by the Zhong benchmark. Higher-order elements
+    with a nonzero element-interior diffusion residual require a separately
+    validated full-residual formulation. The default ``bdf`` integrator is
+    implicit. The ``citcoms`` integrator provides the continuous-P1
+    row-lumped predictor-corrector used by CitcomS-style mantle-convection
+    benchmarks.
     """
 
     @timing.routine_timer_decorator
