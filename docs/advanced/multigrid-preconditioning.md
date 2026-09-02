@@ -71,7 +71,8 @@ pc_mg_galerkin               = "both"        # RAP coarse operators (see below)
 mg_levels_ksp_type           = "chebyshev"
 mg_levels_pc_type            = "sor"
 mg_levels_ksp_max_it         = 4
-mg_coarse_pc_type            = "lu"          # direct coarse solve
+mg_coarse_pc_type            = "redundant"   # direct coarse solve, on every rank
+mg_coarse_redundant_pc_type  = "lu"
 ```
 
 **Why Galerkin coarse operators?** Underworld3 does not install
@@ -92,23 +93,138 @@ This is the key reason to prefer FMG when you adapt:
   GAMG on the next solve, so nothing breaks — you simply lose the geometric path
   until a hierarchy is available again.
 
-## Parallel coarse solve
+## The coarse level must be small, or the bottom solve stops being free
 
-The default coarse solver is a serial direct solve (`mg_coarse_pc_type = "lu"`),
-which is the fast, simple choice in serial and for modest core counts. For large
-parallel partitions, replicate or gather the (small) coarse grid instead:
+Multigrid is cheap because each level costs a fraction of the one above it, and
+the bottom of the hierarchy is solved **exactly** at negligible cost. The word
+doing the work in that sentence is *negligible*. A direct (or SVD) coarse solve
+is only free if the coarsest level is genuinely tiny; nothing in the method makes
+it so, and nothing warns you when it is not.
+
+### What the default does, and why
+
+The bundle sets a redundant direct solve:
 
 ```python
-# redundant: copy the coarse grid to every rank and solve it there
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "redundant"
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_redundant_pc_type"] = "lu"
+mg_coarse_pc_type            = "redundant"
+mg_coarse_redundant_pc_type  = "lu"
+```
 
-# or telescope onto a sub-communicator for very large runs
-# stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "telescope"
+`redundant` copies the whole coarse system to **every rank** and factors it
+there. For a genuinely small system that is the right trade: communicating
+across ranks to solve a few thousand unknowns collectively costs more than
+solving the same thing everywhere. It is also np-safe, which a bare `lu` is not
+— a serial LU cannot factor a distributed matrix and fails at `np > 1` with
+`DIVERGED_LINEAR_SOLVE` after zero iterations. In serial, `redundant` + `lu` is
+identical to `lu`.
+
+This is not an Underworld idiosyncrasy, and it is worth being clear about that
+before blaming the choice for a memory problem. **PETSc makes the same choice on
+its own.** With nothing set under `mg_coarse_*`, `PCSetUp_MG` selects
+`PCREDUNDANT` when the communicator has more than one rank and `PCLU` when it
+does not — its own source comment reads "coarse solve is (redundant) LU by
+default" (`src/ksp/pc/impls/mg/mg.c`). Confirmed by inspection at `np` = 1, 2
+and 4 on PETSc 3.25.
+
+Underworld sets it explicitly rather than inheriting it, so a bundle applied
+after another cannot pick up a sibling's leftover options (#468) — but the value
+is the one PETSc would have picked anyway. Deleting these keys and letting PETSc
+decide would change nothing here; the leverage is in the hierarchy, not the
+bottom solve.
+
+### The failure mode: replicated memory
+
+Because the factorization is replicated, its memory is paid **per rank**, and
+the total scales with the coarse system size *times* the core count. That is
+harmless for a small bottom level and fatal for a large one.
+
+Measured on Setonix (issue #644), a production model at `np = 30` under a
+900 MB/rank cgroup cap:
+
+| Base mesh | Refinement | Coarsest velocity DOFs | Peak RSS/rank | Linear solve |
+|---|---|---|---|---|
+| 10 km | 2 | 14,195 | **683 MB** — OOM killed | ~100 s |
+| 20 km | 3 | ~1,900 | **416 MB** | 111 s (+11%) |
+
+Both configurations have essentially the same *finest* grid (233k vs 227k
+velocity DOFs) and converge identically — the same SNES iteration sequence. The
+only real difference is how far down the hierarchy goes. Shrinking the coarsest
+level alone removed 261 MB/rank, which matches the gather-plus-fill arithmetic
+(~45 MB for the gathered copy, ~232 MB for the factor at a 5.16x fill ratio).
+
+### The fix is the hierarchy, not the coarse solver
+
+The instinct on an OOM is to reach for a different bottom solve. That treats the
+symptom. A 14,000-DOF coarsest level means the hierarchy was built from too fine
+a base with too few levels — the bottom of the ladder never got small, so the
+"solve the coarse problem exactly, for free" premise never held.
+
+Keep the finest resolution you need and add levels underneath it:
+
+```python
+# OOM: fine base, few levels -> the bottom is still large
+mesh = uw.meshing.UnstructuredSimplexBox(..., cellSize=0.10, refinement=2)
+
+# same finest grid, one more level, a much smaller bottom
+mesh = uw.meshing.UnstructuredSimplexBox(..., cellSize=0.20, refinement=3)
+```
+
+Each refinement level divides cell size by two, so in 2-D the level above has
+about 4x the cells (8x in 3-D). Doubling the base cell size and adding one level
+therefore lands on the same finest grid while making every coarser level — the
+bottom one included — about 4x (or 8x) smaller.
+
+Check what you actually built rather than assuming; `dm_hierarchy[0]` is the
+coarsest level and `[-1]` is the mesh you solve on:
+
+```python
+for i, dm in enumerate(mesh.dm_hierarchy):
+    cells = uw.mpi.comm.allreduce(dm.getStratumSize("depth", mesh.dim))
+    uw.pprint(f"level {i}: {cells} cells")
+```
+
+As a rule of thumb, aim for a coarsest level in the low thousands of DOFs or
+fewer. If it runs to five figures, add a level rather than changing the bottom
+solve.
+
+### When the coarse operator has a null space: SVD
+
+One case does require overriding the bottom solve. A **rotated** velocity block
+whose domain leaves rigid rotations free — a closed circle (one mode), a
+spherical shell (three) — hands those modes to the Galerkin-coarsened coarse
+operator, because the rotations survive the constraint. `redundant`/LU hits a
+zero pivot on a singular coarse operator and fails with `SUBPC_ERROR` (outer
+reason `-11`). SVD is null-space robust:
+
+```python
+from underworld3.utilities.multigrid_options import geometric_mg_bundle
+
+geometric_mg_bundle(coarse="svd")    # null-space-robust bottom solve
+```
+
+The solver already does this for you, and it is deliberately **not** a blanket
+choice for every rotated problem. It keys on the count of *verified rotation*
+modes, because a rotated problem with Dirichlet walls, or a split-fault contact
+box, has none — and there an SVD is pure cost. A 3-D P2 coarse level is a
+**dense** factorization: measured, it accounted for most of ~0.8 s per V-cycle
+application at healthy iteration counts (#622).
+
+Two things follow. Do not reach for `svd` because a problem is "rotated"; reach
+for it when the bottom solve reports a zero pivot. And because SVD is dense, it
+is affordable only on a genuinely small coarse level — which makes the sizing
+guidance above a hard requirement on this path rather than a preference.
+
+### Very large partitions: telescope
+
+For core counts where even a small coarse system is replicated too many times,
+gather it onto a sub-communicator instead of onto every rank:
+
+```python
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "telescope"
 ```
 
 Because `"auto"` does not overwrite options you set yourself, you can keep
-`preconditioner = "auto"` and just override the coarse solver as above.
+`preconditioner = "auto"` and override just the coarse solver.
 
 ## Benchmark: FMG vs GAMG on a deforming adaptive mesh
 
