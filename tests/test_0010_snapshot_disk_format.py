@@ -224,6 +224,28 @@ def test_write_snapshot_produces_wrapper_and_bulk_dir(tmp_path):
             assert variable_name in h5["uw_checkpoint"]
 
 
+def test_snapshot_bulk_filenames_do_not_expand_loaded_mesh_name(tmp_path):
+    """A source pathname remains metadata, not a PETSc bulk filename."""
+    import h5py
+    import os
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    mesh.name = "/g/data/project/user/" + "nested_directory/" * 12 + "mesh.msh.h5"
+
+    path = str(tmp_path / "compact.snap.h5")
+    model.save_state(file=path)
+
+    bulk = str(tmp_path / "compact.snap.bulk")
+    files = sorted(os.listdir(bulk))
+    assert files
+    assert all(filename.startswith("mesh_0000.") for filename in files)
+    assert max(map(len, files)) < 64
+
+    with h5py.File(path, "r") as h5:
+        assert list(h5["meshes"]) == ["mesh_0000"]
+        assert h5["meshes"]["mesh_0000"].attrs["name"] == mesh.name
+
+
 def test_write_snapshot_populates_wrapper_layout(tmp_path):
     """The wrapper carries the per-mesh + per-variable metadata that
     makes 'what's in this snapshot?' answerable from h5py alone."""
