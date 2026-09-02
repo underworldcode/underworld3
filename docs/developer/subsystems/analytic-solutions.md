@@ -990,7 +990,7 @@ are under `.self_gravity`. Velocity is unchanged by that postprocessing.
 
 ### Validation
 
-`tests/test_1029_analytic_zhong2008.py` checks every parenthesized analytical
+`tests/test_1030_analytic_zhong2008.py` checks every parenthesized analytical
 entry in Zhong et al. (2008) Tables 2 and 3: three load depths, four harmonic
 degrees, isoviscous and `10^4`-lid cases, and eight response quantities per
 case. The 192 comparisons agree within the precision printed in the paper. The

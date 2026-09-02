@@ -1058,18 +1058,40 @@ def fault_normal_traction(solver, boundary, solve_result):
     return s_coord[order], sig[order]
 
 
-def fault_pair_jumps(solver, boundary, solve_result):
+def fault_pair_jumps(solver, boundary, solve_result, gather=False):
     """The velocity jump at every coincident pair, from the solve.
 
-    Returns ``(coords, jumps, normals)`` on this rank — the pair position,
-    the full jump vector :math:`v^+ - v^-`, and the fault unit normal —
-    in any dimension. Reads the composite solution ``solve_result["U"]``
+    Returns ``(coords, jumps, normals)`` — the pair position, the full
+    jump vector :math:`v^+ - v^-`, and the fault unit normal — in any
+    dimension. Reads the composite solution ``solve_result["U"]``
     through the pairing, which is the only correct route: the pair
     coordinates are identical, so field queries by position see one side
     only. The tangential part of the jump is the slip (a scalar against
     the in-fault tangent in 2-D, an in-plane vector in 3-D); the normal
     part is the leak, held at machine zero by the strong constraint.
+
+    The pairs are rank-local (the split keeps a fault rank-interior), so
+    a rank without the fault returns empty arrays. ``gather=True``
+    all-gathers the three arrays so every rank holds the whole fault —
+    the form a diagnostic that goes on to make collective calls
+    (``evaluate``, a write) must use, or the ranks diverge and hang.
     """
+    coords, jumps, normals = _fault_pair_jumps_local(solver, boundary,
+                                                     solve_result)
+    if not gather:
+        return coords, jumps, normals
+    comm = solver.mesh.dm.comm.tompi4py()
+    if comm.size == 1:
+        return coords, jumps, normals
+    dim = solver.mesh.dim
+    parts = comm.allgather((np.asarray(coords, dtype=float).reshape(-1, dim),
+                            np.asarray(jumps, dtype=float).reshape(-1, dim),
+                            np.asarray(normals, dtype=float).reshape(-1, dim)))
+    return tuple(np.vstack([p[k] for p in parts]) for k in range(3))
+
+
+def _fault_pair_jumps_local(solver, boundary, solve_result):
+    """The rank-local half of :func:`fault_pair_jumps`."""
     dm = solver.dm
     dim = solver.mesh.dim
     lsec = dm.getLocalSection()
