@@ -2984,15 +2984,25 @@ def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
             for j, (nj, pj, _cj) in enumerate(traces):
                 if j == i:
                     continue
-                if dist_to(P, pj) >= lig:
+                d0 = dist_to(P, pj)
+                if d0 >= lig:
                     continue
                 if any(abs(arc - arc_end) < 4.0 * lig for arc, _ in ci):
                     continue                    # already handled above
-                pull = lig
-                for _ in range(5):
+                # Pull back by the clearance DEFICIT, not a whole ligament:
+                # the join should be as small as the mesh allows. When the
+                # other trace's END is the near part (two ends facing each
+                # other), each side yields half — the other end is pulled
+                # by its own pass below.
+                facing = (dist_to(pj[0], pi) < lig
+                          or dist_to(pj[-1], pi) < lig)
+                share = 0.5 if facing else 1.0
+                target = d0 + share * (lig - d0)
+                pull = share * (lig - d0)
+                for _ in range(6):
                     s_q = arc_end + pull if arc_end < 1e-12 \
                         else arc_end - pull
-                    if dist_to(_point_at_arc(pi, s_q), pj) >= lig:
+                    if dist_to(_point_at_arc(pi, s_q), pj) >= target:
                         break
                     pull *= 1.6
                 ci.append((arc_end, pull))
