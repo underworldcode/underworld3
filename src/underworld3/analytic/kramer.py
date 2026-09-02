@@ -266,16 +266,16 @@ class CylindricalStokes(AnalyticSolution):
         to use" section of ``docs/developer/subsystems/rotated-freeslip.md``.
         """
 
+        # The pressure nullspace belongs to the DOMAIN, not to the wall type.
+        # Both cases here are an enclosed annulus — velocity prescribed
+        # everywhere on both arcs, or wall-normal flow zero on both — so in
+        # either the pressure is determined only up to a constant and the
+        # nullspace has to be removed. It used to be set after an early
+        # `return` that the zero-slip branch took, so that case ran a singular
+        # saddle and could return a quiet, wrong answer (#577).
         if self.boundary == "zero":
-            # TODO(BUG): issue #577 — the zero-slip case leaves the pressure
-            # nullspace in place, where every other enclosed case in the suite
-            # removes it. An annulus with both arcs held at zero velocity is
-            # enclosed, so its pressure is determined only up to a constant and
-            # a direct solve on the singular saddle can return a quiet, wrong
-            # answer. Preserved here because this refactor is
-            # behaviour-preserving by contract; fix it under its own test.
             prescribed_velocity(solver, self.boundaries, (0.0, 0.0))
-            return
+        else:
+            free_slip(solver, self.boundaries)
 
-        free_slip(solver, self.boundaries)
         solver.petsc_use_pressure_nullspace = True

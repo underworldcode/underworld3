@@ -5,7 +5,7 @@ solutions, not the CitcomS finite-element results.  This test pins every
 published propagator row so a sign, stress scaling, layer-order, or self-gravity
 regression cannot hide behind agreement with one selected case.
 
-Run: pixi run python -m pytest tests/test_1029_analytic_zhong2008.py -v
+Run: pixi run python -m pytest tests/test_1030_analytic_zhong2008.py -v
 """
 
 import numpy as np

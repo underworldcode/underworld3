@@ -114,9 +114,17 @@ def test_sub_solve_gauge_sees_work_the_outer_count_cannot(guarded):
 
 def test_first_solve_admits_its_count_is_a_lower_bound():
     """A fresh solver cannot see the fieldsplit blocks until PETSc has set up the
-    preconditioner, part-way through its first solve. The count that results is short —
-    measured, by about half — so the report must say so rather than pass it off as
-    exact."""
+    preconditioner, part-way through its first solve. Whatever the monitor
+    catches is therefore a LOWER BOUND, and the report must say so rather than
+    pass it off as exact.
+
+    The bound is allowed to be TIGHT. Under the left-preconditioned gmres
+    outer this test grew up with, one full preconditioner application ran
+    before the first monitor fired and the count was short by about half. The
+    right-preconditioned fgmres outer (#576/#624) forms the unpreconditioned
+    residual first, so nothing runs before attachment and the first count can
+    equal the exact one — the CONTRACT is second >= first plus the honesty
+    flag, not a strict undercount."""
     solver, _ = _stokes("lb", lambda v: 1.0)
     solver.solve()
     first = solver.solve_report.sub["velocity"]
@@ -125,9 +133,9 @@ def test_first_solve_admits_its_count_is_a_lower_bound():
 
     assert not first.complete, "the first solve claimed an exact count it cannot have"
     assert second.complete
-    assert second.its > first.its, (
-        "the first solve should undercount; if it does not, the 'lower bound' contract "
-        "is either wrong or no longer needed"
+    assert second.its >= first.its, (
+        "the first solve reported MORE work than the complete count that "
+        "follows it, so it is not a lower bound at all"
     )
 
 

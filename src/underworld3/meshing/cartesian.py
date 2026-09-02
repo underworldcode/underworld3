@@ -1427,7 +1427,16 @@ def StructuredQuadBox(
         if uw.mpi.rank == 0:
             os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f"{mesh_file_dir()}/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
+        # `elementRes` is part of the name because it is part of the mesh.
+        # Without it every StructuredQuadBox on the same box — 16x16, 32x32,
+        # a resolution sweep — writes and reads ONE path, so two processes at
+        # different resolutions race on it and one reads the other's mesh
+        # (#618). The annulus already carries its cell size for this reason:
+        # `uw_annulus_ro1.0_ri0.5_csize0.05.msh`.
+        uw_filename = (
+            f"{mesh_file_dir()}/uw_structuredQuadBox_minC{minCoords}"
+            f"_maxC{maxCoords}_res{tuple(elementRes)}.msh"
+        )
     else:
         uw_filename = filename
 

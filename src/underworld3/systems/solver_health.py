@@ -60,6 +60,10 @@ from petsc4py import PETSc
 
 # Marking the sub-preconditioner failed is the whole point -- see the module docstring.
 _DEADLINE_REASON = PETSc.KSP.ConvergedReason.DIVERGED_BREAKDOWN
+#: A solve that stopped because it ran out of iterations, not because it
+#: converged. PETSc's KSPCheckSolve deliberately does NOT treat this as a
+#: failure for a sub-KSP, which is exactly why it goes unnoticed.
+_CAPPED_REASON = PETSc.KSP.ConvergedReason.DIVERGED_MAX_IT
 
 # KSP types whose behaviour changes when a monitor is attached (both are gated on
 # ksp->numbermonitors in PETSc): preonly.c computes norms it would otherwise skip, and
@@ -85,6 +89,18 @@ class SubSolveReport:
         work axis.
     applications
         Number of times the sub-solve ran during the outer solve.
+    capped
+        How many of those applications ended at the block's iteration cap
+        (``KSP_DIVERGED_MAX_IT``) rather than at its tolerance. **Non-zero means
+        the block did not solve.** It matters far more than it looks: the Schur
+        operator ``S = -B A^-1 B^T`` is applied *through* the velocity solve, so
+        a capped velocity block hands the pressure Krylov an operator that moves
+        between applications, and no Krylov method converges against that. Every
+        expensive pathology measured in #625 was a cap — the pressure block, the
+        velocity block beneath it, and the velocity block again under
+        augmentation. Measured: raising only ``fieldsplit_velocity_ksp_max_it``
+        from 200 to 5000 took one solve from 976 s to 25.6 s with an identical
+        answer.
     complete
         ``False`` when the block was instrumented *during* this solve rather than
         before it, which happens on a solver's very first solve: the fieldsplit blocks
@@ -99,9 +115,11 @@ class SubSolveReport:
     its: int
     applications: int
     complete: bool = True
+    capped: int = 0
 
     def __str__(self) -> str:
         return (f"{self.name}: {self.its} its / {self.applications} applications"
+                + (f" — {self.capped} AT THE ITERATION CAP" if self.capped else "")
                 + ("" if self.complete else " (lower bound)"))
 
 
@@ -129,20 +147,33 @@ class _InstrumentedKSP:
         self.name = name
         self.its = 0
         self.applications = 0
+        self.capped = 0
         self.complete = not mid_solve
         self._instrumentation = instrumentation
         self.is_outer = is_outer
         self._test_installed = False
         ksp.setMonitor(self._monitor)
+        # The REASON, not an iteration count compared against the cap: a solve
+        # that happens to converge on its last permitted iteration is converged,
+        # and counting would call it capped. A post-solve hook is the only place
+        # the per-application reason can be read before the next solve resets it.
+        ksp.setPostSolve(self._after_application)
 
     def reset(self):
         self.its = 0
         self.applications = 0
+        self.capped = 0
         self.complete = True          # attached before this solve began
 
     def report(self):
         return SubSolveReport(name=self.name, its=self.its,
-                              applications=self.applications, complete=self.complete)
+                              applications=self.applications,
+                              complete=self.complete, capped=self.capped)
+
+    def _after_application(self, ksp, rhs, x):
+        """Record whether this application ran out of iterations."""
+        if ksp.getConvergedReason() == _CAPPED_REASON:
+            self.capped += 1
 
     def _monitor(self, ksp, its, rnorm):
         # PETSc calls the monitor once per iteration including iteration 0, which
