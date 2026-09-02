@@ -8137,7 +8137,10 @@ class Mesh(Stateful, uw_object):
         fault is one open polyline with both tips strictly inside the
         domain; segments must not share vertices, so branches and
         crossings are represented as OFFSET segments (a one-to-two-cell
-        ligament). The result is standalone — no geometric-MG tail, since
+        ligament). The result inherits a MESH-OWNED geometric-MG tail (the
+        parent's coarse levels, the cut mesh finest — a cut is the same
+        grid re-represented); a parent without one yields a standalone
+        mesh — no tail, since
         the coarse levels do not carry the fault (see
         :meth:`add_conforming_surface`); solvers take their
         algebraic-multigrid defaults.
@@ -8146,7 +8149,23 @@ class Mesh(Stateful, uw_object):
         and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
         """
         from underworld3.utilities.fault_split import add_fault
-        return add_fault(self, faults, verbose=verbose)
+        child = add_fault(self, faults, verbose=verbose)
+        # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
+        # re-represents the same grid with the surface conformed (finer only
+        # by the duplicated vertices), so the parent's coarse levels serve
+        # unchanged with the cut mesh as the finest level — the coarse
+        # levels do not need the fault (#620/#629). Without this every
+        # solver on a split mesh fell to GAMG unless it called
+        # set_custom_fmg by hand. The FAC zone is NOT inherited: a split
+        # fault needs no patch (the keying ruling).
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        if (own_tail is not None
+                and getattr(child, "_custom_mg_coarse_meshes", None) is None):
+            child._custom_mg_coarse_meshes = list(own_tail)
+            child._custom_mg_builder = getattr(self, "_custom_mg_builder",
+                                               "barycentric")
+            child._custom_mg_fac_zone = None
+        return child
 
 
     def adapt(self, metric_field, max_levels=None, node_budget=None,
