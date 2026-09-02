@@ -1,17 +1,36 @@
 """The user-facing 2-D fault-network toolkit.
 
+A fault is specified ONCE — a trace, its place in the hierarchy, and
+the properties it carries — and then realised. The realisation is a
+keyword, not a different subsystem: the same specification, the same
+prepared pieces and the same meshed band become either a cut with
+node-pair contact (``realisation="split"``) or a volumetric weak plane
+(``realisation="ti"``). The band carries the fault's own points and
+segments as mesh vertices and edges, so it can be cut whatever its
+width — the choice of realisation is not constrained by the mesh.
+What differs is what the width MEANS: for the split it is a resolution
+parameter that gives the cut its vertices, while for the weak plane it
+is constitutive (``V = 2 e_nt w``) and wants two or three elements
+across it.
+
 One object carries the validated network recipe end to end:
 
 1. **Hierarchy-respecting junction preparation** — where faults cross
    or abut, the junior trace is severed and pulled back a short
    ligament; the senior runs through (:func:`prepare_fault_network`).
 2. **Network-refined meshing** — a graded mesh following every trace,
-   then split-node faults cut along the prepared pieces.
-3. **Contact** — the no-opening pair constraint on every piece.
+   then one ribbon band placed along every prepared piece, cut or left
+   whole according to the realisation.
+3. **Imposition** — :meth:`FaultNetwork.apply` gives the solver the
+   no-opening pair constraint, or the weak-plane rheology.
 4. **Damage-zone glue** — small viscoplastic plugs at the junctions
    connect the network mechanically; the stress lobes of the abutting
    tips decide how slip transfers, no reconnection geometry is ever
    prescribed.
+5. **Fault-attached properties** — :meth:`FaultNetwork.surface` returns
+   the retained :class:`~underworld3.meshing.surfaces.Surface` for a
+   piece; friction, accumulated slip and damage live there, on the
+   fault, and outlive any one realisation of it.
 
 The dials encode the measured rulings (2026-08): junction gaps of one
 or two elements transmit slip within a few percent of a continuous
@@ -29,7 +48,7 @@ Example
 >>> net = uw.meshing.FaultNetwork(
 ...     [("Main", main_pts), ("Splay", splay_pts)],
 ...     hierarchy=["Main", "Splay"])          # Main severs Splay
->>> mesh = net.prepare(h=0.006).build()
+>>> mesh = net.prepare(h=0.006).build(width=0.01)   # realisation="split"
 >>> stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 >>> stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
 >>> stokes.constitutive_model.yield_mode = "min"
@@ -37,11 +56,18 @@ Example
 >>> stokes.constitutive_model.Parameters.yield_stress = \\
 ...     net.damage_yield(v, dial=0.05)
 >>> stokes.consistent_jacobian = True
->>> net.apply_contact(stokes)
+>>> net.apply(stokes)
 >>> # ... boundary conditions ...
 >>> info = net.solve(stokes)
 >>> net.slips(stokes)
 {'Main': 0.14, 'Splay_1': 0.05, 'Splay_2': 0.04}
+
+The same specification as a weak plane — one keyword, one more
+constitutive number, everything else unchanged::
+
+>>> mesh = net.prepare(h=0.006).build(width=0.01, realisation="ti")
+>>> net.apply(stokes, eta_1=0.01)
+>>> net.slips(stokes)                  # the layer's own throughput
 """
 
 import numpy as np
@@ -49,6 +75,86 @@ import sympy
 
 from .surfaces import Surface, prepare_fault_network
 from .faults import FaultSurface
+
+
+def _nearest_segment_normals(P, X):
+    """Unit normal of the polyline segment nearest to each point of ``X``.
+
+    The director of a weak plane, cell by cell: a curved trace has no one
+    orientation, and the nearest SEGMENT is the piece of fault the cell
+    actually lies against. 2-D; ``P`` is ``(n, 2)`` and ``X`` ``(m, 2)``.
+    """
+    P = np.asarray(P, dtype=float)[:, :2]
+    X = np.asarray(X, dtype=float)[:, :2]
+    A, D = P[:-1], np.diff(P, axis=0)
+    L2 = np.maximum(np.einsum("sj,sj->s", D, D), 1e-300)
+    W = X[:, None, :] - A[None, :, :]
+    t = np.clip(np.einsum("psj,sj->ps", W, D) / L2[None, :], 0.0, 1.0)
+    R = W - t[:, :, None] * D[None, :, :]
+    k = np.argmin(np.einsum("psj,psj->ps", R, R), axis=1)
+    T = D[k] / np.sqrt(L2[k])[:, None]
+    return np.column_stack([-T[:, 1], T[:, 0]])
+
+
+def _patch_normal(P):
+    """Unit normal of a planar polygon by Newell's method — robust to
+    collinear leading vertices, which a clipped rim can carry (the
+    two-edge cross product is not)."""
+    P = np.asarray(P, dtype=float)
+    n = np.cross(P, np.roll(P, -1, axis=0)).sum(axis=0)
+    norm = float(np.linalg.norm(n))
+    if norm == 0.0:
+        raise ValueError("degenerate patch: the rim spans no plane")
+    return n / norm
+
+
+def _expand_convex_polygon(P, dist):
+    """Offset a convex planar polygon outward in its own plane: each edge
+    moves ``dist`` along its in-plane outward normal, adjacent edge lines
+    re-intersected — the 3-D tip margin (the band extends past the fault;
+    the mid-surface is the fault itself, honoured exactly)."""
+    P = np.asarray(P, dtype=float)
+    n_hat = _patch_normal(P)
+    m = len(P)
+    anchors, dirs = [], []
+    for i in range(m):
+        e = P[(i + 1) % m] - P[i]
+        out_dir = np.cross(e, n_hat)
+        out_dir /= np.linalg.norm(out_dir)
+        anchors.append(P[i] + dist * out_dir)
+        dirs.append(e / np.linalg.norm(e))
+    out = np.empty_like(P)
+    for i in range(m):
+        # corner i: intersect edge line i-1 with edge line i (in-plane)
+        a0, d0 = anchors[i - 1], dirs[i - 1]
+        a1, d1 = anchors[i], dirs[i]
+        w = np.cross(d0, d1)
+        denom = float(w @ w)
+        if denom < 1e-24:
+            # collinear adjacent edges (a clipped rim keeps such
+            # points): both edges offset onto one line, and the corner
+            # is simply the offset point itself
+            out[i] = a1
+            continue
+        t = float(np.cross(a1 - a0, d1) @ w) / denom
+        out[i] = a0 + t * d0
+    return out
+
+
+def _densify_polyline(E, piece, per_segment=4):
+    """Points along an extended spine, ``per_segment`` per edge, each
+    flagged as lying on a CUT — an edge whose two vertices belong to the
+    same cut piece (``piece`` is the piece index per vertex of ``E``;
+    -1 for margin and gap vertices)."""
+    E = np.asarray(E, dtype=float)
+    piece = np.asarray(piece)
+    f = np.linspace(0.0, 1.0, per_segment, endpoint=False)
+    Q = (E[:-1, None, :] + f[None, :, None] * np.diff(E, axis=0)[:, None, :])
+    Q = np.vstack([Q.reshape(-1, E.shape[1]), E[-1:]])
+    edge_on_cut = (piece[:-1] == piece[1:]) & (piece[:-1] >= 0)
+    on_cut = np.concatenate([np.repeat(edge_on_cut, per_segment),
+                             [False]])
+    return Q, on_cut
 
 
 class FaultNetwork:
@@ -95,10 +201,22 @@ class FaultNetwork:
             raise ValueError(f"hierarchy names not in the network: "
                              f"{sorted(unknown)}")
         self.h_near = None
+        self.ligament = None
         self.prepared = None
         self.junctions = None
         self.report = None
         self.mesh = None
+        # the realisation state, set by build()
+        self.realisation = None
+        self.width = None
+        self.info = None
+        self.fault_surfaces = {}
+        self.ti = None
+        self.glue = None
+        self.margin_rings = None
+        self.spines = None            # (name, polyline, piece index per vertex)
+        self._eta0_var = None
+        self._band_yield_var = None
 
     # ------------------------------------------------------------------
     def prepare(self, h, ligament=2.0, through=None, verbose=True):
@@ -112,6 +230,7 @@ class FaultNetwork:
         cut anywhere); the hierarchy handles everything else pairwise.
         """
         self.h_near = float(h)
+        self.ligament = float(ligament)
         if self.dim == 3:
             from .fault_network_3d import prepare_fault_surfaces
             if through:
@@ -132,18 +251,89 @@ class FaultNetwork:
 
     # ------------------------------------------------------------------
     def build(self, base=None, h_far=None, band=0.03, ramp=0.08,
-              max_levels=2, qdegree=2, mesher="embed"):
+              max_levels=2, qdegree=2, mesher=None,
+              width=None, realisation="split",
+              margin_rings=2, carve_clearance=0.3):
         """Mesh the network: graded refinement along every RAW trace,
-        then split-node faults along the PREPARED pieces.
+        then the chosen REALISATION of the faults on that mesh.
 
         ``base`` is an existing coarse mesh to adapt (default: a unit
         ``UnstructuredSimplexBox`` at ``h_far = 4 h``); the refinement
         holds ``h`` within ``band`` of any trace and grades to
         ``h_far`` over ``ramp``.
+
+        ``width`` is the fault band's thickness. Give it and the network
+        is placed as a ribbon band (2-D) that both realisations share:
+        the SAME mesh is cut and split (``realisation="split"``) or left
+        whole for a volumetric weak-plane rheology
+        (``realisation="ti"``), which is what makes the two comparable.
+        What ``width`` MEANS differs: for the split it is a resolution
+        parameter — the band exists to give the cut its own vertices —
+        while for TI it is constitutive, the layer thickness that sets
+        the slip rate ``V = 2 e_nt w``, so it wants two or three elements
+        across it. The width does NOT decide whether the fault can be
+        cut: the band is meshed around the trace's own points and
+        segments, so the cut chain is part of the mesh by construction at
+        any width (measured to ``w = h_far / 10``; see
+        ``~/+Simulations/fault_split_at_ti_width``).
+
+        ``carve_clearance`` sizes the cells cleared around the ribbons
+        before they are meshed in. On a graded base (``max_levels > 0``
+        refining toward the traces) the default can fail to leave one
+        simple cavity at fine widths; raise it (1.0 worked where 0.3 did
+        not) or build on the uniform base with ``max_levels=0``.
+
+        ``width=None`` keeps the original no-band path: graded refinement
+        cut directly. It is split-only, and its mesh is NOT the one a TI
+        run would use, so do not compare the two across that choice.
+
+        ``mesher`` picks how the fault is meshed into the mesh, from
+        the choices that dimension offers. In 2-D: ``"network"``
+        (default) places every strand in one fused call, so strands may
+        touch, and ``"ladder"`` places them sequentially and lets placed
+        levels nest (see
+        :func:`~underworld3.utilities.place_surface.place_fault_ribbon_2d`).
+        In 3-D: ``"embed"`` (default) and ``"place"``, described in
+        :meth:`_build_3d`.
         """
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
+        if self.dim == 3 and width is not None:
+            if mesher not in (None, "network"):
+                raise ValueError(
+                    "the 3-D band has one mesher, 'network' — the fused "
+                    f"band with embedded mid-surfaces — not {mesher!r}")
+        else:
+            meshers = {2: ("network", "ladder"),
+                       3: ("embed", "place")}[self.dim]
+            if mesher is None:
+                mesher = meshers[0]
+            if mesher not in meshers:
+                raise ValueError(
+                    f"mesher must be one of {meshers} in {self.dim}-D, "
+                    f"not {mesher!r}")
+        if realisation not in ("split", "ti"):
+            raise ValueError(
+                f"realisation must be 'split' or 'ti', not {realisation!r}")
+        if realisation == "ti" and width is None:
+            raise ValueError(
+                "realisation='ti' needs width=: the weak plane is a LAYER, "
+                "and its thickness is constitutive (V = 2 e_nt w). Pass the "
+                "band width you intend to resolve.")
+        self.realisation = realisation
+        self.width = None if width is None else float(width)
         if self.dim == 3:
+            if width is not None:
+                if base is not None:
+                    raise NotImplementedError(
+                        "the 3-D band builds its own base box; adapting "
+                        "a supplied base is not built yet")
+                return self._build_3d_band(
+                    h_far=h_far, qdegree=qdegree, realisation=realisation,
+                    margin_rings=margin_rings,
+                    carve_clearance=carve_clearance)
+            # width=None here implies realisation == "split": the
+            # ti-needs-width check above already refused the other case
             return self._build_3d(h_far=h_far, qdegree=qdegree,
                                   mesher=mesher)
         from .cartesian import UnstructuredSimplexBox
@@ -168,8 +358,261 @@ class FaultNetwork:
             return 1.0 / hh ** 2
 
         child = base.adapt(metric, max_levels=max_levels)
-        self.mesh = child.add_fault(
-            [(n, p.copy()) for n, p in self.prepared])
+        if width is None:
+            self.mesh = child.add_fault(
+                [(n, p.copy()) for n, p in self.prepared])
+            self.info = None
+        else:
+            from underworld3.utilities.place_surface import (
+                place_fault_ribbon_2d)
+            # The ribbons must MEET across every junction ligament: the
+            # ribbon is the fault as the weak plane sees it, continuous
+            # through a junction where the cut stops short, and that
+            # difference is what junction_cells() reads. So the tip
+            # margin reaches at least as far as the longest pull-back.
+            # Collinear abutting pieces share ONE spine (two ribbons
+            # overlapping along a line interleave their vertices into
+            # slivers); the cut still stops at each piece's own ends, and
+            # the gap between them is spine the split does not cut.
+            self.spines = self._shared_spines(margin_rings)
+            margin_rings = self._junction_margins(int(margin_rings))
+            self.margin_rings = margin_rings
+            self.mesh, self.info = place_fault_ribbon_2d(
+                child, [(n, p.copy()) for n, p in self.prepared],
+                self.width, margin_rings=margin_rings,
+                clearance=carve_clearance,
+                split=(realisation == "split"), mesher=mesher,
+                spines=[(n, S) for n, S, _idx in self.spines])
+        self._make_surfaces()
+        return self.mesh
+
+    def _shared_spines(self, rings):
+        """Group the prepared pieces into spines: a piece whose end faces
+        the start of another within the margins' reach, along the same
+        line (end tangents within ~25 degrees, the far start within half
+        a width of the line), continues onto that piece's spine. Returns
+        ``(name, polyline, piece_index_per_vertex)`` per spine; vertices
+        inserted across a gap carry index -1 (spine the split does not
+        cut)."""
+        pieces = [np.asarray(P, dtype=float) for _n, P in self.prepared]
+        n = len(pieces)
+        follower = {}
+        for i, A in enumerate(pieces):
+            tA = A[-1] - A[-2]
+            tA /= np.linalg.norm(tA)
+            sA = float(np.linalg.norm(np.diff(A, axis=0), axis=1).mean())
+            best = None
+            for j, B in enumerate(pieces):
+                if j == i:
+                    continue
+                gap = B[0] - A[-1]
+                dist = float(np.linalg.norm(gap))
+                sB = float(np.linalg.norm(np.diff(B, axis=0), axis=1).mean())
+                if dist > rings * (sA + sB) + self.width:
+                    continue
+                tB = B[1] - B[0]
+                tB /= np.linalg.norm(tB)
+                along = float(gap @ tA)
+                lateral = float(abs(gap[0] * tA[1] - gap[1] * tA[0]))
+                if (tA @ tB < np.cos(np.radians(25)) or along < 0.0
+                        or lateral > 0.5 * self.width):
+                    continue
+                if best is None or dist < best[1]:
+                    best = (j, dist)
+            if best is not None and best[0] not in follower.values():
+                follower[i] = best[0]
+        heads = [i for i in range(n) if i not in follower.values()]
+        spines = []
+        for h in heads:
+            chain = [h]
+            while chain[-1] in follower:
+                chain.append(follower[chain[-1]])
+            S, idx = [pieces[chain[0]]], [np.full(len(pieces[chain[0]]), chain[0])]
+            for a, b in zip(chain[:-1], chain[1:]):
+                A, B = pieces[a], pieces[b]
+                s = 0.5 * (np.linalg.norm(A[-1] - A[-2])
+                           + np.linalg.norm(B[1] - B[0]))
+                gap = float(np.linalg.norm(B[0] - A[-1]))
+                # bridge the gap at the local rung; a gap of one rung is
+                # one edge between the two cut ends, which is already
+                # spine no cut owns (its ends belong to different pieces)
+                k = max(0, int(round(gap / s)) - 1)
+                f = np.linspace(0.0, 1.0, k + 2)[1:-1]
+                S.append(A[-1] + f[:, None] * (B[0] - A[-1]))
+                idx.append(np.full(k, -1))
+                S.append(B)
+                idx.append(np.full(len(B), b))
+            name = "+".join(self.prepared[c][0] for c in chain)
+            spines.append((name, np.vstack(S), np.concatenate(idx)))
+        return spines
+
+    def _junction_margins(self, rings):
+        """Per-end margin counts per SPINE: ``rings`` at a free tip; at
+        an end that sits on a prepared junction, enough rings for the
+        ribbon to reach the OTHER piece's cut (plus half a width) — the
+        whole ligament lies in both ribbons, so the junction cells cover
+        it end to end. The margin is built by continuing the end
+        segment, so the count depends on that segment's length."""
+        pieces = {n: np.asarray(P, dtype=float) for n, P in self.prepared}
+        out = []
+        for _sname, S, idx in self.spines:
+            ends = []
+            for end, seg, piece in ((S[0], S[1] - S[0], idx[0]),
+                                    (S[-1], S[-1] - S[-2], idx[-1])):
+                name = self.prepared[int(piece)][0]
+                reach = 0.0
+                for j in (self.junctions or []):
+                    if name not in j["faults"]:
+                        continue
+                    pull = float(j["pull"])
+                    near = (np.linalg.norm(np.asarray(j["point"]) - end)
+                            <= pull + self.width)
+                    if not near:
+                        continue
+                    other = [n for n in j["faults"] if n != name][0]
+                    gap = float(np.linalg.norm(pieces[other] - end,
+                                               axis=1).min())
+                    reach = max(reach, gap + 0.5 * self.width)
+                seg_len = float(np.linalg.norm(seg))
+                ends.append(max(rings, int(np.ceil(reach / seg_len)) + 1)
+                            if reach > 0 else rings)
+            out.append((ends[0], ends[1]))
+        return out
+
+    def _build_3d_band(self, h_far=None, qdegree=2, realisation="split",
+                       margin_rings=2, carve_clearance=0.3,
+                       minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0)):
+        """The finite-width 3-D network: ONE band, both realisations.
+
+        The prepared patches, expanded in-plane by the tip margin, are
+        thickened by ``±width/2`` and fused (junctions free); each
+        UN-expanded patch is embedded in the band as a conforming
+        mid-surface, so the same mesh is cut and split
+        (``realisation="split"``) or left whole for the weak plane
+        (``"ti"``) — the 2-D contract, one dimension up. Interior
+        networks only for now (an outcropping band cannot yet carry an
+        embedded mid-surface), and the MARGIN-EXPANDED band must clear
+        the walls by about a base cell for the carve to succeed —
+        shrink ``margin_rings`` or refine ``h_far`` when a patch sits
+        close to a boundary (the carve refuses loudly)."""
+        import underworld3 as uw
+        from enum import Enum
+        from underworld3.utilities.place_surface import (
+            place_thin_volume, _label_mid_surface, _cell_centroids_of)
+        from underworld3.utilities.custom_mg import adopt_hierarchy
+        from underworld3.utilities.fault_split import split_faults
+        from .cartesian import UnstructuredSimplexBox
+
+        h = self.h_near
+        h_far = 4.0 * h if h_far is None else float(h_far)
+        if self.junctions and float(margin_rings) > self.ligament - 0.5:
+            # the junction gap is PHYSICS (the intact ligament); the tip
+            # margin is convenience. A margin that reaches within half a
+            # cell of the gap welds the expanded bands at the junction
+            # line and the split then produces degenerate self-paired
+            # nodes there (measured: a bit-frozen residual floor).
+            raise ValueError(
+                f"margin_rings={float(margin_rings):g} closes the "
+                f"junction gap (ligament={self.ligament:g}): the "
+                "expanded bands weld at the junction and the split "
+                "degenerates. Keep margin_rings <= ligament - 0.5.")
+        base = UnstructuredSimplexBox(
+            cellSize=h_far, minCoords=minCoords, maxCoords=maxCoords,
+            refinement=1, qdegree=qdegree)
+        margin = float(margin_rings) * h
+        expanded = [_expand_convex_polygon(P, margin)
+                    for _n, P in self.prepared]
+        # interior networks only: an outcropping band cannot yet carry
+        # its embedded mid-surface (the surface would need the same
+        # boundary clip), so refuse before any meshing happens
+        lo = np.asarray(minCoords, dtype=float)
+        hi = np.asarray(maxCoords, dtype=float)
+        for (name, _P), E in zip(self.prepared, expanded):
+            n_hat = _patch_normal(E)
+            slab = np.vstack([E + 0.5 * self.width * n_hat,
+                              E - 0.5 * self.width * n_hat])
+            if (slab <= lo).any() or (slab >= hi).any():
+                raise NotImplementedError(
+                    f"the band of {name!r} reaches the domain boundary; "
+                    "an outcropping 3-D band cannot yet carry its "
+                    "embedded mid-surface. Keep the network interior, "
+                    "or place the zone with place_thin_volume directly "
+                    "(no embed).")
+        dm, info = place_thin_volume(
+            base.dm, expanded, self.width, label="Band", label_value=71,
+            clearance=carve_clearance, size=h, mesher="network",
+            embed=[np.asarray(P, dtype=float) for _n, P in self.prepared])
+        values = {}
+        for k, (name, _P) in enumerate(self.prepared):
+            values[name] = 41 + k
+            n_faces = _label_mid_surface(dm, info["embedded_nodes"][k],
+                                         name, values[name])
+            if n_faces == 0:
+                raise RuntimeError(
+                    f"the embedded mid-surface of {name!r} labelled no "
+                    f"faces in the placed mesh")
+        members = [(b.name, b.value) for b in base.boundaries]
+        members += [(n, v) for n, v in values.items()]
+        mesh = uw.discretisation.Mesh(
+            dm, simplex=True, qdegree=qdegree,
+            coordinate_system_type=base.CoordinateSystem.coordinate_type,
+            boundaries=Enum("boundaries", members), verbose=False)
+        band = mesh.cells_labelled("Band", 71)
+        adopt_hierarchy(mesh, base, fac_zone=band)
+        if realisation == "split":
+            mesh = split_faults(mesh, [n for n, _P in self.prepared])
+            # reduce first, then branch: the defect must raise on every
+            # rank together or not at all. A healthy pairing is a
+            # bijection between disjoint sides: a node paired with
+            # itself OR appearing as both a minus and a plus (a chain)
+            # is the same degeneracy.
+            n_bad = sum(len(set(pairs) & set(pairs.values()))
+                        for pairs in mesh._fault_point_pairs.values())
+            n_bad = mesh.dm.comm.tompi4py().allreduce(n_bad)
+            if n_bad:
+                raise RuntimeError(
+                    f"the network split produced {n_bad} node(s) on "
+                    "both sides of a pairing — the embedded "
+                    "mid-surfaces are degenerate (a defect, not a "
+                    "configuration error).")
+            mesh._custom_mg_fac_zone = None   # a split fault needs no patch
+            band = mesh.cells_labelled("Band", 71)
+        # honoured footprints: band cells within the USER patch's own
+        # in-plane outline and half a width of its plane — planar patches
+        # make the rule exact; the expanded margin stays unpainted. Near a
+        # junction a cell can satisfy two patches' rules, so ownership is
+        # NEAREST PLANE among them (the 2-D nearest-spine ownership, one
+        # dimension up): footprints are disjoint and the weak-plane
+        # director is well-defined.
+        ids, cen = _cell_centroids_of(mesh.dm, band)
+        plane_dist = np.full((len(self.prepared), len(ids)), np.inf)
+        for j, (_name, P) in enumerate(self.prepared):
+            P = np.asarray(P, dtype=float)
+            n_hat = _patch_normal(P)
+            d = (cen - P[0]) @ n_hat
+            inside = np.abs(d) <= 0.5 * self.width + 0.35 * h
+            in_plane = cen - np.outer(d, n_hat)
+            for i in range(len(P)):             # convex: inside every edge
+                e = P[(i + 1) % len(P)] - P[i]
+                out_dir = np.cross(e, n_hat)
+                out_dir /= np.linalg.norm(out_dir)
+                inside &= (in_plane - P[i]) @ out_dir <= 0.35 * h
+            plane_dist[j, inside] = np.abs(d[inside])
+        owner = np.argmin(plane_dist, axis=0)
+        owned = np.isfinite(plane_dist.min(axis=0))
+        footprints = {}
+        for j, (name, _P) in enumerate(self.prepared):
+            m = np.zeros_like(band)
+            m[ids[(owner == j) & owned]] = True
+            footprints[name] = m
+        self.info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
+                     "band": band, "footprints": footprints,
+                     "spacing": [h] * len(self.prepared),
+                     "width": float(self.width), "mesher": "network",
+                     "margin_rings": [(margin_rings, margin_rings)]
+                     * len(self.prepared)}
+        self.mesh = mesh
+        self._make_surfaces()
         return self.mesh
 
     def _build_3d(self, h_far=None, qdegree=2, mesher="embed",
@@ -209,13 +652,16 @@ class FaultNetwork:
 
         if mesher == "embed":
             from .cartesian import BoxInternalPatch
+            from underworld3.utilities.fault_split import split_faults
             mesh = BoxInternalPatch(
                 cellSize=h_far, minCoords=minCoords, maxCoords=maxCoords,
                 patch_points=[(n, p) for n, p in self.prepared],
                 patch_cellSize=h, qdegree=qdegree)
-            for name, _p in self.prepared:
-                mesh = split_fault(mesh, name)
+            # ONE redistribution for the whole network, then serial-
+            # topology splits: a prior pairing never migrates
+            mesh = split_faults(mesh, [n for n, _p in self.prepared])
             self.mesh = mesh
+            self._make_surfaces()
             return self.mesh
         if mesher != "place":
             raise ValueError(f"mesher must be 'place' or 'embed', "
@@ -253,9 +699,10 @@ class FaultNetwork:
             # hierarchy as its coarse multigrid tail (the 2-D contract;
             # the split below still forfeits it — see add_fault).
             mesh = mesh.add_conforming_sheet(sp, st, n, clearance=clearance)
-        for n, _sp, _st in sheets:
-            mesh = split_fault(mesh, n)
+        from underworld3.utilities.fault_split import split_faults
+        mesh = split_faults(mesh, [n for n, _sp, _st in sheets])
         self.mesh = mesh
+        self._make_surfaces()
         return self.mesh
 
     @staticmethod
@@ -383,13 +830,362 @@ class FaultNetwork:
             "degenerate; drop it or refine h.")
 
     # ------------------------------------------------------------------
-    def apply_contact(self, solver, conds=0):
-        """Register the split-node contact on every prepared piece."""
+    def _make_surfaces(self):
+        """Retain a :class:`~underworld3.meshing.surfaces.Surface` per
+        prepared piece, on the BUILT mesh.
+
+        The fault is specified once and then realised; the surface object
+        is what survives both realisations, and it is where properties
+        that belong to the FAULT rather than to the mesh live —
+        ``add_variable("friction")``, accumulated slip, a damage state.
+        The realisation reads them; it does not own them. In 3-D the
+        input :class:`FaultSurface` objects play the same role.
+        """
+        if self.dim == 3:
+            self.fault_surfaces = {s.name: s for s in (self.surfaces or [])}
+            return self.fault_surfaces
+        from .surfaces import Surface
+
+        self.fault_surfaces = {}
+        for name, P in self.prepared:
+            pts = np.asarray(P, dtype=float)
+            if pts.shape[1] == 2:
+                pts = np.column_stack([pts, np.zeros(len(pts))])
+            self.fault_surfaces[name] = Surface(name, self.mesh, pts)
+        return self.fault_surfaces
+
+    def surface(self, name):
+        """The retained fault surface for one prepared piece."""
+        if not self.fault_surfaces:
+            raise RuntimeError("call build() first")
+        if name not in self.fault_surfaces:
+            raise KeyError(f"no fault surface {name!r}; the network holds "
+                           f"{sorted(self.fault_surfaces)}")
+        return self.fault_surfaces[name]
+
+    # ------------------------------------------------------------------
+    def apply(self, solver, conds=0, eta_1=None, eta_0=1.0, tag="",
+              normal=None):
+        """Impose the network on ``solver``, in whichever realisation
+        ``build()`` made.
+
+        ``realisation="split"`` registers the no-opening contact pair on
+        every prepared piece (``conds`` is the datum, 0 for free slip).
+        ``realisation="ti"`` paints the weak-plane fields on the honoured
+        footprints and hands the solver a
+        :class:`~underworld3.constitutive_models.TransverseIsotropicFlowModel`:
+        ``eta_1`` (required) is the weak-plane viscosity, ``eta_0`` the
+        background — a float, or a per-cell array if the background is
+        itself painted (a terrane, say). ``tag`` disambiguates the field
+        names when more than one network is applied to one mesh.
+
+        ``normal`` is the split's fault normal (see
+        :meth:`~underworld3.systems.Stokes.add_fault_bc`). Pass
+        ``"trace"`` when the traces are SAMPLED SMOOTH CURVES — the
+        default per-node normal zig-zags at the sampling kinks, and
+        the no-opening constraint then notches the slip.
+        """
+        if self.mesh is None:
+            raise RuntimeError("call build() first")
+        if self.realisation == "split":
+            for name, _p in self.prepared:
+                solver.add_fault_bc(conds, boundary=name, normal=normal)
+            return self
+        if eta_1 is None:
+            raise ValueError(
+                "realisation='ti' needs eta_1=: the weak-plane viscosity "
+                "is the other half of the constitutive pair (with width).")
+        import underworld3 as uw
+
+        eta1, ndir, foot = self.ti_fields(eta_1, eta_0=eta_0, tag=tag)
+        solver.constitutive_model = \
+            uw.constitutive_models.TransverseIsotropicFlowModel
+        params = solver.constitutive_model.Parameters
+        params.shear_viscosity_0 = (
+            float(eta_0) if np.ndim(eta_0) == 0 else self._eta0_var.sym[0])
+        params.shear_viscosity_1 = eta1.sym[0]
+        params.director = ndir.sym
+        return self
+
+    def apply_contact(self, solver, conds=0, normal=None):
+        """Register the split-node contact on every prepared piece.
+
+        The split realisation's half of :meth:`apply`, kept under its own
+        name for callers that only ever want the contact.
+        """
+        if self.realisation not in (None, "split"):
+            raise RuntimeError(
+                f"this network was built as {self.realisation!r}; there "
+                f"are no fault pairs to constrain. Use apply().")
         if self.mesh is None:
             raise RuntimeError("call build() first")
         for name, _p in self.prepared:
-            solver.add_fault_bc(conds, boundary=name)
+            solver.add_fault_bc(conds, boundary=name, normal=normal)
         return self
+
+    # ------------------------------------------------------------------
+    def ti_fields(self, eta_1, eta_0=1.0, tag=""):
+        """The weak-plane (TI) realisation's painted P0 fields.
+
+        ``eta_1`` inside each fault's HONOURED footprint — the band cells
+        whose nearest spine sample is a USER point, never the whole band,
+        whose margin is extrapolated surround — and the background
+        elsewhere; the director is the unit normal of the nearest segment
+        of the strand that owns the cell, so a curved trace carries its
+        own orientation cell by cell.
+
+        Returns ``(eta_1_var, director_var, footprint_mask)``. The mask is
+        also the right ``fac_zone`` key for a multigrid patch (#629).
+        """
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first (the weak "
+                "plane is a layer, and the layer has to be meshed).")
+        import underworld3 as uw
+
+        foots = self.info["footprints"]
+        foot = np.zeros_like(next(iter(foots.values())))
+        for m_ in foots.values():
+            foot = foot | m_
+
+        eta1 = uw.discretisation.MeshVariable(
+            f"fnEta1{tag}", self.mesh, 1, degree=0)
+        eta0_vals = np.broadcast_to(np.asarray(eta_0, dtype=float),
+                                    (len(eta1.coords),))
+        eta1.array[:, 0, 0] = np.where(foot, float(eta_1), eta0_vals)
+        self._eta0_var = None
+        if np.ndim(eta_0) != 0:
+            self._eta0_var = uw.discretisation.MeshVariable(
+                f"fnEta0{tag}", self.mesh, 1, degree=0)
+            self._eta0_var.array[:, 0, 0] = eta0_vals
+
+        dim = self.mesh.dim
+        ndir = uw.discretisation.MeshVariable(
+            f"fnDir{tag}", self.mesh, dim, degree=0, continuous=False)
+        cen = np.asarray(ndir.coords)[:, :dim]
+        dvals = np.zeros((len(cen), dim))
+        dvals[:, -1] = 1.0                  # any unit vector outside the
+        for name, P in self.prepared:       # footprints: eta_1 == eta_0
+            m_ = foots[name]                # there, so TI is isotropic
+            if not m_.any():
+                continue
+            if dim == 3:                    # planar patch: ONE normal
+                dvals[m_] = _patch_normal(P)
+            else:
+                dvals[m_] = _nearest_segment_normals(P, cen[m_])
+        ndir.array[...] = dvals.reshape(ndir.array.shape)
+        self.ti = {"eta_1": eta1, "director": ndir, "footprint": foot}
+        return eta1, ndir, foot
+
+    # ------------------------------------------------------------------
+    @property
+    def band(self):
+        """The band's cell mask — the material the fault is embedded in.
+
+        The band is not scaffolding for the weak plane. It is a meshed
+        region of material AROUND the fault, and the split wants it as
+        much: a segmented fault does its interesting work at the tips and
+        in the ligaments between strands, and damage there needs cells to
+        live in. This mask (and :attr:`footprints`, per strand) is how a
+        rheology addresses that region in either realisation.
+        """
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first")
+        return self.info["band"]
+
+    @property
+    def footprints(self):
+        """Per-strand FAULT footprints — the band cells whose nearest
+        spine sample is a USER point, never the extrapolated margin."""
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first")
+        return self.info["footprints"]
+
+    def band_yield(self, tau_y, tau_far=1.0e8, tag=""):
+        """Von Mises yield confined to the band, as an expression.
+
+        The band's cells yield at ``tau_y``; everything else is given
+        ``tau_far``, high enough never to yield. Pair it with a
+        :class:`~underworld3.constitutive_models.ViscoPlasticFlowModel`
+        and ``consistent_jacobian = True``::
+
+            stokes.constitutive_model.Parameters.yield_stress = \
+                net.band_yield(tau_y=4.0)
+
+        This is the damage the SPLIT realisation wants. A released fault
+        flank sits far below ``tau_y`` and is untouched; the places that
+        sit far above it — a strand's tips, the weld where a cut stops
+        short, the sliver at a junction — yield by themselves, so the
+        breakdown appears where the mechanics puts it rather than where a
+        geometric plug was placed. Compare :meth:`damage_yield`, which
+        places plugs at the junctions by construction and is the right
+        tool when the junction glue itself is the object of study.
+
+        The region is a sharp mask, not a blend: never taper a
+        rheological parameter towards a large sentinel.
+        """
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first (the "
+                "damage needs cells to live in)")
+        import underworld3 as uw
+
+        ybar = uw.discretisation.MeshVariable(
+            f"fnTauY{tag}", self.mesh, 1, degree=0)
+        ybar.array[:, 0, 0] = np.where(self.info["band"], float(tau_y),
+                                       float(tau_far))
+        self._band_yield_var = ybar
+        return ybar.sym[0]
+
+    # ------------------------------------------------------------------
+    def junction_cells(self, ring=1):
+        """The cells where the split cannot join: the ribbon minus the cut.
+
+        The ribbon (the band, with its extrapolated tip margins) is
+        everything the weak-plane realisation treats as fault; the cut
+        chains are what the split actually sliced. A band cell whose
+        nearest point on a piece's extended spine lies in that piece's
+        margin (or on the gap of a shared spine) is fault the split did
+        not cut. Where such a cell also lies inside a SECOND piece's
+        ribbon, two pieces meet there and the split has left them welded
+        — a stop-short abutment, a kissing branch, the intact bridge of
+        a stepover. Those cells, dilated by ``ring`` vertex rings within
+        the band, are the junction cells.
+
+        The rule is geometric and comes entirely from the placement: no
+        stress threshold, and the free tips are excluded on purpose (a
+        margin that runs into intact material rather than another
+        ribbon is a tip, not a junction; damage placed there lengthens
+        the fault instead of joining it).
+
+        ``ring=1`` is not optional in practice. Measured on the S-fault
+        rig (2026-08-27): the bare junction cells cannot repair the weld
+        even when fully plastic (a fifth to a quarter of the deficit),
+        because the weld's stiffness lives in the ring of intact material
+        around the two tips; one ring restores 0.8-0.97 of a continuous
+        fault's transmission at both resolutions tested.
+
+        Returns a boolean cell mask over the mesh's cells.
+        """
+        if self.info is None:
+            raise RuntimeError(
+                "no band on this mesh: build(width=...) first (the "
+                "junction cells are read off the ribbon)")
+        if self.realisation != "split":
+            raise RuntimeError(
+                "junction cells are the SPLIT realisation's joints; the "
+                "weak plane has no cut to fall off")
+        if self.dim == 3:
+            raise NotImplementedError(
+                "junction_cells is the 2-D ribbon rule (spines and cut "
+                "chains); in 3-D place the junction glue with "
+                "damage_yield — tubes about the junction segments.")
+        from underworld3.utilities.place_surface import _cell_centroids_of
+
+        band = self.info["band"]
+        ids, cen = _cell_centroids_of(self.mesh.dm, band)
+        mask = np.zeros_like(band)
+        if len(ids) == 0:
+            return mask
+        half_width = 0.5 * self.width
+        from underworld3.utilities.place_surface import _extend_polyline_2d
+
+        def nearest(Q):
+            d = cen[:, None, :] - Q[None, :, :]
+            d2 = np.einsum("ijk,ijk->ij", d, d)
+            j = np.argmin(d2, axis=1)
+            return j, np.sqrt(d2[np.arange(len(ids)), j])
+
+        # off the cut, read spine by spine: a cell in a spine's ribbon
+        # whose nearest spine point is a gap edge or a tip margin is fault
+        # that spine's split did not cut. (It may well sit on ANOTHER
+        # spine's cut — the senior's flank beside a kissing tip is exactly
+        # where the glue belongs.)
+        off_cut = np.zeros(len(ids), dtype=bool)
+        for k, (_sname, _S, idx) in enumerate(self.spines):
+            E = np.asarray(self.info["extended"][k], dtype=float)
+            m0, m1 = self.info["margin_rings"][k]
+            piece = np.concatenate([np.full(m0, -1), idx, np.full(m1, -1)])
+            Q, on_cut = _densify_polyline(E, piece)
+            j, dist = nearest(Q)
+            # a sample spacing's worth of tolerance: the densified spine
+            # is a polyline, the cell centroid a point beside it
+            inside = dist <= half_width + 0.35 * float(self.info["spacing"][k])
+            off_cut |= inside & ~on_cut[j]
+        # two pieces meet: the cell lies in the ribbons of two CUT pieces,
+        # each continued by the default margin
+        ribbons = np.zeros(len(ids), dtype=int)
+        for name, P in self.prepared:
+            P = np.asarray(P, dtype=float)
+            E = _extend_polyline_2d(P, 2)
+            spacing = float(np.linalg.norm(np.diff(P, axis=0), axis=1).mean())
+            _j, dist = nearest(E)
+            ribbons += dist <= half_width + 0.5 * spacing
+        # unjoined = off some cut, where two pieces' ribbons meet
+        mask[ids[off_cut & (ribbons >= 2)]] = True
+        for _ in range(int(ring)):
+            mask = self._vertex_ring(mask) & band
+        return mask
+
+    def _vertex_ring(self, mask):
+        """Cells sharing a vertex with a masked cell (rank-local)."""
+        dm = self.mesh.dm
+        cS, cE = dm.getHeightStratum(0)
+        vS, vE = dm.getDepthStratum(0)
+        out = mask.copy()
+        for c in np.flatnonzero(mask):
+            for q in dm.getTransitiveClosure(int(c) + cS)[0]:
+                if vS <= int(q) < vE:
+                    for c2 in dm.getTransitiveClosure(int(q), useCone=False)[0]:
+                        if cS <= int(c2) < cE:
+                            out[int(c2) - cS] = True
+        return out
+
+    def junction_patch(self, eta_0=1.0, ratio=0.01, ring=1, tag=""):
+        """The junction glue: a weak isotropic patch on the junction cells.
+
+        Returns the viscosity to give an isotropic flow model, as a P0
+        field expression: ``eta_0`` everywhere, ``ratio * eta_0`` on
+        :meth:`junction_cells`. ``eta_0`` is a float or a per-cell array
+        (a painted background). Use it as the split realisation's
+        background viscosity::
+
+            stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+            stokes.constitutive_model.Parameters.shear_viscosity_0 = \
+                net.junction_patch(eta_0=1.0)
+            net.apply(stokes)
+
+        The glue is a viscosity RATIO rather than a yield stress because
+        the joint only has to be broken, and a ratio needs no stress
+        scale. Measured on the S-fault rig (2026-08-27, coarse and fine):
+        the weak patch reproduces a fully plastic patch on the same cells
+        to 1-2%, is insensitive to ``ratio`` from 0.01 to 0.001, carries
+        the segment's slip through the cut itself (the segment's pair
+        jump reaches a continuous fault's), leaves the rest of the
+        network the split's own answer (main strand within 2.5%), and
+        costs the split's velocity iterations. The pressure block alone
+        notices the contrast, which is why 0.01 is the default rather
+        than something smaller. The solve stays linear.
+
+        Isotropic on purpose: inside a junction there is no single plane
+        to be weak on (see :meth:`damage_yield`, whose plugs are placed
+        at the prepared junction POINTS by radius; this patch is read off
+        the mesh instead and also catches stepover bridges, which are not
+        prepared junctions).
+        """
+        import underworld3 as uw
+
+        cells = self.junction_cells(ring=ring)
+        eta = uw.discretisation.MeshVariable(
+            f"fnGlue{tag}", self.mesh, 1, degree=0)
+        eta0_vals = np.broadcast_to(np.asarray(eta_0, dtype=float),
+                                    (len(eta.coords),))
+        eta.array[:, 0, 0] = np.where(cells, float(ratio) * eta0_vals,
+                                      eta0_vals)
+        self.glue = {"cells": cells, "viscosity": eta, "ratio": float(ratio)}
+        return eta.sym[0]
 
     # ------------------------------------------------------------------
     def damage_yield(self, velocity, dial=0.05, radius=None,
@@ -455,7 +1251,21 @@ class FaultNetwork:
 
     # ------------------------------------------------------------------
     def slips(self, solver):
-        """Peak tangential slip per prepared piece (rank-local)."""
+        """Peak tangential slip per prepared piece, in each realisation's
+        OWN quantity (rank-local).
+
+        The split's slip is the tangential jump between the two nodes of
+        a cut pair. The weak plane has no pair: its slip is the jump in
+        tangential velocity across the layer, sampled one band half-width
+        plus a cell either side of the spine — read from the velocity
+        field itself rather than integrated from the in-band strain rate,
+        which is vertex-phase sensitive once ``w`` approaches ``h``.
+        Both are the layer's own throughput, so the two numbers may be
+        compared; a probe placed further out than this reads the
+        surrounding flow as well and over-reads short strands.
+        """
+        if self.realisation == "ti":
+            return self._slips_ti(solver)
         from underworld3.utilities.fault_contact import fault_pair_jumps
         info = getattr(solver, "_rotated_freeslip_info", None)
         if info is None:
@@ -472,12 +1282,56 @@ class FaultNetwork:
             out[name] = float(np.linalg.norm(tangential, axis=1).max())
         return out
 
+    def _slips_ti(self, solver):
+        """The weak plane's slip: the tangential velocity jump across the
+        band, one half-width plus a cell either side of each spine (2-D)
+        or patch (3-D, where the jump is projected onto the plane)."""
+        import underworld3 as uw
+
+        if self.info is None:
+            raise RuntimeError("no band on this mesh: build(width=...)")
+        out = {}
+        for k, (name, P) in enumerate(self.prepared):
+            P = np.asarray(P, dtype=float)
+            skirt = 0.5 * self.width + float(self.info["spacing"][k])
+            if self.dim == 3:
+                # planar patch, one normal: probe the patch's own points
+                # (corners, edge midpoints, centroid) and keep the
+                # in-plane part of the jump — the plane form of the 2-D
+                # tangential projection
+                n_hat = _patch_normal(P)
+                S = np.vstack([P, 0.5 * (P + np.roll(P, -1, axis=0)),
+                               P.mean(axis=0)])
+                vp = np.asarray(uw.function.evaluate(
+                    solver.u.sym, S + skirt * n_hat)).reshape(len(S), -1)
+                vm = np.asarray(uw.function.evaluate(
+                    solver.u.sym, S - skirt * n_hat)).reshape(len(S), -1)
+                dv = (vp - vm)[:, :3]
+                dv -= np.outer(dv @ n_hat, n_hat)
+                out[name] = float(np.linalg.norm(dv, axis=1).max())
+                continue
+            P = P[:, :2]
+            t = np.gradient(P, axis=0)
+            t /= np.linalg.norm(t, axis=1)[:, None]
+            n = np.column_stack([-t[:, 1], t[:, 0]])
+            vp = np.asarray(uw.function.evaluate(
+                solver.u.sym, P + skirt * n)).reshape(len(P), -1)[:, :2]
+            vm = np.asarray(uw.function.evaluate(
+                solver.u.sym, P - skirt * n)).reshape(len(P), -1)[:, :2]
+            out[name] = float(
+                np.abs(np.einsum("ij,ij->i", vp - vm, t)).max())
+        return out
+
     # ------------------------------------------------------------------
     def __repr__(self):
         n_j = len(self.junctions) if self.junctions is not None else "?"
         n_p = len(self.prepared) if self.prepared is not None else "?"
         state = ("meshed" if self.mesh is not None else
                  "prepared" if self.prepared is not None else "raw")
+        if self.mesh is not None:
+            state += f" as {self.realisation}"
+            if self.width is not None:
+                state += f", w={self.width:g}"
         return (f"FaultNetwork({len(self.faults)} faults -> {n_p} "
                 f"pieces, {n_j} junctions, {state}; "
                 f"hierarchy={self.hierarchy})")
