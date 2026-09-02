@@ -1443,10 +1443,31 @@ class CustomMGHierarchy:
                     P = _build_parallel_transfer(*args)
                     # "auto": a zero-column transfer means the coarse level is NOT
                     # co-partitioned with the fine level (a fine leaf sits in an
-                    # off-rank coarse cell). Rebuild it spanning partitions.
-                    if (self.cross_partition == "auto"
-                            and _count_zero_columns_parallel(P, comm) > 0):
-                        P = _build_crosspart_transfer(*args)
+                    # off-rank coarse cell). Rebuild it spanning partitions —
+                    # and keep the rebuild only where it does better. On a
+                    # placed band distributed over two ranks (#671) the
+                    # co-partitioned build left 3 orphan columns and the
+                    # cross-partition build 16,791 of 96,009; the repair then
+                    # injected all of them and the coarse operator was
+                    # nonsense (KSP reason -11 at the first iteration). The
+                    # few genuine orphans are the repair's job below.
+                    n_zero = _count_zero_columns_parallel(P, comm)
+                    if self.cross_partition == "auto" and n_zero > 0:
+                        P_x = _build_crosspart_transfer(*args)
+                        n_x = _count_zero_columns_parallel(P_x, comm)
+                        if n_x < n_zero:
+                            P.destroy()
+                            P = P_x
+                        else:
+                            P_x.destroy()
+                            if n_x > n_zero:
+                                import warnings
+                                warnings.warn(
+                                    f"custom_mg: the cross-partition transfer "
+                                    f"{l - 1}->{l} left {n_x} coarse DOF(s) "
+                                    f"without a fine image where the "
+                                    f"co-partitioned one left {n_zero}; kept "
+                                    f"the co-partitioned transfer (#671).")
                 # the same orphan repair the serial path has: a coarse DOF no
                 # fine node reaches gets its nearest fine DOF as an injection
                 if _count_zero_columns_parallel(P, comm) > 0:

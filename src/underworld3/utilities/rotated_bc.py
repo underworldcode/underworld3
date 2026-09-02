@@ -1566,8 +1566,21 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
     vis = np.asarray(vel_is.getIndices())
     g2blk = {int(g): k for k, g in enumerate(vis)}
     Qv = Q.createSubMatrix(vel_is, vel_is)
-    nrows_blk = sorted({g2blk[g] for g in normal_rows if g in g2blk})
     Pfine = Qv.matMult(Ps[-1])
+    # The constrained rows (rotated normals, fault-pair contact rows) take
+    # no coarse correction. ``g2blk`` enumerates THIS rank's entries of the
+    # velocity IS, so its values are local block rows; zeroRows takes
+    # global ones, which on the sub-matrix are the rank's ownership offset
+    # plus the local index. Passing the local index zeroed the wrong rows
+    # on every rank but the first (#671): a rank's own constrained rows
+    # kept their coarse correction while rows of the first rank lost
+    # theirs — and where those were the only fine images of a coarse
+    # DOF, the Galerkin coarse operator got a zero row PETSc could not
+    # repair (MatGalerkin writes an identity diagonal that was never
+    # allocated).
+    rstart = Pfine.getOwnershipRange()[0]
+    nrows_blk = sorted({rstart + g2blk[g] for g in normal_rows
+                        if g in g2blk})
     Pfine.zeroRows(nrows_blk, diag=0.0)
     # Remember an opportunistic mesh-owned pickup, so a later solve on this solver
     # (rotated or not) reuses the hierarchy instead of re-resolving it.

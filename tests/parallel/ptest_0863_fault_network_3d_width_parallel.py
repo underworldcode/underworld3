@@ -152,3 +152,35 @@ def test_two_faults_apart_are_placed_by_their_own_ranks():
     names = {b.name for b in mesh.boundaries}
     for fault in ("West", "East"):
         assert {f"{fault}Plus", f"{fault}Minus"} <= names, names
+
+    # The contact solve on the DISTRIBUTED band: the geometric tail must
+    # pair the base and the placed mesh across ranks. Two defects hid
+    # here (#671): the rotated prolongation zeroed constrained rows by
+    # their LOCAL index, so every rank but the first zeroed the wrong
+    # rows; and the "auto" transfer replaced a co-partitioned build with
+    # 3 orphan columns by a cross-partition one with 16,791, which the
+    # repair then filled with nonsense (KSP reason -11 at iteration 0).
+    x, y, z = mesh.X
+    v = uw.discretisation.MeshVariable("v2F", mesh, 3, degree=2)
+    p = uw.discretisation.MeshVariable("p2F", mesh, 1, degree=0,
+                                       continuous=False)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.bodyforce = [0.0, 0.0, 0.0]
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        stokes.add_dirichlet_bc((y - 0.5, 0.0, 0.0), wall)
+    net.apply(stokes)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.tolerance = 1e-5
+    solve_info = net.solve(stokes)
+    assert solve_info.get("converged"), solve_info
+    assert solve_info.get("velocity_pc") == "custom-FMG", solve_info
+    # the serial answer on this box (np=1: West 0.13731, East 0.13653);
+    # the gap fill's node count varies by one or two with the partition,
+    # so the meshes differ slightly and the slips agree to 1%, not 5
+    # digits (np=2 and np=4 give 0.13723 / 0.13712 and 0.13712 / 0.13712)
+    slips = net.slips(stokes)
+    for name, serial in (("West", 0.13731), ("East", 0.13653)):
+        peak = comm.allreduce(float(slips.get(name, 0.0)), op=max)
+        assert peak == pytest.approx(serial, rel=1e-2), (name, peak, serial)
