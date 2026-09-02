@@ -559,7 +559,17 @@ class FaultNetwork:
             boundaries=Enum("boundaries", members), verbose=False)
         band = mesh.cells_labelled("Band", 71)
         if realisation == "split":
-            mesh = split_faults(mesh, [n for n, _P in self.prepared])
+            # the pieces the placement kept apart stay apart in the split's
+            # own redistribution: one group per placed region (#670)
+            groups = None
+            regions = info.get("embedded_regions")
+            if regions is not None:
+                by_region = {}
+                for (name, _P), r in zip(self.prepared, regions):
+                    by_region.setdefault(r, []).append(name)
+                groups = list(by_region.values())
+            mesh = split_faults(mesh, [n for n, _P in self.prepared],
+                                groups=groups)
             # reduce first, then branch: the defect must raise on every
             # rank together or not at all. A healthy pairing is a
             # bijection between disjoint sides: a node paired with
@@ -616,7 +626,12 @@ class FaultNetwork:
                      "spacing": [h] * len(self.prepared),
                      "width": float(self.width), "mesher": "network",
                      "margin_rings": [(margin_rings, margin_rings)]
-                     * len(self.prepared)}
+                     * len(self.prepared),
+                     # the placement's parallel record (#670): regions
+                     # gathered, their size, and the cells that moved
+                     "n_regions": int(info.get("n_regions", 1)),
+                     "n_gathered": int(info.get("n_gathered", 0)),
+                     "n_moved": int(info.get("n_moved", 0))}
         self.mesh = mesh
         self._make_surfaces()
         return self.mesh

@@ -1599,6 +1599,39 @@ def _true_wall_vertex_mask(dm, n_vertices):
     return mark[vS - pStart: vS - pStart + n_vertices] == 1
 
 
+def _assembly_components(cells):
+    """Connected components of a standalone assembly mesh, by shared facets.
+
+    Returns a 1-based component id per cell, the same on every rank (the
+    assembly is broadcast, so this is a pure function of it). Two zones of
+    a network that are fused touch through shared faces and are one
+    component; zones a domain apart are separate ones, and #670 places
+    each on a rank of its own.
+    """
+    from itertools import combinations
+    n = len(cells)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    nv = cells.shape[1]
+    owner_of_face = {}
+    for c, cell in enumerate(cells):
+        for f in combinations(sorted(int(v) for v in cell), nv - 1):
+            other = owner_of_face.setdefault(f, c)
+            if other != c:
+                ra, rb = find(other), find(c)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+    roots = np.array([find(c) for c in range(n)], dtype=np.int64)
+    _uniq, comp = np.unique(roots, return_inverse=True)
+    return (comp + 1).astype(np.int32)
+
+
 def _gather_region(dm, vertex_mark_chart, verbose=False):
     """Redistribute so every marked vertex's cell star (+1 layer) is one rank's.
 
@@ -7049,15 +7082,34 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
     d_skin = _sheet_distance_within(X, skin_xyz, skin_tris,
                                     reach_v + 1.0 * h_vertex)
+    # One region per connected component of the assembly (#670): each
+    # zone's shell goes to its own rank, and a zone whose shell is already
+    # interior to a rank moves nothing. The outcrop and ladder paths carry
+    # single-rank machinery (the bowl, the cap, the extrusion) and keep one
+    # region.
+    comp_of_tet = _assembly_components(asm_tets)
+    n_comp = int(comp_of_tet.max())
+    single = outcropping or mesher == "ladder" or n_comp == 1
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
-         + vS - pStart] = 1
+    if single:
+        mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
+             + vS - pStart] = 1
+    else:
+        for k in range(1, n_comp + 1):
+            xyz_k, tris_k, _ids_k = _assembly_skin(
+                asm_pts, asm_tets[comp_of_tet == k])
+            d_k = _sheet_distance_within(X, xyz_k, tris_k,
+                                         reach_v + 1.0 * h_vertex)
+            near = np.flatnonzero(d_k < reach_v + 1.0 * h_vertex)
+            mark[near + vS - pStart] = np.maximum(
+                mark[near + vS - pStart], k)
 
     volume_before = np.array([_owned_cell_volume(dm)], dtype=float)
     comm.Allreduce(MPI.IN_PLACE, volume_before, op=MPI.SUM)
 
-    dm_work, moved = _gather_region(dm, mark, verbose=verbose)
-    if moved:
+    dm_work, moved, n_moved, owner, canon = _gather_regions(
+        dm, mark, verbose=verbose)
+    if n_moved:
         vS, vE = dm_work.getDepthStratum(0)
         pStart, pEnd = dm_work.getChart()
         X = _coords(dm_work)[: vE - vS]
@@ -7086,16 +7138,40 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     reach_c = (np.maximum(clearance * h_cell_local, 0.6 * width)
                if len(cells) else np.zeros(0))
 
-    n_region = int((d_skin < reach_v).sum())
-    owners = np.asarray(comm.allgather(n_region))
-    if owners.sum() == 0:
-        raise ValueError("the thin volume meets no cell of this mesh")
-    target = int(np.argmax(owners))
+    mine_regions = {r for r, rk in owner.items() if rk == comm.rank}
+    my_comps = [k for k in range(1, n_comp + 1)
+                if canon[k if not single else 1] in mine_regions]
+    mine = bool(my_comps)
+    target = owner[canon[1]]          # the root of the outcrop broadcasts
+    if mine and not single:
+        # this rank's share of the assembly, compacted: its components'
+        # cells, their nodes, and the skin of that subset (components are
+        # face-disjoint, so the subset's skin is its components' skins)
+        sel = np.isin(comp_of_tet, my_comps)
+        used = np.unique(asm_tets[sel])
+        remap = np.full(len(asm_pts), -1, dtype=np.int64)
+        remap[used] = np.arange(len(used))
+        asm_pts_m = asm_pts[used]
+        asm_tets_m = remap[asm_tets[sel]]
+        skin_xyz_m, skin_tris_m, skin_node_ids_m = _assembly_skin(
+            asm_pts_m, asm_tets_m)
+        skin_tris_fill_m = skin_tris_m
+    elif mine:
+        asm_pts_m, asm_tets_m = asm_pts, asm_tets
+        skin_xyz_m, skin_tris_m, skin_node_ids_m = (
+            skin_xyz, skin_tris, skin_node_ids)
+        skin_tris_fill_m = skin_tris_fill
+    else:
+        asm_pts_m = np.empty((0, 3), dtype=float)
+        asm_tets_m = np.empty((0, 4), dtype=np.int64)
+        skin_xyz_m = np.empty((0, 3), dtype=float)
+        skin_tris_m = skin_tris_fill_m = np.empty((0, 3), dtype=np.int64)
+        skin_node_ids_m = np.empty(0, dtype=np.int64)
 
     failure = None
     victims = drop_ids = None
     fill = shell_vert_ids = None
-    if comm.rank == target:
+    if mine:
         try:
             deletable = near = None
             if outcropping:
@@ -7103,9 +7179,9 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                                                            dom_tris)
                 deletable, near, _regions = _outcrop_frame_3d(
                     X, on_wall, dom_verts, dom_tris, dom_region,
-                    skin_xyz, skin_tris[band_idx])
+                    skin_xyz_m, skin_tris_m[band_idx])
             victims, drop_ids, shell, cap_faces = _carve_around_volume_3d(
-                dm_work, X, cells, skin_xyz, skin_tris, reach_v, reach_c,
+                dm_work, X, cells, skin_xyz_m, skin_tris_m, reach_v, reach_c,
                 held_cells, on_wall, shared, open_deletable=deletable,
                 open_near=near)
             touched = set()
@@ -7157,14 +7233,14 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                         "boundary complex; the wall mask and the complex "
                         "disagree")
                 _d_band, at_band = _nearest_facet(
-                    skin_xyz[skin_tris[band_idx]].mean(axis=1),
+                    skin_xyz_m[skin_tris_m[band_idx]].mean(axis=1),
                     dom_verts, dom_tris)
                 alive = np.ones(len(X), dtype=bool)
                 alive[np.asarray(victims, dtype=np.int64)] = False
                 cap_nodes, hole_nodes, cap_extra, cap_tris = \
                     _outcrop_collar_3d(
                         X, alive, cap_tris_mesh, dom_region[at_cap],
-                        dom_planes, skin_xyz, skin_tris[band_idx],
+                        dom_planes, skin_xyz_m, skin_tris_m[band_idx],
                         dom_region[at_band], band_outline)
                 cap_payload = {
                     "rim_shell_local": [local[v] for v in cap_nodes],
@@ -7173,8 +7249,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                     "extra_xyz": cap_extra,
                 }
 
-            fill = _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz,
-                                         skin_tris_fill, size_out=h,
+            fill = _gmsh_fill_annulus_3d(shell_xyz, shell_tris, skin_xyz_m,
+                                         skin_tris_fill_m, size_out=h,
                                          size_in=size, cap=cap_payload)
             (_pts, _tets, moved_nodes, skin_out, _n_shell,
              cap_out) = fill
@@ -7182,10 +7258,10 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                 raise RuntimeError(
                     f"the gap fill moved {moved_nodes} constrained node(s); "
                     "the cavity cannot be sewn back.")
-            if skin_out != len(skin_tris_fill):
+            if skin_out != len(skin_tris_fill_m):
                 raise RuntimeError(
                     f"the gap fill remeshed the skin ({skin_out} triangles "
-                    f"for {len(skin_tris_fill)} given).")
+                    f"for {len(skin_tris_fill_m)} given).")
             if cap_payload is not None and (
                     cap_out is None
                     or len(cap_out) != len(cap_payload["tris"])):
@@ -7207,10 +7283,10 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     # Placed rows: the assembly's nodes first, the gap fill's new points
     # after. A gap-fill node is a shell node (an OLD vertex), a skin node
     # (assembly row) or new; assembly tets reference assembly rows only.
-    if comm.rank == target:
+    if mine:
         fill_pts, fill_tets, _m, _s, n_shell, cap_out = fill
-        n_skin = len(skin_xyz)
-        skin_row = np.asarray(skin_node_ids, dtype=np.int64)
+        n_skin = len(skin_xyz_m)
+        skin_row = np.asarray(skin_node_ids_m, dtype=np.int64)
         gap_new = fill_pts[n_shell + n_skin:]
 
         def gap_code(v):
@@ -7218,13 +7294,13 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                 return int(shell_vert_ids[v])
             if v < n_shell + n_skin:
                 return -(int(skin_row[v - n_shell]) + 1)
-            return -(len(asm_pts) + (int(v) - n_shell - n_skin) + 1)
+            return -(len(asm_pts_m) + (int(v) - n_shell - n_skin) + 1)
 
         made = np.array(
             [[gap_code(int(v)) for v in tet] for tet in fill_tets]
-            + [[-(int(v) + 1) for v in tet] for tet in asm_tets],
+            + [[-(int(v) + 1) for v in tet] for tet in asm_tets_m],
             dtype=np.int64)
-        placed = np.vstack([asm_pts, gap_new])
+        placed = np.vstack([asm_pts_m, gap_new])
         victims_arr = np.asarray(victims, dtype=np.int64)
         drop_arr = np.asarray(drop_ids, dtype=np.int64)
     else:
@@ -7247,10 +7323,10 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
             new.createLabel(name)
     n_cells_local = 0
     n_skin_local = 0
-    if comm.rank == target:
+    if mine:
         out_label = new.getLabel(label)
         out_skin = new.getLabel(skin_label)
-        for tet in asm_tets:
+        for tet in asm_tets_m:
             joined = new.getFullJoin([int(placed_new[int(v)]) for v in tet])
             if len(joined) != 1:
                 failure = ("an assembly cell is not a cell of the sewn mesh; "
@@ -7259,7 +7335,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
             out_label.setValue(int(joined[0]), int(label_value))
             n_cells_local += 1
         else:
-            for tri in skin_tris:
+            for tri in skin_tris_m:
                 joined = new.getFullJoin(
                     [int(placed_new[int(skin_row[int(v)])]) for v in tri])
                 if len(joined) != 1:
@@ -7281,17 +7357,17 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     # restores each wall's own labels.
     pairs = comm.bcast(
         sorted({p for _tri, pairs_f in removed_wall for p in pairs_f})
-        if comm.rank == target else None, root=target)
+        if mine else None, root=target)
     n_wall_expect = comm.bcast(
         ((len(cap_out) if cap_out is not None else 0) + len(band_idx))
-        if comm.rank == target else 0, root=target)
+        if mine else 0, root=target)
     for name, val in (pairs or []):
         if not new.hasLabel(name):
             new.createLabel(name)
     n_wall_local = 0
-    if comm.rank == target and outcropping:
+    if mine and outcropping:
         n_shell_ids = np.asarray(shell_vert_ids, dtype=np.int64)
-        n_skin = len(skin_xyz)
+        n_skin = len(skin_xyz_m)
 
         def new_id(v):
             if v < n_shell:
@@ -7300,18 +7376,18 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                 return int(point_map[old_pt - pStart])
             if v < n_shell + n_skin:
                 return int(placed_new[int(skin_row[v - n_shell])])
-            return int(placed_new[len(asm_pts) + (v - n_shell - n_skin)])
+            return int(placed_new[len(asm_pts_m) + (v - n_shell - n_skin)])
 
         wall_tris = ([[new_id(int(v)) for v in t] for t in cap_out]
                      if cap_out is not None else [])
         n_cap_tris = len(wall_tris)
         wall_tris += [[int(placed_new[int(skin_row[int(v)])]) for v in t]
-                      for t in skin_tris[band_idx]]
+                      for t in skin_tris_m[band_idx]]
         centres = np.array(
             [fill_pts[np.asarray(t)].mean(axis=0) for t in cap_out]
             if cap_out is not None else np.zeros((0, 3)))
         if len(band_idx):
-            band_cen = skin_xyz[skin_tris[band_idx]].mean(axis=1)
+            band_cen = skin_xyz_m[skin_tris_m[band_idx]].mean(axis=1)
             centres = (np.vstack([centres, band_cen]) if len(centres)
                        else band_cen)
         old_pts = np.vstack([tri for tri, _p in removed_wall])
@@ -7413,7 +7489,25 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                   f"zone cells, {info['n_skin_faces']} skin faces; placed "
                   f"{info['n_placed']} vertices, removed "
                   f"{info['n_removed']}")
-    info["n_gathered"] = int(moved)   # cells the gather moved (#670)
+    info["n_gathered"] = int(moved)   # the regions' size, star and layer (#670)
+    info["n_moved"] = int(n_moved)    # cells that changed rank for it
+    info["n_regions"] = len(set(canon.values()))
+    if embedded_nodes is not None:
+        # which region each embedded mid-surface's zone became: the split
+        # redistributes per region too (#670), so it must not gather what
+        # the placement kept apart
+        node_comp = np.zeros(len(asm_pts), dtype=np.int32)
+        for k in range(1, n_comp + 1):
+            node_comp[np.unique(asm_tets[comp_of_tet == k])] = k
+        region_of_comp = {k: (canon[k] if not single else canon[1])
+                          for k in range(1, n_comp + 1)}
+        info["embedded_regions"] = []
+        for pts in embedded_nodes:
+            hit = np.flatnonzero(
+                np.all(np.isclose(asm_pts[:, None, :], pts[None, :1, :],
+                                  atol=1e-12), axis=2))
+            k = int(node_comp[hit[0]]) if hit.size else 1
+            info["embedded_regions"].append(region_of_comp.get(k, 1))
     return new, info
 
 

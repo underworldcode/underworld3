@@ -113,3 +113,42 @@ def test_network_3d_width_weak_plane_solve_np2():
         peak = comm.allreduce(float(slips.get(name, 0.0)), op=max)
         assert peak == pytest.approx(expected, rel=2e-2), (
             f"{name}: parallel peak {peak:.4f} vs serial {expected}")
+
+
+def test_two_faults_apart_are_placed_by_their_own_ranks():
+    """Two faults a domain apart in one network are two regions of the
+    placement gather and two groups of the split's redistribution
+    (#670): each is placed and split by the rank that holds it, and
+    the network never gathers them together. On a base wide enough to
+    hold both shells (the width path's own box is the unit cube, so the
+    band builder is called with a wider one), measured at np=2: both
+    regions interior to their ranks, nothing moved, the mesh balanced
+    to within a few cells; at np=4 each region to a different rank."""
+    A = np.array([[0.10, -0.20, 0.30], [0.40, -0.20, 0.30],
+                  [0.40, -0.20, 0.70], [0.10, -0.20, 0.70]])
+    B = np.array([[0.60, 1.20, 0.30], [0.90, 1.20, 0.30],
+                  [0.90, 1.20, 0.70], [0.60, 1.20, 0.70]])
+    fsA = uw.meshing.FaultSurface("West", A)
+    fsA.triangulate()
+    fsB = uw.meshing.FaultSurface("East", B)
+    fsB.triangulate()
+    net = uw.meshing.FaultNetwork([fsA, fsB], hierarchy=["West", "East"])
+    net.prepare(h=H, ligament=1.0, verbose=False)
+    net.realisation, net.width = "split", WIDTH
+    net._build_3d_band(h_far=0.24, realisation="split", margin_rings=0.5,
+                       carve_clearance=0.3, minCoords=(-0.5, -0.5, -0.5),
+                       maxCoords=(1.5, 1.5, 1.5))
+    mesh = net.mesh
+    comm = mesh.dm.comm.tompi4py()
+    info = {k: net.info[k] for k in ("n_regions", "n_gathered", "n_moved")}
+    assert all(g == info for g in comm.allgather(info)), info
+    assert info["n_regions"] == 2, info
+    # never both to one rank: what moved is less than the regions' size
+    assert info["n_moved"] < info["n_gathered"], info
+    # every rank holds cells, and both faults were split (their pair
+    # boundaries exist on the mesh)
+    local = int(mesh.dm.getHeightStratum(0)[1])
+    assert comm.allreduce(local, op=min) > 0
+    names = {b.name for b in mesh.boundaries}
+    for fault in ("West", "East"):
+        assert {f"{fault}Plus", f"{fault}Minus"} <= names, names

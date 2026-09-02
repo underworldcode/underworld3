@@ -298,3 +298,30 @@ def test_the_gather_moves_only_the_shell_around_the_zone():
     assert info["n_gathered"] <= within_three, (
         f"the gather moved {info['n_gathered']} cells; the shell rule "
         f"allows at most the {within_three} within three cells of the zone")
+
+
+def test_two_zones_apart_are_two_regions():
+    """Two patches a domain apart are two connected components of the
+    assembly, so two regions of the gather, each to its own rank
+    (#670): the surgeries run concurrently, and the sewn mesh is the
+    same one the single-region gather produced (zone, skin and removed
+    counts). Measured here at np=2: 304 cells moved where one region
+    for the pair moved 8451, and the two owners are different ranks."""
+    comm = uw.mpi.comm
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(-0.5, -0.5, -0.5), maxCoords=(1.5, 1.5, 1.5),
+        cellSize=0.24, refinement=1, regular=False, qdegree=2)
+    apart = [np.array([[-0.2, 0.0, 0.0], [0.2, 0.0, 0.0],
+                       [0.2, 0.0, 0.4], [-0.2, 0.0, 0.4]]),
+             np.array([[0.8, 1.0, 0.6], [1.2, 1.0, 0.6],
+                       [1.2, 1.0, 1.0], [0.8, 1.0, 1.0]])]
+    new, info = place_thin_volume(mesh.dm, apart, width=0.045,
+                                  label="Zone", label_value=5)
+    assert all(g == info for g in comm.allgather(info))
+    assert info["n_regions"] == 2, info
+    assert info["n_zone_cells"] > 0
+    assert _owned_label_count(new, "Zone", 5) == info["n_zone_cells"]
+    assert _owned_label_count(new, "Zone_skin", 5) == info["n_skin_faces"]
+    # the two regions do not share cells: what moved is at most one of
+    # them, never both (both to one rank would be the old behaviour)
+    assert info["n_moved"] < info["n_gathered"]

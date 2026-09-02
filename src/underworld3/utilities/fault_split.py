@@ -1212,7 +1212,7 @@ def _fault_labels_touch_seam(dm, labels):
     return bool(uw.mpi.comm.allreduce(touch, op=MPI.LOR))
 
 
-def _redistribute_fault_interior(dm, labels, verbose=False):
+def _redistribute_fault_interior(dm, labels, verbose=False, groups=None):
     """Redistribute a cut mesh so each fault's cell star is rank-interior.
 
     The default partition's balance cuts are ATTRACTED to the locally
@@ -1231,98 +1231,54 @@ def _redistribute_fault_interior(dm, labels, verbose=False):
     keyed on the union of its faults, which is what lets every split
     that follows run without migrating any prior pairing. Returns a
     NEW dm; the input is untouched.
+
+    ``groups`` partitions ``labels`` into the faults that must share a
+    rank (a junction-connected cluster); each group is one region of
+    :func:`place_surface._gather_regions`, moved to its own rank — or not
+    moved at all when its star is already interior to one — so two
+    faults a domain apart are never gathered together (#670). Without
+    ``groups`` the whole network is one region, as before.
     """
+    from underworld3.utilities.place_surface import _gather_regions
+
     comm = dm.getComm().tompi4py()
     if comm.size == 1:
         return dm
+    if groups is None:
+        groups = [list(labels)]
 
-    work = dm.clone()
-    cS, cE = work.getHeightStratum(0)
-    fS, fE = work.getHeightStratum(1)
-    vS, vE = work.getDepthStratum(0)
-    _pS, pEnd = work.getChart()
-    sf = work.getPointSF()
-
-    def propagate(mark):
-        # global OR of a chart-length mark across the point SF: remote
-        # copies fold into the owner, the owner's verdict returns to
-        # every copy — after this, every rank agrees on every point it
-        # can see. (A cell can touch a patch vertex without holding any
-        # labelled face in its own closure, so purely local label
-        # reading under-marks near the current seam.)
-        tmp = mark.copy()
-        sf.reduceBegin(MPI.INT32_T, tmp, mark, MPI.MAX)
-        sf.reduceEnd(MPI.INT32_T, tmp, mark, MPI.MAX)
-        out = mark.copy()
-        sf.bcastBegin(MPI.INT32_T, mark, out, MPI.REPLACE)
-        sf.bcastEnd(MPI.INT32_T, mark, out, MPI.REPLACE)
-        return np.maximum(mark, out)
-
-    def star_of_marked(mark):
-        cells = set()
-        for v in range(vS, vE):
-            if mark[v]:
-                for q in work.getTransitiveClosure(v, useCone=False)[0]:
-                    if cS <= int(q) < cE:
-                        cells.add(int(q))
-        return cells
-
-    # fault vertices (of every fault in the batch), marked globally
-    mark = np.zeros(pEnd, dtype=np.int32)
-    for name, value in labels:
-        if work.hasLabel(name) and \
-                work.getLabel(name).getStratumSize(int(value)) > 0:
-            for f in work.getLabel(name).getStratumIS(
-                    int(value)).getIndices():
+    fS, fE = dm.getHeightStratum(1)
+    vS, vE = dm.getDepthStratum(0)
+    pStart, pEnd = dm.getChart()
+    ids = np.zeros(pEnd - pStart, dtype=np.int32)
+    for g, group in enumerate(groups, start=1):
+        for name, value in group:
+            if not (dm.hasLabel(name)
+                    and dm.getLabel(name).getStratumSize(int(value)) > 0):
+                continue
+            for f in dm.getLabel(name).getStratumIS(int(value)).getIndices():
                 if fS <= int(f) < fE:
-                    for q in work.getTransitiveClosure(int(f))[0]:
+                    for q in dm.getTransitiveClosure(int(f))[0]:
                         if vS <= int(q) < vE:
-                            mark[int(q)] = 1
-    mark = propagate(mark)
-    star = star_of_marked(mark)
-
-    # one growth layer: the split's seam rule needs every point in the
-    # CLOSURE of a patch-vertex-star cell unshared, and a point is
-    # unshared exactly when all its incident cells are co-resident —
-    # so gather every cell touching any vertex of the star cells'
-    # closures. One layer is exactly sufficient (each such point's
-    # incident cells all touch a marked-closure vertex).
-    mark2 = np.zeros(pEnd, dtype=np.int32)
-    for c in star:
-        for q in work.getTransitiveClosure(c)[0]:
-            if vS <= int(q) < vE:
-                mark2[int(q)] = 1
-    mark2 = propagate(mark2)
-    star |= star_of_marked(mark2)
-
-    counts = np.asarray(comm.allgather(len(star)))
-    if counts.sum() == 0:
+                            i = int(q) - pStart
+                            ids[i] = max(ids[i], g)
+    if comm.allreduce(int(ids.max()) if ids.size else 0, op=MPI.MAX) == 0:
         names = sorted(name for name, _value in labels)
         raise RuntimeError(
             f"fault_split: no facets labelled {names} found on any rank.")
-    target = int(np.argmax(counts))
-
-    n_local = cE - cS
-    assign = np.full(n_local, comm.rank, dtype=np.int32)
-    for c in star:
-        assign[c - cS] = target
-    order = np.argsort(assign, kind="stable").astype(np.int32)
-    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
-
-    part = work.getPartitioner()
-    part.setType(PETSc.Partitioner.Type.SHELL)
-    part.setShellPartition(comm.size, sizes=sizes, points=order)
-    work.distribute()
+    work, n_region, n_moved, owner, _canon = _gather_regions(dm, ids)
+    if work is dm:
+        work = dm.clone()          # the contract: a new dm, untouched input
     if verbose:
         names = sorted(name for name, _value in labels)
-        uw.pprint(f"[fault_split] {names}: star of "
-                  f"{int(counts.sum())} cells gathered onto rank "
-                  f"{target}; local cells now "
+        uw.pprint(f"[fault_split] {names}: {len(owner)} region(s) of "
+                  f"{n_region} cells, {n_moved} moved (owners "
+                  f"{sorted(owner.values())}); local cells now "
                   f"{work.getHeightStratum(0)[1]}")
     return work
 
 
-def split_faults(mesh, names, verbose=False):
+def split_faults(mesh, names, verbose=False, groups=None):
     """Split a NETWORK of already-labelled faults, any dimension, any np.
 
     The parallel obstruction to sequential :func:`split_fault` calls is
@@ -1334,6 +1290,11 @@ def split_faults(mesh, names, verbose=False):
     pre-pass the 2-D ``add_fault`` performs for freshly cut chains, made
     available for faults that already carry labels (the 3-D embedded
     patches, a reloaded mesh).
+
+    ``groups``, a list of lists of names, says which faults must share a
+    rank (a junction-connected cluster); each group is redistributed to
+    its own rank, and one whose star is already interior to a rank is
+    not moved (#670). Faults not named in any group form one more.
     """
     import underworld3 as uw
     from underworld3.discretisation import Mesh
@@ -1341,9 +1302,17 @@ def split_faults(mesh, names, verbose=False):
     out = mesh
     if uw.mpi.size > 1:
         labels = [(n, int(mesh.boundaries[n].value)) for n in names]
+        label_groups = None
+        if groups is not None:
+            value = dict(labels)
+            label_groups = [[(n, value[n]) for n in g] for g in groups]
+            rest = [n for n in names if not any(n in g for g in groups)]
+            if rest:
+                label_groups.append([(n, value[n]) for n in rest])
         if _fault_labels_touch_seam(mesh.dm, labels):
             dm = _redistribute_fault_interior(mesh.dm, labels,
-                                              verbose=verbose)
+                                              verbose=verbose,
+                                              groups=label_groups)
             out = Mesh(dm, simplex=mesh.dm.isSimplex(),
                        coordinate_system_type=(
                            mesh.CoordinateSystem.coordinate_type),

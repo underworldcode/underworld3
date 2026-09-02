@@ -310,11 +310,27 @@ The gather is one-way: the moved cells stay on the surgery rank, together
 with the cells the fill creates, so that rank carries the shell plus the
 band as extra load. That is the accepted trade (extra load on one rank in
 exchange for no communication during the solve), and it is proportional to
-the surface, not the domain. Two limits remain, recorded in #670: the whole
-network is one region with one target rank, so two surfaces each interior to
-a different rank are still gathered together; and a small domain cannot hold
-a shell at all (three base cells reaching the walls is the whole box, which
-is what the crossing-patches test fixture does).
+the surface, not the domain.
+
+A network is gathered per region, not as a whole. The assembly's connected
+components (zones fused through shared faces are one component; zones a
+domain apart are separate ones) are marked as separate regions, regions
+whose shells touch are merged, and each region goes to the rank that
+already holds most of it, or stays where it is when its shell is already
+interior to one. The surgeries then run concurrently, each owning rank
+carving and filling its own components; the collective rebuild sews them
+all at once. Two patches a domain apart at np=2 move 304 cells this way
+where one region for the pair moved 8451, and `info["n_regions"]` and
+`info["n_moved"]` report it. The split's own redistribution follows the
+same regions (`split_faults(..., groups=...)`, which the network passes
+from `info["embedded_regions"]`), so what the placement kept apart is not
+gathered together afterwards. The outcrop and ladder paths keep one
+region: their bowl, cap and extrusion machinery is single-rank.
+
+One limit remains: a small domain cannot hold a shell at all (three base
+cells reaching the walls is the whole box, which is what the
+crossing-patches test fixture does), so that fixture measures correctness
+only, never balance.
 
 ## The thin volume: finite-width zones, junctions in the volume
 
