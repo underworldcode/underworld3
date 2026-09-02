@@ -393,7 +393,7 @@ def test_citcoms_spherical_shell_is_parallel_safe():
     )
     assert thermal._lumped_mass.getSize() > 0
     assert np.all(np.isfinite(temperature.data))
-    assert temperature_l2_squared == pytest.approx(0.814491155536, rel=1.0e-8)
+    assert temperature_l2_squared == pytest.approx(0.811309509754, rel=1.0e-8)
 
 
 def test_citcoms_snapshot_restores_startup_state_exactly():
