@@ -61,7 +61,21 @@ def _pinned_indices(mesh, name):
     return np.asarray(iset.getIndices(), dtype=np.int64) - vS
 
 
-def test_pinned_set_is_partition_independent():
+def test_every_rank_pins_every_band_vertex_it_holds():
+    """A vertex in the band is pinned on EVERY rank that holds it.
+
+    The previous form of this test allgathered the pinned coordinates, took the
+    union, and compared ``len(union)`` with ``allreduce(len(union), MAX)``. The
+    union is built from the same gathered list on every rank, so those two
+    numbers are the same by construction and the assertion could not fail
+    whatever the pinning did (#512).
+
+    What can fail is this: a rank-local pin misses a vertex its peer pinned, so
+    the owner is free to move a vertex the seam expects to stay. Every rank
+    therefore has to pin every band vertex present in its own coordinate array,
+    not merely some of them.
+    """
+
     mesh, surface = _fixture()
     name = mesh.label_interface_band(surface, offset=0.0, halo=1)
     X = _coords(mesh)
@@ -70,13 +84,21 @@ def test_pinned_set_is_partition_independent():
     # Compare the pinned COORDINATES, not counts: a shared vertex is held by
     # every rank on the seam, so a count double-counts it and would mask exactly
     # the defect this test exists to catch.
-    local = {(round(float(x), 12), round(float(y), 12)) for x, y in X[idx]}
-    gathered = uw.mpi.comm.allgather(local)
-    union = set().union(*gathered)
+    def key(x, y):
+        return (round(float(x), 12), round(float(y), 12))
 
-    total = uw.mpi.comm.allreduce(len(union), op=MPI.MAX)
-    assert len(union) == total
-    assert total > 0, "nothing pinned; the fixture is not exercising the band"
+    local = {key(x, y) for x, y in X[idx]}
+    union = set().union(*uw.mpi.comm.allgather(local))
+
+    assert union, "nothing pinned; the fixture is not exercising the band"
+
+    held_here = {key(x, y) for x, y in X}
+    missing = (union & held_here) - local
+
+    assert not missing, (
+        f"rank {uw.mpi.rank} holds {len(missing)} band vertex/vertices that a "
+        f"peer pinned and it did not: {sorted(missing)[:5]} — a rank-local pin "
+        "lets the owner move a vertex the seam expects to stay")
 
 
 def test_pinned_vertices_including_shared_ones_do_not_move():

@@ -19,7 +19,7 @@ import importlib.util
 import numpy as np
 import sympy
 import underworld3 as uw
-from underworld3.function import analytic as A
+from underworld3 import analytic as A
 
 fv = importlib.util.module_from_spec(
     importlib.util.spec_from_file_location("fv", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fas_vanka.py")))

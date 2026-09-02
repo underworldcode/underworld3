@@ -1,7 +1,7 @@
 name: "GHCR: Command-Line Container"
 
 # Builds the Underworld3 command-line Docker image and pushes to GHCR.
-# Uses container/Containerfile (micromamba-based image for local use).
+# Uses container/Containerfile (pixi-based two-stage image for local use).
 #
 # This is separate from binder-image.yml which builds Binder-ready images
 # optimized for mybinder.org.
@@ -12,7 +12,8 @@ on:
     paths:
       # Only rebuild when these files change
       - 'container/Containerfile'
-      - 'environment.yaml'
+      - 'pixi.toml'
+      - 'pixi.lock'
       - 'src/**/*.pyx'
       - 'src/**/*.c'
       - 'setup.py'
@@ -32,6 +33,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: write
 
     steps:
       - name: Checkout repository
@@ -74,6 +76,8 @@ jobs:
             SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           # tags: |
           #   ghcr.io/underworldcode/underworld3:${{ env.BRANCH }}
           #   ghcr.io/underworldcode/underworld3:latest

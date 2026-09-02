@@ -48,6 +48,11 @@ from petsc4py import PETSc
 
 from underworld3 import mpi
 
+# One rule for a facet's measure and normal, shared with the three wall accumulators
+# (rotated_bc._boundary_velocity_nodes, Mesh._assemble_boundary_normal,
+# boundary_flux._node_normals). This was a fourth verbatim copy.
+from underworld3.utilities.facet_normals import facet_measure_and_normal
+
 # PETSc section field id of the velocity unknown (solver field registration
 # order: velocity first) — the same convention as rotated_bc.
 _VELOCITY_FIELD = 0
@@ -548,18 +553,31 @@ def _fault_pair_nodes(solver, boundary):
               dm.getLabel(plus_name).getStratumIS(value).getIndices()
               if fS <= int(p) < fE]
 
+    # Facet normals accumulated to the pair nodes, weighted by the facet MEASURE for
+    # the same reason as the wall normals in rotated_bc (#560): the assembler
+    # integrates facet by facet, so a node on two facets is only consistent when its
+    # normal is parallel to Σ_f |f| n̂_f. The fault is not protected by being an
+    # interior surface — a constant pressure cancels exactly in the MEAN rows (the two
+    # sides carry opposite outward normals) but DOUBLES in the jump rows, and the
+    # jump-tangential (slip) row is free, so the bisector leaves √2·p·sin(δ/2)·(|f₁|−|f₂|)/6
+    # there: a pressure-driven spurious slip at every kink node, plus the same lost
+    # pressure gauge. Rank-local by construction — a seam-touching fault is
+    # redistributed onto one rank before the split, so no cross-rank sum is needed.
+    # Same rule, same one place, as the three wall accumulators — see
+    # `facet_normals.facet_measure_and_normal`. `orient="support0"` is the ONE
+    # difference and it is deliberate: a fault facet is interior by construction (two
+    # support cells), so the "exterior" rule would decline to orient it at all. Every
+    # facet of a split fault lists the same side first, so "away from support[0]" IS
+    # the ±side split and is coherent along the surface. Keeping the normalise, the
+    # +1e-30 epsilon and the measure weight shared is the point: this was a fourth
+    # verbatim copy of those six lines, and copies of them drifting apart is what
+    # produced #560 and then #564.
     nacc = {}
     for f in facets:
-        _, cent, nrm = dm.computeCellGeometryFVM(f)
-        ne = np.asarray(nrm, dtype=float)
-        ne = ne / (np.linalg.norm(ne) + 1e-30)
-        support = dm.getSupport(f)
-        _, ccent, _ = dm.computeCellGeometryFVM(int(support[0]))
-        if np.dot(ne, np.asarray(cent) - np.asarray(ccent)) < 0:
-            ne = -ne
+        vol, ne, _exterior = facet_measure_and_normal(dm, f, orient="support0")
         for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
-                nacc[q] = nacc.get(q, np.zeros(dim)) + ne
+                nacc[q] = nacc.get(q, np.zeros(dim)) + float(vol) * ne
 
     override = _compiled_normal_override(solver, boundary)
     if override is not None:
@@ -1040,18 +1058,40 @@ def fault_normal_traction(solver, boundary, solve_result):
     return s_coord[order], sig[order]
 
 
-def fault_pair_jumps(solver, boundary, solve_result):
+def fault_pair_jumps(solver, boundary, solve_result, gather=False):
     """The velocity jump at every coincident pair, from the solve.
 
-    Returns ``(coords, jumps, normals)`` on this rank — the pair position,
-    the full jump vector :math:`v^+ - v^-`, and the fault unit normal —
-    in any dimension. Reads the composite solution ``solve_result["U"]``
+    Returns ``(coords, jumps, normals)`` — the pair position, the full
+    jump vector :math:`v^+ - v^-`, and the fault unit normal — in any
+    dimension. Reads the composite solution ``solve_result["U"]``
     through the pairing, which is the only correct route: the pair
     coordinates are identical, so field queries by position see one side
     only. The tangential part of the jump is the slip (a scalar against
     the in-fault tangent in 2-D, an in-plane vector in 3-D); the normal
     part is the leak, held at machine zero by the strong constraint.
+
+    The pairs are rank-local (the split keeps a fault rank-interior), so
+    a rank without the fault returns empty arrays. ``gather=True``
+    all-gathers the three arrays so every rank holds the whole fault —
+    the form a diagnostic that goes on to make collective calls
+    (``evaluate``, a write) must use, or the ranks diverge and hang.
     """
+    coords, jumps, normals = _fault_pair_jumps_local(solver, boundary,
+                                                     solve_result)
+    if not gather:
+        return coords, jumps, normals
+    comm = solver.mesh.dm.comm.tompi4py()
+    if comm.size == 1:
+        return coords, jumps, normals
+    dim = solver.mesh.dim
+    parts = comm.allgather((np.asarray(coords, dtype=float).reshape(-1, dim),
+                            np.asarray(jumps, dtype=float).reshape(-1, dim),
+                            np.asarray(normals, dtype=float).reshape(-1, dim)))
+    return tuple(np.vstack([p[k] for p in parts]) for k in range(3))
+
+
+def _fault_pair_jumps_local(solver, boundary, solve_result):
+    """The rank-local half of :func:`fault_pair_jumps`."""
     dm = solver.dm
     dim = solver.mesh.dim
     lsec = dm.getLocalSection()

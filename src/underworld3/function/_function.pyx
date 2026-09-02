@@ -1023,13 +1023,19 @@ def evaluate_nd(   expr,
         # same fix that lets swarm migration claim them. Serial / non-simplex
         # keep the cell-wall test (bit-identical). See
         # parallel-repeated-solve-corruption.md.
-        in_or_not = mesh.points_in_domain(coords_array, strict_validation=False)
+        #
+        # The classification also hands back the cells it located on the way,
+        # so petsc_interpolate does not look those points up again (#551
+        # item 2).
+        in_or_not, cell_hints = mesh._classify_points_in_domain(
+            coords_array, strict_validation=False)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
                                     coord_sys,
                                     mesh,
                                     simplify=simplify,
-                                    verbose=verbose, )
+                                    verbose=verbose,
+                                    cell_hints=cell_hints[in_or_not], )
 
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
@@ -1093,7 +1099,8 @@ def petsc_interpolate(   expr,
                 mesh=None,
                 other_arguments=None,
                 simplify=True,
-                verbose=False, ):
+                verbose=False,
+                cell_hints=None, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -1112,6 +1119,14 @@ def petsc_interpolate(   expr,
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
         Not yet implemented.
+    cell_hints: numpy.ndarray, optional
+        One owning cell index per coordinate, as returned by
+        ``Mesh._classify_points_in_domain``: a cell the classification
+        already located, or ``-1`` for "not looked up", which this function
+        then locates itself. Supplying it means those points are not located
+        twice. Hints must have been located against ``mesh``; hints for any
+        other mesh in the expression are ignored and that mesh locates its
+        own.
 
     Notes
     -----
@@ -1218,6 +1233,10 @@ def petsc_interpolate(   expr,
     # 2. Evaluate all mesh variables - there is no real
     # computational benefit in interpolating a subset.
 
+    # Any cell hints the caller supplied were located against THIS mesh; an
+    # expression spanning two meshes must locate the second one itself.
+    hinted_mesh = mesh
+
     def interpolate_vars_on_mesh( varfns, np.ndarray coords ):
         """
         This function performs the interpolation for the given variables
@@ -1250,8 +1269,16 @@ def petsc_interpolate(   expr,
                 mesh._evaluation_interpolated_results = None
 
 
-        # For now, eval over all vars
-        vars = mesh.vars.values()
+        # For now, eval over all vars.
+        #
+        # MATERIALISE THE LIST. ``mesh.vars`` is a weakref.WeakValueDictionary
+        # and its ``.values()`` is a GENERATOR, not a view: the dofcount loop
+        # below consumes it, and every later reader (the continuity gate, the
+        # RBF fallback rung) then iterates an empty sequence. That silently
+        # disabled the fallback — points the locator returns -1 for kept the
+        # NaN written by DMInterpolationEvaluate_UW and handed it back to the
+        # caller — and it silently pinned the continuity gate at True.
+        vars = list(mesh.vars.values())
 
         cdef DM dm = mesh.dm
 
@@ -1286,7 +1313,23 @@ def petsc_interpolate(   expr,
         # O(jump) wrong-side errors. The policy participates in the cache key
         # so the same coords evaluated with a different field mix cannot
         # reuse a structure built under the other policy.
-        all_continuous = all(getattr(var, "continuous", True) for var in vars)
+        #
+        # The continuity test runs over the variables THIS CALL ASKED FOR,
+        # not every variable on the mesh. The structure carries all of them
+        # (dofcount above), but only the requested slices are read, and the
+        # gate exists to protect a field whose jump sits on a cell face. Over
+        # the whole mesh instead, one discontinuous variable anywhere would
+        # take every evaluation off the authoritative path: measured on a
+        # warped hex box (capability "continuous") carrying a P1 and a P0,
+        # that costs the CONTINUOUS field a factor 15 in accuracy (linear
+        # field, max error 8.0e-3 -> 1.2e-1 at 62 of 1500 interior points)
+        # for no correctness gain. Scoped to the request, the continuous
+        # field is bit-identical and only the P0 moves.
+        #
+        # NOTE this gate has never bound before: `vars` was an exhausted
+        # generator (see above) so `all()` was vacuously True.
+        all_continuous = all(
+            getattr(varfn.meshvar(), "continuous", True) for varfn in varfns)
         authoritative = mesh._hint_is_authoritative(all_continuous)
         location_policy = "auth" if authoritative else "locate"
 
@@ -1311,24 +1354,44 @@ def petsc_interpolate(   expr,
             cached_info = CachedDMInterpolationInfo()
 
             # Cell hints, by policy:
-            # AUTHORITATIVE — the estimator owner is the answer. Parallel uses
-            # the bulletproof barycentric locator (correct owner across
-            # seams). Serial simplex keeps get_closest_cells (the validated
-            # bit-for-bit PR #203 path; with planar faces + ξ-clamp the
-            # nearest-cell hint evaluates exactly). Serial quad/hex meshes
-            # that qualify by MEASUREMENT use the estimator directly — the
-            # nearest-centroid guess is not containment-checked and these
-            # meshes only just graduated, so take the checked owner.
+            # AUTHORITATIVE — the hint bypasses DMLocatePoints, so it has to
+            # be a cell that CONTAINS the point. _robust_owning_cells is the
+            # containment-checked locator: it returns a cell whose walls the
+            # point is inside (any one of them, for a point on a shared face)
+            # and -1 when no local cell contains it. Every authoritative mesh
+            # takes the same route. Serial simplex meshes used to take the
+            # nearest-CONTROL-POINT lookup (get_closest_cells) with no
+            # containment test at all; on a tetrahedron the reference-coord
+            # clamp downstream is a box clamp and cannot rescue that, so a
+            # query on a shared edge was evaluated by extrapolating the basis
+            # of a cell that does not contain it (#432, a recurrence of #390).
             # NOT AUTHORITATIVE — no hint at all: DMLocatePoints decides,
             # dropped points surface in unlocated_mask and are filled by the
             # RBF fallback below.
+            #
+            # Cells the caller's classification already located are reused;
+            # only the ones it left at -1 are searched for, and only here, on
+            # the cache miss that actually needs them. That is what makes it
+            # one location per point per call rather than two.
             if authoritative:
-                if mesh._eval_use_robust_location():
-                    cells = mesh._robust_owning_cells(coords)
-                elif not bool(mesh.dm.isSimplex()) and mesh.dim == mesh.cdim:
-                    cells = mesh._robust_owning_cells(coords)
+                if cell_hints is not None and mesh is hinted_mesh:
+                    # COPY: the unhinted entries are filled in below, and
+                    # ascontiguousarray hands back the caller's own array when
+                    # it is already int64 and contiguous. petsc_interpolate
+                    # takes cell_hints as a documented keyword, so writing
+                    # through it would mutate somebody else's array.
+                    cells = np.array(cell_hints, dtype=np.int64, copy=True,
+                                     order="C")
+                    if cells.shape[0] != coords.shape[0]:
+                        raise RuntimeError(
+                            "cell_hints must carry one cell index per coordinate "
+                            f"({cells.shape[0]} hints for {coords.shape[0]} points)."
+                        )
+                    unhinted = np.where(cells < 0)[0]
+                    if unhinted.shape[0] > 0:
+                        cells[unhinted] = mesh._robust_owning_cells(coords[unhinted])
                 else:
-                    cells = mesh.get_closest_cells(coords)
+                    cells = mesh._robust_owning_cells(coords)
             else:
                 cells = None
 

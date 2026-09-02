@@ -403,16 +403,27 @@ def gardner_steady_state_psi(y, psi_0, psi_L, L, alpha):
     -----
     This is a *numpy* function (not sympy) intended for comparing
     numerical solutions against the analytical benchmark.
+
+    The formula lives in :func:`underworld3.analytic.richards.
+    gardner_steady_saturation` and is evaluated here; the mesh-based
+    :class:`underworld3.analytic.GardnerSteady` builds the same expression, so
+    the two cannot drift apart. That class is the better entry point when you
+    have a mesh — it carries the conductivity and the boundary conditions as
+    well, and it is covered by the residual check.
     """
     import numpy as np
+    import sympy
 
-    u_0 = np.exp(alpha * psi_0)
-    u_L = np.exp(alpha * psi_L)
+    from underworld3.analytic.richards import gardner_steady_saturation
 
-    # Normalised steady-state flux  q* = q / Ks
-    q_star = (u_L - u_0 * np.exp(-alpha * L)) / (1.0 - np.exp(-alpha * L))
+    coordinate = sympy.Symbol("y")
+    saturation, _ = gardner_steady_saturation(coordinate, psi_0, psi_L, L, alpha)
 
-    return (1.0 / alpha) * np.log((u_0 - q_star) * np.exp(-alpha * y) + q_star)
+    u = sympy.lambdify(coordinate, saturation, ["scipy", "numpy"])(
+        np.asarray(y, dtype=float)
+    )
+
+    return (1.0 / alpha) * np.log(u)
 
 
 def gardner_transient_psi(y, t, psi_dry, psi_wet, L, Ks, alpha, theta_r, theta_s):
@@ -489,6 +500,11 @@ def gardner_transient_psi(y, t, psi_dry, psi_wet, L, Ks, alpha, theta_r, theta_s
     The semi-infinite approximation is excellent when the wetting
     front has not yet reached the bottom boundary.
 
+    The formula lives in :func:`underworld3.analytic.richards.
+    gardner_transient_saturation`; :class:`underworld3.analytic.
+    GardnerTransient` builds the same expression on a mesh and is the better
+    entry point when you have one.
+
     References
     ----------
     Ogata, A. and Banks, R. B. (1961). A solution of the differential
@@ -496,27 +512,18 @@ def gardner_transient_psi(y, t, psi_dry, psi_wet, L, Ks, alpha, theta_r, theta_s
     *US Geological Survey Professional Paper* 411-A.
     """
     import numpy as np
-    from scipy.special import erfc
+    import sympy
 
-    delta_theta = theta_s - theta_r
-    D = Ks / (alpha * delta_theta)
-    V = Ks / delta_theta
+    from underworld3.analytic.richards import gardner_transient_saturation
 
-    u_dry = np.exp(alpha * psi_dry)
-    u_wet = np.exp(alpha * psi_wet)
-
-    # Depth from the top (z = 0 at top, z = L at bottom)
-    z = L - np.asarray(y, dtype=float)
-
-    sqrt_Dt = np.sqrt(D * t)
-
-    # Ogata-Banks solution
-    H = (
-        0.5 * erfc((z - V * t) / (2.0 * sqrt_Dt))
-        + 0.5 * np.exp(V * z / D) * erfc((z + V * t) / (2.0 * sqrt_Dt))
+    coordinate, elapsed = sympy.symbols("y t")
+    saturation, _, _ = gardner_transient_saturation(
+        coordinate, elapsed, psi_dry, psi_wet, L, Ks, alpha, theta_r, theta_s
     )
 
-    u = u_dry + (u_wet - u_dry) * H
+    u = sympy.lambdify((coordinate, elapsed), saturation, ["scipy", "numpy"])(
+        np.asarray(y, dtype=float), float(t)
+    )
 
     return (1.0 / alpha) * np.log(np.maximum(u, 1e-30))
 

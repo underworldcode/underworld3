@@ -38,6 +38,7 @@ Notes
   operators from the DM hierarchy, so our explicit ``P`` is used.
 """
 
+import os
 from typing import NamedTuple
 
 import numpy as np
@@ -156,31 +157,48 @@ def barycentric_prolongation(coarse_coords, fine_coords):
 
 
 def rbf_prolongation(coarse_coords, fine_coords, smooth=0.0):
-    """RBF prolongation: polyharmonic (r² log r) kernel + affine polynomial tail
-    (reproduces linear fields), Shepard row-normalised to a partition of unity.
-    Works for arbitrary (non-nested) point sets; software-equivalent to the
-    barycentric builder as an MG transfer operator."""
-    import scipy.sparse as sp
-    from scipy.spatial.distance import cdist
+    """RBF prolongation via the STANDARD local interpolator (#429).
 
-    def phi(r):
-        # r² log r → 0 as r → 0; the clamp only keeps log(0) finite at
-        # coincident points — it does not perturb the kernel value.
-        r = np.where(r == 0.0, 1e-30, r)
-        return r ** 2 * np.log(r)
+    The sparse, linear-exact, kd-tree-based local RBF the rest of the code
+    uses (``kdtree.interpolation_matrix``, ``order=1``: polyharmonic
+    r² log r kernel + affine tail solved per target over its nearest
+    neighbours — see ``docs/developer/subsystems/interpolation.md``).
+    Replaces the original GLOBAL builder, which assembled and solved the
+    dense coarse-cloud kernel matrix and returned a transfer with
+    ``nnz/row == n_coarse`` — a rescue whose Galerkin coarse operators
+    were dense too, and which had no conditioning path on large clouds
+    (#429). Same kernel, same reproduction guarantees (constants and
+    linears to machine precision), sparse support.
 
-    nc, dim = coarse_coords.shape
-    Pc = np.hstack([np.ones((nc, 1)), coarse_coords])          # affine tail
-    Acc = phi(cdist(coarse_coords, coarse_coords)) + smooth * np.eye(nc)
-    M = np.block([[Acc, Pc], [Pc.T, np.zeros((dim + 1, dim + 1))]])
-    B = np.hstack([phi(cdist(fine_coords, coarse_coords)),
-                   np.ones((fine_coords.shape[0], 1)), fine_coords])
-    # Solve M Xᵀ = Bᵀ rather than forming M⁻¹ explicitly (faster, more stable). M is
-    # symmetric, so B M⁻¹ = solve(M, Bᵀ)ᵀ.
-    Praw = np.linalg.solve(M, B.T).T[:, :nc]
-    rs = Praw.sum(axis=1, keepdims=True)
-    rs[np.abs(rs) < 1e-12] = 1.0
-    return sp.csr_matrix(Praw / rs)
+    A row-wise kNN builder guarantees nonzeros per ROW, never per COLUMN
+    (#424): a coarse DOF outside every fine stencil still yields an empty
+    column and a singular PᵀAP. The build loop's zero-column repair
+    (nearest-fine-DOF injection) is the counterpart, for this builder and
+    the barycentric one alike. ``smooth`` is accepted for signature
+    compatibility and unused — locality is the conditioning here.
+    """
+    from underworld3 import kdtree
+
+    kdt = kdtree.KDTree(np.ascontiguousarray(coarse_coords, dtype=float))
+    return kdt.interpolation_matrix(
+        np.ascontiguousarray(fine_coords, dtype=float), order=1)
+
+
+def _drop_structural_zeros(P_csr, tol=1e-12):
+    """Remove numerically-zero transfer weights that are STRUCTURALLY nonzero.
+
+    A fine node coincident with a coarse node gets barycentric weights
+    ``[1, ~1e-16, ~1e-16, ~1e-16]`` — an identity row in VALUE but a 4-entry
+    row in STRUCTURE, and Galerkin RAP fills by structure. On a composite
+    (placed/overlay) hierarchy the background is all such rows, so the junk
+    entries fatten every coarse operator's background block level over level
+    (measured 90 -> 265 -> 481 nnz/row down a 4-level tail, #629). Weights
+    are O(1) partition-of-unity values, so ``tol`` cuts only float noise; a
+    row cannot empty (its weights sum to 1)."""
+    P = P_csr.tocsr()
+    P.data[np.abs(P.data) < tol] = 0.0
+    P.eliminate_zeros()
+    return P
 
 
 _BUILDERS = {"barycentric": barycentric_prolongation, "rbf": rbf_prolongation}
@@ -404,7 +422,281 @@ def _reduced_transfer(coarse_coords, fine_coords, r2f_c, r2f_f, ncomp, builder):
     """Build one prolongation reduced(coarse) -> reduced(fine):
     node-level scalar P -> interleave ``ncomp`` components -> drop BC rows/cols."""
     Pn = builder(coarse_coords, fine_coords)               # (n_f_nodes, n_c_nodes)
-    return _reduced_from_node_transfer(Pn, r2f_c, r2f_f, ncomp)
+    return _reduced_from_node_transfer(_drop_structural_zeros(Pn),
+                                       r2f_c, r2f_f, ncomp)
+
+
+def _is_native_refine_pair(coarse_mesh, fine_mesh):
+    """Are these two levels consecutive members of one native ``refine()``
+    hierarchy? Decided by the ``_refine_slot`` tags ``_coarse_level_meshes``
+    (and the requested-native arm of :func:`build_transfers`) stamp on the
+    family — token identity plus consecutive level indices. Untagged levels
+    (placed meshes, adapt generations, moved bases) answer False and keep
+    their existing transfer routes."""
+    sa = getattr(coarse_mesh, "_refine_slot", None)
+    sb = getattr(fine_mesh, "_refine_slot", None)
+    return (sa is not None and sb is not None
+            and sa[0] is sb[0] and sb[1] == sa[1] + 1)
+
+
+def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
+                                    coarse_coords=None, fine_coords=None):
+    """EXACT node-level prolongation for a native ``refine()`` pair, at ANY
+    polynomial degree — the FE embedding of the coarse Lagrange space in the
+    fine one. Returns a scipy CSR ``(n_fine_nodes, n_coarse_nodes)`` matrix,
+    or ``None`` to decline (the caller falls back to the geometric builder).
+
+    Why: the DOF clouds of degree >= 2 spaces do NOT nest even where the
+    meshes do (an L1 edge node is no L0 node), so the point-located builders
+    return scattered transfers whose Galerkin product runs 3-5x fatter per row
+    than a native coarse operator (481 vs ~90-150 nnz/row measured, #629).
+    PETSc's own ``DMCreateInterpolation`` general path is NOT the embedding
+    either (measured: row sums to 1.375, quadratic reproduction error 1e-2).
+
+    Construction (#425, the dual-basis identity): a Lagrange basis is dual to
+    its nodal points, so with ``M[i,m] = mu_m(x_i)`` over a parent cell's own
+    ``n`` nodes and ``B[t,m] = mu_m(x_t)`` at the fine nodes inside it, the
+    weight block is ``W = B M^-1`` — no reference element, no per-degree
+    formulae, no point location. Coordinates are pulled back through the
+    parent's affine map first: raw monomials on a cell of size ``h`` give
+    ``cond(M) ~ h^-k``, while under the pullback conditioning depends only on
+    (degree, dim) — and the pulled-back coordinate is the barycentric vector,
+    so the "is this fine node inside its parent?" guard is free.
+
+    The parent relation itself is recovered from the two DMs: every fine
+    vertex of a uniform refinement is an inherited coarse vertex or an exact
+    edge midpoint (identified by bit equality, so a snapped/relaxed hierarchy
+    declines rather than guesses), and the parent cell follows topologically
+    (:func:`~underworld3.utilities.nvb.nested_cell_parents`). Structurally
+    full rank: every coarse node is inherited into the fine level with weight
+    1, so the zero-column failure (#424) cannot arise here.
+    """
+    import itertools
+
+    import scipy.sparse as sp
+    from underworld3.utilities.nvb import (nested_cell_parents,
+                                           nested_prolongation_from_dms)
+
+    cdm, fdm = coarse_mesh.dm, fine_mesh.dm
+    dim = cdm.getDimension()
+    if cdm.getCoordinateDim() != dim:      # embedded surface: no affine pullback
+        return None
+    vP = nested_prolongation_from_dms(cdm, fdm)
+    if vP is None:
+        return None
+    parents = nested_cell_parents(cdm, fdm, vP)
+    if parents is None:
+        return None
+    try:
+        cn = coarse_mesh._cell_node_indices(degree, continuous)
+        fn = fine_mesh._cell_node_indices(degree, continuous)
+    except (NotImplementedError, AttributeError):
+        return None
+
+    Xc = (np.asarray(coarse_coords) if coarse_coords is not None
+          else np.asarray(coarse_mesh._get_coords_for_basis(degree, continuous)))
+    Xf = (np.asarray(fine_coords) if fine_coords is not None
+          else np.asarray(fine_mesh._get_coords_for_basis(degree, continuous)))
+    n_c, n_f = Xc.shape[0], Xf.shape[0]
+
+    # One containing fine cell per fine node — any one: the parent interpolant
+    # is continuous across parent faces, so the weights agree either way.
+    owner = np.full(n_f, -1, dtype=np.int64)
+    for k in range(fn.shape[0]):
+        owner[fn[k]] = k
+    if (owner < 0).any():
+        return None
+
+    ccS, ccE = cdm.getHeightStratum(0)
+    cvS, cvE = cdm.getDepthStratum(0)
+    vxy = np.ascontiguousarray(
+        cdm.getCoordinatesLocal().array.reshape(-1, dim))
+    cell_verts = np.empty((ccE - ccS, dim + 1), dtype=np.int64)
+    for c in range(ccS, ccE):
+        vv = [q - cvS for q in cdm.getTransitiveClosure(c)[0]
+              if cvS <= q < cvE]
+        if len(vv) != dim + 1:
+            return None
+        cell_verts[c - ccS] = vv
+
+    # Monomials of total degree <= degree: exactly nodes-per-cell many on a
+    # simplex, so M is square (guaranteed by _cell_node_indices' own check).
+    E = np.asarray([e for e in itertools.product(range(degree + 1), repeat=dim)
+                    if sum(e) <= degree])
+    if E.shape[0] != cn.shape[1]:
+        return None
+
+    def vander(L):
+        return np.prod(L[:, None, :] ** E[None, :, :], axis=2)
+
+    parent_of = parents[owner] - ccS           # coarse cell index per fine node
+    order = np.argsort(parent_of, kind="stable")
+    runs = np.flatnonzero(np.diff(parent_of[order])) + 1
+    rows, cols, vals = [], [], []
+    for grp in np.split(order, runs):
+        c = int(parent_of[grp[0]])
+        verts = vxy[cell_verts[c]]
+        A = (verts[1:] - verts[0]).T
+        try:
+            Ainv = np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            return None
+        Lc = (Xc[cn[c]] - verts[0]) @ Ainv.T
+        Lf = (Xf[grp] - verts[0]) @ Ainv.T
+        # The pullback is the barycentric vector: outside the parent means the
+        # attribution (or the geometry) is off — decline, never extrapolate.
+        if Lf.min() < -1e-8 or (1.0 - Lf.sum(axis=1)).min() < -1e-8:
+            return None
+        try:
+            W = np.linalg.solve(vander(Lc).T, vander(Lf).T).T   # B M^-1
+        except np.linalg.LinAlgError:
+            return None
+        nodes_c = cn[c]
+        for t_i, t in enumerate(grp):
+            keep = np.flatnonzero(np.abs(W[t_i]) > 1e-12)
+            rows.extend([int(t)] * keep.size)
+            cols.extend(int(nodes_c[j]) for j in keep)
+            vals.extend(float(W[t_i, j]) for j in keep)
+
+    P = sp.csr_matrix((vals, (rows, cols)), shape=(n_f, n_c))
+    # Lagrange partition of unity: every row must sum to 1 exactly.
+    if np.abs(np.asarray(P.sum(axis=1)).ravel() - 1.0).max() > 1e-8:
+        return None
+    return P
+
+
+def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
+                     w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
+    """FAC patch/background split of one level's reduced fine DOFs (#629).
+
+    A locally-refined hierarchy is a COMPOSITE grid: levels differ only in
+    the refined patch, and the background falls through unchanged. Smoothing
+    the whole level is the measured pathology (a V-cycle smooths ~175% of the
+    fine level's nonzeros); the FAC/MLAT answer is to smooth each level only
+    on its patch plus an interface halo, with the background smoothed once at
+    the level that owns it. This function finds that patch algebraically from
+    the level's own transfer — builder-agnostic, so placed levels work too.
+
+    A fine reduced DOF is BACKGROUND when its transfer row is an identity row
+    (one effective weight-1 entry) AND its node coincides with the referenced
+    coarse node (within ``x_tol``): the node falls through the pair. Anything
+    else is PATCH. Split-duplicated nodes — two fine nodes onto one coarse
+    node, a fault slit — count as patch even though each row is identity: the
+    pair changes topology there. The HALO is the one-coarse-cell layer of
+    background whose coarse node is referenced by some patch row. Membership
+    is decided per NODE (all components together), so the split is invariant
+    under the rotated path's per-node Q rotation.
+
+    Returns ``(owned_rows, subdomain_rows)`` — reduced fine row indices of
+    the patch and of patch+halo — or ``None`` when patch+halo covers more
+    than ``cover_max`` of the level: a uniform pair refines everywhere, and
+    whole-level smoothing is then the right configuration.
+    """
+    P = P_csr.tocsr()
+    n = P.shape[0]
+    if n == 0:
+        return None
+    # TODO(MEASURE): #629 campaign knob for the whole-level gate; remove
+    # once the cover threshold is settled.
+    cover_max = float(os.environ.get("UW_FAC_COVER", cover_max))
+    map_f = np.asarray(map_f, dtype=np.int64)
+    map_c = np.asarray(map_c, dtype=np.int64)
+    node_f = map_f // nc
+    indptr, cols, data = P.indptr, P.indices, P.data
+
+    bg_col = np.full(n, -1, dtype=np.int64)     # coarse NODE of background rows
+    patch_row = np.zeros(n, dtype=bool)
+    for r in range(n):
+        sl = slice(indptr[r], indptr[r + 1])
+        w = data[sl]
+        if w.size == 0:
+            patch_row[r] = True
+            continue
+        aw = np.abs(w)
+        j = int(np.argmax(aw))
+        if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
+            patch_row[r] = True
+            continue
+        cnode = int(map_c[cols[sl][j]] // nc)
+        if np.max(np.abs(coords_f[int(node_f[r])] - coords_c[cnode])) > x_tol:
+            patch_row[r] = True
+            continue
+        bg_col[r] = cnode
+
+    nn = int(node_f.max()) + 1
+    node_is_patch = np.zeros(nn, dtype=bool)
+    node_is_patch[node_f[patch_row]] = True
+    # split duplicates: >1 distinct background fine node onto one coarse node
+    dup_nodes = np.zeros(nn, dtype=bool)
+    bgr = np.flatnonzero(bg_col >= 0)
+    if bgr.size:
+        pairs = np.unique(np.stack([bg_col[bgr], node_f[bgr]], axis=1), axis=0)
+        counts = np.bincount(pairs[:, 0])
+        dup = np.flatnonzero(counts > 1)
+        if dup.size:
+            dup_nodes[pairs[np.isin(pairs[:, 0], dup), 1]] = True
+            node_is_patch |= dup_nodes
+
+    # TODO(MEASURE): #629 campaign knob — "slit" keys the strong patch on the
+    # PHYSICS (the split-duplicated fault nodes), not the refinement
+    # structure: the smooth refined bulk stays on whole-level smoothing (it
+    # is well served by ordinary multigrid), and only the fault trace gets
+    # the subdomain solve. The halo comes from ASM overlap through the
+    # operator sparsity (set UW_FAC_OVERLAP). Remove when settled.
+    if os.environ.get("UW_FAC_PATCH") == "slit":
+        # The fault trace = COINCIDENT FINE PAIRS — the split's plus/minus
+        # nodes at bit-identical coordinates. Detected in the fine cloud
+        # itself, not through the transfer: a cut inserts NEW vertices at
+        # edge crossings, so slit nodes need not coincide with any coarse
+        # node and the transfer-dup rule (above) can be empty.
+        slit_nodes = np.zeros(nn, dtype=bool)
+        cf = np.ascontiguousarray(np.asarray(coords_f, dtype=float))
+        _, first, counts = np.unique(
+            cf.round(decimals=9)[:nn], axis=0,
+            return_index=True, return_counts=True)
+        if (counts > 1).any():
+            keys = {cf.round(decimals=9)[i].tobytes()
+                    for i in first[counts > 1]}
+            for i in range(nn):
+                if cf.round(decimals=9)[i].tobytes() in keys:
+                    slit_nodes[i] = True
+        slit_nodes |= dup_nodes
+        rows = np.flatnonzero(slit_nodes[node_f])
+        if rows.size == 0:
+            return None                    # unsplit level: whole-level smoothing
+        rows = rows.astype(np.int64)
+        # TODO(MEASURE): #629 segmentation experiment — split the fault
+        # subdomain into k along-strike blocks (contiguous chunks of the
+        # coordinate along the trace's principal direction) to measure the
+        # iteration cost of block-wise solving vs one trace-wide solve; the
+        # discriminator for the fault-network coarse-space question.
+        k = int(os.environ.get("UW_FAC_SEGMENTS", "1"))
+        if k <= 1:
+            return rows, rows
+        pts = coords_f[node_f[rows]]
+        c0 = pts - pts.mean(axis=0)
+        # leading principal component = the strike direction
+        _, _, Vt = np.linalg.svd(c0, full_matrices=False)
+        s = c0 @ Vt[0]
+        order = np.argsort(s, kind="stable")
+        return [(chunk, chunk) for chunk in
+                (rows[idx] for idx in np.array_split(order, k))
+                if chunk.size]
+
+    row_is_patch = node_is_patch[node_f]
+    # halo: background rows whose coarse node is referenced by a patch row
+    entry_rows = np.repeat(np.arange(n), np.diff(indptr))
+    csel = np.zeros(coords_c.shape[0], dtype=bool)
+    csel[map_c[cols[row_is_patch[entry_rows]]] // nc] = True
+    halo_rows = (~row_is_patch) & (bg_col >= 0) & csel[np.clip(bg_col, 0, None)]
+    node_in_sub = node_is_patch.copy()
+    node_in_sub[node_f[halo_rows]] = True
+
+    sub = np.flatnonzero(node_in_sub[node_f])
+    if sub.size > cover_max * n:
+        return None
+    owned = np.flatnonzero(row_is_patch)
+    return owned.astype(np.int64), sub.astype(np.int64)
 
 
 # --------------------------------------------------------------------------- #
@@ -467,7 +759,8 @@ def _build_parallel_transfer(coarse_coords, fine_coords, coarse_layout,
     Constrained coarse DOFs (``l2g == -1``) drop out -> reduced->reduced."""
     l2g_c = coarse_layout.l2g
     l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
-    Pn = builder(coarse_coords, fine_coords).tocsr()   # (n_f_nodes, n_c_nodes), local
+    Pn = _drop_structural_zeros(
+        builder(coarse_coords, fine_coords))           # (n_f_nodes, n_c_nodes), local
     nloc_f = fend - fstart
     nloc_c = coarse_layout.rend - coarse_layout.rstart
 
@@ -531,7 +824,7 @@ def _build_crosspart_transfer(coarse_coords, fine_coords, coarse_layout,
     coords_u, cols_u = _gather_coarse_cloud(coarse_coords, coarse_layout,
                                             ncomp, comm)
 
-    Pn = builder(coords_u, fine_coords).tocsr()  # (n_f_nodes_local, Nu)
+    Pn = _drop_structural_zeros(builder(coords_u, fine_coords))  # (n_f_local, Nu)
     nloc_f = fend - fstart
     nloc_c = coarse_layout.rend - coarse_layout.rstart
 
@@ -574,6 +867,65 @@ def _count_zero_columns_parallel(P, comm):
     return nzero
 
 
+def _repair_zero_columns_parallel(P, coords_f, fine_layout, coords_u, cols_u,
+                                  ncomp, comm):
+    """Give each unreached coarse DOF a nearest-fine-DOF entry (parallel).
+
+    The counterpart of :func:`_repair_zero_columns_serial` for the
+    cross-partition build: a coarse DOF no fine node reaches (the fine
+    mesh gathered onto a surgery rank, a placed band, a relaxed child)
+    leaves an empty column and a singular Galerkin coarse operator. Each
+    rank reads the empty columns it OWNS off P^T.1, the orphan list is
+    all-gathered (small), every rank offers its nearest OWNED fine DOF
+    of the same component, and the rank holding the nearest one sets the
+    injection entry. Returns ``(P, n_repaired)``; ``P`` is re-assembled.
+    """
+    m4 = comm.tompi4py()
+    ones_f = P.createVecLeft()
+    ones_f.set(1.0)
+    colsum = P.createVecRight()
+    P.multTranspose(ones_f, colsum)
+    cstart, _cend = colsum.getOwnershipRange()
+    zero_local = np.flatnonzero(colsum.array == 0.0) + cstart
+    ones_f.destroy()
+    colsum.destroy()
+    zero = np.concatenate(m4.allgather(zero_local.astype(np.int64)))
+    if zero.size == 0:
+        return P, 0
+    # global column -> (coarse node coordinate, component) via the gathered cloud
+    where = {int(cols_u[n, c]): (n, c)
+             for n in range(cols_u.shape[0]) for c in range(ncomp)
+             if cols_u[n, c] >= 0}
+    from scipy.spatial import cKDTree
+    l2g_f, fstart, fend = fine_layout.l2g, fine_layout.rstart, fine_layout.rend
+    tree = cKDTree(coords_f) if coords_f.shape[0] else None
+    offers = []                                   # (distance, global fine row)
+    for col in zero.tolist():
+        node_c, comp = where[int(col)]
+        best = (np.inf, -1)
+        if tree is not None:
+            k = min(8, coords_f.shape[0])
+            d, idx = tree.query(coords_u[node_c], k=k)
+            for dd, i in zip(np.atleast_1d(d), np.atleast_1d(idx)):
+                grow = int(l2g_f[int(i) * ncomp + comp])
+                if fstart <= grow < fend:          # an OWNED fine row
+                    best = (float(dd), grow)
+                    break
+        offers.append(best)
+    # the nearest offer across ranks wins each orphan
+    dist = np.array([o[0] for o in offers])
+    rows = np.array([o[1] for o in offers], dtype=np.int64)
+    all_dist = np.vstack(m4.allgather(dist))
+    all_rows = np.vstack(m4.allgather(rows))
+    winner = np.argmin(all_dist, axis=0)
+    for j, col in enumerate(zero.tolist()):
+        if winner[j] == m4.rank and np.isfinite(all_dist[winner[j], j]):
+            P.setValues([int(all_rows[winner[j], j])], [int(col)], [1.0],
+                        addv=PETSc.InsertMode.INSERT_VALUES)
+    P.assemble()
+    return P, int(zero.size)
+
+
 def _assert_no_zero_columns_parallel(P, comm):
     """Parallel zero-column guard: a coarse DOF with no fine image -> singular
     Galerkin coarse operator."""
@@ -595,8 +947,49 @@ def _assert_no_zero_columns_serial(P_csr, level):
             f"operator would be singular.")
 
 
+def _repair_zero_columns_serial(P_csr, coords_c, coords_f, map_c, map_f,
+                                nc, level):
+    """Give each unreached coarse DOF a nearest-fine-DOF entry (serial).
+
+    The barycentric builder has LOCAL support, so on NON-NESTED level pairs
+    — two independently PLACED meshes (#626), a relaxed child (#424) — a
+    coarse DOF can lose every fine image and its Galerkin column goes
+    singular. The dense-RBF rescue fixes that globally at a performance
+    cliff; when only a handful of columns are empty, a surgical injection
+    entry (weight 1 at the nearest fine DOF of the same component) makes
+    the RAP nonsingular at zero cost. These are preconditioner transfers,
+    not the discretisation — a few injected rows cost iterations at worst,
+    never correctness. Returns the (possibly repaired) matrix and the
+    repair count; a column it cannot repair is left empty for the guard
+    to refuse loudly.
+    """
+    colsum = np.asarray((P_csr != 0).sum(axis=0)).ravel()
+    zero = np.flatnonzero(colsum == 0)
+    if not len(zero):
+        return P_csr, 0
+    from scipy.spatial import cKDTree
+
+    n_full_f = coords_f.shape[0] * nc
+    inv_f = -np.ones(n_full_f, dtype=np.int64)
+    inv_f[np.asarray(map_f, dtype=np.int64)] = np.arange(len(map_f))
+    tree = cKDTree(coords_f)
+    P = P_csr.tolil()
+    repaired = 0
+    for j in zero:
+        full_c = int(map_c[j])
+        node_c, comp = divmod(full_c, nc)
+        k = min(8, coords_f.shape[0])
+        for i in np.atleast_1d(tree.query(coords_c[node_c], k=k)[1]):
+            full_f = int(i) * nc + comp
+            if inv_f[full_f] >= 0:
+                P[int(inv_f[full_f]), int(j)] = 1.0
+                repaired += 1
+                break
+    return P.tocsr(), repaired
+
+
 def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
-                    ksp=None):
+                    ksp=None, patch_rows=None):
     """Reconfigure ``pc`` as a fresh PCMG (FMG F-cycle) driven by the supplied
     reduced->reduced prolongations ``Ps``, Galerkin RAP for coarse operators.
 
@@ -621,12 +1014,41 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     ``setMGInterpolation`` persists through ``setFromOptions``; the first
     ``PCSetUp`` builds the coarse operators from our P (no
     ``MatProductReplaceMats`` shape bug, since the PCMG is fresh and P's size is
-    fixed)."""
+    fixed).
+
+    ``patch_rows`` is the FAC configuration (#629): per PCMG level, ``None``
+    (whole-level smoothing, the classical setup) or ``(owned, subdomain)``
+    reduced-row index arrays from :func:`_fac_patch_split`. A level with a
+    patch gets its smoother PC switched to ASM with that ONE user subdomain
+    — the smoother relaxes only the refined patch plus its interface halo,
+    the background falls through to the level that owns it, and the V-cycle's
+    smoothing cost follows the patch sizes' geometric series instead of
+    levels-times-whole-mesh. Residual and transfer work stay global. The
+    per-level ``mg_levels_<l>_pc_type`` keys written here are returned so a
+    per-solve caller (the rotated path) can drop them from the DB."""
     nlev = len(Ps) + 1
     prefix = pc.getOptionsPrefix() or ""
     opts = PETSc.Options()
     multigrid_options.geometric_mg_bundle(coarse=coarse, smoother=smoother).apply(
         opts, prefix, owned=owned)
+    # TODO(MEASURE): #629 contrast-campaign knob — smoother iteration count
+    # override (the bundle's gmres/4 vs /8 discriminator); remove when settled.
+    _sm_its = os.environ.get("UW_MG_SMOOTH_ITS")
+    if _sm_its:
+        opts[prefix + "mg_levels_ksp_max_it"] = _sm_its
+    # Per-level override BEFORE setFromOptions: the numbered key beats the
+    # generic mg_levels_pc_type from the bundle, and having it in the DB keeps
+    # any later setFromOptions from reverting the live setType below.
+    fac_keys = []
+    _only = os.environ.get("UW_FAC_LEVELS")            # TODO(MEASURE): #629 knob
+    _only = {int(t) for t in _only.split(",")} if _only else None
+    if patch_rows:
+        for l in range(1, nlev):
+            if (l < len(patch_rows) and patch_rows[l] is not None
+                    and (_only is None or l in _only)):
+                key = f"mg_levels_{l}_pc_type"
+                opts[prefix + key] = "asm"
+                fac_keys.append(key)
     # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
     # between applications, so its KSP must judge convergence flexibly), but on
     # the top-level path the KSP consumed its options long before this
@@ -643,9 +1065,72 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
     for l in range(1, nlev):
         pc.setMGInterpolation(l, Ps[l - 1])
     pc.setFromOptions()
+    # FAC subdomains go on the LIVE smoother PCs — an IS cannot ride the
+    # options DB. setFromOptions above has already pushed the bundle (and the
+    # per-level asm keys) into the level KSPs, so the objects are stable now.
+    if patch_rows:
+        # TODO(MEASURE): #629 campaign knobs — ASM variant and subdomain
+        # solver for the FAC smoother; remove once the configuration settles.
+        # BASIC, not restricted, ASM: the correction must land on the halo
+        # too. Measured (banded Poisson, 4-level tail): restrict stalls the
+        # outer KSP at 80-375 iterations where basic runs 6 against a
+        # whole-level baseline of 4 — discarding the subdomain solve's halo
+        # correction breaks the interface error systematically.
+        _asm_type = os.environ.get("UW_FAC_ASM_TYPE", "basic")
+        _sub_pc = os.environ.get("UW_FAC_SUB_PC")
+        _whole = os.environ.get("UW_FAC_WHOLE")        # asm WITHOUT subdomain
+        for l in range(1, nlev):
+            entry = patch_rows[l] if l < len(patch_rows) else None
+            if entry is None or (_only is not None and l not in _only):
+                continue
+            if _whole:
+                pc.getMGSmoother(l).getPC().setType("asm")
+                continue
+            # An entry is one (owned, subdomain) pair, or a LIST of them —
+            # one ASM subdomain per block (the segmented-fault shape).
+            blocks = entry if isinstance(entry, list) else [entry]
+            sm = pc.getMGSmoother(l)
+            spc = sm.getPC()
+            spc.setType("asm")
+            is_subs = [PETSc.IS().createGeneral(
+                np.asarray(sub_rows, dtype=PETSc.IntType),
+                comm=PETSc.COMM_SELF) for _own, sub_rows in blocks]
+            is_owns = [PETSc.IS().createGeneral(
+                np.asarray(own_rows, dtype=PETSc.IntType),
+                comm=PETSc.COMM_SELF) for own_rows, _sub in blocks]
+            # Subdomain = patch + halo; BASIC applies corrections on the
+            # whole subdomain (restricted stalls — see the class note).
+            # Overlap 0: the transfer-graph halo is the overlap; the env
+            # knob adds operator-sparsity layers at PCSetUp instead.
+            if _asm_type == "basic":
+                spc.setASMType(PETSc.PC.ASMType.BASIC)
+                spc.setASMLocalSubdomains(len(blocks), is_subs)
+            else:
+                spc.setASMLocalSubdomains(len(blocks), is_subs, is_owns)
+            # Extra operator-sparsity overlap layers on top of the transfer
+            # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
+            spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "0")))
+            # Subdomain solver: SOR, the patch-restricted twin of the
+            # whole-level smoother — no factorization, so no pivot to hit.
+            # PCASM's default sub-solve (ILU-0) takes a NUMERIC_ZEROPIVOT on
+            # the rotated Galerkin patch block (measured: min |diag| 8e-5 near
+            # the constraint; PC_FAILED -11 before the first iteration).
+            opts[prefix + f"mg_levels_{l}_sub_pc_type"] = _sub_pc or "sor"
+            fac_keys.append(f"mg_levels_{l}_sub_pc_type")
+            if (_sub_pc or "sor") in ("lu", "ilu", "cholesky"):
+                # The rotated Galerkin patch block carries near-zero pivots
+                # (constraint-zeroed transfer rows leave weakly-attached
+                # coarse DOFs, min diag ~1e-5); an unshifted factorization
+                # takes NUMERIC_ZEROPIVOT even as exact LU.
+                key = f"mg_levels_{l}_sub_pc_factor_shift_type"
+                opts[prefix + key] = "nonzero"
+                fac_keys.append(key)
+            for _is in is_subs + is_owns:   # the PC holds its own references
+                _is.destroy()
+    return fac_keys
 
 
-def _install_transfers(solver, Ps, verbose=False):
+def _install_transfers(solver, Ps, verbose=False, patch_rows=None):
     """Configure the managed PCMG block to use the supplied prolongations.
 
     Two paths, keyed by ``solver._pc_option_prefix``:
@@ -671,7 +1156,8 @@ def _install_transfers(solver, Ps, verbose=False):
         ksp.setDMActive(PETSc.KSP.DMActive.OPERATOR, False)
         _configure_pcmg(ksp.getPC(), Ps,
                         smoother=solver._mg_smoother_variant,
-                        owned=solver._managed_pc_options, ksp=ksp)
+                        owned=solver._managed_pc_options, ksp=ksp,
+                        patch_rows=patch_rows)
         if verbose:
             from underworld3 import mpi
             mpi.pprint(f"[{solver.name}] custom FMG installed: {nlev} levels, "
@@ -682,10 +1168,12 @@ def _install_transfers(solver, Ps, verbose=False):
         raise NotImplementedError(
             f"custom_mg install: unsupported PC prefix '{pfx}'.")
 
-    _install_velocity_block_transfers(solver, Ps, verbose=verbose)
+    _install_velocity_block_transfers(solver, Ps, verbose=verbose,
+                                      patch_rows=patch_rows)
 
 
-def _install_velocity_block_transfers(solver, Ps, verbose=False):
+def _install_velocity_block_transfers(solver, Ps, verbose=False,
+                                      patch_rows=None):
     """Stokes velocity-block install (mechanism A: reset + fresh PCMG).
 
     Preconditions: ``solver._build`` + ``setFromOptions`` + ``_attach_stokes_nullspace``
@@ -705,6 +1193,13 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
         snes.computeJacobian(x0, J, Pmat)
     except PETSc.Error:
         # fallback: throwaway max_it=0 solve assembles + splits the operator
+        solver._record_pc_fallback(
+            "custom_mg.velocity_block_assembly",
+            requested="direct Jacobian assembly (computeFunction/computeJacobian)",
+            installed="throwaway max_it=0 assembly route; same PC installed",
+            reason="build_failed",
+            detail="snes.computeJacobian raised; the operator is assembled by "
+                   "a zero-iteration solve instead")
         saved = (solver.petsc_options.getString("snes_max_it")
                  if solver.petsc_options.hasName("snes_max_it") else None)
         solver.petsc_options["snes_max_it"] = 0
@@ -733,7 +1228,7 @@ def _install_velocity_block_transfers(solver, Ps, verbose=False):
     vel_pc.reset()
     vel_pc.setOperators(A_vv, P_vv)
     _configure_pcmg(vel_pc, Ps, smoother=solver._mg_smoother_variant,
-                    owned=solver._managed_pc_options)
+                    owned=solver._managed_pc_options, patch_rows=patch_rows)
     vel_pc.setUp()
 
     # 4. re-attach the coupled Stokes nullspace (operator state was touched)
@@ -770,10 +1265,18 @@ class CustomMGHierarchy:
         (default) uses the fast path and, if it produces a zero-column transfer
         (the signature of a cross-partition point-location miss), rebuilds that
         level cross-partition. Serial builds ignore this.
+    fac_zone : array_like of bool, or list of such, or None
+        The fault-zone patch key for the FINEST level's strong (ASM) patch
+        smoother (#629): a boolean mask over the finest mesh's cells — the
+        painted / placed band the modeler authored — or a LIST of masks for
+        one ASM block per fault segment (masks may overlap; a junction cell
+        in two masks sits inside both blocks). The structural patch (the
+        cut/split-inserted rows the transfer cannot represent) is unioned in
+        automatically. ``None`` keys the patch on the structural rows alone.
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
-                 cross_partition="auto"):
+                 cross_partition="auto", fac_zone=None):
         if builder not in _BUILDERS:
             raise ValueError("builder must be 'barycentric' or 'rbf'")
         if len(level_meshes) < 2:
@@ -785,7 +1288,32 @@ class CustomMGHierarchy:
         self.builder_name = builder
         self.field_id = field_id
         self.cross_partition = cross_partition
+        self.fac_zone = self._validated_fac_zone(fac_zone)
         self.transfers = None
+
+    def _validated_fac_zone(self, fac_zone):
+        """Normalise ``fac_zone`` to None or a list of boolean cell masks.
+
+        Validated against the FINEST level's cell count at construction —
+        a mask of the wrong length would otherwise surface as a silently
+        empty (or wrong) patch, which is exactly the declining-quietly
+        failure mode the ASM probe discipline exists to catch."""
+        if fac_zone is None:
+            return None
+        masks = (list(fac_zone) if isinstance(fac_zone, (list, tuple))
+                 else [fac_zone])
+        finest = self.level_meshes[-1]
+        cS, cE = finest.dm.getHeightStratum(0)
+        out = []
+        for k, mk in enumerate(masks):
+            arr = np.asarray(mk, dtype=bool)
+            if arr.ndim != 1 or arr.shape[0] != cE - cS:
+                raise ValueError(
+                    f"fac_zone mask {k}: expected a 1-D boolean mask over the "
+                    f"finest mesh's {cE - cS} cells (plex cell order), got "
+                    f"shape {arr.shape}.")
+            out.append(arr)
+        return out
 
     def _recorded_node_transfer(self, level, nlev, degree, n_coarse, n_fine):
         """The EXACT nested prolongation recorded by ``mesh.adapt`` for this
@@ -855,8 +1383,14 @@ class CustomMGHierarchy:
         except Exception:
             # Sanctioned swallow: setUp can fail on a not-yet-fully-configured
             # SNES (pre-solve injection). The install paths call setUp again;
-            # the finest map then reads the DM's current global section.
-            pass
+            # the finest map then reads the DM's current global section. The
+            # skip is recorded so "the section was finalized" is checkable.
+            solver._record_pc_fallback(
+                "custom_mg.presolve_setup",
+                requested="pre-build snes.setUp() (finalize the DM section)",
+                installed="deferred to install-time setUp",
+                reason="check_skipped",
+                detail="setUp raised on the not-yet-fully-configured SNES")
 
         coords, maps, ncomp = [], [], []
         for k, mesh in enumerate(self.level_meshes):
@@ -893,6 +1427,11 @@ class CustomMGHierarchy:
             self._assert_finest_matches_operator(solver, maps[-1], parallel)
 
         Ps = []
+        # FAC patch smoothing (#629): one entry per PCMG level; level ``l``'s
+        # patch is read off its own transfer ``Ps[l-1]``. Serial-only for now,
+        # like the rest of the custom-P specifics; parallel leaves every entry
+        # None, which _configure_pcmg reads as whole-level smoothing.
+        self.level_patch_rows = [None] * nlev
         comm = solver.dm.comm
         for l in range(1, nlev):
             if parallel:
@@ -908,17 +1447,118 @@ class CustomMGHierarchy:
                     if (self.cross_partition == "auto"
                             and _count_zero_columns_parallel(P, comm) > 0):
                         P = _build_crosspart_transfer(*args)
+                # the same orphan repair the serial path has: a coarse DOF no
+                # fine node reaches gets its nearest fine DOF as an injection
+                if _count_zero_columns_parallel(P, comm) > 0:
+                    coords_u, cols_u = _gather_coarse_cloud(
+                        coords[l - 1], maps[l - 1], nc, comm)
+                    P, n_rep = _repair_zero_columns_parallel(
+                        P, coords[l], maps[l], coords_u, cols_u, nc, comm)
+                    if n_rep:
+                        import warnings
+                        warnings.warn(
+                            f"custom_mg: parallel transfer {l - 1}->{l} had "
+                            f"{n_rep} coarse DOF(s) with no fine image "
+                            f"(non-nested levels); repaired by "
+                            f"nearest-fine-DOF injection.")
                 _assert_no_zero_columns_parallel(P, comm)
                 Ps.append(P)
             else:
-                Pn = self._recorded_node_transfer(
-                    l, nlev, degree, coords[l - 1].shape[0], coords[l].shape[0])
+                # A native refine() pair gets the EXACT nested embedding at the
+                # field's own degree (#629 item 1): the point-located builders
+                # scatter across the non-nested >P1 node clouds and fatten the
+                # Galerkin product 3-5x. Declines (None) fall through to the
+                # recorded/geometric routes unchanged.
+                Pn = None
+                # TODO(MEASURE): the env flag is an A/B affordance for the #629
+                # benchmark campaign (nested-native vs geometric on the base
+                # ladder); remove once the comparison is settled.
+                if (not os.environ.get("UW_CUSTOM_MG_DISABLE_NESTED_NATIVE")
+                        and _is_native_refine_pair(self.level_meshes[l - 1],
+                                                   self.level_meshes[l])):
+                    Pn = nested_refine_pair_prolongation(
+                        self.level_meshes[l - 1], self.level_meshes[l],
+                        degree, continuous,
+                        coarse_coords=coords[l - 1], fine_coords=coords[l])
+                if Pn is None:
+                    Pn = self._recorded_node_transfer(
+                        l, nlev, degree, coords[l - 1].shape[0],
+                        coords[l].shape[0])
                 if Pn is not None:
                     Pr = _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc)
                 else:
                     Pr = _reduced_transfer(coords[l - 1], coords[l], maps[l - 1],
                                            maps[l], nc, self.builder)
+                Pr, n_rep = _repair_zero_columns_serial(
+                    Pr, coords[l - 1], coords[l], maps[l - 1], maps[l],
+                    nc, l)
+                if n_rep:
+                    import warnings
+                    warnings.warn(
+                        f"custom_mg: transfer {l - 1}->{l} had {n_rep} coarse "
+                        f"DOF(s) with no fine image (non-nested levels); "
+                        f"repaired by nearest-fine-DOF injection. Costs "
+                        f"iterations at worst, never correctness.")
                 _assert_no_zero_columns_serial(Pr, l)
+                # TODO(MEASURE): A/B affordance for the #629 campaign, like
+                # the nested-native flag above; remove when settled.
+                if not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC"):
+                    # An EXPLICIT zone beats detection: a painted weak/TI
+                    # band has no split topology to detect, but the modeler
+                    # knows exactly which cells were painted. The fac_zone
+                    # masks key the finest level's strong patch to those
+                    # cells' DOFs (#629 — the patch solve is rheology-
+                    # agnostic; only detection was split-specific).
+                    if getattr(solver, "_fac_zone_cells", None) is not None:
+                        raise RuntimeError(
+                            "solver._fac_zone_cells is retired; pass the "
+                            "mask(s) as set_custom_fmg(..., fac_zone=...). "
+                            "(A silently ignored zone would leave the patch "
+                            "structural-only — the declining-quietly failure "
+                            "the #629 campaign was bitten by.)")
+                    masks = self.fac_zone
+                    if masks is not None and l == nlev - 1:
+                        # one mask -> one block; a LIST of masks -> one ASM
+                        # block per mask. Masks may overlap (a junction cell
+                        # in two masks sits inside both blocks — the
+                        # junction-coupling design).
+                        cn = self.level_meshes[l]._cell_node_indices(
+                            degree, continuous)
+                        node_of_row = np.asarray(maps[l]) // nc
+                        blocks = []
+                        covered = np.zeros(len(node_of_row), dtype=bool)
+                        for mk in masks:
+                            node_in = np.zeros(coords[l].shape[0], dtype=bool)
+                            node_in[np.unique(
+                                cn[np.asarray(mk, dtype=bool)])] = True
+                            rows = np.flatnonzero(
+                                node_in[node_of_row]).astype(np.int64)
+                            if rows.size:
+                                blocks.append((rows, rows))
+                                covered[rows] = True
+                        # The patch smoother REPLACES whole-level smoothing,
+                        # so it inherits every row the coarse level cannot
+                        # represent — the STRUCTURAL (non-identity) transfer
+                        # patch — whether or not the physics zone covers it.
+                        # A zone away from the cut/split leaves those rows
+                        # smoothed nowhere and the velocity solve stalls at
+                        # its cap (measured: any off-cut zone, #629). Add
+                        # the uncovered structural rows as one more block.
+                        split = _fac_patch_split(
+                            Pr, coords[l - 1], coords[l], maps[l - 1],
+                            maps[l], nc, cover_max=1.01)
+                        if split is not None:
+                            _own, sub = split
+                            extra = sub[~covered[sub]].astype(np.int64)
+                            if extra.size:
+                                blocks.append((extra, extra))
+                        self.level_patch_rows[l] = (
+                            None if not blocks
+                            else blocks[0] if len(blocks) == 1 else blocks)
+                    else:
+                        self.level_patch_rows[l] = _fac_patch_split(
+                            Pr, coords[l - 1], coords[l], maps[l - 1],
+                            maps[l], nc)
                 Ps.append(_to_petsc_aij(Pr))
         self.transfers = Ps
         return Ps
@@ -935,7 +1575,15 @@ class CustomMGHierarchy:
         try:
             op_n = int(solver.snes.getJacobian()[0].getSize()[0])
         except Exception:
-            return                                   # can't read operator -> skip
+            # Sanctioned: no readable operator to check against — record the
+            # skipped guard rather than silently waiving it (#484).
+            solver._record_pc_fallback(
+                "custom_mg.finest_operator_check",
+                requested="finest reduced-map vs operator span check",
+                installed="unchecked",
+                reason="check_skipped",
+                detail="could not read the assembled operator")
+            return
         if op_n <= 0:
             return
         if parallel:
@@ -955,14 +1603,79 @@ class CustomMGHierarchy:
     def install(self, solver, verbose=False):
         if self.transfers is None:
             raise RuntimeError("call build() before install()")
-        _install_transfers(solver, self.transfers, verbose=verbose)
+        _install_transfers(solver, self.transfers, verbose=verbose,
+                           patch_rows=getattr(self, "level_patch_rows", None))
+        # Record what is live on this solver's PC, so a repeat solve can
+        # skip the re-install (see _pcmg_still_installed).
+        solver._custom_mg_live = {"h": id(self),
+                                  "nlev": len(self.transfers) + 1}
+
+
+class _DMLevelView:
+    """A mesh-shaped view over one DM of a native ``refine()`` hierarchy.
+
+    ``CustomMGHierarchy`` consumes *meshes*, but the requested-native source in
+    :func:`build_transfers` (#478) has only the raw ``mesh.dm_hierarchy`` DMs.
+    This adapter provides exactly what a coarse level is asked for: ``.dm``
+    (used by ``_clone_dm_with_solver_discretisation`` — the hierarchy DMs carry
+    the boundary labels ``refine()`` propagates, which is all copyDS needs)
+    plus ``_get_coords_for_basis``, delegated UNBOUND to
+    ``discretisation.Mesh`` so there is one implementation. That method reads
+    only ``self.dm`` and the four scalars copied here (``dim``, ``cdim``,
+    ``isSimplex``, ``qdegree`` — shared by every level of a uniform
+    refinement), which is what makes the unbound call safe. No full ``Mesh``
+    is built: a coarse MG level needs no variables, caches, or registries.
+    """
+
+    def __init__(self, dm, fine_mesh):
+        # A CLONE, never the hierarchy DM itself: the base (gmsh-imported)
+        # level may need its coordinate field repaired below, and the shared
+        # hierarchy DMs also feed the native Stokes FMG route.
+        self.dm = dm.clone()
+        self.dim = fine_mesh.dim
+        self.cdim = fine_mesh.cdim
+        self.isSimplex = fine_mesh.isSimplex
+        self.qdegree = fine_mesh.qdegree
+
+        # The gmsh-imported BASE level carries section-only coordinates (its
+        # coordinate field is a PetscContainer, no PetscFE), and
+        # DMCreateInterpolation from such a source silently returns a ZERO
+        # matrix (measured) — _get_coords_for_basis would then hand every
+        # level-0 node the coordinate (0,0) and the transfer build collapses.
+        # refine() gives the child levels an FE coordinate space; give the
+        # clone's base the same: P1 Lagrange on the identical vertex layout.
+        cdm = self.dm.getCoordinateDM()
+        field = cdm.getField(0)
+        fobj = field[0] if isinstance(field, tuple) else field
+        if not isinstance(fobj, PETSc.FE):
+            fe = PETSc.FE().createLagrange(self.dim, self.cdim, self.isSimplex,
+                                           1, self.qdegree, comm=PETSc.COMM_SELF)
+            cdm.setField(0, fe)
+            cdm.createDS()
+
+    def _get_coords_for_basis(self, degree, continuous):
+        from underworld3.discretisation import Mesh
+        return Mesh._get_coords_for_basis(self, degree, continuous)
+
+    def _basis_coordinate_dm(self, degree, continuous):
+        from underworld3.discretisation import Mesh
+        return Mesh._basis_coordinate_dm(self, degree, continuous)
+
+    def _cell_node_indices(self, degree, continuous):
+        # Same unbound-delegation pattern as _get_coords_for_basis; the cache
+        # dict a full Mesh initialises in _setup_ds is created on demand here.
+        from underworld3.discretisation import Mesh
+        if not hasattr(self, "_cell_node_array"):
+            self._cell_node_array = {}
+        return Mesh._cell_node_indices(self, degree, continuous)
 
 
 # --------------------------------------------------------------------------- #
 #  Entry points
 # --------------------------------------------------------------------------- #
 def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
-                   field_id=None, cross_partition="auto", verbose=False):
+                   field_id=None, cross_partition="auto", fac_zone=None,
+                   verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
     Registers a :class:`CustomMGHierarchy` on the solver so that the next
@@ -975,12 +1688,21 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
 
     ``cross_partition`` selects the parallel (np>1) transfer strategy (see
     :class:`CustomMGHierarchy`); the default ``"auto"`` handles both nested and
-    non-nested coarse tails."""
+    non-nested coarse tails.
+
+    ``fac_zone`` keys the finest level's strong patch smoother on the fault
+    zone (#629): a boolean mask over the solver mesh's cells — e.g.
+    ``mesh.cells_labelled("Band")`` for a placed ribbon, or
+    ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
+    list of masks for per-segment ASM blocks. The structural (cut/split)
+    rows are unioned in automatically; the patch is solved strongly once
+    per smoother application (basic ASM, shifted factorization)."""
     solver._custom_mg = {
         "mode": "hierarchy",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
                                        builder=builder, field_id=field_id,
-                                       cross_partition=cross_partition),
+                                       cross_partition=cross_partition,
+                                       fac_zone=fac_zone),
         "verbose": verbose,
     }
     solver.is_setup = False
@@ -988,8 +1710,9 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
 
 def build_transfers(solver, field_id=None):
     """The custom-P prolongations this solver should drive, built and ready to
-    install — from either a solver-set hierarchy (``set_custom_fmg``) or a
-    **mesh-owned** one (a ``mesh.adapt`` refinement child).
+    install — from a solver-set hierarchy (``set_custom_fmg``), a **mesh-owned**
+    one (a ``mesh.adapt`` refinement child), or a **requested-native** one
+    (explicit ``preconditioner="fmg"`` on a single-field solver, #478).
 
     This is the shared resolution rule for every route that can drive custom-P
     multigrid: the standard solve path via :func:`auto_inject_custom_mg`, and the
@@ -997,12 +1720,20 @@ def build_transfers(solver, field_id=None):
     ``utilities.rotated_bc`` and so never reaches the standard injection hook
     (#467). Both must answer "which hierarchy does this solver get?" the same way.
 
+    Resolution order: **solver-set > mesh-owned > requested-native.** The first
+    is a DEMAND (build errors raise — the user registered it explicitly); the
+    other two are PREFERENCES, built through the same opportunistic arm
+    (barycentric, RBF retry, degrade to the solver's default preconditioner —
+    every step recorded in ``solver.pc_fallbacks``).
+
     A refinement child carries ``mesh._custom_mg_coarse_meshes`` (the static
     coarse tail), so a :class:`CustomMGHierarchy` ``[*coarse, solver.mesh]``
     targeting ``field_id`` (0 for the Stokes velocity block, None for
     scalar/vector) is built lazily on first solve — every solver on an adapted
-    mesh drives geometric MG with no per-solver call. A solver-set hierarchy (if
-    present) always wins.
+    mesh drives geometric MG with no per-solver call. The requested-native
+    source instead wraps the mesh's own ``dm_hierarchy`` tail in
+    :class:`_DMLevelView` adapters — the same coarse levels native FMG would
+    use, driven through injection-free custom-P transfers.
 
     Parameters
     ----------
@@ -1037,28 +1768,56 @@ def build_transfers(solver, field_id=None):
     # so it is faithful to the operator on adapt children too — including scalar
     # semi-Lagrangian advection-diffusion (which earlier had to be skipped).
     coarse = getattr(solver.mesh, "_custom_mg_coarse_meshes", None)
-    if coarse is None:
+    if coarse is not None:
+        # An EXPLICIT preconditioner choice beats the opportunistic pickup. Before
+        # this guard, `solver.preconditioner = "gamg"` on an adapt child was
+        # silently clobbered back to the custom-P PCMG at solve time (measured:
+        # both arms of test_0842's fmg-vs-gamg comparison ran pc_type=mg), so a
+        # user could not opt out and any FMG-vs-GAMG comparison was vacuous.
+        # `_pc_user_override` is the same statement in the other spelling: the
+        # solver's option manager has latched "the user owns this block's pc_type"
+        # (they wrote a pc_type of their own into petsc_options), and an
+        # opportunistic pickup must stand down for exactly the same reason.
+        # "auto" (the default) still picks up the mesh-owned hierarchy.
+        # NOTE the arity: this function returns a 2-tuple, never bare None — a bare
+        # `return` here is what turned the gate into a TypeError at the call site
+        # when this hunk migrated from auto_inject_custom_mg (which returns nothing)
+        # during the #488 x #471 merge.
+        if (getattr(solver, "_preconditioner", "auto") == "gamg"
+                or getattr(solver, "_pc_user_override", False)):
+            return None, None
+        level_tail = list(coarse)
+        builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
+    elif getattr(solver, "_pc_single_field_geo_requested", False):
+        # Requested-native source (#478): an explicit `preconditioner="fmg"`
+        # on a single-field solver. The gate in _apply_preconditioner_options
+        # set the flag only when the mesh reported a hierarchy, but re-check
+        # here — a remesh between build and solve can collapse it, and this
+        # arm must degrade readably, never crash a solve.
+        hierarchy_dms = list(getattr(solver.mesh, "dm_hierarchy", []) or [])
+        if len(hierarchy_dms) < 2:
+            solver._record_pc_fallback(
+                "custom_mg.requested_native",
+                requested="custom-P geometric MG over mesh.dm_hierarchy",
+                installed="default preconditioner",
+                reason="unavailable",
+                detail="the refinement hierarchy is gone (collapsed by a "
+                       "remesh between build and solve)")
+            return None, None
+        level_tail = [_DMLevelView(dm, solver.mesh) for dm in hierarchy_dms[:-1]]
+        # Stamp the refine-family slots so consecutive pairs (including the
+        # finest pair, whose fine level is the solver's own mesh) take the
+        # exact nested transfer. Reuse the mesh's token if _coarse_level_meshes
+        # already stamped one — the level indices coincide by construction.
+        _slot = getattr(solver.mesh, "_refine_slot", None)
+        _token = _slot[0] if _slot is not None else object()
+        for _k, _v in enumerate(level_tail):
+            _v._refine_slot = (_token, _k)
+        if _slot is None:
+            solver.mesh._refine_slot = (_token, len(hierarchy_dms) - 1)
+        builder = "barycentric"
+    else:
         return None, None                   # nothing to inject
-
-    # An EXPLICIT preconditioner choice beats the opportunistic pickup. Before
-    # this guard, `solver.preconditioner = "gamg"` on an adapt child was
-    # silently clobbered back to the custom-P PCMG at solve time (measured:
-    # both arms of test_0842's fmg-vs-gamg comparison ran pc_type=mg), so a
-    # user could not opt out and any FMG-vs-GAMG comparison was vacuous.
-    # `_pc_user_override` is the same statement in the other spelling: the
-    # solver's option manager has latched "the user owns this block's pc_type"
-    # (they wrote a pc_type of their own into petsc_options), and an
-    # opportunistic pickup must stand down for exactly the same reason.
-    # "auto" (the default) still picks up the mesh-owned hierarchy.
-    # NOTE the arity: this function returns a 2-tuple, never bare None — a bare
-    # `return` here is what turned the gate into a TypeError at the call site
-    # when this hunk migrated from auto_inject_custom_mg (which returns nothing)
-    # during the #488 x #471 merge.
-    if (getattr(solver, "_preconditioner", "auto") == "gamg"
-            or getattr(solver, "_pc_user_override", False)):
-        return None, None
-
-    builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")
     # Retry with the RBF builder before abandoning geometric MG. The
     # barycentric builder has LOCAL support: it re-triangulates the coarse
     # DOF cloud and locates each fine DOF in one simplex, so a coarse DOF
@@ -1074,28 +1833,44 @@ def build_transfers(solver, field_id=None):
     _attempts = [builder] + (["rbf"] if builder != "rbf" else [])
     h = Ps = None
     for _i, _b in enumerate(_attempts):
-        h = CustomMGHierarchy(list(coarse) + [solver.mesh], builder=_b,
-                              field_id=field_id)
+        h = CustomMGHierarchy(
+            level_tail + [solver.mesh], builder=_b, field_id=field_id,
+            # a MESH-OWNED FAC zone (set by the placement that built the
+            # mesh — the fault band): the finest level's strong patch
+            # smoother keys on it with no per-solver set_custom_fmg call
+            fac_zone=getattr(solver.mesh, "_custom_mg_fac_zone", None))
         try:
             Ps = h.build(solver)
             break
         except Exception as exc:            # pragma: no cover - defensive
             import warnings
             if _i + 1 < len(_attempts):
+                solver._record_pc_fallback(
+                    "custom_mg.transfer_builder",
+                    requested=_b,
+                    installed=f"{_attempts[_i + 1]} (local kd-tree RBF)",
+                    reason="build_failed",
+                    detail=f"{exc}; the local RBF stencils are wider than the "
+                           f"barycentric ones, so the Galerkin coarse "
+                           f"operators fatten (#429)")
                 warnings.warn(
                     f"custom_mg: {_b} transfer build failed ({exc}); "
-                    f"retrying with the '{_attempts[_i + 1]}' builder, which "
-                    f"has global support and cannot leave a coarse DOF "
-                    f"without a fine image. NOTE the RBF transfer is DENSE "
-                    f"(nnz/row == n_coarse), so the Galerkin coarse operators "
-                    f"are dense too — this rescues correctness but does not "
-                    f"scale. If it fires on a production-sized problem, treat "
-                    f"it as a performance cliff and fix the cause, not the "
-                    f"symptom (#424).")
+                    f"retrying with the '{_attempts[_i + 1]}' builder — the "
+                    f"sparse, linear-exact local kd-tree RBF (#429), whose "
+                    f"kNN stencils reach coarse DOFs the barycentric simplex "
+                    f"does not. Its wider stencils fatten the Galerkin coarse "
+                    f"operators; if this fires routinely, fix the level "
+                    f"geometry rather than live with the fallback.")
                 continue
+            solver._record_pc_fallback(
+                "custom_mg.build",
+                requested=f"custom-P geometric MG ({' -> '.join(_attempts)})",
+                installed="default preconditioner",
+                reason="build_failed",
+                detail=str(exc))
             warnings.warn(
-                f"custom_mg: mesh-owned FMG build failed ({exc}); using the "
-                "solver's default preconditioner.")
+                f"custom_mg: opportunistic custom-P FMG build failed ({exc}); "
+                "using the solver's default preconditioner.")
             return None, None
 
     return h, Ps
@@ -1142,6 +1917,14 @@ def auto_inject_custom_mg(solver, field_id=None):
             # default preconditioner (round-3b annulus finding, 2026-07).
             if op_n > 0 and pr != op_n:
                 import warnings
+                solver._record_pc_fallback(
+                    "custom_mg.dimensional_guard",
+                    requested="custom-P geometric MG hierarchy",
+                    installed="default preconditioner",
+                    reason="unavailable",
+                    detail=f"finest transfer {pr}x{pc} is incompatible with the "
+                           f"operator (size {op_n}); set_custom_fmg() an explicit "
+                           f"hierarchy to override")
                 warnings.warn(
                     "custom_mg: mesh-owned adapt-mesh FMG transfer is incompatible "
                     f"with this solver's operator (transfer {pr}x{pc}, operator {op_n}); "
@@ -1149,10 +1932,54 @@ def auto_inject_custom_mg(solver, field_id=None):
                     "set_custom_fmg() an explicit hierarchy to override.")
                 return
         except Exception:
-            pass                            # can't check -> don't block working cases
+            # Sanctioned: an unreadable operator must not block working cases —
+            # but the skipped guard is on the record.
+            solver._record_pc_fallback(
+                "custom_mg.dimensional_guard",
+                requested="finest-transfer vs operator size check",
+                installed="unchecked (hierarchy installed anyway)",
+                reason="check_skipped",
+                detail="could not read the assembled operator to check the "
+                       "finest transfer against it")
 
     h.install(solver, verbose=False)
-    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False}
+    # auto_cached marks this as a RESOLUTION product (auto/fmg install), not a
+    # user registration: the preconditioner setter drops it so a later explicit
+    # choice re-resolves instead of re-injecting this hierarchy unconditionally.
+    solver._custom_mg = {"mode": "hierarchy", "hierarchy": h, "verbose": False,
+                         "auto_cached": True}
+
+
+def _pcmg_still_installed(solver, h):
+    """Is THIS hierarchy still live on the solver's managed PC block?
+
+    The marker written by :meth:`CustomMGHierarchy.install` says an install
+    happened; it cannot say the PC still carries it — a rebuilt SNES, an
+    explicit ``preconditioner=`` change, or anything that reset the PC leaves
+    the marker stale. So the marker is only the cheap first test, and the
+    verdict comes from the LIVE object: the managed block must exist, be a
+    PCMG, and have the hierarchy's level count. Any doubt (unreachable PC,
+    un-set-up fieldsplit) answers False — the cost of a wrong False is one
+    redundant install, the cost of a wrong True is a solve on a stale PC.
+    """
+    mark = getattr(solver, "_custom_mg_live", None)
+    if not mark or mark.get("h") != id(h):
+        return False
+    try:
+        pfx = solver._pc_option_prefix or ""
+        if pfx == "":
+            pc = solver.snes.getKSP().getPC()
+        elif pfx == "fieldsplit_velocity_":
+            outer = solver.snes.getKSP().getPC()
+            if outer.getType() != "fieldsplit":
+                return False
+            pc = outer.getFieldSplitSubKSP()[0].getPC()
+        else:
+            return False
+        return (pc.getType() == "mg"
+                and pc.getMGLevels() == mark.get("nlev"))
+    except PETSc.Error:
+        return False
 
 
 def inject_custom_mg(solver):
@@ -1165,6 +1992,16 @@ def inject_custom_mg(solver):
 
     if isinstance(cfg, dict) and cfg.get("mode") == "hierarchy":
         h = cfg["hierarchy"]
+        if _pcmg_still_installed(solver, h):
+            # The hierarchy is already live on this solver's PC. PETSc
+            # re-Galerkins the coarse operators when the fine operator's
+            # values change at the next PCSetUp, so a repeat solve needs
+            # NO re-install — and the install is expensive: measured
+            # (#622) at 55 s of a 61 s warm Stokes solve on an 85k-cell
+            # cut child, 49.5 s of it a DUPLICATE Jacobian assembly done
+            # only to make the fieldsplit reachable, 5.8 s rebuilding
+            # transfers that depend only on the meshes.
+            return
         h.build(solver)              # parallel-capable (nested co-partitioned)
         h.install(solver, verbose=cfg.get("verbose", False))
         return
@@ -1190,3 +2027,97 @@ def inject_custom_mg(solver):
     levels.append(fine)
     Ps = [_to_petsc_aij(builder(levels[l - 1], levels[l])) for l in range(1, len(levels))]
     _install_transfers(solver, Ps, verbose=cfg.get("verbose", False))
+
+
+def _colocate_level(coarse_mesh, fine_mesh):
+    """Redistribute one coarse level so each coarse cell lives on the rank
+    that holds the fine cells over it (nearest owned fine centroid, by a
+    global minimum). A placed fine mesh is gathered onto its surgery rank
+    while the tail stays load-balanced; the transfer then pairs a fine
+    node with a coarse cell on another rank and coarse DOFs lose every
+    fine image (measured: 488 of 5614 on the S-fault rig at np=2, and the
+    repaired transfer does not precondition). Co-resident levels are the
+    same construction ptest_0004 uses for a reloaded hierarchy. Returns a
+    new Mesh, or ``coarse_mesh`` itself when nothing moves."""
+    import underworld3 as uw
+    from scipy.spatial import cKDTree
+
+    dm = coarse_mesh.dm
+    comm = dm.getComm().tompi4py()
+    if comm.size == 1:
+        return coarse_mesh
+    cS, cE = dm.getHeightStratum(0)
+    cen_c = np.array([dm.computeCellGeometryFVM(c)[1] for c in range(cS, cE)])
+    fdm = fine_mesh.dm
+    fS, fE = fdm.getHeightStratum(0)
+    # OWNED fine cells only: a ghost cell belongs to another rank
+    fsf = fdm.getPointSF()
+    try:
+        _n, ileaf, _r = fsf.getGraph()
+        ghost = set(int(q) for q in ileaf)
+    except (ValueError, TypeError):
+        ghost = set()
+    owned_f = [c for c in range(fS, fE) if c not in ghost]
+    cen_f = (np.array([fdm.computeCellGeometryFVM(c)[1] for c in owned_f])
+             if owned_f else np.zeros((0, cen_c.shape[1])))
+    # every rank offers its nearest owned fine cell to EVERY coarse centroid
+    # in the mesh (all-gathered: the coarse levels are small)
+    cen_all = np.vstack(comm.allgather(cen_c))
+    if cen_f.shape[0]:
+        d_local = cKDTree(cen_f).query(cen_all)[0]
+    else:
+        d_local = np.full(len(cen_all), np.inf)
+    d_all = np.vstack(comm.allgather(d_local))
+    owner_all = np.argmin(d_all, axis=0).astype(np.int32)
+    off = np.cumsum([0] + comm.allgather(len(cen_c)))
+    assign = owner_all[off[comm.rank]:off[comm.rank + 1]]
+    if not comm.allreduce(int((assign != comm.rank).sum())):
+        return coarse_mesh
+    work = dm.clone()
+    part = work.getPartitioner()
+    part.setType(PETSc.Partitioner.Type.SHELL)
+    order = np.argsort(assign, kind="stable").astype(np.int32)
+    sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
+    part.setShellPartition(comm.size, sizes=sizes, points=order)
+    work.distribute()
+    return uw.discretisation.Mesh(
+        work, simplex=coarse_mesh.dm.isSimplex(), qdegree=coarse_mesh.qdegree,
+        coordinate_system_type=coarse_mesh.CoordinateSystem.coordinate_type,
+        boundaries=coarse_mesh.boundaries, verbose=False)
+
+
+def adopt_hierarchy(mesh, base_mesh, fac_zone=None, builder=None):
+    """Make ``mesh`` OWN the multigrid hierarchy of ``base_mesh`` — the
+    static coarse tail every solver built on ``mesh`` then drives
+    automatically (standard and rotated paths alike, through
+    :func:`build_transfers`'s mesh-owned route), with ``fac_zone`` as the
+    finest level's FAC patch key. For a mesh produced by SURGERY on a
+    refined base (a placed fault band, a network of ribbons): the coarse
+    levels do not need the fault — the finest level inherits the tail
+    (#620/#629). Without this, a fresh Mesh from a surgery DM owns no
+    hierarchy and every solver on it silently falls back to GAMG (whose
+    Chebyshev smoother is the configuration a nonlinear solve should not
+    be handed by default). A later ``mesh.add_fault`` child inherits the
+    tail itself; the FAC zone is NOT inherited by the cut child (a split
+    fault needs no patch — the keying ruling).
+    """
+    # a base that is itself an adapt()/cut child owns its tail: extend it
+    # with the base (the child's finest level) — the same rule
+    # Mesh._adopt_cut_child applies; a plain refined base contributes its
+    # static level wraps (coarsest .. base-finest)
+    own = getattr(base_mesh, "_custom_mg_coarse_meshes", None)
+    tail = (list(own) + [base_mesh] if own is not None
+            else list(base_mesh._coarse_level_meshes()))
+    # In parallel the placed mesh is gathered onto its surgery rank while
+    # the tail is load-balanced: co-locate every level with the finest so
+    # the transfers pair rank-locally (the coarse levels are small; the
+    # fine mesh and its FAC patch never move).
+    if mesh.dm.getComm().getSize() > 1:
+        tail = [_colocate_level(level, mesh) for level in tail]
+    mesh._custom_mg_coarse_meshes = tail
+    mesh._custom_mg_builder = (builder if builder is not None
+                               else getattr(base_mesh, "_custom_mg_builder",
+                                            "barycentric"))
+    mesh._custom_mg_fac_zone = (None if fac_zone is None
+                                else np.asarray(fac_zone, dtype=bool))
+    return mesh

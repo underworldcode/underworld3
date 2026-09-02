@@ -194,6 +194,88 @@ def test_boundary_flux_p1_trace_2d(mass):
         )
 
 
+def _unit_flux_2d(degree, res=8):
+    """Unit-box conduction, T = 1 - y: exact at every degree, unit flux on Top/Bottom."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(res, res), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=4)
+    T = uw.discretisation.MeshVariable(f"T459_{degree}", mesh, 1, degree=degree)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(1.0, "Bottom")
+    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.solve()
+    return poisson
+
+
+@pytest.mark.parametrize("degree", (1, 2, 3))
+def test_boundary_flux_degree_sweep_2d(degree):
+    """#459: the trace degree must not change the answer. T = 1 - y is exact at every
+    degree, so each wall node must read the exact unit flux. A degree-3 trace carries
+    TWO edge-interior reactions per edge; both were keyed by the edge's single
+    coordinate, collapsed onto one dictionary key, and the recovery silently returned
+    0.57-0.74 of the unit flux from 17 of the 25 trace nodes."""
+    poisson = _unit_flux_2d(degree)
+    for wall, sign in (("Top", -1.0), ("Bottom", +1.0)):
+        xs, flux = poisson.boundary_flux(wall)
+        assert np.allclose(np.asarray(flux), sign, atol=1e-3), (
+            f"{wall} (degree={degree}): flux range "
+            f"[{np.min(flux)}, {np.max(flux)}], expected {sign}")
+        if uw.mpi.size == 1:
+            # every trace node must report — the collapse also DROPPED nodes
+            assert len(np.asarray(xs)) == degree * 8 + 1
+
+
+def test_boundary_flux_p3_interior_node_placement():
+    """#459: each degree-3 edge-interior reaction pairs with its OWN node coordinate.
+    T = xy gives dT/dn = x on Top, so the recovered flux is linear in x; swapping the
+    two interior nodes of an edge (or mis-placing them at the midpoint) displaces the
+    flux by O(edge/3) ~ 2e-2 at this resolution. Corner columns are excluded: corner
+    reactions mix both driven walls and the consistent mass spreads that mixture over
+    about one element (documented corner semantics)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 16), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=4)
+    T = uw.discretisation.MeshVariable("T459xy", mesh, 1, degree=3)
+    x, y = mesh.X
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        poisson.add_dirichlet_bc(sympy.Matrix([x * y]), wall)
+    poisson.solve()
+
+    xs, flux = poisson.boundary_flux("Top")          # auto -> consistent at degree 3
+    xs = np.asarray(xs)
+    flux = np.asarray(flux)
+    mid = (xs[:, 0] > 0.35) & (xs[:, 0] < 0.65)
+    if uw.mpi.size == 1:
+        assert np.count_nonzero(mid) > 0
+    assert np.allclose(flux[mid], xs[mid, 0], atol=5e-3), (
+        f"mid-wall flux error {np.max(np.abs(flux[mid] - xs[mid, 0])):.3e} — "
+        "degree-3 interior nodes mis-placed or mis-ordered")
+
+
+def test_boundary_flux_p3_collapse_guard(monkeypatch):
+    """#459 negative control: force the pre-fix behaviour (both edge-interior nodes
+    keyed by the edge's one coordinate) and the de-smear must REFUSE — the silent
+    overwrite is exactly what returned wrong flux before the fix."""
+    from underworld3.utilities import boundary_flux as bf
+
+    poisson = _unit_flux_2d(3, res=4)
+    true_coords = bf._trace_interior_coords
+
+    def collapsed(solver, degree):
+        full = true_coords(solver, degree)
+        return {e: np.repeat(a.mean(axis=0, keepdims=True), len(a), axis=0)
+                for e, a in full.items()}
+
+    monkeypatch.setattr(bf, "_trace_interior_coords", collapsed)
+    with pytest.raises(RuntimeError, match="collapse"):
+        poisson.boundary_flux("Top")
+
+
 def test_volume_residual_fields_insert_essential_values():
     """#411: compute_volume_residual_fields (Stokes-only diagnostic) missed the
     #407 insert — its residual must now match _assemble_volume_reaction (the

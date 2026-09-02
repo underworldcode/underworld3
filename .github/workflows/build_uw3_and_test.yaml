@@ -19,10 +19,40 @@ on:
 
   workflow_dispatch:
 
+env:
+  # Some Azure runners carry a MANA NIC whose InfiniBand verbs device UCX
+  # advertises but cannot open: uct_iface_open(ud_verbs/mana_0) fails inside
+  # MPI_Init, so `import underworld3` dies before any UW3 code runs (issues
+  # #461/#528 — four hits in the first week of 2026-08, each costing a manual
+  # re-roll). A single-node CI runner needs only shared memory and TCP, so pin
+  # the UCX transports and retire the whole flake class.
+  UCX_TLS: tcp,sm,self
+
+  # Distribute the serial batches across worker processes. This was held back
+  # until #567 was fixed: worker counts change which files share a process, and
+  # a units test that switched the units system on at import time then reached
+  # a module-scoped fixture in the point-locator suite before anything reset it.
+  # That is fixed at source in tests/conftest.py, and the whole suite is green
+  # at 4, 8 and 16 workers.
+  #
+  # 4 is the vCPU count of the runner. Do NOT try to detect it: the first
+  # attempt derived the count inside the job, got 1, and ran xdist with a single
+  # worker — a spawn and a fresh underworld3 import per batch, parallelising
+  # nothing, for 52m37s. The MPI batches are unaffected either way; they run
+  # their own mpirun.
+  WORKERS: 4
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The suite has outgrown 60 minutes. Measured 2026-08-15: the SERIAL phase
+    # alone is ~55 min (three batches at 14-15 min each), so the parallel phase
+    # - which runs last - was being cut off mid-run and reported as a failure
+    # that looked like a test failure. Any addition at all pushed a run over.
+    # This is a stop-gap that unblocks landing work; the durable fix is to split
+    # the batches across parallel jobs so wall-clock stops tracking total test
+    # time. See the CI-runtime issue for that.
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4

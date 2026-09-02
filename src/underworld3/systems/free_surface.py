@@ -279,6 +279,14 @@ class FreeSurface:
         """Per-node unit vectors along the topography direction that the surface
         increment is deformed along — vertical (Cartesian) or radial (annulus /
         spherical shell); dimension-general."""
+        # TODO(BUG): this is unconditionally +radial, but since #560 the geometric
+        # constraint normal (and so the recovered σ_nn and h_∞) is the DOMAIN's
+        # outward normal, which on a CONCAVE surface — an inner arc / CMB free
+        # surface — is −radial. The relaxation would then drive the surface away
+        # from equilibrium instead of toward it. Unreachable today: every curved
+        # free surface in the repo passes an explicit normal=rhat on an OUTER
+        # boundary, and every Cartesian one is a flat Top. Needs the sign taken from
+        # the same source as h_∞ before an inner free surface is supported.
         if self._radial:
             r = np.linalg.norm(coords, axis=1)
             r[r == 0.0] = 1.0

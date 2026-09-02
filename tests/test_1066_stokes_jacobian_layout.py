@@ -291,6 +291,138 @@ def test_ti_vep_c_tensor_coefficients_are_frozen():
     )
 
 
+def _ti_vep_yielding():
+    """TI-VEP with an ACTIVE yield limit — shared by the reporting and
+    freezing tests below (same parameters as the frozen-tensor test)."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("V_tvr", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_tvr", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    cm = uw.constitutive_models.TransverseIsotropicVEPFlowModel(stokes.Unknowns)
+    stokes.constitutive_model = cm
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_viscosity_1 = 0.01
+    cm.Parameters.shear_modulus = 100.0
+    cm.Parameters.dt_elastic = 0.1  # BDF eta_0 composite is nan at the oo default
+    cm.Parameters.yield_stress = 0.5
+    cm.Parameters.director = sympy.Matrix([0.0, 1.0])
+    cm.Parameters.strainrate_inv_II_min = 1.0e-6
+    return stokes, cm, mesh
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_ti_vep_viscosity_property_reports_yield_limited_eta1():
+    """Issue #463: TransverseIsotropicVEPFlowModel.viscosity computed the
+    yield-limited fault-plane viscosity and then returned the UN-yielded bulk
+    eta_0 — so diagnostics/renders saw no yielding while the flux yielded.
+    The property must report exactly the coefficient the stress tensor is
+    built from: the persistent _eta1_yield_eff container (wrapped atom)."""
+    stokes, cm, mesh = _ti_vep_yielding()
+    assert cm.is_viscoplastic
+
+    visc = cm.viscosity
+    # The drift (#463): the un-yielded bulk value came back.
+    assert visc is not cm.Parameters.shear_viscosity_0, (
+        "TI-VEP .viscosity returned the un-yielded bulk eta_0 — the "
+        "yield-limited eta_1_eff is being discarded (issue #463)"
+    )
+    # The property must hand back the very container the c-tensor bakes.
+    assert visc is cm._eta1_yield_eff, (
+        ".viscosity does not return the persistent yield container the "
+        "flux tensor uses"
+    )
+    _, eta1_tensor = cm._eta_for_tensor("bdf", apply_yield=True)
+    assert eta1_tensor is visc, (
+        ".viscosity and _eta_for_tensor disagree about the fault-plane "
+        "coefficient — reporting has drifted from the flux again"
+    )
+
+    # Freezing contract: the reported value is a wrapped atom (Picard-frozen),
+    # with the strain-rate dependence of the yield law INSIDE it.
+    L = stokes.Unknowns.L
+    d = mesh.dim
+    assert all(
+        sympy.diff(sympy.sympify(visc), L[k, l]) == 0
+        for k in range(d) for l in range(d)
+    ), ".viscosity leaks grad-v to sympy.diff — the freezing contract is broken"
+    from underworld3.cython.generic_solvers import _jacobian_unwrap
+
+    unwrapped = _jacobian_unwrap(sympy.Matrix([visc]))
+    assert any(
+        sympy.diff(sympy.sympify(unwrapped[0]), L[k, l]) != 0
+        for k in range(d) for l in range(d)
+    ), (
+        "positive control failed: the Newton unwrap of .viscosity reveals no "
+        "strain-rate dependence, so the frozen assertion above is vacuous"
+    )
+
+    # Negative control: with the yield limit disabled the property reports the
+    # unlimited VE fault-plane viscosity, not a stale yield container.
+    cm.Parameters.yield_stress = sympy.oo
+    assert not cm.is_viscoplastic
+    visc_off = cm.viscosity
+    assert visc_off is not cm._eta1_yield_eff
+    assert visc_off is cm.Parameters.ve_effective_viscosity
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_a
+def test_vep_c_tensor_coefficients_are_frozen():
+    """Isotropic VEP with yield active: same freezing contract as the TI
+    classes (the .sym tidy deferred on PR #493) — the c-tensor coefficients
+    must live inside UWexpression atoms so the default (Picard) tangent stays
+    frozen; only the Newton unwrap sees the yield law's strain-rate
+    dependence."""
+    import itertools
+
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("V_vf", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_vf", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    cm = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns)
+    stokes.constitutive_model = cm
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 100.0
+    cm.Parameters.dt_elastic = 0.1
+    cm.Parameters.yield_stress = 0.5
+    cm.Parameters.strainrate_inv_II_min = 1.0e-6
+    assert cm.is_viscoplastic
+
+    cm._build_c_tensor()
+
+    L = stokes.Unknowns.L
+    d = mesh.dim
+    c = sympy.Array(cm.c)
+    live = [
+        (idx, k, l)
+        for idx in itertools.product(range(d), repeat=4)
+        for k in range(d)
+        for l in range(d)
+        if sympy.diff(sympy.sympify(c[idx]), L[k, l]) != 0
+    ]
+    assert not live, (
+        "isotropic VEP c-tensor depends on the velocity gradient (yield-"
+        "limited viscosity baked unwrapped) — Picard tangent un-frozen: "
+        f"first hits {live[:4]}"
+    )
+
+    # Positive control: the dependence must exist INSIDE the atoms.
+    from underworld3.cython.generic_solvers import _jacobian_unwrap
+
+    c_unwrapped = _jacobian_unwrap(c)
+    revealed = any(
+        sympy.diff(sympy.sympify(c_unwrapped[idx]), L[k, l]) != 0
+        for idx in itertools.product(range(d), repeat=4)
+        for k in range(d)
+        for l in range(d)
+    )
+    assert revealed, (
+        "Newton unwrap of the VEP c-tensor reveals no strain-rate "
+        "dependence — the yield law has been lost from the tangent chain"
+    )
+
+
 def _nitsche_annulus_stokes(anisotropic):
     """Annulus + Nitsche free-slip on the outer wall — the issue #239 setup.
 

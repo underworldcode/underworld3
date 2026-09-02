@@ -1,3 +1,6 @@
+# Human-readable reference for the runtime dependencies.
+# NOT used as a build input — the command-line container now uses pixi.lock.
+# To update the container environment, edit pixi.toml and run: pixi update -e runtime
 name: uw3
 channels:
   - conda-forge
@@ -5,8 +8,8 @@ dependencies:
   - python=3.12.*
   - compilers
   - mpich
-  - petsc=3.24
-  - petsc4py=3.24
+  - petsc=3.25
+  - petsc4py=3.25
   - cython>=3.1,<4
   - mpmath<=1.3
   - mesalib

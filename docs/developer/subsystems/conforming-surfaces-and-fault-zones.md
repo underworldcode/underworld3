@@ -300,15 +300,28 @@ representation, where the width `w` is a mesh parameter and constitutive
 and measured (`w = h/4` passes every gate).
 
 The construction is "mesh the whole lot, then embed", and the two stages are
-forced by kernel: OCC `fragment` — the only operation that resolves
-fault–fault intersections — sees only CAD entities, and the cavity fill
+forced by kernel: the OCC booleans — the only operations that resolve
+fault–fault intersections — see only CAD entities, and the cavity fill
 honours only discrete ones. So the network's patches are thickened by
-`±w/2` and fragmented **together** in OCC (a junction becomes ordinary
-volumes of the union — no geometric junction treatment, the rheology
-decides), the assembly is meshed standalone at layer scale, its boundary
-skin is extracted, and the meshed assembly is embedded whole: a cavity is
-carved around it and gmsh fills the annular gap with the skin as an interior
-**hole** in the fill volume, both surfaces verbatim.
+`±w/2` and resolved against one another **together** in OCC (a junction
+becomes ordinary volumes of the union — no geometric junction treatment, the
+rheology decides), the assembly is meshed standalone at layer scale, its
+boundary skin is extracted, and the meshed assembly is embedded whole: a
+cavity is carved around it and gmsh fills the annular gap with the skin as an
+interior **hole** in the fill volume, both surfaces verbatim.
+
+Which boolean resolves the overlaps is the `assembly` argument, and the
+default is `"fuse"` — the union as **one** region. The alternative,
+`"fragment"`, keeps every overlap piece as its own region, so the mesh must
+conform to the boundary of the overlap; where two zones converge
+tangentially that boundary is a lens closing at the convergence angle, and
+the mesh resolves it as a chain of slivers (measured on a ribbon soling into
+another: minimum angle 0°, 22 cells under 5°, against 37° and none for the
+fused union). Nothing downstream needs those internal boundaries: the zone
+carries a single label, and a cell's fault properties are read from the
+`Surface` objects by proximity, not from the piece it was meshed in. Ask for
+`"fragment"` only when the boundaries between overlapping zones are
+themselves the object of interest.
 
 In the result the layer's **cells** carry `(label, value)` — the zone exists
 to hand cells to the rheology — and the skin's faces carry

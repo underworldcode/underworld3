@@ -21,6 +21,25 @@ import sympy
 import sys
 import os
 
+
+def _headroom(frames):
+    """A recursion limit ``frames`` above the CURRENT stack depth.
+
+    These tests mean "this operation does not recurse without bound", and an
+    absolute ``setrecursionlimit(50)`` does not say that: it also assumes the
+    stack is nearly empty when the test starts. Run under pytest-xdist, whose
+    worker adds its own frames, the budget is spent before the test body
+    begins and the test fails for a reason that has nothing to do with
+    recursion. Measuring from where we actually are keeps the assertion about
+    the operation.
+    """
+    depth = 0
+    frame = sys._getframe()
+    while frame is not None:
+        depth += 1
+        frame = frame.f_back
+    return depth + frames
+
 # Add src to path for testing
 # REMOVED: sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -38,7 +57,7 @@ class TestRecursionPreventionInMathematicalObjects:
 
         # Set recursion limit to catch infinite recursion quickly
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(100)  # Low limit to catch recursion fast
+        sys.setrecursionlimit(_headroom(100))  # Low limit to catch recursion fast
 
         try:
             # This was causing infinite recursion before the fix
@@ -86,7 +105,7 @@ class TestRecursionPreventionInMathematicalObjects:
 
         # Create compound expressions (these should not cause recursion)
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(50)
+        sys.setrecursionlimit(_headroom(50))
 
         try:
             # Mathematical operations should not trigger recursion
@@ -129,7 +148,7 @@ class TestRecursionPreventionInMathematicalObjects:
 
         # Set recursion limit to catch the issue
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(50)
+        sys.setrecursionlimit(_headroom(50))
 
         try:
             # This function evaluation was causing recursion in estimate_dt()
@@ -158,7 +177,7 @@ class TestSymPyIntegrationRecursionPrevention:
         expr = uw.function.expression(r"func_test", sym=0.5)
 
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(100)
+        sys.setrecursionlimit(_headroom(100))
 
         try:
             # SymPy functions should not cause recursion when applied to UWexpressions
@@ -183,7 +202,7 @@ class TestSymPyIntegrationRecursionPrevention:
         expr = uw.function.expression(r"sub_test", sym=sympy.Symbol("x"))
 
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(100)
+        sys.setrecursionlimit(_headroom(100))
 
         try:
             # Substitution operations should not cause recursion
@@ -204,7 +223,7 @@ class TestSymPyIntegrationRecursionPrevention:
         expr = uw.function.expression(r"diff_test", sym=x**2 + 2 * x + 1)
 
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(100)
+        sys.setrecursionlimit(_headroom(100))
 
         try:
             # Differentiation should not cause recursion
@@ -244,7 +263,7 @@ class TestRecursionPreventionInSolvers:
         old_limit = sys.getrecursionlimit()
         # Set limit high enough for SymPy tree traversal but low enough to catch infinite loops
         # Original bug (UWQuantity._sympify_() returning self) would hit even high limits
-        sys.setrecursionlimit(300)
+        sys.setrecursionlimit(_headroom(300))
 
         try:
             # This was the specific call that failed with the original recursion bug
@@ -284,7 +303,7 @@ class TestRecursionPreventionInSolvers:
 
         old_limit = sys.getrecursionlimit()
         # Set reasonable limit to catch infinite recursion but allow normal operations
-        sys.setrecursionlimit(300)
+        sys.setrecursionlimit(_headroom(300))
 
         try:
             # Accessing parameters should not cause recursion
@@ -313,7 +332,7 @@ class TestRecursionDetectionUtilities:
             return recursive_function(n - 1)
 
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(50)
+        sys.setrecursionlimit(_headroom(50))
 
         try:
             # This should hit recursion limit
@@ -346,7 +365,7 @@ class TestRecursionDetectionUtilities:
         safe_obj = SafeObject(sympy.Symbol("x"))
 
         old_limit = sys.getrecursionlimit()
-        sys.setrecursionlimit(50)
+        sys.setrecursionlimit(_headroom(50))
 
         try:
             atoms = safe_obj.atoms(sympy.Symbol)
@@ -369,7 +388,7 @@ class TestRecursionDetectionUtilities:
             # The real test: can we call atoms() without infinite recursion?
             import sys
             old_limit = sys.getrecursionlimit()
-            sys.setrecursionlimit(100)
+            sys.setrecursionlimit(_headroom(100))
             try:
                 result = obj.atoms(sympy.Symbol)
                 return False  # No risk - it worked
