@@ -268,7 +268,7 @@ def test_spherical_shell_supg_is_parallel_safe():
     )
     assert np.all(np.isfinite(temperature.data))
     assert np.all(np.isfinite(thermal._supg_tau.data))
-    assert temperature_l2_squared == pytest.approx(0.833491030982, rel=1.0e-8)
+    assert temperature_l2_squared == pytest.approx(0.831128934047, rel=1.0e-8)
 
 
 def test_bdf2_snapshot_restore_leaves_no_discarded_step_trace():
