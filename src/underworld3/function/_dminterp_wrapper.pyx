@@ -178,7 +178,18 @@ cdef class CachedDMInterpolationInfo:
                                            <size_t*> &cells_view[0],
                                            1 if hint_authoritative else 0)
         else:
-            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, NULL, 0)
+            # No hint array to pass (no points, or no cells) — but the POLICY
+            # still has to be forwarded. Hardcoding 0 here made a rank with zero
+            # local points disagree with its peers about whether the hint is
+            # authoritative, and petsc_tools.c takes the DMLocatePoints branch
+            # when it is not. DMLocatePoints is COLLECTIVE on the mesh DM, so
+            # that rank blocked inside DMGetBoundingBox -> MPI_Allreduce while
+            # the others bypassed and ran on to DMSwarmMigrate -> MPI_Comm_dup:
+            # a deadlock whenever a query set leaves some rank empty (#611).
+            # The policy is a mesh capability and already agrees across ranks;
+            # it just has to survive the trip.
+            ierr = DMInterpolationSetUp_UW(self._ipInfo, dm, 0, 1, NULL,
+                                           1 if hint_authoritative else 0)
         if ierr != 0:
             DMInterpolationDestroy(&self._ipInfo)
             raise RuntimeError(f"DMInterpolationSetUp_UW failed with error {ierr}")
