@@ -40,6 +40,7 @@ import datetime
 import json
 import os
 import warnings
+from contextlib import contextmanager
 from typing import Any, Optional
 
 import numpy as np
@@ -262,6 +263,23 @@ def _bulk_dir_for(wrapper_path: str) -> str:
     return base + ".bulk"
 
 
+@contextmanager
+def _short_io_path(path: str):
+    """Expose ``path`` to native I/O as a basename from its parent directory.
+
+    Some parallel PETSc/HDF5 stacks fail on valid absolute paths well below
+    ``PATH_MAX``. Snapshot artifacts retain their normal locations, while the
+    native reader or writer receives only the final path component.
+    """
+    absolute_path = os.path.abspath(path)
+    previous_directory = os.getcwd()
+    os.chdir(os.path.dirname(absolute_path))
+    try:
+        yield os.path.basename(absolute_path)
+    finally:
+        os.chdir(previous_directory)
+
+
 def _sanitise(name: str) -> str:
     """Sanitise a mesh / variable name for use as a filename component.
 
@@ -324,14 +342,15 @@ def write_snapshot(model, path: str) -> str:
         # (consumed by the reload path below). Suppress the FutureWarning for
         # this internal call rather than spam every snapshot. (Migrating the
         # snapshot to write_timestep is tracked in #252.)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            mesh.write_checkpoint(
-                mesh_safe,
-                outputPath=bulk_dir,
-                meshVars=mesh_vars,
-                index=0,
-            )
+        with _short_io_path(bulk_dir) as short_bulk_dir:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                mesh.write_checkpoint(
+                    mesh_safe,
+                    outputPath=short_bulk_dir,
+                    meshVars=mesh_vars,
+                    index=0,
+                )
 
         mesh_records.append({
             "name": mesh.name,
@@ -501,10 +520,13 @@ def read_snapshot(model, path: str) -> None:
                         f"snapshot variable {var_name!r} not registered on "
                         f"mesh {mesh_name!r}"
                     )
-                var.read_checkpoint(
-                    os.path.join(bulk_dir, external_file),
-                    data_name=var_name,
-                )
+                with _short_io_path(
+                    os.path.join(bulk_dir, external_file)
+                ) as short_external_file:
+                    var.read_checkpoint(
+                        short_external_file,
+                        data_name=var_name,
+                    )
 
         # Phase 3a: restore state-bearer dataclasses.
         if _GROUP_PYTHON_STATE in f:
@@ -954,13 +976,17 @@ def extract_var_via_bridge(wrapper_path: str, var_name: str):
     # Rebuild a transient source mesh + variable to read DOFs into.
     # We deliberately don't register them with the live model — these
     # are throwaway and exit scope on return.
-    src_mesh = uw.discretisation.Mesh(os.path.join(bulk_dir, mesh_file_rel))
+    with _short_io_path(
+        os.path.join(bulk_dir, mesh_file_rel)
+    ) as short_mesh_file:
+        src_mesh = uw.discretisation.Mesh(short_mesh_file)
     src_var = uw.discretisation.MeshVariable(
         var_name, src_mesh, components, degree=degree, continuous=continuous,
     )
-    src_var.read_checkpoint(
-        os.path.join(bulk_dir, var_file_rel), data_name=var_name
-    )
+    with _short_io_path(
+        os.path.join(bulk_dir, var_file_rel)
+    ) as short_var_file:
+        src_var.read_checkpoint(short_var_file, data_name=var_name)
 
     coords = np.asarray(src_var.coords).copy()
     values = np.asarray(src_var.array[...]).reshape(

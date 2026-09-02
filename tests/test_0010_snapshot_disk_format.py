@@ -236,6 +236,23 @@ def test_snapshot_bulk_filenames_do_not_expand_loaded_mesh_name(tmp_path):
         assert h5["meshes"]["mesh_0000"].attrs["name"] == mesh.name
 
 
+def test_short_io_path_uses_basename_and_restores_cwd(tmp_path):
+    """Native PETSc/HDF5 calls do not receive the full user output path."""
+    import os
+    from underworld3.checkpoint.disk_snapshot import _short_io_path
+
+    original_directory = os.getcwd()
+    target_directory = tmp_path / "nested" / "snapshot.bulk"
+    target_directory.mkdir(parents=True)
+    target_file = target_directory / "mesh_0000.T.00000.h5"
+
+    with _short_io_path(str(target_file)) as short_path:
+        assert short_path == target_file.name
+        assert os.getcwd() == str(target_directory)
+
+    assert os.getcwd() == original_directory
+
+
 def test_write_snapshot_populates_wrapper_layout(tmp_path):
     """The wrapper carries the per-mesh + per-variable metadata that
     makes 'what's in this snapshot?' answerable from h5py alone."""
