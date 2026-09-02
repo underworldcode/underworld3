@@ -2183,16 +2183,25 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     #: not inside P0, so the term does not vanish at the discrete solution --
     #: but it converges away. ``penalty = 0`` restores the unaugmented operator.
     #:
-    #: **Held at 0 pending the pointwise-traction question.** At 10 the
-    #: spherical dynamic topography recovered from the rotated free-slip
-    #: reaction drops 0.4192 -> 0.3021, 28%, on the *vertex-sampled* value while
-    #: the facet-integrated value stays correct (``test_1018``). So augmentation
-    #: corrupts the de-smearing from reaction loads to pointwise stress —
-    #: presumably because lambda*mu*(div u) is non-zero cell-by-cell for P2-P0
-    #: and averages out over a facet integral but not at a vertex. Dynamic
-    #: topography is the main product of that machinery, so the value stays 0
-    #: until that is resolved; everything needed for the change is in place and
-    #: it is this constant.
+    #: **Held at 0, but no longer because of #633.** That issue turned out to be
+    #: the recovery operator, not the penalty: the 3-D P2 TRIANGLE de-smearing
+    #: mass has vertex rows summing to exactly zero, and ``mass="auto"`` now
+    #: picks the monotone P1-projected recovery instead. The topography
+    #: objection is gone.
+    #:
+    #: It stays at 0 because of the GAMG cost above, which is far worse than
+    #: #625 recorded. Flipping it to 10 was tried and reverted: three tier-A/B
+    #: tests failed (``test_0112`` swarm, ``test_1060`` Nitsche free-slip leak
+    #: 1.234e-4 against a 1e-4 bound, ``test_1061`` topography correlation
+    #: 0.979 against 0.99) and the same three ran **8.3x slower** -- 9.27 s to
+    #: 76.92 s, warm JIT cache both ways. The 21% FMG win needs a hierarchy;
+    #: without ``refinement>=1`` the velocity block falls back to GAMG, which
+    #: is the default path and the one that pays. A default has to serve the
+    #: default.
+    #:
+    #: Set ``penalty = 10`` explicitly on a solver that has an FMG hierarchy.
+    #: Note it also perturbs a Nitsche free-slip constraint, whose leak bound
+    #: is not slack enough to absorb it.
     DEFAULT_PENALTY = 0.0
 
 
