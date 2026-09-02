@@ -247,8 +247,8 @@ def read_snapshot_metadata(path: str) -> dict:
 #
 #   /path/to/run.snap.h5              wrapper (metadata, h5py-readable)
 #   /path/to/run.snap.bulk/           companion directory (one per snapshot)
-#       {mesh_safe}.mesh.00000.h5     mesh DM dump (PETSc HDF5)
-#       {mesh_safe}.{var_clean}.00000.h5  per-variable section + vec (PETSc HDF5)
+#       mesh_0000.mesh.00000.h5       mesh DM dump (PETSc HDF5)
+#       mesh_0000.{var_clean}.00000.h5  per-variable section + vec (PETSc HDF5)
 #       ... one set per (mesh, var) ...
 #
 # The bulk-dir path is derived from the wrapper path by convention, so a
@@ -306,8 +306,13 @@ def write_snapshot(model, path: str) -> str:
     # bulk directory. write_checkpoint is collective (PETSc HDF5
     # viewer), so all ranks must participate.
     mesh_records: list[dict] = []
-    for mesh in list(model._meshes.values()):
-        mesh_safe = _sanitise(mesh.name)
+    for mesh_index, mesh in enumerate(list(model._meshes.values())):
+        # Loaded meshes commonly use their complete source path as ``name``.
+        # Embedding that path in every PETSc-HDF5 bulk filename can exceed
+        # practical MPI-I/O pathname limits even when the wrapper path itself
+        # is valid. The wrapper preserves the original name for exact restore
+        # matching, so bulk files only need a compact deterministic identifier.
+        mesh_safe = f"mesh_{mesh_index:04d}"
         mesh_vars = list(mesh.vars.values())
         # Filter to allocated variables — same skip rule as the in-memory
         # path: lazy-allocated vars with _gvec == None have no data.
