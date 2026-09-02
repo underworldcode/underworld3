@@ -1602,76 +1602,153 @@ def _true_wall_vertex_mask(dm, n_vertices):
 def _gather_region(dm, vertex_mark_chart, verbose=False):
     """Redistribute so every marked vertex's cell star (+1 layer) is one rank's.
 
-    A mask-driven port of the contact stream's ``_redistribute_fault_interior``
-    (feature/fault-split-node c8693579 / 1d487319; the label-driven original
-    is measured at np=2..8 with serial-identical topology). Only the marked
-    star moves — everything else keeps its load-balanced home — via a shell
-    partitioner. Returns ``(new_dm, n_moved)``: the global count of cells
+    The one-region form of :func:`_gather_regions` (a 0/1 mask is one
+    region). Returns ``(new_dm, n_moved)``: the global count of cells
     gathered, ``0`` when nothing moved (serial, or a region already
     interior to one rank), so callers can both branch on it and report
     it. The input is untouched.
     """
+    ids = (np.asarray(vertex_mark_chart) != 0).astype(np.int32)
+    work, n_region, _n_moved, _owner, _canon = _gather_regions(
+        dm, ids, verbose=verbose)
+    return work, n_region
+
+
+def _gather_regions(dm, vertex_region_chart, verbose=False):
+    """Redistribute so each marked REGION's cell star (+1 layer) is one rank's.
+
+    A mask-driven port of the contact stream's ``_redistribute_fault_interior``
+    (feature/fault-split-node c8693579 / 1d487319; the label-driven original
+    is measured at np=2..8 with serial-identical topology), generalised to
+    several regions (#670). ``vertex_region_chart`` is chart-length: ``0``
+    for an unmarked point, ``k >= 1`` the region a vertex belongs to. Each
+    region's star and layer go to ONE rank, chosen per region — the rank
+    that already holds most of it — and a region that is already interior
+    to one rank is left where it is. Two regions whose stars or layers
+    touch (share a cell or a vertex, on any rank) are merged: their
+    cavities would share ring points, so they must be one rank's. Only the
+    marked stars move — everything else keeps its load-balanced home — via
+    one shell partition.
+
+    Returns ``(new_dm, n_region, n_moved, owner, canon)``: the global size
+    of the regions (star and layer — the seam rule's footprint, a function
+    of the mesh alone), the count of cells that changed rank (``0`` when
+    none did; the input dm is then returned untouched), ``owner`` mapping
+    each merged region's id to its rank, and ``canon`` mapping every input
+    region id to its merged id. The decisions are COLLECTIVE: overlaps and
+    counts are gathered before any branch.
+    """
     comm = dm.getComm().tompi4py()
+    ids_in = np.asarray(vertex_region_chart, dtype=np.int32)
+    n_ids = int(comm.allreduce(int(ids_in.max()) if ids_in.size else 0,
+                               op=MPI.MAX))
+    if n_ids == 0:
+        raise ValueError("place_sheet: the sheet meets no cell on any rank")
     if comm.size == 1:
-        return dm, 0
+        canon = {k: k for k in range(1, n_ids + 1)}
+        return dm, 0, 0, {k: 0 for k in canon}, canon
 
     work = dm.clone()
     cS, cE = work.getHeightStratum(0)
     vS, vE = work.getDepthStratum(0)
     pStart, pEnd = work.getChart()
+    pairs = set()          # (a, b): regions that touch, to be merged
 
-    mark = vertex_mark_chart.astype(np.int32).copy()
-    mark = _propagate_vertex(work, mark, MPI.MAX, np.maximum)
+    def reconcile(chart):
+        # every rank agrees on every point it can see; where a rank's own
+        # id loses to a neighbour's under MAX the two regions touch
+        before = chart.copy()
+        after = _propagate_vertex(work, chart, MPI.MAX, np.maximum)
+        touch = (before > 0) & (after != before)
+        for a, b in zip(before[touch], after[touch]):
+            pairs.add((int(a), int(b)))
+        return after
 
-    def star_of_marked(m):
-        out = set()
+    cell_region = np.zeros(cE - cS, dtype=np.int32)
+
+    def claim_cells(chart):
         for v in range(vS, vE):
-            if m[v - pStart]:
-                for q in work.getTransitiveClosure(v, useCone=False)[0]:
-                    if cS <= int(q) < cE:
-                        out.add(int(q))
-        return out
+            k = int(chart[v - pStart])
+            if k == 0:
+                continue
+            for q in work.getTransitiveClosure(v, useCone=False)[0]:
+                if cS <= int(q) < cE:
+                    c = int(q) - cS
+                    if cell_region[c] and cell_region[c] != k:
+                        pairs.add((int(cell_region[c]), k))
+                    cell_region[c] = max(cell_region[c], k)
 
-    star = star_of_marked(mark)
+    claim_cells(reconcile(ids_in.copy()))
     # One growth layer: the surgery needs every point in the closure of a
     # region cell unshared, and a point is unshared exactly when all its
     # incident cells are co-resident.
-    mark2 = np.zeros(pEnd - pStart, dtype=np.int32)
-    for c in star:
-        for q in work.getTransitiveClosure(c)[0]:
+    layer = np.zeros(pEnd - pStart, dtype=np.int32)
+    for c in np.flatnonzero(cell_region):
+        k = int(cell_region[c])
+        for q in work.getTransitiveClosure(int(c) + cS)[0]:
             if vS <= int(q) < vE:
-                mark2[int(q) - pStart] = 1
-    mark2 = _propagate_vertex(work, mark2, MPI.MAX, np.maximum)
-    star |= star_of_marked(mark2)
+                i = int(q) - pStart
+                if layer[i] and layer[i] != k:
+                    pairs.add((int(layer[i]), k))
+                layer[i] = max(layer[i], k)
+    claim_cells(reconcile(layer))
 
-    counts = np.asarray(comm.allgather(len(star)))
+    # merge touching regions: union-find on the gathered pair set, the same
+    # on every rank
+    parent = list(range(n_ids + 1))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in sorted(set().union(*comm.allgather(pairs))):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    canon = {k: find(k) for k in range(1, n_ids + 1)}
+    for c in np.flatnonzero(cell_region):
+        cell_region[c] = canon[int(cell_region[c])]
+
+    regions = sorted(set(canon.values()))
+    local = np.array([int((cell_region == k).sum()) for k in regions],
+                     dtype=np.int64)
+    counts = np.asarray(comm.allgather(local))          # (size, n_regions)
     if counts.sum() == 0:
         raise ValueError("place_sheet: the sheet meets no cell on any rank")
-    if np.count_nonzero(counts) == 1:
-        # The region, star and layer included, is already interior to one
-        # rank: the seam rule holds where the mesh stands, and the surgery
-        # runs there with no cell moved (#670). COLLECTIVE decision — the
-        # counts are gathered, so every rank takes this branch together.
-        if verbose:
-            uw.pprint(f"[place_sheet] a {int(counts.sum())}-cell region is "
-                      f"interior to rank {int(np.argmax(counts))}; no gather")
-        return dm, 0
-    target = int(np.argmax(counts))
-
+    owner = {}
     assign = np.full(cE - cS, comm.rank, dtype=np.int32)
-    for c in star:
-        assign[c - cS] = target
+    n_moved = 0
+    for j, k in enumerate(regions):
+        col = counts[:, j]
+        owner[k] = int(np.argmax(col))
+        if np.count_nonzero(col) <= 1:
+            # star and layer already interior to one rank: the seam rule
+            # holds where the mesh stands, nothing moves (#670)
+            continue
+        n_moved += int(col.sum() - col[owner[k]])
+        assign[cell_region == k] = owner[k]
+    n_region = int(counts.sum())
+    if n_moved == 0:
+        if verbose:
+            uw.pprint(f"[place_sheet] {len(regions)} region(s), "
+                      f"{n_region} cells, already interior to their ranks; "
+                      f"no gather")
+        return dm, n_region, 0, owner, canon
+
     order = np.argsort(assign, kind="stable").astype(np.int32)
     sizes = np.bincount(assign, minlength=comm.size).astype(np.int32)
-
     part = work.getPartitioner()
     part.setType(PETSc.Partitioner.Type.SHELL)
     part.setShellPartition(comm.size, sizes=sizes, points=order)
     work.distribute()
     if verbose:
-        uw.pprint(f"[place_sheet] gathered a {int(counts.sum())}-cell region "
-                  f"onto rank {target}")
-    return work, int(counts.sum())
+        uw.pprint(f"[place_sheet] gathered {n_moved} cells: "
+                  + ", ".join(f"region {k} ({int(counts[:, j].sum())} "
+                              f"cells) onto rank {owner[k]}"
+                              for j, k in enumerate(regions)))
+    return work, n_region, n_moved, owner, canon
 
 
 def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
