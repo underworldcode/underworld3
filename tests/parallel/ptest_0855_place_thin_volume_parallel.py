@@ -256,3 +256,45 @@ def test_2d_refusals_are_collective():
     assert all(m is not None for m in messages), (
         f"some rank did NOT raise: {[m is None for m in messages]}")
     assert len(set(messages)) == 1, "ranks raised different errors"
+
+
+def test_the_gather_moves_only_the_shell_around_the_zone():
+    """The gather exists for the seam rule: the cells the carve drops,
+    their vertex star, and one more layer so the ring's points are
+    unshared. That is a shell about three cells thick around the zone,
+    and nothing else may move (#670: a distance blanket two cells wide
+    ahead of that growth moved 91% of a fixture whose cavity was 6%,
+    onto one rank, for good). Measured on this box, np=2 and np=4 alike:
+    the shell is 5046 cells against 7269 within three median cell
+    diameters, and the old mask moved 9831 (this test fails on it). A
+    box eight times the unit fixture, so a shell fits inside it."""
+    from underworld3.utilities.edge_split import cell_diameters
+
+    comm = uw.mpi.comm
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(-0.5, -0.5, -0.5), maxCoords=(1.5, 1.5, 1.5),
+        cellSize=0.24, refinement=1, regular=False, qdegree=2)
+    width = 0.045
+    cells = np.asarray(mesh._cell_node_indices(1, True))
+    X = np.asarray(mesh.X.coords)[:, :3]
+    centroid = X[cells].mean(axis=1)
+    diameters = np.concatenate(comm.allgather(
+        np.asarray(cell_diameters(mesh.dm), dtype=float)))
+    h_med = float(np.median(diameters))
+
+    def slab_distance(P):
+        lo, hi = P.min(axis=0) - 0.5 * width, P.max(axis=0) + 0.5 * width
+        return np.linalg.norm(np.maximum(np.maximum(lo - centroid, 0.0),
+                                         centroid - hi), axis=1)
+
+    d = np.min([slab_distance(P) for P in CROSS], axis=0)
+    within_three = int(comm.allreduce(int((d < 3.0 * h_med).sum()),
+                                      op=MPI.SUM))
+
+    new, info = place_thin_volume(mesh.dm, CROSS, width=width,
+                                  label="Zone", label_value=5)
+    assert info["n_zone_cells"] > 0
+    assert all(g == info for g in comm.allgather(info))
+    assert info["n_gathered"] <= within_three, (
+        f"the gather moved {info['n_gathered']} cells; the shell rule "
+        f"allows at most the {within_three} within three cells of the zone")

@@ -985,7 +985,7 @@ def _place_one_parallel(dm, pts, label, label_value, clearance, spacing):
     comm.Allreduce(MPI.IN_PLACE, area_before, op=MPI.SUM)
 
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_line < (clearance + 2.0) * h_vertex)
+    mark[np.flatnonzero(d_line < (clearance + 1.0) * h_vertex)
          + vS - pStart] = 1
     dm_work, moved = _gather_region(dm, mark)
     if moved:
@@ -1606,11 +1606,14 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
     (feature/fault-split-node c8693579 / 1d487319; the label-driven original
     is measured at np=2..8 with serial-identical topology). Only the marked
     star moves — everything else keeps its load-balanced home — via a shell
-    partitioner. Returns ``(new_dm, moved)``; the input is untouched.
+    partitioner. Returns ``(new_dm, n_moved)``: the global count of cells
+    gathered, ``0`` when nothing moved (serial, or a region already
+    interior to one rank), so callers can both branch on it and report
+    it. The input is untouched.
     """
     comm = dm.getComm().tompi4py()
     if comm.size == 1:
-        return dm, False
+        return dm, 0
 
     work = dm.clone()
     cS, cE = work.getHeightStratum(0)
@@ -1644,6 +1647,15 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
     counts = np.asarray(comm.allgather(len(star)))
     if counts.sum() == 0:
         raise ValueError("place_sheet: the sheet meets no cell on any rank")
+    if np.count_nonzero(counts) == 1:
+        # The region, star and layer included, is already interior to one
+        # rank: the seam rule holds where the mesh stands, and the surgery
+        # runs there with no cell moved (#670). COLLECTIVE decision — the
+        # counts are gathered, so every rank takes this branch together.
+        if verbose:
+            uw.pprint(f"[place_sheet] a {int(counts.sum())}-cell region is "
+                      f"interior to rank {int(np.argmax(counts))}; no gather")
+        return dm, 0
     target = int(np.argmax(counts))
 
     assign = np.full(cE - cS, comm.rank, dtype=np.int32)
@@ -1659,7 +1671,7 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
     if verbose:
         uw.pprint(f"[place_sheet] gathered a {int(counts.sum())}-cell region "
                   f"onto rank {target}")
-    return work, True
+    return work, int(counts.sum())
 
 
 def _carve_cavity_3d(dm, X, cells, sheet_pts, sheet_tris, clearance,
@@ -2972,14 +2984,17 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     cells = _tet_vertices(dm)
     h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
     d_sheet = _sheet_distance_within(X, sheet_pts, sheet_tris,
-                                     (clearance + 2.0) * h_vertex)
-    # The gather mask is a SUPERSET of everything the carve may touch: the
-    # victims (clearance) plus the crossed cells' vertices, which sit within
-    # a cell diameter of the sheet. The +2 margin covers grading between
-    # neighbouring cells; the carve asserts nothing shared afterwards, so an
-    # under-reach is loud, never silent.
+                                     (clearance + 1.0) * h_vertex)
+    # The gather mask covers everything the carve may DROP: the victims
+    # (clearance) plus the crossed cells' vertices, which sit within a cell
+    # diameter of the sheet. The seam rule needs the dropped cells, the ring
+    # (their vertex star) and one more layer so the ring's points are
+    # unshared; _gather_region grows the star and the layer from this mask,
+    # so a wider mask here only moves cells the surgery never touches (#670:
+    # a +2 margin gathered 91% of a fixture whose cavity was 6%). The carve
+    # asserts nothing shared afterwards, so an under-reach is loud.
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_sheet < (clearance + 2.0) * h_vertex)
+    mark[np.flatnonzero(d_sheet < (clearance + 1.0) * h_vertex)
          + vS - pStart] = 1
 
     volume_before = np.array(
@@ -2994,7 +3009,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         cells = _tet_vertices(dm_work)
         h_vertex, _h_cell = _vertex_h_3d(dm_work, cells, len(X))
         d_sheet = _sheet_distance_within(X, sheet_pts, sheet_tris,
-                                         (clearance + 2.0) * h_vertex)
+                                         (clearance + 1.0) * h_vertex)
 
     on_wall = _true_wall_vertex_mask(dm_work, len(X))
     shared = _shared_point_flags(dm_work).astype(bool)
@@ -3324,6 +3339,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         uw.pprint(f"[place_sheet {label!r}] placed {info['n_placed']} "
                   f"vertices, removed {info['n_removed']}; "
                   f"{info['n_surface_facets']} sheet faces")
+    info["n_gathered"] = int(moved)   # cells the gather moved (#670)
     return new, info
 
 
@@ -5836,7 +5852,7 @@ def _remove_embedded_2d(dm, label, label_value, clearance, verbose):
     reach_v = clearance * h_vertex
 
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
+    mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
          + vS - pStart] = 1
     cS0, cE0 = dm.getHeightStratum(0)
     if dm.hasLabel(label):
@@ -6082,7 +6098,7 @@ def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
     d_skin = _sheet_distance(X, soup_pts, soup_tris)
     reach_v = clearance * h_vertex
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
+    mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
          + vS - pStart] = 1
     # The object's own vertices must gather with it, however fat the zone.
     cS0, _cE0 = dm.getHeightStratum(0)
@@ -6365,7 +6381,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     comm.Allreduce(MPI.IN_PLACE, area_before, op=MPI.SUM)
 
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
+    mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
          + vS - pStart] = 1
     dm_work, moved = _gather_region(dm, mark, verbose=verbose)
     if moved:
@@ -6955,9 +6971,9 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
     reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
     d_skin = _sheet_distance_within(X, skin_xyz, skin_tris,
-                                    reach_v + 2.0 * h_vertex)
+                                    reach_v + 1.0 * h_vertex)
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_skin < reach_v + 2.0 * h_vertex)
+    mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
          + vS - pStart] = 1
 
     volume_before = np.array([_owned_cell_volume(dm)], dtype=float)
@@ -6972,7 +6988,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         h_vertex, _h_cell = _vertex_h_3d(dm_work, cells, len(X))
         reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
         d_skin = _sheet_distance_within(X, skin_xyz, skin_tris,
-                                        reach_v + 2.0 * h_vertex)
+                                        reach_v + 1.0 * h_vertex)
 
     on_wall = _true_wall_vertex_mask(dm_work, len(X))
     shared = _shared_point_flags(dm_work).astype(bool)
@@ -7320,6 +7336,7 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                   f"zone cells, {info['n_skin_faces']} skin faces; placed "
                   f"{info['n_placed']} vertices, removed "
                   f"{info['n_removed']}")
+    info["n_gathered"] = int(moved)   # cells the gather moved (#670)
     return new, info
 
 

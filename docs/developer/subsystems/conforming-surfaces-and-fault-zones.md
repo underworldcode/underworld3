@@ -291,6 +291,31 @@ bit-identical over np = 1..5. Every refusal is collective: all ranks raise
 the same error, or none does. The 2-D forms are serial; a parallel call is
 refused rather than returning a mesh whose star-forest is silently wrong.
 
+What the gather moves, and why, is base mesh — never the surface. The
+surgery deletes base cells around the surface and creates new ones in the
+cavity, and the rebuild carries the old star forest over by renumbering, so
+no point the surgery deletes or creates may be shared. That needs exactly
+three layers of base cells on one rank: the cells the carve drops, their
+vertex star (the ring the fill attaches to), and one more layer so the
+ring's own points are unshared. The mark covers the dropped cells (the
+victims within the clearance plus the crossed cells' vertices, within one
+cell diameter of the surface) and `_gather_region` grows the star and the
+layer from it. The result is a shell about three cells thick around the
+surface; a region whose shell is already interior to one rank is placed
+there with nothing moved. The moved count is reported as
+`info["n_gathered"]`, and `ptest_0855` bounds it by the cells within three
+median cell diameters of the zone.
+
+The gather is one-way: the moved cells stay on the surgery rank, together
+with the cells the fill creates, so that rank carries the shell plus the
+band as extra load. That is the accepted trade (extra load on one rank in
+exchange for no communication during the solve), and it is proportional to
+the surface, not the domain. Two limits remain, recorded in #670: the whole
+network is one region with one target rank, so two surfaces each interior to
+a different rank are still gathered together; and a small domain cannot hold
+a shell at all (three base cells reaching the walls is the whole box, which
+is what the crossing-patches test fixture does).
+
 ## The thin volume: finite-width zones, junctions in the volume
 
 `place_surface.place_thin_volume(dm, patches, width)` embeds a layer of real
