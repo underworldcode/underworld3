@@ -89,3 +89,16 @@ reproduce the original failure, though the full threshold matrix was not repeate
 Shortening the longest filename from 286 to 189 characters made an otherwise unchanged
 eight-rank benchmark pass end to end, and a subsequent 192-rank run at 1/64 resolution
 completed every mesh, Stokes, HDF5, XDMF and postprocessing stage.
+
+**One source of path growth has since been removed.** The snapshot backend used to
+expand `mesh.name` — which is the full source path for a mesh loaded from file — into
+every generated filename, so a 123-character mesh name became a 346-character output
+filename on its own. It now writes deterministic `mesh_0000` stems and calls native
+PETSc/HDF5 from the artifact directory using short relative names, keeping the original
+name in the wrapper metadata. Snapshot writes are therefore no longer a path-length
+amplifier.
+
+That fix does not make the advice above unnecessary. It covers the snapshot backend
+only: `Mesh.write_timestep()` and anything else that builds its own output filenames
+still passes whatever you give it straight through to the native stack, and the
+underlying limit — wherever it actually sits — has not moved.
