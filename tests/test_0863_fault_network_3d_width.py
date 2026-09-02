@@ -230,6 +230,9 @@ def test_the_realisations_solve_on_the_shared_band():
             stokes.tolerance = 1e-5
             info = net.solve(stokes)
             assert info.get("converged")
+            # the band's base owns a geometric tail; the split child must
+            # inherit it (it silently fell back to GAMG before)
+            assert info.get("velocity_pc") == "custom-FMG", info
         else:
             net.apply(stokes, eta_1=0.01)
             stokes.petsc_use_pressure_nullspace = True

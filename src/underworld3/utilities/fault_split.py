@@ -1357,6 +1357,20 @@ def split_faults(mesh, names, verbose=False):
             mesh._registered_children.add(out)
     for n in names:
         out = split_fault(out, n, verbose=verbose)
+    # The network's child INHERITS a mesh-owned geometric-MG tail — the
+    # same rule Mesh.add_fault applies: a cut re-represents the same
+    # grid, so the parent's coarse levels serve unchanged with the cut
+    # mesh as the finest level (#620/#629). Without this, every solver
+    # on a network split silently fell back to GAMG. The FAC zone is
+    # NOT inherited (a split fault needs no patch — the keying ruling);
+    # callers that key a zone re-adopt on the child explicitly.
+    own_tail = getattr(mesh, "_custom_mg_coarse_meshes", None)
+    if (own_tail is not None
+            and getattr(out, "_custom_mg_coarse_meshes", None) is None):
+        out._custom_mg_coarse_meshes = list(own_tail)
+        out._custom_mg_builder = getattr(mesh, "_custom_mg_builder",
+                                         "barycentric")
+        out._custom_mg_fac_zone = None
     return out
 
 
