@@ -196,15 +196,35 @@ net.apply_contact(stokes)                          # only on the sliced pieces
 finite-width model. The two share one mesh, which is what makes the comparison
 between them clean.
 
+### What landed (2026-08)
+
+The whole-network end of this arrived first, in a slightly different
+shape. `build(width=..., realisation="split"|"ti")` places one ribbon
+band along every prepared piece and either cuts it or leaves it whole,
+so the two representations share one mesh as intended; `apply(solver,
+...)` imposes whichever was built, and `ti_fields` paints the weak-plane
+viscosity and director. The realisation is a property of the whole
+network, not yet of an individual piece — there is no per-fault
+`slice="auto"` criterion, so a model that is sliced *here* and finite-width
+*there* still has to be assembled by hand.
+
+The director question moved rather than closed. Within one strand's
+footprint the director is the unit normal of the nearest **segment** of
+that strand's trace, so it no longer moves when a trace is re-sampled.
+Which strand *owns* a cell is still nearest-sample over the concatenated
+spines, so the partition boundary and the high-angle-junction objection
+above are unchanged.
+
 ## What still has to be built
 
 In dependency order, for 2-D:
 
 1. Zone-boundary distance exposed so the criterion can be evaluated.
-2. The nearest-fault director, needed by the TI rheology and currently
-   hand-rolled in every script (issue #540 — broken three ways in 2-D — and
-   issue #544 for the ownership question above).
-3. The criterion itself, and the `slice="auto"` wiring.
+2. ~~The nearest-fault director~~ — landed as `FaultNetwork.ti_fields`
+   (nearest segment within a footprint); the ownership question (issue
+   #544) is untouched.
+3. The criterion itself, and the `slice="auto"` wiring — i.e. a
+   per-piece rather than per-network realisation.
 
 Placing a contact tip inside a zone works: `add_fault` puts a vertex on every
 control point of the trace, so a truncated trace terminates cleanly. That path
