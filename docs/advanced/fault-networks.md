@@ -63,7 +63,13 @@ jump between the two nodes of a cut pair, or the jump in tangential
 velocity across the layer, sampled one half-width plus a cell either
 side of the spine. Both are the fault's own throughput; a probe placed
 further out reads the surrounding flow as well and over-reads short
-strands.
+strands. The gauge is rank-local: each rank reports only the probe
+pairs it owns and omits a piece it holds no pair of, so a
+max-reduction across ranks recovers the network's answer. This
+matters because `evaluate` answers for any point it is handed,
+extrapolating from the nearest local cell when the point is not in
+the local mesh — a band-less rank would otherwise report a far-field
+extrapolation as the band's slip.
 
 `build(width=None)` keeps the older no-band path — graded refinement
 cut directly. It is split-only, and its mesh is not the one a weak
@@ -278,7 +284,16 @@ v1 scope, refused loudly outside it: planar patches (the
 near-miss — close but not crossing — is refused rather than guessed
 at). Multi-fault networks split and solve in parallel: `split_faults`
 redistributes ONCE, keyed on the union of the network's facets, and
-every split then runs with serial topology.
+every split then runs with serial topology. Either realisation runs
+its velocity block on the geometric multigrid tail the band's base
+mesh owns (`build` adopts it on the final mesh; `net.solve` says so
+when a solve falls back to algebraic multigrid). Placement is
+gather-first, so the cells gmsh fills into the carved cavity — the
+band and its graded surround — live on one rank; only the base's far
+field is balanced. On the crossing-patches fixture that is 8012 of
+8405 cells on one rank at np=4, and the solve is not faster than
+serial: parallel is a correctness mode for this path, not a speed-up,
+until the placed region is rebalanced.
 
 ## Limitations
 
