@@ -69,7 +69,17 @@ PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ctx, DM dm, PetscBool
   PetscCall(PetscMalloc2(N, &foundProcs, N, &globalProcs));
   for (p = 0; p < N; ++p) foundProcs[p] = size;
   cellSF = NULL;
-  if (owning_cell && hintAuthoritative) {
+  /* N == 0 is included deliberately. An empty hint array reaches C as a NULL
+     `owning_cell`, which flipped this test and sent a rank with no local points
+     down the DMLocatePoints branch ALONE -- and DMLocatePoints is collective on
+     the mesh DM communicator (the comment below is right that the
+     Allreduce(foundProcs) is a COMM_SELF no-op, but DMLocatePoints itself is
+     not). Three ranks bypassed while the empty one blocked inside
+     DMGetBoundingBox -> MPI_Allreduce, deadlocking the job (#611). With no
+     points there is nothing to locate, so bypassing is trivially correct and
+     the branch now depends only on `hintAuthoritative`, which is a mesh
+     capability and agrees across ranks. */
+  if ((owning_cell || N == 0) && hintAuthoritative) {
     /*
       Bypass DMLocatePoints when the caller supplies an AUTHORITATIVE hint
       (ported from feature/dminterp-bypass-element-check, 17a5a8d).

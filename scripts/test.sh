@@ -126,6 +126,14 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # NOT yet batched (issue #504 audit): test_106*py and test_107*py contain
   # level_2/level_3 + slow + tier_b/tier_c suites (e.g. test_1064) and need
   # a triage/deselect decision before being wired into CI.
+  #
+  # test_1072 is pulled forward out of that group, the same way test_1069 is
+  # above, because leaving it there defeats its purpose: it is the ONLY guard on
+  # the 3-D free-surface sign and relaxation rate, and #496 exists precisely
+  # because those regressions were invisible to CI. Landing the test into an
+  # unbatched file would have closed the issue without closing the gap.
+  # level_2/tier_b, ~55s serial; passes at np=1 and np=2.
+  $PYTEST tests/test_1072_free_surface_spherical.py || status=1
 
   # Diffusion / Advection tests
   $PYTEST tests/test_1100*py || status=1

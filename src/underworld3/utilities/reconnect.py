@@ -180,6 +180,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
+from underworld3.utilities.dm_labels import label_stratum_indices
 
 # Labels PETSc maintains itself. They are rebuilt by ``stratify`` so they must not
 # be copied onto a fresh plex, and an edge carrying one is not an interface.
@@ -373,10 +374,10 @@ def _interface_edges(dm):
         if values is None:
             continue
         for val in values.getIndices():
-            points = label.getStratumIS(int(val))
-            if points is None:
-                continue
-            idx = np.asarray(points.getIndices(), dtype=np.int64)
+            # Empty-safe (#589): an absent stratum hands back a NULL IS
+            # wrapper, never None — the old `is None` guard was dead and
+            # getIndices() on the wrapper segfaults.
+            idx = label_stratum_indices(label, val)
             if not len(idx):
                 continue
             if ((idx >= cS) & (idx < cE)).any():
@@ -408,10 +409,8 @@ def _cell_regions(dm):
         if values is None:
             continue
         for val in values.getIndices():
-            points = label.getStratumIS(int(val))
-            if points is None:
-                continue
-            idx = np.asarray(points.getIndices(), dtype=np.int64)
+            # Empty-safe (#589), as in _interface_edges above.
+            idx = label_stratum_indices(label, val)
             cells = idx[(idx >= cS) & (idx < cE)]
             if len(cells):
                 sig[cells - cS, j] = int(val)
@@ -491,10 +490,8 @@ def _copy_labels(new, dm, point_map=None):
         if values is None:
             continue
         for val in values.getIndices():
-            points = source.getStratumIS(int(val))
-            if points is None:
-                continue
-            for p in points.getIndices():
+            # Empty-safe (#589), as in _interface_edges above.
+            for p in label_stratum_indices(source, val):
                 q = int(p) if point_map is None else int(point_map[int(p)
                                                                   - pStart])
                 if q >= 0:

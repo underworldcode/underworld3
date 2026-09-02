@@ -252,11 +252,58 @@ def test_all_three_routes_share_one_bundle(monkeypatch):
     assert native["smoother_pc"] == "sor"
     assert native["smoother_max_it"] == 4
 
-    # The ONE deliberate per-route difference (#306): the rotated coarse operator
-    # inherits the rigid-rotation null space, where redundant/LU hits a zero pivot.
+    # The rotated coarse solve is GATED (#629 revision of the #306 rule):
+    # svd ONLY when the rotated problem carries a VERIFIED rigid-rotation
+    # null mode — blanket svd was measured as most of ~0.8 s per V-cycle
+    # (#622). This fixture PINS the inner boundary, so no rotation mode
+    # survives and all three routes legitimately share the redundant/LU
+    # coarse solve. The svd arm of the gate is asserted by
+    # test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode.
     assert native["coarse_pc"] == "redundant"
     assert standard["coarse_pc"] == "redundant"
-    assert rotated["coarse_pc"] == "svd"
+    assert rotated["coarse_pc"] == "redundant"
+
+
+def test_rotated_coarse_is_svd_only_with_a_verified_rotation_mode(monkeypatch):
+    """The svd arm of the coarse-solve gate (#306, as revised by #629):
+    rotated free-slip on BOTH annulus boundaries leaves the rigid rotation
+    as a genuine null mode, the null-space builder must verify and record
+    it, and only then is the svd coarse solve required — redundant/LU
+    would hit its zero pivot exactly here."""
+    mesh = _annulus(RES)
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    rhat = sympy.Matrix([[x / r, y / r]])
+    v = uw.discretisation.MeshVariable("Vsvd", mesh, mesh.dim, degree=2,
+                                       continuous=True)
+    p = uw.discretisation.MeshVariable("Psvd", mesh, 1, degree=1,
+                                       continuous=True)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    blob = sympy.exp(-(((x - 0.75) ** 2 + y**2) / 0.05))
+    s.bodyforce = sympy.Matrix([[50.0 * blob * x / r, 50.0 * blob * y / r]])
+    s.add_rotated_freeslip_bc(0.0, "Lower", normal=rhat)
+    s.add_rotated_freeslip_bc(0.0, "Upper", normal=rhat)
+    s.petsc_use_pressure_nullspace = True
+    s.tolerance = 1.0e-8
+    custom_mg.set_custom_fmg(s, [_annulus(2 * RES)], field_id=0)
+
+    real_solve = rotated_bc._solve_rotated_iterative
+    captured = {}
+
+    def capture(solver, Ahat, bhat, Q, Qt, normal_rows, **kw):
+        result = real_solve(solver, Ahat, bhat, Q, Qt, normal_rows, **kw)
+        captured.setdefault("config", _mg_config(
+            result[2]["pc"].getFieldSplitSubKSP()[0].getPC()))
+        return result
+
+    monkeypatch.setattr(rotated_bc, "_solve_rotated_iterative", capture)
+    s.solve()
+    assert s._rotated_velocity_null_modes == 1, (
+        "the free-slip annulus rotation mode was not verified/recorded — "
+        "the gate would silently choose the zero-pivot coarse solve")
+    assert captured["config"]["coarse_pc"] == "svd"
 
 
 def test_rotated_picks_up_a_mesh_owned_hierarchy():
@@ -385,7 +432,11 @@ def test_strategy_reaches_every_route(monkeypatch):
                           ("custom-P rotated", rotated)):
         assert config[:2] == ("richardson", 3), (
             f"strategy='fast' not honoured on the {route} route: {config}")
-    assert rotated[2] == "svd", "the rotated coarse solve must still be svd"
+    # Gated (#629): the fixture pins the inner boundary — no rotation
+    # mode, so the strategy must NOT drag the coarse solve back to svd.
+    assert rotated[2] == "redundant", (
+        "no verified rotation mode here; the coarse solve must stay "
+        "redundant under a strategy change")
 
 
 def test_strategy_value_pickles_and_copies():
