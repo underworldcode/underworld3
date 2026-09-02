@@ -169,10 +169,19 @@ mesh = uw.meshing.UnstructuredSimplexBox(..., cellSize=0.10, refinement=2)
 mesh = uw.meshing.UnstructuredSimplexBox(..., cellSize=0.20, refinement=3)
 ```
 
-Each refinement level divides cell size by two, so in 2-D the level above has
-about 4x the cells (8x in 3-D). Doubling the base cell size and adding one level
-therefore lands on the same finest grid while making every coarser level — the
-bottom one included — about 4x (or 8x) smaller.
+Each refinement level divides cell size by two, so the level above has 4x the
+cells in 2-D and 8x in 3-D — measured exactly, 66 / 264 / 1056 and
+184 / 1472 / 11776 on a `refinement=2` box. Doubling the base cell size and
+adding one level therefore lands on the same finest grid while making every
+coarser level — the bottom one included — about 4x (or 8x) smaller.
+
+"The same finest grid" is approximate, because the base mesh is unstructured and
+gmsh does not produce exactly 4x the cells for half the target size. Measured on
+a unit box, `cellSize=0.10, refinement=2` gives 3,872 finest cells against
+`cellSize=0.20, refinement=3` at 4,224 — 9% more, while the coarsest level drops
+to 27% of its former size. The production model in #644 landed the other way:
+227k against 233k. Expect a few percent either side, and check rather than
+assume.
 
 Check what you actually built rather than assuming; `dm_hierarchy[0]` is the
 coarsest level and `[-1]` is the mesh you solve on:
@@ -183,48 +192,66 @@ for i, dm in enumerate(mesh.dm_hierarchy):
     uw.pprint(f"level {i}: {cells} cells")
 ```
 
-As a rule of thumb, aim for a coarsest level in the low thousands of DOFs or
-fewer. If it runs to five figures, add a level rather than changing the bottom
-solve.
+There is no single DOF number that is "small enough", because the quantity that
+has to fit is the replicated factor **per rank**, against your per-rank memory
+budget — the core count is in the arithmetic, not just the coarse size. The #644
+measurement calibrates it: ~14k velocity DOFs cost ~300 MB/rank at a 5.16x LU
+fill, so a 900 MB/rank cap is already lost before the rest of the solver is
+counted, while ~1.9k DOFs cost little enough to disappear.
+
+As a working rule, keep the coarsest level in the low thousands of DOFs, and
+treat five figures as a bug in the hierarchy rather than a tuning question. If
+you are near the line, estimate it rather than guessing: the factor grows faster
+than the DOF count, and you pay it on every rank at once.
 
 ### When the coarse operator has a null space: SVD
 
-One case does require overriding the bottom solve. A **rotated** velocity block
-whose domain leaves rigid rotations free — a closed circle (one mode), a
-spherical shell (three) — hands those modes to the Galerkin-coarsened coarse
-operator, because the rotations survive the constraint. `redundant`/LU hits a
-zero pivot on a singular coarse operator and fails with `SUBPC_ERROR` (outer
-reason `-11`). SVD is null-space robust:
+One case does require a different bottom solve, and the solver handles it for
+you. A **rotated** velocity block whose domain leaves rigid rotations free — a
+closed circle (one mode), a spherical shell (three) — hands those modes to the
+Galerkin-coarsened coarse operator, because the rotations survive the
+constraint. `redundant`/LU hits a zero pivot on a singular coarse operator and
+fails with `SUBPC_ERROR` (outer reason `-11`), so the rotated path selects SVD
+instead.
 
-```python
-from underworld3.utilities.multigrid_options import geometric_mg_bundle
+It is deliberately **not** a blanket choice for every rotated problem. It keys
+on the count of *verified rotation* modes, because a rotated problem with
+Dirichlet walls, or a split-fault contact box, has none — and there an SVD is
+pure cost. A 3-D P2 coarse level is a **dense** factorization: measured, it
+accounted for most of ~0.8 s per V-cycle application at healthy iteration counts
+(#622).
 
-geometric_mg_bundle(coarse="svd")    # null-space-robust bottom solve
+```{warning}
+There is no `petsc_options` override for the coarse solve **on the rotated
+path**. That route writes its multigrid bundle under the velocity sub-PC's own
+prefix, applies it, and deletes the keys again; anything you set through
+`solver.petsc_options[...]` lives under the solver's SNES prefix and never
+reaches it. The override below works on the standard path only.
 ```
 
-The solver already does this for you, and it is deliberately **not** a blanket
-choice for every rotated problem. It keys on the count of *verified rotation*
-modes, because a rotated problem with Dirichlet walls, or a split-fault contact
-box, has none — and there an SVD is pure cost. A 3-D P2 coarse level is a
-**dense** factorization: measured, it accounted for most of ~0.8 s per V-cycle
-application at healthy iteration counts (#622).
+Because SVD is dense, it is affordable only on a genuinely small coarse level —
+which makes the sizing guidance above a hard requirement on this path rather
+than a preference.
 
-Two things follow. Do not reach for `svd` because a problem is "rotated"; reach
-for it when the bottom solve reports a zero pivot. And because SVD is dense, it
-is affordable only on a genuinely small coarse level — which makes the sizing
-guidance above a hard requirement on this path rather than a preference.
+### Overriding the coarse solve yourself
 
-### Very large partitions: telescope
-
-For core counts where even a small coarse system is replicated too many times,
-gather it onto a sub-communicator instead of onto every rank:
+On the standard (non-rotated) path, `"auto"` does not overwrite options you set
+yourself, so you can keep `preconditioner = "auto"` and change just the bottom
+solve:
 
 ```python
-stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "telescope"
+stokes.preconditioner = "auto"
+stokes.petsc_options["fieldsplit_velocity_mg_coarse_pc_type"] = "svd"
 ```
 
-Because `"auto"` does not overwrite options you set yourself, you can keep
-`preconditioner = "auto"` and override just the coarse solver.
+```{note}
+`PCTELESCOPE` — the usual PETSc answer to "replicating onto every rank is too
+many copies", which gathers the coarse system onto a sub-communicator instead —
+**is not available here**. It has no DMPlex support, and every Underworld mesh
+is a DMPlex, so requesting it aborts the solve with `Support for DMPLEX is
+currently not available` (PETSc error 56). There is no bottom-solve escape hatch
+from an over-large coarse level: the hierarchy is the lever.
+```
 
 ## Benchmark: FMG vs GAMG on a deforming adaptive mesh
 
