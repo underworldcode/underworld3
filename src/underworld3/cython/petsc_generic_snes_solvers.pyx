@@ -3136,9 +3136,17 @@ class SolverBaseClass(uw_object):
                 # this branch serves; its recovered values were ~1e-18 against an
                 # analytic ~1e-5.
                 _names, _iss, _subdms = self.dm.createFieldDecomposition()
-                sgvec = gvec.getSubVector(_iss[0])
-                _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
-                gvec.restoreSubVector(_iss[0], sgvec)
+                try:
+                    sgvec = gvec.getSubVector(_iss[0])
+                    try:
+                        _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                    finally:
+                        gvec.restoreSubVector(_iss[0], sgvec)
+                finally:
+                    for _is in _iss:
+                        _is.destroy()
+                    for _subdm in _subdms:
+                        _subdm.destroy()
 
             self.dm.globalToLocal(gvec, xlocal)
 
