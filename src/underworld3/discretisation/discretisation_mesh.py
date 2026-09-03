@@ -4836,9 +4836,10 @@ class Mesh(Stateful, uw_object):
         - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
           receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
           and rank 0 writes the companion ``.xdmf`` file.
-        - ``petsc_reload=True`` writes PETSc DMPlex section/vector metadata into
-          the same per-variable HDF5 files. These files can then be loaded with
-          ``MeshVariable.read_checkpoint()`` for PETSc-native same-mesh reload.
+        - ``petsc_reload=True`` writes PETSc DMPlex section/local-vector
+          metadata and an in-place global-vector payload into the same
+          per-variable HDF5 files. These files can then be loaded with
+          ``MeshVariable.read_checkpoint()`` for exact restart.
 
         Common choices are:
 
@@ -5015,7 +5016,7 @@ class Mesh(Stateful, uw_object):
             subdm.destroy()
 
     def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
-        """Write PETSc DMPlex section/vector reload metadata."""
+        """Write DMPlex reload metadata and in-place vector payloads."""
 
         old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")
@@ -5036,6 +5037,23 @@ class Mesh(Stateful, uw_object):
             viewer.destroy()
             if old_dm_name is not None:
                 self.dm.setName(old_dm_name)
+
+        viewer = PETSc.ViewerHDF5().create(
+            checkpoint_file, "a", comm=PETSc.COMM_WORLD
+        )
+        try:
+            viewer.pushGroup("/uw_checkpoint")
+            for var in variables:
+                var._sync_lvec_to_gvec()
+                checkpoint_vec = PETSc.Vec().createWithArray(
+                    var._gvec.array_r, comm=PETSc.COMM_WORLD
+                )
+                checkpoint_vec.setName(var.clean_name)
+                viewer(checkpoint_vec)
+                checkpoint_vec.destroy()
+            viewer.popGroup()
+        finally:
+            viewer.destroy()
 
     @timing.routine_timer_decorator
     def write_checkpoint(
