@@ -343,6 +343,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             raise TypeError(
                 f"Provided dtype={dtype} is not supported. Supported types are 'int' and 'float'."
             )
+        self._petsc_dtype = petsc_type
 
         if _register:
             # Check if swarm is already populated - PETSc doesn't allow registering
@@ -450,7 +451,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
             # Handle case where unpack returns None (swarm not initialized)
             if initial_data is None:
-                initial_data = np.zeros((0, self.num_components))
+                initial_data = np.zeros(
+                    (0, self.num_components), dtype=self._petsc_dtype
+                )
 
         # Create NDArray_With_Callback for flat data
         array_obj = uw.utilities.NDArray_With_Callback(
@@ -1428,15 +1431,19 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         # Check if swarm has any particles before accessing field
         swarm_size = self.swarm.local_size
         if swarm_size <= 0:
-            # Swarm not populated yet, return empty array
-            return np.zeros((0, self.num_components))
+            # Swarm not populated yet, return empty array. Keep the field's
+            # PETSc dtype so that an empty rank's array agrees with a
+            # non-empty rank's (a float64 default here made the collective
+            # parallel-HDF5 create_dataset in ``save`` see different dtypes
+            # across ranks and deadlock on close for ``int`` variables).
+            return np.zeros((0, self.num_components), dtype=self._petsc_dtype)
 
         # Direct PETSc field access without context manager
         field_data = self.swarm.dm.getField(self.clean_name)
         if field_data is None:
             # Field not properly initialized, restore and return empty array
             self.swarm.dm.restoreField(self.clean_name)
-            return np.zeros((0, self.num_components))
+            return np.zeros((0, self.num_components), dtype=self._petsc_dtype)
 
         petsc_data = field_data.reshape((-1, self.num_components))
 
