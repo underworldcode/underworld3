@@ -37,9 +37,7 @@ adv.solve(timestep=dt)
 | `DuDt.set_initial_history(values, dt)` | same | plant an exact history to start at full order |
 | `restore_points_func`, `monotone_mode`, `old_frame_traceback`, `DFDt` | ignored, with a warning | they configure the trace-back |
 
-`order=3` (BDF3) is available; see below for when it is safe. `integrator="am"`
-above order 1 reaches the higher Adams-Moulton rules, which are for
-diffusion-dominated problems only.
+`order=3` (BDF3) is available; see below for when it is safe.
 
 ## When to use which
 
@@ -80,7 +78,7 @@ tables are in the design note.
 | BDF2 (`order=2`) | damped and stable at every Courant number; the choice for sharp or under-resolved fields |
 | BDF3 (`order=3`) | the most accurate scheme below Courant 1 when diffusion is present; on pure advection it grows slowly at any Courant number, so use it only with diffusion |
 | backward Euler (`order=1, theta=1.0`) | 20 to 40% error at any practical timestep; not for transport |
-| Adams-Moulton 2, 3 (`integrator="am"`) | third and fourth order below Courant 1; blow up on advection from about Courant 1 |
+| Adams-Moulton 2, 3 (not offered) | third and fourth order below Courant 1 but blow up on advection from about Courant 1, which is why there is no knob for them |
 
 All schemes cost the same per step: the history terms are extra kernel inputs,
 not extra solves. Changing the timestep between steps changes a runtime constant

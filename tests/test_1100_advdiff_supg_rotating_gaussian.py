@@ -32,14 +32,14 @@ def _box(res, refinement=0):
         qdegree=3, regular=False, refinement=refinement)
 
 
-def _problem(mesh, tag, order, integrator="bdf", theta=1.0, kappa=0.0):
+def _problem(mesh, tag, order, theta=None, kappa=0.0):
     x, y = mesh.X
     sol = uw.analytic.RotatingGaussian(mesh, sigma=SIGMA, centre_radius=0.5,
                                        omega=1.0, diffusivity=kappa)
     T = uw.discretisation.MeshVariable(f"T_{tag}", mesh, 1, degree=2)
     T.array[:, 0, 0] = uw.function.evaluate(sol.at(0.0), T.coords).reshape(-1)
     adv = uw.systems.AdvDiffusionSUPG(mesh, T, sympy.Matrix([[-y, x]]),
-                                      order=order, integrator=integrator, theta=theta)
+                                      order=order, theta=theta)
     adv.constitutive_model.Parameters.diffusivity = kappa
     for b in ("Left", "Right", "Top", "Bottom"):
         adv.add_dirichlet_bc(0.0, b)
@@ -74,7 +74,7 @@ def test_temporal_convergence_order(order, timesteps, expected_slope):
     t_end = float(sympy.pi) / 2
     errors = []
     for i, dt in enumerate(timesteps):
-        sol, T, adv = _problem(mesh, f"c{order}{i}", order)
+        sol, T, adv = _problem(mesh, f"c{order}{i}", order, theta=1.0)
         errors.append(_run(sol, T, adv, dt, t_end))
     slopes = np.log2(np.array(errors[:-1]) / np.array(errors[1:]))
     print(f"order {order}: errors {errors} slopes {slopes}")

@@ -30,10 +30,10 @@ Every past time level $\phi^{n}, \phi^{n-1}, \dots$ is a mesh variable held by a
 `Eulerian` history manager, so first derivatives of past states are available in
 the kernels and two multistep families share one code path:
 
-| `integrator` | time derivative | spatial operator |
+| family | time derivative | spatial operator |
 |---|---|---|
-| `bdf`, order $N$ | $\frac{1}{\Delta t}\sum_{k=0}^{N} c_k\,\phi^{n+1-k}$ | at $n+1$ only |
-| `am`, order $N$ | $\frac{\phi^{n+1}-\phi^{n}}{\Delta t}$ | $\sum_{k=0}^{N} a_k\,S(\phi^{n+1-k})$ |
+| BDF, order $N$ (`order=2, 3`) | $\frac{1}{\Delta t}\sum_{k=0}^{N} c_k\,\phi^{n+1-k}$ | at $n+1$ only |
+| theta rule (`order=1`; Adams-Moulton of $N$ steps internally) | $\frac{\phi^{n+1}-\phi^{n}}{\Delta t}$ | $\sum_{k=0}^{N} a_k\,S(\phi^{n+1-k})$ |
 
 with $S(\phi) = \mathbf{u}\cdot\nabla\phi - \nabla\cdot(\kappa\nabla\phi)$ and the
 coefficients those the history manager already maintains (`theta` is the
@@ -175,8 +175,8 @@ What the table says:
 - **Adams-Moulton above order 1 is unusable for advection.** Its stability region
   is bounded and covers only a short segment of the imaginary axis, so on a pure
   advection operator it blows up once the Courant number reaches about 1, and
-  diffusion at this Peclet number does not rescue it. It is kept in the class for
-  the record and for diffusion-dominated use, with that warning in the docstring.
+  diffusion at this Peclet number does not rescue it. The assembly code handles
+  it, but no public argument reaches it.
 - **BDF3 is the most accurate scheme below Courant 1 with diffusion present**
   (0.3%, on the spatial floor) but it is not A-stable, fails from Courant 4, and
   on pure advection grows slowly at any Courant number (the res-64 rows).
@@ -192,8 +192,10 @@ What the table says:
 semi-Lagrangian solver: the same constructor, and `order` and `theta` with the same
 meaning (`order=1, theta=0.5` is Crank-Nicolson and the default, as for SLCN;
 `order=2, theta=1.0` is BDF2, the counterpart of SL-BDF2; `order=2, theta=0.5` is
-refused for the reason the SLCN documentation gives). `integrator` is inferred and
-only needs setting to reach Adams-Moulton above order 1. The choice of
+refused for the reason the SLCN documentation gives). There is no `integrator`
+argument: the family follows the order, and the only schemes that argument would
+have added, Adams-Moulton at orders 2 and 3, are the ones the table rules out.
+The study reached them by switching the family on the instance. The choice of
 Crank-Nicolson as the default follows the drop-in contract and the table: it is
 the more accurate scheme wherever the answer is good, and where it rings the
 answer is already wrong for every scheme. A user who wants damping asks for

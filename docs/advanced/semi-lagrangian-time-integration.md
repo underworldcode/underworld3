@@ -116,9 +116,9 @@ $[\theta,\,1-\theta]$:
 
 `uw.systems.AdvDiffusionSUPG` solves the same equation without a trace-back:
 all terms are assembled on the mesh, implicit in time, with SUPG
-stabilisation. Its `order=` and `integrator="bdf"|"am"` arguments select the
-multistep scheme, built from the same stored history as above; `order=1,
-integrator="am", theta=0.5` is Crank-Nicolson. The scheme is stable at any
+stabilisation. Its `order=` and `theta=` arguments mean what they mean here:
+`order=1, theta=0.5` is Crank-Nicolson, `order=2` is BDF2, built from the same
+stored history as above. The scheme is stable at any
 cell Courant number, so cells refined for a Stokes problem never limit the
 transport timestep; its accuracy is set by how far the transported feature
 moves per step. The semi-Lagrangian scheme's accuracy is instead set by how

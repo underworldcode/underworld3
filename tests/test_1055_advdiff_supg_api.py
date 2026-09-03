@@ -66,9 +66,9 @@ def test_solve_takes_the_slcn_signature_and_delta_t(mesh):
 
 @pytest.mark.parametrize("tag, kwargs, message", [
     ("v0", dict(order=4), "order must be"),
-    ("v1", dict(integrator="rk4"), "integrator must be"),
-    ("v2", dict(integrator="bdf", theta=0.5), "theta applies"),
-    ("v3", dict(integrator="am", order=2, theta=0.5), "theta applies"),
+    ("v1", dict(order=0), "order must be"),
+    ("v2", dict(order=2, theta=0.5), "theta applies"),
+    ("v3", dict(order=3, theta=0.5), "theta applies"),
 ])
 def test_scheme_arguments_are_validated(mesh, tag, kwargs, message):
     with pytest.raises(ValueError, match=message):
@@ -81,17 +81,21 @@ def test_timestep_is_required(mesh):
         adv.solve()
 
 
-def test_bdf1_diffusive_flux_is_the_constitutive_flux(mesh):
-    """At order 1 the assembled diffusive flux is exactly the constitutive
-    model's own flux of the new state; the history weights are inert."""
-    adv, _T = _solver(mesh, "c", order=1, theta=1.0, integrator="bdf")
+def test_bdf_diffusive_flux_is_the_constitutive_flux(mesh):
+    """For the BDF family the assembled diffusive flux is exactly the
+    constitutive model's own flux of the new state; no history enters it."""
+    adv, _T = _solver(mesh, "c", order=2)
     adv.constitutive_model.Parameters.diffusivity = 0.7
     difference = adv._diffusive_flux() - adv.constitutive_model.flux.T
     assert all(sympy.simplify(e) == 0 for e in difference)
 
 
-def test_am_order2_uses_all_three_time_levels(mesh):
-    adv, _T = _solver(mesh, "d", integrator="am", order=2)
+def test_multistep_weights_reach_every_stored_time_level(mesh):
+    # The theta rule at higher order is assembled by the same code; it is not
+    # offered publicly (unstable for advection), so the family is switched
+    # on the instance here to cover the weighted-sum path.
+    adv, _T = _solver(mesh, "d", order=2)
+    adv._integrator = "am"
     weights = adv._spatial_weights()
     assert len(weights) == 3
     states = adv._states()

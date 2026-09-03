@@ -101,28 +101,26 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     of past states are available in the kernels and both families come from
     one code path:
 
-    ``integrator="bdf"`` (order :math:`N`)
+    backward differentiation (order :math:`N \ge 2`)
 
     .. math::
         \frac{1}{\Delta t}\sum_{k=0}^{N} c_k\,\phi^{n+1-k}
             + \mathbf{u}\cdot\nabla\phi^{n+1}
             - \nabla\cdot(\kappa\nabla\phi^{n+1}) = f
 
-    ``integrator="am"`` (order :math:`N`; ``theta`` at order 1)
+    the :math:`\theta` rule (order 1; Adams-Moulton of one step)
 
     .. math::
         \frac{\phi^{n+1}-\phi^{n}}{\Delta t}
             + \sum_{k=0}^{N} a_k\left[\mathbf{u}\cdot\nabla\phi^{n+1-k}
             - \nabla\cdot(\kappa\nabla\phi^{n+1-k})\right] = f
 
-    ``integrator`` is inferred from ``order`` and ``theta`` (Adams-Moulton at
-    order 1, BDF above) and only needs setting to reach Adams-Moulton above
-    order 1, which is provided for diffusion-dominated problems: its bounded
-    stability region makes it blow up on an advection operator from about
-    Courant 1. Both families ramp from first order over the opening steps
-    unless a history is planted with ``solver.DuDt.set_initial_history``. A
-    BDF3 request falls back to variable-step BDF2 whenever consecutive
-    timesteps differ by more than 5%.
+    The higher Adams-Moulton rules are assembled by the same code but are
+    not offered: their bounded stability region blows up on an advection
+    operator from about Courant 1 (see the design note). Both families ramp
+    from first order over the opening steps unless a history is planted with
+    ``solver.DuDt.set_initial_history``. A BDF3 request falls back to
+    variable-step BDF2 whenever consecutive timesteps differ by more than 5%.
 
     **Which scheme.** Measured on a rotating Gaussian
     (``docs/developer/design/eulerian-supg-transport.md``): Crank-Nicolson is
@@ -190,8 +188,6 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         Crank-Nicolson, 1.0 is backward Euler. Above order 1 the only
         consistent value is 1.0, which is taken when ``theta`` is not given
         and refused when 0.5 is asked for explicitly.
-    integrator : {"bdf", "am"}, optional
-        Inferred from ``order`` and ``theta`` when omitted.
     verbose : bool, default False
     DuDt : Eulerian, optional
         A pre-built history manager (order at least ``order``, no ``V_fn``).
@@ -210,8 +206,6 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     solvers use; every option is overridable through ``petsc_options``.
     """
 
-    _INTEGRATORS = ("bdf", "am")
-
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -220,7 +214,6 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         V_fn,
         order: int = 1,
         theta: Optional[float] = None,
-        integrator: Optional[str] = None,
         verbose: bool = False,
         DuDt: Optional[Eulerian_DDt] = None,
         DFDt=None,
@@ -252,13 +245,13 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         # Crank-Nicolson blend at order 1. Left unset, order 2 and 3 take the
         # only consistent value; set explicitly to 0.5 there, it is refused.
         theta = float(theta) if theta is not None else (0.5 if order == 1 else 1.0)
-        if integrator is None:
-            integrator = "am" if order == 1 else "bdf"
-        if integrator not in self._INTEGRATORS:
-            raise ValueError(
-                f"integrator must be one of {self._INTEGRATORS}, not {integrator!r}."
-            )
-        if theta != 1.0 and not (integrator == "am" and order == 1):
+        # The multistep family follows the order: the Adams-Moulton (theta)
+        # rule at order 1, backward differentiation above. Adams-Moulton at
+        # orders 2 and 3 is assembled by the same code but is not offered:
+        # its bounded stability region blows up on an advection operator
+        # from about Courant 1 (design note, integrator study).
+        integrator = "am" if order == 1 else "bdf"
+        if theta != 1.0 and order != 1:
             raise ValueError(
                 "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
                 "backward Euler); order 2 and 3 take theta=1.0, the same rule as "
@@ -352,7 +345,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
     @property
     def integrator(self) -> str:
-        """``"bdf"`` or ``"am"``."""
+        """The multistep family in use: ``"am"`` (the theta rule) at order 1, ``"bdf"`` above."""
         return self._integrator
 
     @property
