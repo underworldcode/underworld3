@@ -140,6 +140,7 @@ curved-boundary-conditions
 mesh-adaptation
 semi-lagrangian-time-integration
 eulerian-advection-diffusion
+level-set-transport
 porous-flow
 snapshot-restore
 troubleshooting

@@ -21,6 +21,8 @@ AdvDiffusion : class
     Advection-diffusion with semi-Lagrangian transport.
 AdvDiffusionSUPG : class
     Advection-diffusion, implicit Eulerian with SUPG stabilisation.
+LevelSetSolver : class
+    Conservative level-set transport (advection, reinitialisation, mass correction).
 NavierStokes : class
     Navier-Stokes equations with inertia.
 Diffusion : class
@@ -95,4 +97,5 @@ from .ddt import Eulerian as Eulerian_DDt
 from .yield_continuation import yield_continuation, YieldHomotopyControl
 from .solve_report import SolveReport
 
-from .solver_supg import SNES_AdvectionDiffusion_SUPG as AdvDiffusionSUPG
+from . import level_set
+from .level_set import LevelSetSolver
