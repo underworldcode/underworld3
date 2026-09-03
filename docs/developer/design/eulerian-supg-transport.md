@@ -188,11 +188,17 @@ What the table says:
   order, and the error is still set by $\mathbf{u}\Delta t$ against the feature
   width.
 
-**Default: `order=2, integrator="bdf"`.** Defaults err toward robustness; a user
-with a smooth field at Courant 2 or below gets the better answer from
-`integrator="am", order=1, theta=0.5` (Crank-Nicolson), and with diffusion below
-Courant 1 from `order=3`. Backward Euler (order 1) is a first-order scheme with 20 to 40% error
-at any practical timestep and is not a sensible default for transport.
+**Interface and default.** The class is a drop-in replacement for the
+semi-Lagrangian solver: the same constructor, and `order` and `theta` with the same
+meaning (`order=1, theta=0.5` is Crank-Nicolson and the default, as for SLCN;
+`order=2, theta=1.0` is BDF2, the counterpart of SL-BDF2; `order=2, theta=0.5` is
+refused for the reason the SLCN documentation gives). `integrator` is inferred and
+only needs setting to reach Adams-Moulton above order 1. The choice of
+Crank-Nicolson as the default follows the drop-in contract and the table: it is
+the more accurate scheme wherever the answer is good, and where it rings the
+answer is already wrong for every scheme. A user who wants damping asks for
+`order=2`; below Courant 1 with diffusion, `order=3`. Backward Euler is not a
+sensible choice for transport.
 
 ### Temporal convergence (tests/test_1100)
 

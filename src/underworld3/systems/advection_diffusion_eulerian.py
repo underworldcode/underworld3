@@ -20,9 +20,11 @@ step; the semi-Lagrangian scheme's accuracy is set by how far a characteristic
 turns in one step. See ``docs/developer/design/eulerian-supg-transport.md``.
 """
 
+import warnings
+
 import numpy as np
 import sympy
-from typing import Optional
+from typing import Callable, Optional, Union
 
 import underworld3 as uw
 import underworld3.timing as timing
@@ -64,35 +66,75 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         \frac{\partial \phi}{\partial t} + \mathbf{u}\cdot\nabla\phi
             - \nabla\cdot(\kappa\nabla\phi) = f
 
-    Two families of time integration are built from the same stored history
-    :math:`\phi^{n}, \phi^{n-1}, \dots` (real mesh variables, so their
-    gradients are available inside the kernels):
+    A drop-in replacement for :class:`~underworld3.systems.solvers.SNES_AdvectionDiffusion`
+    (``uw.systems.AdvDiffusionSLCN``): the constructor, ``order``, ``theta``,
+    ``f``, ``V_fn``, ``constitutive_model``, ``delta_t``, ``estimate_dt`` and
+    ``solve`` all keep the semi-Lagrangian solver's meaning, so a script changes
+    the class name and nothing else::
 
-    ``integrator="bdf"`` (backward differentiation, order 1-3)
+        adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
+        adv.constitutive_model = uw.constitutive_models.DiffusionModel
+        adv.constitutive_model.Parameters.diffusivity = 1.0e-3
+        adv.add_dirichlet_bc(0.0, "Left")
+        adv.solve(timestep=dt)
+
+    The arguments that only make sense for a trace-back
+    (``restore_points_func``, ``monotone_mode``, ``old_frame_traceback``,
+    ``DFDt``) are accepted and ignored with a warning.
+
+    **Time schemes.** ``order`` and ``theta`` select the same schemes as for
+    the semi-Lagrangian solver:
+
+    ==========  =======  =====================================================
+    ``order``   ``theta``  scheme
+    ==========  =======  =====================================================
+    1           0.5      Crank-Nicolson (default; the SLCN convention)
+    1           1.0      backward Euler
+    2           1.0      BDF2, all spatial terms at :math:`n+1` (the SL-BDF2 convention)
+    3           1.0      BDF3
+    ==========  =======  =====================================================
+
+    ``order=2`` with ``theta=0.5`` is refused, as the semi-Lagrangian
+    documentation says: a BDF stencil pairs with terms at :math:`n+1`, not
+    with a centred flux. Every past time level is a mesh variable held by an
+    :class:`~underworld3.systems.ddt.Eulerian` history manager, so gradients
+    of past states are available in the kernels and both families come from
+    one code path:
+
+    ``integrator="bdf"`` (order :math:`N`)
 
     .. math::
         \frac{1}{\Delta t}\sum_{k=0}^{N} c_k\,\phi^{n+1-k}
             + \mathbf{u}\cdot\nabla\phi^{n+1}
             - \nabla\cdot(\kappa\nabla\phi^{n+1}) = f
 
-    ``integrator="am"`` (Adams-Moulton, order 1-3; ``theta`` at order 1)
+    ``integrator="am"`` (order :math:`N`; ``theta`` at order 1)
 
     .. math::
         \frac{\phi^{n+1}-\phi^{n}}{\Delta t}
             + \sum_{k=0}^{N} a_k\left[\mathbf{u}\cdot\nabla\phi^{n+1-k}
             - \nabla\cdot(\kappa\nabla\phi^{n+1-k})\right] = f
 
-    Order 1 with ``theta=1`` is backward Euler in both families;
-    ``integrator="am", order=1, theta=0.5`` is Crank-Nicolson. The BDF
-    coefficients :math:`c_k` and Adams-Moulton weights :math:`a_k` are the
-    ones the :class:`~underworld3.systems.ddt.Eulerian` manager maintains;
-    both ramp from first order over the opening steps unless a history is
-    planted with ``solver.DuDt.set_initial_history``. A BDF3 request falls
-    back to variable-step BDF2 whenever consecutive timesteps differ by more
-    than 5%.
+    ``integrator`` is inferred from ``order`` and ``theta`` (Adams-Moulton at
+    order 1, BDF above) and only needs setting to reach Adams-Moulton above
+    order 1, which is provided for diffusion-dominated problems: its bounded
+    stability region makes it blow up on an advection operator from about
+    Courant 1. Both families ramp from first order over the opening steps
+    unless a history is planted with ``solver.DuDt.set_initial_history``. A
+    BDF3 request falls back to variable-step BDF2 whenever consecutive
+    timesteps differ by more than 5%.
+
+    **Which scheme.** Measured on a rotating Gaussian
+    (``docs/developer/design/eulerian-supg-transport.md``): Crank-Nicolson is
+    three to four times more accurate than BDF2 at the same timestep below
+    Courant 2 on the feature scale, and rings once the feature is
+    under-resolved in time; BDF2 is damped and stable at every Courant
+    number; BDF3 is the most accurate scheme below Courant 1 when diffusion
+    is present but grows slowly on pure advection; backward Euler carries 20
+    to 40% error at any practical timestep.
 
     **Weak form.** With the strong residual of the chosen scheme
-    :math:`R(\phi)` (time derivative and advection; see below) the residual
+    :math:`R(\phi)` (time derivative, advection, source) the residual
     assembled through PETSc's pointwise interface is
 
     .. math::
@@ -117,20 +159,22 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
             + \left(\frac{2|\mathbf{u}|}{h}\right)^2
             + \left(\frac{4\kappa}{h^2}\right)^2\right]^{-1/2}
 
-    with :math:`h` the local cell size (``mesh.cell_size()``, the
-    :math:`\mathrm{volume}^{1/d}` equivalent radius) and :math:`c_0` the
-    leading multistep coefficient. The three weights are runtime constants
-    (``tau_weights``) and ``supg_weight`` scales the whole term, so a
-    Galerkin baseline needs no rebuild.
+    with :math:`h` the local cell size (``mesh.cell_size()``) and
+    :math:`c_0` the leading multistep coefficient. The three weights are
+    runtime constants (``tau_weights``) and ``supg_weight`` scales the whole
+    term, so a Galerkin baseline needs no rebuild.
 
-    **What limits the timestep.** Nothing, for stability. The implicit
+    **What limits the timestep.** Nothing, for stability: the implicit
     scheme is stable at any cell Courant number, including on cells refined
     for a Stokes problem that the scalar does not need. Accuracy is set by
     how far the transported feature moves per step relative to its own
-    width: the error grows as :math:`(\mathbf{u}\Delta t)^2` for the
-    second-order schemes, and the transient term of :math:`\tau` cannot
-    hide that. :meth:`estimate_dt` returns the cell-crossing time as a
-    resolution guide only.
+    width, as :math:`(\mathbf{u}\Delta t)^2` for the second-order schemes.
+    :meth:`estimate_dt` returns the cell-crossing time as a resolution guide,
+    exactly as the semi-Lagrangian solver does. Against that solver: the
+    semi-Lagrangian error is flat in the timestep but accumulates one
+    interpolation per step, and its limit is the arc a characteristic turns
+    per step; the Eulerian solve costs four to six times less per step in
+    serial and needs no departure points in parallel.
 
     Parameters
     ----------
@@ -139,42 +183,31 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         Continuous scalar field :math:`\phi`.
     V_fn : MeshVariable or sympy Matrix
         Advecting velocity, ``(1, dim)``.
-    order : int, default 2
-        Order of the time integration, 1 to 3. BDF2 is the default because it
-        is stable at every Courant number and damped. Measured on a rotating
-        Gaussian (``docs/developer/design/eulerian-supg-transport.md``):
-        Crank-Nicolson is three to four times more accurate than BDF2 at the
-        same timestep below Courant 2 but rings once the feature is
-        under-resolved in time; BDF3 is the most accurate scheme below
-        Courant 1 when diffusion is present, fails from Courant 4, and on
-        pure advection grows slowly at any Courant number; backward Euler (order 1) carries
-        20 to 40% error at any practical timestep.
-    integrator : {"bdf", "am"}, default "bdf"
-        Adams-Moulton above order 1 has a bounded stability region and blows
-        up on an advection operator from about Courant 1; it is provided for
-        diffusion-dominated problems and for comparison.
-    theta : float, default 1.0
-        Adams-Moulton blend at order 1 only (0.5 is Crank-Nicolson). Must be
-        1.0 for BDF and for Adams-Moulton above order 1.
+    order : int, default 1
+        Time-integration order, 1 to 3 (see the table above).
+    theta : float, optional
+        Crank-Nicolson blend at order 1: 0.5 (the default there) is
+        Crank-Nicolson, 1.0 is backward Euler. Above order 1 the only
+        consistent value is 1.0, which is taken when ``theta`` is not given
+        and refused when 0.5 is asked for explicitly.
+    integrator : {"bdf", "am"}, optional
+        Inferred from ``order`` and ``theta`` when omitted.
     verbose : bool, default False
     DuDt : Eulerian, optional
         A pre-built history manager (order at least ``order``, no ``V_fn``).
+    restore_points_func, monotone_mode, old_frame_traceback, DFDt
+        Semi-Lagrangian arguments, accepted for drop-in compatibility and
+        ignored with a warning: there is no trace-back here.
 
     Notes
     -----
-    The diffusivity is set through the constitutive model, as for the other
-    scalar solvers; the solver starts with a
+    The diffusivity is set through the constitutive model, as for every
+    scalar solver; the solver starts with a
     :class:`~underworld3.constitutive_models.DiffusionModel` at
-    :math:`\kappa = 0` (pure advection)::
-
-        adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, order=2)
-        adv.constitutive_model.Parameters.diffusivity = 1.0e-3
-        adv.add_dirichlet_bc(0.0, "Left")
-        adv.solve(timestep=dt)
-
-    The linear system is nonsymmetric, so the preconditioner defaults are
-    GMRES with an additive-Schwarz ILU preconditioner rather than the
-    algebraic multigrid the symmetric scalar solvers use.
+    :math:`\kappa = 0` (pure advection). The linear system is nonsymmetric,
+    so the solver defaults to GMRES with an additive-Schwarz ILU
+    preconditioner rather than the algebraic multigrid the symmetric scalar
+    solvers use; every option is overridable through ``petsc_options``.
     """
 
     _INTEGRATORS = ("bdf", "am")
@@ -185,29 +218,52 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable,
         V_fn,
-        order: int = 2,
-        integrator: str = "bdf",
-        theta: float = 1.0,
+        order: int = 1,
+        theta: Optional[float] = None,
+        integrator: Optional[str] = None,
         verbose: bool = False,
         DuDt: Optional[Eulerian_DDt] = None,
+        DFDt=None,
+        restore_points_func: Optional[Callable] = None,
+        monotone_mode: Optional[str] = None,
+        old_frame_traceback: bool = False,
     ):
         if not u_Field.continuous:
             raise ValueError(
                 "u_Field must be a continuous MeshVariable: the SUPG weak form "
                 "is continuous Galerkin."
             )
-        if integrator not in self._INTEGRATORS:
-            raise ValueError(
-                f"integrator must be one of {self._INTEGRATORS}, not {integrator!r}."
+        ignored = [name for name, value in (
+            ("restore_points_func", restore_points_func),
+            ("monotone_mode", monotone_mode),
+            ("old_frame_traceback", old_frame_traceback),
+            ("DFDt", DFDt),
+        ) if value]
+        if ignored:
+            warnings.warn(
+                f"AdvDiffusionSUPG ignores {', '.join(ignored)}: these configure "
+                "the semi-Lagrangian trace-back and the Eulerian scheme has none.",
+                stacklevel=2,
             )
         order = int(order)
         if order not in (1, 2, 3):
             raise ValueError(f"order must be 1, 2 or 3, not {order}.")
-        theta = float(theta)
+        # theta means what it means for the semi-Lagrangian solver: the
+        # Crank-Nicolson blend at order 1. Left unset, order 2 and 3 take the
+        # only consistent value; set explicitly to 0.5 there, it is refused.
+        theta = float(theta) if theta is not None else (0.5 if order == 1 else 1.0)
+        if integrator is None:
+            integrator = "am" if order == 1 else "bdf"
+        if integrator not in self._INTEGRATORS:
+            raise ValueError(
+                f"integrator must be one of {self._INTEGRATORS}, not {integrator!r}."
+            )
         if theta != 1.0 and not (integrator == "am" and order == 1):
             raise ValueError(
-                "theta applies to integrator='am' at order 1 only "
-                "(0.5 is Crank-Nicolson); higher orders and BDF take theta=1."
+                "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
+                "backward Euler); order 2 and 3 take theta=1.0, the same rule as "
+                "the semi-Lagrangian solver (a BDF stencil pairs with terms at n+1, "
+                "not with a centred flux)."
             )
 
         super().__init__(mesh, u_Field, u_Field.degree, verbose, DuDt=DuDt, DFDt=None)
@@ -277,6 +333,19 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self.petsc_options["snes_rtol"] = 1.0e-8
         self.petsc_options["snes_max_it"] = 20
 
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+
+        super()._object_viewer()
+        scheme = {("am", 1): f"Adams-Moulton order 1, theta = {self._theta}",
+                  ("bdf", 1): "backward Euler"}.get(
+            (self._integrator, self._time_order),
+            f"{self._integrator.upper()} order {self._time_order}")
+        display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
+        display(Latex(r"$\quad\mathbf{v} = $ " + self._V_fn._repr_latex_()))
+        display(Latex(r"$\quad\Delta t = $ " + self._delta_t._repr_latex_()))
+        display(Latex(rf"$\quad$ time scheme: {scheme}"))
+
     # ------------------------------------------------------------------
     # Scheme description
     # ------------------------------------------------------------------
@@ -298,8 +367,23 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
     @property
     def delta_t(self):
-        r"""The timestep :math:`\Delta t` as a UW expression (set by :meth:`solve`)."""
+        r"""The timestep :math:`\Delta t` as a UW expression.
+
+        Set by :meth:`solve`, or assign it directly (a number or a quantity
+        with time units) and call ``solve()`` without ``timestep``, as with
+        the semi-Lagrangian solver. A new value updates a runtime constant of
+        the compiled kernels; nothing is recompiled.
+        """
         return self._delta_t
+
+    @delta_t.setter
+    def delta_t(self, value):
+        dt = float(_nondimensionalise_timestep(value))
+        if dt <= 0.0:
+            raise ValueError(f"timestep must be positive, not {dt}.")
+        if dt != self._last_timestep:
+            self._delta_t.sym = dt
+            self._last_timestep = dt
 
     @property
     def V_fn(self):
@@ -458,29 +542,27 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
     def solve(
         self,
-        *,
-        timestep=None,
         zero_init_guess: Optional[bool] = None,
-        verbose: bool = False,
+        timestep=None,
         _force_setup: bool = False,
+        _evalf: bool = False,
+        verbose: bool = False,
         divergence_retries: int = 0,
     ):
-        r"""Advance :math:`\phi` by one step of size ``timestep``.
+        r"""Advance :math:`\phi` by one step.
 
-        ``timestep`` is required and keyword-only. Changing it between calls
-        updates a runtime constant of the compiled kernels; nothing is
-        recompiled.
+        Same signature as the semi-Lagrangian solver. ``timestep`` sets
+        :attr:`delta_t`; omit it to reuse the value already set. Changing it
+        between calls updates a runtime constant of the compiled kernels;
+        nothing is recompiled.
         """
-        if timestep is None:
+        if timestep is not None:
+            self.delta_t = timestep
+        elif self._last_timestep is None:
             raise ValueError(
-                "solve() requires timestep=<dt>; there is no default timestep."
+                "solve() needs a timestep: pass timestep=<dt> or set solver.delta_t first."
             )
-        dt = float(_nondimensionalise_timestep(timestep))
-        if dt <= 0.0:
-            raise ValueError(f"timestep must be positive, not {dt}.")
-        if dt != self._last_timestep:
-            self._delta_t.sym = dt
-            self._last_timestep = dt
+        dt = self._last_timestep
 
         if _force_setup:
             self._needs_function_rewire = True

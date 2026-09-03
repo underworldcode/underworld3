@@ -37,13 +37,14 @@ stays perfectly stable, and `-uw_order 2` to see the second-order scheme.
   timestep is a runtime constant of the compiled kernels.
 - **SUPG stabilisation**: the streamline-upwind test-function perturbation
   written as a flux, so PETSc needs no modified test space.
-- **Multistep order**: `order=1, 2, 3` with `integrator="bdf"` or `"am"`.
+- **Drop-in for SLCN**: the same constructor, `order`, `theta`, `estimate_dt`
+  and `solve`; change the class name and nothing else.
 
 ## Parameters
 
 - `uw_res`: cells across the box
 - `uw_courant`: timestep as a multiple of the cell-crossing time
-- `uw_order`, `uw_integrator`, `uw_theta`: the time scheme
+- `uw_order`, `uw_theta`: the time scheme, with the semi-Lagrangian solver's meaning
 - `uw_diffusivity`: thermal diffusivity (0 is pure advection)
 """
 
@@ -67,9 +68,8 @@ python Ex_AdvectionDiffusionSUPG_RotationTest.py -uw_courant 4 -uw_order 2
 params = uw.Params(
     uw_res=32,
     uw_courant=1.0,
-    uw_order=2,
-    uw_integrator="bdf",
-    uw_theta=1.0,
+    uw_order=1,          # 1 with theta 0.5 is Crank-Nicolson; 2 with theta 1.0 is BDF2
+    uw_theta=0.5,
     uw_diffusivity=0.0,
     uw_sigma=0.12,
 )
@@ -104,8 +104,7 @@ walls carry T = 0, which is exact to rounding a few sigma from the orbit.
 
 # %%
 adv_diff = uw.systems.AdvDiffusionSUPG(
-    mesh, T, velocity, order=params.uw_order,
-    integrator=params.uw_integrator, theta=params.uw_theta)
+    mesh, T, velocity, order=params.uw_order, theta=params.uw_theta)
 adv_diff.constitutive_model.Parameters.diffusivity = params.uw_diffusivity
 for boundary in ("Left", "Right", "Top", "Bottom"):
     adv_diff.add_dirichlet_bc(0.0, boundary)

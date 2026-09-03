@@ -32,12 +32,36 @@ def _solver(mesh, tag, **kwargs):
     return adv, T
 
 
-def test_exported_and_constructs(mesh):
+def test_exported_and_constructs_with_the_slcn_defaults(mesh):
     adv, _T = _solver(mesh, "a")
     assert type(adv).__name__ == "SNES_AdvectionDiffusion_SUPG"
-    assert adv.integrator == "bdf" and adv.order == 2
+    # order 1, theta 0.5: Crank-Nicolson, the semi-Lagrangian solver's default
+    assert adv.integrator == "am" and adv.order == 1 and adv.theta == 0.5
     assert isinstance(adv.DuDt, uw.systems.ddt.Eulerian)
     assert adv.DuDt.V_fn is None, "advection is implicit, not a history correction"
+
+
+def test_slcn_order_theta_pairs_select_the_documented_schemes(mesh):
+    assert _solver(mesh, "p1", order=1, theta=1.0)[0].integrator == "am"     # backward Euler
+    assert _solver(mesh, "p2", order=2, theta=1.0)[0].integrator == "bdf"    # SL-BDF2's counterpart
+    assert _solver(mesh, "p3", order=2)[0].integrator == "bdf"               # theta 0.5 only bites at order 1
+    with pytest.raises(ValueError, match="theta applies"):
+        _solver(mesh, "p4", order=2, theta=0.5)
+
+
+def test_semi_lagrangian_only_arguments_are_ignored_with_a_warning(mesh):
+    with pytest.warns(UserWarning, match="monotone_mode, old_frame_traceback"):
+        adv, _T = _solver(mesh, "q", monotone_mode="clamp", old_frame_traceback=True)
+    adv.solve(timestep=0.01)
+
+
+def test_solve_takes_the_slcn_signature_and_delta_t(mesh):
+    adv, T = _solver(mesh, "s")
+    adv.solve(False, 0.01)                      # positional, as SLCN allows
+    adv.delta_t = 0.02                          # set once ...
+    adv.solve()                                 # ... and reuse
+    assert float(adv.delta_t.sym) == 0.02
+    assert np.isfinite(np.asarray(T.array)).all()
 
 
 @pytest.mark.parametrize("tag, kwargs, message", [
@@ -53,14 +77,14 @@ def test_scheme_arguments_are_validated(mesh, tag, kwargs, message):
 
 def test_timestep_is_required(mesh):
     adv, _T = _solver(mesh, "b")
-    with pytest.raises(ValueError, match="requires timestep"):
+    with pytest.raises(ValueError, match="needs a timestep"):
         adv.solve()
 
 
 def test_bdf1_diffusive_flux_is_the_constitutive_flux(mesh):
     """At order 1 the assembled diffusive flux is exactly the constitutive
     model's own flux of the new state; the history weights are inert."""
-    adv, _T = _solver(mesh, "c")
+    adv, _T = _solver(mesh, "c", order=1, theta=1.0, integrator="bdf")
     adv.constitutive_model.Parameters.diffusivity = 0.7
     difference = adv._diffusive_flux() - adv.constitutive_model.flux.T
     assert all(sympy.simplify(e) == 0 for e in difference)
