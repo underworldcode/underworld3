@@ -6695,9 +6695,13 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
             comps = []
             if drop.any():
-                comps, drop = _ring_growing_multi(
-                    cells, drop, held_c,
-                    allow_multiple=(seams == "ligament"))
+                # Several cavities on one rank are ordinary (a network
+                # whose zones sit apart, a graded base whose cleared cells
+                # fall into more than one hole): each is carved and
+                # filled on its own. This lifts the "one simple hole"
+                # refusal the fine S-fault rig hit on a graded base.
+                comps, drop = _ring_growing_multi(cells, drop, held_c,
+                                                  allow_multiple=True)
             boundary_pairs = None
             if outcropping:
                 boundary_pairs = {frozenset((a, b))
@@ -6711,29 +6715,35 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             # the ring spliced accordingly.
             carved = []
             for ring, comp in comps:
-                if seams == "ligament":
+                # the clip margin applies along every ring edge on the
+                # seam (both ends protected) and every one whose outside
+                # cell the cavity WANTED but a shrink restored
+                edge_cell = {}
+                for ci in np.flatnonzero(~drop & drop_wanted):
+                    v0, v1, v2 = (int(v) for v in cells[ci])
+                    for a, b in ((v0, v1), (v1, v2), (v2, v0)):
+                        edge_cell[(min(a, b), max(a, b))] = ci
+                seam_edges = [(a, b) for a, b in zip(ring, ring[1:] + ring[:1])
+                              if (min(a, b), max(a, b)) in edge_cell
+                              or (seam_prot_v[a] and seam_prot_v[b])]
+                # the assembly cells THIS cavity holds. One cavity with no
+                # seam holds the whole assembly (an outcrop vertex snapped
+                # to a curved wall sits just outside the straight base
+                # cells, so a point test would lose it); several cavities,
+                # or a seam, take the cells whose vertices lie inside.
+                if len(comps) == 1 and not seam_edges:
+                    kept = np.ones(len(asm_tris), dtype=bool)
+                else:
                     inside = _inside_mesh(X, cells[comp], asm_pts)
                     kept = inside[asm_tris].all(axis=1)
-                    # the clip margin applies along every ring edge on the
-                    # seam (both ends protected) and every one whose outside
-                    # cell the cavity WANTED but a shrink restored
-                    edge_cell = {}
-                    for ci in np.flatnonzero(~drop & drop_wanted):
-                        v0, v1, v2 = (int(v) for v in cells[ci])
-                        for a, b in ((v0, v1), (v1, v2), (v2, v0)):
-                            edge_cell[(min(a, b), max(a, b))] = ci
-                    seam_edges = [(a, b) for a, b in zip(ring, ring[1:] + ring[:1])
-                                  if (min(a, b), max(a, b)) in edge_cell
-                                  or (seam_prot_v[a] and seam_prot_v[b])]
-                    if seam_edges and kept.any():
-                        d_seam = _segments_distance(asm_pts, X, seam_edges)
-                        kept &= ~(d_seam[asm_tris] < 0.4 * size).any(axis=1)
+                if seam_edges and kept.any():
+                    d_seam = _segments_distance(asm_pts, X, seam_edges)
+                    kept &= ~(d_seam[asm_tris] < 0.4 * size).any(axis=1)
+                if not kept.all():
                     kept = _manifold_subset_2d(asm_tris, kept)
-                    if not kept.any():
-                        drop[comp] = False      # nothing to embed: leave it
-                        continue
-                else:
-                    kept = np.ones(len(asm_tris), dtype=bool)
+                if not kept.any():
+                    drop[comp] = False      # nothing to embed: leave it
+                    continue
                 sub = asm_tris[kept]
                 _sk, sk_local, sk_ids = _assembly_skin(asm_pts, sub)
                 sk_edges = [(int(sk_ids[a]), int(sk_ids[b]))

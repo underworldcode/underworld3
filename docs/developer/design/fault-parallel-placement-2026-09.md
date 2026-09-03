@@ -631,6 +631,57 @@ margin plus the ligament is three band cells the crack does not cross,
 and the weak plane at eta_1 = 0.01 carries about half of the slip across
 it. That is the number the free tip has to beat.
 
+### The rig: a fine fault across a coarse seam (3 September, late)
+
+Louis's direction for the parallel work is the TI realisation; the split
+nodes wait for a later session. So the S-fault rig ran in parallel with
+TI on the network path (`cases/s_fault_rig`, `-uw_seams ligament`; the
+rig's gauges were rank-local and now reduce across ranks). Coarse
+(w = 0.03) the ligament is within 3% on the Main, local to its crossing,
+and the other strands within 1%, with the first speed-up the rig has had.
+Fine (w = 0.01, the sensible width) it is not acceptable: the seam's cells
+are three to six band widths across, the Main loses 8% (np=2) to 10%
+(np=4) of peak slip along its whole length, Cont loses 4-5%, and the
+Branch gains 6-20% because the Main's throughput drops at its junction
+crossing and the slip partitions onto the Branch. One more refinement
+level toward the traces halves the seam cell and halves the loss (Main
+−3.1% at np=2, −0.8% at np=4; the serial answer is unchanged): the loss
+is the seam cell's size, i.e. the ligament standing in for the band at
+base resolution. The rig case's README carries both tables.
+
+Two library consequences fell out. Several cavities on one rank are now
+carved and filled independently in every mode, which lifts the "one
+simple hole" refusal the fine rig hit on a graded base at two levels.
+And the cells a cavity holds are the assembly cells whose vertices lie
+inside it, except for one seamless cavity, which holds the whole
+assembly (an outcrop vertex snapped to a curved wall lies just outside
+the straight base cells).
+
+### The decision: mesh the band through the seam
+
+Louis: "That really will not do. Why is it not possible to mesh
+consistently across the boundary?" It is possible. The band assembly is
+identical on every rank already, so both sides of a seam can compute the
+same interface; what is missing is that the rebuild carries the old star
+forest over and assumes no placed point is shared. The conforming mode of
+the interface sketch is therefore the next build, in this form:
+
+1. Split each seam edge the band crosses at its two rail crossings; the
+   crossing points are new vertices, shared by construction.
+2. Assign the band's cells to sides by centroid; the chain of band edges
+   between the two sets is the seam inside the band, and its vertices are
+   shared.
+3. Fill each side against its own ring with the crossing points in it;
+   the band's cells on each side are made by that side as now.
+4. Extend the vertex star forest with the crossing points and the chain
+   vertices before the interpolate, keyed by the band's own point
+   numbering (owner the lower rank; one small exchange of the owner's new
+   indices).
+
+The band then keeps its own resolution through the seam and the TI
+realisation is partition-independent up to the fill's noise. The
+ligament mode stays as the fallback and as the split's blind-tip form.
+
 ### What follows
 
 1. **A free tip at a ligament end.** The split's weld is the pinned tip.
