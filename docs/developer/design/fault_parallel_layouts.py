@@ -21,7 +21,8 @@ import underworld3 as uw
 
 params = uw.Params(layout=uw.Param("local", "local | straddle | gathered"),
                    tail=uw.Param(1, "1 = geometric tail (custom-FMG), 0 = GAMG"),
-                   solve=uw.Param(1, "0 = build only"))
+                   solve=uw.Param(1, "0 = build only"),
+                   pres_rtol=uw.Param(0.0, "pressure sub-solve rtol (0 = the path's default, 0.1 x tol)"))
 layout = str(params.layout)
 if layout == "gathered":
     # one region for the whole network: the old behaviour, for reference
@@ -87,6 +88,8 @@ for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
 net.apply(stokes)
 stokes.petsc_use_pressure_nullspace = True
 stokes.tolerance = 1e-5
+if float(params.pres_rtol) > 0:
+    stokes._rotated_pres_rtol = float(params.pres_rtol)
 t1 = time.perf_counter(); info = net.solve(stokes); t_cold = time.perf_counter() - t1
 # warm: a full solve again, from zero, with the tail and the rotation reused
 t2 = time.perf_counter(); info2 = net.solve(stokes, zero_init_guess=True); t_warm = time.perf_counter() - t2
@@ -97,7 +100,7 @@ if comm.rank == 0:
     print(f"[layout] {layout} tail={int(params.tail)} np={comm.size}: build {t_build:.1f}s; "
           f"regions {net.info['n_regions']} gathered {net.info['n_gathered']} moved {net.info['n_moved']}; "
           f"cells/rank {cells} (max/mean {imb:.2f}) band/rank {band}", flush=True)
-    print(f"[layout] {layout} tail={int(params.tail)}: cold {t_cold:.1f}s warm {t_warm:.1f}s; "
+    print(f"[layout] {layout} tail={int(params.tail)} pres_rtol={params.pres_rtol}: cold {t_cold:.1f}s warm {t_warm:.1f}s; "
           f"pc={info.get('velocity_pc')} newton={info.get('nonlinear_iterations')} "
           f"converged={info.get('converged')} vel_its={info.get('vel_its_last')} pres_its={info.get('pres_its_last')}; "
           f"warm newton={info2.get('nonlinear_iterations')} vel_its={info2.get('vel_its_last')} reused={info2.get('rotation_reused')}", flush=True)

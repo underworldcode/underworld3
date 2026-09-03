@@ -1719,7 +1719,16 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # iteration counts (measured, both velocity-block routes, isotropic and
             # TI); a too-loose inner solve fails by silent stagnation, not loudly.
             "fieldsplit_pres_ksp_type": "fgmres",
-            "fieldsplit_pres_ksp_rtol": str(tol * 0.1),
+            # TODO(MEASURE): the 0.1 margin sits BELOW the floor the inexact
+            # velocity solve leaves in the Schur residual (measured on the
+            # fault-network layouts: the pressure residual falls 5e-3 in 20
+            # iterations, then creeps to the 200 cap at ~7e-6 relative, each
+            # iteration a velocity-preconditioner apply). The attribute is
+            # the knob for the measurement in
+            # docs/developer/design/fault-parallel-placement-2026-09.md;
+            # the resolved rule replaces it.
+            "fieldsplit_pres_ksp_rtol": str(
+                getattr(solver, "_rotated_pres_rtol", tol * 0.1)),
             "fieldsplit_pres_ksp_max_it": "200",
         }
         if Mp is not None:

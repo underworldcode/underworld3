@@ -228,45 +228,74 @@ from zero with the tail and the rotation reused — a repeat from the
 converged solution takes no Newton step and measures nothing. Warm solve
 time is what a time-stepping model pays per step.
 
-### Results (2 September 2026, 16-core workstation, 20,778-cell base)
+### Results (2–3 September 2026, 16-core workstation, 20,778-cell base)
 
 The junior of the crossing pair is consumed whole by the ligament cut at
 1.5 on this mesh, so the fixture as run is three faults, one per slab,
 and the "cluster" is a single fault. Warm is the second full solve from
-zero; every solve took one Newton step.
+zero; every solve took one Newton step; the tolerance is 1e-5.
+
+**The first pass was uninterpretable, and why matters.** With the rotated
+path's default pressure sub-solve tolerance (a tenth of the solver
+tolerance) every configuration ran the pressure Schur solve to its
+200-iteration cap. The monitor showed the mechanism: the pressure
+residual falls by 5e-3 in twenty iterations and then creeps — 2.6e-8 at
+20, 5.5e-9 at 50, 8e-10 at 199 — against a target of 1.2e-10. The floor
+is set by the inexact velocity solve inside the Schur application (the
+velocity sub-solve stops at 3.3e-7 of its own residual, and the Schur
+complement amplifies that to about 7e-6 relative in the pressure
+residual), so the margin rule "inner converges well below outer" is
+inverted between the two inner solves: the pressure cannot converge
+below the velocity's floor. Each wasted pressure iteration is a
+velocity-preconditioner apply, which is why in that pass GAMG (26
+velocity iterations, cheap applies) was 2.6 times faster in wall time
+than the tail (4 iterations, dear applies). Recorded on #625. The
+pressure tolerance is now an attribute knob (`solver._rotated_pres_rtol`,
+a `TODO(MEASURE)`); the table of record uses 1e-4, ten times the solver
+tolerance, at which the pressure solve converges in 26 iterations and
+the outer FGMRES does the rest. The default is unchanged: what it should
+be is a solver-configuration decision, not a placement one.
 
 | layout | regions | cells moved | cells per rank (max/mean) | cold s | warm s | velocity its | pressure its | slips A / B / D |
 |---|---|---|---|---|---|---|---|---|
-| serial, tail | 3 | 0 | 20778 (1.00) | 97.7 | 81.0 | 3 | 200 | 0.11182 / 0.13117 / 0.11110 |
-| np=3 local, tail | 3 | 122 | 6727 / 6733 / 7317 (1.06) | 52.3 | 45.8 | 4 | 200 | 0.11181 / 0.13176 / 0.11108 |
-| np=3 straddle, tail | 3 | 834 | 5624 / 6733 / 8438 (1.22) | 60.6 | 52.9 | 4 | 200 | 0.11181 / 0.13114 / 0.10926 (D moved) |
-| np=3 gathered (pre-#672), tail | 1 | 5440 | 3514 / 13208 / 4054 (1.91) | 89.4 | 78.3 | 4 | 200 | 0.11182 / 0.13116 / 0.11111 |
-| np=3 local, GAMG | 3 | 122 | 6727 / 6733 / 7317 (1.06) | 24.9 | 17.6 | 26 | 200 | 0.11182 / 0.13176 / 0.11108 |
+| serial, tail | 3 | 0 | 20778 (1.00) | 31.4 | 14.0 | 3 | 26 | 0.11182 / 0.13117 / 0.11110 |
+| np=3 local, tail | 3 | 122 | 6727 / 6733 / 7317 (1.06) | 13.5 | 6.8 | 4 | 26 | 0.11181 / 0.13176 / 0.11108 |
+| np=3 straddle, tail | 3 | 834 | 5624 / 6733 / 8438 (1.22) | 16.6 | 8.7 | 4 | 26 | 0.11182 / 0.13115 / 0.10927 (D moved) |
+| np=3 local, GAMG | 3 | 122 | 6727 / 6733 / 7317 (1.06) | 9.3 | 3.3 | 26 | 26 | 0.11182 / 0.13176 / 0.11108 |
+| *capped pass, for the record:* | | | | | | | | |
+| serial, tail, pressure at cap | 3 | 0 | 20778 (1.00) | 97.7 | 81.0 | 3 | 200 | same |
+| np=3 local, tail, pressure at cap | 3 | 122 | (1.06) | 52.3 | 45.8 | 4 | 200 | same |
+| np=3 straddle, tail, pressure at cap | 3 | 834 | (1.22) | 60.6 | 52.9 | 4 | 200 | same |
+| np=3 gathered (pre-#672), pressure at cap | 1 | 5440 | 3514 / 13208 / 4054 (1.91) | 89.4 | 78.3 | 4 | 200 | 0.11182 / 0.13116 / 0.11111 |
+| np=3 local, GAMG, pressure at cap | 3 | 122 | (1.06) | 24.9 | 17.6 | 26 | 200 | same |
 
 What the table says:
 
 - **The answer is layout-independent.** A and D agree to four digits
-  across serial, local, straddle and gathered; B to 0.5%, which is the
-  gap fill's node-count noise between partitions. The straddle's D is a
-  different fault position and legitimately a different number.
+  across serial, local, straddle and gathered, and across both pressure
+  tolerances; B to 0.5%, which is the gap fill's node-count noise
+  between partitions. The straddle's D is a different fault position and
+  legitimately a different number.
 - **Per-region placement is what makes np=3 worth running.** The old
-  single gather left one rank with 63% of the mesh and a warm solve of
-  78 s against 81 s serial: no parallel gain at all. Per region, the
-  mesh is balanced to 6% and the warm solve is 46 s, 1.8 times serial
-  and 1.7 times the old gather.
-- **A straddling fault costs about 15%** (53 s against 46 s): 834 cells
-  moved, the owner at 1.22 of the mean, and that shell's transfers
+  single gather left one rank with 63% of the mesh and (in the capped
+  pass) a warm solve of 78 s against 81 s serial: no parallel gain at
+  all. Per region, the mesh is balanced to 6% and the warm solve is
+  2.1 times serial (6.8 s against 14.0 s).
+- **A straddling fault costs about 28%** (8.7 s against 6.8 s): 834
+  cells moved, the owner at 1.22 of the mean, and that shell's transfers
   cross-partition. That is the price of one non-local fault on three
-  ranks, and it is the number the design decision rests on.
-- **The pressure block is the wall-clock gate on this fixture, not the
-  velocity block.** Every configuration hits the pressure Schur solve's
-  200-iteration cap, so wall time is dominated by pressure iterations,
-  each of which applies the velocity preconditioner. That is why GAMG,
-  at 26 velocity iterations against the tail's 4, is 2.6 times faster
-  here: its application is cheaper and the cap is the same. The tail's
-  advantage in velocity iterations is real and invisible in wall time
-  until the pressure solve converges. This is the #625 pressure cap,
-  measured again on a contact fixture; it is not a placement matter.
+  ranks, and it is the number the design decision rests on. (In the
+  capped pass the same difference read 15%, diluted by the wasted
+  pressure iterations.)
+- **GAMG is still twice as fast as the tail in wall time on this
+  fixture** (3.3 s against 6.8 s warm) with the pressure solve fixed,
+  at 26 velocity iterations against 4. The tail's application is dearer
+  by more than the iteration ratio buys back here. This fixture is
+  linear viscous, uniform viscosity, one Newton step — the regime GAMG
+  is built for; the tail's measured advantage (#579, #576) is on banded
+  contrast and nonlinear solves, which this test does not exercise. It
+  is a red flag worth its own measurement on a contrast fixture, and it
+  is not a placement matter.
 
 The script beside this note (`fault_parallel_layouts.py`) regenerates
 the table:
