@@ -5083,7 +5083,15 @@ class Swarm(Stateful, uw_object):
         # silently disabling advection's step_limit substepping (BF-16).
         vel = np.asarray(vel)
         if vel.ndim == 3:
-            vel = vel.reshape(vel.shape[0], -1)
+            # Guard against empty ranks: an array of size 0 cannot be
+            # reshaped with a `-1` axis (NumPy cannot infer the implied
+            # dimension from zero elements) — e.g. (0, 1, dim) -> (0, -1)
+            # raises ValueError. A zero-particle rank legitimately has no
+            # velocities and contributes 0 to the global max below.
+            if vel.size == 0:
+                vel = np.zeros((0, vel.shape[2]) if vel.ndim >= 3 else (0,))
+            else:
+                vel = vel.reshape(vel.shape[0], -1)
 
         try:
             magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
