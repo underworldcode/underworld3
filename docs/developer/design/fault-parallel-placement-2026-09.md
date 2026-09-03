@@ -187,6 +187,19 @@ Two further rulings from the same discussion:
   coarse columns on a pair that is actually co-partitioned. It is only
   prevented from being chosen when it is worse.
 - **Slicing a long fault** (above).
+- **The penalty.** The runs here use `penalty = 0`, the solver default,
+  which the solver holds at zero because a grad-div penalty of 10
+  corrupted the vertex-sampled dynamic topography recovered from the
+  free-slip reaction (test_1018). That is a recovery defect, not a
+  reason to forgo the penalty: the traction is the multiplier plus the
+  augmentation, r(u·n − ũ_n), and at a viscosity contrast of 1e6 the
+  multiplier alone carries almost none of it (Louis's note,
+  https://www.underworldcode.org/boundary-conditions-on-non-planar-boundaries).
+  The Coulomb fault law takes its normal stress from the same reaction,
+  so the correction belongs there too before a penalty is used with
+  frictional faults. Measured on this fixture: penalty 1 at tolerance
+  1e-5 does not lift the pressure cap and shifts the slips by 0.6 to
+  0.9% at this resolution.
 - **The seam-straddling gauge**: the weak-plane slip gauge omits a probe
   pair the rank does not own on both sides; unreachable while the
   gathered region holds the probes, and worth a collective count if a
@@ -253,8 +266,13 @@ than the tail (4 iterations, dear applies). Recorded on #625. The
 pressure tolerance is now an attribute knob (`solver._rotated_pres_rtol`,
 a `TODO(MEASURE)`); the table of record uses 1e-4, ten times the solver
 tolerance, at which the pressure solve converges in 26 iterations and
-the outer FGMRES does the rest. The default is unchanged: what it should
-be is a solver-configuration decision, not a placement one.
+the outer FGMRES does the rest. The default is unchanged, and the
+better reading is Louis's: the fixture's tolerance of 1e-5 is one or two
+orders stricter than a mesh of 0.08 to 0.2 cells deserves, and at 1e-3
+the default margins converge the pressure solve in the same 26
+iterations with no knob at all (the third block of the table). The
+slips move by 0.2 to 0.7% between the two tolerances, which is the
+loose tolerance's own noise, still below the fill's partition noise.
 
 | layout | regions | cells moved | cells per rank (max/mean) | cold s | warm s | velocity its | pressure its | slips A / B / D |
 |---|---|---|---|---|---|---|---|---|
@@ -262,6 +280,11 @@ be is a solver-configuration decision, not a placement one.
 | np=3 local, tail | 3 | 122 | 6727 / 6733 / 7317 (1.06) | 13.5 | 6.8 | 4 | 26 | 0.11181 / 0.13176 / 0.11108 |
 | np=3 straddle, tail | 3 | 834 | 5624 / 6733 / 8438 (1.22) | 16.6 | 8.7 | 4 | 26 | 0.11182 / 0.13115 / 0.10927 (D moved) |
 | np=3 local, GAMG | 3 | 122 | 6727 / 6733 / 7317 (1.06) | 9.3 | 3.3 | 26 | 26 | 0.11182 / 0.13176 / 0.11108 |
+| *tolerance 1e-3, default margins (the tolerance this resolution deserves):* | | | | | | | | |
+| serial, tail | 3 | 0 | 20778 (1.00) | 26.1 | 10.1 | 2 | 26 | 0.11187 / 0.13104 / 0.11116 |
+| np=3 local, tail | 3 | 122 | (1.06) | 15.1 | 5.4 | 2 | 26 | 0.11187 / 0.13152 / 0.11115 |
+| np=3 straddle, tail | 3 | 834 | (1.22) | 12.8 | 5.3 | 2 | 26 | 0.11197 / 0.13069 / 0.10942 (D moved) |
+| np=3 local, GAMG | 3 | 122 | (1.06) | 8.3 | 2.2 | 16 | 26 | 0.11164 / 0.13162 / 0.11104 |
 | *capped pass, for the record:* | | | | | | | | |
 | serial, tail, pressure at cap | 3 | 0 | 20778 (1.00) | 97.7 | 81.0 | 3 | 200 | same |
 | np=3 local, tail, pressure at cap | 3 | 122 | (1.06) | 52.3 | 45.8 | 4 | 200 | same |
@@ -281,15 +304,18 @@ What the table says:
   pass) a warm solve of 78 s against 81 s serial: no parallel gain at
   all. Per region, the mesh is balanced to 6% and the warm solve is
   2.1 times serial (6.8 s against 14.0 s).
-- **A straddling fault costs about 28%** (8.7 s against 6.8 s): 834
-  cells moved, the owner at 1.22 of the mean, and that shell's transfers
-  cross-partition. That is the price of one non-local fault on three
-  ranks, and it is the number the design decision rests on. (In the
-  capped pass the same difference read 15%, diluted by the wasted
-  pressure iterations.)
+- **A straddling fault costs between nothing and 28%.** At tolerance
+  1e-5 it read 8.7 s against 6.8 s (28%); at 1e-3, 5.3 s against 5.4 s
+  (none); in the capped pass, 15%. These are single runs on a shared
+  workstation, so the honest statement is that one non-local fault on
+  three ranks costs at most a quarter of the solve and may cost nothing
+  measurable: 834 cells moved, the owner at 1.22 of the mean, and that
+  shell's transfers cross-partition. The design decision rests on that
+  bound, not on a point value.
 - **GAMG is still twice as fast as the tail in wall time on this
-  fixture** (3.3 s against 6.8 s warm) with the pressure solve fixed,
-  at 26 velocity iterations against 4. The tail's application is dearer
+  fixture** (3.3 s against 6.8 s warm at 1e-5; 2.2 s against 5.4 s at
+  1e-3) with the pressure solve converging, at 16 to 26 velocity
+  iterations against 2 to 4. The tail's application is dearer
   by more than the iteration ratio buys back here. This fixture is
   linear viscous, uniform viscosity, one Newton step — the regime GAMG
   is built for; the tail's measured advantage (#579, #576) is on banded
