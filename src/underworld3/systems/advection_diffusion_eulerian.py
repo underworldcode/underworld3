@@ -139,9 +139,19 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         Continuous scalar field :math:`\phi`.
     V_fn : MeshVariable or sympy Matrix
         Advecting velocity, ``(1, dim)``.
-    order : int, default 1
-        Order of the time integration, 1 to 3.
+    order : int, default 2
+        Order of the time integration, 1 to 3. BDF2 is the default because it
+        is stable at every Courant number and damped. Measured on a rotating
+        Gaussian (``docs/developer/design/eulerian-supg-transport.md``):
+        Crank-Nicolson is three to four times more accurate than BDF2 at the
+        same timestep below Courant 2 but rings once the feature is
+        under-resolved in time; BDF3 is the most accurate scheme below
+        Courant 1 and fails from Courant 4; backward Euler (order 1) carries
+        20 to 40% error at any practical timestep.
     integrator : {"bdf", "am"}, default "bdf"
+        Adams-Moulton above order 1 has a bounded stability region and blows
+        up on an advection operator from about Courant 1; it is provided for
+        diffusion-dominated problems and for comparison.
     theta : float, default 1.0
         Adams-Moulton blend at order 1 only (0.5 is Crank-Nicolson). Must be
         1.0 for BDF and for Adams-Moulton above order 1.
@@ -174,7 +184,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         mesh: uw.discretisation.Mesh,
         u_Field: uw.discretisation.MeshVariable,
         V_fn,
-        order: int = 1,
+        order: int = 2,
         integrator: str = "bdf",
         theta: float = 1.0,
         verbose: bool = False,

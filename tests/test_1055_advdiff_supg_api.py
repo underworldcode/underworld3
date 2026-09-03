@@ -35,7 +35,7 @@ def _solver(mesh, tag, **kwargs):
 def test_exported_and_constructs(mesh):
     adv, _T = _solver(mesh, "a")
     assert type(adv).__name__ == "SNES_AdvectionDiffusion_SUPG"
-    assert adv.integrator == "bdf" and adv.order == 1
+    assert adv.integrator == "bdf" and adv.order == 2
     assert isinstance(adv.DuDt, uw.systems.ddt.Eulerian)
     assert adv.DuDt.V_fn is None, "advection is implicit, not a history correction"
 

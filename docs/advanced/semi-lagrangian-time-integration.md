@@ -112,6 +112,19 @@ $[\theta,\,1-\theta]$:
 
 `theta` is settable after construction: `adv_diff.DFDt.theta = 1.0`.
 
+## The Eulerian alternative
+
+`uw.systems.AdvDiffusionSUPG` solves the same equation without a trace-back:
+all terms are assembled on the mesh, implicit in time, with SUPG
+stabilisation. Its `order=` and `integrator="bdf"|"am"` arguments select the
+multistep scheme, built from the same stored history as above; `order=1,
+integrator="am", theta=0.5` is Crank-Nicolson. The scheme is stable at any
+cell Courant number, so cells refined for a Stokes problem never limit the
+transport timestep; its accuracy is set by how far the transported feature
+moves per step. The semi-Lagrangian scheme's accuracy is instead set by how
+far a characteristic turns per step. The measurements behind that split are
+in `docs/developer/design/eulerian-supg-transport.md`.
+
 ## Related options
 
 - **`monotone_mode`** (`"clamp"` / `"pick"`) bounds the semi-Lagrangian
