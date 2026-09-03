@@ -581,6 +581,56 @@ and the Splay fall in the ligament. `figures/seam-ligament/probe_cross.py`
 and `plot_cross.py`.
 ```
 
+### The band butted up to the seam (3 September, evening)
+
+Louis's reading of the first diagram was that the design had always been
+the band butted up to the partition boundary in elements, with the split
+blind at the seam as it is at the free surface, and that the weak glue
+ameliorates the tip stress only if the fault in the TI sense is
+continuous through the tip. The first build fell short of that in one
+rule: it protected every cell touching a shared vertex, so the band
+stopped a base cell short of the seam on each rank, the gap between the
+two tips was six band cells of base mesh, and each tip touched the weak
+material on one side only.
+
+The rebuild's contract is narrower: no shared vertex deleted, no placed
+vertex shared. So the second build protects the shared vertices only,
+carves the seam cells like any other, lets the cavity ring run along the
+seam's own edges, and caps the band against them. What is left at the
+seam is one strip of fill cells, the ligament. The cut stops one band
+cell short of each clipped end (`add_fault(..., blind=1)`), and the weak
+plane is painted on the ligament and on the band within one band width
+of each blind tip (`FaultNetwork.bridge_cells`), so the tip is enclosed.
+
+```{figure} figures/seam-ligament/fault_mesh_serial_vs_butted.png
+:alt: Two zoomed panels of a vertical fault band on a triangulated mesh. Left, serial: a continuous gold band with a blue cut down its middle. Right, np=2 with the band butted to the seam: the gold band reaches the seam from both sides, a thin strip of red fill cells sits on the seam between them, the blue cut stops at a green tip one band cell inside each side, and a purple outline marks the band cells around both tips and the strip as painted eta_1.
+:width: 100%
+
+The seam crossing of the long-fault fixture, serial (left) and butted at
+np=2 (right). `figures/seam-ligament/dump_fault_mesh.py` and
+`plot_fault_mesh.py`; `fault_mesh_serial_vs_seamcell.png` is the same
+view of the first build.
+```
+
+| realisation | np | seam-cell ligament | butted, blind tip | gathered |
+|---|---|---|---|---|
+| TI | 2 | 0.5605 (−1.5%) | 0.5684 (−0.07%) | 0.5688 |
+| TI | 3 | 0.5484 (−3.6%) | 0.5643 (−0.8%) | 0.5688 |
+| split | 2 | 0.4421 (−13%) | 0.4703 (−7.7%) | 0.5094 |
+| split | 3 | 0.3869 (−24%) | 0.4352 (−15%) | 0.5094 |
+
+For the TI realisation the crossing is now within the fill's own noise:
+the band is at its own resolution everywhere except one strip of fill on
+the seam. For the split the weld per crossing halves, and the profile
+shows where the rest is: at the far ends of the fault the butted band
+gives 0.95 to 0.98 of the gathered slip where the first build gave 0.90
+to 0.96, and the drop is confined to the two band cells either side of
+the ligament, where the pinned tips sit. The tips are now enclosed by
+weak cells, and the loss that remains is the tips themselves: the blind
+margin plus the ligament is three band cells the crack does not cross,
+and the weak plane at eta_1 = 0.01 carries about half of the slip across
+it. That is the number the free tip has to beat.
+
 ### What follows
 
 1. **A free tip at a ligament end.** The split's weld is the pinned tip.

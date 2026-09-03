@@ -1018,7 +1018,53 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
     return new, point_map, clone_map
 
 
-def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False):
+def _blind_clipped_ends(dm, label, value, poly, tol, blind):
+    """Unlabel ``blind`` edges from every chain end that is not a trace end.
+
+    Rank-local by construction (the chains are). A chain left with fewer
+    than two edges is unlabelled whole. Returns the number unlabelled.
+    """
+    from underworld3.utilities.line_cut import _coords
+
+    eS, eE = dm.getDepthStratum(1)
+    vS, _vE = dm.getDepthStratum(0)
+    X = _coords(dm)
+    if label.getStratumSize(value) == 0:
+        return 0
+    edges = [int(e) for e in label.getStratumIS(value).getIndices()
+             if eS <= int(e) < eE]
+    ends = poly[[0, -1]]
+    removed = 0
+    for chain in _facet_components(dm, edges):
+        nbr = {}
+        for e in chain:
+            a, b = (int(q) for q in dm.getCone(e))
+            nbr.setdefault(a, []).append(e)
+            nbr.setdefault(b, []).append(e)
+        tips = [v for v, es in nbr.items() if len(es) == 1]
+        clipped = [v for v in tips
+                   if np.linalg.norm(ends - X[v - vS], axis=1).min() > tol]
+        cut = set()
+        for v in clipped:
+            e = nbr[v][0]
+            for _k in range(blind):
+                cut.add(e)
+                a, b = (int(q) for q in dm.getCone(e))
+                v = b if a == v else a
+                onward = [f for f in nbr[v] if f != e]
+                if not onward:
+                    break
+                e = onward[0]
+        if len(chain) - len(cut) < 2:
+            cut = set(chain)
+        for e in cut:
+            label.clearValue(e, value)
+        removed += len(cut)
+    return removed
+
+
+def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False,
+                          blind=1):
     """Label the mesh edges already lying on each polyline; return a CLONE.
 
     The label-only form of the cut (``add_fault(cut=False)``): an edge is
@@ -1026,6 +1072,9 @@ def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False):
     chord rule of :func:`line_cut._label_cut_edges`). Edges with a support
     cell in the ``exclude`` label are left out — the seam ligament's base
     cells, where the band was clipped and the fault is deliberately uncut.
+    A chain end that is not an end of the trace is a CLIPPED end, at the
+    seam; ``blind`` edges are unlabelled from it so the cut stops short and
+    the band encloses the tip — blind, as a fault under a free surface.
     COLLECTIVE (the tolerance is a global length). The input is untouched.
     """
     from underworld3.utilities.line_cut import (_global_extent,
@@ -1056,6 +1105,10 @@ def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False):
                        for c in new.getSupport(int(e))):
                     lbl.clearValue(int(e), int(values[name]))
                     n_dropped += 1
+        if blind > 0:
+            n_dropped += _blind_clipped_ends(
+                new, lbl, int(values[name]), np.asarray(poly, dtype=float),
+                1e-9 * scale, blind)
         n_local = len(marked) - n_dropped
         n_total = int(uw.mpi.comm.allreduce(n_local, op=MPI.SUM))
         if n_total == 0:
@@ -1071,7 +1124,8 @@ def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False):
     return new
 
 
-def add_fault(mesh, faults, verbose=False, cut=True, exclude=None):
+def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
+              blind=1):
     """Cut AND split one or more faults into a mesh; return the split Mesh.
 
     The one-call form of the split-node pipeline: for each fault, the tips
@@ -1110,6 +1164,11 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None):
         With ``cut=False``, a cell label whose cells contribute no fault
         edge (the placement's ``<label>_ligament`` cells) — so a base edge
         that happens to lie on the line inside a ligament is left alone.
+    blind : int, optional
+        With ``cut=False``, the edges left uncut at each CLIPPED chain end
+        (an end that is not an end of the trace): the cut stops short of
+        the seam and the band encloses the tip, blind, as a fault under a
+        free surface. Default one band cell.
 
     Returns
     -------
@@ -1175,7 +1234,7 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None):
                           f"facets, min angle {info['min_angle']:.2f} deg")
     else:
         dm = _label_embedded_edges(dm, segments, values, exclude=exclude,
-                                   verbose=verbose)
+                                   verbose=verbose, blind=blind)
 
     # In parallel the balanced partition's cuts are attracted to the refined
     # fault band, so a cut chain generally touches the seam. Redistribute

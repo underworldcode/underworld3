@@ -8124,7 +8124,8 @@ class Mesh(Stateful, uw_object):
         return self._adopt_cut_child(cut_dm, boundaries, info,
                                      mg_coarsening_ratio, verbose)
 
-    def add_fault(self, faults, verbose=False, cut=True, exclude=None):
+    def add_fault(self, faults, verbose=False, cut=True, exclude=None,
+                  blind=1):
         """Cut AND split one or more faults; return the split mesh.
 
         The split-node fault pipeline in one call: each fault becomes a
@@ -8153,7 +8154,7 @@ class Mesh(Stateful, uw_object):
         """
         from underworld3.utilities.fault_split import add_fault
         child = add_fault(self, faults, verbose=verbose, cut=cut,
-                          exclude=exclude)
+                          exclude=exclude, blind=blind)
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve

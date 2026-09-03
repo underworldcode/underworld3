@@ -156,7 +156,9 @@ def test_the_weak_plane_crosses_the_seam_within_the_bound():
     partition-crossing structures: the ligament's base cells ARE the
     band there, at the base's resolution, and the answer moves by a few
     per cent while the cells stay balanced. Measured 2026-09-03 at
-    h = 0.02: peak 0.5605 (np=2) and 0.5484 (np=3) against 0.5688."""
+    h = 0.02 with the band butted to the seam: peak 0.5684 (np=2) and
+    0.5643 (np=3) against 0.5688 (the first, seam-cell build: 0.5605
+    and 0.5484)."""
     comm = MPI.COMM_WORLD
     net = _build_long("ligament", "ti")
     assert net.ligament_cells() is not None, "no crossing on this fixture"
@@ -178,10 +180,12 @@ def test_the_split_runs_rank_local_and_the_tips_weld_as_measured():
     """The split realisation under the ligament: rank-local sub-chains,
     the contact solve converging on geometric multigrid - and a WELD at
     each crossing, because a sub-chain ends in a pinned tip that no weak
-    plane can free. Measured 2026-09-03 at h = 0.02, eta_1 = 0.01: peak
-    0.4421 (np=2, one crossing) against the gathered 0.5094; insensitive
-    to eta_1 (0.001 gives the same). The bound is that measurement; the
-    remedy (a free tip at a ligament end) is the design note's next step."""
+    plane can free. Measured 2026-09-03 at h = 0.02, eta_1 = 0.01, band
+    butted to the seam, blind tip enclosed by the weak plane: peak 0.4703
+    (np=2, one crossing) and 0.4352 (np=3, two) against the gathered
+    0.5094 (the seam-cell build gave 0.4421 and 0.3869, insensitive to
+    eta_1). The bound is that measurement; the remedy (a free tip at a
+    ligament end) is the design note's next step."""
     comm = MPI.COMM_WORLD
     net = _build_long("ligament", "split")
     mesh = net.mesh

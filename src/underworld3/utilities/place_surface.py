@@ -6640,23 +6640,24 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     do_surgery = (n_region > 0) if seams == "ligament" \
         else (comm.rank == target)
 
-    # The seam ligament (#670): a cell whose star reaches the partition
-    # seam (a shared vertex, or one within ligament/2 of the seam) is never
-    # carved and its vertices are never deleted, so every cavity stops one
-    # cell short of the seam on its own rank, and the assembly is CLIPPED
-    # there. The base cells left in the ligament are the band's material
-    # across the seam — labelled as zone, for the weak rheology to bridge.
-    seam_c = np.zeros(len(cells), dtype=bool)
+    # The seam ligament (#670): the band butts up to the partition seam in
+    # elements and nothing the surgery makes crosses it. The rebuild's one
+    # contract is that no shared vertex is deleted and no placed vertex is
+    # shared, so the shared vertices (and, with ``ligament``, those within
+    # ligament/2 of the seam) are protected and everything else at the
+    # seam is carved like any other cell: the cavity ring runs along the
+    # seam's own edges and the fill attaches to them. The assembly is
+    # clipped clear of the seam by a fraction of a band cell, and the fill
+    # strip left at the seam is the LIGAMENT — labelled as zone, for the
+    # weak rheology to bridge.
+    seam_prot_v = np.zeros(len(X), dtype=bool)
     if seams == "ligament" and comm.size > 1:
         shared_v = shared[vS - pStart: vE - pStart]
-        near = shared_v.copy()
+        seam_prot_v = shared_v.copy()
         if ligament is not None and shared_v.any():
             from scipy.spatial import cKDTree as _KDT_seam
-            near |= _KDT_seam(X[shared_v]).query(X)[0] < 0.5 * float(ligament)
-        seam_c = near[cells].any(axis=1)
-    seam_prot_v = np.zeros(len(X), dtype=bool)
-    if seam_c.any():
-        seam_prot_v[cells[seam_c].ravel()] = True
+            seam_prot_v |= (_KDT_seam(X[shared_v]).query(X)[0]
+                            < 0.5 * float(ligament))
 
     failure = None
     surgery = None
@@ -6681,7 +6682,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                                  0.6 * width)
             drop |= _segments_distance(cen, asm_pts, skin_edges) < reach_c
             drop_wanted = drop.copy()
-            drop &= ~held_c & ~seam_c
+            drop &= ~held_c
             need = victim[cells].any(axis=1)
             if (need & held_c).any():
                 raise RuntimeError(
@@ -6695,7 +6696,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             comps = []
             if drop.any():
                 comps, drop = _ring_growing_multi(
-                    cells, drop, held_c | seam_c,
+                    cells, drop, held_c,
                     allow_multiple=(seams == "ligament"))
             boundary_pairs = None
             if outcropping:
@@ -6713,16 +6714,17 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                 if seams == "ligament":
                     inside = _inside_mesh(X, cells[comp], asm_pts)
                     kept = inside[asm_tris].all(axis=1)
-                    # the clip margin applies along every ring edge whose
-                    # outside cell the cavity WANTED (a seam cell, or one
-                    # restored when a pinch was shrunk away from the seam)
+                    # the clip margin applies along every ring edge on the
+                    # seam (both ends protected) and every one whose outside
+                    # cell the cavity WANTED but a shrink restored
                     edge_cell = {}
-                    for ci in np.flatnonzero(~drop & (seam_c | drop_wanted)):
+                    for ci in np.flatnonzero(~drop & drop_wanted):
                         v0, v1, v2 = (int(v) for v in cells[ci])
                         for a, b in ((v0, v1), (v1, v2), (v2, v0)):
                             edge_cell[(min(a, b), max(a, b))] = ci
                     seam_edges = [(a, b) for a, b in zip(ring, ring[1:] + ring[:1])
-                                  if (min(a, b), max(a, b)) in edge_cell]
+                                  if (min(a, b), max(a, b)) in edge_cell
+                                  or (seam_prot_v[a] and seam_prot_v[b])]
                     if seam_edges and kept.any():
                         d_seam = _segments_distance(asm_pts, X, seam_edges)
                         kept &= ~(d_seam[asm_tris] < 0.4 * size).any(axis=1)
@@ -6777,6 +6779,11 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             referenced = np.zeros(len(X), dtype=bool)
             if (~drop).any():
                 referenced[cells[~drop].ravel()] = True
+            # a ring vertex is referenced by the fill; on the seam it may
+            # have no kept cell of this rank at all (its fan is one-sided
+            # and wholly dropped), and it must survive
+            for ring, _k, _sk, _h, _c, _w in carved:
+                referenced[[v for v in ring if v < len(X)]] = True
             # a cavity left uncarved (nothing of the band inside it) keeps
             # its cells, so its would-be victims stay
             victim &= ~referenced
@@ -6886,15 +6893,13 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             placed = np.vstack(placed_parts) if n_rows else \
                 np.empty((0, 2), dtype=float)
 
-            touched = set()
-            cS0, _ = dm_work.getHeightStratum(0)
-            for c in np.flatnonzero(drop):
-                for q in dm_work.getTransitiveClosure(int(c) + cS0)[0]:
-                    touched.add(int(q))
-            if any(shared[q - pStart] for q in touched):
+            # The rebuild's contract, gated here rather than assumed: no
+            # shared vertex is deleted (the gather's mask reached, or the
+            # seam's vertices were protected).
+            if any(shared[int(v) + vS - pStart] for v in np.flatnonzero(victim)):
                 raise RuntimeError(
-                    "place_thin_volume internal: the gathered region "
-                    "touches a shared point; the gather mask under-reached.")
+                    "place_thin_volume internal: the surgery would delete a "
+                    "shared vertex; the gather mask under-reached.")
             sk_all = [e for _r, _k, sk_edges, _h, _c, _w in carved
                       for e in sk_edges]
             surgery = (np.flatnonzero(victim), np.flatnonzero(drop), made,

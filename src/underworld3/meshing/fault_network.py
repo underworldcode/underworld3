@@ -933,11 +933,12 @@ class FaultNetwork:
         import underworld3 as uw
 
         if self.realisation == "split":
-            lig = self.ligament_cells()
+            lig = self.bridge_cells()
             if lig is not None:
-                # The seam ligaments: the fault is not cut through them,
-                # so the band's weak plane carries the slip across each
-                # seam (#670) — the hybrid recipe, at the seams.
+                # The seam bridges: the cut stops blind short of each seam
+                # and the band's weak plane, painted on the ligament and on
+                # the band around each blind tip, carries the slip across
+                # (#670) — the daylighting rule, applied at the seams.
                 if eta_1 is None:
                     raise ValueError(
                         "this network was built with seams='ligament': "
@@ -1004,6 +1005,57 @@ class FaultNetwork:
         mask = np.asarray(self.info["ligament"], dtype=bool)
         n = int(uw.mpi.comm.allreduce(int(mask.sum()), op=MPI.SUM))
         return mask if n else None
+
+    def bridge_cells(self, reach=None):
+        """The cells that bridge the seams of a split network, or ``None``.
+
+        The ligament cells (what is left of the band at each seam) plus
+        the band cells within ``reach`` (default one band width) of every
+        BLIND tip — a sub-chain end that is not an end of its trace. The
+        weak plane painted on this mask encloses each blind tip, as the
+        junction glue encloses the arms' tips. COLLECTIVE verdict, as
+        :meth:`ligament_cells`.
+        """
+        if self.realisation != "split":
+            return self.ligament_cells()
+        lig = self.ligament_cells()
+        if lig is None:
+            return None
+        import underworld3 as uw
+        from underworld3.utilities.place_surface import _cell_centroids_of
+
+        mesh = self.mesh
+        dm = mesh.dm
+        reach = float(self.width) if reach is None else float(reach)
+        X = np.asarray(mesh.X.coords)
+        vS, vE = dm.getDepthStratum(0)
+        eS, eE = dm.getDepthStratum(1)
+        tips = []
+        for name, P in self.prepared:
+            lbl = f"{name}Plus"
+            if not dm.hasLabel(lbl):
+                continue
+            value = int(mesh.boundaries[lbl].value)
+            if dm.getLabel(lbl).getStratumSize(value) == 0:
+                continue
+            degree = {}
+            for e in dm.getLabel(lbl).getStratumIS(value).getIndices():
+                if eS <= int(e) < eE:
+                    for q in dm.getCone(int(e)):
+                        degree[int(q) - vS] = degree.get(int(q) - vS, 0) + 1
+            ends = np.asarray(P, dtype=float)[[0, -1]]
+            for v, n in degree.items():
+                if n == 1 and np.linalg.norm(
+                        ends - X[v], axis=1).min() > 0.5 * self.h_near:
+                    tips.append(X[v])
+        band = np.asarray(self.info["band"], dtype=bool)
+        mask = lig.copy()
+        if tips:
+            ids, cen = _cell_centroids_of(dm, band)
+            T = np.asarray(tips)
+            d = np.linalg.norm(cen[:, None, :] - T[None, :, :], axis=2)
+            mask[ids[d.min(axis=1) < reach]] = True
+        return mask
 
     def ti_fields(self, eta_1, eta_0=1.0, tag="", mask=None):
         """The weak-plane (TI) realisation's painted P0 fields.
