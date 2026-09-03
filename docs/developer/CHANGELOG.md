@@ -278,6 +278,11 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   existing boundary traction onto an axisymmetric harmonic; the pure functions
   also accept coefficients recovered by other methods and an optional internal
   load.
+- Rotated free slip exposes
+  `Stokes.boundary_normal_traction_integral(boundary, fn)` for a distributed
+  weak contraction of the assembled normal reaction. Cylindrical-annulus
+  Stokes responses use this fitted integral and its matching finite-element
+  boundary norm instead of gathering pointwise samples for angular quadrature.
 - `uw.analytic.Zhong2008` implements the Hager--O'Connell propagator-matrix
   oracle used for the Zhong et al. spherical-shell response benchmark. It
   supports piecewise-constant radial viscosity and reproduces every analytical

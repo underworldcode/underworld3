@@ -1066,11 +1066,15 @@ def cylindrical_cosine_boundary_coefficient(
     values,
     wavenumber: int,
 ) -> tuple[float, float]:
-    r"""Project circular samples onto :math:`\cos(n\theta)` and the mean.
+    r"""Project sampled circular data onto :math:`\cos(n\theta)` and the mean.
 
     ``coords`` must contain at least three two-dimensional Cartesian boundary
     points. The samples may begin at any angle and need not include a duplicate
-    endpoint; this function sorts and closes the periodic interval.
+    endpoint; this function sorts and closes the periodic interval. This helper
+    is intended for external sampled data. Finite-element reaction loads use
+    :meth:`Stokes.boundary_normal_traction_integral` instead, so their projection
+    follows the actual boundary facets without a global gather or reconstructed
+    angular ordering.
 
     Parameters
     ----------
@@ -1117,28 +1121,6 @@ def cylindrical_cosine_boundary_coefficient(
     return float(coefficient), float(mean)
 
 
-def _merge_unique_boundary_samples(gathered_rows, dimension: int):
-    """Merge duplicate partition-boundary samples on the root rank."""
-
-    nonempty_rows = [rows for rows in gathered_rows if rows.size]
-    if not nonempty_rows:
-        raise RuntimeError("No boundary samples were recovered.")
-
-    merged = {}
-    for row in np.vstack(nonempty_rows):
-        key = tuple(np.round(row[:dimension], 12))
-        if key not in merged:
-            merged[key] = [row[:dimension].copy(), 0.0, 0]
-        merged[key][1] += float(row[dimension])
-        merged[key][2] += 1
-    coords = np.array([entry[0] for entry in merged.values()])
-    values = np.array(
-        [entry[1] / entry[2] for entry in merged.values()],
-        dtype=float,
-    )
-    return coords, values
-
-
 def _rotated_cylindrical_boundary_response(
     *,
     stokes,
@@ -1146,7 +1128,7 @@ def _rotated_cylindrical_boundary_response(
     wavenumber: int,
     buoyancy_scale: float,
 ) -> tuple[float, float, float]:
-    """Recover one circular boundary's reaction and topography coefficients."""
+    """Project one boundary's assembled reaction and topography coefficients."""
 
     mode = _validate_cylindrical_mode(wavenumber)
     buoyancy_scale = _finite_float(buoyancy_scale, "buoyancy_scale")
@@ -1155,66 +1137,48 @@ def _rotated_cylindrical_boundary_response(
     if getattr(stokes.mesh, "dim", None) != 2:
         raise ValueError("The cylindrical adapter requires a two-dimensional mesh.")
 
-    local_error = None
-    try:
-        local_coords, local_reaction = stokes.boundary_normal_traction(
+    import sympy
+    from underworld3.maths import BdIntegral
+
+    theta = stokes.mesh.CoordinateSystem.xR[1]
+    harmonic = sympy.cos(mode * theta)
+    reaction_integral = float(
+        stokes.boundary_normal_traction_integral(
             boundary,
-            mass="auto",
+            harmonic,
+            remove_mean=True,
         )
-        local_coords = np.asarray(local_coords, dtype=float)
-        local_reaction = np.asarray(local_reaction, dtype=float).reshape(-1)
-        if local_coords.ndim != 2 or local_coords.shape[1] != 2:
-            raise ValueError("Boundary coordinates must have shape (n, 2).")
-        if local_coords.shape[0] != local_reaction.size:
-            raise ValueError(
-                "Boundary coordinates and reactions must have equal lengths."
-            )
-        local_rows = np.column_stack((local_coords, local_reaction))
-    except Exception as error:
-        local_rows = np.empty((0, 3), dtype=float)
-        local_error = f"{type(error).__name__}: {error}"
-
-    rank_errors = MPI.COMM_WORLD.allgather(local_error)
-    rank_errors = [error for error in rank_errors if error is not None]
-    if rank_errors:
+    )
+    reaction_total = float(
+        stokes.boundary_normal_traction_integral(
+            boundary,
+            1.0,
+            remove_mean=False,
+        )
+    )
+    boundary_measure = float(
+        BdIntegral(stokes.mesh, fn=1.0, boundary=boundary).evaluate()
+    )
+    harmonic_norm = float(
+        BdIntegral(stokes.mesh, fn=harmonic**2, boundary=boundary).evaluate()
+    )
+    if not np.all(
+        np.isfinite(
+            (reaction_integral, reaction_total, boundary_measure, harmonic_norm)
+        )
+    ):
+        raise RuntimeError("Cylindrical reaction projection produced non-finite data.")
+    if boundary_measure <= 0.0 or harmonic_norm <= 0.0:
         raise RuntimeError(
-            "Cylindrical boundary traction recovery failed: " + rank_errors[0]
+            "Cylindrical reaction projection requires positive boundary integrals."
         )
 
-    gathered_rows = MPI.COMM_WORLD.gather(local_rows, root=0)
-    result = None
-    root_error = None
-    if MPI.COMM_WORLD.rank == 0:
-        try:
-            coords, reaction = _merge_unique_boundary_samples(
-                gathered_rows,
-                dimension=2,
-            )
-            reaction_coefficient, reaction_mean = (
-                cylindrical_cosine_boundary_coefficient(
-                    coords,
-                    reaction,
-                    mode,
-                )
-            )
-            result = (
-                reaction_coefficient,
-                reaction_mean,
-                -reaction_coefficient / buoyancy_scale,
-            )
-        except Exception as error:
-            root_error = f"{type(error).__name__}: {error}"
-
-    root_error = MPI.COMM_WORLD.bcast(root_error, root=0)
-    if root_error is not None:
-        raise RuntimeError("Cylindrical Fourier projection failed: " + root_error)
-    global_result = MPI.COMM_WORLD.bcast(result, root=0)
-    if global_result is None:
-        raise RuntimeError("MPI broadcast returned no cylindrical response.")
+    reaction_coefficient = reaction_integral / harmonic_norm
+    reaction_mean = reaction_total / boundary_measure
     return (
-        float(global_result[0]),
-        float(global_result[1]),
-        float(global_result[2]),
+        float(reaction_coefficient),
+        float(reaction_mean),
+        float(-reaction_coefficient / buoyancy_scale),
     )
 
 
@@ -1241,16 +1205,18 @@ def cylindrical_annulus_response_from_rotated_stokes(
 ) -> CylindricalAnnulusResponse:
     r"""Compute a cylindrical response from rotated-free-slip wall reactions.
 
-    :meth:`Stokes.boundary_normal_traction` returns the wall reaction. This
-    adapter uses
+    :meth:`Stokes.boundary_normal_traction_integral` contracts the assembled
+    wall reaction directly with a boundary test function. This adapter uses
 
     .. math::
 
        h=-reaction_{nn}/signed\_buoyancy\_scale
 
-    and projects each circular boundary onto the unnormalised real basis
-    :math:`\cos(n\theta)`. Boundary samples are gathered only to MPI rank zero;
-    the resulting coefficients are broadcast to all ranks.
+    and projects each boundary onto the unnormalised real basis
+    :math:`\cos(n\theta)`. The numerator and harmonic norm use the same finite-
+    element boundary measure. Owned reaction degrees of freedom are reduced on
+    the mesh communicator; no pointwise traction recovery, angular sorting, or
+    rank-zero boundary gather is performed.
 
     Parameters
     ----------

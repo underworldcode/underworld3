@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 
-from mpi4py import MPI
 import numpy as np
 import pytest
+import sympy
 import underworld3 as uw
 
 
@@ -21,18 +21,44 @@ def _circle_samples(radius, coefficient, mean, wavenumber, count=256):
     return coords, values
 
 
-class PartitionedFakeRotatedStokes:
-    """Return a disjoint subset of each synthetic boundary on every rank."""
+class IntegralFakeRotatedStokes:
+    """Expose fitted reaction functionals while rejecting pointwise recovery."""
 
     def __init__(self, boundary_data):
-        self.mesh = SimpleNamespace(dim=2)
+        radius, theta = sympy.symbols("r theta", real=True)
+        self.mesh = SimpleNamespace(
+            dim=2,
+            CoordinateSystem=SimpleNamespace(xR=(radius, theta)),
+            boundary_data=boundary_data,
+        )
         self.boundary_data = boundary_data
+        self.integral_calls = []
 
     def boundary_normal_traction(self, boundary, mass="auto"):
-        assert mass == "auto"
-        coords, values = self.boundary_data[boundary]
-        indices = np.arange(coords.shape[0])[MPI.COMM_WORLD.rank :: MPI.COMM_WORLD.size]
-        return coords[indices], values[indices]
+        raise AssertionError("The finite-element adapter must not recover point values.")
+
+    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
+        radius, coefficient, mean = self.boundary_data[boundary]
+        self.integral_calls.append((boundary, bool(remove_mean)))
+        if remove_mean:
+            return coefficient * np.pi * radius
+        assert float(sympy.sympify(fn)) == 1.0
+        return mean * 2.0 * np.pi * radius
+
+
+class FakeBoundaryIntegral:
+    """Exact circular measure used to isolate the adapter's projection route."""
+
+    def __init__(self, mesh, fn, boundary):
+        self.mesh = mesh
+        self.fn = sympy.sympify(fn)
+        self.boundary = boundary
+
+    def evaluate(self):
+        radius = self.mesh.boundary_data[self.boundary][0]
+        if self.fn.is_number and float(self.fn) == 1.0:
+            return 2.0 * np.pi * radius
+        return np.pi * radius
 
 
 def _adapter_kwargs(wavenumber=2):
@@ -76,6 +102,89 @@ def test_cylindrical_geoid_api_is_public():
     for name in expected:
         assert name in uw.postprocessing.geoid.__all__
         assert hasattr(uw.postprocessing.geoid, name)
+    assert hasattr(uw.systems.Stokes, "boundary_normal_traction_integral")
+
+
+def test_reaction_integral_requires_boolean_mean_removal():
+    from underworld3.utilities.rotated_bc import boundary_normal_traction_integral
+
+    with pytest.raises(TypeError, match="remove_mean must be True or False"):
+        boundary_normal_traction_integral(
+            solver=None,
+            boundary="Upper",
+            solve_result=None,
+            fn=1.0,
+            remove_mean="yes",
+        )
+
+
+def test_distributed_reaction_integral_on_finite_element_annulus():
+    """Exercise the complete adapter on an assembled rotated-free-slip reaction."""
+
+    radius_inner = 0.5
+    radius_outer = 1.0
+    mode = 4
+    mesh = uw.meshing.Annulus(
+        radiusInner=radius_inner,
+        radiusOuter=radius_outer,
+        cellSize=0.15,
+        qdegree=3,
+    )
+    x, y = mesh.X
+    radius = sympy.sqrt(x**2 + y**2)
+    theta = sympy.atan2(y, x)
+    velocity = uw.discretisation.MeshVariable(
+        "V_geoid_integral", mesh, mesh.dim, degree=2, continuous=True
+    )
+    pressure = uw.discretisation.MeshVariable(
+        "P_geoid_integral", mesh, 1, degree=1, continuous=True
+    )
+    stokes = uw.systems.Stokes(
+        mesh,
+        velocityField=velocity,
+        pressureField=pressure,
+    )
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    radial_force = (
+        sympy.cos(mode * theta)
+        * (radius - radius_inner)
+        * (radius_outer - radius)
+        * 40.0
+    )
+    stokes.bodyforce = sympy.Matrix(
+        [[x * radial_force / radius, y * radial_force / radius]]
+    )
+    normal = sympy.Matrix([[x / radius, y / radius]])
+    stokes.add_rotated_freeslip_bc(0, "Lower", normal=normal)
+    stokes.add_rotated_freeslip_bc(0, "Upper", normal=normal)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.petsc_options["snes_type"] = "ksponly"
+    stokes.solve()
+
+    response = uw.postprocessing.geoid.cylindrical_annulus_response_from_rotated_stokes(
+        stokes=stokes,
+        radius_inner=radius_inner,
+        radius_outer=radius_outer,
+        wavenumber=mode,
+        outer_density_contrast=1.0,
+        inner_density_contrast=1.0,
+        outer_reference_gravity=1.0,
+        inner_reference_gravity=1.0,
+    )
+
+    assert response.outer_reaction == pytest.approx(0.4044747, rel=2.0e-4)
+    assert response.inner_reaction == pytest.approx(0.5158471, rel=2.0e-4)
+    assert np.all(
+        np.isfinite(
+            [
+                response.outer_reaction_mean,
+                response.inner_reaction_mean,
+                response.outer_geoid,
+                response.inner_geoid,
+            ]
+        )
+    )
 
 
 @pytest.mark.parametrize("wavenumber", [1, 2, 3, 4, 8])
@@ -282,26 +391,17 @@ def test_cylindrical_projection_recovers_mode_and_mean():
     assert mean == pytest.approx(0.12, abs=2.0e-15)
 
 
-def test_partitioned_rotated_adapter_matches_pure_response():
+def test_rotated_adapter_uses_distributed_reaction_integral(monkeypatch):
     kwargs = _adapter_kwargs(wavenumber=3)
     outer_reaction = 0.8
     inner_reaction = -0.4
-    stokes = PartitionedFakeRotatedStokes(
+    stokes = IntegralFakeRotatedStokes(
         {
-            "Upper": _circle_samples(
-                RADIUS_OUTER,
-                outer_reaction,
-                0.03,
-                kwargs["wavenumber"],
-            ),
-            "Lower": _circle_samples(
-                RADIUS_INNER,
-                inner_reaction,
-                -0.02,
-                kwargs["wavenumber"],
-            ),
+            "Upper": (RADIUS_OUTER, outer_reaction, 0.03),
+            "Lower": (RADIUS_INNER, inner_reaction, -0.02),
         }
     )
+    monkeypatch.setattr(uw.maths, "BdIntegral", FakeBoundaryIntegral)
     response = uw.postprocessing.geoid.cylindrical_annulus_response_from_rotated_stokes(
         stokes=stokes,
         include_self_gravity=True,
@@ -318,6 +418,14 @@ def test_partitioned_rotated_adapter_matches_pure_response():
 
     assert response.outer_reaction == pytest.approx(outer_reaction)
     assert response.inner_reaction == pytest.approx(inner_reaction)
+    assert response.outer_reaction_mean == pytest.approx(0.03)
+    assert response.inner_reaction_mean == pytest.approx(-0.02)
+    assert stokes.integral_calls == [
+        ("Upper", True),
+        ("Upper", False),
+        ("Lower", True),
+        ("Lower", False),
+    ]
     np.testing.assert_allclose(
         [response.outer_topography, response.inner_topography],
         [expected_outer_topography, expected_inner_topography],

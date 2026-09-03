@@ -137,10 +137,13 @@ Published reference solvers, such as the Zhong et al. propagator-matrix method,
 belong in `uw.analytic`; their computed topography coefficients can be passed to
 the pure post-processing functions above.
 
-The rotated harmonic projector gathers boundary samples to rank zero and
-reconstructs their spherical triangulation. A future boundary-reaction
-functional could replace this step with a direct distributed finite-element
-projection without changing the coefficient API.
+`Stokes.boundary_normal_traction_integral(boundary, fn)` contracts an assembled
+normal-reaction load directly with a scalar test function over owned degrees of
+freedom, followed by reductions on the mesh communicator. It is useful whenever
+only an integrated or fitted traction diagnostic is required. It avoids
+pointwise recovery and global boundary reconstruction; consumers that need a
+nodal field should continue to use `boundary_normal_traction()` or
+`dynamic_topography()` and follow their curved-P2 guidance.
 
 ## 4. Cylindrical-annulus gravity and geoid response
 
@@ -218,11 +221,21 @@ response = (
 )
 ```
 
-Only boundary samples are gathered to rank zero; the projected coefficients
-are broadcast to all ranks. The coefficient kernel follows Simons (1996),
-Appendix B. Complete Kramer--Simons finite-element convergence and
-physical-space Poisson comparisons remain in the separate mantle-convection
-benchmark repository.
+The Stokes adapter contracts the assembled reaction directly with
+`cos(n theta)` through `boundary_normal_traction_integral()`. The coefficient is
+normalised by the matching `BdIntegral` of `cos(n theta)**2`, so its numerator
+and denominator use the same faceted finite-element boundary geometry. The
+calculation counts owned reaction degrees of freedom and reduces on the mesh
+communicator; it does not recover pointwise traction, sort samples by angle, or
+gather a global boundary on rank zero. This construction remains valid on a
+deformed boundary, where the fitted coefficient is weighted by the actual
+finite-element boundary measure.
+
+`cylindrical_cosine_boundary_coefficient()` remains available for external
+sampled data on a mathematical circle; it is not used for finite-element
+reaction loads. The coefficient kernel follows Simons (1996), Appendix B.
+Complete Kramer--Simons finite-element convergence and physical-space Poisson
+comparisons remain in the separate mantle-convection benchmark repository.
 
 ## See also
 
