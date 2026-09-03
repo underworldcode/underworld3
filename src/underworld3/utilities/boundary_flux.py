@@ -712,24 +712,42 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
     return np.array([sig[gi[_key(x, dim)]] for x in xs])
 
 
+def _refuse_a_constrained_boundary(solver, boundary):
+    """CBF recovery reads the VELOCITY residual. On a boundary held by
+    ``add_constraint_bc`` the traction has been moved into the multiplier block, so
+    what remains in the velocity rows is a CONSTANT traction — the reaction comes back
+    exactly proportional to the nodal boundary mass, and de-smearing hands that constant
+    straight back (#614).
+
+    That is not an approximation, it is the wrong quantity: measured on SolCx the
+    recovered flux had a standard deviation of 2e-15 across the boundary while the
+    equivalent ``Stokes`` solve varied correctly and correlated -0.997 with the exact
+    topography. It returns a plausible-looking number, which is why it went unnoticed.
+
+    Refuse rather than mislead. The traction on such a boundary is
+    ``solver.traction(boundary)`` — ``h + r(n·u − g)``, the multiplier plus its
+    augmented-Lagrangian share (#607). ``solver.multiplier()`` returns ``h`` alone and
+    is short by that share, so it is not the thing to redirect a caller to."""
+    constraints = getattr(solver, "_block_constraint_bcs", None)
+    if not constraints:
+        return
+    if any(getattr(c, "boundary", None) == boundary for c in constraints):
+        raise NotImplementedError(
+            f"boundary_flux cannot recover the traction on {boundary!r}: it is held "
+            "by add_constraint_bc, so the traction is carried by the multiplier and "
+            "the velocity residual this reads holds only a constant (#614). Use "
+            f"solver.traction({boundary!r}) — h + r(n·u − g) — or "
+            f"solver.topography({boundary!r}) for the scaled version. "
+            "solver.multiplier() returns h alone and is short by the "
+            "augmented-Lagrangian share (#607)."
+        )
+
+
 def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None):
     """See ``SolverBaseClass.boundary_flux``. Returns ``(xs, flux)`` for this rank's
     boundary nodes; scalar solver → normal flux, vector solver → traction (or its normal
     component if ``normal`` is given)."""
-    # A multiplier-constrained boundary has no reaction left to read. The constraint
-    # is imposed by a term in the SAME row, so the assembled residual there is
-    # balanced at convergence and this back-calculation returns ~0 (measured: rms
-    # 4e-13 against a traction of 0.37). The traction is carried by the multiplier —
-    # M_Gamma(h + r(n.u - g)) IS the CBF nodal load — so send the caller there rather
-    # than hand back a quiet zero.
-    for cbc in getattr(solver, "_block_constraint_bcs", ()):
-        if cbc.boundary == boundary:
-            raise RuntimeError(
-                f"'{boundary}' is held by a multiplier constraint, so the consistent "
-                "boundary flux reads ~0 there: the constraint term balances the row it "
-                "sits in. Use solver.traction(boundary) — h + r(n.u - g) — which is the "
-                "same quantity, or solver.topography(boundary) for the scaled version.")
-
+    _refuse_a_constrained_boundary(solver, boundary)
     dm = solver.dm; dim = solver.mesh.dim
     ra = np.asarray(solver._assemble_volume_reaction()).ravel()
     nodes, lsec, csec, cvec, v0, v1, edge_nodes = _boundary_field_nodes(
