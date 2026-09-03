@@ -166,6 +166,30 @@ None of that is built, and it should not be until a model needs a fault
 longer than one rank comfortably holds. The first thing to test when it
 is: the split across one cut plane at np=3.
 
+**Revised on 3 September (Louis), after the hierarchy was seen and the
+two realisations' requirements were separated.** The embedding is the
+same for both realisations; only the split needs its pairs on one rank.
+The weak and TI band need nothing beyond mesh continuity across a seam,
+so with a seam-conforming fill a band can be cut anywhere, including on
+a process boundary. The design line is therefore: embed the fault-zone
+mesh with its mid-surface as reserved conforming faces and its cells
+labelled, immediately usable by the TI formulation; then make the split
+local by construction — cut only the mid-surface facets whose star is
+interior to the rank and leave a ligament, a physical width the user
+sets, at each seam crossing, which the band's weak rheology bridges.
+That is the hybrid recipe applied at seams, and the stepover and
+junction studies already measured it: a TI band bridging a cut gap
+reproduces the continuous fault to 0.2%, and cuts plus a weak band cost
+what the split costs and give its answer. What it gives up is
+bit-identical partition independence, since the ligaments move with the
+seams; that is a bound to measure at np=3, including a seam near a tip
+or a junction. Build order: the seam-conforming fill in 2-D first, then
+the bridging split mode (skip and report seam-touching facets rather
+than refuse or redistribute), then the 2-D study of one-object cuts
+against per-rank cuts with ligaments in both realisations. This
+supersedes the CAD cut for the split; the per-region gather stays as
+the mechanism for whole objects meanwhile.
+
 Two further rulings from the same discussion:
 
 - **Do not rebalance the child after placement.** It fixes the solve
