@@ -320,8 +320,22 @@ What the table says:
   linear viscous, uniform viscosity, one Newton step — the regime GAMG
   is built for; the tail's measured advantage (#579, #576) is on banded
   contrast and nonlinear solves, which this test does not exercise. It
-  is a red flag worth its own measurement on a contrast fixture, and it
-  is not a placement matter.
+  is not a placement matter. Seen rather than inferred (the renders in
+  `~/+Simulations/fault_network_3d_parallel/figures/`, 3 September): the
+  tail here is ONE genuine coarsening — the gmsh box at 0.24 (2433 cells,
+  the redundant LU coarse solve at about 13,000 velocity DOFs), its
+  single bisection (19,464), and the placed mesh (20,778) which differs
+  from the level below in 1,314 cells in three pockets, so the finest
+  transfer is the identity on 94% of its rows. The band is two cells
+  across its width inside fill cells four to eight times larger with no
+  grading between, because the band builder hard-codes one refinement of
+  the far-field box. A two-grid method with custom transfers and a large
+  coarse LU has nothing to gain over GAMG on an isoviscous problem, and
+  that is what the row shows. **Ruling (Louis, 3 September): the
+  preconditioner question is deferred to 2-D**, where a real hierarchy
+  (two or three doublings to the same finest cell) and a viscosity
+  contrast in the band are cheap to build and to see; this 3-D fixture
+  measures placement and balance, not multigrid.
 
 The script beside this note (`fault_parallel_layouts.py`) regenerates
 the table:
