@@ -311,12 +311,13 @@ class FaultNetwork:
         """
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
-        if seams not in ("gather", "ligament"):
+        if seams not in ("gather", "ligament", "conform"):
             raise ValueError(
-                f"seams must be 'gather' or 'ligament', not {seams!r}")
-        if seams == "ligament" and (self.dim == 3 or width is None):
+                f"seams must be 'gather', 'ligament' or 'conform', not "
+                f"{seams!r}")
+        if seams != "gather" and (self.dim == 3 or width is None):
             raise NotImplementedError(
-                "seams='ligament' is the 2-D band's (width=) placement; the "
+                f"seams={seams!r} is the 2-D band's (width=) placement; the "
                 "3-D band and the no-band cut still gather.")
         self.seams = seams
         if self.dim == 3 and width is not None:
@@ -1020,7 +1021,9 @@ class FaultNetwork:
             return self.ligament_cells()
         lig = self.ligament_cells()
         if lig is None:
-            return None
+            if self.info is None or self.info.get("band") is None:
+                return None
+            lig = np.zeros_like(np.asarray(self.info["band"], dtype=bool))
         import underworld3 as uw
         from underworld3.utilities.place_surface import _cell_centroids_of
 
@@ -1055,7 +1058,9 @@ class FaultNetwork:
             T = np.asarray(tips)
             d = np.linalg.norm(cen[:, None, :] - T[None, :, :], axis=2)
             mask[ids[d.min(axis=1) < reach]] = True
-        return mask
+        from mpi4py import MPI
+        n = int(uw.mpi.comm.allreduce(int(mask.sum()), op=MPI.SUM))
+        return mask if n else None
 
     def ti_fields(self, eta_1, eta_0=1.0, tag="", mask=None):
         """The weak-plane (TI) realisation's painted P0 fields.

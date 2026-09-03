@@ -682,6 +682,69 @@ The band then keeps its own resolution through the seam and the TI
 realisation is partition-independent up to the fill's noise. The
 ligament mode stays as the fallback and as the split's blind-tip form.
 
+### Built: the band meshed through the seam (3 September, night)
+
+`seams="conform"` is built for the 2-D ribbon, and it is what the
+gather's partition independence was for. Nothing moves. The mechanism,
+as it ended up rather than as sketched:
+
+- **Victims on the seam are one decision.** A seam vertex is deleted
+  only if the band itself reaches it (within 0.6 of a band width), never
+  because it lies within the carve's clearance, and the decision is
+  reconciled over the star forest so both sides delete it or neither
+  does. A seam the band merely runs beside keeps its edges, and the
+  fills on either side keep their common boundary there.
+- **Ownership by cavity.** Every band cell belongs to the rank whose
+  dropped cells hold its centroid; every band vertex likewise; every
+  skin edge belongs to the rank whose cavity holds the point just
+  outside it. Three global arrays, one reduction each. The boundary
+  between the two ranks' band cells is a chain of band edges — the seam
+  inside the band — and needs no construction of its own.
+- **The fill boundary is a graph.** A rank's ring edges that are not
+  crossed seam edges, its skin edges, and one connector from each
+  surviving end of a crossed span to the nearest free end of its skin
+  runs (a run ends where the skin changes hands, which is where the seam
+  crosses a rail, so the connector is the same edge on both sides).
+  Every vertex then has two edges; walking the graph gives the fill
+  loops, outer ones filled with the loops they contain as holes. A
+  junction loop the seam crosses twice, a band the seam skirts, a fault
+  ending near the seam all come out of the same walk; the arc-splicing
+  formulation tried first did not survive the rig's junction.
+- **The rebuild's star forest gains the new shared points.** The band
+  vertices more than one rank places are owned by the lowest rank; the
+  others enter as leaves before the interpolate, keyed by the band's own
+  point numbering with one exchange of the owners' first placed index.
+  A shared vertex deleted on both sides drops out; deleted on one side
+  only is refused.
+- **The fill is graded from the band arcs in the ring** as it is from
+  the holes, or the cavity meshes at band resolution end to end (the
+  first conform run was a third larger than serial for that reason).
+
+In serial it reduces to the gather path exactly.
+
+| fixture | np | cells per rank | result vs gathered |
+|---|---|---|---|
+| long fault, TI | 2 | 1212 / 1042 | 0.5688 vs 0.5688 |
+| long fault, TI | 3 | 784 / 891 / 571 | 0.5688 vs 0.5688 |
+| S-fault rig fine, TI | 2 | 4781 / 2899 | Main 0.5649 vs 0.5683; Branch, Step, Cont within 0.1% |
+| S-fault rig fine, TI | 4 | 4475 / … | Main 0.5648; the rest within 0.1% |
+
+The rig's fine profiles sit within 2% of serial everywhere along the
+Main (the fill's noise at the crossing) and within 0.1% along Cont, where
+the ligament had lost 8-10% and shifted the partition onto the Branch.
+The repeat solve on the fine rig is 5.0 s at np=2 against 7.4 s serial.
+`ptest_0864` pins the long fault at np=2 and np=3; the rig case's README
+carries the profiles and `sf_partition_fine_conform_np2.png` the
+partition, with the seam running through the Main's band along its own
+edges at the junction.
+
+**Not handled, refused with a message:** a seam that runs inside the
+band along strike (its vertices are all victims and the two fills have
+no common boundary to keep); a crossing so oblique that the skin
+changes hands at fewer than two vertices; and 3-D, where the thin volume
+still gathers. A refused fill saves its inputs to
+`place_fill_failure_rank<r>.npz` beside the script.
+
 ### What follows
 
 1. **A free tip at a ligament end.** The split's weld is the pinned tip.
@@ -697,10 +760,11 @@ ligament mode stays as the fallback and as the split's blind-tip form.
    merges touching regions today; chunks need a `merge=False` form with
    a deterministic claim of the overlap. Without this, an along-strike
    seam leaves a fault's whole stretch as painted base cells.
-3. **The conforming interface** of the sketch remains the upgrade for the
-   TI realisation if the base-cell ligament proves too coarse; nothing
-   built here is lost by it. It does not help the split, whose weld is
-   the tip.
+3. **The conforming interface is built** (`seams="conform"`, above). What
+   it leaves for the split is the cut through the seam: duplicating a
+   shared chain vertex on both ranks with star-forest entries for the
+   replica pair and a pairing record that agrees across ranks — the same
+   bookkeeping, applied to a duplicated point instead of a new one.
 4. **3-D.** The 2-D ribbon has the mechanism; the 3-D thin volume still
    gathers. The clip and the manifold clean-up carry over one dimension
    up (tets, faces), the multi-pass split already works in 3-D through

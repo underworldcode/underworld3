@@ -203,3 +203,27 @@ def test_the_split_runs_rank_local_and_the_tips_weld_as_measured():
                           op=MPI.MAX)
     assert 0.7 * LONG_GATHERED["split"] < peak < LONG_GATHERED["split"], (
         f"split peak slip {peak:.4f} vs gathered {LONG_GATHERED['split']}")
+
+
+def test_the_band_meshed_through_the_seam_gives_the_gathered_answer():
+    """``seams="conform"``: the band keeps its own resolution through the
+    seam (each rank makes the band cells its cavity holds, the fill wraps
+    around the band, and the band vertices both sides use are shared
+    points of the rebuild), so the weak plane's answer is the gathered
+    one up to the fill's noise while the cells stay balanced. Measured
+    2026-09-03: 0.5688 at np=2 and np=3 against 0.5688."""
+    comm = MPI.COMM_WORLD
+    net = _build_long("conform", "ti")
+    info = net.info
+    assert info["n_ligament_cells"] == 0
+    stokes = _stokes_on(net)
+    net.apply(stokes, eta_1=ETA_1)
+    stokes.solve()
+    peak = comm.allreduce(float(net.slips(stokes).get("Main", 0.0)),
+                          op=MPI.MAX)
+    assert peak == pytest.approx(LONG_GATHERED["ti"], rel=5e-3), (
+        f"weak-plane peak slip {peak:.4f} vs gathered "
+        f"{LONG_GATHERED['ti']}")
+    n_local = int(net.mesh.dm.getHeightStratum(0)[1])
+    n_total = comm.allreduce(n_local, op=MPI.SUM)
+    assert comm.allreduce(n_local, op=MPI.MAX) < 0.6 * n_total

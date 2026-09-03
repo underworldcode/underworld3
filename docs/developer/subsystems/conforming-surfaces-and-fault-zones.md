@@ -327,8 +327,17 @@ from `info["embedded_regions"]`), so what the placement kept apart is not
 gathered together afterwards. The outcrop and ladder paths keep one
 region: their bowl, cap and extrusion machinery is single-rank.
 
-The 2-D ribbon has a second mode, `seams="ligament"`, that gathers
-nothing. Every rank carves its own cavities and each stops one cell short
+The 2-D ribbon has two more modes that gather nothing. `seams="conform"`
+meshes the band through the seam: every band cell is made by the rank
+whose cavity holds its centroid, so the seam inside the band runs along
+band edges; each rank's fill boundary is its ring with the crossed seam
+spans replaced by connectors to the skin and the skin on its side; and the
+band vertices both sides use become shared points of the rebuild's star
+forest. The band keeps its own resolution everywhere, and the weak plane's
+answer is the gathered one to the fill's noise (the S-fault rig at fine
+width: within 0.1% on three strands, 2% on the crossing one) with the cells
+balanced. `seams="ligament"` butts the band up to the seam instead and
+gathers nothing either. Every rank carves its own cavities and each stops one cell short
 of the seam: a base cell with a shared vertex is never dropped. The band
 assembly is clipped to what each cavity holds, and the base cells the
 clipped band cells covered are left as the LIGAMENT, labelled as zone and
