@@ -31,8 +31,9 @@ def _setup(tag, advection):
     psi0 = np.array(psi.array)
     # rigid rotation about the box centre, one revolution in 2 pi
     velocity = sympy.Matrix([[-(y - 0.5), x - 0.5]])
+    # the rotating flow crosses the walls: impose the far-field value there
     solver = uw.systems.LevelSetSolver(psi, velocity=velocity, epsilon=eps, advection=advection,
-                                       reini_steps=1, reini_frequency=5)
+                                       far_field=0.0, reini_steps=1, reini_frequency=5)
     return mesh, psi, psi0, solver
 
 

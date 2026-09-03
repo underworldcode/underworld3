@@ -42,6 +42,7 @@ viscosity = level_set.material_property_field(psi.sym[0], [eta_outside, eta_insi
 | `advection` | `"supg"` (default) or `"slcn"`; both run pure advection |
 | `order`, `theta` | the transport solver's time scheme; Crank-Nicolson by default, which preserves the profile's amplitude between reinitialisations |
 | `reini_frequency`, `reini_steps`, `reini_dt` | how often, how many pseudo-time steps, and how long each is (half the smallest $\varepsilon$ by default) |
+| `far_field` | the value of $\psi$ imposed on the domain boundary; set it whenever the flow crosses the boundary (an inflow boundary with no value lets mass in) |
 | `conserve_mass` | apply the global correction after every step |
 | `adv_solver_bc` | box wall labels on which a zero normal gradient is imposed by copying the neighbouring interior nodes |
 
