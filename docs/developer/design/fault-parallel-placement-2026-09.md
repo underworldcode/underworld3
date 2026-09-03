@@ -484,3 +484,123 @@ every run.
   gather (`_gather_regions`) is wired into the 3-D thin volume alone.
   Wire it into 2-D first so `gather` and `conform` are compared like
   for like.
+
+## What was built: the seam ligament (3 September 2026)
+
+Louis's ruling on the morning of 3 September simplified the sketch above:
+partition-crossing structures stay transversely isotropic. A band that
+crosses a seam needs only a conforming mesh on each side; the splitting
+machinery never runs across the decomposition. Split nodes live in the
+interior of a rank, and across the seam the band's weak plane is the glue.
+Splitting through the seam is a later experiment, not a requirement.
+
+We built the cheapest version of that and measured it. Nothing is
+gathered and no interface is meshed. Each rank carves its own cavities,
+and a cavity stops one cell short of the seam: a base cell with a shared
+vertex is never dropped and its vertices are never deleted. The band
+assembly is clipped to what each cavity holds, less a margin of 0.4 band
+cells from the seam-side ring so the fill has room, and the clipped subset
+is made manifold (a bow-tie vertex or a triangle hanging by one vertex is
+removed) so its skin is a set of closed loops. The base cells that the
+clipped-away band cells covered are the LIGAMENT. They keep the base's
+vertices, so the rebuild's star forest carries over unchanged, and they
+are labelled both as zone and as `<label>_ligament`. `place_thin_volume`
+exposes this as `seams="ligament"` (2-D), `place_fault_ribbon_2d` and
+`FaultNetwork.build` pass it through, and in serial it reduces to the
+gather path exactly: same cells, same coordinates, same pairings.
+
+The split then never sees a seam. The cut is replaced by a label-only pass
+(`add_fault(cut=False)`) over the mesh edges already lying on the trace,
+excluding edges in ligament cells, and a fault that crosses a rank in and
+out is split as several sub-chains, one collective pass per piece
+(`split_fault` loops until no rank has a piece left). A fault lying wholly
+in a ligament stays uncut with empty side labels. For the split
+realisation `FaultNetwork.apply` paints the weak plane on the ligament
+cells, so it now takes `eta_1` in both realisations.
+
+### Measured, and what it means
+
+One vertical fault of 35 cells (h = 0.02, band 2h) crossed once by the
+np=2 seam and twice at np=3; the network of ptest_0859 turned vertical;
+`ptest_0864` pins both. The gathered answer is the serial-topology one.
+
+| realisation | np | cells per rank | ligament cells | peak slip | vs gathered |
+|---|---|---|---|---|---|
+| TI, gather | 2 | 1629 / 635 | 0 | 0.5688 | — |
+| TI, ligament | 2 | 1216 / 1050 | 33 | 0.5605 | −1.5% |
+| TI, ligament | 3 | 781 / 897 / 574 | 45 | 0.5484 | −3.6% |
+| split, gather | 2 | 1629 / 635 | 0 (69 pairs) | 0.5094 | — |
+| split, ligament | 2 | 1216 / 1050 | 33 (62 pairs) | 0.4421 | −13% |
+| split, ligament | 3 | 785 / 897 / 574 | 51 (52 pairs) | 0.3869 | −24% |
+
+The weak plane crosses the seam at the base's resolution and loses a few
+per cent, with the profile ratio to the gathered answer between 0.96 and
+1.00 along the whole fault, while the cells stay balanced instead of
+sitting 72% on one rank. That is the design line, confirmed: for the TI
+realisation the ligament is a resolution effect, and pre-refining the base
+in the fault region shrinks it.
+
+The split is different, and the reason is structural. Each rank-local
+sub-chain ends in a tip, and a tip is a single vertex shared by both
+sides, so slip is zero there by construction. The weak plane painted on
+the ligament cells is correctly applied (33 cells across the band width,
+director along the normal, TI engaged), and changing `eta_1` from 0.01 to
+0.001 changes the peak by 0.5%: the loss is the pinned tips, not the
+bridge. Near the ligament the slip drops to about 45% of the gathered
+profile, and at the far ends of the fault it recovers to 92–94%. Each
+crossing is a weld of about 13% of peak slip on this fixture.
+
+### The along-strike seam
+
+On the unit box at np=2 the seam runs along y = 0.5, and the horizontal
+network of ptest_0859 lies on it. Its whole band is then ligament, and the
+Splay, which leaves the seam, is the only piece embedded (the figure
+below; the pieces' trace edges are drawn on the embedded band). This is
+not the fixture being unlucky: a balanced partition of a base refined
+along a fault puts its cut in the densest region, which is the band, so a
+seam that follows a fault is the generic case. For the TI realisation
+that stretch is a painted base-cell band. For the split it is uncut.
+
+```{figure} figures/seam-ligament/along_strike_seam.png
+:alt: A triangulated unit square split between two ranks, dark grey above and light grey below, with the seam running horizontally along the fault line at mid-height; the band cells along that line are red (ligament) on both ranks, and only a short inclined band above the seam is gold (embedded) with a green trace on it.
+:width: 70%
+
+The np=2 seam (black vertices) follows the horizontal network of
+ptest_0859; the band along it is all ligament (red) and only the Splay is
+embedded (gold, trace in green). `figures/seam-ligament/probe_along_strike.py`
+and `plot_along_strike.py`.
+```
+
+```{figure} figures/seam-ligament/crossing_gather_vs_ligament.png
+:alt: Two panels of the same vertical fault network on a two-rank mesh. Left, the gather: the whole band and its surround sit on the darker rank, with the traces drawn in green. Right, the ligament: the band's upper part is embedded on the dark rank with a green trace, its lower part on the light rank with a blue trace, and the seam crossing, including the junction and the inclined splay, is a strip of red base cells.
+:width: 100%
+
+The vertical network, gathered (left) and with the seam ligament (right).
+The split's sub-chains carry their own traces on each rank; the junction
+and the Splay fall in the ligament. `figures/seam-ligament/probe_cross.py`
+and `plot_cross.py`.
+```
+
+### What follows
+
+1. **A free tip at a ligament end.** The split's weld is the pinned tip.
+   Where a sub-chain ends because the band was clipped rather than because
+   the fault ends, the tip vertex can be duplicated too, with its fan
+   assigned by the side of the trace's extension; the discontinuity then
+   ends inside the ligament's weak cells, which carry the jump as strain
+   over one cell. That is the bridging split the sketch asked for, done
+   at the tip rather than at the seam.
+2. **Steering the seam off the fault.** A segmented gather: chunks along
+   strike, each moved to the rank that holds most of it, so the seam
+   crosses the band only where the owner changes. `_gather_regions`
+   merges touching regions today; chunks need a `merge=False` form with
+   a deterministic claim of the overlap. Without this, an along-strike
+   seam leaves a fault's whole stretch as painted base cells.
+3. **The conforming interface** of the sketch remains the upgrade for the
+   TI realisation if the base-cell ligament proves too coarse; nothing
+   built here is lost by it. It does not help the split, whose weld is
+   the tip.
+4. **3-D.** The 2-D ribbon has the mechanism; the 3-D thin volume still
+   gathers. The clip and the manifold clean-up carry over one dimension
+   up (tets, faces), the multi-pass split already works in 3-D through
+   `split_along_label_3d`.

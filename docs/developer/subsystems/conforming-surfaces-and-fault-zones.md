@@ -327,6 +327,22 @@ from `info["embedded_regions"]`), so what the placement kept apart is not
 gathered together afterwards. The outcrop and ladder paths keep one
 region: their bowl, cap and extrusion machinery is single-rank.
 
+The 2-D ribbon has a second mode, `seams="ligament"`, that gathers
+nothing. Every rank carves its own cavities and each stops one cell short
+of the seam: a base cell with a shared vertex is never dropped. The band
+assembly is clipped to what each cavity holds, and the base cells the
+clipped band cells covered are left as the LIGAMENT, labelled as zone and
+as `<label>_ligament`. Across the seam the band is therefore base mesh at
+the base's resolution, and the band's weak plane is what carries the fault
+there (`FaultNetwork.apply` paints it on the ligament cells in both
+realisations). The split runs rank-local: `add_fault(cut=False)` labels
+the embedded spine edges outside the ligament, and a fault that crosses a
+rank in and out is split as several sub-chains. In serial the two modes
+give the same mesh. Measured at h = 0.02 on a 35-cell fault, the weak
+plane loses 1.5% of peak slip per crossing and the cells stay balanced;
+the split loses about 13% per crossing, because a sub-chain's tip is
+pinned — see the design note for the numbers and what follows.
+
 One limit remains: a small domain cannot hold a shell at all (three base
 cells reaching the walls is the whole box, which is what the
 crossing-patches test fixture does), so that fixture measures correctness

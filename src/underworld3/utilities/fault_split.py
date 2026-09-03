@@ -1018,7 +1018,60 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
     return new, point_map, clone_map
 
 
-def add_fault(mesh, faults, verbose=False):
+def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False):
+    """Label the mesh edges already lying on each polyline; return a CLONE.
+
+    The label-only form of the cut (``add_fault(cut=False)``): an edge is
+    the fault's when both its ends and its midpoint lie on the line (the
+    chord rule of :func:`line_cut._label_cut_edges`). Edges with a support
+    cell in the ``exclude`` label are left out — the seam ligament's base
+    cells, where the band was clipped and the fault is deliberately uncut.
+    COLLECTIVE (the tolerance is a global length). The input is untouched.
+    """
+    from underworld3.utilities.line_cut import (_global_extent,
+                                                _label_cut_edges)
+
+    new = dm.clone()
+    scale = _global_extent(new)
+    cS, cE = new.getHeightStratum(0)
+    excluded = np.zeros(new.getChart()[1] - new.getChart()[0], dtype=bool)
+    if exclude is not None and new.hasLabel(exclude):
+        lbl = new.getLabel(exclude)
+        pStart = new.getChart()[0]
+        for v in lbl.getValueIS().getIndices() if lbl.getNumValues() else []:
+            if lbl.getStratumSize(int(v)) == 0:
+                continue
+            for c in lbl.getStratumIS(int(v)).getIndices():
+                if cS <= int(c) < cE:
+                    excluded[int(c) - pStart] = True
+    for name, poly in segments:
+        marked = _label_cut_edges(new, [np.asarray(poly, dtype=float)],
+                                  1e-9 * scale, name, values[name])
+        lbl = new.getLabel(name)
+        n_dropped = 0
+        if excluded.any():
+            pStart = new.getChart()[0]
+            for e in marked:
+                if any(excluded[int(c) - pStart]
+                       for c in new.getSupport(int(e))):
+                    lbl.clearValue(int(e), int(values[name]))
+                    n_dropped += 1
+        n_local = len(marked) - n_dropped
+        n_total = int(uw.mpi.comm.allreduce(n_local, op=MPI.SUM))
+        if n_total == 0:
+            # legitimate under the seam ligament: a short fault that lies
+            # wholly in the clipped stretch is not cut at all — the weak
+            # plane carries it — so the split below is empty, not wrong
+            uw.pprint(f"[add_fault {name!r}] no embedded edge lies on the "
+                      "trace: the fault is entirely in the seam ligament "
+                      "and stays uncut (weak plane only)")
+        elif verbose:
+            uw.pprint(f"[add_fault {name!r}] {n_total} embedded facets "
+                      f"labelled (no cut)")
+    return new
+
+
+def add_fault(mesh, faults, verbose=False, cut=True, exclude=None):
     """Cut AND split one or more faults into a mesh; return the split Mesh.
 
     The one-call form of the split-node pipeline: for each fault, the tips
@@ -1043,6 +1096,20 @@ def add_fault(mesh, faults, verbose=False):
         sizes), the J0 pattern of the deployment design.
     verbose : bool, optional
         Report each cut and split.
+    cut : bool, optional
+        ``False`` cuts nothing: the fault's facets are the mesh edges
+        ALREADY lying on each polyline — the embedded spines of a placed
+        band (:func:`~underworld3.utilities.place_surface.place_thin_volume`
+        with ``mesher="network"``). Nothing moves, no vertex is pulled,
+        and nothing is redistributed: with the seam-ligament placement
+        every spine edge is rank-interior by construction, and a fault
+        that crosses a rank in and out is split as several sub-chains,
+        each with its own uncut tips at the ligaments (#670). A labelled
+        edge touching the seam is refused.
+    exclude : str or None, optional
+        With ``cut=False``, a cell label whose cells contribute no fault
+        edge (the placement's ``<label>_ligament`` cells) — so a base edge
+        that happens to lie on the line inside a ligament is left alone.
 
     Returns
     -------
@@ -1094,17 +1161,21 @@ def add_fault(mesh, faults, verbose=False):
         members[name] = values[name] = candidate
 
     dm = mesh.dm
-    for name, poly in segments:
-        # EVERY control point gets a vertex, not just the tips: an interior
-        # kink is the same problem as a tip — a distinguished point of the
-        # geometry that must coincide with a mesh vertex, or the cut leaves
-        # the chain fragmented at the turn.
-        dm = pull_vertex_onto(dm, np.asarray(poly, dtype=float))
-        dm, info = cut_along_lines(dm, [poly], label=name,
-                                   label_value=values[name])
-        if verbose:
-            uw.pprint(f"[add_fault {name!r}] {info['n_cut_edges']} facets, "
-                      f"min angle {info['min_angle']:.2f} deg")
+    if cut:
+        for name, poly in segments:
+            # EVERY control point gets a vertex, not just the tips: an
+            # interior kink is the same problem as a tip — a distinguished
+            # point of the geometry that must coincide with a mesh vertex,
+            # or the cut leaves the chain fragmented at the turn.
+            dm = pull_vertex_onto(dm, np.asarray(poly, dtype=float))
+            dm, info = cut_along_lines(dm, [poly], label=name,
+                                       label_value=values[name])
+            if verbose:
+                uw.pprint(f"[add_fault {name!r}] {info['n_cut_edges']} "
+                          f"facets, min angle {info['min_angle']:.2f} deg")
+    else:
+        dm = _label_embedded_edges(dm, segments, values, exclude=exclude,
+                                   verbose=verbose)
 
     # In parallel the balanced partition's cuts are attracted to the refined
     # fault band, so a cut chain generally touches the seam. Redistribute
@@ -1114,10 +1185,17 @@ def add_fault(mesh, faults, verbose=False):
     # the splits below run with serial topology. Doing it here rather than
     # per split also keeps a network's prior pairings valid — a pairing
     # cannot yet migrate through a redistribution, so split_fault refuses
-    # exactly the per-split case this pre-pass avoids.
+    # exactly the per-split case this pre-pass avoids. Label-only faults
+    # never touch the seam (the placement clipped the band there); one
+    # that does is a placement defect and is refused, collectively.
     if uw.mpi.size > 1 and dm.getDimension() == 2:
         labels = [(name, values[name]) for name, _poly in segments]
         if _fault_labels_touch_seam(dm, labels):
+            if not cut:
+                raise RuntimeError(
+                    "add_fault(cut=False): a fault edge touches the "
+                    "partition seam. The embedded spines are rank-interior "
+                    "only when the band was placed with seams='ligament'.")
             dm = _redistribute_fault_interior(dm, labels, verbose=verbose)
 
     cut = Mesh(dm, simplex=mesh.dm.isSimplex(),
@@ -1343,6 +1421,51 @@ def split_faults(mesh, names, verbose=False, groups=None):
     return out
 
 
+def _unsplit_facets(dm, name, value, plus_name, minus_name):
+    """The facets labelled ``name`` that carry neither side label yet."""
+    if not (dm.hasLabel(name) and dm.getLabel(name).getStratumSize(int(value)) > 0):
+        return []
+    fS, fE = dm.getHeightStratum(1)
+    out = []
+    for f in dm.getLabel(name).getStratumIS(int(value)).getIndices():
+        f = int(f)
+        if not (fS <= f < fE):
+            continue
+        if (dm.hasLabel(plus_name) and dm.getLabelValue(plus_name, f) >= 0) \
+                or (dm.hasLabel(minus_name)
+                    and dm.getLabelValue(minus_name, f) >= 0):
+            continue
+        out.append(f)
+    return out
+
+
+def _facet_components(dm, facets):
+    """Rank-local connected components of a facet set, joined through a
+    shared cone point (a vertex in 2-D, an edge in 3-D). Each component
+    is a sorted list; the list is ordered by its smallest facet."""
+    facets = [int(f) for f in facets]
+    parent = {f: f for f in facets}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    first = {}
+    for f in facets:
+        for q in dm.getCone(f):
+            other = first.setdefault(int(q), f)
+            if other != f:
+                ra, rb = find(other), find(f)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+    groups = {}
+    for f in facets:
+        groups.setdefault(find(f), []).append(f)
+    return sorted((sorted(g) for g in groups.values()), key=lambda g: g[0])
+
+
 def split_fault(mesh, name, orientation=None, verbose=False):
     """Split the nodes along the conforming surface ``name``; return the mesh.
 
@@ -1409,17 +1532,102 @@ def split_fault(mesh, name, orientation=None, verbose=False):
                     "split the network in serial.")
             source_dm = _redistribute_fault_interior(
                 source_dm, labels, verbose=verbose)
-    pStart, _pEnd = source_dm.getChart()
     splitter = (split_along_label if source_dm.getDimension() == 2
                 else split_along_label_3d)
-    new_dm, point_map, clone_map = splitter(
-        source_dm, name, int(mesh.boundaries[name].value),
-        plus_name, int(boundaries[plus_name].value),
-        minus_name, int(boundaries[minus_name].value),
-        orientation=orientation, verbose=verbose)
+    value = int(mesh.boundaries[name].value)
+    plus_value = int(boundaries[plus_name].value)
+    minus_value = int(boundaries[minus_name].value)
+    comm = uw.mpi.comm
+
+    # The Minus->Plus point pairing in the SPLIT mesh's numbering, for every
+    # replica whose original SURVIVED — the duplicated vertices and the
+    # doubled fault facets (the P2 midpoint DOFs live on the latter). Fresh
+    # minus-side SPOKE facets are excluded: their originals were dropped
+    # (point_map -1), because a re-homed spoke is the same geometric edge
+    # renumbered, not a coincident copy. This dict is the ONLY source of the
+    # pairing — the sides are geometrically coincident, so no coordinate
+    # query can ever recover it — and it is what a fault interface condition
+    # (slip constraint, friction) pairs degrees of freedom with.
+    #
+    # Splitting renumbers the whole chart, so PRIOR faults' pairings are
+    # carried through point_map rather than copied verbatim — copied ids
+    # would silently index the wrong points on the new mesh. A prior fault's
+    # points always survive this split (only this fault's minus spokes are
+    # re-homed), asserted rather than assumed.
+    #
+    # A fault may be several SUB-CHAINS on a rank — the seam-ligament
+    # placement leaves it uncut where it crosses the seam, so a rank the
+    # fault crosses in and out holds two pieces (#670). Each pass splits
+    # one piece per rank under a temporary label, collectively, until no
+    # rank has a piece left; a single whole chain takes the plain path.
+    prior = {p: dict(v)
+             for p, v in getattr(mesh, "_fault_point_pairs", {}).items()}
+    pairs = {}
+    dm_cur = source_dm
+    tmp = f"_{name}_split_pass"
+    n_pass = 0
+    while True:
+        remaining = _unsplit_facets(dm_cur, name, value, plus_name, minus_name)
+        comps = [c for c in _facet_components(dm_cur, remaining)
+                 if len(c) >= 2]
+        whole = (len(comps) <= 1
+                 and sum(len(c) for c in comps) == len(remaining))
+        n_max, all_whole = comm.allreduce(len(comps), op=MPI.MAX), \
+            comm.allreduce(whole, op=MPI.LAND)
+        n_left = comm.allreduce(len(remaining), op=MPI.SUM)
+        if n_max == 0 and (n_pass > 0 or n_left == 0):
+            break
+        if n_pass == 0 and (all_whole or n_max == 0):
+            lname, lvalue = name, value        # today's path, verbatim
+        else:
+            if dm_cur.hasLabel(tmp):
+                dm_cur.removeLabel(tmp)
+            dm_cur.createLabel(tmp)
+            lbl = dm_cur.getLabel(tmp)
+            for f in (comps[0] if comps else []):
+                lbl.setValue(int(f), 1)
+            lname, lvalue = tmp, 1
+        pStart, _pEnd = dm_cur.getChart()
+        new_dm, point_map, clone_map = splitter(
+            dm_cur, lname, lvalue, plus_name, plus_value, minus_name,
+            minus_value, orientation=orientation, verbose=verbose)
+
+        def carry(d, what):
+            out = {int(point_map[qm - pStart]): int(point_map[qp - pStart])
+                   for qm, qp in d.items()}
+            if any(q < 0 for kv in out.items() for q in kv):
+                raise RuntimeError(
+                    f"fault_split internal: splitting {name!r} dropped a "
+                    f"point of {what}'s pairing — the faults are not "
+                    "disjoint.")
+            return out
+
+        for p in prior:
+            prior[p] = carry(prior[p], f"the prior fault {p!r}")
+        pairs = carry(pairs, f"{name!r}'s earlier piece")
+        pairs.update({
+            int(q_minus): int(point_map[old_pt - pStart])
+            for q_minus, old_pt in clone_map.items()
+            if point_map[old_pt - pStart] >= 0})
+        if new_dm.hasLabel(tmp):
+            new_dm.removeLabel(tmp)
+        dm_cur = new_dm
+        n_pass += 1
+        if lname == name:
+            break
+    if verbose and n_pass > 1:
+        uw.pprint(f"[split_fault {name!r}] {n_pass} sub-chain passes")
+    if n_pass == 0:
+        # nothing split anywhere (the fault lies wholly in a seam
+        # ligament): the side boundaries still exist, empty, so that a
+        # condition on them is a no-op rather than a null-label query
+        dm_cur = dm_cur.clone()
+        for lname in (plus_name, minus_name):
+            if not dm_cur.hasLabel(lname):
+                dm_cur.createLabel(lname)
 
     child = Mesh(
-        new_dm,
+        dm_cur,
         simplex=mesh.dm.isSimplex(),
         coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
         qdegree=mesh.qdegree,
@@ -1440,34 +1648,7 @@ def split_fault(mesh, name, orientation=None, verbose=False):
         child._fault_surfaces = dict(mesh._fault_surfaces)
     child.regions = mesh.regions
     child._parent_mesh_version = mesh._mesh_version
-    # The Minus->Plus point pairing in the SPLIT mesh's numbering, for every
-    # replica whose original SURVIVED — the duplicated vertices and the
-    # doubled fault facets (the P2 midpoint DOFs live on the latter). Fresh
-    # minus-side SPOKE facets are excluded: their originals were dropped
-    # (point_map -1), because a re-homed spoke is the same geometric edge
-    # renumbered, not a coincident copy. This dict is the ONLY source of the
-    # pairing — the sides are geometrically coincident, so no coordinate
-    # query can ever recover it — and it is what a fault interface condition
-    # (slip constraint, friction) pairs degrees of freedom with.
-    #
-    # Splitting renumbers the whole chart, so PRIOR faults' pairings are
-    # carried through point_map rather than copied verbatim — copied ids
-    # would silently index the wrong points on the new mesh. A prior fault's
-    # points always survive this split (only this fault's minus spokes are
-    # re-homed), asserted rather than assumed.
-    child._fault_point_pairs = {}
-    for prior, pairs in getattr(mesh, "_fault_point_pairs", {}).items():
-        remapped = {int(point_map[qm - pStart]): int(point_map[qp - pStart])
-                    for qm, qp in pairs.items()}
-        if any(q < 0 for kv in remapped.items() for q in kv):
-            raise RuntimeError(
-                f"fault_split internal: splitting {name!r} dropped a point "
-                f"of the prior fault {prior!r}'s pairing — the faults are "
-                "not disjoint.")
-        child._fault_point_pairs[prior] = remapped
-    child._fault_point_pairs[name] = {
-        int(q_minus): int(point_map[old_pt - pStart])
-        for q_minus, old_pt in clone_map.items()
-        if point_map[old_pt - pStart] >= 0}
+    child._fault_point_pairs = dict(prior)
+    child._fault_point_pairs[name] = pairs
     mesh._registered_children.add(child)
     return child

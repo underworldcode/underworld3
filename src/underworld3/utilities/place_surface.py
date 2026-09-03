@@ -5789,6 +5789,114 @@ def _ring_growing(cells, drop, held_mask):
         "`clearance`.")
 
 
+def _ring_growing_multi(cells, drop, held_mask, allow_multiple=False):
+    """The cavity rings, one per connected component of the drop set.
+
+    :func:`_ring_growing`'s pinch growth first (a pinch between two
+    cavities merges them), then each component's own simple ring. With
+    ``allow_multiple`` false a second component is the refusal
+    :func:`_ring_growing` gives; with it true — the seam-ligament placement,
+    where a band crossing a rank in and out leaves two cavities on it —
+    every component is carved and filled on its own. Returns
+    ``([(ring, component_mask), ...], drop)``.
+    """
+    for _round in range(20):
+        directed = {}
+        for ci in np.flatnonzero(drop):
+            v0, v1, v2 = cells[ci]
+            for a, b in ((v0, v1), (v1, v2), (v2, v0)):
+                directed[(int(a), int(b))] = int(ci)
+        ring_edges = [(a, b) for (a, b) in directed
+                      if (b, a) not in directed]
+        starts = {}
+        pinch = set()
+        for a, b in ring_edges:
+            if a in starts:
+                pinch.add(a)
+            starts[a] = b
+        if not pinch:
+            ids = np.flatnonzero(drop)
+            comp = _assembly_components(cells[ids])
+            n_comp = int(comp.max()) if len(comp) else 0
+            if n_comp > 1 and not allow_multiple:
+                raise RuntimeError(
+                    "the cells cleared for the thin volume do not leave one "
+                    "simple hole. Raise `clearance`.")
+            out = []
+            for k in range(1, n_comp + 1):
+                sel = ids[comp == k]
+                ring = _cavity_ring(cells, sel)
+                if ring is None:
+                    raise RuntimeError(
+                        "the cells cleared for the thin volume do not leave "
+                        "one simple hole. Raise `clearance`.")
+                mask = np.zeros(len(cells), dtype=bool)
+                mask[sel] = True
+                out.append((ring, mask))
+            return out, drop
+        for v in pinch:
+            grow = (cells == v).any(axis=1)
+            if (grow & held_mask).any():
+                if not allow_multiple:
+                    raise RuntimeError(
+                        "closing the cavity needs a cell held for a surface "
+                        "already embedded; move the zone away or raise "
+                        "`clearance`.")
+                # The pinch abuts the seam ligament, which cannot be
+                # carved: SHRINK the cavity instead — keep the largest fan
+                # of dropped cells at the vertex, restore the rest. The
+                # band is clipped by whatever the cavity ends up holding.
+                fan = np.flatnonzero(drop & grow)
+                comp = _assembly_components(cells[fan])
+                if int(comp.max()) < 2:
+                    raise RuntimeError(
+                        "the cavity pinches at the seam ligament in a way "
+                        "shrinking cannot resolve; raise `clearance` or "
+                        "widen `ligament`.")
+                sizes = np.bincount(comp)
+                biggest = int(np.argmax(sizes[1:])) + 1
+                drop[fan[comp != biggest]] = False
+                break           # the ring changed: recompute the pinches
+            else:
+                drop |= grow
+    raise RuntimeError(
+        "the cavity did not become simple in 20 growth rounds; raise "
+        "`clearance`.")
+
+
+def _manifold_subset_2d(tris, kept):
+    """Shrink a triangle subset until its boundary is a set of simple loops.
+
+    A clipped subset can pinch at a vertex — two fans of kept triangles
+    meeting only there (a bow-tie), or a triangle hanging by one vertex —
+    and such a vertex carries four boundary edges, which no closed-loop
+    walk can pass. Every triangle at such a vertex is dropped, and the
+    check repeats until each vertex carries zero or two boundary edges.
+    Returns the new mask; the input is untouched.
+    """
+    from collections import Counter
+    kept = kept.copy()
+    for _round in range(50):
+        sub = tris[kept]
+        if not len(sub):
+            return kept
+        use = Counter()
+        for a, b, c in sub:
+            for e in ((a, b), (b, c), (c, a)):
+                use[(min(e), max(e))] += 1
+        at_v = Counter()
+        for (a, b), n in use.items():
+            if n == 1:
+                at_v[a] += 1
+                at_v[b] += 1
+        bad = {v for v, n in at_v.items() if n != 2}
+        if not bad:
+            return kept
+        hit = np.array([any(int(v) in bad for v in t) for t in tris])
+        kept &= ~hit
+    raise RuntimeError("the clipped band did not become manifold")
+
+
 def _gmsh_fill_plain_3d(shell_xyz, shell_tris, h):
     """Tetrahedralise inside the shell with NOTHING embedded — the removal
     fill. The shell is a discrete surface carrying its triangulation
@@ -6402,7 +6510,8 @@ ZONE_LABEL = "uw_zone"
 
 
 def _place_thin_volume_2d(dm, polylines, width, label, label_value,
-                          clearance, size, assembly, verbose, mesher=None):
+                          clearance, size, assembly, verbose, mesher=None,
+                          seams="gather", ligament=None):
     """The ribbon: the identical construction one dimension down.
 
     Serial AND parallel through the same gather-first mechanism as the 3-D
@@ -6502,7 +6611,10 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
     mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
          + vS - pStart] = 1
-    dm_work, moved = _gather_region(dm, mark, verbose=verbose)
+    if seams == "ligament":
+        dm_work, moved = dm, 0          # no gather: each rank carves its own
+    else:
+        dm_work, moved = _gather_region(dm, mark, verbose=verbose)
     if moved:
         vS, vE = dm_work.getDepthStratum(0)
         pStart, pEnd = dm_work.getChart()
@@ -6523,10 +6635,32 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     if owners.sum() == 0:
         raise ValueError("the thin volume meets no cell of this mesh")
     target = int(np.argmax(owners))
+    # Who carves: the gather's one target, or — with seam ligaments — every
+    # rank holding part of the zone, concurrently, each its own cavities.
+    do_surgery = (n_region > 0) if seams == "ligament" \
+        else (comm.rank == target)
+
+    # The seam ligament (#670): a cell whose star reaches the partition
+    # seam (a shared vertex, or one within ligament/2 of the seam) is never
+    # carved and its vertices are never deleted, so every cavity stops one
+    # cell short of the seam on its own rank, and the assembly is CLIPPED
+    # there. The base cells left in the ligament are the band's material
+    # across the seam — labelled as zone, for the weak rheology to bridge.
+    seam_c = np.zeros(len(cells), dtype=bool)
+    if seams == "ligament" and comm.size > 1:
+        shared_v = shared[vS - pStart: vE - pStart]
+        near = shared_v.copy()
+        if ligament is not None and shared_v.any():
+            from scipy.spatial import cKDTree as _KDT_seam
+            near |= _KDT_seam(X[shared_v]).query(X)[0] < 0.5 * float(ligament)
+        seam_c = near[cells].any(axis=1)
+    seam_prot_v = np.zeros(len(X), dtype=bool)
+    if seam_c.any():
+        seam_prot_v[cells[seam_c].ravel()] = True
 
     failure = None
     surgery = None
-    if comm.rank == target:
+    if do_surgery:
         try:
             beside_held = np.zeros(len(X), dtype=bool)
             beside_held[cells[held_c].ravel()] = True
@@ -6537,7 +6671,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                               for L in domain_loops]
                 deletable_wall, near_touched = _outcrop_frame_2d(
                     comp_loops, asm_pts, band_pairs, X, on_wall)
-            protected = (on_wall & ~deletable_wall) | held_v | beside_held
+            protected = ((on_wall & ~deletable_wall) | held_v | beside_held
+                         | seam_prot_v)
             victim = (d_skin < reach_v) & ~protected
 
             drop = victim[cells].any(axis=1)
@@ -6545,7 +6680,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             reach_c = np.maximum(clearance * h_vertex[cells].min(axis=1),
                                  0.6 * width)
             drop |= _segments_distance(cen, asm_pts, skin_edges) < reach_c
-            drop &= ~held_c
+            drop_wanted = drop.copy()
+            drop &= ~held_c & ~seam_c
             need = victim[cells].any(axis=1)
             if (need & held_c).any():
                 raise RuntimeError(
@@ -6553,39 +6689,97 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     "surface already embedded. Zones and surfaces must be "
                     "separated by at least a cell.")
             drop |= need
-            if not drop.any():
+            if not drop.any() and seams != "ligament":
                 raise ValueError("the thin volume meets no cell of this mesh")
 
-            ring, drop = _ring_growing(cells, drop, held_c)
-            removed_wall = []
-            if not outcropping:
-                if on_wall[np.asarray(ring)].any():
-                    raise RuntimeError(
-                        "the ribbon's cavity reached the domain wall; the "
-                        "volume must be interior, with clearance to spare")
-            else:
+            comps = []
+            if drop.any():
+                comps, drop = _ring_growing_multi(
+                    cells, drop, held_c | seam_c,
+                    allow_multiple=(seams == "ligament"))
+            boundary_pairs = None
+            if outcropping:
                 boundary_pairs = {frozenset((a, b))
                                   for _e, a, b in _boundary_edges(dm_work)}
-                chain_ids = [len(X) + int(v) for v in chain_asm]
-                chain_ends = (asm_pts[chain_asm[0]],
-                              asm_pts[chain_asm[-1]])
-                ring, removed_wall = _outcrop_ring_splice(
-                    ring, X, boundary_pairs, chain_ids, chain_ends)
-                off_band = [v for v in ring if v < len(X)
-                            and on_wall[v] and not near_touched[v]]
-                if off_band:
+
+            # Per cavity: the assembly cells it holds (all of them under
+            # the gather; under ligaments, those wholly inside it and
+            # clear of the seam-side ring by most of a band cell — the
+            # clipped edge must leave the fill room), that subset's skin,
+            # its outcrop chain if the band reaches the wall there, and
+            # the ring spliced accordingly.
+            carved = []
+            for ring, comp in comps:
+                if seams == "ligament":
+                    inside = _inside_mesh(X, cells[comp], asm_pts)
+                    kept = inside[asm_tris].all(axis=1)
+                    # the clip margin applies along every ring edge whose
+                    # outside cell the cavity WANTED (a seam cell, or one
+                    # restored when a pinch was shrunk away from the seam)
+                    edge_cell = {}
+                    for ci in np.flatnonzero(~drop & (seam_c | drop_wanted)):
+                        v0, v1, v2 = (int(v) for v in cells[ci])
+                        for a, b in ((v0, v1), (v1, v2), (v2, v0)):
+                            edge_cell[(min(a, b), max(a, b))] = ci
+                    seam_edges = [(a, b) for a, b in zip(ring, ring[1:] + ring[:1])
+                                  if (min(a, b), max(a, b)) in edge_cell]
+                    if seam_edges and kept.any():
+                        d_seam = _segments_distance(asm_pts, X, seam_edges)
+                        kept &= ~(d_seam[asm_tris] < 0.4 * size).any(axis=1)
+                    kept = _manifold_subset_2d(asm_tris, kept)
+                    if not kept.any():
+                        drop[comp] = False      # nothing to embed: leave it
+                        continue
+                else:
+                    kept = np.ones(len(asm_tris), dtype=bool)
+                sub = asm_tris[kept]
+                _sk, sk_local, sk_ids = _assembly_skin(asm_pts, sub)
+                sk_edges = [(int(sk_ids[a]), int(sk_ids[b]))
+                            for a, b in sk_local]
+                loops_k = _skin_loops(sk_edges)
+                chain_k, holes_k = None, loops_k
+                removed_wall = []
+                if outcropping:
+                    pairs_k = {frozenset(e) for e in sk_edges} & band_pairs
+                    if pairs_k and len(pairs_k) != len(band_pairs):
+                        raise RuntimeError(
+                            "a seam ligament crosses the outcrop band; the "
+                            "outcrop must lie within one rank's cavity. Use "
+                            "seams='gather' for this layout.")
+                    if pairs_k:
+                        chain_k, holes_k = _outcrop_chain_2d(loops_k,
+                                                             band_pairs)
+                if chain_k is None:
+                    if on_wall[np.asarray(ring)].any():
+                        raise RuntimeError(
+                            "the ribbon's cavity reached the domain wall; "
+                            "the volume must be interior, with clearance "
+                            "to spare")
+                else:
+                    chain_ids = [len(X) + int(v) for v in chain_k]
+                    chain_ends = (asm_pts[chain_k[0]], asm_pts[chain_k[-1]])
+                    ring, removed_wall = _outcrop_ring_splice(
+                        ring, X, boundary_pairs, chain_ids, chain_ends)
+                    off_band = [v for v in ring if v < len(X)
+                                and on_wall[v] and not near_touched[v]]
+                    if off_band:
+                        raise RuntimeError(
+                            "the ribbon's cavity reached the domain "
+                            "boundary away from the outcrop band; only a "
+                            "one-band outcrop is built.")
+                old_ring = np.asarray([v for v in ring if v < len(X)])
+                if victim[old_ring].any():
                     raise RuntimeError(
-                        "the ribbon's cavity reached the domain boundary "
-                        "away from the outcrop band; only a one-band "
-                        "outcrop is built.")
-            old_ring = np.asarray([v for v in ring if v < len(X)])
-            if victim[old_ring].any():
-                raise RuntimeError(
-                    "a deleted vertex is on the cavity boundary")
+                        "a deleted vertex is on the cavity boundary")
+                carved.append((ring, kept, sk_edges, holes_k, chain_k,
+                               removed_wall))
 
             referenced = np.zeros(len(X), dtype=bool)
             if (~drop).any():
                 referenced[cells[~drop].ravel()] = True
+            # a cavity left uncarved (nothing of the band inside it) keeps
+            # its cells, so its would-be victims stay
+            victim &= ~referenced
             orphan = ~referenced & ~victim
             if (orphan & on_wall & ~deletable_wall).any():
                 raise RuntimeError(
@@ -6598,9 +6792,12 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             # changes label mid-way (Top on one side, Right on the other),
             # so each new wall edge must take the labels of the old
             # segment it lies on, not a set common to the whole span.
-            span_labels = []
-            span_segments = []
-            if removed_wall:
+            outcrop = None
+            for ring, kept, sk_edges, holes_k, chain_k, removed_wall in carved:
+                if not removed_wall:
+                    continue
+                span_labels = []
+                span_segments = []
                 names = [dm_work.getLabelName(i)
                          for i in range(dm_work.getNumLabels())
                          if dm_work.getLabelName(i)
@@ -6616,44 +6813,78 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                     span_labels.append(pairs_p)
                     span_segments.append((X[int(a)].copy(),
                                           X[int(b)].copy()))
+                # The splice ends: the surviving corner vertices and the
+                # chain ends they meet — the chain is the ring's tail, in
+                # the orientation the splice chose.
+                outcrop = (span_labels, span_segments,
+                           int(removed_wall[0][0]),
+                           int(removed_wall[-1][1]),
+                           int(ring[-len(chain_k)]) - len(X),
+                           int(ring[-1]) - len(X))
 
+            kept_all = np.zeros(len(asm_tris), dtype=bool)
+            for _ring, kept, _sk, _h, _c, _w in carved:
+                kept_all |= kept
+            used = np.unique(asm_tris[kept_all]) if kept_all.any() \
+                else np.zeros(0, dtype=np.int64)
+            asm_row = -np.ones(len(asm_pts), dtype=np.int64)
+            asm_row[used] = np.arange(len(used))
+            placed_parts = [asm_pts[used]]
+            n_rows = len(used)
+            made = []
             Xall = np.vstack([X, asm_pts])
-            holes = [[len(X) + int(v) for v in loop] for loop in hole_loops]
-            # GRADED fill: the annulus between the assembly's skin and the
-            # cavity ring is meshed from the skin's own size out to the
-            # ring's edge length, interpolated by relative distance. Without
-            # this the fill inherits the skin segmentation throughout, and
-            # where several ribbons sit within a cavity of each other the
-            # merged cavity fills at band resolution end to end (measured on
-            # the S-fault rig: the fill cost as many cells as the bands —
-            # the #629 "fill shell was the fat" finding on the network path).
-            size_of = None
-            if hole_loops:
-                from scipy.spatial import cKDTree as _KDT
-                _skin = asm_pts[np.unique(np.concatenate(
-                    [np.asarray(l, dtype=int) for l in hole_loops]))]
-                _ring_pts = Xall[np.asarray(ring, dtype=int)]
-                _rl = np.linalg.norm(np.diff(
-                    np.vstack([_ring_pts, _ring_pts[:1]]), axis=0), axis=1)
-                _h_ring, _h_skin = float(np.median(_rl)), float(size)
-                if _h_ring > 1.2 * _h_skin:
-                    _kd_s, _kd_r = _KDT(_skin), _KDT(_ring_pts)
+            for ring, kept, sk_edges, holes_k, chain_k, _w in carved:
+                holes = [[len(X) + int(v) for v in loop] for loop in holes_k]
+                # GRADED fill: the annulus between the assembly's skin and
+                # the cavity ring is meshed from the skin's own size out to
+                # the ring's edge length, interpolated by relative distance.
+                # Without this the fill inherits the skin segmentation
+                # throughout, and where several ribbons sit within a cavity
+                # of each other the merged cavity fills at band resolution
+                # end to end (measured on the S-fault rig: the fill cost as
+                # many cells as the bands — the #629 "fill shell was the
+                # fat" finding on the network path).
+                size_of = None
+                if holes_k:
+                    from scipy.spatial import cKDTree as _KDT
+                    _skin = asm_pts[np.unique(np.concatenate(
+                        [np.asarray(l, dtype=int) for l in holes_k]))]
+                    _ring_pts = Xall[np.asarray(ring, dtype=int)]
+                    _rl = np.linalg.norm(np.diff(
+                        np.vstack([_ring_pts, _ring_pts[:1]]), axis=0),
+                        axis=1)
+                    _h_ring, _h_skin = float(np.median(_rl)), float(size)
+                    if _h_ring > 1.2 * _h_skin:
+                        _kd_s, _kd_r = _KDT(_skin), _KDT(_ring_pts)
 
-                    def size_of(x, y, _s=_h_skin, _h=_h_ring,
-                                _ks=_kd_s, _kr=_kd_r):
-                        q = np.array([[x, y]])
-                        ds = float(_ks.query(q)[0][0])
-                        dr = float(_kr.query(q)[0][0])
-                        return _s + (_h - _s) * ds / (ds + dr + 1e-30)
-            gap_tris, extra = _gmsh_fill_2d(Xall, ring, None, holes=holes,
-                                            size_of=size_of)
-            placed = np.vstack([asm_pts, extra]) if len(extra) else asm_pts
+                        def size_of(x, y, _s=_h_skin, _h=_h_ring,
+                                    _ks=_kd_s, _kr=_kd_r):
+                            q = np.array([[x, y]])
+                            ds = float(_ks.query(q)[0][0])
+                            dr = float(_kr.query(q)[0][0])
+                            return _s + (_h - _s) * ds / (ds + dr + 1e-30)
+                gap_tris, extra = _gmsh_fill_2d(Xall, ring, None,
+                                                holes=holes, size_of=size_of)
+                n_all = len(Xall)
+                offset = n_rows
 
-            def mixed(v):
-                return int(v) if v < len(X) else -(int(v) - len(X) + 1)
+                def mixed(v, _off=offset, _n=n_all):
+                    v = int(v)
+                    if v < len(X):
+                        return v
+                    if v < _n:
+                        return -(int(asm_row[v - len(X)]) + 1)
+                    return -(_off + (v - _n) + 1)
 
-            made = [tuple(mixed(v) for v in t) for t in gap_tris]
-            made += [tuple(-(int(v) + 1) for v in t) for t in asm_tris]
+                made += [tuple(mixed(v) for v in t) for t in gap_tris]
+                if len(extra):
+                    placed_parts.append(np.asarray(extra, dtype=float)
+                                        .reshape(-1, 2))
+                    n_rows += len(extra)
+            made += [tuple(-(int(asm_row[v]) + 1) for v in t)
+                     for t in asm_tris[kept_all]]
+            placed = np.vstack(placed_parts) if n_rows else \
+                np.empty((0, 2), dtype=float)
 
             touched = set()
             cS0, _ = dm_work.getHeightStratum(0)
@@ -6664,18 +6895,10 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                 raise RuntimeError(
                     "place_thin_volume internal: the gathered region "
                     "touches a shared point; the gather mask under-reached.")
-            outcrop = None
-            if outcropping:
-                # The splice ends: the surviving corner vertices and the
-                # chain ends they meet — the chain is the ring's tail, in
-                # the orientation the splice chose.
-                outcrop = (span_labels, span_segments,
-                           int(removed_wall[0][0]),
-                           int(removed_wall[-1][1]),
-                           int(ring[-len(chain_asm)]) - len(X),
-                           int(ring[-1]) - len(X))
+            sk_all = [e for _r, _k, sk_edges, _h, _c, _w in carved
+                      for e in sk_edges]
             surgery = (np.flatnonzero(victim), np.flatnonzero(drop), made,
-                       placed, outcrop)
+                       placed, outcrop, kept_all, asm_row, sk_all)
         except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
     failures = comm.allgather(failure)
@@ -6684,31 +6907,53 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
         raise RuntimeError(
             f"place_thin_volume failed on the surgery rank: {real[0]}")
 
-    if comm.rank == target:
-        victims_arr, drop_arr, made, placed, outcrop = surgery
+    if surgery is not None:
+        (victims_arr, drop_arr, made, placed, outcrop, kept_all, asm_row,
+         sk_all) = surgery
     else:
         victims_arr = np.empty(0, dtype=np.int64)
         drop_arr = np.empty(0, dtype=np.int64)
         made = []
         placed = np.empty((0, 2), dtype=float)
         outcrop = None
+        kept_all = np.zeros(len(asm_tris), dtype=bool)
+        asm_row = -np.ones(len(asm_pts), dtype=np.int64)
+        sk_all = []
+
+    # Every assembly cell is embedded on exactly one rank or, under the
+    # ligament, on none — the ligament cells; a cell kept twice is a
+    # defect of the clipping and is refused here.
+    kept_count = kept_all.astype(np.int32)
+    comm.Allreduce(MPI.IN_PLACE, kept_count, op=MPI.SUM)
+    if (kept_count > 1).any():
+        raise RuntimeError(
+            "place_thin_volume internal: an assembly cell was embedded on "
+            f"{int(kept_count.max())} ranks; the seam clipping overlapped.")
+    n_kept = int((kept_count == 1).sum())
+    lig_tris = np.flatnonzero(kept_count == 0)
+    if len(lig_tris) and seams != "ligament":
+        raise RuntimeError(
+            f"place_thin_volume internal: {len(lig_tris)} assembly cells "
+            "were not embedded.")
+    n_skin_expected = int(comm.allreduce(len(sk_all), op=MPI.SUM))
 
     new_dm, point_map, placed_points = _rebuild_sewn(
         dm_work, drop_arr, victims_arr, made, placed)
 
     skin_label = label + "_skin"
     trace_label = label + "_trace"
+    lig_label = label + "_ligament"
     for name in (label, skin_label, trace_label):
         if not new_dm.hasLabel(name):
             new_dm.createLabel(name)
     n_zone_local = 0
     n_skin_local = 0
-    if comm.rank == target:
+    if surgery is not None:
         out_label = new_dm.getLabel(label)
         out_skin = new_dm.getLabel(skin_label)
-        for t in asm_tris:
+        for t in asm_tris[kept_all]:
             joined = new_dm.getFullJoin(
-                [int(placed_points[int(v)]) for v in t])
+                [int(placed_points[int(asm_row[int(v)])]) for v in t])
             if len(joined) != 1:
                 failure = ("an assembly cell is not a cell of the sewn "
                            "mesh; the embed lost the layer.")
@@ -6716,9 +6961,10 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             out_label.setValue(int(joined[0]), int(label_value))
             n_zone_local += 1
         else:
-            for a, b in skin_edges:
-                joined = new_dm.getFullJoin([int(placed_points[a]),
-                                             int(placed_points[b])])
+            for a, b in sk_all:
+                joined = new_dm.getFullJoin(
+                    [int(placed_points[int(asm_row[a])]),
+                     int(placed_points[int(asm_row[b])])])
                 if len(joined) != 1:
                     failure = ("a skin edge is not an edge of the sewn "
                                "mesh; the gap was not sewn onto the layer.")
@@ -6730,25 +6976,49 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     if real:
         raise RuntimeError(real[0])
 
+    # The ligament cells: base cells the clipped-away assembly cells
+    # cover (centroid inside one). Zone AND ligament labelled, so the band
+    # mask sees them and the split's edge labelling can avoid them.
+    n_lig_local = 0
+    if len(lig_tris):
+        if not new_dm.hasLabel(lig_label):
+            new_dm.createLabel(lig_label)
+        out_lig = new_dm.getLabel(lig_label)
+        out_label = new_dm.getLabel(label)
+        cS_n, cE_n = new_dm.getHeightStratum(0)
+        ids, cen = _cell_centroids_of(new_dm, np.ones(cE_n - cS_n, dtype=bool))
+        covered = _inside_mesh(asm_pts, asm_tris[lig_tris], cen)
+        for c in ids[covered]:
+            out_label.setValue(int(c) + cS_n, int(label_value))
+            out_lig.setValue(int(c) + cS_n, int(label_value))
+            n_lig_local += 1
+
     # An outcropping ribbon's new wall coverage — the two splice segments
     # and the band itself — is relabelled EXPLICITLY with what the deleted
     # wall span carried, full closures included.
     n_wall_local = 0
     if outcropping:
+        has_outcrop = np.asarray(comm.allgather(outcrop is not None))
+        if int(has_outcrop.sum()) != 1:
+            raise RuntimeError(
+                f"place_thin_volume internal: the outcrop was carved on "
+                f"{int(has_outcrop.sum())} ranks.")
+        root = int(np.argmax(has_outcrop))
         label_names = comm.bcast(
             sorted({name for pairs_p in outcrop[0] for name, _v in pairs_p})
-            if comm.rank == target else None, root=target)
+            if comm.rank == root else None, root=root)
         for name in label_names:
             if not new_dm.hasLabel(name):
                 new_dm.createLabel(name)
-        if comm.rank == target:
+        if comm.rank == root:
             (span_lab, span_seg, corner_l, corner_r,
              a_first, a_last) = outcrop
             wall_ids = [[int(point_map[corner_l + vS - pStart]),
-                         int(placed_points[a_first])],
-                        [int(placed_points[a_last]),
+                         int(placed_points[int(asm_row[a_first])])],
+                        [int(placed_points[int(asm_row[a_last])]),
                          int(point_map[corner_r + vS - pStart])]]
-            wall_ids += [[int(placed_points[a]), int(placed_points[b])]
+            wall_ids += [[int(placed_points[int(asm_row[a])]),
+                          int(placed_points[int(asm_row[b])])]
                          for a, b in (tuple(p) for p in band_pairs)]
             mids = [0.5 * (X[corner_l] + asm_pts[a_first]),
                     0.5 * (asm_pts[a_last] + X[corner_r])]
@@ -6799,15 +7069,15 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                 f"{2 + len(band_pairs)} given.")
 
     counts = np.array([n_zone_local, n_skin_local, len(victims_arr),
-                       len(placed)], dtype=np.int64)
+                       len(placed), n_lig_local], dtype=np.int64)
     comm.Allreduce(MPI.IN_PLACE, counts, op=MPI.SUM)
-    n_zone, n_skin, n_removed, n_placed = (int(x) for x in counts)
-    if n_zone != len(asm_tris):
+    n_zone, n_skin, n_removed, n_placed, n_lig = (int(x) for x in counts)
+    if n_zone != n_kept:
         raise RuntimeError(f"{n_zone} zone cells labelled for "
-                           f"{len(asm_tris)} assembly cells given.")
-    if n_skin != len(skin_edges):
+                           f"{n_kept} assembly cells embedded.")
+    if n_skin != n_skin_expected:
         raise RuntimeError(f"{n_skin} skin edges labelled for "
-                           f"{len(skin_edges)} given.")
+                           f"{n_skin_expected} given.")
 
     areas = cell_areas(new_dm)
     stats = np.array([float(areas.sum()) if len(areas) else 0.0,
@@ -6840,22 +7110,31 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                      float(min_angles(new_dm).min())
                      if len(areas) else np.inf])
     comm.Allreduce(MPI.IN_PLACE, mins, op=MPI.MIN)
+    n_ranks_carving = int(comm.allreduce(int(surgery is not None),
+                                         op=MPI.SUM))
     info = {"n_zone_cells": n_zone, "n_skin_faces": n_skin,
             "n_placed": n_placed, "n_removed": n_removed,
             "n_trace_facets": int(len(band_idx)),
-            "min_area": float(mins[0]), "min_angle": float(mins[1])}
+            "min_area": float(mins[0]), "min_angle": float(mins[1]),
+            "n_gathered": int(moved), "seams": seams,
+            "n_ligament_cells": n_lig, "n_ligament_tris": int(len(lig_tris)),
+            "n_surgery_ranks": n_ranks_carving}
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {n_zone} zone cells, "
                   f"{n_skin} skin edges; placed {n_placed} vertices, "
                   f"removed {n_removed}; min angle "
-                  f"{info['min_angle']:.2f} deg")
+                  f"{info['min_angle']:.2f} deg"
+                  + (f"; {n_lig} ligament cells stand in for "
+                     f"{len(lig_tris)} clipped band cells"
+                     if len(lig_tris) else ""))
     return new_dm, info
 
 
 
 def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
                       clearance=0.7, size=None, *, assembly="fuse",
-                      mesher=None, embed=None, verbose=False):
+                      mesher=None, embed=None, verbose=False,
+                      seams="gather", ligament=None):
     """Embed a THIN VOLUME of the given width around each patch, junctions free.
 
     The finite-width fault representation: each planar patch is thickened by
@@ -6948,6 +7227,19 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
         :func:`_label_mid_surface` labels a placed fault from.
     verbose : bool
         Report the counts.
+    seams : {"gather", "ligament"}, keyword-only
+        How a zone that straddles a partition seam is placed. ``"gather"``
+        (the default) moves the zone's region onto one rank and carves
+        there. ``"ligament"`` (2-D) carves on every rank at once: each
+        rank's cavities stop one cell short of the seam, the assembly is
+        clipped there, and the base cells left in the gap — the LIGAMENT
+        — are labelled ``<label>`` and ``<label>_ligament`` so the band's
+        weak rheology bridges the seam (#670). Nothing moves; the mesh
+        at a crossing is the base's, at the base's resolution.
+    ligament : float or None, keyword-only
+        With ``seams="ligament"``, widen the ligament: cells within
+        ``ligament/2`` of the seam are also left uncarved. ``None`` keeps
+        only the seam cells themselves (one layer on each side).
 
     Returns
     -------
@@ -6976,6 +7268,15 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if mesher not in (None, "ladder", "network"):
         raise ValueError(
             f"mesher must be None, 'ladder' or 'network', not {mesher!r}")
+    if seams not in ("gather", "ligament"):
+        raise ValueError(
+            f"seams must be 'gather' or 'ligament', not {seams!r}")
+    if ligament is not None and seams != "ligament":
+        raise ValueError("ligament= belongs to seams='ligament'")
+    if seams == "ligament" and dm.getDimension() != 2:
+        raise NotImplementedError(
+            "seams='ligament' is built for the 2-D ribbon; the 3-D band "
+            "still gathers (seams='gather').")
     if embed is not None and mesher != "network":
         raise ValueError(
             "embed= belongs to mesher='network' (mid-surfaces fragmented "
@@ -6985,7 +7286,8 @@ def place_thin_volume(dm, patches, width, label=ZONE_LABEL, label_value=1,
     if dm.getDimension() == 2:
         return _place_thin_volume_2d(dm, patches, width, label, label_value,
                                      clearance, size, assembly, verbose,
-                                     mesher=mesher)
+                                     mesher=mesher, seams=seams,
+                                     ligament=ligament)
     if mesher == "ladder":
         if len(patches) != 1:
             raise ValueError("the 3-D ladder takes exactly one patch")
@@ -7820,7 +8122,8 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
 def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                           band_label="Band", band_value=71,
                           clearance=0.3, split=True, mesher="ladder",
-                          spines=None, verbose=False):
+                          spines=None, verbose=False, seams="gather",
+                          ligament=None):
     """Split-ready 2-D fault ribbons from the traces' OWN sampling (#629).
 
     The 2-D production fault-prep path, honouring the same contract set
@@ -7881,6 +8184,20 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         the placed, unlabelled-fault mesh for painted (volumetric)
         models on identical geometry — remember the paint stops at the
         fault FOOTPRINT, not the band.
+    seams : {"gather", "ligament"}
+        How a band crossing a partition seam is placed (#670).
+        ``"gather"`` moves the band's region onto one rank and carves
+        there; the split then runs with serial topology. ``"ligament"``
+        carves on every rank, clips the band one cell short of each seam
+        and leaves the base cells there as the LIGAMENT: the trace is
+        not cut through it, so the split runs rank-local with the
+        weak-plane rheology bridging the seam
+        (:meth:`FaultNetwork.apply` paints it on the ligament cells).
+        Nothing is redistributed. See
+        :func:`place_thin_volume` for the mechanism.
+    ligament : float or None
+        With ``seams="ligament"``, widen the ligament to the cells within
+        ``ligament/2`` of the seam.
     verbose : bool
         Report counts.
 
@@ -7948,8 +8265,13 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         dm, _info = place_thin_volume(
             dm, extended, width, label=band_label, label_value=band_value,
             clearance=clearance, size=float(np.mean(spacing_all)),
-            mesher="network", verbose=verbose)
+            mesher="network", verbose=verbose, seams=seams,
+            ligament=ligament)
     else:
+        if seams != "gather":
+            raise ValueError(
+                "seams='ligament' needs mesher='network' (the spines must "
+                "be embedded for the label-only cut)")
         for k, S in enumerate(extended):
             dm, _info = place_thin_volume(
                 dm, [(S, _mitred_reach_2d(S))], width, label=band_label,
@@ -7972,8 +8294,13 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         # ONE network call — cut all, then split all (chained add_fault
         # calls do not compose: each split re-derives the pairing records
         # and drops the earlier fault's).
+        # Under the seam ligament the spines are already the mesh's edges
+        # and the ligament is deliberately uncut: label, do not cut.
         mesh = mesh.add_fault([(label, np.asarray(P, dtype=float))
-                               for label, P in traces])
+                               for label, P in traces],
+                              cut=(seams != "ligament"),
+                              exclude=(band_label + "_ligament"
+                                       if seams == "ligament" else None))
         mesh._custom_mg_fac_zone = None     # a split fault needs no patch
 
     # Per-strand FAULT FOOTPRINT masks (the honoured-paint rule): band
@@ -8001,12 +8328,18 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         footprints[label] = _footprint_from_samples(
             mesh.dm, band, S_all, is_user)
 
+    # The seam ligament's cells (empty under the gather): the band material
+    # the fault is NOT cut through, for apply() to paint the weak plane on.
+    ligament_mask = mesh.cells_labelled(band_label + "_ligament")
     info = {"n_cells": int(mesh.dm.getHeightStratum(0)[1]),
             "spacing": spacing_all, "n_rungs": rungs_all,
             "footprints": footprints, "band": band, "mesher": mesher,
             "extended": extended, "width": float(width),
             "margin_rings": margin_rings,
-            "spines": [label for label, _P in spines]}
+            "spines": [label for label, _P in spines],
+            "seams": seams, "ligament": ligament_mask,
+            "n_ligament_cells": int(_info.get("n_ligament_cells", 0))
+            if mesher == "network" else 0}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "

@@ -202,6 +202,7 @@ class FaultNetwork:
                              f"{sorted(unknown)}")
         self.h_near = None
         self.ligament = None
+        self.seams = None
         self.prepared = None
         self.junctions = None
         self.report = None
@@ -253,7 +254,8 @@ class FaultNetwork:
     def build(self, base=None, h_far=None, band=0.03, ramp=0.08,
               max_levels=2, qdegree=2, mesher=None,
               width=None, realisation="split",
-              margin_rings=2, carve_clearance=0.3):
+              margin_rings=2, carve_clearance=0.3,
+              seams="gather", seam_ligament=None):
         """Mesh the network: graded refinement along every RAW trace,
         then the chosen REALISATION of the faults on that mesh.
 
@@ -295,9 +297,28 @@ class FaultNetwork:
         :func:`~underworld3.utilities.place_surface.place_fault_ribbon_2d`).
         In 3-D: ``"embed"`` (default) and ``"place"``, described in
         :meth:`_build_3d`.
+
+        ``seams`` (2-D band, ``mesher="network"``) says how a band
+        crossing a partition seam is placed (#670): ``"gather"`` moves
+        its region onto one rank; ``"ligament"`` carves on every rank
+        and leaves the base cells at each seam as a LIGAMENT the fault
+        is not cut through — the split is then rank-local and the
+        weak-plane rheology bridges the seam (:meth:`apply` paints it on
+        the ligament cells, so the split realisation needs ``eta_1``
+        too). ``seam_ligament`` widens it (a physical width; unrelated to
+        ``prepare(ligament=)``, the junction gap). In serial both give
+        the same mesh.
         """
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
+        if seams not in ("gather", "ligament"):
+            raise ValueError(
+                f"seams must be 'gather' or 'ligament', not {seams!r}")
+        if seams == "ligament" and (self.dim == 3 or width is None):
+            raise NotImplementedError(
+                "seams='ligament' is the 2-D band's (width=) placement; the "
+                "3-D band and the no-band cut still gather.")
+        self.seams = seams
         if self.dim == 3 and width is not None:
             if mesher not in (None, "network"):
                 raise ValueError(
@@ -382,7 +403,8 @@ class FaultNetwork:
                 self.width, margin_rings=margin_rings,
                 clearance=carve_clearance,
                 split=(realisation == "split"), mesher=mesher,
-                spines=[(n, S) for n, S, _idx in self.spines])
+                spines=[(n, S) for n, S, _idx in self.spines],
+                seams=seams, ligament=seam_ligament)
         self._make_surfaces()
         return self.mesh
 
@@ -908,7 +930,29 @@ class FaultNetwork:
         """
         if self.mesh is None:
             raise RuntimeError("call build() first")
+        import underworld3 as uw
+
         if self.realisation == "split":
+            lig = self.ligament_cells()
+            if lig is not None:
+                # The seam ligaments: the fault is not cut through them,
+                # so the band's weak plane carries the slip across each
+                # seam (#670) — the hybrid recipe, at the seams.
+                if eta_1 is None:
+                    raise ValueError(
+                        "this network was built with seams='ligament': "
+                        "apply() needs eta_1=, the weak-plane viscosity "
+                        "the ligament cells carry across each seam.")
+                eta1, ndir, _foot = self.ti_fields(eta_1, eta_0=eta_0,
+                                                   tag=tag, mask=lig)
+                solver.constitutive_model = \
+                    uw.constitutive_models.TransverseIsotropicFlowModel
+                params = solver.constitutive_model.Parameters
+                params.shear_viscosity_0 = (
+                    float(eta_0) if np.ndim(eta_0) == 0
+                    else self._eta0_var.sym[0])
+                params.shear_viscosity_1 = eta1.sym[0]
+                params.director = ndir.sym
             for name, _p in self.prepared:
                 solver.add_fault_bc(conds, boundary=name, normal=normal)
             return self
@@ -916,8 +960,6 @@ class FaultNetwork:
             raise ValueError(
                 "realisation='ti' needs eta_1=: the weak-plane viscosity "
                 "is the other half of the constitutive pair (with width).")
-        import underworld3 as uw
-
         eta1, ndir, foot = self.ti_fields(eta_1, eta_0=eta_0, tag=tag)
         solver.constitutive_model = \
             uw.constitutive_models.TransverseIsotropicFlowModel
@@ -945,7 +987,25 @@ class FaultNetwork:
         return self
 
     # ------------------------------------------------------------------
-    def ti_fields(self, eta_1, eta_0=1.0, tag=""):
+    def ligament_cells(self):
+        """The seam-ligament cell mask (plex cell order), or ``None``.
+
+        ``None`` unless the network was built with ``seams="ligament"``
+        AND some rank's band was clipped at a seam (in serial there is
+        no seam, so the mask is empty and ``None`` is returned). The
+        verdict is COLLECTIVE — every rank returns a mask or every rank
+        returns ``None``.
+        """
+        if self.info is None or self.info.get("ligament") is None:
+            return None
+        import underworld3 as uw
+        from mpi4py import MPI
+
+        mask = np.asarray(self.info["ligament"], dtype=bool)
+        n = int(uw.mpi.comm.allreduce(int(mask.sum()), op=MPI.SUM))
+        return mask if n else None
+
+    def ti_fields(self, eta_1, eta_0=1.0, tag="", mask=None):
         """The weak-plane (TI) realisation's painted P0 fields.
 
         ``eta_1`` inside each fault's HONOURED footprint — the band cells
@@ -957,6 +1017,10 @@ class FaultNetwork:
 
         Returns ``(eta_1_var, director_var, footprint_mask)``. The mask is
         also the right ``fac_zone`` key for a multigrid patch (#629).
+
+        ``mask`` restricts the painting to a cell subset of the footprints
+        — the seam ligaments of a split network, where the weak plane
+        bridges what the cut leaves whole (#670).
         """
         if self.info is None:
             raise RuntimeError(
@@ -965,6 +1029,9 @@ class FaultNetwork:
         import underworld3 as uw
 
         foots = self.info["footprints"]
+        if mask is not None:
+            foots = {k: (m_ & np.asarray(mask, dtype=bool))
+                     for k, m_ in foots.items()}
         foot = np.zeros_like(next(iter(foots.values())))
         for m_ in foots.values():
             foot = foot | m_

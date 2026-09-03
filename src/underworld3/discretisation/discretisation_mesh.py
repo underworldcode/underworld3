@@ -7705,9 +7705,12 @@ class Mesh(Stateful, uw_object):
         dm = self.dm
         cS, cE = dm.getHeightStratum(0)
         zone = numpy.zeros(cE - cS, dtype=bool)
-        label = dm.getLabel(name)
-        if label is None:
+        # hasLabel, not getLabel-against-None: petsc4py hands back a
+        # wrapper around a NULL label for a missing name, and the first
+        # query on it aborts the process rather than raising.
+        if not dm.hasLabel(name):
             return zone
+        label = dm.getLabel(name)
         if value is None:
             vis = label.getValueIS()
             values = [int(v) for v in vis.getIndices()] if vis is not None else []
@@ -8121,7 +8124,7 @@ class Mesh(Stateful, uw_object):
         return self._adopt_cut_child(cut_dm, boundaries, info,
                                      mg_coarsening_ratio, verbose)
 
-    def add_fault(self, faults, verbose=False):
+    def add_fault(self, faults, verbose=False, cut=True, exclude=None):
         """Cut AND split one or more faults; return the split mesh.
 
         The split-node fault pipeline in one call: each fault becomes a
@@ -8149,7 +8152,8 @@ class Mesh(Stateful, uw_object):
         and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
         """
         from underworld3.utilities.fault_split import add_fault
-        child = add_fault(self, faults, verbose=verbose)
+        child = add_fault(self, faults, verbose=verbose, cut=cut,
+                          exclude=exclude)
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve
