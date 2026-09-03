@@ -365,3 +365,122 @@ The script beside this note (`fault_parallel_layouts.py`) regenerates
 the table:
 
     mpirun -np 3 python -u fault_parallel_layouts.py -uw_layout local|straddle|gathered [-uw_tail 0]
+
+## Interface sketch: seam-conforming placement and the bridging split
+
+Written 3 September 2026 for implementation in a fresh session; debug in
+2-D serial and parallel, validate in 3-D serial and parallel. Nothing
+below is built.
+
+### What changes and what does not
+
+The carve, the gmsh fill, the collective rebuild and every gate stay.
+What changes is the contract on *where* a cavity may lie: today a
+cavity must be interior to one rank (the gather makes it so); with seam
+conformance a cavity may straddle a seam, and the two ranks fill their
+own sides against an interface they both hold exactly.
+
+### The mechanism, in four steps
+
+1. **Interface planes.** For each seam a band's cavity would cross, a
+   plane (a line in 2-D) is chosen deterministically: through the mean
+   position of the seam faces inside the cavity zone, normal to the
+   band's strike there. Collective: every rank computes the same list.
+   A cavity zone touching no seam gets no plane and proceeds as now.
+2. **The strip alignment.** Cells adjacent to the cavity zone are
+   reassigned by the side of the plane their centroid lies on, so that
+   within the zone the partition boundary *is* the plane, up to the
+   cells that straddle it, which are dropped. One shell partition, a
+   few cells wide along each plane. This is the only redistribution,
+   and it moves a strip, not a region.
+3. **The interface surface.** On the lower rank of each pair, the
+   plane region bounded by the ring's outline (the ring faces meeting
+   the plane form a closed polygon) is meshed once in 2-D by gmsh with
+   the band's cross-section outline embedded, and broadcast to the
+   pair. In 2-D it is a chain of points along the line: the ring ends
+   and the band's two skin crossings. Both ranks embed it verbatim;
+   the fill's existing gating (zero moved constrained nodes, every
+   constraint facet present) covers it.
+4. **Two fills and one rebuild.** Each rank carves its own side (the
+   band cells assigned by centroid side, the assembly cut by the plane
+   in CAD so the two halves' skins meet on the interface exactly) and
+   fills between its ring, its half of the skin and the interface. The
+   rebuild is the existing collective one with one addition: the
+   interface's new vertices are created on both ranks and must be the
+   *same* points, so `_attach_uninterp_vertex_sf` gains entries for
+   them — owner the lower rank, leaves on the higher, matched by the
+   interface's own point numbering, which both ranks hold. That is the
+   one deep change: today's rebuild asserts that no placed point is
+   ever shared.
+
+### Signatures
+
+```
+place_thin_volume(dm, patches, width, ..., seams="gather")
+    seams : {"gather", "conform"}
+        "gather"  — the per-region gather (today).
+        "conform" — cavities may straddle seams; the four steps above.
+    info["seam_crossings"] : list of dicts, one per interface —
+        {"ranks": (r, s), "point": ..., "normal": ..., "n_strip": int}
+
+split_faults(mesh, names, groups=None, at_seams="gather", ligament=None)
+    at_seams : {"gather", "bridge"}
+        "gather" — redistribute per group, cut everything (today).
+        "bridge" — cut only facets whose closure is unshared AND farther
+                   than ligament/2 from every interface plane; leave the
+                   rest as ligaments for the band's rheology.
+    ligament : physical width (same units as the band width); required
+               with "bridge".
+    info / the child's record: "ligaments" — one entry per seam crossing
+        with the uncut facet count and the ligament's extent.
+
+FaultNetwork.build(..., seams="gather", seam_ligament=None)
+    passes both through; net.info gains "seam_crossings" and
+    "ligaments"; the band's rheology (apply / ti_fields) must cover the
+    ligaments, which it does already since the band is weak everywhere
+    it is not cut.
+```
+
+### Collective discipline
+
+Every decision above is taken from gathered data before any branch:
+the plane list, the strip assignment, the interface point set, the
+ligament list. A rank with no crossing still participates in each
+collective. The refusals stay collective. Arm `UW_HANG_WATCHDOG` on
+every run.
+
+### Tests, in order
+
+- **2-D serial**: `seams="conform"` on a single-rank mesh must reduce
+  to the existing path bit-for-bit (no seams, no planes).
+- **2-D np=2, one band across the seam**: `conform` against `gather`
+  — same zone and skin counts, same volume and Euler gates, the TI
+  solve identical to the fill's noise; then `at_seams="bridge"` — one
+  ligament reported, its width the one asked for, slip along the fault
+  within the stepover bound (0.2% of the continuous control away from
+  the ligament).
+- **2-D np=3**, a seam near a fault tip and one at a junction: the
+  bound on the ligament's effect where it is not a small perturbation.
+- **3-D serial** (reduction to the existing path), then **3-D np=2 and
+  np=3** on the crossing fixture and the layout fixture: the same
+  assertions, plus the interface surface's own gates (the plane
+  triangulation present verbatim in both fills).
+- The layout throughput test gains a `conform` column: cells moved
+  should be the strips only.
+
+### Traps known in advance
+
+- The rebuild currently *asserts* no placed point is shared; the
+  interface vertices violate that by design, and the SF extension must
+  come before the interpolate (the #520 ordering).
+- gmsh's fill is not bit-reproducible across inputs that differ only
+  in ordering (the 611/612 placed-node effect); the interface surface
+  must be generated once and broadcast, never regenerated per rank.
+- A plane chosen from the seam's mean position can cut a band near
+  its tip; the ligament rule must handle a crossing at a tip (the tip
+  itself is never split, so a seam through the tip region simply
+  enlarges the uncut margin).
+- The 2-D thin volume has the one-region gather only; the per-region
+  gather (`_gather_regions`) is wired into the 3-D thin volume alone.
+  Wire it into 2-D first so `gather` and `conform` are compared like
+  for like.
