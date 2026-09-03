@@ -6,6 +6,40 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### The Multiplier Was Not the Whole Traction (August 2026)
+
+**`Stokes_Constrained.topography()` now returns the traction the boundary is
+actually held with**, and a new `traction()` exposes it directly. The momentum
+row carries `λ + r(n·u − g)`, so the bare multiplier is short by the
+augmented-Lagrangian share — `r` times the discrete constraint residual. With the
+viscosity-weighted default `r = 1e4·μ(x)` that share is a few per cent of the
+surface traction on a uniform-viscosity annulus and most of it across a `1e6`
+viscosity step, where `λ` alone reads a tenth of the exact SolCx topography and
+is anti-correlated with it. `multiplier()` still returns `λ` and now says what it
+is not.
+
+The defect survived because the validation scored a **correlation** (0.9999)
+between the multiplier and the recovered normal stress. A correlation is
+scale-free and cannot see a systematic amplitude deficit, which is precisely what
+a missing share of the load is. The new guard,
+`tests/test_1063_constrained_traction.py`, scores a relative `l2` against the
+exact SolCx surface topography and carries the bare multiplier as its negative
+control.
+
+The corrected quantity is the consistent boundary flux: at convergence
+`M_Γ(λ + r(n·u − g))` balances the volume residual restricted to the boundary,
+which is the CBF nodal load (Zhong, Gurnis & Hulbert 1993). So the multiplier
+route and the rotated constraint's `boundary_normal_traction` are the same
+computation, and they agree to 3–5% — inside each route's own error against the
+exact answer.
+
+Documentation: `docs/advanced/curved-boundary-conditions.md` now writes the
+penalty free-slip recipe against `mesh.boundary_normal` rather than `mesh.Gamma`.
+A penalty against the per-facet normal over-constrains the shared nodes and does
+not converge — measured on an annulus at coefficient `1e6`, the velocity error
+stays at 0.60 and the surface-stress error grows from 0.21 to 0.26 as the mesh is
+refined, while the leak reads 1e-5 throughout. (underworld3#607, #608, #614)
+
 ### A Singular Recovery Mass, Mistaken for a Penalty Defect (August 2026)
 
 **The grad-div penalty default stays off**, but the reason it was held off turned out to

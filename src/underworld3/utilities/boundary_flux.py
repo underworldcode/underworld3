@@ -716,6 +716,20 @@ def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None)
     """See ``SolverBaseClass.boundary_flux``. Returns ``(xs, flux)`` for this rank's
     boundary nodes; scalar solver → normal flux, vector solver → traction (or its normal
     component if ``normal`` is given)."""
+    # A multiplier-constrained boundary has no reaction left to read. The constraint
+    # is imposed by a term in the SAME row, so the assembled residual there is
+    # balanced at convergence and this back-calculation returns ~0 (measured: rms
+    # 4e-13 against a traction of 0.37). The traction is carried by the multiplier —
+    # M_Gamma(h + r(n.u - g)) IS the CBF nodal load — so send the caller there rather
+    # than hand back a quiet zero.
+    for cbc in getattr(solver, "_block_constraint_bcs", ()):
+        if cbc.boundary == boundary:
+            raise RuntimeError(
+                f"'{boundary}' is held by a multiplier constraint, so the consistent "
+                "boundary flux reads ~0 there: the constraint term balances the row it "
+                "sits in. Use solver.traction(boundary) — h + r(n.u - g) — which is the "
+                "same quantity, or solver.topography(boundary) for the scaled version.")
+
     dm = solver.dm; dim = solver.mesh.dim
     ra = np.asarray(solver._assemble_volume_reaction()).ravel()
     nodes, lsec, csec, cvec, v0, v1, edge_nodes = _boundary_field_nodes(

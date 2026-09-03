@@ -8123,8 +8123,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # u-row residual:  fn_f = h·n  +  r(n·u − g)·n
             # The r-term is the augmented-Lagrangian penalty: it adds a uu
             # boundary stiffness r·(n⊗n) that conditions the Schur complement
-            # but does NOT bias the multiplier (the h-row stays the exact
-            # constraint, so h still converges to the true normal traction).
+            # but does not change what the constraint ENFORCES (the h-row stays
+            # the exact constraint). It does change what h IS: the traction is
+            # h + r(n.u - g), and only the sum is r-independent. Stokes_Constrained
+            # .traction() / .topography() return that sum; .multiplier() returns h.
             fn_f = sympy.Matrix(
                 [(hsym + r_sym * (u_dot_n - g_sym)) * n_row[i] for i in range(dim)]
             ).as_immutable()

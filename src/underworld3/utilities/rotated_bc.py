@@ -425,7 +425,44 @@ def build_rotation(solver, boundaries, datum_specs=None):
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
-        if any(g < 0 for g in grows):
+        free = [c for c in range(dim) if grows[c] >= 0]
+        if not free:                             # every component pinned already
+            continue
+        if len(free) < dim:
+            # PARTIALLY CONSTRAINED NODE — a rotated wall meeting an essential one.
+            # Some components are constrained out of the global vector (g < 0) and
+            # the rest are free. This used to `continue`, which left the wall-normal
+            # component UNCONSTRAINED at those nodes: the wall leaked at its own end
+            # points while every interior node was exact. Measured on a unit box with
+            # a rotated lid and component free slip on the other three walls,
+            # max|u_y| on the lid was 4.0e-3 against |u|max 2.5e-2 — 16%, entirely at
+            # the two corners — and the solve differed from the equivalent component
+            # Dirichlet lid by 2e-3 globally, with an exact linear solve on both
+            # sides (issue #616; the corner reaction of #608 is the same node).
+            #
+            # The constraint is still imposable on what is left: with the pinned
+            # components held at zero, n̂·v = 0 reduces to n̂_F·v_F = 0 on the free
+            # subspace F. Build the frame there and constrain its normal rows.
+            if q in node_dspec:
+                # A prescribed v_n datum at such a node needs the pinned components'
+                # values to reduce the affine constraint, which are not read here.
+                # Preserve the previous behaviour rather than impose the wrong datum.
+                _warn_once_partial_datum()
+                continue
+            Mf = np.array(nrms, dtype=float)[:, free]
+            scale = float(np.linalg.norm(np.array(nrms, dtype=float)))
+            if float(np.linalg.norm(Mf)) <= 1e-12 * max(scale, 1.0):
+                # the normal lies entirely in the pinned subspace: already implied
+                continue
+            rows = [grows[c] for c in free]
+            if not (rstart <= rows[0] < rend):   # not owned by this rank → skip
+                continue
+            _, svf, Vtf = np.linalg.svd(Mf)
+            rf = int((svf > 1e-8 * (svf[0] if svf.size else 1.0)).sum())
+            for i in range(len(free)):
+                for j in range(len(free)):
+                    Q.setValue(rows[i], rows[j], float(Vtf[i, j]))
+            normal_rows.extend(rows[:rf])
             continue
         if not (rstart <= grows[0] < rend):      # not owned by this rank → skip
             continue
@@ -542,6 +579,21 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 if val != 0.0:
                     datum_map[grow0] = float(sgn * val)
     return Q, Qt, sorted(set(normal_rows)), datum_map
+
+
+_PARTIAL_DATUM_WARNED = [False]
+
+
+def _warn_once_partial_datum():
+    """A prescribed wall-normal datum at a node shared with an essential BC is not
+    reduced here, so that node keeps the pre-#616 behaviour (unconstrained). Say so
+    once rather than silently."""
+    if not _PARTIAL_DATUM_WARNED[0]:
+        _PARTIAL_DATUM_WARNED[0] = True
+        print("[rotated_bc] WARNING: a prescribed v_n datum sits on a node shared "
+              "with an essential BC; the wall-normal component is left free there "
+              "(the affine reduction against the pinned components is not "
+              "implemented). Free-slip nodes are unaffected.")
 
 
 def _zero_rows_local(vec, normal_rows):
