@@ -2183,16 +2183,25 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     #: not inside P0, so the term does not vanish at the discrete solution --
     #: but it converges away. ``penalty = 0`` restores the unaugmented operator.
     #:
-    #: **Held at 0 pending the pointwise-traction question.** At 10 the
-    #: spherical dynamic topography recovered from the rotated free-slip
-    #: reaction drops 0.4192 -> 0.3021, 28%, on the *vertex-sampled* value while
-    #: the facet-integrated value stays correct (``test_1018``). So augmentation
-    #: corrupts the de-smearing from reaction loads to pointwise stress —
-    #: presumably because lambda*mu*(div u) is non-zero cell-by-cell for P2-P0
-    #: and averages out over a facet integral but not at a vertex. Dynamic
-    #: topography is the main product of that machinery, so the value stays 0
-    #: until that is resolved; everything needed for the change is in place and
-    #: it is this constant.
+    #: **Held at 0, but no longer because of #633.** That issue turned out to be
+    #: the recovery operator, not the penalty: the 3-D P2 TRIANGLE de-smearing
+    #: mass has vertex rows summing to exactly zero, and ``mass="auto"`` now
+    #: picks the monotone P1-projected recovery instead. The topography
+    #: objection is gone.
+    #:
+    #: It stays at 0 because of the GAMG cost above, which is far worse than
+    #: #625 recorded. Flipping it to 10 was tried and reverted: three tier-A/B
+    #: tests failed (``test_0112`` swarm, ``test_1060`` Nitsche free-slip leak
+    #: 1.234e-4 against a 1e-4 bound, ``test_1061`` topography correlation
+    #: 0.979 against 0.99) and the same three ran **8.3x slower** -- 9.27 s to
+    #: 76.92 s, warm JIT cache both ways. The 21% FMG win needs a hierarchy;
+    #: without ``refinement>=1`` the velocity block falls back to GAMG, which
+    #: is the default path and the one that pays. A default has to serve the
+    #: default.
+    #:
+    #: Set ``penalty = 10`` explicitly on a solver that has an FMG hierarchy.
+    #: Note it also perturbs a Nitsche free-slip constraint, whose leak bound
+    #: is not slack enough to absorb it.
     DEFAULT_PENALTY = 0.0
 
 
@@ -2487,7 +2496,7 @@ class SNES_Stokes_Constrained(SNES_Stokes):
 
     The constraint is enforced in one coupled solve (no outer iteration). The
     augmented-Lagrangian term conditions the :math:`[p,h]` Schur complement
-    without biasing the multiplier, and the interior multiplier DOFs are reduced
+    without changing what the constraint enforces, and the interior multiplier DOFs are reduced
     away so the solved block is boundary-sized.
 
     Runs in parallel: the interior-multiplier reduction is rank-local section
@@ -2772,9 +2781,11 @@ class SNES_Stokes_Constrained(SNES_Stokes):
 
         Adds a scalar multiplier field ``h`` coupled into the saddle-point system
         so that :math:`\mathbf{u}\cdot\mathbf{n}=\mathrm{conds}` is enforced on
-        ``boundary`` in the coupled solve; at convergence ``h`` on the boundary
-        is the normal traction (dynamic topography), recoverable via
-        :meth:`multiplier` / :meth:`topography`.
+        ``boundary`` in the coupled solve. At convergence the boundary traction —
+        the dynamic topography before scaling — is
+        :math:`h + r(\mathbf{u}\cdot\mathbf{n} - g)`, returned by :meth:`traction`
+        and :meth:`topography`. :meth:`multiplier` returns the field :math:`h`,
+        which is that sum less the augmented-Lagrangian share.
 
         Parameters
         ----------
@@ -2795,14 +2806,20 @@ class SNES_Stokes_Constrained(SNES_Stokes):
             :math:`r(\mathbf{n}\cdot\mathbf{u}-g)\,\mathbf{n}` to the u-row,
             giving a ``uu`` boundary stiffness :math:`r\,(\mathbf{n}\otimes
             \mathbf{n})` that conditions the :math:`[p,h]` Schur complement
-            **without biasing the multiplier** (the h-row is still the exact
-            constraint). Defaults to ``augmentation_base · μ(x)`` (viscosity-
+            without changing what the constraint enforces (the h-row is still the
+            exact constraint). Defaults to ``augmentation_base · μ(x)`` (viscosity-
             weighted, mesh-independent). Pass ``0`` for the bare KKT system.
+
+            It DOES change what :math:`h` is: the traction is
+            :math:`h + r(\mathbf{u}\cdot\mathbf{n} - g)` and only the sum is
+            :math:`r`-independent. Read it through :meth:`traction` or
+            :meth:`topography`, never off :meth:`multiplier` alone.
         augmentation_base : float, default 1e4
-            Base multiple used when ``augmentation`` is not given. Accuracy is
-            independent of this value (the multiplier carries the exact
-            constraint); larger values reduce the iteration count up to a broad
-            plateau, well below the roundoff limit.
+            Base multiple used when ``augmentation`` is not given. The CONSTRAINT
+            is independent of this value and so is the traction read through
+            :meth:`traction`; larger values reduce the iteration count up to a
+            broad plateau. The bare multiplier :math:`h` is not independent of it
+            — see :meth:`multiplier`.
         g : float or sympy expression, optional
             Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
@@ -2902,19 +2919,69 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         return h
 
     def multiplier(self, boundary):
-        """Return the multiplier field for ``boundary`` (None if not constrained).
+        """Return the multiplier FIELD for ``boundary`` (None if not constrained).
 
-        After :meth:`solve`, the multiplier's boundary trace is the normal
-        traction holding the constraint. Divide by :math:`\\Delta\\rho\\,g` for
-        dynamic topography (see :meth:`topography`).
+        .. warning::
+           This is :math:`h` itself, which is **not** the whole boundary traction
+           whenever an augmented-Lagrangian term is in place (it is by default).
+           The momentum row carries
+           :math:`(h + r(\\mathbf{u}\\cdot\\mathbf{n} - g))\\mathbf{n}`, so the
+           traction holding the boundary is that sum — see :meth:`traction`, and
+           :meth:`topography` which is built on it. Measured on SolCx at a
+           viscosity contrast of :math:`10^6`, where the viscosity-weighted default
+           :math:`r = 10^4\\mu` reaches :math:`10^{10}` on the stiff half, ``h``
+           alone carries about a tenth of the surface traction and is
+           anti-correlated with it.
         """
         for cbc in self._block_constraint_bcs:
             if cbc.boundary == boundary:
                 return cbc.lam
         return None
 
+    def _constraint_bc(self, boundary):
+        """The registered constraint record for ``boundary``, or raise."""
+        for cbc in self._block_constraint_bcs:
+            if cbc.boundary == boundary:
+                return cbc
+        raise ValueError(f"No constraint registered on boundary '{boundary}'.")
+
+    def traction(self, boundary):
+        r"""Boundary normal traction on ``boundary``, as a symbolic expression.
+
+        The momentum row's boundary term is
+        :math:`(h + r(\mathbf{u}\cdot\mathbf{n} - g))\,\mathbf{n}`, so the traction
+        holding the constraint is
+
+        .. math:: \sigma_{nn} = h + r(\mathbf{u}\cdot\mathbf{n} - g),
+
+        with :math:`r` the augmented-Lagrangian parameter and :math:`g` the
+        prescribed normal velocity. The second term vanishes only where the
+        constraint row is satisfied exactly; discretely it is satisfied to the
+        solver's tolerance, and :math:`r` multiplies that residual straight back
+        into the traction. With the viscosity-weighted default
+        :math:`r = 10^4\mu(x)` the omitted share is a few per cent of the surface
+        traction on a uniform-viscosity annulus and most of it across a
+        :math:`10^6` viscosity step.
+
+        This is the same quantity the consistent boundary flux back-calculation
+        recovers (Zhong, Gurnis & Hulbert 1993): at convergence the assembled
+        boundary load :math:`M_\Gamma(h + r(\mathbf{u}\cdot\mathbf{n}-g))` balances
+        the volume residual restricted to the boundary, which is the CBF nodal
+        load, so the two differ only by the mass de-smear.
+
+        Valid ON ``boundary``; the expression involves the multiplier field, whose
+        interior degrees of freedom are constrained out of the solve.
+        """
+        cbc = self._constraint_bc(boundary)
+        u_dot_n = sum(cbc.normal[i] * self.u.sym[i] for i in range(self.mesh.dim))
+        return cbc.lam.sym[0] + cbc.augmentation * (u_dot_n - cbc.g)
+
     def topography(self, boundary, buoyancy_scale=1.0, reference=None):
-        r"""Dynamic topography expression :math:`h / (\Delta\rho\, g)` on ``boundary``.
+        r"""Dynamic topography on ``boundary``, as a symbolic expression.
+
+        :math:`\sigma_{nn} / (\Delta\rho\, g)` with :math:`\sigma_{nn}` the full
+        boundary traction :math:`h + r(\mathbf{u}\cdot\mathbf{n} - g)` — see
+        :meth:`traction`, and :meth:`multiplier` for why :math:`h` alone is not it.
 
         For an **enclosed** problem (no net normal flow through any boundary) the
         multiplier :math:`h` is determined only up to the :math:`[p,\lambda]` gauge
@@ -2923,14 +2990,14 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         the absolute level of :math:`h` is not reproducible across ranks. For such
         problems pass ``reference="mean"`` to subtract the boundary mean and obtain
         a gauge-fixed, partition-independent topography. The default
-        (``reference=None``) returns the raw multiplier — correct for problems with
-        **no** gauge freedom (e.g. an open boundary), where the mean of :math:`h` is
-        the physical mean traction and must NOT be removed.
+        (``reference=None``) returns the traction unshifted — correct for problems
+        with **no** gauge freedom (e.g. an open boundary), where its mean is the
+        physical mean traction and must NOT be removed.
 
         Note that the automatic pressure gauge (:attr:`auto_pressure_gauge`) fixes
         the raw *pressure* level but NOT the raw *multiplier* level (the constant
         multiplier is an independent gauge freedom). So on an enclosed problem the
-        raw multiplier (``reference=None``) is still partition-dependent —
+        unshifted traction (``reference=None``) is still partition-dependent —
         ``reference="mean"`` is the gauge-invariant, partition-reproducible read
         for dynamic topography and is the recommended path.
 
@@ -2941,8 +3008,8 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         buoyancy_scale : float, default 1.0
             Divide by :math:`\Delta\rho\,g` to convert traction to length.
         reference : {None, "mean"}, default None
-            ``None`` returns the raw multiplier (correct when there is no gauge
-            freedom). ``"mean"`` subtracts the boundary mean (gauge-fixed,
+            ``None`` returns the traction unshifted (correct when there is no
+            gauge freedom). ``"mean"`` subtracts the boundary mean (gauge-fixed,
             reproducible) — use for enclosed problems.
 
         Notes
@@ -2953,17 +3020,19 @@ class SNES_Stokes_Constrained(SNES_Stokes):
         single-rank branch). ``reference=None`` is a pure symbolic accessor with
         no reduction.
         """
-        lam = self.multiplier(boundary)
-        if lam is None:
-            raise ValueError(f"No constraint registered on boundary '{boundary}'.")
-        expr = lam.sym[0]
+        # The WHOLE traction, not the bare multiplier: with an augmented-Lagrangian
+        # term in place the momentum row carries h + r(u.n - g), and r multiplies
+        # the discrete constraint residual back into the traction. Reading h alone
+        # was wrong by a few per cent on a uniform-viscosity annulus and by an
+        # order of magnitude (and a sign) across a 1e6 viscosity step.
+        expr = self.traction(boundary)
         if reference == "mean":
-            # Subtract the boundary mean of h via parallel-safe surface integrals
+            # Subtract the boundary mean via parallel-safe surface integrals
             # (BdIntegral handles the cross-rank reduction); this fixes the gauge.
             blen = uw.maths.BdIntegral(
                 mesh=self.mesh, fn=sympy.Integer(1), boundary=boundary).evaluate()
             hbar = uw.maths.BdIntegral(
-                mesh=self.mesh, fn=lam.sym[0], boundary=boundary).evaluate() / blen
+                mesh=self.mesh, fn=expr, boundary=boundary).evaluate() / blen
             expr = expr - hbar
         elif reference is not None:
             raise ValueError(
