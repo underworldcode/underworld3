@@ -10,8 +10,8 @@ exact at every time):
    refined to h/8 across the orbit, at the same timestep, gives the same
    error to three digits even though its cells sit at a local Courant
    number of several;
-3. the round trip: after one revolution the field returns to its initial
-   state to a few per cent at a Courant number of one half.
+3. the round trip: at the solver's own accuracy-based timestep the field
+   returns to its initial state after one revolution to under one per cent.
 
 Run: pixi run python -m pytest tests/test_1100_advdiff_supg_rotating_gaussian.py -v
 """
@@ -108,14 +108,23 @@ def test_refinement_the_scalar_does_not_need_leaves_the_error_alone():
     err_band = _run(sol_c, T_c, adv_c, dt, t_end)
 
     # the band cells are at a local Courant number well above one
-    assert dt / float(adv_c.estimate_dt()) > 4.0
+    assert dt / float(adv_c.estimate_dt(basis="resolution")) > 4.0
     assert abs(err_band - err_uniform) < 0.15 * err_uniform, (err_uniform, err_band)
 
+    # the accuracy-based estimate follows the field, so the band does not
+    # shrink it, while the resolution estimate collapses with the cells
+    dt_acc_uniform = float(adv.estimate_dt())
+    dt_acc_band = float(adv_c.estimate_dt())
+    assert abs(dt_acc_band - dt_acc_uniform) < 0.25 * dt_acc_uniform, (dt_acc_uniform, dt_acc_band)
+    assert float(adv.estimate_dt(basis="resolution")) > 3.0 * float(adv_c.estimate_dt(basis="resolution"))
 
-def test_round_trip_at_moderate_courant():
+
+def test_round_trip_at_the_default_timestep():
+    """The solver's own defaults: Crank-Nicolson at the accuracy-based step
+    (2% of the range per step). BDF2 at the same step lands near 1.5%."""
     mesh = _box(32)
-    sol, T, adv = _problem(mesh, "r", 2)
-    err = _run(sol, T, adv, 0.5 * float(adv.estimate_dt()), float(sol.period))
-    assert err < 0.03, err
+    sol, T, adv = _problem(mesh, "r", 1)
+    err = _run(sol, T, adv, float(adv.estimate_dt()), float(sol.period))
+    assert err < 0.01, err
     data = np.asarray(T.array[:, 0, 0])
     assert data.min() > -0.02 and data.max() < 1.02, (data.min(), data.max())

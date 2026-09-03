@@ -18,6 +18,11 @@ The companion of :class:`~underworld3.systems.solvers.SNES_AdvectionDiffusion`
 and its accuracy is set by how far the transported feature moves in one
 step; the semi-Lagrangian scheme's accuracy is set by how far a characteristic
 turns in one step. See ``docs/developer/design/eulerian-supg-transport.md``.
+
+The SUPG weak form, the Petrov-Galerkin test-function perturbation written
+as a flux so that PETSc needs no modified test space, and its first
+implementation on PetscDS are NengLu's (issue #657, branch ``levelset``);
+this module keeps that formulation and its stabilisation parameter.
 """
 
 import warnings
@@ -167,8 +172,10 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     for a Stokes problem that the scalar does not need. Accuracy is set by
     how far the transported feature moves per step relative to its own
     width, as :math:`(\mathbf{u}\Delta t)^2` for the second-order schemes.
-    :meth:`estimate_dt` returns the cell-crossing time as a resolution guide,
-    exactly as the semi-Lagrangian solver does. Against that solver: the
+    :meth:`estimate_dt` therefore returns an accuracy-based step, the
+    allowed change of the field per step as a fraction of its range, and
+    only reports the cell-crossing time on request
+    (``basis="resolution"``). Against the semi-Lagrangian solver: the
     semi-Lagrangian error is flat in the timestep but accumulates one
     interpolation per step, and its limit is the arc a characteristic turns
     per step; the Eulerian solve costs four to six times less per step in
@@ -271,6 +278,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._delta_t = public_expression(
             rf"\Delta t_{{{tag}}}", 1.0, "Eulerian advection-diffusion timestep")
         self._last_timestep = None
+        self._last_change_rate = None
 
         # SUPG on/off and the three tau weights are runtime constants: the
         # compiled kernels read them from PETSc's constants[] array.
@@ -507,31 +515,99 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     # ------------------------------------------------------------------
 
     @timing.routine_timer_decorator
-    def estimate_dt(self, direction_aware: bool = False, percentile: float = 0.0):
-        r"""Cell-crossing timestep, as a resolution guide.
+    def estimate_dt(self, fraction: float = 0.02, basis: str = "accuracy",
+                    direction_aware: bool = False, percentile: float = 0.0):
+        r"""A timestep for this scheme, chosen for accuracy.
 
-        The minimum over cells of :math:`h/|\mathbf{u}|` and
-        :math:`h^2/\kappa`, exactly as for the semi-Lagrangian solver. It is
-        not a stability limit for this scheme, and on a mesh refined for
-        another problem it is far smaller than the timestep the transported
-        field needs. Choose the timestep from the feature being transported:
-        :math:`|\mathbf{u}|\Delta t` should be a fraction of its width.
+        The implicit scheme has no stability limit, so the cell-crossing time
+        the semi-Lagrangian solver reports says nothing about how large a step
+        this solver can take. What bounds the error is how much the field
+        changes per step, and that is what the default estimate measures:
+
+        .. math::
+            \Delta t = f\,\frac{\max\phi - \min\phi}
+                                {\max\left|\dot\phi\right|}
+
+        with :math:`\dot\phi` the rate of change of the field. Before the
+        first solve that rate is the advective one, :math:`|\mathbf{u}\cdot
+        \nabla\phi|` at the mesh vertices; after a solve it is the rate the
+        last step actually produced, :math:`|\phi^{n+1}-\phi^{n}|/\Delta t`,
+        which includes diffusion and sources. The estimate is independent of
+        the mesh, so a band of cells refined for another problem does not
+        shrink it; it does shrink for a feature that is genuinely
+        under-resolved, which is the honest answer.
+
+        On the rotating Gaussian (``docs/developer/design/eulerian-supg-transport.md``)
+        ``fraction=0.02`` gives Crank-Nicolson a round-trip error of a few
+        tenths of a per cent after one revolution and BDF2 about 1.5%;
+        ``fraction=0.07`` gives 2.5% and 9%.
 
         Parameters
         ----------
-        direction_aware : bool, default False
-            Use the per-cell extent along the local velocity.
-        percentile : float, default 0.0
-            Global percentile of the per-cell timesteps instead of the minimum.
+        fraction : float, default 0.02
+            Allowed change of the field per step as a fraction of its range.
+        basis : {"accuracy", "resolution"}
+            ``"resolution"`` returns the cell-crossing / diffusion time the
+            semi-Lagrangian solver's ``estimate_dt`` returns, for scripts that
+            size the step in Courant numbers.
+        direction_aware, percentile
+            Forwarded to the resolution estimate; ignored otherwise.
+
+        Returns
+        -------
+        pint.Quantity or float
+            With physical time units if a model with reference scales is
+            active, otherwise nondimensional. ``inf`` if nothing changes.
         """
-        dt_estimate, dt_adv, dt_diff = _advective_diffusive_dt(
-            self.constitutive_model.K, self._V_fn, self.mesh,
-            direction_aware=direction_aware, percentile=percentile)
-        self.dt_adv = dt_adv if not np.isinf(dt_adv) else 0.0
-        self.dt_diff = dt_diff if not np.isinf(dt_diff) else 0.0
-        if np.isinf(dt_estimate):
+        from mpi4py import MPI
+
+        if basis == "resolution":
+            dt_estimate, dt_adv, dt_diff = _advective_diffusive_dt(
+                self.constitutive_model.K, self._V_fn, self.mesh,
+                direction_aware=direction_aware, percentile=percentile)
+            self.dt_adv = dt_adv if not np.isinf(dt_adv) else 0.0
+            self.dt_diff = dt_diff if not np.isinf(dt_diff) else 0.0
+            if np.isinf(dt_estimate):
+                return np.inf
+            return _dimensionalise_dt(dt_estimate)
+        if basis != "accuracy":
+            raise ValueError(f"basis must be 'accuracy' or 'resolution', not {basis!r}.")
+
+        comm = uw.mpi.comm
+        values = np.asarray(self.u.array).reshape(-1)
+        lo = comm.allreduce(float(values.min()) if values.size else np.inf, op=MPI.MIN)
+        hi = comm.allreduce(float(values.max()) if values.size else -np.inf, op=MPI.MAX)
+        field_range = hi - lo
+
+        if self._last_change_rate is not None:
+            rate = self._last_change_rate
+        else:
+            rate = self._advective_rate()
+        self.dt_accuracy = fraction * field_range / rate if rate > 0.0 else np.inf
+        if np.isinf(self.dt_accuracy) or field_range <= 0.0:
             return np.inf
-        return _dimensionalise_dt(dt_estimate)
+        return _dimensionalise_dt(self.dt_accuracy)
+
+    def _advective_rate(self):
+        r"""Global maximum of :math:`|\mathbf{u}\cdot\nabla\phi|` at the mesh vertices.
+
+        The gradient is the Clement recovery at the vertices (no point
+        location, so it is safe on a mesh carrying many variables) and the
+        velocity is evaluated at the same points.
+        """
+        from mpi4py import MPI
+        from underworld3.function.gradient_evaluation import compute_clement_gradient_at_nodes
+
+        coords = np.asarray(self.mesh.X.coords)
+        n = coords.shape[0]
+        if n:
+            grad = np.asarray(compute_clement_gradient_at_nodes(self.u), dtype=float).reshape(n, -1)
+            vel = uw.function.evaluate(self._V_fn, coords)
+            vel = np.asarray(getattr(vel, "magnitude", vel), dtype=float).reshape(n, -1)
+            local = float(np.abs((vel[:, :grad.shape[1]] * grad).sum(axis=1)).max())
+        else:
+            local = 0.0
+        return uw.mpi.comm.allreduce(local, op=MPI.MAX)
 
     def solve(
         self,
@@ -569,6 +645,13 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self.DuDt.update_pre_solve(dt, verbose=verbose)
         super().solve(zero_init_guess, _force_setup, divergence_retries=divergence_retries)
         _invalidate_solution_cache(self.u)
+        # The realised rate of change of the field over this step feeds the
+        # accuracy-based estimate_dt; psi_star[0] still holds phi^n here.
+        from mpi4py import MPI
+        change = np.abs(np.asarray(self.u.array).reshape(-1)
+                        - np.asarray(self.DuDt.psi_star[0].array).reshape(-1))
+        local = float(change.max()) if change.size else 0.0
+        self._last_change_rate = uw.mpi.comm.allreduce(local, op=MPI.MAX) / dt
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True

@@ -191,3 +191,30 @@ def test_solves_on_an_adapt_child_with_its_own_preconditioner():
     assert adv._custom_mg is None
     data = np.asarray(T.array[:, 0, 0])
     assert np.isfinite(data).all() and 0.9 < data.max() < 1.01
+
+
+def test_estimate_dt_is_accuracy_based_and_resolution_on_request(mesh):
+    """The default estimate follows the field, not the mesh; the resolution
+    basis reproduces the semi-Lagrangian solver's cell-crossing time."""
+    adv, T = _solver(mesh, "t")
+    dt_acc = float(adv.estimate_dt())
+    dt_res = float(adv.estimate_dt(basis="resolution"))
+    assert np.isfinite(dt_acc) and dt_acc > 0 and np.isfinite(dt_res) and dt_res > 0
+    # a tighter fraction is a proportionally smaller step
+    assert float(adv.estimate_dt(fraction=0.01)) == pytest.approx(0.5 * dt_acc)
+
+    x, y = mesh.X
+    T2 = uw.discretisation.MeshVariable("T_t2", mesh, 1, degree=2)
+    slcn = uw.systems.AdvDiffusionSLCN(mesh, T2, sympy.Matrix([[-y, x]]))
+    slcn.constitutive_model = uw.constitutive_models.DiffusionModel
+    slcn.constitutive_model.Parameters.diffusivity = 0.0
+    assert dt_res == pytest.approx(float(slcn.estimate_dt()), rel=1e-12)
+
+    # after a step the estimate uses the realised rate of change
+    adv.solve(timestep=dt_acc)
+    assert adv._last_change_rate > 0
+    dt_after = float(adv.estimate_dt())
+    assert np.isfinite(dt_after) and 0.2 * dt_acc < dt_after < 5 * dt_acc
+
+    with pytest.raises(ValueError, match="basis must be"):
+        adv.estimate_dt(basis="courant")

@@ -1,8 +1,14 @@
 # Eulerian SUPG transport: design and measurements
 
 **Status**: implemented on `feature/eulerian-supg-transport` (2026-09-02), static mesh.
-Supersedes the Crank-Nicolson prototype of issue #657 as the implementation route
-while keeping its weak-form idea.
+
+**Credit.** The SUPG weak form used here (the test-function perturbation written as
+a flux, so PETSc needs no modified test space), its first working implementation on
+PetscDS with P2 elements, the LeVeque swirling-flow comparison against SLCN and the
+conservative level-set pipeline that motivated it are NengLu's, on the `levelset`
+branch of issue #657. This note builds on that prototype: same formulation and
+stabilisation parameter, time integration moved onto the symbolic history
+machinery, and the measurements added.
 
 ## Why an Eulerian scheme
 
@@ -210,12 +216,24 @@ BDF1 slopes 0.80 and 0.88 between $\Delta t$ = 0.02, 0.01, 0.005; BDF2 slopes ab
 
 ## What the timestep estimate means
 
-`estimate_dt` returns the cell-crossing time, the same resolution estimate the
-semi-Lagrangian solver reports, because that is the only quantity the mesh knows.
-It is not a stability limit for either scheme. Choose the Eulerian timestep from
-the transported feature: $|\mathbf{u}|\Delta t$ a fraction of its width. For SLCN
-the honest limit is the trace-back arc, $\Delta t \lesssim 0.25 / \max|\nabla\mathbf{u}|$,
-which is a separate change to that solver.
+The cell-crossing time is not a stability limit for either scheme and says
+nothing about this one's accuracy, so the Eulerian solver's `estimate_dt` measures
+the field instead:
+
+$$
+\Delta t = f\,\frac{\max\phi - \min\phi}{\max|\dot\phi|},
+$$
+
+with $\dot\phi$ the advective rate $|\mathbf{u}\cdot\nabla\phi|$ before the first
+solve and the realised rate $|\phi^{n+1}-\phi^{n}|/\Delta t$ after it (diffusion
+and sources included). On the rotating Gaussian the fraction at Courant 0.5 on
+the res-32 mesh is about 0.03 (0.6% Crank-Nicolson error) and at Courant 1 about
+0.07 (2.5%); the default $f = 0.02$ therefore sits at a few tenths of a per cent.
+The estimate is mesh-independent by construction, which is the property the
+transport note's section 1 asks for; `basis="resolution"` still returns the
+semi-Lagrangian solver's cell-crossing time. For SLCN the honest limit is the
+trace-back arc, $\Delta t \lesssim 0.25 / \max|\nabla\mathbf{u}|$, which is a separate
+change to that solver.
 
 ## A defect found on the way
 

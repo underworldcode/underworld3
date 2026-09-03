@@ -27,9 +27,10 @@ solution is known at every time (`uw.analytic.RotatingGaussian`), so the
 error is measured directly rather than inferred from a picture.
 
 The scheme is stable at any cell Courant number; what limits the timestep
-is how far the anomaly moves per step relative to its own width. Try
-`-uw_courant 4` to see the accuracy fall off as `dt**2` while the solve
-stays perfectly stable, and `-uw_order 2` to see the second-order scheme.
+is how far the anomaly moves per step relative to its own width, which is
+what the solver's own `estimate_dt` measures. Try `-uw_dt_fraction 0.1` to
+see the accuracy fall off as `dt**2` while the solve stays perfectly
+stable, and `-uw_order 2` for the damped second-order scheme.
 
 ## Key Concepts
 
@@ -43,7 +44,7 @@ stays perfectly stable, and `-uw_order 2` to see the second-order scheme.
 ## Parameters
 
 - `uw_res`: cells across the box
-- `uw_courant`: timestep as a multiple of the cell-crossing time
+- `uw_dt_fraction`: allowed change of the field per step (the timestep follows)
 - `uw_order`, `uw_theta`: the time scheme, with the semi-Lagrangian solver's meaning
 - `uw_diffusivity`: thermal diffusivity (0 is pure advection)
 """
@@ -60,14 +61,14 @@ import underworld3 as uw
 Override from the command line:
 
 ```bash
-python Ex_AdvectionDiffusionSUPG_RotationTest.py -uw_courant 4 -uw_order 2
+python Ex_AdvectionDiffusionSUPG_RotationTest.py -uw_dt_fraction 0.1 -uw_order 2
 ```
 """
 
 # %%
 params = uw.Params(
     uw_res=32,
-    uw_courant=1.0,
+    uw_dt_fraction=0.02,   # allowed change of T per step, as a fraction of its range
     uw_order=1,          # 1 with theta 0.5 is Crank-Nicolson; 2 with theta 1.0 is BDF2
     uw_theta=0.5,
     uw_diffusivity=0.0,
@@ -113,16 +114,19 @@ for boundary in ("Left", "Right", "Top", "Bottom"):
 """
 ## Time loop
 
-`estimate_dt` returns the cell-crossing time. It is a resolution guide, not a
-stability limit, so the timestep is a chosen multiple of it. For a multistep
-scheme the exact history is planted so the first step already runs at full
-order.
+`estimate_dt` returns an accuracy-based step: the field may change by
+`uw_dt_fraction` of its range per step. It does not depend on the mesh; the
+cell-crossing time the semi-Lagrangian solver reports is available with
+`basis="resolution"` and is printed for comparison. For a multistep scheme the
+exact history is planted so the first step already runs at full order.
 """
 
 # %%
 period = float(exact.period)
-dt_cell = float(adv_diff.estimate_dt())
-n_steps = int(np.ceil(period / (params.uw_courant * dt_cell)))
+dt_accuracy = float(adv_diff.estimate_dt(fraction=params.uw_dt_fraction))
+dt_cell = float(adv_diff.estimate_dt(basis="resolution"))
+uw.pprint(f"accuracy-based dt {dt_accuracy:.4g}, cell-crossing dt {dt_cell:.4g}")
+n_steps = int(np.ceil(period / dt_accuracy))
 dt = period / n_steps
 
 if params.uw_order > 1:
@@ -142,9 +146,9 @@ for step in range(n_steps):
 """
 ## Result
 
-After one revolution the field should match its initial state. At a Courant
-number of one half the round-trip error is below one per cent on this mesh;
-it grows as `dt**2` from there.
+After one revolution the field should match its initial state. At the
+default fraction the round-trip error is a few tenths of a per cent on this
+mesh; it grows as `dt**2` with the fraction.
 """
 
 # %%
