@@ -19,9 +19,19 @@ adv.constitutive_model.Parameters.diffusivity = 1.0e-3
 adv.add_dirichlet_bc(1.0, "Bottom")
 adv.add_dirichlet_bc(0.0, "Top")
 
-dt = 0.5 * adv.estimate_dt()
+dt = adv.estimate_dt()          # accuracy-based: 2% of the field's range per step
 adv.solve(timestep=dt)
 ```
+
+The one deliberate difference is the timestep estimate. The semi-Lagrangian
+`estimate_dt` reports the cell-crossing time, which for this solver is neither
+a stability limit nor an accuracy one. The Eulerian solver's `estimate_dt`
+instead returns the step at which the field changes by a given fraction of its
+range (0.02 by default), from the advective rate before the first solve and
+from the rate the last step actually produced after it. It does not depend on
+the mesh, so cells refined for the Stokes problem do not shrink it. A script
+that sizes its step in Courant numbers can still ask for
+`estimate_dt(basis="resolution")`.
 
 ## What carries over
 
@@ -32,7 +42,7 @@ adv.solve(timestep=dt)
 | `order=2, theta=1.0` | same | SL-BDF2 becomes BDF2 |
 | `order=2, theta=0.5` | refused | refused for the same reason: a BDF stencil does not pair with a centred flux |
 | `f`, `V_fn`, `constitutive_model`, `delta_t` | same | |
-| `estimate_dt(direction_aware, percentile)` | same | the cell-crossing time, a resolution guide for both |
+| `estimate_dt()` | accuracy-based by default | the field may change by `fraction` (0.02) of its range per step; `basis="resolution"` returns the cell-crossing time SLCN reports |
 | `solve(zero_init_guess, timestep, ...)` | same | |
 | `DuDt.set_initial_history(values, dt)` | same | plant an exact history to start at full order |
 | `restore_points_func`, `monotone_mode`, `old_frame_traceback`, `DFDt` | ignored, with a warning | they configure the trace-back |
