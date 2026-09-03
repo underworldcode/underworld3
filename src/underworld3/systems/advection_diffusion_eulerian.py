@@ -146,7 +146,8 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         Crank-Nicolson is three to four times more accurate than BDF2 at the
         same timestep below Courant 2 but rings once the feature is
         under-resolved in time; BDF3 is the most accurate scheme below
-        Courant 1 and fails from Courant 4; backward Euler (order 1) carries
+        Courant 1 when diffusion is present, fails from Courant 4, and on
+        pure advection grows slowly at any Courant number; backward Euler (order 1) carries
         20 to 40% error at any practical timestep.
     integrator : {"bdf", "am"}, default "bdf"
         Adams-Moulton above order 1 has a bounded stability region and blows

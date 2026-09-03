@@ -145,7 +145,27 @@ then $\kappa = 10^{-3}$ (cell Peclet about 40).
 | Adams-Moulton 2 | 0.42% | 0.71% | 1.3% | X | X | X |
 | Adams-Moulton 3 | 0.42% | 0.71% | X | X | X | X |
 
-Cost per step is the same for every scheme (0.058 to 0.068 s at res 32): the
+At res 64 (pure advection, Courant 1 to 8, 590 to 74 steps per revolution):
+
+| scheme, res 64 | C 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| BDF1 = backward Euler | 30% | 43% | 57% | 68% |
+| BDF2 | 2.5% | 9.1% | 27% | 53% |
+| BDF3 | 3100% (slow growth) | 1.9% | 17% | 130% |
+| Crank-Nicolson | 0.62% | 2.5% | 9.5% | 31% |
+| Adams-Moulton 2 | 310% (slow growth) | X@76 | X@49 | X@38 |
+| Adams-Moulton 3 | X@116 | X@37 | X@25 | X@22 |
+
+BDF2 and Crank-Nicolson track their res-32 values at the same $\mathbf{u}\Delta t$
+(the error is set by the timestep, not the mesh). BDF3 is not safe for pure
+advection at any Courant number: its stability region misses the imaginary axis
+near the origin, so the low-frequency modes a finer mesh carries grow slowly (31
+times the exact field after 590 steps at Courant 1, where the coarser mesh with
+half the steps still looked fine); with $\kappa = 10^{-3}$ it behaved. Use it
+only with diffusion and below Courant 2.
+
+Cost per step is the same for every scheme (0.058 to 0.068 s at res 32, 0.32 to
+0.36 s at res 64): the
 history terms are extra kernel inputs, not extra solves. BDF1 and backward Euler
 agree to every digit, which checks that the two families are assembled
 consistently.
@@ -157,8 +177,9 @@ What the table says:
   advection operator it blows up once the Courant number reaches about 1, and
   diffusion at this Peclet number does not rescue it. It is kept in the class for
   the record and for diffusion-dominated use, with that warning in the docstring.
-- **BDF3 is the most accurate scheme below Courant 1** (0.3%, on the spatial
-  floor) but it is not A-stable either, and it fails from Courant 4.
+- **BDF3 is the most accurate scheme below Courant 1 with diffusion present**
+  (0.3%, on the spatial floor) but it is not A-stable, fails from Courant 4, and
+  on pure advection grows slowly at any Courant number (the res-64 rows).
 - **Crank-Nicolson is three to four times more accurate than BDF2 at the same
   timestep** across the usable range, because it does not damp; the price is
   ringing once the feature is under-resolved in time (minimum $-0.35$ at Courant 8
@@ -169,8 +190,8 @@ What the table says:
 
 **Default: `order=2, integrator="bdf"`.** Defaults err toward robustness; a user
 with a smooth field at Courant 2 or below gets the better answer from
-`integrator="am", order=1, theta=0.5` (Crank-Nicolson), and below Courant 1 from
-`order=3`. Backward Euler (order 1) is a first-order scheme with 20 to 40% error
+`integrator="am", order=1, theta=0.5` (Crank-Nicolson), and with diffusion below
+Courant 1 from `order=3`. Backward Euler (order 1) is a first-order scheme with 20 to 40% error
 at any practical timestep and is not a sensible default for transport.
 
 ### Temporal convergence (tests/test_1100)
