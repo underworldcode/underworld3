@@ -292,8 +292,12 @@ gather-first, so the cells gmsh fills into the carved cavity — the
 band and its graded surround — live on one rank; only the base's far
 field is balanced. On the crossing-patches fixture that is 8012 of
 8405 cells on one rank at np=4, and the solve is not faster than
-serial: parallel is a correctness mode for this path, not a speed-up,
-until the placed region is rebalanced.
+serial. Since PR #672 the gather is per region: each zone, or
+junction-connected cluster of zones, is placed and split by the rank that
+holds it, and a zone whose shell is already interior to a rank is not
+moved at all; a single long fault is still one rank's. The design and its
+measurements are in the developer note
+`fault-parallel-placement-2026-09.md`.
 
 ## Limitations
 

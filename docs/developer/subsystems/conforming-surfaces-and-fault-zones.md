@@ -330,7 +330,10 @@ region: their bowl, cap and extrusion machinery is single-rank.
 One limit remains: a small domain cannot hold a shell at all (three base
 cells reaching the walls is the whole box, which is what the
 crossing-patches test fixture does), so that fixture measures correctness
-only, never balance.
+only, never balance. The measurements, the design decision on cutting long
+faults, and the layout throughput test are recorded in
+`../design/fault-parallel-placement-2026-09.md`, the governing note for
+parallel placement.
 
 ## The thin volume: finite-width zones, junctions in the volume
 

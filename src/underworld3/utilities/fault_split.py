@@ -1266,7 +1266,7 @@ def _redistribute_fault_interior(dm, labels, verbose=False, groups=None):
         names = sorted(name for name, _value in labels)
         raise RuntimeError(
             f"fault_split: no facets labelled {names} found on any rank.")
-    work, n_region, n_moved, owner, _canon = _gather_regions(dm, ids)
+    work, n_region, n_moved, owner, _canon = _gather_regions(dm, ids, layers=1)
     if work is dm:
         work = dm.clone()          # the contract: a new dm, untouched input
     if verbose:

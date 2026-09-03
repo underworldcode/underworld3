@@ -1643,12 +1643,12 @@ def _gather_region(dm, vertex_mark_chart, verbose=False):
     """
     ids = (np.asarray(vertex_mark_chart) != 0).astype(np.int32)
     work, n_region, _n_moved, _owner, _canon = _gather_regions(
-        dm, ids, verbose=verbose)
+        dm, ids, verbose=verbose, layers=1)
     return work, n_region
 
 
-def _gather_regions(dm, vertex_region_chart, verbose=False):
-    """Redistribute so each marked REGION's cell star (+1 layer) is one rank's.
+def _gather_regions(dm, vertex_region_chart, verbose=False, layers=1):
+    """Redistribute so each marked REGION's cell star (+ ``layers``) is one rank's.
 
     A mask-driven port of the contact stream's ``_redistribute_fault_interior``
     (feature/fault-split-node c8693579 / 1d487319; the label-driven original
@@ -1662,6 +1662,14 @@ def _gather_regions(dm, vertex_region_chart, verbose=False):
     cavities would share ring points, so they must be one rank's. Only the
     marked stars move — everything else keeps its load-balanced home — via
     one shell partition.
+
+    ``layers`` is the growth beyond the star, one by default: the star is
+    the marked vertices' cells, and the layer makes every point in the
+    closure of a star cell unshared. Both the placement and the split
+    need it. Measured (#670): with ``layers=0`` the placement's own gate
+    ("the gathered region touches a shared point") fires at np=2, 3 and
+    4 on the thin-volume suite — the carve drops cells beyond the marked
+    vertices' star, so the star alone under-reaches.
 
     Returns ``(new_dm, n_region, n_moved, owner, canon)``: the global size
     of the regions (star and layer — the seam rule's footprint, a function
@@ -1712,19 +1720,20 @@ def _gather_regions(dm, vertex_region_chart, verbose=False):
                     cell_region[c] = max(cell_region[c], k)
 
     claim_cells(reconcile(ids_in.copy()))
-    # One growth layer: the surgery needs every point in the closure of a
-    # region cell unshared, and a point is unshared exactly when all its
-    # incident cells are co-resident.
-    layer = np.zeros(pEnd - pStart, dtype=np.int32)
-    for c in np.flatnonzero(cell_region):
-        k = int(cell_region[c])
-        for q in work.getTransitiveClosure(int(c) + cS)[0]:
-            if vS <= int(q) < vE:
-                i = int(q) - pStart
-                if layer[i] and layer[i] != k:
-                    pairs.add((int(layer[i]), k))
-                layer[i] = max(layer[i], k)
-    claim_cells(reconcile(layer))
+    # Growth layers: a point is unshared exactly when all its incident
+    # cells are co-resident, so each layer makes the previous cells'
+    # closures unshared.
+    for _grow in range(int(layers)):
+        layer = np.zeros(pEnd - pStart, dtype=np.int32)
+        for c in np.flatnonzero(cell_region):
+            k = int(cell_region[c])
+            for q in work.getTransitiveClosure(int(c) + cS)[0]:
+                if vS <= int(q) < vE:
+                    i = int(q) - pStart
+                    if layer[i] and layer[i] != k:
+                        pairs.add((int(layer[i]), k))
+                    layer[i] = max(layer[i], k)
+        claim_cells(reconcile(layer))
 
     # merge touching regions: union-find on the gathered pair set, the same
     # on every rank
