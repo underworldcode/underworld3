@@ -221,6 +221,7 @@ def test_write_snapshot_produces_wrapper_and_bulk_dir(tmp_path):
             if filename.endswith(f".{variable_name}.00000.h5")
         )
         with h5py.File(os.path.join(bulk, variable_file), "r") as h5:
+            assert variable_name in h5["topologies"]["uw_mesh"]["dms"]
             assert variable_name in h5["uw_checkpoint"]
 
 

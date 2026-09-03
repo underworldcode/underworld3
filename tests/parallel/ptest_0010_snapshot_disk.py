@@ -1,6 +1,6 @@
 """Parallel (MPI) test of the on-disk snapshot path (v1.1).
 
-Phase 6 of the snapshot toolkit: exact same-rank mesh-variable vectors and
+Phase 6 of the snapshot toolkit: exact same-rank PETSc mesh-variable reload and
 per-rank swarm sidecars. This ptest exercises both layers together under MPI.
 
 Run (4 ranks exercises cross-rank distribution of swarm particles):
@@ -18,6 +18,8 @@ Asserts (collective, checked on rank 0):
      swarm-var data, model.load_state(file=...), gathered (gid, x, y,
      material) tables sorted by gid are np.array_equal, and every restored
      mesh-variable dof matches its coordinate-defined analytic value.
+  4. Loading the PETSc field onto a newly reconstructed checkpoint mesh is
+     also exact, so reload does not depend on the original global DOF order.
 """
 
 import os
@@ -102,10 +104,11 @@ def main():
     model.save_state(file=wrapper)
     comm.Barrier()
 
+    bulk = os.path.join(tmp, "parrun.snap.bulk")
+
     # Check files on rank 0
     files_ok = True
     if rank == 0:
-        bulk = os.path.join(tmp, "parrun.snap.bulk")
         files = sorted(os.listdir(bulk))
         per_rank = [f for f in files if ".swarm.rank" in f]
         # Expect one swarm sidecar per rank
@@ -140,6 +143,34 @@ def main():
     count_ok = pre_count == post_count
     tracker_ok = (model.tracker.time == 1.5 and model.tracker.step == 7)
 
+    bulk_files = sorted(os.listdir(bulk))
+    mesh_file = os.path.join(
+        bulk,
+        next(name for name in bulk_files if name.endswith(".mesh.00000.h5")),
+    )
+    temperature_file = os.path.join(
+        bulk,
+        next(name for name in bulk_files if name.endswith(".T.00000.h5")),
+    )
+    reloaded_mesh = uw.discretisation.Mesh(mesh_file)
+    reloaded_temperature = uw.discretisation.MeshVariable(
+        "T_reloaded",
+        reloaded_mesh,
+        1,
+        degree=1,
+    )
+    reloaded_temperature.read_checkpoint(temperature_file, data_name="T")
+    reloaded_values = np.asarray(reloaded_temperature.array[...]).reshape(-1)
+    reloaded_coords = np.asarray(reloaded_temperature.coords)
+    reloaded_expected = reloaded_coords[:, 0] - reloaded_coords[:, 1]
+    local_reloaded_error = (
+        float(np.max(np.abs(reloaded_values - reloaded_expected)))
+        if reloaded_values.size
+        else 0.0
+    )
+    reloaded_error = comm.allreduce(local_reloaded_error, op=MPI.MAX)
+    reconstructed_mesh_ok = reloaded_error == 0.0
+
     if rank == 0:
         print(f"[ranks={size}] particles total = {pre_count}", flush=True)
         print(f"  P1 disk wrapper + per-rank sidecars present: {files_ok}",
@@ -153,12 +184,16 @@ def main():
               flush=True)
         print(f"  P5 tracker state restored:                   {tracker_ok}",
               flush=True)
+        print(f"  P6 reconstructed-mesh field exact:           "
+              f"{reconstructed_mesh_ok} (max error={reloaded_error:.3e})",
+              flush=True)
 
         assert files_ok
         assert count_ok
         assert swarm_ok
         assert T_ok
         assert tracker_ok
+        assert reconstructed_mesh_ok
         print(f"[ranks={size}] PASS", flush=True)
 
 

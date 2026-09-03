@@ -4836,10 +4836,10 @@ class Mesh(Stateful, uw_object):
         - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
           receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
           and rank 0 writes the companion ``.xdmf`` file.
-        - ``petsc_reload=True`` writes PETSc DMPlex metadata and an owned
-          global-vector payload into the same per-variable HDF5 files. These
-          files can then be loaded with ``MeshVariable.read_checkpoint()`` for
-          exact same-layout reload.
+        - ``petsc_reload=True`` writes PETSc DMPlex section/local-vector
+          metadata and an in-place global-vector payload into the same
+          per-variable HDF5 files. These files can then be loaded with
+          ``MeshVariable.read_checkpoint()`` for exact restart.
 
         Common choices are:
 
@@ -5016,7 +5016,7 @@ class Mesh(Stateful, uw_object):
             subdm.destroy()
 
     def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
-        """Write DMPlex metadata and exact same-layout global vectors."""
+        """Write DMPlex reload metadata and in-place vector payloads."""
 
         old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")

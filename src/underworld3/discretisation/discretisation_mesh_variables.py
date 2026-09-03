@@ -1449,14 +1449,21 @@ class _BaseMeshVariable(Stateful, uw_object):
         self,
         filename: str,
         data_name: Optional[str] = None,
+        same_layout: bool = False,
     ):
         """Load this mesh variable from PETSc reload output.
 
-        This is an exact same-layout PETSc vector reload path. It does not use
-        the coordinate/KDTree remapping used by ``read_timestep()``. New output
-        should be written with ``Mesh.write_timestep(..., petsc_reload=True)``;
-        legacy ``Mesh.write_checkpoint()`` files are also supported through
-        the older DMPlex local-vector fallback.
+        The default path restores DMPlex section/local-vector data through the
+        topology migration SF, so a mesh reconstructed from its checkpoint may
+        have a different parallel DOF ordering. Set ``same_layout=True`` only
+        for an in-place restore onto the exact mesh object that wrote the file;
+        that path reloads the saved global vector directly.
+
+        This method does not use the coordinate/KDTree remapping provided by
+        ``read_timestep()``. New output should be written with
+        ``Mesh.write_timestep(..., petsc_reload=True)``; legacy
+        ``Mesh.write_checkpoint()`` files are also supported by the default
+        DMPlex path.
         """
 
         if data_name is None:
@@ -1465,16 +1472,26 @@ class _BaseMeshVariable(Stateful, uw_object):
         if self._lvec is None:
             self._set_vec(available=True)
 
-        import h5py
+        if same_layout:
+            import h5py
 
-        has_direct_vector = False
-        if uw.mpi.rank == 0:
-            with h5py.File(filename, "r") as checkpoint_h5:
-                has_direct_vector = (
-                    "uw_checkpoint" in checkpoint_h5
-                    and data_name in checkpoint_h5["uw_checkpoint"]
+            if uw.mpi.rank == 0:
+                with h5py.File(filename, "r") as checkpoint_h5:
+                    has_direct_vector = (
+                        "uw_checkpoint" in checkpoint_h5
+                        and data_name in checkpoint_h5["uw_checkpoint"]
+                    )
+            else:
+                has_direct_vector = None
+            has_direct_vector = uw.mpi.comm.bcast(
+                has_direct_vector,
+                root=0,
+            )
+            if not has_direct_vector:
+                raise RuntimeError(
+                    f"{filename} has no in-place checkpoint vector for "
+                    f"{data_name!r}. Reload it with same_layout=False."
                 )
-        has_direct_vector = uw.mpi.comm.bcast(has_direct_vector, root=0)
 
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         sectiondm = self.mesh.dm.clone()
@@ -1492,7 +1509,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._lvec.setName(data_name)
             self._gvec.setName(data_name)
 
-            if has_direct_vector:
+            if same_layout:
                 checkpoint_vec = PETSc.Vec().createMPI(
                     (self._gvec.getLocalSize(), self._gvec.getSize()),
                     comm=PETSc.COMM_WORLD,

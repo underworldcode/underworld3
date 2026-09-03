@@ -535,6 +535,7 @@ def read_snapshot(model, path: str) -> None:
                     var.read_checkpoint(
                         short_external_file,
                         data_name=var_name,
+                        same_layout=True,
                     )
 
         # Phase 3a: restore state-bearer dataclasses.
