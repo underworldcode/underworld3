@@ -666,6 +666,29 @@ class _DDtBase(uw_object):
         """Current BDF coefficients [c0, c1, ...] accounting for variable timesteps."""
         return _bdf_coefficients(self.effective_order, self._dt, self._dt_history)
 
+    @property
+    def bdf_coefficient_expressions(self):
+        r"""The BDF coefficient symbols :math:`[c_0, c_1, \dots]` as UWexpressions.
+
+        For a solver that assembles its own weighted sum of history terms
+        (an Eulerian scheme applying the multistep rule to a spatial
+        operator, say). The symbols are routed through PETSc's
+        ``constants[]`` array, so their values follow ``effective_order``
+        and the timestep without a recompile; ``bdf_coefficients`` gives
+        the current values.
+        """
+        return list(self._bdf_coeffs)
+
+    @property
+    def am_coefficient_expressions(self):
+        r"""The Adams-Moulton coefficient symbols :math:`[a_0, a_1, \dots]` as UWexpressions.
+
+        :math:`a_0` weights the new state, :math:`a_k` the history slot
+        ``psi_star[k-1]``. Same constants-routing as
+        :attr:`bdf_coefficient_expressions`.
+        """
+        return list(self._am_coeffs)
+
     def _history_syms(self):
         """History terms as sympy expressions for the weighted sums.
 

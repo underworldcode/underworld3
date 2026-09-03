@@ -321,6 +321,104 @@ def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
     return vel
 
 
+def _advective_diffusive_dt(constitutive_K, V_fn, mesh, direction_aware=False,
+                            percentile=0.0):
+    r"""Per-element resolution timestep, reduced to one global value.
+
+    The minimum over cells of the advective crossing time :math:`h/|v|` and
+    the diffusive time :math:`h^2/\kappa`, nondimensional. Shared by the
+    semi-Lagrangian and the Eulerian advection-diffusion solvers: for both
+    it is a *resolution* estimate, not a stability limit. The semi-Lagrangian
+    scheme is unconditionally stable and the implicit Eulerian scheme is
+    stable at any cell Courant number; what bounds either one is accuracy
+    on the feature being transported, which the mesh cannot know.
+
+    Parameters
+    ----------
+    constitutive_K : sympy expression or number
+        Diffusivity (the constitutive model's unified ``K``).
+    V_fn : sympy Matrix
+        Advecting velocity, evaluated at cell centroids.
+    mesh : Mesh
+    direction_aware : bool, default False
+        Use the per-cell extent along the local velocity instead of the
+        isotropic radius (triangles only; falls back otherwise).
+    percentile : float, default 0.0
+        ``0`` takes the strict global minimum; ``> 0`` takes that global
+        percentile of the per-element timesteps, so a few sliver cells
+        cannot collapse the estimate.
+
+    Returns
+    -------
+    (dt, dt_adv, dt_diff) : floats
+        The estimate and its two components; ``inf`` where a component does
+        not apply (zero velocity, zero diffusivity).
+    """
+    from mpi4py import MPI
+
+    comm = uw.mpi.comm
+
+    diffusivity_glob = _global_max_diffusivity(constitutive_K, mesh)
+    vel = _centroid_velocities_nd(V_fn, mesh)
+    vel_magnitudes = np.linalg.norm(vel, axis=1)
+    element_radii = mesh._radii
+
+    def _reduce_dt(per_elem):
+        fin = per_elem[np.isfinite(per_elem)] if len(per_elem) else per_elem
+        if percentile and percentile > 0:
+            gathered = comm.allgather(np.ascontiguousarray(fin, dtype=float))
+            allv = (np.concatenate([a for a in gathered if a.size])
+                    if any(a.size for a in gathered) else np.empty(0))
+            return float(np.percentile(allv, percentile)) if allv.size else np.inf
+        loc = float(np.min(fin)) if len(fin) else np.inf
+        return comm.allreduce(loc, op=MPI.MIN)
+
+    if diffusivity_glob > 0:
+        dt_diff_per_element = (element_radii ** 2) / diffusivity_glob
+    else:
+        dt_diff_per_element = np.array([np.inf])
+
+    if direction_aware:
+        from underworld3.meshing.smoothing import _tri_cells
+        tris = _tri_cells(mesh.dm)
+        if tris is None:
+            h_per_element = element_radii
+        else:
+            coords = np.asarray(mesh.X.coords)
+            centroids = coords[tris].mean(axis=1)
+            vhat = np.where(
+                vel_magnitudes[:, None] > 0,
+                vel / np.maximum(vel_magnitudes[:, None], 1.0e-30),
+                0.0)
+            D = coords[tris] - centroids[:, None, :]
+            # Signed projections of the cell vertices along v-hat: the
+            # extent material actually traverses through the cell.
+            s = np.einsum('cvd,cd->cv', D, vhat)
+            h_per_element = np.maximum(s.max(axis=1) - s.min(axis=1), 0.0)
+    else:
+        h_per_element = element_radii
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dt_adv_per_element = np.where(
+            vel_magnitudes > 0, h_per_element / vel_magnitudes, np.inf)
+
+    dt_diff = _reduce_dt(dt_diff_per_element)
+    dt_adv = _reduce_dt(dt_adv_per_element)
+    return min(dt_diff, dt_adv), dt_adv, dt_diff
+
+
+def _dimensionalise_dt(dt_estimate):
+    """Return a timestep estimate with physical time units when a model with
+    reference scales is active, otherwise as a plain nondimensional scalar."""
+    try:
+        return uw.dimensionalise(np.squeeze(dt_estimate), {'[time]': 1})
+    except Exception:
+        # Sanctioned fallback: no active scaling model. _as_scalar because
+        # np.squeeze promotes a Python float to a 0-d array, which is not a
+        # number any caller expects (see _apply_unit_aware_scaling).
+        return _as_scalar(np.squeeze(dt_estimate))
+
+
 def _invalidate_solution_cache(u):
     """Drop the cached data view of a just-solved variable.
 
@@ -2183,16 +2281,25 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     #: not inside P0, so the term does not vanish at the discrete solution --
     #: but it converges away. ``penalty = 0`` restores the unaugmented operator.
     #:
-    #: **Held at 0 pending the pointwise-traction question.** At 10 the
-    #: spherical dynamic topography recovered from the rotated free-slip
-    #: reaction drops 0.4192 -> 0.3021, 28%, on the *vertex-sampled* value while
-    #: the facet-integrated value stays correct (``test_1018``). So augmentation
-    #: corrupts the de-smearing from reaction loads to pointwise stress —
-    #: presumably because lambda*mu*(div u) is non-zero cell-by-cell for P2-P0
-    #: and averages out over a facet integral but not at a vertex. Dynamic
-    #: topography is the main product of that machinery, so the value stays 0
-    #: until that is resolved; everything needed for the change is in place and
-    #: it is this constant.
+    #: **Held at 0, but no longer because of #633.** That issue turned out to be
+    #: the recovery operator, not the penalty: the 3-D P2 TRIANGLE de-smearing
+    #: mass has vertex rows summing to exactly zero, and ``mass="auto"`` now
+    #: picks the monotone P1-projected recovery instead. The topography
+    #: objection is gone.
+    #:
+    #: It stays at 0 because of the GAMG cost above, which is far worse than
+    #: #625 recorded. Flipping it to 10 was tried and reverted: three tier-A/B
+    #: tests failed (``test_0112`` swarm, ``test_1060`` Nitsche free-slip leak
+    #: 1.234e-4 against a 1e-4 bound, ``test_1061`` topography correlation
+    #: 0.979 against 0.99) and the same three ran **8.3x slower** -- 9.27 s to
+    #: 76.92 s, warm JIT cache both ways. The 21% FMG win needs a hierarchy;
+    #: without ``refinement>=1`` the velocity block falls back to GAMG, which
+    #: is the default path and the one that pays. A default has to serve the
+    #: default.
+    #:
+    #: Set ``penalty = 10`` explicitly on a solver that has an FMG hierarchy.
+    #: Note it also perturbs a Nitsche free-slip constraint, whose leak bound
+    #: is not slack enough to absorb it.
     DEFAULT_PENALTY = 0.0
 
 
@@ -4293,111 +4400,19 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             with reference scales is available, otherwise nondimensional.
         """
 
-        ### required modules
-        from mpi4py import MPI
-
-        comm = uw.mpi.comm
-
-        ## global max diffusivity (unified .K property: diffusivity for
-        ## diffusion models)
-        diffusivity_glob = _global_max_diffusivity(
-            self.constitutive_model.K, self.mesh)
-
-        ### velocity values at element centroids (nondimensional)
-        vel = _centroid_velocities_nd(self.V_fn, self.mesh)
-
-        # Get per-element velocity magnitudes
-        vel_magnitudes = np.linalg.norm(vel, axis=1)
-
-        # Get per-element radii (characteristic element size)
-        element_radii = self.mesh._radii
-
-        ## estimate dt of adv and diff components using per-element approach
-        ## dt_adv_i = h_i / |v_i| for advection
-        ## dt_diff_i = h_i^2 / κ for diffusion (using global κ for now)
-
-        # Reduce per-element dt to one global value. Default (percentile=0) =
-        # strict global MINIMUM — one cell sets the limit. percentile>0 takes the
-        # Nth global percentile (50 = median) of the per-element dt instead, so a
-        # few anisotropic SLIVER cells (velocity ACROSS a thin cell) don't collapse
-        # dt. SLCN is unconditionally stable, and ``direction_aware`` already
-        # credits cells stretched ALONG the flow — together they give the
-        # orientation-aware + sliver-robust timestep.
-        def _reduce_dt(per_elem):
-            fin = per_elem[np.isfinite(per_elem)] if len(per_elem) else per_elem
-            if percentile and percentile > 0:
-                gathered = comm.allgather(np.ascontiguousarray(fin, dtype=float))
-                allv = (np.concatenate([a for a in gathered if a.size])
-                        if any(a.size for a in gathered) else np.empty(0))
-                return float(np.percentile(allv, percentile)) if allv.size else np.inf
-            loc = float(np.min(fin)) if len(fin) else np.inf
-            return comm.allreduce(loc, op=MPI.MIN)
-
-        # Per-element diffusive timestep (all elements use same diffusivity)
-        if diffusivity_glob > 0:
-            dt_diff_per_element = (element_radii ** 2) / diffusivity_glob
-        else:
-            dt_diff_per_element = np.array([np.inf])
-
-        # Per-element advective timestep — either isotropic
-        # (mesh._radii / |v|) or direction-aware (v-aligned cell
-        # extent / |v|).
-        if direction_aware:
-            # Per-cell vertex indices (triangle / tet).
-            from underworld3.meshing.smoothing import _tri_cells
-            tris = _tri_cells(self.mesh.dm)
-            if tris is None:
-                # Fall back to isotropic for non-triangle meshes.
-                h_per_element = element_radii
-            else:
-                coords = np.asarray(self.mesh.X.coords)
-                centroids = coords[tris].mean(axis=1)
-                # v-hat per cell (use centroid v we already have)
-                vhat = np.where(
-                    vel_magnitudes[:, None] > 0,
-                    vel / np.maximum(vel_magnitudes[:, None],
-                                      1.0e-30),
-                    0.0)
-                D = coords[tris] - centroids[:, None, :]
-                # Signed projections along v̂ per cell vertex
-                s = np.einsum('cvd,cd->cv', D, vhat)
-                h_per_element = s.max(axis=1) - s.min(axis=1)
-                # Sanity-floor — for zero-velocity cells s=0
-                # ⇒ h_eff=0 ⇒ dt_adv=inf via the where below
-                h_per_element = np.maximum(
-                    h_per_element, 0.0)
-        else:
-            h_per_element = element_radii
-
-        with np.errstate(divide='ignore', invalid='ignore'):
-            dt_adv_per_element = np.where(
-                vel_magnitudes > 0,
-                h_per_element / vel_magnitudes,
-                np.inf
-            )
-        # Global reduction — strict min (percentile=0) or Nth percentile (median).
-        min_dt_diff_glob = _reduce_dt(dt_diff_per_element)
-        min_dt_adv_glob = _reduce_dt(dt_adv_per_element)
+        dt_estimate, dt_adv, dt_diff = _advective_diffusive_dt(
+            self.constitutive_model.K, self.V_fn, self.mesh,
+            direction_aware=direction_aware, percentile=percentile)
 
         # Store for user inspection
-        self.dt_adv = min_dt_adv_glob if not np.isinf(min_dt_adv_glob) else 0.0
-        self.dt_diff = min_dt_diff_glob if not np.isinf(min_dt_diff_glob) else 0.0
+        self.dt_adv = dt_adv if not np.isinf(dt_adv) else 0.0
+        self.dt_diff = dt_diff if not np.isinf(dt_diff) else 0.0
 
-        # Take overall minimum (respecting infinity for zero velocity/diffusivity cases)
-        dt_estimate = min(min_dt_diff_glob, min_dt_adv_glob)
-
-        # If both are infinite (no velocity and no diffusivity), return infinity
+        # Both infinite (no velocity and no diffusivity): nothing to bound
         if np.isinf(dt_estimate):
             return np.inf
 
-        # Dimensionalise the result to physical time
-        try:
-            return uw.dimensionalise(np.squeeze(dt_estimate), {'[time]': 1})
-        except Exception:
-            # Fallback: return plain nondimensional number. _as_scalar because
-            # np.squeeze promotes a Python float to a 0-d array, which is not
-            # a number any caller expects (see _apply_unit_aware_scaling).
-            return _as_scalar(np.squeeze(dt_estimate))
+        return _dimensionalise_dt(dt_estimate)
 
     @timing.routine_timer_decorator
     def solve(

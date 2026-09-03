@@ -19,6 +19,8 @@ Projection : class
     L2 projection of fields onto mesh variables.
 AdvDiffusion : class
     Advection-diffusion with semi-Lagrangian transport.
+AdvDiffusionSUPG : class
+    Advection-diffusion, implicit Eulerian with SUPG stabilisation.
 NavierStokes : class
     Navier-Stokes equations with inertia.
 Diffusion : class
@@ -64,6 +66,7 @@ from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
+from .advection_diffusion_eulerian import SNES_AdvectionDiffusion_SUPG as AdvDiffusionSUPG
 
 # import diffusion-only solver
 from .solvers import SNES_Diffusion as Diffusion

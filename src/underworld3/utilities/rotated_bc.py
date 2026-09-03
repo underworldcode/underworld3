@@ -2084,16 +2084,27 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     σ_nn is the boundary-mass de-smear of R.
 
     ``mass`` selects the de-smear:
-      * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles, consistent for
-        3D P2 triangles.
+      * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles,
+        MIDPOINT-RECONSTRUCTED for 3D P2 triangles.
       * ``"lumped"`` — the diagonal row-sum mass. It is monotone for supported traces,
         but invalid for 3D P2 triangles because their vertex row sums are exactly zero.
-      * ``"consistent"`` — the full trace mass. Pointwise-exact 3D P2 recovery, but
-        carries the vertex-integral checkerboard on P2 triangles (#404 hold).
+      * ``"consistent"`` — the full trace mass. Its 3D P2 MIDPOINT values are
+        superconvergent (0.1–1.5% on the Zhong l=2 shell at every penalty), and that is
+        the reason to choose it. Its VERTEX values are not usable: the zero vertex row
+        sums make M singular on constants there, so M⁻¹ amplifies any perturbation of
+        the load by O(1) independently of h (7.6% low at ``penalty=0``, 28% at 10,
+        79% at 100) — the vertex-integral checkerboard (#404), measured in #633.
       * ``"p1"`` — P1-PROJECTED recovery on a 3D P2 trace (edge-midpoint loads folded
-        onto vertices, lumped P1 triangle mass). Sound where the consistent P2 path
-        checkerboards; the FreeSurface default in 3D. On a P1 trace, identical to
-        ``"lumped"``.
+        onto vertices, lumped P1 triangle mass). Monotone and sound, but it discards the
+        superconvergent midpoints along with the unusable vertices. On a P1 trace,
+        identical to ``"lumped"``.
+      * ``"midpoint"`` — the ``"auto"`` choice on a 3D P2 trace (#633). The consistent
+        solve, keeping its superconvergent midpoint values, with the VERTEX values
+        reconstructed from them: on each facet the three midpoints determine a unique
+        linear function, so a vertex reads its two adjacent midpoints and subtracts the
+        opposite one, averaged over incident facets. Beats ``"p1"`` on worst-node error
+        at every resolution measured (h 0.25 → 0.11), by 1.8x to 4.9x. On a P1 trace,
+        identical to ``"lumped"``.
 
     Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
     section offset. In 3D, coordinate-keyed reactions and boundary elements are gathered
@@ -2140,7 +2151,8 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     """Populate a scalar MeshVariable ``field`` with the dynamic topography
     :math:`h = -(\\sigma_{nn}-\\overline{\\sigma_{nn}})/(\\Delta\\rho\\,g)` on ``boundary``,
     recovered from the rotated-free-slip constraint reaction. ``mass="auto"`` uses
-    lumped recovery where valid and the consistent surface mass for 3D P2 triangles.
+    lumped recovery where valid and midpoint-reconstructed recovery for 3D P2
+    triangles.
     Interior nodes are left untouched. Returns ``field``.
 
     This is the hand-off to the free-surface machinery: the 3-number topography
