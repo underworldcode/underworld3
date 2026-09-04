@@ -3896,13 +3896,21 @@ class Mesh(Stateful, uw_object):
             # The field decomposition seems to fail if coarse DMs are present
             names, isets, dms = self.dm.createFieldDecomposition()
 
-            # traverse subdms, taking user generated data in the subdm
-            # local vec, pushing it into a global sub vec
-            for var, subiset, subdm in zip(self.vars.values(), isets, dms):
-                # var.vec lazily creates the PETSc local vector on first access
-                lvec = var.vec
+            # Traverse the DM's fields BY NAME. `self.vars` holds its
+            # variables weakly, so a dropped-and-collected variable leaves
+            # a field behind in the DM; a positional zip would then pack
+            # every later variable into the wrong field (measured: the
+            # cell-size field landing in a P2 slot as garbage, NaN
+            # residuals in a solver that reads it). An orphaned field is
+            # zeroed so nothing stale can reach a kernel.
+            for name, subiset, subdm in zip(names, isets, dms):
+                var = self.vars.get(name)
                 subvec = a_global.getSubVector(subiset)
-                subdm.localToGlobal(lvec, subvec, addv=False)
+                if var is None:
+                    subvec.set(0.0)
+                else:
+                    # var.vec lazily creates the PETSc local vector on first access
+                    subdm.localToGlobal(var.vec, subvec, addv=False)
                 a_global.restoreSubVector(subiset, subvec)
 
             for iset in isets:

@@ -773,6 +773,24 @@ def getext(
 
 
 @timing.routine_timer_decorator
+def _aux_component_offsets(mesh):
+    """Component offset of every field of the mesh DM, keyed by field id.
+
+    Read from the DM itself, not from ``mesh.vars``: a MeshVariable that
+    was dropped and collected leaves its PETSc field in the DM (a DMPlex
+    cannot shed a field), and PETSc lays the auxiliary arrays out over
+    ALL fields in field order. The offsets therefore have to count the
+    orphaned fields too.
+    """
+    offsets = {}
+    total = 0
+    for field_id in range(mesh.dm.getNumFields()):
+        fe, _label = mesh.dm.getField(field_id)
+        offsets[field_id] = total
+        total += fe.getNumComponents()
+    return offsets
+
+
 def generate_c_source(
     name,
     mesh: underworld3.discretisation.Mesh,
@@ -822,7 +840,7 @@ def generate_c_source(
         count_bd_residual_sig, count_bd_jacobian_sig = callbacks.counts
 
     # `_ccode` patching
-    def ccode_patch_fns(varlist, prefix_str):
+    def ccode_patch_fns(varlist, prefix_str, component_offsets=None):
         """
         This function patches uw functions with the necessary ccode
         routines for the code printing.
@@ -848,11 +866,22 @@ def generate_c_source(
             ordered according to their `field_id`.
         prefix_str: str
             The string prefix to write.
+        component_offsets: dict, optional
+            Component offset of every field in the DM, by ``field_id``
+            (see ``_aux_component_offsets``). When given, each variable
+            is patched from ITS OWN field's offset instead of a running
+            count over ``varlist``: a field whose Python variable has
+            been dropped stays in the DM and still occupies its slots,
+            so a running count would shift every later variable onto
+            the wrong data.
         """
         u_i = 0  # variable increment
         u_x_i = 0  # variable gradient increment
         lambdafunc = lambda self, printer: self._ccodestr
         for var in varlist:
+            if component_offsets is not None:
+                u_i = component_offsets[var.field_id]
+                u_x_i = u_i * mesh.cdim
             if var.vtype == VarType.SCALAR:
                 # monkey patch this guy into the function
                 type(var.fn)._ccodestr = f"{prefix_str}[{u_i}]"
@@ -898,7 +927,8 @@ def generate_c_source(
     # is important, as the secondary call will overwrite
     # those patched in the first call.
 
-    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a")
+    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a",
+                    component_offsets=_aux_component_offsets(mesh))
     ccode_patch_fns(primary_field_list, "petsc_u")
 
     # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,
