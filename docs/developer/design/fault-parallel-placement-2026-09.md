@@ -777,6 +777,36 @@ several. At np=2 with the band through the seam the fine rig is now
 3363 cells on rank 0 and the repeat solve 3.7 s (serial linear: 7.0 s),
 the answer unchanged.
 
+### The FAC patch in parallel (4 September)
+
+The patch smoother was serial only because its blocks were built in the
+serial branch of the transfer builder; the installation already took
+per-rank subdomains. The blocks are now built in the parallel branch too,
+in global row numbering: the fault-zone blocks from the level's local
+cells through the layout's ghost-resolved numbering, which puts a masked
+cell's off-rank nodes into this rank's subdomain and so gives the seam
+halo for free, and the structural block from this rank's owned rows of
+the distributed transfer, with the cover gate one collective verdict.
+
+Measured on the fine rig (TI, contrast 1, eta_1 = 1e-3, harder grading),
+velocity iterations of the last apply and the repeat solve:
+
+| configuration | serial | np=2, seams="conform" |
+|---|---|---|
+| whole-level smoothing (no patch) | 44 its, 4.2 s | 57 its, 3.7 s |
+| fault blocks + structural block | 60 its, 5.2 s (block 20290 of 23134 rows) | 66 its, 4.2 s (rank 0: 11944 of 22590) |
+| fault blocks alone | stalls (watchdog) | stalls (watchdog) |
+
+The patch engages in parallel exactly as in serial, and on this problem
+it is a net loss in both: the fault blocks alone leave the non-nested
+fill rows smoothed nowhere and the solve stalls, so the structural block
+is mandatory, and with it the "patch" is 88% of the level. The fill is
+the whole refined region here; on a long fault in a large domain both
+blocks are small, which is where the patch earned its keep. Whether the
+structural block is needed at all under a nested, co-partitioned tail is
+the open question the no-patch row raises. `UW_FAC_STRUCTURAL=0` is the
+measurement knob for it.
+
 ### What follows
 
 1. **A free tip at a ligament end.** The split's weld is the pinned tip.

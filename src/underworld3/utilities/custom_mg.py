@@ -39,6 +39,7 @@ Notes
 """
 
 import os
+from mpi4py import MPI
 from typing import NamedTuple
 
 import numpy as np
@@ -707,6 +708,90 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
 #  its block of P from its LOCAL (ghost-inclusive) coarse coords — point-location
 #  is rank-local. The reduced global numbering rides the DM global section.
 # --------------------------------------------------------------------------- #
+def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
+                              w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
+    """:func:`_fac_patch_split` for a distributed transfer, in GLOBAL rows.
+
+    This rank's owned rows of ``P`` are classified as in the serial split
+    (an identity row onto a coincident coarse node is background, anything
+    else is patch, split duplicates are patch); a coarse column this rank
+    does not hold locally counts as patch. The halo is the background rows
+    whose coarse node some patch row of THIS rank references. The cover
+    gate is decided on the global counts, so every rank returns the same
+    verdict. Returns ``(owned_global_rows, subdomain_global_rows)`` or
+    ``None``.
+    """
+    cover_max = float(os.environ.get("UW_FAC_COVER", cover_max))
+    fstart, fend = lay_f.rstart, lay_f.rend
+    n = fend - fstart
+    indptr, cols, data = P.getValuesCSR()
+    # owned global row -> local full DOF (for its node and coordinates)
+    l2g_f = np.asarray(lay_f.l2g)
+    owned_local = np.flatnonzero((l2g_f >= fstart) & (l2g_f < fend))
+    local_of_row = np.full(n, -1, dtype=np.int64)
+    local_of_row[l2g_f[owned_local] - fstart] = owned_local
+    l2g_c = np.asarray(lay_c.l2g)
+    held_c = np.flatnonzero(l2g_c >= 0)
+    c_local_of_global = dict(zip(l2g_c[held_c].tolist(), held_c.tolist()))
+
+    bg_cnode = np.full(n, -1, dtype=np.int64)
+    patch_row = np.zeros(n, dtype=bool)
+    ref_cnodes = []                      # coarse nodes patch rows reference
+    for r in range(n):
+        sl = slice(indptr[r], indptr[r + 1])
+        w = data[sl]
+        li = local_of_row[r]
+        if w.size == 0 or li < 0:
+            patch_row[r] = True
+            continue
+        aw = np.abs(w)
+        j = int(np.argmax(aw))
+        if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
+            patch_row[r] = True
+            ref_cnodes += [c_local_of_global.get(int(g), -1) // nc
+                           for g in cols[sl]]
+            continue
+        cl = c_local_of_global.get(int(cols[sl][j]), -1)
+        if cl < 0:
+            patch_row[r] = True
+            continue
+        cnode = cl // nc
+        if np.max(np.abs(coords_f[li // nc] - coords_c[cnode])) > x_tol:
+            patch_row[r] = True
+            ref_cnodes.append(cnode)
+            continue
+        bg_cnode[r] = cnode
+    node_of_row = local_of_row // nc
+    nn = int(node_of_row.max()) + 1 if n else 0
+    node_is_patch = np.zeros(max(nn, 1), dtype=bool)
+    node_is_patch[node_of_row[patch_row]] = True
+    bgr = np.flatnonzero(bg_cnode >= 0)
+    if bgr.size:
+        pairs = np.unique(np.stack([bg_cnode[bgr], node_of_row[bgr]], axis=1),
+                          axis=0)
+        counts = np.bincount(pairs[:, 0])
+        dup = np.flatnonzero(counts > 1)
+        if dup.size:
+            node_is_patch[pairs[np.isin(pairs[:, 0], dup), 1]] = True
+    row_is_patch = node_is_patch[node_of_row] if n else np.zeros(0, dtype=bool)
+    csel = np.zeros(coords_c.shape[0], dtype=bool)
+    ref = np.asarray([c for c in ref_cnodes if c >= 0], dtype=np.int64)
+    if ref.size:
+        csel[ref] = True
+    halo_rows = (~row_is_patch) & (bg_cnode >= 0) & csel[np.clip(bg_cnode, 0, None)]
+    node_in_sub = node_is_patch.copy()
+    if n:
+        node_in_sub[node_of_row[halo_rows]] = True
+    sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
+    n_sub = comm.allreduce(int(sub_local.size), op=MPI.SUM)
+    n_all = comm.allreduce(int(n), op=MPI.SUM)
+    if n_sub > cover_max * n_all:
+        return None
+    owned = (np.flatnonzero(row_is_patch) + fstart).astype(np.int64)
+    sub = (sub_local + fstart).astype(np.int64)
+    return owned, sub
+
+
 class LevelLayout(NamedTuple):
     """Parallel DOF layout of one MG level.
 
@@ -1428,9 +1513,8 @@ class CustomMGHierarchy:
 
         Ps = []
         # FAC patch smoothing (#629): one entry per PCMG level; level ``l``'s
-        # patch is read off its own transfer ``Ps[l-1]``. Serial-only for now,
-        # like the rest of the custom-P specifics; parallel leaves every entry
-        # None, which _configure_pcmg reads as whole-level smoothing.
+        # patch is read off its own transfer ``Ps[l-1]``, in the level
+        # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
         comm = solver.dm.comm
         for l in range(1, nlev):
@@ -1483,6 +1567,55 @@ class CustomMGHierarchy:
                             f"(non-nested levels); repaired by "
                             f"nearest-fine-DOF injection.")
                 _assert_no_zero_columns_parallel(P, comm)
+                # FAC in parallel (#670): the same blocks as the serial branch
+                # below, in GLOBAL row numbering — the layout's ghost-resolved
+                # l2g puts a masked cell's off-rank nodes into this rank's
+                # subdomain, which is the seam halo; the structural split
+                # reads this rank's owned rows of the distributed transfer;
+                # the cover gate is one collective verdict.
+                if (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
+                        and l == nlev - 1):
+                    lay = maps[l]
+                    blocks = []
+                    covered = set()
+                    if self.fac_zone is not None:
+                        cn = self.level_meshes[l]._cell_node_indices(
+                            degree, continuous)
+                        for mk in self.fac_zone:
+                            nodes = np.unique(cn[np.asarray(mk, dtype=bool)])
+                            rows = lay.l2g[(nodes[:, None] * nc
+                                            + np.arange(nc)[None, :]).ravel()]
+                            rows = np.unique(rows[rows >= 0]).astype(np.int64)
+                            if rows.size:
+                                blocks.append((rows, rows))
+                                covered.update(rows.tolist())
+                    # TODO(MEASURE): #670 knob — UW_FAC_STRUCTURAL=0 keeps the
+                    # fault-zone blocks alone, without the structural
+                    # (non-nested transfer) rows; remove when settled.
+                    split = None
+                    if os.environ.get("UW_FAC_STRUCTURAL", "1") != "0" or not blocks:
+                        split = _fac_patch_split_parallel(
+                            P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
+                            comm.tompi4py(),
+                            cover_max=(1.01 if blocks else 0.75))
+                    if split is not None:
+                        _own, sub = split
+                        extra = np.asarray([g for g in sub if g not in covered],
+                                           dtype=np.int64)
+                        if blocks:
+                            if extra.size:
+                                blocks.append((extra, extra))
+                        else:
+                            blocks.append((np.asarray(_own, dtype=np.int64),
+                                           np.asarray(sub, dtype=np.int64)))
+                    # every rank installs the patch, or none does: a rank with
+                    # no rows of its own still sets the smoother type
+                    n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)
+                    if n_any:
+                        self.level_patch_rows[l] = (
+                            blocks if len(blocks) != 1 else blocks[0]) \
+                            if blocks else (np.zeros(0, dtype=np.int64),
+                                            np.zeros(0, dtype=np.int64))
                 Ps.append(P)
             else:
                 # A native refine() pair gets the EXACT nested embedding at the
@@ -1565,9 +1698,11 @@ class CustomMGHierarchy:
                         # smoothed nowhere and the velocity solve stalls at
                         # its cap (measured: any off-cut zone, #629). Add
                         # the uncovered structural rows as one more block.
-                        split = _fac_patch_split(
-                            Pr, coords[l - 1], coords[l], maps[l - 1],
-                            maps[l], nc, cover_max=1.01)
+                        split = None
+                        if os.environ.get("UW_FAC_STRUCTURAL", "1") != "0":
+                            split = _fac_patch_split(
+                                Pr, coords[l - 1], coords[l], maps[l - 1],
+                                maps[l], nc, cover_max=1.01)
                         if split is not None:
                             _own, sub = split
                             extra = sub[~covered[sub]].astype(np.int64)
