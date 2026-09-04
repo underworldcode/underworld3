@@ -4,11 +4,13 @@
 #
 # Usage: ./test.sh [OPTIONS]
 #   --p N            Run parallel tests with N MPI ranks (default: skip parallel tests)
+#   --full-parallel  Add a second parallel pass at 4 ranks (see below; slow on CI)
 #   --parallel-only  Run ONLY parallel tests (skip all serial tests)
 #
 # Examples:
 #   ./test.sh                     # All serial tests only
 #   ./test.sh --p 2               # All serial + parallel (2 ranks)
+#   ./test.sh --p 2 --full-parallel   # ... and again at 4 ranks
 #   ./test.sh --parallel-only --p 2   # Only parallel tests (debugging)
 #
 # We do not run one monolithic pytest because tests produce a large number of
@@ -20,11 +22,19 @@ status=0
 # Parse arguments
 PARALLEL_RANKS=0
 PARALLEL_ONLY=0
+# Second parallel pass at four ranks. OFF by default: on a 2-core CI runner
+# np=4 is oversubscribed and the pass costs far more than the ~3 minutes it
+# takes on a workstation — enough to exceed the 120-minute job cap (#573).
+FULL_PARALLEL=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         --p)
             PARALLEL_RANKS="$2"
             shift 2
+            ;;
+        --full-parallel)
+            FULL_PARALLEL=1
+            shift
             ;;
         --parallel-only)
             PARALLEL_ONLY=1
@@ -32,7 +42,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--p N] [--parallel-only]"
+            echo "Usage: $0 [--p N] [--full-parallel] [--parallel-only]"
             exit 1
             ;;
     esac
@@ -156,19 +166,65 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     # - Solver operations
     # - Global evaluations
 
-    echo "Testing global statistics and parallel operations..."
-    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py || status=1
+    # Every mpirun goes through the supervisor. A rank blocked in a collective
+    # produces nothing and never returns, so an unsupervised batch spends the
+    # whole job budget in silence and is cancelled from outside with no
+    # diagnosis -- measured at 76 minutes (#675). The supervisor bounds that on
+    # silence rather than total runtime, so a legitimately slow batch is not
+    # punished, and it dumps and compares the ranks before killing them.
+    #
+    # It matters more here than it did on the two globs it replaced: this pass
+    # covers the directory by enumeration, so files that had never run in CI
+    # now do, and a new file is exactly where an unbounded hang comes from.
+    SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
 
-    # Parallel SOLVER tests. This line was commented out, so test_1017 and
-    # test_1062..test_1069 — the whole rotated / constrained / MG parallel set,
-    # including the partition-independence guards for the rotated nodal normal
-    # (#560) and the mesh boundary normal (#564) — executed at NO rank count
-    # in CI.
-    echo "Testing parallel solvers..."
-    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_10*py || status=1
+    # Every file under tests/parallel/, in BATCHES. Two things matter here and
+    # they pull in opposite directions.
+    #
+    # Coverage: the batches used to be `test_075*py` and `test_10*py`, which
+    # between them named 14 of the 32 files and left a hole from 0760 to 0999 —
+    # test_0760, test_0765..test_0790, test_0855 and test_0873 ran in parallel
+    # at NO rank count, in CI or locally. That is how the np=4 hang in #611
+    # survived unnoticed, and it is the #570 class: a glob naming ranges grows
+    # holes as files are added between them. So the list is ENUMERATED, and
+    # covers the directory by construction.
+    #
+    # Batching: this script does not run one monolithic pytest, for the reason
+    # in its header — PETSc objects accumulate across files and tests start
+    # interacting. Handing the whole directory to a single mpirun took the CI
+    # job past its 120-minute cap while the same set in batches costs a couple
+    # of minutes. So the enumeration is chunked rather than passed in one go.
+    PARALLEL_BATCH=${PARALLEL_BATCH:-6}
+    PARALLEL_FILES=(tests/parallel/test_*.py)
+    echo "Testing parallel operations, swarms and solvers"
+    echo "  ${#PARALLEL_FILES[@]} files in batches of $PARALLEL_BATCH"
+    for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+      $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+        "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
+    done
 
-    # echo "Testing parallel I/O..."
-    # mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_io*py || status=1
+    # A SECOND pass at four ranks, because two is a special case: the failure
+    # this suite exists to catch is a collective entered by some ranks and not
+    # others, and with two ranks the mismatched pair often still meets. Both
+    # recent instances passed at np=2 and hung at np=4 (#609's conditional
+    # collective, and #611).
+    #
+    # Opt-in via --full-parallel. A CI runner has two cores, so np=4 is
+    # oversubscribed there; this belongs in a nightly or a separate job (#573).
+    #
+    # The deselection is #611: that test passes at np=2 and hangs at np=4 on
+    # development. The node id has no `tests/` prefix because tests/pytest.ini
+    # puts rootdir at `tests/`, and a deselect that does not match is ignored in
+    # silence — confirm "1 deselected" in the output when changing it.
+    if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
+      echo "Testing the same set at 4 ranks (np=2 is a special case)..."
+      for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+        $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+          "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" \
+          --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
+          || status=1
+      done
+    fi
 
     echo "Parallel tests complete"
     echo "=========================================="
