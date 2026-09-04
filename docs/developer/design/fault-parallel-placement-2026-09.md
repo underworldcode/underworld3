@@ -829,6 +829,44 @@ collective, and a rank with no band cells decided alone to take it while
 the others skipped it, a hang at np=4; the decision is now made from
 what any rank holds.
 
+### The band block's size (4 September, evening)
+
+Louis: keep the band level manageable; in 3-D this will be large. The
+block is the one cost that grows with the fault, so it was swept on the
+fine rig (TI 1e-3, composite form, LU sub-solve, overlap 1). The band's
+footprint is 11440 rows; with its overlap layer one block is 15736 rows,
+two thirds of the finest level. Cutting it along strike into pieces of
+at most N rows:
+
+| rows per block | serial: blocks, its, first / repeat solve | np=2: blocks (rank 0), its, solve | np=4 |
+|---|---|---|---|
+| whole band | 1, 10, 6.1 / 2.2 s | 1, 11, 3.6 / 1.6 s | — |
+| 6000 | 2, 12, 4.4 / 2.4 s | — | — |
+| 3000 | 4, 12, 4.6 / 2.4 s | 3, 12, 5.0 / 1.6 s | — |
+| 1500 | 8, 12, 4.7 / 2.5 s | 5, 12, 3.5 / 1.6 s | 5, 12, 4.0 / 1.6 s |
+| 800 | 15, 13, 6.1 / 2.6 s | 9, 13, 3.7 / 1.8 s | — |
+| 400 | 29, 15, 5.1 / 2.7 s | 17, 30, 5.6 / 3.4 s | — |
+
+Segmenting is nearly free down to about a thousand rows per block: 12
+iterations from 2 to 8 blocks in serial and at np=2 and np=4, with the
+first solve faster than the single block's because the factorisations
+are small. Below that the interfaces between pieces start to cost, and at
+np=2 the 600-row blocks double the iteration count. Two other points:
+ILU on the block instead of LU is 27 iterations against 10, so the
+sub-solve must be exact; and a second overlap layer buys one iteration
+for 2700 rows (9 against 10) while segmented blocks with overlap 2 did
+not get through setup in serial within the watchdog.
+
+**The 2-D defaults**, set in `set_custom_fmg` and the automatic path:
+the composite form, LU sub-solve with a nonzero shift, one overlap layer,
+`fac_block_rows=2000` (rows before the overlap), no structural block. On
+the rig that is 6 blocks and 12 iterations in serial, 5 blocks and 12 at
+np=2 and np=4, with the repeat solve at 1.6 s where the run began the day
+at 7.4 s. For 3-D the arithmetic is the point: the band is a surface two
+cells thick, its rows grow with the fault's area, and the cap turns that
+into more blocks of the same size rather than a larger factorisation;
+the iteration count is flat in the block count above the floor.
+
 ### What follows
 
 1. **A free tip at a ligament end.** The split's weld is the pinned tip.

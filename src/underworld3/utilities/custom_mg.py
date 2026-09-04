@@ -708,6 +708,36 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
 #  its block of P from its LOCAL (ghost-inclusive) coarse coords — point-location
 #  is rank-local. The reduced global numbering rides the DM global section.
 # --------------------------------------------------------------------------- #
+def _segment_block(rows, node_of_row, coords, max_rows):
+    """Split one patch block into contiguous pieces along its strike.
+
+    ``rows`` are the block's rows, ``node_of_row`` their nodes, ``coords``
+    the level's node coordinates. The nodes are ordered along the block's
+    leading principal direction (the strike of a fault band) and cut into
+    the fewest pieces of at most ``max_rows`` rows, whole nodes kept
+    together. An exact sub-solve costs superlinearly in the block, so the
+    cap bounds the factorisation as the band grows; the overlap layer
+    joins the pieces. ``max_rows`` None or non-positive keeps one block.
+    """
+    rows = np.asarray(rows, dtype=np.int64)
+    if not max_rows or max_rows <= 0 or rows.size <= max_rows:
+        return [rows]
+    nodes = np.asarray(node_of_row, dtype=np.int64)
+    uniq, inv = np.unique(nodes, return_inverse=True)
+    P = np.asarray(coords)[uniq]
+    c0 = P - P.mean(axis=0)
+    _u, _s, Vt = np.linalg.svd(c0, full_matrices=False)
+    along = c0 @ Vt[0]
+    order = np.argsort(along, kind="stable")
+    k = int(np.ceil(rows.size / max_rows))
+    pieces = []
+    for chunk in np.array_split(order, k):
+        sel = np.isin(inv, chunk)
+        if sel.any():
+            pieces.append(rows[sel])
+    return pieces
+
+
 def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
                               w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
     """:func:`_fac_patch_split` for a distributed transfer, in GLOBAL rows.
@@ -1383,7 +1413,7 @@ class CustomMGHierarchy:
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
-                 cross_partition="auto", fac_zone=None):
+                 cross_partition="auto", fac_zone=None, fac_block_rows=2000):
         if builder not in _BUILDERS:
             raise ValueError("builder must be 'barycentric' or 'rbf'")
         if len(level_meshes) < 2:
@@ -1396,6 +1426,12 @@ class CustomMGHierarchy:
         self.field_id = field_id
         self.cross_partition = cross_partition
         self.fac_zone = self._validated_fac_zone(fac_zone)
+        # rows per band block before its overlap layer. Measured on the
+        # fine S-fault rig (TI 1e-3, 4 September): one block of 15736 rows
+        # takes 10 velocity iterations, blocks of ~2000 rows 12, of ~600
+        # rows 15 in serial and 30 at np=2 — and the exact sub-solve's
+        # cost is bounded by the cap however long the band grows.
+        self.fac_block_rows = int(fac_block_rows)
         self.transfers = None
 
     def _validated_fac_zone(self, fac_zone):
@@ -1605,12 +1641,21 @@ class CustomMGHierarchy:
                             degree, continuous)
                         for mk in self.fac_zone:
                             nodes = np.unique(cn[np.asarray(mk, dtype=bool)])
-                            rows = lay.l2g[(nodes[:, None] * nc
-                                            + np.arange(nc)[None, :]).ravel()]
-                            rows = np.unique(rows[rows >= 0]).astype(np.int64)
-                            if rows.size:
-                                blocks.append((rows, rows))
-                                covered.update(rows.tolist())
+                            full = (nodes[:, None] * nc
+                                    + np.arange(nc)[None, :]).ravel()
+                            rows = lay.l2g[full]
+                            keep = rows >= 0
+                            rows, node_r = rows[keep], full[keep] // nc
+                            # TODO(MEASURE): #670 knob — rows per block;
+                            # the default comes from the size sweep.
+                            cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                     self.fac_block_rows))
+                            for piece in _segment_block(rows, node_r,
+                                                        coords[l], cap):
+                                piece = np.unique(piece).astype(np.int64)
+                                if piece.size:
+                                    blocks.append((piece, piece))
+                                    covered.update(piece.tolist())
                     # TODO(MEASURE): #670 knob — UW_FAC_STRUCTURAL=0 keeps the
                     # fault-zone blocks alone, without the structural
                     # (non-nested transfer) rows; remove when settled.
@@ -1709,15 +1754,19 @@ class CustomMGHierarchy:
                         node_of_row = np.asarray(maps[l]) // nc
                         blocks = []
                         covered = np.zeros(len(node_of_row), dtype=bool)
+                        cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                 self.fac_block_rows))
                         for mk in masks:
                             node_in = np.zeros(coords[l].shape[0], dtype=bool)
                             node_in[np.unique(
                                 cn[np.asarray(mk, dtype=bool)])] = True
                             rows = np.flatnonzero(
                                 node_in[node_of_row]).astype(np.int64)
-                            if rows.size:
-                                blocks.append((rows, rows))
-                                covered[rows] = True
+                            for piece in _segment_block(
+                                    rows, node_of_row[rows], coords[l], cap):
+                                if piece.size:
+                                    blocks.append((piece, piece))
+                                    covered[piece] = True
                         # The patch smoother REPLACES whole-level smoothing,
                         # so it inherits every row the coarse level cannot
                         # represent — the STRUCTURAL (non-identity) transfer
@@ -1859,6 +1908,7 @@ class _DMLevelView:
 # --------------------------------------------------------------------------- #
 def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
                    field_id=None, cross_partition="auto", fac_zone=None,
+                   fac_block_rows=2000,
                    verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
@@ -1874,7 +1924,9 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     :class:`CustomMGHierarchy`); the default ``"auto"`` handles both nested and
     non-nested coarse tails.
 
-    ``fac_zone`` keys the finest level's strong patch smoother on the fault
+    ``fac_block_rows`` caps the rows of each band block (before its overlap
+    layer); a longer band is cut into more blocks along its strike, so the
+    exact sub-solve stays bounded. ``fac_zone`` keys the finest level's strong patch smoother on the fault
     zone (#629): a boolean mask over the solver mesh's cells — e.g.
     ``mesh.cells_labelled("Band")`` for a placed ribbon, or
     ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
@@ -1886,7 +1938,8 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
                                        builder=builder, field_id=field_id,
                                        cross_partition=cross_partition,
-                                       fac_zone=fac_zone),
+                                       fac_zone=fac_zone,
+                                       fac_block_rows=fac_block_rows),
         "verbose": verbose,
     }
     solver.is_setup = False
