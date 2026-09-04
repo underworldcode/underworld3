@@ -139,6 +139,7 @@ custom-meshes
 curved-boundary-conditions
 mesh-adaptation
 semi-lagrangian-time-integration
+eulerian-advection-diffusion
 porous-flow
 snapshot-restore
 troubleshooting
