@@ -593,7 +593,12 @@ class _BaseMeshVariable(Stateful, uw_object):
         MeshVariable
             New mesh variable with copied structure but independent data.
         """
-        newMeshVariable = MeshVariable(
+        # Built through the public factory rather than a bare `MeshVariable`,
+        # which is not a name in this module — the clone therefore came back as
+        # a NameError for every caller. See issue #498. Going through the
+        # factory also returns the same enhanced type the caller started with,
+        # so a clone behaves like its original.
+        return uw.discretisation.MeshVariable(
             varname=name,
             mesh=self.mesh,
             num_components=self.shape,
@@ -602,8 +607,6 @@ class _BaseMeshVariable(Stateful, uw_object):
             continuous=self.continuous,
             varsymbol=varsymbol,
         )
-
-        return newMeshVariable
 
     def pack_raw_data_to_petsc(self, data_array, sync=True):
         """
@@ -934,6 +937,15 @@ class _BaseMeshVariable(Stateful, uw_object):
                 nnn = 3
 
         D = self.data.copy()
+
+        # A rank owning no cells owns no DOFs either, so there is nothing to
+        # interpolate FROM: the kd-tree below would be built over an empty
+        # point cloud and the stencil gather would index an empty array
+        # (issue #405). Return the correctly-shaped zeros — this is a purely
+        # rank-local path, so returning early takes no collective with it.
+        # (The equivalent SwarmVariable path guards the same way.)
+        if D.shape[0] == 0:
+            return np.zeros((np.asarray(new_coords).shape[0], D.shape[1]))
 
         if verbose and uw.mpi.rank == 0:
             print("Building K-D tree", flush=True)
@@ -1691,27 +1703,38 @@ class _BaseMeshVariable(Stateful, uw_object):
             # When we rebuild the DM, existing variables' vectors must be recreated
             # from the new DM, but we need to preserve their data
 
-            # Save old variable data before destroying vectors
+            # Save old variable data, then RELEASE (not destroy) the old
+            # vectors. petsc4py's ``destroy()`` zeroes the handle of the very
+            # wrapper object a user may still hold (``var.vec`` returns the
+            # same wrapper), turning a later call on it into a NULL-handle
+            # dereference — a hard SIGSEGV on an optimized PETSc (issue #492).
+            # Dropping our reference instead lets PETSc refcounting free the
+            # Vec with its last holder: same memory behaviour when nobody
+            # else holds it, a stale-but-valid handle when someone does.
             var_data_backup = {}
             for var in self.mesh.vars.values():
                 if var._lvec is not None:
-                    # Save the data
                     var_data_backup[var.clean_name] = var._lvec.array.copy()
-                    # Destroy old vectors
-                    var._lvec.destroy()
                     var._lvec = None
                 if var._gvec is not None:
-                    var._gvec.destroy()
                     var._gvec = None
 
-            # Also invalidate mesh's local vector if it exists
+            # Release the mesh's combined local vector the same way; it is
+            # rebuilt from the new DM on the next update_lvec().
             if self.mesh._lvec is not None:
-                self.mesh._lvec.destroy()
                 self.mesh._lvec = None
                 self.mesh._stale_lvec = True
 
-            # Replace old DM with new one
-            dm_old.destroy()
+            # Swap in the rebuilt DM. The old DM is deliberately NOT
+            # destroyed (issue #492): ``mesh.dm`` is a plain attribute, so a
+            # user-captured handle is the SAME wrapper object — an eager
+            # destroy blinds it (handle -> 0, SIGSEGV on next use) and frees
+            # the C object while numpy views of the old vectors still alias
+            # its pages (the delayed heap-corruption crash on Linux CI).
+            # Dropping the reference is leak-free: solver-side holders are
+            # clones, so the old DM's last reference is normally this one and
+            # it is collected immediately; measured RSS over repeated
+            # rebuild+solve cycles is identical with and without the destroy.
             self.mesh.dm = dm_new
             self.mesh.dm_hierarchy[-1] = dm_new
 
@@ -1724,11 +1747,14 @@ class _BaseMeshVariable(Stateful, uw_object):
                 if var.clean_name in var_data_backup:
                     # _set_vec will create new vectors from the new DM
                     var._set_vec(available=True)
-                    # Eagerly invalidate cached data array. The .data property also
-                    # self-validates via _lvec identity check, but clearing here avoids
-                    # unnecessary recreation on next access.
+                    # Eagerly invalidate cached data/array views. The .data
+                    # property also self-validates via _lvec identity check,
+                    # but clearing here guarantees UW3 never hands back a view
+                    # of the released vectors (matches _on_mesh_adapted).
                     if hasattr(var, '_canonical_data'):
                         var._canonical_data = None
+                    var._data_cache = None
+                    var._array_cache = None
                     # Restore the data
                     var._lvec.array[...] = var_data_backup[var.clean_name]
 

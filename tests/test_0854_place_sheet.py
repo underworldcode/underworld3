@@ -150,5 +150,156 @@ def test_dimension_dispatch_is_refused_both_ways():
     pts, tris = _sheet((0.5, 0.5, 0.5))
     with pytest.raises(NotImplementedError, match="place_along_lines"):
         place_sheet(mesh2.dm, pts, tris)
-    with pytest.raises(NotImplementedError, match="cavity of a placed sheet"):
+    with pytest.raises(NotImplementedError, match="place_sheet"):
         place_along_lines(mesh3.dm, [np.array([[0.2, 0.5], [0.8, 0.5]])])
+
+
+def test_finite_elements_are_exact_on_the_placed_mesh():
+    """P2 Poisson reproduces a quadratic on the sewn mesh to solver precision.
+
+    The oracle that was missing when issue #520's parent defect shipped: a
+    mesh can pass conformity, Euler, exact volume and every abs()-based gate
+    while assembling a WRONG operator — mixed cell handedness did exactly
+    that (4131 cells one way, 443 the other; a linear solution came back with
+    errors of 27 under exact LU). P2 contains x^2+y^2+z^2, so a correct
+    assembly returns it to solver precision; any orientation or DOF-numbering
+    disorder cannot.
+    """
+    import sympy
+
+    base = _box(0.11)
+    bounds = base._boundaries_with("Rupture")
+    pts, tris = _sheet((0.5, 0.5, 0.5))
+    dm, _ = place_sheet(base.dm, pts, tris, label="Rupture",
+                        label_value=bounds["Rupture"].value)
+    mesh = uw.discretisation.Mesh(
+        dm, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y, z = mesh.X
+    exact = x**2 + y**2 + z**2
+    t = uw.discretisation.MeshVariable("T_fe_sheet", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -6.0
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0])
+                 - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
+    assert float(err.max()) < 1e-8, (
+        f"the placed mesh assembles a wrong operator: max |u - exact| = "
+        f"{float(err.max()):.3e}")
+
+
+def test_an_outcropping_sheet_meets_the_top_surface():
+    """The science case: the fault intersects the upper surface.
+
+    Specify-long contract (ruling 2026-08-11): the sheet extends PAST the
+    box and is clipped; its trace becomes the outcrop, the cavity opens
+    onto the top wall, and the cap over it is remeshed — pre-meshed by the
+    2-D fill so the rim stays verbatim (a geo surface RESAMPLES a discrete
+    rim, measured). The cap's new faces are relabelled explicitly with what
+    the replaced faces carried, so a Dirichlet condition on "Top" still
+    grips — asserted through the P2 quadratic oracle, which no missing
+    boundary condition or seam disorder can pass.
+    """
+    import sympy
+
+    base = _box(0.12)
+    bounds = base._boundaries_with("Rupture")
+    strike = np.array([1.0, 0.15, 0.0])
+    strike /= np.linalg.norm(strike)
+    dip = np.array([0.15, 0.0, -1.0])
+    dip /= np.linalg.norm(dip)
+    top = np.array([0.5, 0.5, 1.1])          # 0.1 ABOVE the box
+    s = np.linspace(-0.22, 0.22, 5)
+    d = np.linspace(0.0, 0.45, 5)
+    pts = np.array([top + a * strike + b * dip for b in d for a in s])
+    tris, n = [], 5
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a, b = i * n + j, i * n + j + 1
+            c, e = (i + 1) * n + j, (i + 1) * n + j + 1
+            tris += [(a, b, e), (a, e, c)]
+
+    new, info = place_sheet(base.dm, pts, np.array(tris, dtype=np.int64),
+                            label="Rupture",
+                            label_value=bounds["Rupture"].value)
+    assert info["n_surface_facets"] > 0
+    assert new.getLabel("Rupture").getStratumSize(
+        bounds["Rupture"].value) == info["n_surface_facets"]
+
+    # Every boundary face on the top plane carries the Top label — the cap
+    # was relabelled, not silently stripped.
+    fS, fE = new.getHeightStratum(1)
+    vS, vE = new.getDepthStratum(0)
+    Xn = np.asarray(new.getCoordinatesLocal().array
+                    ).reshape(-1, 3)[: vE - vS]
+    top_label = new.getLabel("Top")
+    tv = bounds["Top"].value
+    for f in range(fS, fE):
+        if len(new.getSupport(f)) != 1:
+            continue
+        verts = [int(q) - vS for q in new.getTransitiveClosure(f)[0]
+                 if vS <= int(q) < vE]
+        if all(Xn[v][2] == 1.0 for v in verts):
+            assert top_label.getValue(f) == tv, \
+                "an unlabelled boundary face on the remeshed top"
+
+    mesh = uw.discretisation.Mesh(
+        new, simplex=True, qdegree=3, boundaries=bounds,
+        coordinate_system_type=base.CoordinateSystem.coordinate_type)
+    x, y, z = mesh.X
+    exact = x**2 + y**2 + z**2
+    t = uw.discretisation.MeshVariable("T_outcrop", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=t)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = -6.0
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        poisson.add_dirichlet_bc(sympy.Matrix([exact]), wall)
+    poisson.tolerance = 1e-11
+    poisson.solve()
+    X = np.asarray(t.coords)
+    err = np.abs(np.asarray(t.data[:, 0])
+                 - (X[:, 0]**2 + X[:, 1]**2 + X[:, 2]**2))
+    assert float(err.max()) < 1e-8
+
+def test_a_sheet_embeds_in_a_spherical_shell_and_removes_again():
+    """The domain's topology is conserved, not assumed.
+
+    A spherical shell is S^2 x I, global Euler number 2, and the old gate
+    demanded 1 — refusing the domain for its topology rather than for any
+    defect of the surgery. Placement and removal both run their own
+    volume, conformity and Euler-conservation gates; asserting the info
+    here proves they ran and agreed. Serial guard matches the suite.
+    """
+    if uw.mpi.size > 1:
+        pytest.skip("serial suite; the parallel form is ptest_0854")
+    from underworld3.utilities.place_surface import remove_embedded
+
+    shell = uw.meshing.SphericalShell(radiusInner=0.25, radiusOuter=1.0,
+                                      cellSize=0.13, qdegree=2)
+    d1 = np.array([0.0, 1.0, 0.0])
+    d2 = np.array([-1.0, 0.0, 1.0]) / np.sqrt(2.0)
+    C = np.array([0.45, 0.0, 0.45])
+    n, s = 5, np.linspace(-0.1, 0.1, 5)
+    pts = np.array([C + a * d1 + b * d2 for a in s for b in s])
+    tris = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a, b = i * n + j, i * n + j + 1
+            c, d = (i + 1) * n + j, (i + 1) * n + j + 1
+            tris += [(a, b, d), (a, d, c)]
+
+    new, info = place_sheet(shell.dm, pts, np.array(tris, dtype=np.int64),
+                            label="Sheet", label_value=3)
+    assert info["n_surface_facets"] == len(tris)
+    assert new.getLabel("Sheet").getStratumSize(3) >= len(tris)
+
+    back, rinfo = remove_embedded(new, "Sheet", label_value=3)
+    assert rinfo["n_removed_cells"] > 0
+    assert back.getLabel("Sheet").getStratumSize(3) == 0

@@ -10,6 +10,7 @@ from .cartesian import (
     UnstructuredSimplexBox,
     StructuredQuadBox,
     BoxInternalBoundary,
+    BoxInternalPatch,
 )
 
 from .spherical import (
@@ -45,6 +46,8 @@ from .surfaces import (
     SurfaceVariable,
     SurfaceCollection,
     fault_metric_tensor,
+    prepare_fault_network,
+    damage_zone_yield,
     fault_comb_metric,
     fault_metric,
     compose_metrics,
@@ -53,6 +56,10 @@ from .surfaces import (
 from .faults import (
     FaultSurface,
     FaultCollection,
+)
+
+from .fault_network import (
+    FaultNetwork,
 )
 
 from .smoothing import (
@@ -78,6 +85,7 @@ __all__ = [
     "UnstructuredSimplexBox",
     "StructuredQuadBox",
     "BoxInternalBoundary",
+    "BoxInternalPatch",
     # Spherical meshes
     "SphericalShell",
     "SphericalShellInternalBoundary",
@@ -103,6 +111,9 @@ __all__ = [
     "SurfaceVariable",
     "SurfaceCollection",
     "fault_metric_tensor",
+    "prepare_fault_network",
+    "FaultNetwork",
+    "damage_zone_yield",
     "fault_comb_metric",
     "fault_metric",
     "compose_metrics",

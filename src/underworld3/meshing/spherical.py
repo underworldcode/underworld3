@@ -16,10 +16,12 @@ import os
 import math
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
 from underworld3.discretisation import _from_gmsh as gmsh2dmplex
+from underworld3.discretisation import _gmsh_to_h5 as gmsh2h5
 import underworld3.timing as timing
 import underworld3.cython.petsc_discretisation
 
@@ -137,10 +139,10 @@ def SphericalShell(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
         uw_filename = (
-            f".meshes/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
+            f"{mesh_file_dir()}/uw_spherical_shell_ro{radiusOuter}_ri{radiusInner}_csize{cellSize}.msh"
         )
     else:
         uw_filename = filename
@@ -210,7 +212,7 @@ def SphericalShell(
         gmsh.model.occ.synchronize()
 
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Ensure boundaries conform (if refined)
@@ -382,9 +384,9 @@ def SphericalManifold(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
         uw_filename = (
-            f".meshes/uw_spherical_manifold_r{radius}_csize{cellSize}.msh"
+            f"{mesh_file_dir()}/uw_spherical_manifold_r{radius}_csize{cellSize}.msh"
         )
     else:
         uw_filename = filename
@@ -414,7 +416,7 @@ def SphericalManifold(
 
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
         gmsh.model.mesh.generate(2)  # 2-D mesh in 3-D space
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Force the PETSc gmsh reader to preserve the 3-D embedding when
@@ -508,6 +510,7 @@ def SphericalShellInternalBoundary(
     refinement=None,
     gmsh_verbosity=0,
     verbose=False,
+    write_mesh_files_only=False,
 ):
     """
     Generates a spherical shell with an internal boundary using Gmsh. The function creates a 3D mesh of a spherical shell
@@ -535,11 +538,19 @@ def SphericalShellInternalBoundary(
         Gmsh output verbosity (0=quiet). Default is 0.
     verbose : bool, optional
         If True, print additional information. Default is False.
+    write_mesh_files_only : bool, optional
+        If True, write the Gmsh ``.msh`` and PETSc ``.msh.h5`` files, return
+        the HDF5 path as a string, and stop without constructing an in-memory
+        Underworld mesh. This skips HDF5 reloading, coordinate-system setup,
+        and cell-region classification. If False, return a fully initialized
+        :class:`underworld3.discretisation.Mesh`, including the ``Inner`` and
+        ``Outer`` cell-region labels. Default is False.
 
     Returns
     -------
-    Mesh
-        The generated spherical shell mesh with internal boundary.
+    Mesh or str
+        The PETSc HDF5 path when ``write_mesh_files_only=True``; otherwise, a
+        fully initialized spherical-shell mesh.
 
     Examples
     --------
@@ -572,9 +583,9 @@ def SphericalShellInternalBoundary(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_spherical_shell_ro{radiusOuter}_rint{radiusInternal}_ri{radiusInner}_csize{cellSize}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_spherical_shell_ro{radiusOuter}_rint{radiusInternal}_ri{radiusInner}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -692,8 +703,16 @@ def SphericalShellInternalBoundary(
         gmsh.model.addPhysicalGroup(shell_vol[0], [shell_vol[1]], 99999, "Elements")
 
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
+
+    if write_mesh_files_only:
+        return gmsh2h5(
+            uw_filename,
+            markVertices=True,
+            useRegions=True,
+            useMultipleTags=True,
+        )
 
     # Ensure boundaries conform (if refined)
     # This is equivalent to a partial function because it already
@@ -876,9 +895,9 @@ def SegmentofSphere(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_segmentofsphere_ro{radiusOuter}_ri{radiusInner}_longext{longitudeExtent}_latext{latitudeExtent}_csize{cellSize}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_segmentofsphere_ro{radiusOuter}_ri{radiusInner}_longext{longitudeExtent}_latext{latitudeExtent}_csize{cellSize}.msh"
     else:
         uw_filename = filename
 
@@ -997,7 +1016,7 @@ def SegmentofSphere(
         gmsh.model.occ.synchronize()
 
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     # Ensure boundaries conform (if refined)
@@ -1156,8 +1175,8 @@ def CubedSphere(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
-        uw_filename = f".meshes/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElements}_plex{simplex}.msh"
+            os.makedirs(mesh_file_dir(), exist_ok=True)
+        uw_filename = f"{mesh_file_dir()}/uw_cubed_spherical_shell_ro{radiusOuter}_ri{radiusInner}_elts{numElements}_plex{simplex}.msh"
     else:
         uw_filename = filename
 
@@ -1266,7 +1285,7 @@ def CubedSphere(
 
         # Generate Mesh
         gmsh.model.mesh.generate(3)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def sphere_return_coords_to_bounds(coords):
@@ -1332,7 +1351,10 @@ def CubedSphere(
         Lower = new_mesh.CoordinateSystem.unit_e_0
         Upper = new_mesh.CoordinateSystem.unit_e_0
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # boundary_normals deprecated — use mesh.Gamma inside integrands and BCs,
+    # or mesh.boundary_normal(boundary) for a per-boundary P1 normal field.
+    # NOT mesh.Gamma_P1: it is deprecated too, and off-kernel it falls back to
+    # a coordinate direction rather than a normal (#538).
 
     # Full cubed sphere: 3 rigid rotation modes
     x, y, z = new_mesh.X

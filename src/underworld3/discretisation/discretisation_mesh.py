@@ -96,18 +96,15 @@ def extend_enum(inherited):
 
 
 @timing.routine_timer_decorator
-def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMultipleTags=True):
-    """Read a Gmsh .msh file from `filename`.
+def _gmsh_to_h5(
+    filename,
+    markVertices=False,
+    useRegions=True,
+    useMultipleTags=True,
+):
+    """Convert a Gmsh file to PETSc HDF5 without loading the resulting DM."""
 
-    :kwarg comm: Optional communicator to build the mesh on (defaults to
-        COMM_WORLD).
-    """
-
-    ## NOTE: - this should be smart enough to serialise the msh conversion
-    ## and then read back in parallel via h5.  This is currently done
-    ## by every gmesh mesh
-
-    comm = comm or PETSc.COMM_WORLD
+    h5_filename = filename + ".h5"
     options = PETSc.Options()
     options["dm_plex_hash_location"] = None
 
@@ -143,9 +140,20 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
             plex_0.setName("uw_mesh")
             plex_0.markBoundaryFaces("All_Boundaries", 1001)
 
-            viewer = PETSc.ViewerHDF5().create(filename + ".h5", "w", comm=PETSc.COMM_SELF)
+            # Write aside and rename, so ``filename + ".h5"`` never names a
+            # half-written file. The name comes from the mesh PARAMETERS, so a
+            # second process building the same geometry in this directory picks
+            # the same one and would otherwise read what this one is still
+            # writing (issue #563).
+            # Imported here, not at module scope: the meshing package imports
+            # this module, so a top-level import would close a cycle.
+            from underworld3.meshing._mesh_files import _scratch_name
+
+            scratch = _scratch_name(h5_filename)
+            viewer = PETSc.ViewerHDF5().create(str(scratch), "w", comm=PETSc.COMM_SELF)
             viewer(plex_0)
             viewer.destroy()
+            os.replace(scratch, h5_filename)
     finally:
         # The gmsh import options are import-time scratch — meaningful only for
         # the createFromFile above. Clear the whole namespace so a value set by
@@ -155,9 +163,39 @@ def _from_gmsh(filename, comm=None, markVertices=False, useRegions=True, useMult
         # read as 2-D). Runs on success or failure.
         _clear_gmsh_import_options()
 
-    # Now we have an h5 file and we can hand this to _from_plexh5
+    # The barrier ensures every rank sees the complete atomically-renamed file.
+    uw.mpi.barrier()
 
-    return _from_plexh5(filename + ".h5", comm, return_sf=True)
+    return filename + ".h5"
+
+
+@timing.routine_timer_decorator
+def _from_gmsh(
+    filename,
+    comm=None,
+    markVertices=False,
+    useRegions=True,
+    useMultipleTags=True,
+):
+    """Read a Gmsh .msh file from `filename`.
+
+    :kwarg comm: Optional communicator to build the mesh on (defaults to
+        COMM_WORLD).
+    """
+
+    ## NOTE: - this should be smart enough to serialise the msh conversion
+    ## and then read back in parallel via h5.  This is currently done
+    ## by every gmesh mesh
+
+    comm = comm or PETSc.COMM_WORLD
+    h5_filename = _gmsh_to_h5(
+        filename,
+        markVertices=markVertices,
+        useRegions=useRegions,
+        useMultipleTags=useMultipleTags,
+    )
+
+    return _from_plexh5(h5_filename, comm, return_sf=True)
 
 
 @timing.routine_timer_decorator
@@ -1504,6 +1542,21 @@ class Mesh(Stateful, uw_object):
                     val, op=getattr(_MPI, op))
             return val
 
+        # A rank owning zero cells contributes the identity element of each
+        # reduction rather than raising on an empty array (issue #405).
+        def _reduce_min(arr):
+            return _reduce(float(arr.min()) if arr.size else float("inf"),
+                           "MIN")
+
+        def _reduce_max(arr):
+            return _reduce(float(arr.max()) if arr.size else float("-inf"),
+                           "MAX")
+
+        def _local_percentile(arr, pct):
+            # Rank-local estimate (see the docstring); a rank with no cells
+            # has no local distribution to take a percentile of.
+            return float(np.percentile(arr, pct)) if arr.size else float("nan")
+
         tri_vertex_lists = []
         is_simplex2d = cdim == 2
         if is_simplex2d:
@@ -1516,17 +1569,32 @@ class Mesh(Stateful, uw_object):
                     break
                 tri_vertex_lists.append(cell_vertices)
 
-        if not is_simplex2d or not tri_vertex_lists:
+        # Choose the branch COLLECTIVELY. A rank owning zero cells collects no
+        # triangles and would otherwise take the volume-only branch (three
+        # reductions) while its populated peers took the simplex branch
+        # (eleven) — mismatched collective counts, i.e. a hang (issue #405).
+        # A starved rank abstains from the vote instead.
+        has_cells = cEnd > cStart
+        n_simplex_ranks = _reduce(
+            int(has_cells and is_simplex2d and bool(tri_vertex_lists)), "SUM")
+        n_populated_ranks = _reduce(int(has_cells), "SUM")
+        is_simplex2d = (n_populated_ranks > 0
+                        and n_simplex_ranks == n_populated_ranks)
+
+        if not is_simplex2d:
             try:
                 volume = np.abs(np.array(
                     [dm.computeCellGeometryFVM(cell_id)[0]
                      for cell_id in range(cStart, cEnd)]))
             except Exception:
                 volume = np.array([1.0])
-            if not volume.size:
+            # A rank that owns cells but cannot compute their geometry keeps
+            # the unit-volume placeholder; a rank owning NO cells contributes
+            # nothing at all, so the global cell count stays honest.
+            if not volume.size and has_cells:
                 volume = np.array([1.0])
             n_cells = _reduce(int(volume.size), "SUM")
-            vol_min = _reduce(float(volume.min()), "MIN")
+            vol_min = _reduce_min(volume)
             vol_sum = _reduce(float(volume.sum()), "SUM")
             metrics = dict(
                 n_cells=n_cells, element="non-2D-simplex",
@@ -1538,7 +1606,9 @@ class Mesh(Stateful, uw_object):
                 metrics["per_cell"] = dict(volume=volume)
             return metrics
 
-        tri = np.asarray(tri_vertex_lists, dtype=np.int64)
+        # reshape(-1, 3) keeps the (0, 3) shape on a rank with no cells, where
+        # np.asarray([]) would be 1-D and the column indexing below would fail.
+        tri = np.asarray(tri_vertex_lists, dtype=np.int64).reshape(-1, 3)
         v0, v1, v2 = (vertex_coords[tri[:, 0]],
                       vertex_coords[tri[:, 1]],
                       vertex_coords[tri[:, 2]])
@@ -1566,7 +1636,9 @@ class Mesh(Stateful, uw_object):
              _angle_deg(edge_c, edge_a, edge_b)])
         longest_edge = np.maximum.reduce([edge_a, edge_b, edge_c])
         aspect = longest_edge * longest_edge / (2.0 * area)
-        rel_area = area / area.mean()
+        # rel_area only ever masks this rank's own cells, so the rank-local
+        # mean is the right scale — and an empty rank has no cells to mask.
+        rel_area = area / area.mean() if area.size else area
 
         # Neighbour size-jump: map each (undirected) edge to the triangles
         # sharing it; interior edges (exactly two triangles) contribute the
@@ -1585,22 +1657,22 @@ class Mesh(Stateful, uw_object):
         area_sum = _reduce(float(area.sum()), "SUM")
         metrics = dict(
             n_cells=n_cells, element="2D-simplex",
-            q_min=_reduce(float(shape_q.min()), "MIN"),
+            q_min=_reduce_min(shape_q),
             q_mean=q_sum / max(n_cells, 1),
-            q_p01=float(np.percentile(shape_q, 1)),
-            q_p05=float(np.percentile(shape_q, 5)),
+            q_p01=_local_percentile(shape_q, 1),
+            q_p05=_local_percentile(shape_q, 5),
             n_q_lt_0p3=_reduce(int((shape_q < 0.3).sum()), "SUM"),
             n_q_lt_0p2=_reduce(int((shape_q < 0.2).sum()), "SUM"),
-            angle_max_deg=_reduce(float(largest_angle.max()), "MAX"),
+            angle_max_deg=_reduce_max(largest_angle),
             n_angle_gt_150=_reduce(int((largest_angle > 150).sum()), "SUM"),
             n_angle_gt_165=_reduce(int((largest_angle > 165).sum()), "SUM"),
-            aspect_max=_reduce(float(aspect.max()), "MAX"),
-            aspect_p99=float(np.percentile(aspect, 99)),
+            aspect_max=_reduce_max(aspect),
+            aspect_p99=_local_percentile(aspect, 99),
             sizejump_max=float(size_jump.max()),
-            sizejump_p99=float(np.percentile(size_jump, 99)),
+            sizejump_p99=_local_percentile(size_jump, 99),
             n_big_thin=_reduce(
                 int(((rel_area > 2.0) & (aspect > 4.0)).sum()), "SUM"),
-            vol_min_over_mean=(_reduce(float(area.min()), "MIN")
+            vol_min_over_mean=(_reduce_min(area)
                                / (area_sum / max(n_cells, 1))))
         if per_cell:
             metrics["per_cell"] = dict(
@@ -2640,6 +2712,11 @@ class Mesh(Stateful, uw_object):
             uw.pprint(f"PETScDS - (re) initialised")
 
         self._coord_array = {}
+        # Cleared with _coord_array because both describe the same node layout:
+        # the coordinates and which cell owns each of them. Topology only, so it
+        # survives node motion — but it is invalidated by the same re-creation
+        # of the DS that invalidates the coordinates.
+        self._cell_node_array = {}
 
         # let's go ahead and do an initial projection from linear (the default)
         # to linear. this really is a nothing operation, but a
@@ -2875,13 +2952,38 @@ class Mesh(Stateful, uw_object):
     def boundary_normal(self, boundary):
         """Outward unit normal of a single boundary, tracking deformation.
 
-        Assembles the EXACT, outward, area-weighted PETSc facet normals
+        Assembles the EXACT, outward, measure-weighted PETSc facet normals
         (``dm.computeCellGeometryFVM``) from ONLY this boundary's facets onto
         its P1 vertices. Because each boundary is assembled independently,
         a vertex shared by two boundaries (a sharp corner) is NOT averaged
         across the discontinuity — each boundary keeps its own normal. On a
         smooth boundary (e.g. a free surface) the result is the smooth
         deformed normal. Cached per boundary; rebuilt lazily after a deform.
+
+        COLLECTIVE. The per-vertex sum runs over ALL the facets meeting the
+        vertex, which in parallel are split between ranks, so it is completed
+        through the variable's own local↔global scatter before normalising
+        (#564). Every rank must call this, including one that owns no part of
+        the boundary.
+
+        .. note:: **The 3-D answer changed at #564, in SERIAL as well as in
+           parallel.** Facet contributions used to be routed to "the DOFs
+           nearest the facet centroid" by a kd-tree query. On a TETRAHEDRAL
+           boundary the three DOFs nearest a face centroid are not always that
+           face's own three vertices, so the query silently picked up a
+           neighbour and the assembled normal was wrong — by up to **0.103 in
+           the unit normal (≈5.9°) on ``SphericalShell(0.55, 1.0, cs=0.35)``,
+           at np=1, on a UNIFORM mesh**. Rows now come from the variable's own
+           section, which is exact: measured against an independent
+           global-facet-sum oracle, 1.9e-16 (Upper) and 2.2e-16 (Lower) where the
+           old route was 4.7e-02 and 1.03e-01.
+
+           2-D is unaffected (annulus 1.1e-16 old and new, box bit-identical) —
+           on an edge the two nearest DOFs to the midpoint are always its own two
+           vertices. So any **3-D** result that used the default ``normal=None``
+           on a curved boundary moves, and moves toward the right answer. Guarded
+           by ``tests/parallel/test_1069_boundary_normal_parallel.py``, which runs
+           at np=1 as well as np>1 precisely so this path is covered.
 
         Returns a sympy Matrix (row) of the P1 normal-field components, for
         use as the constraint direction in Nitsche/penalty BCs.
@@ -2941,55 +3043,181 @@ class Mesh(Stateful, uw_object):
         return face_pts
 
     def _assemble_boundary_normal(self, var, name):
-        """Fill ``var`` with the area-weighted outward facet normal assembled
-        from the faces of boundary ``name`` only (see :meth:`boundary_normal`)."""
-        from scipy.spatial import cKDTree
+        """Fill ``var`` with the measure-weighted outward facet normal assembled
+        from the faces of boundary ``name`` only (see :meth:`boundary_normal`).
+
+        The nodal normal is ``Σ_f |f| n̂_f`` over EVERY facet of this boundary that
+        meets the node, normalised at the end. In parallel that sum has to be
+        completed across ranks before the normalise: a boundary facet is labelled
+        on exactly one rank (measured — see the note below), so a node on a
+        partition seam sees only SOME of its facets locally and normalising a
+        partial stencil gives it a rotated normal. That is #564: on an
+        ``Annulus(cellSize=0.12)`` the Upper arc's worst nodal normal was 3.0e-10
+        from the exact radial one in serial and 5.8e-02 (3.3 degrees) at np=2,3,4 —
+        exactly the error of taking one facet's normal instead of the average of
+        the two — and it moved a constrained free-slip answer by 3.4 %.
+
+        COLLECTIVE. The reduction runs on every rank, including one that owns no
+        facet of this boundary (the #405 lesson: a rank-local early return here
+        deadlocks the ranks that do own facets).
+
+        Why a plain ADD is exact, with no de-duplication: no boundary facet is
+        labelled on two ranks and none is labelled away from its owner. Measured
+        on the annulus and the spherical shell at np=2,3,4 for BOTH label sources
+        (the per-boundary label this uses and the consolidated ``UW_Boundaries``);
+        the guard that keeps it true is
+        ``tests/parallel/test_1069_boundary_normal_parallel.py``.
+
+        FAILURE IS COLLECTIVE AND LOUD. A rank that cannot complete its facet walk
+        raises :class:`RuntimeError` on EVERY rank, not just its own. Two failure
+        modes are being avoided, and both were measured on the first version of
+        this routine:
+
+        * swallowing the failure rank-locally and carrying on gives that rank's
+          OWNED boundary DOFs a ZERO normal — so the constraint direction over
+          that part of the boundary is the zero vector, with a converged solve
+          and no message. That is strictly worse than the 3.3-degree error this
+          routine exists to remove, and indistinguishable from success;
+        * raising rank-locally takes that rank out of the sub-DM collectives
+          below and HANGS the others (measured: rank 1 returns, rank 0 blocks,
+          killed by the launcher timeout).
+
+        So the flag is agreed with an all-reduce first, every rank then takes the
+        same branch, and every rank raises. Callers that swallow the exception
+        (:meth:`deform`) are therefore safe by construction: what reaches them is
+        already symmetric.
+        """
+        from underworld3.utilities.facet_normals import facet_measure_and_normal
+
         cdim = self.cdim
         dm = self.dm
-        coords = numpy.ascontiguousarray(var.coords)
-        accum = numpy.zeros((coords.shape[0], cdim))
+        comm = dm.comm.tompi4py()
+        failed = 0
+        detail = ""
+        ncomp = None
+        accum = None
 
-        face_pts = self._boundary_facets(name)
+        # Rank-local set-up. Guarded like the facet walk below and for the same
+        # reason: `dm.createSubDM` is COLLECTIVE, so a rank must not leave before
+        # reaching it.
+        try:
+            ncomp = var.num_components
+            # One node per DMPlex point is assumed by the `offset // ncomp` row
+            # arithmetic below. True for the degree-1 variable `boundary_normal`
+            # builds, but that path adopts a pre-existing `_n_bd_<name>` variable
+            # if one is already registered (a checkpoint restore, or user code),
+            # and a higher-degree space puts several nodes on one point — a P3
+            # edge carries two in 2-D — which would land both on the first row and
+            # leave the second at zero. Refuse rather than silently half-fill.
+            if var.degree != 1:
+                raise RuntimeError(
+                    f"boundary_normal needs a degree-1 field; '{var.clean_name}' is "
+                    f"degree {var.degree}. A higher-degree space carries several "
+                    f"nodes per DMPlex point and this assembly writes one row per "
+                    f"point.")
+            # Dense over this rank's LOCAL DOFs (ghosts included), so a node whose
+            # labelled facets all live on a neighbour needs no special enumeration —
+            # it is simply a row that stays zero until the reduction fills it.
+            accum = numpy.zeros_like(numpy.asarray(var.data))
+        except Exception as exc:
+            failed, detail = 1, f"{type(exc).__name__}: {exc}"
 
-        tree = cKDTree(coords)
-        # P1 vertices per facet, counted from the facet's own closure so this
-        # works for non-simplex facets too (2D edge=2, 3D tri=3, 3D quad=4).
-        vStart, vEnd = dm.getDepthStratum(0)
-        for f in face_pts:
-            if dm.getSupportSize(f) != 1:
-                continue
-            area, cent, nrm = dm.computeCellGeometryFVM(f)
-            nrm = numpy.asarray(nrm)[:cdim]
-            cell = dm.getSupport(f)[0]
-            _, ccent, _ = dm.computeCellGeometryFVM(cell)
-            if numpy.dot(nrm, numpy.asarray(cent)[:cdim]
-                         - numpy.asarray(ccent)[:cdim]) < 0:
-                nrm = -nrm
-            _clo = dm.getTransitiveClosure(f)[0]
-            nverts = int(numpy.count_nonzero((_clo >= vStart) & (_clo < vEnd))) or cdim
-            # Accumulate to the facet's P1 DOFs (its vertices) — found as the
-            # nearest DOFs to the facet centroid. This avoids indexing the local
-            # coordinate array by (vertex_point - vStart), which is only valid
-            # in serial (the parallel coordinate layout differs → out-of-range).
-            # Normalisation at the end makes the per-DOF weight (full vs share)
-            # irrelevant to the resulting direction.
-            _, idxs = tree.query(numpy.asarray(cent)[:cdim], k=nverts)
-            for idx in numpy.atleast_1d(idxs):
-                accum[idx] += area * nrm
+        # DOF rows come from the variable's OWN section on its sub-DM: exact on
+        # every rank, and the same section the reduction below scatters through.
+        # (This used to be a kd-tree lookup of the DOFs nearest the facet
+        # centroid. That is a heuristic, and not only on a graded mesh: on a
+        # TETRAHEDRAL boundary the three DOFs nearest a face centroid are not
+        # always that face's own three vertices, so it mis-assigned on a uniform
+        # spherical shell in SERIAL — see :meth:`boundary_normal`. It also cannot
+        # be made to agree across ranks, because each rank's tree is built from
+        # its own local coordinates.)
+        indexset, subdm = dm.createSubDM(var.field_id)
+        try:
+            try:
+                ssec = subdm.getLocalSection()
+                for f in self._boundary_facets(name):
+                    # Orientation needs the facet's OWN support cell, and only an
+                    # exterior facet has exactly one. An internal boundary's facets
+                    # have two and support[0] is arbitrary, so neighbouring facets
+                    # of the same surface could be oriented oppositely and CANCEL
+                    # in the sum — those facets are skipped, which is why a normal
+                    # requested for an INTERNAL boundary comes back zero.
+                    # (rotated_bc keeps the raw PETSc normal there instead;
+                    # neither is a supported use of this routine today.)
+                    measure, nrm, exterior = facet_measure_and_normal(dm, f)
+                    if not exterior:
+                        continue
+                    for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
+                        if ssec.getDof(q) <= 0:
+                            continue
+                        accum[ssec.getOffset(q) // ncomp] += measure * nrm[:cdim]
+            except Exception as exc:
+                if not failed:
+                    failed, detail = 1, f"{type(exc).__name__}: {exc}"
 
-        # TODO(parallel): a boundary vertex on a partition interface should
-        # ADD-reduce the UNnormalised facet contributions from both ranks before
-        # normalising (DMLocalToGlobal ADD_VALUES on the variable's section),
-        # so its normal is the full-stencil average rather than this rank's
-        # partial stencil. This is parallel-SAFE as-is (rank-interior boundary
-        # vertices are exact; only the handful of partition-seam surface
-        # vertices get a slightly-rotated unit normal). A first ADD-reduce
-        # attempt SEGV'd on the lazily-built work variable's global vec; deferred
-        # to a focused follow-up with the right vec/section plumbing.
+            # Agree on the outcome BEFORE the reduction, so every rank takes the
+            # same branch. Skipping the reduction on a failure is what keeps the
+            # raise below from being reached by only some ranks.
+            if comm.size > 1:
+                failed = comm.allreduce(failed)
+            if not failed:
+                accum = self._sum_local_dofs_across_ranks(subdm, accum) \
+                    if comm.size > 1 else accum
+        finally:
+            indexset.destroy()
+            subdm.destroy()
+
+        if failed:
+            reports = [d for d in (comm.allgather(detail) if comm.size > 1
+                                   else [detail]) if d]
+            raise RuntimeError(
+                f"boundary normal assembly for {name!r} failed on "
+                f"{failed} of {comm.size} rank(s): {'; '.join(reports[:4])}")
+
         mag = numpy.sqrt(numpy.sum(accum ** 2, axis=1))
         nonzero = mag > 1.0e-30
         accum[nonzero] /= mag[nonzero, numpy.newaxis]
         var.data[...] = accum
+
+    def _sum_local_dofs_across_ranks(self, subdm, values):
+        """Complete a per-DOF sum across ranks: this rank's own contributions in,
+        the sum over EVERY rank's contributions out — the same value on every rank
+        that holds the DOF.
+
+        ``values`` is dense over ``subdm``'s LOCAL DOFs, shaped ``(ndof, ncomp)``
+        exactly like the variable's ``.data``. The sum rides the sub-DM's own
+        local↔global scatter: ADD into the global vector accumulates every ghost
+        copy onto the owner, and scattering back hands every rank the identical
+        total. Work vectors are created here rather than borrowed from the
+        variable, whose global vec is built lazily.
+
+        COLLECTIVE on the DM's communicator.
+
+        There is deliberately NO "the round trip lost this DOF, keep the local
+        value" fallback. The question such a fallback wants to ask is "was this
+        DOF constrained out of the global vector?"; the only thing it can cheaply
+        test is "did it come back all-zero?", and those two differ on exactly the
+        input where it would matter — a node whose GLOBAL contributions cancel
+        (opposed facets on a degenerate or zero-thickness boundary) would have its
+        rank-local PARTIAL value restored, re-introducing #564 on the one case the
+        reduction exists to get right. The mesh DM carries no essential-BC
+        constraints (those live on the solver DM), so nothing is lost today; if
+        that ever changes, this should fail loudly rather than guess, and
+        ``ssec.getConstraintDof(q)`` is the predicate to use.
+        """
+        ncomp = values.shape[1]
+        lvec = subdm.createLocalVector()
+        gvec = subdm.createGlobalVector()
+        try:
+            lvec.array[...] = values.reshape(-1)
+            gvec.set(0.0)
+            subdm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
+            subdm.globalToLocal(gvec, lvec, addv=PETSc.InsertMode.INSERT_VALUES)
+            summed = numpy.array(lvec.array, dtype=float).reshape(-1, ncomp)
+        finally:
+            lvec.destroy()
+            gvec.destroy()
+        return summed
 
     def cell_size(self):
         """Local, per-cell characteristic mesh size as a scalar field symbol.
@@ -3072,6 +3300,23 @@ class Mesh(Stateful, uw_object):
         access, no collective): mixing a rank-local fast path with a
         collective fallback would diverge across ranks and deadlock, because
         ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
+        # TODO(BUG): this field is PARTITION-DEPENDENT, and so therefore is the
+        # Nitsche penalty gamma*mu/h that consumes it (local_h=True, the default).
+        # Not the indexing here — the values. `_get_mesh_sizes` measures a cell by
+        # the distance from its vertices to the NEAREST CENTROID in a kd-tree built
+        # from THIS RANK's centroids, so near a partition seam the nearest centroid
+        # may simply be absent. Measured on Annulus(cellSize=0.12): the field's sum
+        # is 26.0822 at np=1, 26.1211 at np=2 and 26.1386 at np=4, and its max moves
+        # at np=4. End to end that is 6.6e-03 in the velocity of a Nitsche free-slip
+        # annulus and it does NOT shrink with solver tolerance.
+        # This is a DIFFERENT defect from the boundary normal fixed for #564 (which
+        # is now clean: the same solve with local_h=False agrees to 3.6e-10 at
+        # np=1..4). It is the local h that is left, and it also reaches every other
+        # consumer of `cell_size()`. Not fixed here because `_get_mesh_sizes` also
+        # feeds `get_min_radius`, the adaptivity metrics and the free-surface
+        # relaxation, and it needs its own benchmarking.
+        # Guard/measurement: tests/parallel/test_1069_boundary_normal_parallel.py
+        # (_nitsche_annulus_diagnostics docstring records the numbers).
         radii = numpy.asarray(self._radii).reshape(-1)
         # Empty partition (no local cells): nothing to fill on this rank.
         if radii.size == 0 or var.data.shape[0] == 0:
@@ -3861,17 +4106,47 @@ class Mesh(Stateful, uw_object):
         # geometry (the JIT reads the variable's .data, which would otherwise
         # hold the setup-time normal). Re-assemble each cached boundary normal.
         if getattr(self, "_boundary_normal_vars", None):
+            _bn_comm = self.dm.comm.tompi4py()
             for _nm, _var in list(self._boundary_normal_vars.items()):
+                # The outcome is decided COLLECTIVELY, not per rank. The callee
+                # already all-reduces its own failure flag and raises on every rank
+                # or none, so this is belt and braces for anything raised OUTSIDE
+                # its guarded region — but it is what makes "every rank takes the
+                # same branch" a property of this loop rather than an inherited
+                # assumption. The all-reduce is reached on the exception path too;
+                # that is the whole point.
+                _bn_failed, _bn_exc = 0, None
                 try:
                     self._assemble_boundary_normal(_var, _nm)
-                except Exception:
+                except Exception as _e:
+                    _bn_failed, _bn_exc = 1, _e
+                if _bn_comm.size > 1:
+                    _bn_failed = _bn_comm.allreduce(_bn_failed)
+                if _bn_failed:
+                    _exc = _bn_exc if _bn_exc is not None else RuntimeError(
+                        "failed on another rank")
                     # Sanctioned swallow: a normal refresh can fail for a
                     # boundary whose label vanished from the current DM
                     # (e.g. after region extraction); the deform itself is
                     # complete and must not be rolled back for one BC aid.
                     # Consequence of skipping: that Nitsche/penalty BC
-                    # keeps its setup-time normal until next refresh.
-                    pass
+                    # keeps its setup-time normal until next refresh — which is
+                    # why it is a WARNING and not silence. A silent skip here
+                    # leaves a stale constraint direction on a moved boundary.
+                    #
+                    # SAFE TO SWALLOW because _assemble_boundary_normal is
+                    # COLLECTIVE (it completes the facet sum across ranks, #564)
+                    # and its failures are collective too: it all-reduces its own
+                    # failure flag and raises on EVERY rank or none. So what
+                    # arrives here is already symmetric and every rank takes this
+                    # branch together. Do not weaken that contract — a rank-local
+                    # raise out of that routine hangs the job here rather than
+                    # failing it. The dict is built by a collective accessor, so
+                    # every rank iterates the same boundaries in the same order.
+                    uw.mpi.pprint(
+                        f"[mesh.deform] WARNING: could not refresh the boundary "
+                        f"normal for {_nm!r} ({type(_exc).__name__}: {_exc}); BCs "
+                        f"that captured it keep their pre-deform direction.")
         # Likewise refresh the local cell-size field (Nitsche penalty scaling)
         # so its cell-constant data tracks the deformed geometry.
         if getattr(self, "_cell_size_variable", None) is not None:
@@ -4434,6 +4709,9 @@ class Mesh(Stateful, uw_object):
         Returns the mesh bounding box scaled to physical units using
         the model's length scale.
 
+        COLLECTIVE: the bounding box spans the whole mesh, so it is reduced
+        across ranks (see :meth:`_global_coord_bounds`).
+
         Returns
         -------
         tuple of UWQuantity or None
@@ -4447,10 +4725,7 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, "_model") or self._model is None:
             return None
 
-        import numpy as np
-
-        min_coords = np.min(self.points, axis=0)
-        max_coords = np.max(self.points, axis=0)
+        min_coords, max_coords = self._global_coord_bounds()
 
         return (
             self._model.scale_to_physical(min_coords, dimension="length"),
@@ -4463,6 +4738,9 @@ class Mesh(Stateful, uw_object):
         Mesh spatial extent in physical units.
 
         Returns the mesh size (max - min) in each dimension scaled to physical units.
+
+        COLLECTIVE: the extent spans the whole mesh, so it is reduced across
+        ranks (see :meth:`_global_coord_bounds`).
 
         Returns
         -------
@@ -4477,13 +4755,59 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, "_model") or self._model is None:
             return None
 
+        min_coords, max_coords = self._global_coord_bounds()
+
+        return self._model.scale_to_physical(
+            max_coords - min_coords, dimension="length")
+
+    def _global_coord_bounds(self):
+        """Bounding box of the mesh nodes, ``(min_coords, max_coords)``.
+
+        COLLECTIVE. Each rank holds only its own subdomain's nodes, so a
+        rank-local ``min``/``max`` describes the partition rather than the
+        mesh — every rank would report a different "domain size". The
+        reduction makes the answer global and identical everywhere, and lets
+        a rank owning no cells (hence no nodes) contribute the identity
+        elements instead of raising on an empty array (issue #405).
+
+        Reads the same node coordinates as the deprecated ``mesh.points``
+        (without its warning or unit wrapping), so the physical-bounds /
+        physical-extent answers are unchanged apart from being global.
+
+        .. TODO(BUG): ``mesh.points`` already multiplies by
+           ``CoordinateSystem._length_scale`` when the coordinate system is
+           scaled, and both callers then pass the result through
+           ``model.scale_to_physical(..., dimension="length")`` — a second
+           application of the same factor. Reproduced here deliberately so
+           this fix stays behaviour-neutral; the double scaling is a separate
+           question for the units owner.
+        """
         import numpy as np
+        from mpi4py import MPI
 
-        min_coords = np.min(self.points, axis=0)
-        max_coords = np.max(self.points, axis=0)
-        extent = max_coords - min_coords
+        coords = np.asarray(self._coords, dtype=np.float64).reshape(
+            -1, self.cdim)
+        if getattr(self.CoordinateSystem, "_scaled", False):
+            coords = coords * self.CoordinateSystem._length_scale
+        coords = np.ascontiguousarray(coords)
 
-        return self._model.scale_to_physical(extent, dimension="length")
+        if coords.shape[0] > 0:
+            local_min = np.ascontiguousarray(coords.min(axis=0))
+            local_max = np.ascontiguousarray(coords.max(axis=0))
+        else:
+            local_min = np.full(self.cdim, np.inf)
+            local_max = np.full(self.cdim, -np.inf)
+
+        if uw.mpi.size > 1:
+            # Buffer (uppercase) Allreduce: the pickling `allreduce` applies
+            # MPI.MIN through Python's `min()`, which is ambiguous for arrays.
+            global_min = np.empty_like(local_min)
+            global_max = np.empty_like(local_max)
+            uw.mpi.comm.Allreduce(local_min, global_min, op=MPI.MIN)
+            uw.mpi.comm.Allreduce(local_max, global_max, op=MPI.MAX)
+            local_min, local_max = global_min, global_max
+
+        return local_min, local_max
 
     @timing.routine_timer_decorator
     def write_timestep(
@@ -5147,13 +5471,14 @@ class Mesh(Stateful, uw_object):
             self._coord_array[key] = self._get_coords_for_basis(var.degree, var.continuous)
             return self._coord_array[key]
 
-    def _get_coords_for_basis(self, degree, continuous):
-        """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+    def _basis_coordinate_dm(self, degree, continuous):
+        """Coordinate DM carrying a degree-``degree`` Lagrange field.
 
+        Its local section defines the node layout that
+        :meth:`_get_coords_for_basis` reads, so anything that needs to know
+        WHICH node is which — as opposed to just where the nodes are — has to
+        come from this same DM. The caller destroys it.
+        """
         dmold = self.dm.getCoordinateDM()
         dmold.createDS()
         dmnew = dmold.clone()
@@ -5174,6 +5499,73 @@ class Mesh(Stateful, uw_object):
 
         dmnew.setField(0, dmfe)
         dmnew.createDS()
+        dmfe.destroy()          # DMSetField took its own reference
+        return dmnew
+
+    def _cell_node_indices(self, degree, continuous):
+        """Rows of each cell's degrees of freedom, indexing exactly the array
+        :meth:`_get_coords_for_basis` returns for the same ``(degree,
+        continuous)``.
+
+        Returns an ``(n_cells, nodes_per_cell)`` integer array; row ``k`` lists
+        cell ``cStart + k``'s DOF rows in closure order. The order within a row
+        is arbitrary but self-consistent, which is all any consumer needs: the
+        weights are computed from the coordinates read at these same rows, so
+        no reference-element node ordering is ever assumed. (Element assembly
+        WOULD care — the two DOFs on an edge follow the edge's own orientation,
+        not the cell's — so do not repurpose this for that.)
+
+        Knowing a cell's nodes is what turns the adapt parent-CELL map into an
+        exact transfer at any polynomial degree: for a Lagrange element the
+        basis is dual to its nodal points, so a coarse cell's own DOF
+        coordinates determine the coarse interpolant inside it (#425).
+        """
+        from math import comb
+
+        key = (self.isSimplex, degree, continuous)
+        if key in self._cell_node_array:
+            return self._cell_node_array[key]
+
+        dmnew = self._basis_coordinate_dm(degree, continuous)
+        section = dmnew.getLocalSection()
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        cdim = self.cdim
+
+        rows = []
+        for cell in range(cStart, cEnd):
+            cell_rows = []
+            for point in dmnew.getTransitiveClosure(cell)[0]:
+                ndof = section.getDof(point) // cdim
+                if ndof:
+                    offset = section.getOffset(point) // cdim
+                    cell_rows.extend(range(offset, offset + ndof))
+            rows.append(cell_rows)
+        dmnew.destroy()
+
+        expected = comb(degree + self.dim, self.dim)
+        if not self.isSimplex or any(len(r) != expected for r in rows):
+            # A tensor-product Q_k cell carries (k+1)^dim nodes, so the monomial
+            # basis of total degree <= k would not be square against them and
+            # the dual-basis construction does not apply. Say so here rather
+            # than return a ragged array the caller has to second-guess.
+            got = sorted({len(r) for r in rows})
+            raise NotImplementedError(
+                f"_cell_node_indices needs a simplex mesh: expected "
+                f"{expected} nodes per cell for degree {degree} in {self.dim}D, "
+                f"got {got}")
+
+        self._cell_node_array[key] = numpy.asarray(rows, dtype=numpy.int64)
+        return self._cell_node_array[key]
+
+    def _get_coords_for_basis(self, degree, continuous):
+        """
+        This function returns the vertex array for the
+        provided variable. If the array does not already exist,
+        it is first created and then returned.
+        """
+
+        dmold = self.dm.getCoordinateDM()
+        dmnew = self._basis_coordinate_dm(degree, continuous)
 
         matInterp, vecScale = dmold.createInterpolation(dmnew)
         coordsOld = self.dm.getCoordinates()
@@ -5194,32 +5586,8 @@ class Mesh(Stateful, uw_object):
         if vecScale is not None:
             vecScale.destroy()
         dmnew.destroy()
-        dmfe.destroy()
 
         return arrcopy
-
-    def _build_kd_tree_index_DS(self):
-
-        if hasattr(self, "_index") and self._index is not None:
-            return
-
-        # Build this from the PETScDS rather than the SWARM
-
-        centroids = self._get_coords_for_basis(0, False)
-        index_coords = self._get_coords_for_basis(2, False)
-
-        points_per_cell = index_coords.shape[0] // centroids.shape[0]
-
-        cell_id = numpy.empty(index_coords.shape[0])
-        for i in range(cell_id.shape[0]):
-            cell_id[i] = i // points_per_cell
-
-        self._indexCoords = index_coords
-        self._index = uw.kdtree.KDTree(self._indexCoords)
-        # self._index.build_index()
-        self._indexMap = numpy.array(cell_id, dtype=numpy.int64)
-
-        return
 
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
@@ -5288,6 +5656,12 @@ class Mesh(Stateful, uw_object):
         control_points_list = []
         control_points_cell_list = []
         centroids_list = []
+        # Largest distance from a cell centroid to one of that cell's own
+        # vertices, maximised over local cells. A convex cell is the convex
+        # hull of its vertices, so every point of it lies within this distance
+        # of its centroid — which makes it the rejection radius the locator
+        # needs (see _get_closest_local_cells_internal).
+        cell_reach = 0.0
 
         for cell, cell_id in enumerate(range(cStart, cEnd)):
 
@@ -5297,6 +5671,8 @@ class Mesh(Stateful, uw_object):
             cell_point_coords = nav_coords[self._coord_rows_for_points(nav_dm, points)]
             cell_centroid = cell_point_coords.mean(axis=0)
             centroids_list.append(cell_centroid)
+            cell_reach = max(cell_reach, float(numpy.linalg.norm(
+                cell_point_coords - cell_centroid, axis=1).max()))
 
             # for face in range(cell_num_faces):
 
@@ -5360,60 +5736,15 @@ class Mesh(Stateful, uw_object):
             centroids_list, dtype=numpy.float64).reshape(-1, self.cdim)
         self._centroid_index = uw.kdtree.KDTree(self._nav_centroids)
 
-        return
-
-    def _build_kd_tree_index_PIC(self):
-
-        if hasattr(self, "_index") and self._index is not None:
-            return
-
-        ## Bootstrapping - the kd-tree is needed to build the index but
-        ## the index is also used in the kd-tree.
-
-        from underworld3.swarm import Swarm, SwarmPICLayout
-
-        # Create a temp swarm which we'll use to populate particles
-        # at gauss points. These will then be used as basis for
-        # kd-tree indexing back to owning cells.
-
-        from petsc4py import PETSc
-
-        tempSwarm = PETSc.DMSwarm().create()
-        tempSwarm.setDimension(self.dim)
-        tempSwarm.setCellDM(self.dm)
-        tempSwarm.setType(PETSc.DMSwarm.Type.PIC)
-        tempSwarm.finalizeFieldRegister()
-
-        # 3^dim or 4^dim pop is used. This number may need to be considered
-        # more carefully, or possibly should be coded to be set dynamically.
-
-        tempSwarm.insertPointUsingCellDM(PETSc.DMSwarm.PICLayoutType.LAYOUT_GAUSS, 3)
-
-        # We can't use our own populate function since this needs THIS kd_tree to exist
-        # We will need to use a standard layout instead
-
-        ## ?? is this required given no migration ??
-        # tempSwarm.migrate(remove_sent_points=True)
-
-        PIC_coords = tempSwarm.getField("DMSwarmPIC_coor").reshape(-1, self.dim)
-        PIC_cellid = tempSwarm.getField("DMSwarm_cellid")
-
-        self._indexCoords = PIC_coords.copy()
-        self._index = uw.kdtree.KDTree(self._indexCoords)
-        self._indexMap = numpy.array(PIC_cellid, dtype=numpy.int64)
-        # self._index.build_index()
-
-        # We don't need an indexMap for this one because there is only one point per cell
-        # and the returned kdtree value IS the index.
-        # Note: self._centroids is not yet defined:
-
-        self._centroid_index = uw.kdtree.KDTree(self._get_coords_for_basis(0, False))
-        # self._centroid_index.build_index()
-
-        tempSwarm.restoreField("DMSwarmPIC_coor")
-        tempSwarm.restoreField("DMSwarm_cellid")  #
-
-        tempSwarm.destroy()
+        # Rejection radius for the lost-point walk. Rebuilt with the kd-tree
+        # (i.e. invalidated by deform / adapt along with _index) — this is the
+        # ONE place it is set, and the only builder of ``_index``, so a stale
+        # reach cannot outlive the geometry it was measured on. Two other
+        # builders (``_build_kd_tree_index_PIC``, ``_build_kd_tree_index_DS``)
+        # set ``_index`` without the reach; both had zero callers and are
+        # deleted rather than taught the new invariant. Pinned by
+        # test_0761_point_locator.py::test_the_rejection_radius_is_rebuilt_when_the_mesh_moves.
+        self._local_cell_reach = cell_reach
 
         return
 
@@ -5867,6 +6198,38 @@ class Mesh(Stateful, uw_object):
             Whether to perform strict validation near boundaries
 
         """
+        return self._classify_points_in_domain(points, strict_validation)[0]
+
+    def _classify_points_in_domain(self, points, strict_validation=True):
+        """In/out classification, keeping the owning cells it had to locate.
+
+        ``points_in_domain`` located the near-boundary points and threw the
+        owning cells away, leaving the interpolator to locate them a second
+        time. This hands them over instead, so evaluation locates each point
+        once (#551 item 2).
+
+        Parameters
+        ----------
+        points : array-like
+            Coordinate array in any physical unit system (will be
+            auto-converted).
+        strict_validation : bool
+            Whether to perform strict validation near boundaries.
+
+        Returns
+        -------
+        in_or_not : numpy.ndarray of bool
+            Exactly what :meth:`points_in_domain` returns.
+        cells : numpy.ndarray of int
+            Owning cell for the points the classification actually located,
+            at the evaluation face tolerance (:meth:`_robust_owning_cells`).
+            ``-1`` everywhere else — for an EXTERIOR point that means "not in
+            the local mesh"; for an INTERIOR point it means "not looked up",
+            because the boundary-sign test settled it without a search. A
+            caller that needs a cell for every interior point locates the
+            ``-1`` entries itself, and only when it needs them: nothing here
+            searches on the classifier's behalf.
+        """
         # Convert points to model coordinates using the unified conversion function
         # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
         import underworld3 as uw
@@ -5876,12 +6239,26 @@ class Mesh(Stateful, uw_object):
         # and handles all the complexity of extracting values from unit-aware coordinates
         model_points = _convert_coords_to_si(points)
 
-        self._mark_local_boundary_faces_inside_and_out()
-
+        # get_max_radius() is COLLECTIVE, so it must be reached by every rank
+        # before any rank takes a short-circuit below — otherwise the starved
+        # ranks skip the reduction their peers are sitting in (issue #405).
         max_radius = self.get_max_radius()
 
+        self._mark_local_boundary_faces_inside_and_out()
+
         if model_points.shape[0] == 0:
-            return numpy.array([], dtype=bool)
+            return (numpy.array([], dtype=bool),
+                    numpy.array([], dtype=numpy.int64))
+
+        cells = numpy.full(model_points.shape[0], -1, dtype=numpy.int64)
+
+        # A rank owning no cells contains no points, so the honest answer is
+        # False everywhere. Its local boundary skeleton is empty too, and the
+        # closest-local-cell test below would otherwise have to interrogate a
+        # cell set that does not exist.
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        if cEnd == cStart:
+            return numpy.zeros(model_points.shape[0], dtype=bool)
 
         # Cd-1 surface mesh: no boundary-face control points exist
         # (see _mark_local_boundary_faces_inside_and_out). Per the
@@ -5889,7 +6266,8 @@ class Mesh(Stateful, uw_object):
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
         if self.boundary_face_control_points_kdtree is None:
-            return self._get_closest_local_cells_internal(model_points) != -1
+            in_or_not = self._get_closest_local_cells_internal(model_points) != -1
+            return in_or_not, cells
 
         dist2, closest_control_points_ext = self.boundary_face_control_points_kdtree.query(
             model_points, k=1, sqr_dists=True
@@ -5917,11 +6295,17 @@ class Mesh(Stateful, uw_object):
         # cell (>= 0) for any point genuinely in/on the mesh and -1 only for
         # true exterior. Serial / non-simplex keep the cell-wall test
         # (bit-identical to the validated baseline).
+        #
+        # Only the robust locator's answer is kept as a cell hint: it is the
+        # same call the evaluation path makes, so keeping it saves a repeat.
+        # The cell-wall test runs at a different face tolerance and its answer
+        # is a classification, not a hint.
         near_boundary = numpy.where(dist2 < 2 * max_radius**2)[0]
         near_boundary_points = model_points[near_boundary]
 
         if self._eval_use_robust_location():
-            in_or_not[near_boundary] = self._robust_owning_cells(near_boundary_points) >= 0
+            cells[near_boundary] = self._robust_owning_cells(near_boundary_points)
+            in_or_not[near_boundary] = cells[near_boundary] >= 0
         else:
             in_or_not[near_boundary] = (
                 self._get_closest_local_cells_internal(near_boundary_points) != -1
@@ -5931,11 +6315,15 @@ class Mesh(Stateful, uw_object):
             chosen_ones = numpy.where(in_or_not == True)[0]
             chosen_points = model_points[chosen_ones]
             if self._eval_use_robust_location():
-                in_or_not[chosen_ones] = self._robust_owning_cells(chosen_points) >= 0
+                cells[chosen_ones] = self._robust_owning_cells(chosen_points)
+                in_or_not[chosen_ones] = cells[chosen_ones] >= 0
             else:
                 in_or_not[chosen_ones] = self._get_closest_local_cells_internal(chosen_points) != -1
 
-        return in_or_not
+        # A point demoted to exterior keeps no hint: it goes to RBF.
+        cells[~in_or_not] = -1
+
+        return in_or_not, cells
 
     @timing.routine_timer_decorator
     def get_closest_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
@@ -5984,6 +6372,10 @@ class Mesh(Stateful, uw_object):
             # CRITICAL: Must return 1D array, not 2D, for Cython buffer compatibility
             return numpy.array([], dtype=numpy.int64)
 
+    # Safety factor on the local cell reach used to reject a query point
+    # before the lost-point walk. See _get_closest_local_cells_internal.
+    _LOCATOR_REACH_MARGIN = 2.0
+
     def _get_closest_local_cells_internal(
         self,
         coords: numpy.ndarray,
@@ -5996,6 +6388,34 @@ class Mesh(Stateful, uw_object):
         be exactly the owning cell, but if the mesh is deformed, this
         is not guaranteed. Also compares the distance from the cell to the
         point - if this is larger than the "cell size" then returns -1
+
+        A point the first containment test rejects is looked for among the
+        nearest cell centroids. Points too far from the local mesh to be in
+        any of its cells are rejected before that walk starts, and a point
+        leaves the walk as soon as a cell claims it, so the walk costs what is
+        still lost rather than what was asked for.
+
+        .. note:: **Which containing cell you get changed (#551).**
+
+           A point on a shared vertex, edge or face is contained by several
+           cells and this routine returns one of them; *which* one has never
+           been part of the contract. It used to be the last cell to claim the
+           point across up to 50 rounds of the walk — an order that depended
+           on whether some unrelated point in the same batch was still lost.
+           It is now the containing cell with the nearest centroid, which is
+           batch-independent. Measured on a uniform 3-D simplex box, 35% of
+           near-vertex queries (the population that actually enters the walk;
+           exact vertices and centroids are answered before it) come back in a
+           different — equally containing — cell.
+
+           For a CONTINUOUS field that is invisible: the interpolants of the
+           containing cells agree at the shared point. For a DISCONTINUOUS
+           field (P0, or the P2/P0-discontinuous pressure space the fault work
+           uses) the cell *is* the answer, so the evaluated value moves by
+           O(jump) at such points — measured max 1.935 on a P0 field of range
+           2. Both values are legitimate: each is the value of a cell that
+           contains the query. Code that needs a specific side of a jump must
+           say which side, not rely on the locator's tie-break.
 
         ``on_boundary`` and ``tol`` are forwarded to the in-cell
         containment test (see ``_test_if_points_in_cells_internal``).
@@ -6046,7 +6466,8 @@ class Mesh(Stateful, uw_object):
         self._build_kd_tree_index()
 
         if len(coords) > 0:
-            dist, closest_points = self._index.query(coords, k=1, sqr_dists=False)
+            control_point_distance, closest_points = self._index.query(
+                coords, k=1, sqr_dists=False)
             # >= : valid indices are 0..n-1, and the empty-tree sentinel
             # (0 with n=0) must trip this guard, not index _indexMap (#399).
             if np.any(closest_points >= self._index.n):
@@ -6072,7 +6493,42 @@ class Mesh(Stateful, uw_object):
         cells[~inside] = -1
         lost_points = np.where(inside == False)[0]
 
-        # Part 2 - try to find the lost points by walking nearby cells
+        if lost_points.shape[0] == 0:
+            return cells
+
+        # Part 2 - try to find the lost points by walking nearby cells.
+        #
+        # Reject what cannot possibly be found, first. Every cell contributes
+        # its centroid to the control-point kd-tree, so a point lying in cell c
+        # is at most |p - centroid_c| from its NEAREST control point, and a
+        # convex cell puts that within the cell's vertex reach. A lost point
+        # whose nearest control point is beyond the largest local reach is in
+        # no local cell and the walk has nothing to find for it. Without this
+        # every genuinely foreign point pays the full 50-neighbour walk — 51
+        # containment tests against 1 for an owned point — and the foreign
+        # fraction is exactly what grows with rank count (#551).
+        #
+        # The margin is deliberately loose. The in-cell test admits a thin
+        # slab outside each face (``tol``), and a badly shaped cell expands
+        # further under that slab than a well-shaped one; a factor of two on
+        # the reach covers both with room to spare while still rejecting
+        # anything more than about one cell away from the local mesh.
+        #
+        # Note the two scales are set differently: the slab the containment
+        # test admits is ``tol`` times the face control-point separation,
+        # which _mark_faces_inside_and_out fixes at an ABSOLUTE 1e-3 in model
+        # units, while the radius here is a fraction of the LOCAL cell size.
+        # They only cross over when the largest local cell reach falls below
+        # about 5e-6 in model units — a whole domain a few microns across, at
+        # which scale the containment test's own absolute floors have already
+        # gone. Measured: a mesh 1e-4 across (reach 6.9e-6) and one 6371
+        # across both reject nothing they should have kept.
+        reach = getattr(self, "_local_cell_reach", None)
+        if reach is not None and reach > 0.0:
+            reach = self._LOCATOR_REACH_MARGIN * reach
+            lost_points = lost_points[control_point_distance[lost_points] <= reach]
+            if lost_points.shape[0] == 0:
+                return cells
 
         # Size by the nav-DM cell count, which is what _centroid_index
         # was built from (includes ghost cells on manifold meshes).
@@ -6082,22 +6538,42 @@ class Mesh(Stateful, uw_object):
         num_local_cells = nav_centroids.shape[0]
         num_testable_neighbours = min(num_local_cells, 50)
 
-        dist2, closest_centroids = self._centroid_index.query(
+        centroid_distance, closest_centroids = self._centroid_index.query(
             coords[lost_points], k=num_testable_neighbours, sqr_dists=False
         )
+        # The kd-tree drops the neighbour axis at k == 1 (a rank owning a
+        # single cell); the walk indexes it either way.
+        centroid_distance = centroid_distance.reshape(lost_points.shape[0], -1)
+        closest_centroids = closest_centroids.reshape(lost_points.shape[0], -1)
 
         # This number is close to the point-point coordination value in 3D unstructured
         # grids (by inspection)
 
+        # The working set shrinks: a point drops out as soon as a neighbour
+        # claims it, or as soon as the neighbour distances (sorted, so
+        # monotonic in i) pass the rejection radius. The nearest containing
+        # centroid therefore wins, which also makes the answer independent of
+        # whether some OTHER point in the same batch is findable — previously
+        # a single unlocatable point kept every already-found point in the
+        # test set for all 50 rounds, and a shared-face point could be
+        # reassigned to a further cell in a later round.
+        working = np.arange(lost_points.shape[0])
         for i in range(0, num_testable_neighbours):
 
+            if reach is not None and reach > 0.0:
+                working = working[centroid_distance[working, i] <= reach]
+                if working.shape[0] == 0:
+                    break
+
+            candidate_cells = closest_centroids[working, i]
             inside = self._test_if_points_in_cells_internal(
-                coords[lost_points], closest_centroids[:, i],
+                coords[lost_points[working]], candidate_cells,
                 on_boundary=on_boundary, tol=tol,
             )
-            cells[lost_points[inside]] = closest_centroids[inside, i]
+            cells[lost_points[working[inside]]] = candidate_cells[inside]
 
-            if np.count_nonzero(cells == -1) == 0:
+            working = working[~inside]
+            if working.shape[0] == 0:
                 break
 
         return cells
@@ -6240,6 +6716,11 @@ class Mesh(Stateful, uw_object):
 
         Never calls PETSc ``DMLocatePoints`` (slow, raises out-of-domain), and
         is purely kd-tree / Euclidean — manifold-safe, no manifold branch.
+
+        For a point several cells share, the cell returned is the containing
+        one with the nearest centroid — see the tie-break note on
+        :meth:`_get_closest_local_cells_internal` for what that changed and
+        why it is visible only to discontinuous fields.
         """
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
@@ -6453,13 +6934,13 @@ class Mesh(Stateful, uw_object):
         from underworld3.utilities import gather_data
 
         # A rank owning zero cells has no centroid; mean() of the empty
-        # array is NaN, and gather_data silently STRIPS NaN rows — the
-        # gathered table's row index then no longer equals rank, and
-        # _route_by_nearest_centroid mis-routes particles to the wrong
-        # rank (issue #399 review). A huge FINITE sentinel keeps the row
-        # (row == rank) while a nearest-centroid search can never select
-        # it, so starved ranks correctly receive no particles. (Finite,
-        # not inf: infinities poison the kd-tree's bounding boxes.)
+        # array is NaN. gather_data no longer strips NaN rows (issue #405
+        # made that opt-in), but a NaN row would still poison the kd-tree
+        # this table feeds, and _route_by_nearest_centroid would mis-route
+        # particles (issue #399 review). A huge FINITE sentinel keeps the
+        # row (row == rank) while a nearest-centroid search can never
+        # select it, so starved ranks correctly receive no particles.
+        # (Finite, not inf: infinities poison the kd-tree's bounding boxes.)
         if self._centroids.shape[0] > 0:
             domain_centroid = self._centroids.mean(axis=0)
         else:
@@ -6499,34 +6980,51 @@ class Mesh(Stateful, uw_object):
     @uw.collective_operation
     def get_min_radius(self) -> float:
         """
-        This method returns the global minimum distance from any cell centroid to a face.
-        It wraps to the PETSc `DMPlexGetMinRadius` routine. The petsc4py equivalent always
-        returns zero.
+        Global minimum of the characteristic cell length scale — the smallest
+        cell anywhere in the mesh, not just on this rank. Parallel-safe via
+        MPI allreduce of the local minimum.
+
+        A rank owning zero cells contributes the identity element of the
+        reduction (:math:`+\\infty`) and therefore returns the same global
+        value as its populated peers. Taking ``min()`` of that rank's empty
+        ``_radii`` array instead would raise on the starved rank alone, while
+        its peers waited in the reduction — the rank-asymmetric raise that
+        deadlocks the job (issue #405).
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
         ## does not obtain the minimum radius for the mesh.
 
         import numpy as np
+        from mpi4py import MPI
 
-        all_min_radii = uw.utilities.gather_data(np.array((self._radii.min(),)), bcast=True)
-
-        return all_min_radii.min()
+        radii = np.asarray(self._radii).reshape(-1)
+        local_min = float(radii.min()) if radii.size else float("inf")
+        if uw.mpi.size > 1:
+            local_min = uw.mpi.comm.allreduce(local_min, op=MPI.MIN)
+        return local_min
 
     @uw.collective_operation
     def get_max_radius(self) -> float:
         """
-        This method returns the global maximum distance from any cell centroid to a face.
+        Global maximum of the characteristic cell length scale — the largest
+        cell anywhere in the mesh. Parallel-safe via MPI allreduce of the
+        local maximum; a rank owning zero cells contributes the identity
+        element (:math:`-\\infty`) and still returns the global value.
+        See :meth:`get_min_radius` for why the guard matters.
         """
 
         ## Note: The petsc4py version of DMPlexComputeGeometryFVM does not compute all cells and
         ## does not obtain the minimum radius for the mesh.
 
         import numpy as np
+        from mpi4py import MPI
 
-        all_max_radii = uw.utilities.gather_data(np.array((self._radii.max(),)), bcast=True)
-
-        return all_max_radii.max()
+        radii = np.asarray(self._radii).reshape(-1)
+        local_max = float(radii.max()) if radii.size else float("-inf")
+        if uw.mpi.size > 1:
+            local_max = uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
+        return local_max
 
     @uw.collective_operation
     def get_mean_radius(self) -> float:
@@ -6681,10 +7179,22 @@ class Mesh(Stateful, uw_object):
     def _coarse_level_meshes(self):
         """The static coarse-mesh tail (one Mesh per base hierarchy level,
         coarsest..base-finest), built once and cached — they never change
-        because the base hierarchy is static across adapts."""
+        because the base hierarchy is static across adapts.
+
+        Each wrap is tagged with its ``(hierarchy token, level)`` slot — and so
+        is this mesh itself, whose ``dm`` is the finest hierarchy level. Two
+        levels whose slots are consecutive under the same token are a native
+        ``refine()`` pair, which is what lets ``custom_mg`` give that pair the
+        EXACT nested prolongation instead of a point-located one (#425/#629).
+        The token is a plain sentinel object: identity ties the family together
+        without a reference cycle back to this mesh."""
         cached = getattr(self, "_coarse_level_meshes_cache", None)
         if cached is None:
             cached = [self._wrap_coarse_level(d) for d in self.dm_hierarchy]
+            token = object()
+            for k, w in enumerate(cached):
+                w._refine_slot = (token, k)
+            self._refine_slot = (token, len(cached) - 1)
             self._coarse_level_meshes_cache = cached
         return cached
 
@@ -6816,11 +7326,38 @@ class Mesh(Stateful, uw_object):
                          if vS <= p < vE])
             for c in range(cS, cE)]
 
+        def _sync_across_ranks(pinned_set):
+            """A vertex pinned on ANY rank is pinned on EVERY rank holding a copy.
+
+            The straddle test and the ring growth both walk rank-LOCAL cells, and
+            cells are partitioned disjointly — so a shared vertex whose cut (or
+            ring) cell lives on the neighbour rank is pinned there but not here.
+            If HERE is the owner, the mover moves it and the neighbour's pinned
+            copy follows through the SF: measured at np=4 (review of PR #488,
+            2026-08-06), two pinned leaves moved 4.2e-3 and 1.9e-3 while np=2/3
+            passed on partition luck. Matching by coordinate (the same rounded
+            key the parallel test uses) makes the set partition-independent.
+            """
+            if uw.mpi.size == 1:
+                return pinned_set
+            local_xy = (coords[[v - vS for v in pinned_set]]
+                        if pinned_set else numpy.empty((0, self.dim)))
+            global_keys = set()
+            for arr in uw.mpi.comm.allgather(local_xy):
+                for p in arr:
+                    global_keys.add(tuple(numpy.round(p, 12)))
+            out = set(pinned_set)
+            for i in range(vE - vS):
+                if tuple(numpy.round(coords[i], 12)) in global_keys:
+                    out.add(vS + i)
+            return out
+
         pinned = set()
         for verts in cell_vertices:
             d = distance[verts - vS]
             if d.min() < offset < d.max():
                 pinned.update(int(v) for v in verts)
+        pinned = _sync_across_ranks(pinned)
         for _ring in range(halo):
             grown = set()
             for verts in cell_vertices:
@@ -6828,10 +7365,17 @@ class Mesh(Stateful, uw_object):
                 if any(v in pinned for v in vv):
                     grown.update(vv)
             pinned |= grown
+            pinned = _sync_across_ranks(pinned)
 
-        if not pinned:
-            # An empty DMLabel is not merely useless: querying its strata is a
-            # hard crash, not an exception, so refuse rather than hand one back.
+        # COLLECTIVE emptiness test. A rank whose subdomain the surface never
+        # enters legitimately has an empty local band — only a GLOBALLY empty
+        # band is a user error. The previous rank-local raise here deadlocked
+        # np=4 (measured 2026-08-06, review of PR #488: a corner-confined
+        # surface left three ranks raising while the fourth entered the
+        # collective mover and hung to the 300 s timeout).
+        n_global = uw.mpi.comm.allreduce(len(pinned))
+        if n_global == 0:
+            # Raised on EVERY rank, after the collective reduction.
             raise ValueError(
                 f"no cell is cut by distance == {offset} on surface "
                 f"{getattr(surface, 'name', surface)!r}, so there is no band to "
@@ -6839,6 +7383,11 @@ class Mesh(Stateful, uw_object):
                 f"interface you meant (for a weak zone it is the HALF-WIDTH, not "
                 f"zero).")
 
+        # Every rank creates the label, including ranks whose local band is
+        # empty: the downstream consumer (smoothing.graph._pinned_mask) is
+        # documented to tolerate a present-but-empty label, and a label that
+        # exists on some ranks only is the kind of asymmetry this method is
+        # not allowed to produce.
         name = name or f"PinnedBand_{getattr(surface, 'name', 'surface')}"
         if not dm.hasLabel(name):
             dm.createLabel(name)
@@ -7098,13 +7647,76 @@ class Mesh(Stateful, uw_object):
         if label is None or label.getStratumSize(value) == 0:
             return zone
 
+        fS, fE = dm.getHeightStratum(1)
         for f in label.getStratumIS(value).getIndices():
-            # `_cells_on_edge` rather than `getSupport` directly: in 2-D an edge
-            # IS a facet and its support is already the cells, but in 3-D the
-            # support holds faces and the cells are one level further up.
-            # Applying the 2-D walk in 3-D returns nothing at all, silently.
-            for c in _cells_on_edge(dm, int(f)):
-                zone[c - cS] = True
+            p = int(f)
+            if fS <= p < fE:
+                # A FACET's support is the cells, in any dimension — a 2-D
+                # facet is an edge, a 3-D facet is a face. (This method only
+                # ever saw 2-D meshes before the 3-D conforming sheet, and
+                # the edge walk below returns NOTHING from a 3-D face,
+                # silently — the same trap `_cells_on_edge` documents, one
+                # level up.)
+                for c in dm.getSupport(p):
+                    if cS <= c < cE:
+                        zone[c - cS] = True
+            else:
+                # A labelled EDGE in 3-D (a trace chain): cells are one
+                # level further up.
+                for c in _cells_on_edge(dm, p):
+                    zone[c - cS] = True
+        return zone
+
+    def cells_labelled(self, name, value=None):
+        """The cells carrying DM label ``name`` (optionally stratum ``value``).
+
+        The cell-label partner of :meth:`cells_supporting`: where that method
+        derives a zone from a FACET label (a conforming surface's support),
+        this one reads a CELL label directly — the region a placement call
+        painted (:func:`~underworld3.utilities.place_surface.place_thin_volume`
+        labels its layer's cells), an imported region marker, or any other
+        authored cell stratum. It is the empty-safe way to build a fault-zone
+        patch key for ``set_custom_fmg(..., fac_zone=...)`` (#629): an absent
+        label or an empty stratum returns an all-``False`` mask rather than
+        touching the null IS that segfaults ``getIndices()`` (#589).
+
+        Parameters
+        ----------
+        name : str
+            The DM label name (e.g. the ``label=`` given to a placement call).
+        value : int or None
+            The stratum value; ``None`` takes the union over every value the
+            label carries.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean, one entry per cell, in **plex cell order** — also the DOF
+            order of a ``degree=0`` :class:`MeshVariable`. Points of the label
+            that are not cells (faces, edges) are ignored.
+
+        Examples
+        --------
+        >>> zone = mesh.cells_labelled("Band")
+        >>> set_custom_fmg(stokes, tail, field_id=0, fac_zone=zone)
+        """
+        from underworld3.utilities.dm_labels import label_stratum_indices
+
+        dm = self.dm
+        cS, cE = dm.getHeightStratum(0)
+        zone = numpy.zeros(cE - cS, dtype=bool)
+        label = dm.getLabel(name)
+        if label is None:
+            return zone
+        if value is None:
+            vis = label.getValueIS()
+            values = [int(v) for v in vis.getIndices()] if vis is not None else []
+        else:
+            values = [int(value)]
+        for v in values:
+            pts = label_stratum_indices(label, v)
+            pts = pts[(pts >= cS) & (pts < cE)]
+            zone[pts - cS] = True
         return zone
 
     @staticmethod
@@ -7142,6 +7754,87 @@ class Mesh(Stateful, uw_object):
             uw.pprint(f"[surface repair] {n_flips} flips, {n_removed} vertices "
                       f"removed, min angle now {info['min_angle']:.2f} deg")
         return cut_dm, info
+
+    def _adopt_cut_child(self, cut_dm, boundaries, info, mg_coarsening_ratio,
+                         verbose):
+        """Wrap a DM cut at the finest level as this mesh's child.
+
+        Shared by :meth:`add_conforming_surface` (2-D line cut) and
+        :meth:`add_conforming_sheet` (3-D placed sheet): the cut exists on
+        the finest level only, so this mesh plus everything below it is the
+        child's coarse multigrid tail. The coarse levels do not carry the
+        surface and do not need to — see the measured note in
+        :meth:`add_conforming_surface`.
+        """
+        child = Mesh(
+            cut_dm,
+            simplex=self.dm.isSimplex(),
+            coordinate_system_type=self.CoordinateSystem.coordinate_type,
+            qdegree=self.qdegree,
+            boundaries=boundaries,
+            verbose=False,
+        )
+        child.parent = self
+        child._relationship_kind = "refinement"
+        # ... but NOT a nested one. The cut moves or replaces parent vertices
+        # (the 2-D cut snaps them onto the surface; the 3-D carve deletes and
+        # refills), so a coarse DOF need not have a coincident fine DOF, and
+        # the injection that a bisection child's restriction relies on would
+        # quietly read the field at the displaced position instead.
+        child._refine_dofs_coincide = False
+        child.regions = self.regions
+        child._parent_mesh_version = self._mesh_version
+        child._surface_info = info
+
+        # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
+        # mesh, so this mesh plus everything below it is a valid coarse tail and
+        # the solver appends the child as the finest level. The transfers are
+        # coordinate-based and do not need the levels to nest — just as well,
+        # since a cut vertex is not an edge midpoint and the exact 1/2,1/2
+        # prolongation does not apply to it.
+        #
+        # A mesh that is ITSELF a child (a second surface, or an adapt child) has
+        # to EXTEND its own tail rather than read `dm_hierarchy`, which for a child
+        # holds only its own DM: reading it there would silently discard every
+        # level below and leave a two-level hierarchy calling itself multigrid.
+        #
+        # Tested with `is not None`, not for truthiness. A child whose own tail
+        # is EMPTY is still a child, and reading `dm_hierarchy` there returns
+        # just its own DM — the two-level collapse this comment warns about,
+        # reached by the one input the truth test cannot distinguish from a
+        # parent.
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        tail = (list(own_tail) + [self]) if own_tail is not None \
+            else self._coarse_level_meshes()
+
+        # A cut is not necessarily a refinement. It re-represents the same grid
+        # with the surface conformed, so `self` earns its place as a separate
+        # level only if the child is genuinely finer — the same question `adapt`
+        # asks of an engine pass, so ask it with the same routine rather than a
+        # second rule that could drift from it.
+        #
+        # Measured on a box fault before this: nine levels, of which the two
+        # added by the two cuts coarsened h by 1.11x and 1.17x on the 5th
+        # percentile against a threshold of 1.8 — each costing a full Galerkin
+        # RAP and smoother sweep for no correction. Worse, transfer 7->8, BETWEEN
+        # those two, is where the barycentric builder ran out of coarse DOFs with
+        # a fine image and fell back to the dense RBF one (#424).
+        #
+        # `_subsample_mg_levels` already does "replace the level below rather
+        # than append to it" for its own finest generation; handing it the pair
+        # (self, child) against the level beneath them puts that decision here
+        # too. One level back means it kept only the child.
+        if len(tail) >= 2:
+            kept, _Ps, _pc = self._subsample_mg_levels(
+                tail[-2].dm, [tail[-1].dm, cut_dm], [None, None], [],
+                ratio=mg_coarsening_ratio, verbose=verbose)
+            if len(kept) == 1:
+                tail = tail[:-1]
+        child._custom_mg_coarse_meshes = tail
+        child._custom_mg_builder = self._custom_mg_builder
+
+        self._registered_children.add(child)
+        return child
 
     def add_conforming_surface(self, surface, snap_frac=0.10, verbose=False,
                                snap_quality=0.15, snap_dist=0.0,
@@ -7307,9 +8000,10 @@ class Mesh(Stateful, uw_object):
 
         Notes
         -----
-        Two dimensions only. A surface **ending inside** the mesh (a fault tip) is
-        refused rather than silently mis-meshed, as is a triangle the surface
-        crosses three times.
+        Two dimensions only — in 3-D use :meth:`add_conforming_sheet`, where
+        a free rim (a fault tip) is the normal case. Here a surface **ending
+        inside** the mesh is refused rather than silently mis-meshed, as is a
+        triangle the surface crosses three times.
 
         See Also
         --------
@@ -7349,73 +8043,128 @@ class Mesh(Stateful, uw_object):
                       f"{info['n_cut_edges']} surface facets, "
                       f"min angle {info['min_angle']:.2f} deg")
 
-        child = Mesh(
-            cut_dm,
-            simplex=self.dm.isSimplex(),
-            coordinate_system_type=self.CoordinateSystem.coordinate_type,
-            qdegree=self.qdegree,
-            boundaries=boundaries,
-            verbose=False,
-        )
-        child.parent = self
-        child._relationship_kind = "refinement"
-        # ... but NOT a nested one. Snapping moves parent vertices onto the
-        # surface, so a coarse DOF need not have a coincident fine DOF, and the
-        # injection that a bisection child's restriction relies on would quietly
-        # read the field at the displaced position instead.
-        child._refine_dofs_coincide = False
-        child.regions = self.regions
-        child._parent_mesh_version = self._mesh_version
-        child._surface_info = info
+        return self._adopt_cut_child(cut_dm, boundaries, info,
+                                     mg_coarsening_ratio, verbose)
 
-        # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
-        # mesh, so this mesh plus everything below it is a valid coarse tail and
-        # the solver appends the child as the finest level. The transfers are
-        # coordinate-based and do not need the levels to nest — just as well,
-        # since a cut vertex is not an edge midpoint and the exact 1/2,1/2
-        # prolongation does not apply to it.
-        #
-        # A mesh that is ITSELF a child (a second surface, or an adapt child) has
-        # to EXTEND its own tail rather than read `dm_hierarchy`, which for a child
-        # holds only its own DM: reading it there would silently discard every
-        # level below and leave a two-level hierarchy calling itself multigrid.
-        #
-        # Tested with `is not None`, not for truthiness. A child whose own tail
-        # is EMPTY is still a child, and reading `dm_hierarchy` there returns
-        # just its own DM — the two-level collapse this comment warns about,
-        # reached by the one input the truth test cannot distinguish from a
-        # parent.
+    def add_conforming_sheet(self, points, triangles, name, *,
+                             clearance=0.6, setback=0.0, size=None,
+                             verbose=False, mg_coarsening_ratio=2.0):
+        r"""Add a triangulated sheet that the mesh conforms to (3-D).
+
+        The 3-D twin of :meth:`add_conforming_surface`, and the Mesh-level
+        form of :func:`~underworld3.utilities.place_surface.place_sheet`:
+        the sheet's points become mesh vertices, every sheet triangle an
+        interior face labelled ``name``, and the rim is free inside the
+        mesh — a fault tip is the normal case here, not a refusal.
+
+        The cut runs at the finest level ONLY. This mesh and every
+        multigrid level under it are untouched and become the child's
+        coarse tail, exactly as in 2-D: the coarse levels do not carry the
+        sheet and do not need to (custom-P sets ``pc_mg_galerkin=both``,
+        so every coarse operator is :math:`P^\mathsf{T} A P` from the fine
+        operator — see the measured note in :meth:`add_conforming_surface`,
+        whose warning about ESSENTIAL conditions on the surface applies
+        here unchanged; a material contrast across the sheet is the
+        supported use).
+
+        Everything :func:`place_sheet` documents holds: the sheet may run
+        PAST the domain (it is clipped against the mesh's own boundary,
+        and an outcrop trace is labelled ``<name>_trace``); ``setback``
+        stops it short as a BLIND fault with the would-be intersection
+        returned in ``child._surface_info["surface_trace"]``; ``size``
+        re-triangulates the sheet to match the mesh it cuts.
+
+        Parameters
+        ----------
+        points, triangles : array_like
+            The sheet: ``(N, 3)`` vertices and ``(M, 3)`` triangle
+            indices. Explicit arrays rather than an object, because a
+            sheet is DATA — a slab model, an authored parameter-space
+            triangulation — whose connectivity must be embedded verbatim
+            (:class:`~underworld3.meshing.FaultSurface` re-derives its
+            triangulation, so it cannot carry an authored one).
+        name : str
+            Becomes a boundary of the returned mesh, so a solver can
+            resolve the facets by name and :meth:`cells_supporting`
+            marks the fault zone.
+        clearance, setback, size, verbose
+            Passed through to :func:`place_sheet`.
+        mg_coarsening_ratio : float
+            As in :meth:`add_conforming_surface`: the cut replaces this
+            mesh in the tail unless it is genuinely finer.
+
+        Returns
+        -------
+        Mesh
+            A new mesh; this one is not modified. Placement metadata is
+            on ``child._surface_info``. Call again on the result to add
+            another sheet — a network is built one branch at a time.
+
+        See Also
+        --------
+        add_conforming_surface : the 2-D form.
+        add_fault : cut AND split, for a velocity discontinuity.
+        cells_supporting : the fault zone of the labelled facets.
+        """
+        from underworld3.utilities.place_surface import place_sheet
+
+        if self.dim != 3:
+            raise NotImplementedError(
+                "add_conforming_sheet is 3-D; in 2-D use "
+                "add_conforming_surface.")
+
+        boundaries = self._boundaries_with(name)
+        cut_dm, info = place_sheet(
+            self.dm, points, triangles, label=name,
+            label_value=boundaries[name].value, clearance=clearance,
+            verbose=verbose, setback=setback, size=size)
+        return self._adopt_cut_child(cut_dm, boundaries, info,
+                                     mg_coarsening_ratio, verbose)
+
+    def add_fault(self, faults, verbose=False):
+        """Cut AND split one or more faults; return the split mesh.
+
+        The split-node fault pipeline in one call: each fault becomes a
+        genuine velocity discontinuity — a conforming facet chain whose
+        nodes are duplicated, with boundaries ``<name>Plus`` /
+        ``<name>Minus`` and the coincident DOF pairing recorded. Interface
+        conditions then go through ``solver.add_fault_bc(conds, name)``
+        (``conds = 0`` frictionless, ``conds`` > 0 a viscous interface) and
+        an ordinary ``solve()``.
+
+        ``faults`` is a ``Surface``, a ``(name, points)`` pair, or a
+        sequence of either (a network — cut all, then split all). Each
+        fault is one open polyline with both tips strictly inside the
+        domain; segments must not share vertices, so branches and
+        crossings are represented as OFFSET segments (a one-to-two-cell
+        ligament). The result inherits a MESH-OWNED geometric-MG tail (the
+        parent's coarse levels, the cut mesh finest — a cut is the same
+        grid re-represented); a parent without one yields a standalone
+        mesh — no tail, since
+        the coarse levels do not carry the fault (see
+        :meth:`add_conforming_surface`); solvers take their
+        algebraic-multigrid defaults.
+
+        Implementation and design: ``underworld3.utilities.fault_split``
+        and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
+        """
+        from underworld3.utilities.fault_split import add_fault
+        child = add_fault(self, faults, verbose=verbose)
+        # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
+        # re-represents the same grid with the surface conformed (finer only
+        # by the duplicated vertices), so the parent's coarse levels serve
+        # unchanged with the cut mesh as the finest level — the coarse
+        # levels do not need the fault (#620/#629). Without this every
+        # solver on a split mesh fell to GAMG unless it called
+        # set_custom_fmg by hand. The FAC zone is NOT inherited: a split
+        # fault needs no patch (the keying ruling).
         own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
-        tail = (list(own_tail) + [self]) if own_tail is not None \
-            else self._coarse_level_meshes()
-
-        # A cut is not necessarily a refinement. It re-represents the same grid
-        # with the surface conformed, so `self` earns its place as a separate
-        # level only if the child is genuinely finer — the same question `adapt`
-        # asks of an engine pass, so ask it with the same routine rather than a
-        # second rule that could drift from it.
-        #
-        # Measured on a box fault before this: nine levels, of which the two
-        # added by the two cuts coarsened h by 1.11x and 1.17x on the 5th
-        # percentile against a threshold of 1.8 — each costing a full Galerkin
-        # RAP and smoother sweep for no correction. Worse, transfer 7->8, BETWEEN
-        # those two, is where the barycentric builder ran out of coarse DOFs with
-        # a fine image and fell back to the dense RBF one (#424).
-        #
-        # `_subsample_mg_levels` already does "replace the level below rather
-        # than append to it" for its own finest generation; handing it the pair
-        # (self, child) against the level beneath them puts that decision here
-        # too. One level back means it kept only the child.
-        if len(tail) >= 2:
-            kept, _Ps, _pc = self._subsample_mg_levels(
-                tail[-2].dm, [tail[-1].dm, cut_dm], [None, None], [],
-                ratio=mg_coarsening_ratio, verbose=verbose)
-            if len(kept) == 1:
-                tail = tail[:-1]
-        child._custom_mg_coarse_meshes = tail
-        child._custom_mg_builder = self._custom_mg_builder
-
-        self._registered_children.add(child)
+        if (own_tail is not None
+                and getattr(child, "_custom_mg_coarse_meshes", None) is None):
+            child._custom_mg_coarse_meshes = list(own_tail)
+            child._custom_mg_builder = getattr(self, "_custom_mg_builder",
+                                               "barycentric")
+            child._custom_mg_fac_zone = None
         return child
 
 
@@ -7758,6 +8507,34 @@ class Mesh(Stateful, uw_object):
             def eval_metric(centroids):
                 return numpy.asarray(_sampler(metric_sym, centroids)).reshape(-1)
 
+        def marking_metric(centroids):
+            """``eval_metric``, clipped, with "nobody has cells" decided together.
+
+            Returns ``None`` when NO rank owns cells, which the marking loops
+            read as "mark nothing". The point of routing the emptiness question
+            through a reduction is that the loops below then have a collective
+            fact to stop on, instead of each rank deciding for itself whether
+            to leave — which is the defect this replaced (#512).
+
+            Note on what this does NOT fix. #512 describes the rank-local
+            ``if cur_h.size:`` guards as skipping a collective, on the grounds
+            that ``eval_metric`` is ``global_evaluate`` for a field or
+            expression metric. Measured at np=2, that is not so: with one rank
+            asleep for 10 s, the other's ``global_evaluate`` returned in 0.06 s,
+            both for in-domain points and for points that strand outside the
+            mesh entirely. It does not wait for its peers on these shapes, so a
+            cell-less rank skipping it does not hang. The guards are routed
+            through here for uniformity with the stop below, not because they
+            were hanging.
+            """
+
+            # mpi4py allreduce defaults to MPI.SUM, as at the collective stop
+            # further down.
+            if uw.mpi.comm.allreduce(int(centroids.shape[0])) == 0:
+                return None
+
+            return numpy.clip(eval_metric(centroids), 1e-30, None)
+
         def cell_geometry(dm):
             """Per-cell centroid and size for every cell of a simplicial DM.
 
@@ -7845,14 +8622,14 @@ class Mesh(Stateful, uw_object):
                     arr[mask] = s.restore(arr[mask])
                     snapped_any |= mask
             dm.setCoordinatesLocal(vec)
+            # A snap moves boundary vertices by the chord sagitta
+            # (~h²/8R); on a base coarse enough that h ≈ R this could
+            # invert a sliver silently. Fail loudly instead: no cell
+            # incident to a snapped vertex may flip orientation.
+            flipped = 0
             if snapped_any.any():
-                # A snap moves boundary vertices by the chord sagitta
-                # (~h²/8R); on a base coarse enough that h ≈ R this could
-                # invert a sliver silently. Fail loudly instead: no cell
-                # incident to a snapped vertex may flip orientation.
                 cs_, ce_ = dm.getHeightStratum(0)
                 vS_, vE_ = dm.getDepthStratum(0)
-                flipped = 0
                 for c in range(cs_, ce_):
                     vs = [p - vS_ for p in dm.getTransitiveClosure(c)[0]
                           if vS_ <= p < vE_]
@@ -7863,16 +8640,22 @@ class Mesh(Stateful, uw_object):
                     if (numpy.sign(numpy.linalg.det(e0))
                             != numpy.sign(numpy.linalg.det(e1))):
                         flipped += 1
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
-                if flipped:
-                    raise RuntimeError(
-                        f"adapt: snapping boundary vertices to the analytic "
-                        f"surfaces inverted {flipped} cell(s) — the base mesh "
-                        "is too coarse for the boundary curvature (chord "
-                        "sagitta ~ cell size). Refine the base mesh or adapt "
-                        "without registered bounding surfaces.")
+
+            # The count is rank-local, so the REDUCTION must be reached
+            # unconditionally: a rank whose partition holds no vertex on a
+            # registered surface has an all-False `snapped_any`, and guarding
+            # the reduction on it starves the peers that are already in it
+            # (#627).
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
+            if flipped:
+                raise RuntimeError(
+                    f"adapt: snapping boundary vertices to the analytic "
+                    f"surfaces inverted {flipped} cell(s) — the base mesh "
+                    "is too coarse for the boundary curvature (chord "
+                    "sagitta ~ cell size). Refine the base mesh or adapt "
+                    "without registered bounding surfaces.")
 
         # Refine from the mesh's CURRENT geometry. Node redistribution
         # (redistribute_nodes) moves mesh.dm's coordinates while the static
@@ -7990,8 +8773,8 @@ class Mesh(Stateful, uw_object):
             n_gen = dim * max_levels
             for level in range(n_gen):
                 centroids, cur_h, cs = cell_geometry(current_dm)
-                if cur_h.size:
-                    M = numpy.clip(eval_metric(centroids), 1e-30, None)
+                M = marking_metric(centroids)
+                if M is not None and cur_h.size:
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
@@ -8073,12 +8856,28 @@ class Mesh(Stateful, uw_object):
             # so fewer edges are independent per pass.
             n_pass = 8 * dim * max_levels
             current_dm = base_finest
+            _pct5_of_dm = {}
             for level in range(n_pass):
                 centroids, _proxy_h, cs = cell_geometry(current_dm)
-                if centroids.shape[0]:
-                    M = numpy.clip(eval_metric(centroids), 1e-30, None)
+                # The topology tables are read ONCE per pass and shared
+                # with the split — the per-cell closure walk is the
+                # loop's dominant cost and was paid twice (#610). The
+                # metric goes through marking_metric: the "nobody has
+                # cells" verdict is COLLECTIVE (rank-local branching on
+                # the raw metric is the np>1 deadlock class).
+                _edge_tables = None
+                M = marking_metric(centroids)
+                if M is not None and centroids.shape[0]:
                     h_target = 1.0 / numpy.sqrt(M)
-                    diameter = edge_split.cell_diameters(current_dm)
+                    diameter, _edge_tables = edge_split.cell_diameters(
+                        current_dm, return_tables=True)
+                    # The marking pass has just measured this dm; the MG
+                    # level selection re-derives the same 5th percentile
+                    # per retained generation, so it is cached here
+                    # rather than re-walking every level's topology.
+                    _pct5_of_dm[id(current_dm)] = (
+                        float(numpy.percentile(diameter, 5))
+                        if diameter.size else float("inf"))
                     sel = numpy.where(diameter > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
                         order = numpy.argsort(M[sel])[::-1]
@@ -8089,7 +8888,7 @@ class Mesh(Stateful, uw_object):
                 marked = [int(cs + j) for j in sel]
                 _coarse_for_P = current_dm
                 current_dm, n_split = edge_split.bisect_longest_edges(
-                    current_dm, marked)
+                    current_dm, marked, tables=_edge_tables)
                 # n_split is global, so this stop is collective without a further
                 # reduction — a rank with nothing marked still enters the split.
                 if n_split == 0:
@@ -8123,9 +8922,14 @@ class Mesh(Stateful, uw_object):
                         uw.pprint(0, f"[adapt] edge_split pass {level}: repaired "
                                      f"with {n_flips} flip(s)")
                 else:
-                    _nested_parent_cells.append(
-                        None if _vP is None
-                        else _nested_parents(_coarse_for_P, current_dm, _vP))
+                    # Parent maps are DEFERRED to the retained MG levels:
+                    # the subsampler discarded every per-pass map whose
+                    # span was more than one pass, so building ~76 of
+                    # them to keep 3-4 was almost entirely wasted work —
+                    # and the retained multi-pass spans now get EXACT
+                    # parents from the composed vertex transfer instead
+                    # of falling back to the geometric builder.
+                    _nested_parent_cells.append(None)
                 snap_level_boundaries(current_dm)
                 if _relax_mode == "per-generation":
                     _mg = Mesh(current_dm.clone(),
@@ -8171,6 +8975,13 @@ class Mesh(Stateful, uw_object):
                                   regions=rcarry)
             n_gen = dim * max_levels
             for level in range(n_gen):
+                # Rank-local marking and a rank-local break, deliberately: this
+                # is the pure-Python cell-list engine, reached only when the
+                # native uwnvb transform is absent, and that combination raises
+                # NotImplementedError at np>1 further up. It is serial by
+                # construction, so the collective discipline the other engines
+                # need here (#512) has nothing to protect. Port it before
+                # porting this loop.
                 centroids, cur_h, cids = nvb.centroids_h()
                 M = numpy.clip(eval_metric(centroids), 1e-30, None)
                 h_target = 1.0 / numpy.sqrt(M)
@@ -8228,17 +9039,30 @@ class Mesh(Stateful, uw_object):
             current_dm = base_finest             # base finest, current geometry
             for level in range(max_levels):
                 centroids, cur_h, cs = cell_geometry(current_dm)
-                if cur_h.size == 0:
-                    break
 
                 # Metric M = 1/h_target² at the cell centroids (parent field).
                 # A callable is evaluated directly on the centroids; a field/expr
                 # goes through global_evaluate (parallel) or evaluate (serial).
-                M = numpy.clip(eval_metric(centroids), 1e-30, None)
-                h_target = 1.0 / numpy.sqrt(M)
+                M = marking_metric(centroids)
+                if M is None:
+                    break                     # no rank has cells: leaving together
 
-                refine = numpy.where(cur_h > h_target)[0]
-                if refine.size == 0:
+                if cur_h.size:
+                    h_target = 1.0 / numpy.sqrt(M)
+                    refine = numpy.where(cur_h > h_target)[0]
+                else:
+                    refine = numpy.empty(0, dtype=int)
+
+                # Collective stop. `refine.size == 0` is a rank-local fact: this
+                # rank's cells are all fine enough, which says nothing about its
+                # peers'. Breaking on it alone takes the rank out of the loop for
+                # good while the others go round again into the DM refinement,
+                # which IS collective — so the job hangs, and not latently.
+                # Measured at np=2 with a callable metric demanding h=0.01 inside
+                # r<0.15 of one corner and nothing elsewhere: the rank holding no
+                # corner cells left at the first level and `mpirun` reached its
+                # timeout with neither rank returning. See test_0873.
+                if uw.mpi.comm.allreduce(int(refine.size)) == 0:
                     if verbose:
                         uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
                     break
@@ -8296,7 +9120,9 @@ class Mesh(Stateful, uw_object):
         if level_dms:
             level_dms, _nested_Ps, _nested_parent_cells = self._subsample_mg_levels(
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
-                ratio=mg_coarsening_ratio, verbose=verbose)
+                ratio=mg_coarsening_ratio, verbose=verbose,
+                resolution_hint=(_pct5_of_dm if engine == "edge_split"
+                                 else None))
 
         # Exact per-generation prolongations when the engine could supply them
         # (cell-list path). Empty for the native transform path, which falls
@@ -8335,7 +9161,8 @@ class Mesh(Stateful, uw_object):
     _MG_RATIO_SLACK = 0.9      # a step of 1.92 counts as a doubling
 
     def _subsample_mg_levels(self, base_finest, level_dms, nested_Ps,
-                             nested_parent_cells, ratio=2.0, verbose=False):
+                             nested_parent_cells, ratio=2.0, verbose=False,
+                             resolution_hint=None):
         """Keep one multigrid level per DOUBLING OF RESOLUTION, not one per pass.
 
         A refinement engine takes as many passes as it needs to reach the size
@@ -8375,10 +9202,16 @@ class Mesh(Stateful, uw_object):
 
             A low percentile rather than the strict minimum, so one thin cell
             cannot declare a level; reduced with MIN so the finest region counts
-            wherever it happens to live.
+            wherever it happens to live. A caller that already measured a
+            dm during its own pass loop supplies the value through
+            ``resolution_hint`` instead of paying a second topology walk.
             """
-            d = edge_split.cell_diameters(dm)
-            local = float(numpy.percentile(d, 5)) if d.size else float("inf")
+            if resolution_hint is not None and id(dm) in resolution_hint:
+                local = resolution_hint[id(dm)]
+            else:
+                d = edge_split.cell_diameters(dm)
+                local = (float(numpy.percentile(d, 5)) if d.size
+                         else float("inf"))
             return uw.mpi.comm.allreduce(local, op=min)
 
         # An engine lands near the target, not on it (1.92, 1.97, 2.19 measured),
@@ -8408,15 +9241,9 @@ class Mesh(Stateful, uw_object):
 
         composed, parent_cells = [], []
         start = 0
+        level_coarse = base_finest
         for i in keep:
             span = [P for P in nested_Ps[start:i + 1]]
-            # One generation -> the level IS that pass, so its parent-cell map
-            # still describes it. More -> no single parent per cell. Not every
-            # engine records the maps at all (the native transform and SBR paths
-            # do not), so a short list means "none for this level".
-            parent_cells.append(nested_parent_cells[i]
-                                if i == start and i < len(nested_parent_cells)
-                                else None)
             if any(P is None for P in span) or not span:
                 composed.append(None)
             elif len(span) == 1:
@@ -8428,6 +9255,26 @@ class Mesh(Stateful, uw_object):
                 for P in span[1:]:
                     M = _compose_prolongations(P, M)
                 composed.append(M)
+            # The parent-cell map, for the RETAINED pair only. A map the
+            # engine recorded per pass (a single-pass span) is used as
+            # recorded; otherwise it is derived from the composed vertex
+            # transfer — nested_cell_parents is topological through the
+            # transfer, and a descendant's referenced coarse vertices are
+            # all corners of its ancestor at any depth, so multi-pass
+            # spans now carry exact parents instead of None.
+            recorded = (nested_parent_cells[i]
+                        if i == start and i < len(nested_parent_cells)
+                        else None)
+            if recorded is not None:
+                parent_cells.append(recorded)
+            elif composed[-1] is not None:
+                from underworld3.utilities.nvb import (
+                    nested_cell_parents as _parents_of)
+                parent_cells.append(
+                    _parents_of(level_coarse, level_dms[i], composed[-1]))
+            else:
+                parent_cells.append(None)
+            level_coarse = level_dms[i]
             start = i + 1
 
         if verbose:

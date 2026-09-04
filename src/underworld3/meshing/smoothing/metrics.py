@@ -171,11 +171,16 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
         #
         # KNOWN LIMIT: this skips uw.function.evaluate, which is itself
         # collective for metrics containing MESH-VARIABLE data — a starved
-        # rank then deadlocks the populated ranks inside evaluate. Full
-        # starved-rank support for field-valued metrics needs the
-        # evaluate/points_in_domain layer to be empty-rank safe first
-        # (tracked with the #399 follow-up issue). Analytic (pure-sympy)
-        # metrics are fine: their evaluation is rank-local.
+        # rank then deadlocks the populated ranks inside evaluate. Analytic
+        # (pure-sympy) metrics are fine: their evaluation is rank-local.
+        #
+        # Issue #405 made the reduction layer under evaluate empty-rank safe
+        # (radii, points_in_domain), which was expected to lift this limit on
+        # its own. Measured at np=4 on a starved mesh: it does not. The
+        # remaining blocker is below UW3 — the DMPlex sub-DM clone that the
+        # mesh-variable path builds fails with MPI_ERR_BUFFER when a rank has
+        # no cells. That is issue #314's territory; revisit this branch when
+        # #314 closes.
         A_actual = np.empty(0)
         rho = np.empty(0)
     inv_rho = 1.0 / rho if rho.size else np.empty(0)

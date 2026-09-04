@@ -27,37 +27,30 @@ Yield-law maths, tangent-per-model, quadratic-convergence check: `plasticity-sol
    the soft-min carries to the viscous branch (see the trap list for the one form
    that must be written carefully).
 
-2. **Multi-solve δ-continuation** (NOT an in-solve ramp). Hold δ **constant** for a
-   full nonlinear solve to tolerance; warm-start the next, smaller δ from that
-   converged state; march δ down to the sharp surface. δ is a `constants[]` atom,
-   so each step is a recompile-free `PetscDSSetConstants` update.
+2. **If a single solve at the sharp surface fails**, escalate in this order:
+   **grid sequencing first** (solve coarse, transfer, re-solve fine — the
+   measured 2-3x win at the notch), and only then a **multi-solve
+   δ-continuation** as the rescue of last resort. The δ-discipline, when you do
+   reach for it: hold δ **constant** for a full nonlinear solve to tolerance;
+   warm-start the next, smaller δ from that converged state; march down to the
+   sharp surface. δ is a `constants[]` atom, so each step is a recompile-free
+   `PetscDSSetConstants` update.
 
-   **This is now one call** — the model advertises the homotopy and `solve()` marches it:
-
-   ```python
-   stokes.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
-   cm.Parameters.shear_viscosity_0 = ...
-   cm.Parameters.yield_stress = ...          # a plain pressure-dependent yield
-   report = stokes.solve(homotopy=True)      # smooth mode, tangent, march: automatic
-   report["settled_delta"]                   # smallest δ that converged
-   ```
-
-   `solve(homotopy=True)` sets the smooth mode (softmin + power-mean), picks the
-   tangent the model asks for (Newton for DP, Picard for elastic VEP), and runs a
-   residual-guided march that accelerates on easy steps and reverts + retries a
-   failed δ more gently. Tune with
-   `homotopy_options=dict(delta0=…, down=…, dmin=…, entry_maxit=…, step_maxit=…)`;
-   the driver is also callable directly as
-   `underworld3.systems.yield_continuation`.
+   The packaged driver is `stokes.solve(homotopy=True)` (also callable directly
+   as `underworld3.systems.yield_continuation`; tune with
+   `homotopy_options=dict(delta0=…, down=…, dmin=…, entry_maxit=…,
+   step_maxit=…)`). **Treat it as a rescue, not the default**: the evidence
+   that once made a δ-march the recommended entry point was retracted (it
+   rested on a unit-scaling error — `plasticity-solvers` carries the ruling
+   and the surviving evidence), and the driver's documented cold-start
+   guarantee does not currently hold (issue #473: entry can fail on a
+   pressure-dependent yield, and the step control is effectively one-shot).
+   Newton + the automatic Picard entry handles the standard cases without it.
 
 3. **Consistent-Newton tangent** for non-elastic DP (`consistent_jacobian=True`);
    **Picard** for elastic VEP — see `plasticity-solvers` for the per-model table.
 
 4. **`bt` line search** with the consistent tangent on a smooth (δ>0) surface.
-
-The δ-march is cheap: with the power-mean smoother a converged δ warm-starts every
-sharper δ in ≈0 Newton iterations, so a residual-guided auto-descent costs almost
-nothing.
 
 ---
 
@@ -70,9 +63,10 @@ proven solver config**. Mechanism: the continuation only sharpens δ from a
 **converged**, well-conditioned iterate; the in-SNES ramp sharpens δ **mid-solve**
 at a far-from-solution iterate where the consistent-Newton Jacobian on a sharpening
 surface is ill-conditioned and the linear solve fails. **Hide the *continuation*,
-not the *ramp*.** (This supersedes the `enable_yield_homotopy()` in-SNES ramp still
-described in `plasticity-solvers`; that path is retained only as a dead-experiment
-record — use the multi-solve continuation above.)
+not the *ramp*.** (An in-SNES ramp API once shipped and has been removed from the
+source entirely — use the multi-solve continuation above; `plasticity-solvers`
+carries the yield-law substrate and the evidence on when a δ-march is worth it
+at all.)
 
 ---
 
@@ -83,7 +77,7 @@ case felt like whack-a-mole. Check them first.
 
 | Trap | Symptom | Fix |
 |---|---|---|
-| Consistent Newton makes the velocity block **non-symmetric**; a Chebyshev/Richardson MG smoother assumes SPD | smoother diverges / stalls → `DIVERGED_LINEAR_SOLVE` or an endless grind | **Now the default** — the FMG bundle ships `mg_levels_ksp_type=gmres` + `pc_type=sor` + `norm_type=none`. Only an issue if you override it, or on GAMG (which uses PETSc's chebyshev default) |
+| **Perfect plasticity's consistent tangent is SINGULAR along the flow**: on the hard-`Min` plastic branch η = τ_y/2ε̇_II, so 2η + 2η′ε̇_II = 0 — the velocity block is symmetric but semi-definite in every yielded cell. (An earlier version of this row blamed *asymmetry*; that is wrong for any η(ε̇_II) law — the rank-one term η′ ε̇⊗ε̇/ε̇_II is symmetric. Pressure-dependent yield adds a non-symmetric v–p coupling, not a non-symmetric velocity block. Corrected 2026-08-26, maintainer review.) | benign while yielded cells are few (the viscous neighbours regularise); with a large yielded fraction the velocity sub-solve caps out and Newton stalls at ~1e-3, no failure reason | give the plastic branch a positive tangent: a small δ soft-min (`yield_mode="softmin"`, powermean, `yield_anchor="yield"`), a rounded viscosity floor, or rate-strengthening ξ; Picard converges regardless (full 2η stiffness) but is linear-rate. The FMG bundle's `gmres`+`sor` smoother is Newton-safe either way |
 | `preconditioner="fmg"` (vs explicit `pc_type=mg` + manual mg opts) | outer KSP "converges" in **1 iteration** → no real Newton correction → stall → `DIVERGED_LINE_SEARCH` | use explicit `pc_type=mg` with the smoother opts above; bound the outer KSP (`ksp_max_it`~80) so a hostile step fails fast |
 | Cold plastic start `v=0`, or any rigid/unyielded point | `DIVERGED_FNORM_NAN` at iteration 0 | **Not** a div/0: `ε̇=0` gives `η_pl=+inf`, which `Min` and the sqrt soft-min carry correctly to the viscous branch. Only a soft-min form that computes `η_ve·η_pl/(η_ve+η_pl)` breaks (`inf/inf`). Fixed in the power-mean; if you hand-roll a blend, write the harmonic mean as `η_ve/(1+η_ve/η_pl)`. **Do not reach for a strain-rate floor** — it hides this rather than fixing it |
 | LU velocity block with all-Dirichlet-ish BC | pressure nullspace singular | attach the Stokes nullspace / avoid a bare LU there |
@@ -127,10 +121,13 @@ if stokes.has_solution:
 - **Layer 3 — DONE:** the FMG velocity smoother defaults to `gmres`+`sor` with
   `mg_levels_ksp_norm_type=none` (fixed-cost V-cycle), unconditionally — see
   "Multigrid depth" below.
-- **Layer 2 — DONE:** the model advertises the homotopy
+- **Layer 2 — SHIPPED, DEMOTED TO RESCUE:** the model advertises the homotopy
   (`supports_yield_homotopy` / `_yield_homotopy_control`) and
   `stokes.solve(homotopy=True, homotopy_options=...)` runs the residual-guided
-  continuation, returning the march summary.
+  continuation, returning the march summary. The doctrine that made this the
+  recommended entry point was retracted (unit-scaling error — see
+  `plasticity-solvers`), and its cold-start guarantee is broken (issue #473);
+  use it after Newton + Picard entry and grid sequencing have failed.
 
 ---
 
@@ -167,6 +164,141 @@ conditioning — the coarsest grid cannot represent the viscosity contrast — a
 levels *every* smoother fails there (richardson outright, gmres with ρ>1). Use the δ/ξ
 continuation to stay in the solvable region.
 
+## FMG on an ADAPT-ON-TOP child (locally refined meshes)
+
+An `adapt()` child carries its **own custom-P geometric MG tail** — subsampled to
+one level per **DOUBLING of h** (`mg_coarsening_ratio=2.0`, the `adapt()` default)
+— on `child._custom_mg_coarse_meshes`, and solvers built on it pick it up
+automatically. So the usual advice above ("never use a non-nested hierarchy") is
+satisfied without you assembling anything:
+
+```python
+child = base.adapt(metric, max_levels=3, engine="edge_split")
+stokes = uw.systems.Stokes(child, velocityField=v, pressureField=p)
+stokes.solve()          # pc=mg auto-attached off the child's tail
+```
+
+Requirements and traps, all measured:
+
+- **Build the base with `refinement>=1` for a deeper tail.** The custom-P tail
+  always starts at the BASE mesh — with `refinement=0` it is
+  `[base] + the intermediate doubling levels`, so there IS a coarse grid — but
+  the uniform base levels extend it downward, and in MG you want the coarsest
+  grid as coarse as it can be.
+- **Keep the GRADED tail.** `_adapt_nested` stores one MG level per doubling of
+  resolution (`_subsample_mg_levels`; per-bisection-pass levels were measured
+  2.3–7.3× slower). Handing the solver a base-only tail instead — coarse base
+  straight to the fully adapted mesh — **triples the V-cycle count**.
+- **V-cycle counts are insensitive to element quality here, and that is a PASS not
+  a failed measurement.** On a fault child the velocity block takes 2 iterations
+  (iso) or 2–3 (TI) across meshes ranging from 156° to 105° max angle. The
+  geometric hierarchy's coarse spaces come from the mesh hierarchy, not from the
+  fine operator, so shape does not move it — which is exactly what makes
+  adapt-on-top viable. **If you want a solver-side probe of mesh quality, use
+  GAMG**, which does respond (iso 79 → 64 velocity iterations with `repair=True`).
+  That is now actionable: `solver.preconditioner = "gamg"` is **respected** on an
+  adapt child (#530) — before that guard the opportunistic pickup silently
+  clobbered it back to `pc=mg`, so any FMG-vs-GAMG comparison was vacuous.
+- **Single-field solvers get FMG too** (#478/#534): `preconditioner = "fmg"` on a
+  Poisson/projection-class solver builds the custom-P tail over the mesh's own
+  `dm_hierarchy` — the section is not Stokes-or-adapt-child only.
+- **`relax()` can trip #424.** On a relaxed, unrepaired child the barycentric
+  transfer hit 22 zero columns and fell back to the DENSE global RBF builder — a
+  performance cliff, not just a warning.
+- **Every PC degradation is recorded in `solver.pc_fallbacks`** (#534) — the
+  requested/installed/reason record for the #424 barycentric→rbf retry, a
+  collapsed hierarchy, a declined pickup. Read that, don't scrape warnings.
+- **`repair=True` invalidates the any-degree nested transfer** (a flipped cell can
+  straddle two coarse cells), so degree ≥ 2 falls back to the geometric builder.
+  The exact ½,½ vertex prolongation survives, because flips move no vertex.
+- Under **rotated free-slip** the mesh-owned adapt tail is picked up automatically
+  too — the rotated KSP resolves hierarchies through the same
+  `custom_mg.build_transfers` rule (#467 fixed the old silent GAMG fallback). See
+  the `adapt-on-top-faults` skill for the plain-refined-mesh case, which still
+  needs `set_custom_fmg`.
+
+Companion skills: **`adapt-on-top-faults`** (building the child, engines, repair,
+band sizing), **`adaptive-meshing`** (the mover, and `relax(pin_bands=...)` for
+relaxing a mesh that was refined onto an interface).
+
+## The Schur complement: pair the penalty with FMG, never with GAMG
+
+**Symptom this is for**: the velocity block's iteration count is rock solid but
+the pressure sub-solve wanders into the hundreds and eventually stops
+converging.
+
+**First: it is probably not the pressure block.** `S = -B A^-1 B^T` is applied
+*through* the velocity solve, so a velocity solve that exits at its iteration
+cap makes the Schur operator inconsistent between applications — and no Krylov
+method converges against an operator that moves under it. The pressure block
+then caps too, and the outer flounders. Measured on SolCx (eta 1e6, P2-P0disc,
+h=1/30), changing **only** `fieldsplit_velocity_ksp_max_it`:
+
+| velocity cap | sec | outer | pressure/app | velocity/app |
+|---|---|---|---|---|
+| 200 (default) | 976.0 | 44 | **200.0** | **200.0** |
+| 5000 | **25.6** | **2** | **30.0** | 618.0 |
+
+**38x from a number that is not in the pressure block**, and the velocity error
+is identical in both rows. Before tuning the Schur solve, check whether either
+block sat at exactly its cap — `solve_report.sub` gives iterations and
+applications per block, and a per-application count equal to the cap to the
+digit is the tell.
+
+**Then: the penalty is the lever on the Schur count, and it needs FMG.**
+`stokes.penalty = lambda` adds `lambda*mu*(div u)(div v)`, which makes the
+eta-scaled mass matrix a better approximation to S. Matched on one mesh
+(2592 cells), same discrete solve, only the velocity preconditioner differs:
+
+| lambda | velocity PC | sec | outer | Schur/app | velocity/app | velocity total |
+|---|---|---|---|---|---|---|
+| 0  | GAMG | 15.49 | 2 | 125.5 | 94.7 | 24802 |
+| 0  | **FMG** | **3.88** | 1 | **59.0** | **8.8** | **546** |
+| 10 | GAMG | 20.68 | 7 | 22.3 | **199.9 capped** | 33976 |
+| 10 | **FMG** | **3.06** | 1 | **18.0** | **13.5** | **270** |
+
+- **With FMG, `penalty = 10` improves every axis at once**: 21% faster, Schur
+  count 3.3x smaller, total velocity work halved. FMG absorbs grad-div
+  augmentation (8.8 -> 13.5 iterations per application); GAMG does not
+  (94.7 -> capped).
+- **With GAMG, do not use it at all.** The same `penalty = 10` makes the solve
+  *slower* (15.49 -> 20.68 s), because augmentation is exactly what drives GAMG
+  into its cap. Uncapping rescues it to 11.03 s but it still needs **833**
+  iterations per application, and FMG is 3.6x faster on the same mesh.
+  Feasible is not competitive.
+
+**The accuracy cost is consistent, so it is safe to pair by default.** The
+penalty is grad-div, not a true augmented Lagrangian — `div(P2)` is not inside
+`P0`, so the term does not vanish at the discrete solution and it does perturb
+the answer. But the perturbation converges away: same rate, and the gap shrinks
+under refinement.
+
+| cells | lambda=0 v err | rate | lambda=10 v err | rate | gap |
+|---|---|---|---|---|---|
+| 648   | 2.112e-1 | —    | 2.327e-1 | —    | 1.102 |
+| 2592  | 1.266e-1 | 1.67 | 1.376e-1 | 1.69 | 1.087 |
+| 10368 | 8.727e-2 | 1.45 | 9.305e-2 | 1.48 | **1.066** |
+
+For a pressure-dependent constitutive law use the mechanical pressure,
+`p_mech = p - lambda*mu*(div u)`; the raw `p` is the multiplier.
+
+**Traps.**
+
+- **FMG needs a refined base or you silently get GAMG.** Measured:
+  `refinement=0` -> one hierarchy level -> default velocity PC is `gamg`;
+  `refinement=2` -> `mg`. So `penalty` set "with FMG" on an unrefined mesh is
+  actually the harmful GAMG pairing. Check
+  `snes.getKSP().getPC().getFieldSplitSubKSP()[0].getPC().getType()`, or read
+  `solver.pc_fallbacks`.
+- **Scaling `saddle_preconditioner` by a constant does nothing** — it does not
+  change the Krylov subspace. `1/eta` and `101/eta` both give 28 iterations,
+  identical to every digit, so an "AL-matched" `1/(eta*(1+lambda))` cannot help.
+  The 1/eta *weighting* itself is worth 1.9x (28 vs 52 with a flat `1`).
+- **Eisenstat-Walker is inert under `snes_type=ksponly`** — identical iterations
+  and error on or off. And `outer 1` is not an EW artefact: it is what a full
+  Schur factorisation gives when the Schur complement is solved well.
+- Measurements: `~/+Simulations/pressure_schur_625/` (#625).
+
 ## Gotchas
 
 - **`./uw build` → `amr-dev` env**; verify `uw.__file__` is the worktree site-packages.
@@ -183,4 +315,7 @@ continuation to stay in the solvable region.
 - Continuation driver: `underworld3.systems.yield_continuation`.
 - Diagnostics: `SNES_*.get_snes_diagnostics()` / `solve_with_diagnostics()`.
 - Related skills: `plasticity-solvers` (yield law + tangent per model),
-  `free-surface-convection`, `adaptive-meshing`.
+  `free-surface-convection`, `adaptive-meshing` (mover + `relax(pin_bands=...)`),
+  `adapt-on-top-faults` (locally refined children and their MG tail).
+- Reconnection / refinement engines:
+  `docs/developer/design/mesh-reconnection-and-delaunay-adapt.md`.

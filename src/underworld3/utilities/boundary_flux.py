@@ -12,18 +12,29 @@ gathering, the boundary-mass de-smear (lumped / consistent), and the field hand-
 The equation-specific bit — extracting the nodal reaction — is the solver method
 ``_assemble_volume_reaction``, which returns each rank's RAW (per-rank) volume FEM
 residual; the complete reaction at a boundary node shared across a partition cut is then
-assembled here in ``_desmear`` by SUMMING each rank's partial contribution by coordinate
-(the same rock-solid gather used for the boundary mass — no hand-rolled global assembly).
+assembled here in ``_desmear`` by SUMMING each rank's partial contribution by coordinate.
+In 3D, the complete boundary mass is assembled and solved once on rank zero; only the
+recovered values needed by each rank are scattered back. This avoids replicating the
+global P2 surface mesh and sparse solve on every rank.
 
-``mass="auto"`` (default) uses a diagonal lumped mass where the trace basis admits
-positive row sums (the 2D P2 line trace and the 3D P1 triangle trace), and the consistent
-mass otherwise. A 3D P2 triangle has exactly zero row sum at every vertex, so its
-pointwise recovery requires the consistent surface-mass solve.
+``mass="auto"`` (default) uses a diagonal lumped mass where lumping is pointwise
+sound (the 2D P1/P2 line traces and the 3D P1 triangle trace), and the consistent
+mass otherwise. A 3D P2 triangle has exactly zero row sum at every vertex; a 2D trace
+of degree ≥ 3 places its edge-interior nodes asymmetrically (Gauss-Jacobi), where
+row-sum lumping is only O(h) pointwise — both take the consistent solve. A degree ≥ 3
+trace also carries several interpolation nodes per edge point, and each keeps its own
+coordinate — keying both by the edge's single coordinate silently collapsed them
+(issue #459).
 ``remove_mean=False`` (default) keeps the physical mean flux (the Nusselt number);
 set ``remove_mean=True`` for a gauge-free field (e.g. dynamic topography).
 """
 import numpy as np
 from mpi4py import MPI
+
+# One rule for a boundary facet's outward normal and measure, shared with the two
+# sibling accumulators (rotated_bc._boundary_velocity_nodes,
+# Mesh._assemble_boundary_normal).
+from underworld3.utilities.facet_normals import facet_measure_and_normal
 
 
 # M_e = (area / 12) * _P1_TRIANGLE_MASS.
@@ -47,6 +58,44 @@ _P2_TRIANGLE_MASS = np.array(
         (0.0, -4.0, 0.0, 16.0, 16.0, 32.0),
     )
 )
+
+
+def _rebuild_vertices_from_midpoints(elements, global_index, flux):
+    """Replace the VERTEX entries of a 3D P2 recovery with values reconstructed from
+    its edge-midpoint entries, averaged over the facets incident on each vertex.
+
+    The P2 triangle vertex basis function has zero mean (``_P2_TRIANGLE_MASS`` vertex
+    row sums are exactly 0), so the vertex DOF of an L2 recovery carries no mass and is
+    fixed by cancellation — O(1) error, independent of h. The midpoints carry all of it
+    and are superconvergent, so the vertices are better obtained from them than asked
+    for directly.
+
+    On one triangle the three midpoint values determine a unique linear function.
+    Because ``m01 = (v0+v1)/2`` and so on, that function takes the value
+    ``m01 + m20 - m12`` at ``v0`` — each vertex reads its two ADJACENT midpoints and
+    subtracts the OPPOSITE one. The subtraction amplifies noise up to 3x, which is
+    tolerable only because the midpoints are superconvergent; averaging over the
+    (typically ~6) incident facets damps it further.
+
+    Mean removal is unaffected: it weights by ``M·1``, which is zero at exactly these
+    vertices, so the gauge is set by the midpoints either way — and the reconstruction
+    is linear, so removing the mean before or after gives the same answer.
+    """
+    total = np.zeros_like(flux)
+    count = np.zeros(len(flux), dtype=np.int64)
+    for _order, nodes, _area in elements.values():
+        v0, v1, v2 = (global_index[k] for k in nodes[:3])
+        m01, m12, m20 = (global_index[k] for k in nodes[3:])
+        for vertex, near_a, near_b, far in (
+                (v0, m01, m20, m12),      # v0 lies on edges 01 and 20
+                (v1, m01, m12, m20),      # v1 lies on edges 01 and 12
+                (v2, m12, m20, m01)):     # v2 lies on edges 12 and 20
+            total[vertex] += flux[near_a] + flux[near_b] - flux[far]
+            count[vertex] += 1
+    rebuilt = np.array(flux, dtype=float, copy=True)
+    touched = count > 0
+    rebuilt[touched] = total[touched] / count[touched]
+    return rebuilt
 
 
 def _key(c, dim):
@@ -79,11 +128,88 @@ def _point_coord(dm, dim, cvec, csec, v0, v1, q):
     return np.mean([cvec[csec.getOffset(v) // dim] for v in verts], axis=0)
 
 
+def _trace_interior_coords(solver, degree):
+    """Coordinates of the EDGE-INTERIOR interpolation nodes of a continuous Lagrange
+    field of ``degree``, keyed by DMPlex edge point: ``{edge: (degree-1, cdim) array}``
+    in section slot order. A degree-3 trace carries TWO nodes per edge; the coordinate
+    section stores only one coordinate per point, so these must be built by
+    interpolating the mesh coordinate field into a matching-degree space (issue #459).
+    The space is created exactly as UW3 creates every field FE (``createDefault``,
+    ``node_endpoints=False`` — see ``Mesh._get_coords_for_basis``), so the per-point
+    node ordering matches the solver field's section by construction.
+    COLLECTIVE on the DM's communicator — every rank must call this, boundary or not."""
+    from petsc4py import PETSc
+
+    mesh = solver.mesh
+    cdim = mesh.cdim
+    dmold = solver.dm.getCoordinateDM()
+    dmold.createDS()
+    dmnew = dmold.clone()
+    prefix = "cbf_trace_coord_"
+    options = PETSc.Options()
+    options[prefix + "petscspace_degree"] = degree
+    options[prefix + "petscdualspace_lagrange_continuity"] = True
+    options[prefix + "petscdualspace_lagrange_node_endpoints"] = False
+    fe = PETSc.FE().createDefault(
+        mesh.dim, cdim, mesh.isSimplex, mesh.qdegree, prefix, PETSc.COMM_SELF)
+    dmnew.setField(0, fe)
+    dmnew.createDS()
+    mat_interp, vec_scale = dmold.createInterpolation(dmnew)
+    coords_new_g = dmnew.getGlobalVec()
+    coords_new_l = dmnew.getLocalVec()
+    mat_interp.mult(solver.dm.getCoordinates(), coords_new_g)
+    dmnew.globalToLocal(coords_new_g, coords_new_l)
+    arr = np.asarray(coords_new_l.array).reshape(-1, cdim).copy()
+    sec = dmnew.getLocalSection()
+    e0, e1 = dmnew.getDepthStratum(1)
+    out = {}
+    for e in range(e0, e1):
+        ndof = sec.getDof(e)
+        if ndof > 0:
+            row = sec.getOffset(e) // cdim
+            out[e] = arr[row: row + ndof // cdim]
+    dmnew.restoreGlobalVec(coords_new_g)
+    dmnew.restoreLocalVec(coords_new_l)
+    mat_interp.destroy()
+    if vec_scale is not None:
+        vec_scale.destroy()
+    fe.destroy()
+    dmnew.destroy()
+    return out
+
+
+def _line_mass_1d(ts):
+    """Consistent 1-D line-element mass per unit length for a Lagrange basis with
+    nodes at parameters ``ts`` in [0, 1]: ``M_ij = ∫ L_i L_j dt`` (Gauss–Legendre,
+    exact for the polynomial integrand). The lumped row sums are ``∫ L_i`` by
+    partition of unity; their positivity is checked where the lumped path uses them."""
+    t = np.asarray(ts, dtype=float)
+    if np.min(np.diff(np.sort(t))) < 1e-12:
+        raise RuntimeError(
+            "Line-trace interpolation nodes are not distinct — the per-node "
+            "coordinate build is inconsistent with the field layout (issue #459).")
+    degree = len(t) - 1
+    xq, wq = np.polynomial.legendre.leggauss(degree + 1)
+    xq = 0.5 * (xq + 1.0)
+    wq = 0.5 * wq
+    L = np.ones((len(t), len(xq)))
+    for i, ti in enumerate(t):
+        for j, tj in enumerate(t):
+            if i != j:
+                L[i] *= (xq - tj) / (ti - tj)
+    return (L * wq) @ L.T
+
+
 def _boundary_field_nodes(solver, boundary, field_id=0):
-    """DMPlex points carrying `field_id` DOFs on `boundary`, with their coordinates.
-    Parallel-safe: a rank owning no part of the boundary gets a NULL stratum IS
-    (guarded); ghost/shared nodes are included and their partial per-rank reactions are
-    summed by coordinate in ``_desmear`` to form the complete reaction."""
+    """Interpolation nodes carrying `field_id` DOFs on `boundary`, one entry per NODE
+    as ``(point, slot, coord)``. A DMPlex point can carry several nodes — a degree-3
+    trace has two edge-interior nodes per edge point — and each keeps its OWN
+    coordinate: keying both by the point's single coordinate collapses them in the
+    de-smear and silently drops reactions (issue #459).
+    Parallel-safe and COLLECTIVE (the per-node coordinate build interpolates the mesh
+    coordinate field, and whether it is needed is agreed globally): a rank owning no
+    part of the boundary still participates; ghost/shared nodes are included and their
+    partial per-rank reactions are summed by coordinate in ``_desmear``."""
     dm = solver.dm
     dim = solver.mesh.dim
     lsec = dm.getLocalSection()
@@ -91,27 +217,56 @@ def _boundary_field_nodes(solver, boundary, field_id=0):
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
     fS, fE = dm.getHeightStratum(1)
+    ncomp = lsec.getFieldComponents(field_id)
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
-    if not (sis and sis.getSize() > 0):
-        return [], lsec, csec, cvec, v0, v1
-    facets = [int(z) for z in sis.getIndices()]
-    seen = set(); out = []
+    facets = [] if not (sis and sis.getSize() > 0) else [
+        int(z) for z in sis.getIndices() if fS <= int(z) < fE]
+    seen = set(); points = []
     for f in facets:
-        if not (fS <= f < fE):
-            continue
         for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-            if q in seen or lsec.getFieldDof(q, field_id) <= 0:
+            if q in seen:
+                continue
+            fdof = lsec.getFieldDof(q, field_id)
+            if fdof <= 0:
                 continue
             seen.add(q)
-            out.append((q, _point_coord(dm, dim, cvec, csec, v0, v1, q)))
-    return out, lsec, csec, cvec, v0, v1
+            if fdof % ncomp:
+                raise RuntimeError(
+                    f"Field {field_id} carries {fdof} DOFs at point {q} with "
+                    f"{ncomp} components — not a nodal (Lagrange) layout.")
+            points.append((q, fdof // ncomp))
+    nnodes_max = dm.comm.tompi4py().allreduce(
+        max((m for _q, m in points), default=1), op=MPI.MAX)
+    interior = _trace_interior_coords(solver, nnodes_max + 1) if nnodes_max >= 2 else {}
+    out = []
+    for q, m in points:
+        if m == 1:
+            out.append((q, 0, _point_coord(dm, dim, cvec, csec, v0, v1, q)))
+        else:
+            if q not in interior:
+                # multi-node points other than mesh edges (e.g. the interior nodes of
+                # a degree-4 face in 3D) have no per-node coordinate build yet
+                raise NotImplementedError(
+                    f"Boundary point {q} carries {m} interpolation nodes but only "
+                    "edge-interior nodes have per-node coordinates (issue #459).")
+            for slot, xc in enumerate(np.asarray(interior[q], dtype=float)[:m]):
+                out.append((q, slot, xc[:dim]))
+    return out, lsec, csec, cvec, v0, v1, interior
 
 
 def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
     """Per-node outward unit normal (only needed to project a vector reaction).
     ``normal`` is None (geometric facet normal), a sympy 1×dim Matrix (analytic,
     lambdified), or a constant (dim,) vector."""
-    interior_ref = cvec.mean(axis=0)
+    # The geometric branch below now takes its orientation and its measure weight from
+    # the shared `facet_measure_and_normal` (the #560/#561 rule), so it is no longer a
+    # stale copy of the pre-#560 bisector.
+    #
+    # TODO(parallel): it still accumulates over THIS RANK's labelled facets only, so a
+    # node on a partition seam would get a partial stencil — the #564 defect. It is
+    # unreachable today (the only caller guards it with `if normal is not None`), which
+    # is why it is not carrying its own cross-rank reduction: wire one in from
+    # `rotated_bc._sum_facet_normals_across_ranks` before making this branch live.
     sym_fn = const = None
     if normal is not None:
         try:
@@ -124,9 +279,10 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
         if sym_fn is None:
             const = np.asarray(normal, dtype=float).ravel()
     nmap = {}
-    coord = {q: c for q, c in nodes}
+    pts = {q for q, _s, _c in nodes}
     if normal is None:
-        # accumulate area-weighted facet normals to the closure nodes
+        # accumulate area-weighted facet normals to the closure points; every node of
+        # a point (e.g. both P3 edge-interior nodes) shares its point's facet normal
         sis = _boundary_stratum_is(dm, solver.mesh, boundary)
         facets = [] if not (sis and sis.getSize() > 0) else [int(z) for z in sis.getIndices()]
         fS, fE = dm.getHeightStratum(1)
@@ -134,40 +290,58 @@ def _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1):
         for f in facets:
             if not (fS <= f < fE):
                 continue
-            _, cent, nrm = dm.computeCellGeometryFVM(f)
-            ne = np.asarray(nrm, float); ne = ne / (np.linalg.norm(ne) + 1e-30)
-            if np.dot(ne, np.asarray(cent) - interior_ref) < 0:
-                ne = -ne
+            measure, ne, _exterior = facet_measure_and_normal(dm, f)
             for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-                if q in coord:
-                    acc[q] = acc.get(q, np.zeros(dim)) + ne
-        for q in coord:
+                if q in pts:
+                    acc[q] = acc.get(q, np.zeros(dim)) + measure * ne
+        for q, s, _c in nodes:
             nn = acc.get(q, np.zeros(dim))
-            nmap[q] = nn / (np.linalg.norm(nn) + 1e-30)
+            nmap[(q, s)] = nn / (np.linalg.norm(nn) + 1e-30)
     else:
-        for q, c in nodes:
+        for q, s, c in nodes:
             ne = np.asarray(sym_fn(*c), float).ravel() if sym_fn is not None else const.copy()
-            nmap[q] = ne / (np.linalg.norm(ne) + 1e-30)
+            nmap[(q, s)] = ne / (np.linalg.norm(ne) + 1e-30)
     return nmap
 
 
-def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
+def _node_reactions(xs, R, dim, boundary):
+    """Coordinate-keyed nodal reactions, refusing the #459 collapse: two reaction
+    nodes sharing one coordinate key would silently overwrite each other."""
+    nodeR = {_key(x, dim): float(r) for x, r in zip(xs, R)}
+    if len(nodeR) != len(xs):
+        raise RuntimeError(
+            f"{len(xs)} boundary reaction nodes on {boundary!r} collapse onto "
+            f"{len(nodeR)} distinct coordinate keys — per-node coordinates are not "
+            "distinct (issue #459: a multi-node trace point needs true interpolation-"
+            "node coordinates, not the point's single coordinate).")
+    return nodeR
+
+
+def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
+             edge_node_coords=None):
     """De-smear per-node reaction loads R (aligned with xs) into a pointwise flux via the
-    boundary mass, assembled globally by a coordinate-keyed allgather so every rank forms
-    the identical system. Returns the flux at this rank's local nodes (xs order).
+    boundary mass. In 3D, coordinate-keyed reactions and trace elements are gathered to
+    rank zero, which forms and solves the global system once; the flux values requested
+    by each rank are then scattered in local ``xs`` order. Returns the flux at this
+    rank's local nodes.
 
     ``partial_reaction`` controls how a boundary node shared across a partition cut is
     reconciled across ranks: ``True`` (default) SUMS each rank's contribution — correct
     when R is the RAW per-rank volume residual (``boundary_flux``, DM overlap=0); ``False``
     OVERWRITES (all ranks already agree) — correct when R comes from an ASSEMBLED global
-    operator, e.g. the rotated free-slip reaction ``Q(A·u − b)`` (``rotated_bc``)."""
+    operator, e.g. the rotated free-slip reaction ``Q(A·u − b)`` (``rotated_bc``).
+
+    ``edge_node_coords`` (2D, trace degree ≥ 3 only) is the ``_trace_interior_coords``
+    map of per-edge interior node coordinates; ``boundary_flux`` passes the one it built
+    so the element keys match ``xs`` exactly. ``None`` builds it on demand (collective)."""
     dm = solver.dm; dim = solver.mesh.dim; comm = dm.comm.tompi4py()
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
-    if mass not in ("auto", "lumped", "consistent", "p1"):
-        raise ValueError("mass must be 'auto', 'lumped', 'consistent', or 'p1' "
-                         "(P1-projected recovery on a 3D P2 trace).")
+    if mass not in ("auto", "lumped", "consistent", "p1", "midpoint"):
+        raise ValueError("mass must be 'auto', 'lumped', 'consistent', 'p1' "
+                         "(P1-projected) or 'midpoint' (midpoint-reconstructed) "
+                         "— the last two apply to a 3D P2 trace.")
     if dim == 3:
         lsec = dm.getLocalSection()
         ncomp = lsec.getFieldComponents(0)
@@ -177,7 +351,7 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
         def coord(q):
             return _point_coord(dm, dim, cvec, csec, v0, v1, q)
 
-        nodeR = {_key(x, dim): float(r) for x, r in zip(xs, R)}
+        nodeR = _node_reactions(xs, R, dim, boundary)
         sis = _boundary_stratum_is(dm, solver.mesh, boundary)
         facets = [] if not (sis and sis.getSize() > 0) else [
             int(q) for q in sis.getIndices() if f0 <= int(q) < f1
@@ -238,145 +412,230 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
                 )
             )
 
-        R_by = {}
-        for rank_values in comm.allgather(nodeR):
-            for key, value in rank_values.items():
-                R_by[key] = (
-                    R_by.get(key, 0.0) + value if partial_reaction else value
-                )
+        local_keys = [_key(x, dim) for x in xs]
+        gathered = comm.gather((nodeR, local_elements, local_keys), root=0)
+        flux_by_rank = None
+        root_error = None
 
-        elements = {}
-        for rank_elements in comm.allgather(local_elements):
-            for order, nodes, area in rank_elements:
-                elements[(order, tuple(sorted(nodes)))] = (order, nodes, area)
+        if comm.rank == 0:
+            try:
+                requested_keys = [rank_keys for _rank_r, _rank_e, rank_keys in gathered]
 
-        orders = {order for order, _nodes, _area in elements.values()}
-        if len(orders) != 1:
-            raise RuntimeError(
-                f"Expected one trace order on boundary {boundary!r}, found {sorted(orders)}."
-            )
-        order = orders.pop()
-        if mass == "auto":
-            mass = "consistent" if order == 2 else "lumped"
-        if order == 2 and mass == "lumped":
-            raise ValueError(
-                "A 3D P2 triangular trace has zero row-sum mass at its vertices; "
-                "use mass='consistent' (pointwise, carries the vertex-integral "
-                "checkerboard risk) or mass='p1' (P1-projected, monotone — the "
-                "choice for driving a P1 surface field) for boundary-flux recovery."
-            )
-        mid_owners = {}
-        if mass == "p1":
-            if order != 2:
-                mass = "lumped"                    # P1 trace: p1 IS lumped
-            else:
-                # P1-PROJECTED recovery on a P2 trace: the consistent P2 path has
-                # the ∫φ_vertex = 0 vertex checkerboard (#404 hold), while the P1
-                # trace is sound — and a P1 surface field only consumes vertex
-                # values anyway. Fold each edge-midpoint load onto its two edge
-                # vertices (φ^{P1}(edge-mid) = 1/2 exactly, P1 ⊂ P2 — the load
-                # transfer is the interpolation transpose, so the total load is
-                # conserved), then de-smear with the P1 lumped triangle mass.
-                # Midpoint outputs are read back as the P1 interpolant (vertex
-                # average).
-                new_elements = {}
-                for _order, nodes, area in elements.values():
-                    vk = nodes[:3]
-                    m01, m12, m20 = nodes[3:]
-                    mid_owners[m01] = (vk[0], vk[1])
-                    mid_owners[m12] = (vk[1], vk[2])
-                    mid_owners[m20] = (vk[2], vk[0])
-                    new_elements[(1, tuple(sorted(vk)))] = (1, vk, area)
-                folded = {}
-                for key, value in R_by.items():
-                    if key in mid_owners:
-                        va, vb = mid_owners[key]
-                        folded[va] = folded.get(va, 0.0) + 0.5 * value
-                        folded[vb] = folded.get(vb, 0.0) + 0.5 * value
+                R_by = {}
+                elements = {}
+                for rank_values, rank_elements, _rank_keys in gathered:
+                    for key, value in rank_values.items():
+                        R_by[key] = R_by.get(key, 0.0) + value if partial_reaction else value
+                    for order, nodes, area in rank_elements:
+                        elements[(order, tuple(sorted(nodes)))] = (order, nodes, area)
+                del gathered
+
+                orders = {order for order, _nodes, _area in elements.values()}
+                if len(orders) != 1:
+                    raise RuntimeError(
+                        f"Expected one trace order on boundary {boundary!r}, "
+                        f"found {sorted(orders)}."
+                    )
+                order = orders.pop()
+                if mass == "auto":
+                    # A P2 TRIANGLE mass has vertex rows that sum to EXACTLY zero
+                    # (_P2_TRIANGLE_MASS, row sums [0,0,0,60,60,60]). Row sum i of a
+                    # mass matrix IS the integral of basis function i, because the
+                    # basis is a partition of unity:
+                    #     sum_j INT(phi_i phi_j) = INT(phi_i sum_j phi_j) = INT(phi_i)
+                    # so this says INT(phi_vertex) = 0 — a property of the P2 triangle
+                    # element, not of this code. A vertex DOF carries no mass, so an
+                    # L2 recovery fixes it by cancellation and amplifies whatever noise
+                    # is present: O(1), and independently of h. Measured on the Zhong
+                    # l=2 shell (#633), the consistent vertex error over cellSize
+                    # 0.25 -> 0.11 runs 0.076 / 0.074 / 0.070 / 0.119 / 0.093 — flat
+                    # and erratic, never converging.
+                    #
+                    # The midpoints carry all of the mass (row sums 60) and are
+                    # superconvergent (to 5e-4). So do not ask the recovery for vertex
+                    # values at all: keep the midpoints and RECONSTRUCT the vertices
+                    # from them ('midpoint'). Worst-node error against the analytic
+                    # coefficient beats the P1-projected recovery at every resolution
+                    # measured, on both boundaries, by 1.8x to 4.9x:
+                    #     h      0.25   0.20   0.16   0.13   0.11
+                    #     p1     .041   .026   .018   .013   .008   (Upper)
+                    #     mid    .016   .012   .012   .003   .004
+                    #     p1     .116   .067   .047   .030   .025   (Lower)
+                    #     mid    .094   .058   .043   .024   .015
+                    # 'p1' remains available and is sound; it simply discards the good
+                    # data along with the bad. The 2-D P2 LINE mass has vertex row sums
+                    # of 5 and needs none of this.
+                    mass = "midpoint" if order == 2 else "lumped"
+                if order == 2 and mass == "lumped":
+                    raise ValueError(
+                        "A 3D P2 triangular trace has zero row-sum mass at its "
+                        "vertices; use mass='consistent' (pointwise, carries the "
+                        "vertex-integral checkerboard risk) or mass='p1' "
+                        "(P1-projected, monotone — the choice for driving a P1 "
+                        "surface field) for boundary-flux recovery."
+                    )
+                mid_owners = {}
+                if mass == "p1":
+                    if order != 2:
+                        mass = "lumped"  # P1 trace: p1 IS lumped
                     else:
-                        folded[key] = folded.get(key, 0.0) + value
-                R_by = folded
-                elements = new_elements
-                order = 1
-                mass = "lumped"
+                        # Fold each P2 midpoint load onto its two P1 vertices, then
+                        # de-smear with the monotone P1 lumped triangle mass.
+                        new_elements = {}
+                        for _order, nodes, area in elements.values():
+                            vk = nodes[:3]
+                            m01, m12, m20 = nodes[3:]
+                            mid_owners[m01] = (vk[0], vk[1])
+                            mid_owners[m12] = (vk[1], vk[2])
+                            mid_owners[m20] = (vk[2], vk[0])
+                            new_elements[(1, tuple(sorted(vk)))] = (1, vk, area)
+                        folded = {}
+                        for key, value in R_by.items():
+                            if key in mid_owners:
+                                va, vb = mid_owners[key]
+                                folded[va] = folded.get(va, 0.0) + 0.5 * value
+                                folded[vb] = folded.get(vb, 0.0) + 0.5 * value
+                            else:
+                                folded[key] = folded.get(key, 0.0) + value
+                        R_by = folded
+                        elements = new_elements
+                        order = 1
+                        mass = "lumped"
 
-        keys = sorted(R_by)
-        global_index = {key: i for i, key in enumerate(keys)}
-        reaction = np.array([R_by[key] for key in keys], dtype=float)
-        if mass == "lumped":
-            boundary_mass = np.zeros(len(keys), dtype=float)
-            for _order, nodes, area in elements.values():
-                for key in nodes:
-                    boundary_mass[global_index[key]] += area / 3.0
-            missing = np.flatnonzero(boundary_mass <= 0.0)
-            if missing.size:
-                raise RuntimeError(
-                    f"Boundary mass is zero at {missing.size} nodes on {boundary!r}."
-                )
-            flux = reaction / boundary_mass
-        elif mass == "consistent":
-            from scipy.sparse import coo_matrix
-            from scipy.sparse.linalg import spsolve
+                # 'midpoint' IS the consistent solve, plus a vertex reconstruction
+                # from its midpoint values afterwards.
+                reconstruct = mass == "midpoint"
+                if reconstruct:
+                    mass = "consistent" if order == 2 else "lumped"
+                    reconstruct = order == 2   # a P1 trace has no midpoints to use
 
-            rows = []
-            cols = []
-            values = []
-            reference_mass = (
-                _P1_TRIANGLE_MASS if order == 1 else _P2_TRIANGLE_MASS
-            )
-            mass_scale = 12.0 if order == 1 else 180.0
-            for _order, nodes, area in elements.values():
-                indices = [global_index[key] for key in nodes]
-                element_mass = (area / mass_scale) * reference_mass
-                for i, row in enumerate(indices):
-                    for j, col in enumerate(indices):
-                        rows.append(row)
-                        cols.append(col)
-                        values.append(element_mass[i, j])
-            surface_mass = coo_matrix(
-                (values, (rows, cols)), shape=(len(keys), len(keys))
-            ).tocsr()
-            surface_mass.sum_duplicates()
-            flux = np.asarray(spsolve(surface_mass, reaction), dtype=float)
-            boundary_mass = np.asarray(
-                surface_mass @ np.ones(len(keys), dtype=float)
-            )
-            if not np.all(np.isfinite(flux)):
-                raise RuntimeError(
-                    f"Consistent boundary-mass solve failed on boundary {boundary!r}."
-                )
-        if remove_mean:
-            mean = float(np.dot(flux, boundary_mass) / np.sum(boundary_mass))
-            flux -= mean
+                keys = sorted(R_by)
+                global_index = {key: i for i, key in enumerate(keys)}
+                reaction = np.array([R_by[key] for key in keys], dtype=float)
+                if mass == "lumped":
+                    boundary_mass = np.zeros(len(keys), dtype=float)
+                    for _order, nodes, area in elements.values():
+                        for key in nodes:
+                            boundary_mass[global_index[key]] += area / 3.0
+                    missing = np.flatnonzero(boundary_mass <= 0.0)
+                    if missing.size:
+                        raise RuntimeError(
+                            f"Boundary mass is zero at {missing.size} nodes on " f"{boundary!r}."
+                        )
+                    flux = reaction / boundary_mass
+                elif mass == "consistent":
+                    from scipy.sparse import coo_matrix
+                    from scipy.sparse.linalg import spsolve
 
-        def value_at(x):
-            key = _key(x, dim)
-            if key in global_index:
-                return flux[global_index[key]]
-            # P1-projected mode: a P2 edge midpoint reads the P1 interpolant
-            va, vb = mid_owners[key]
-            return 0.5 * (flux[global_index[va]] + flux[global_index[vb]])
+                    reference_mass = _P1_TRIANGLE_MASS if order == 1 else _P2_TRIANGLE_MASS
+                    mass_scale = 12.0 if order == 1 else 180.0
+                    nodes_per_element = reference_mass.shape[0]
+                    entries_per_element = nodes_per_element**2
+                    entry_count = len(elements) * entries_per_element
+                    rows = np.empty(entry_count, dtype=np.int64)
+                    cols = np.empty(entry_count, dtype=np.int64)
+                    values = np.empty(entry_count, dtype=float)
+                    cursor = 0
+                    for _order, nodes, area in elements.values():
+                        indices = np.fromiter(
+                            (global_index[key] for key in nodes),
+                            dtype=np.int64,
+                            count=nodes_per_element,
+                        )
+                        next_cursor = cursor + entries_per_element
+                        rows[cursor:next_cursor] = np.repeat(indices, nodes_per_element)
+                        cols[cursor:next_cursor] = np.tile(indices, nodes_per_element)
+                        values[cursor:next_cursor] = ((area / mass_scale) * reference_mass).ravel()
+                        cursor = next_cursor
+                    surface_mass = coo_matrix(
+                        (values, (rows, cols)), shape=(len(keys), len(keys))
+                    ).tocsr()
+                    del rows, cols, values
+                    surface_mass.sum_duplicates()
+                    flux = np.asarray(spsolve(surface_mass, reaction), dtype=float)
+                    boundary_mass = np.asarray(surface_mass @ np.ones(len(keys), dtype=float))
+                    if not np.all(np.isfinite(flux)):
+                        raise RuntimeError(
+                            "Consistent boundary-mass solve failed on boundary " f"{boundary!r}."
+                        )
+                    if reconstruct:
+                        flux = _rebuild_vertices_from_midpoints(
+                            elements, global_index, flux)
+                if remove_mean:
+                    mean = float(np.dot(flux, boundary_mass) / np.sum(boundary_mass))
+                    flux -= mean
 
-        return np.array([value_at(x) for x in xs])
+                def value_at(key):
+                    if key in global_index:
+                        return flux[global_index[key]]
+                    # P1-projected mode: a P2 midpoint reads the P1 interpolant.
+                    va, vb = mid_owners[key]
+                    return 0.5 * (flux[global_index[va]] + flux[global_index[vb]])
+
+                flux_by_rank = [
+                    np.array([value_at(key) for key in rank_keys], dtype=float)
+                    for rank_keys in requested_keys
+                ]
+            except Exception as error:
+                root_error = (type(error).__name__, str(error))
+
+        root_error = comm.bcast(root_error, root=0)
+        if root_error is not None:
+            error_name, error_message = root_error
+            error_type = {
+                "ValueError": ValueError,
+                "NotImplementedError": NotImplementedError,
+                "RuntimeError": RuntimeError,
+            }.get(error_name, RuntimeError)
+            raise error_type(error_message)
+
+        return np.asarray(comm.scatter(flux_by_rank, root=0), dtype=float)
 
     if dim != 2:
         raise NotImplementedError(
             f"Boundary-flux recovery is not implemented for mesh dimension {dim}."
         )
-    if mass in ("auto", "p1"):
-        mass = "lumped"                    # 2D: the lumped line mass is sound
+    if mass in ("p1", "midpoint"):
+        # Both exist to work around the 3D P2 TRIANGLE's zero-mean vertex basis. A 2D
+        # P2 LINE trace has vertex row sums of 5, so its vertex values are sound as
+        # recovered and neither workaround is needed here.
+        mass = "lumped"
 
+    lsec = dm.getLocalSection()
+    ncomp = lsec.getFieldComponents(0)
     e0, e1 = dm.getDepthStratum(1)
     def vcoord(q): return cvec[csec.getOffset(q) // dim]
-    nodeR = {_key(x, dim): float(r) for x, r in zip(xs, R)}
+    nodeR = _node_reactions(xs, R, dim, boundary)
     sis = _boundary_stratum_is(dm, solver.mesh, boundary)
     strat = [] if not (sis and sis.getSize() > 0) else [int(z) for z in sis.getIndices()]
+    edges = [q for q in strat if e0 <= q < e1]
+    # Interior-node count per edge from the SECTION (structural — the trace order is
+    # never sniffed from coordinate keys): 0 → P1, 1 → P2, m → degree m+1. Whether the
+    # per-node coordinate build is needed is agreed globally (it is collective).
+    if edge_node_coords is None:
+        m_max = comm.allreduce(
+            max((lsec.getFieldDof(e, 0) // ncomp for e in edges), default=0), op=MPI.MAX)
+        edge_node_coords = _trace_interior_coords(solver, m_max + 1) if m_max >= 2 else {}
     local_elems = []
-    for e in [q for q in strat if e0 <= q < e1]:
+    for e in edges:
+        m = lsec.getFieldDof(e, 0) // ncomp
         a, b = (int(c) for c in dm.getCone(e))
-        cmid = _point_coord(dm, dim, cvec, csec, v0, v1, e)
-        h = float(np.hypot(*(vcoord(b) - vcoord(a))))
-        local_elems.append((_key(vcoord(a), dim), _key(cmid, dim), _key(vcoord(b), dim), h))
+        xa, xb = vcoord(a), vcoord(b)
+        h = float(np.hypot(*(xb - xa)))
+        if m >= 2:
+            xin = np.asarray(edge_node_coords[e], dtype=float)[:m, :dim]
+            keys_e = (_key(xa, dim), *(_key(x, dim) for x in xin), _key(xb, dim))
+            # node parameters along the edge chord, measured from the actual node
+            # coordinates so the element mass matches the basis in effect
+            ts_e = (0.0, *(float(np.dot(x - xa, xb - xa) / (h * h)) for x in xin), 1.0)
+        elif m == 1:
+            cmid = _point_coord(dm, dim, cvec, csec, v0, v1, e)
+            keys_e = (_key(xa, dim), _key(cmid, dim), _key(xb, dim))
+            ts_e = (0.0, 0.5, 1.0)
+        else:
+            keys_e = (_key(xa, dim), _key(xb, dim))
+            ts_e = (0.0, 1.0)
+        local_elems.append((keys_e, ts_e, h))
 
     # Reconcile the nodal reaction across ranks by coordinate. partial_reaction=True: SUM
     # (raw per-rank residual, DM overlap=0, so a cut node holds only each rank's partial
@@ -389,31 +648,47 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
             R_by[k] = (R_by.get(k, 0.0) + v) if partial_reaction else v
     uniq = {}
     for lst in comm.allgather(local_elems):
-        for (ka, km, kb, h) in lst:
-            uniq[(ka, km, kb)] = h
+        for keys_e, ts_e, h in lst:
+            uniq[keys_e] = (ts_e, h)
     keys = sorted(R_by.keys()); gi = {k: i for i, k in enumerate(keys)}
     n = len(keys); Rg = np.zeros(n)
     for k, i in gi.items():
         Rg[i] = R_by[k]
-    # Trace order from the DATA, not an assumption: a P2 trace has a reaction DOF at
-    # every edge point (the midpoint key is in R_by), a P1 trace has vertices only.
-    # Assembling P2 line masses against a P1 trace died with a bare KeyError on the
-    # missing midpoint (issue #413). A mix means the field layout is inconsistent
-    # with the trace — raise rather than guess.
-    mids_present = [km in R_by for (ka, km, kb) in uniq]
-    if mids_present and any(mids_present) != all(mids_present):
+    # A mixed trace (field DOFs on only part of the boundary's edges) means the field
+    # layout is inconsistent with the trace — raise rather than guess (issue #413).
+    orders = {len(keys_e) for keys_e in uniq}
+    if len(orders) > 1:
         raise NotImplementedError(
-            "2D boundary-flux recovery found edge-midpoint reactions on only part "
-            "of the boundary; mixed P1/P2 traces are not supported."
+            "2D boundary-flux recovery found different trace orders on parts of "
+            "the boundary; mixed traces are not supported."
         )
-    trace_order = 2 if (mids_present and mids_present[0]) else 1
+    if mass == "auto":
+        # The row-sum lumped de-smear is pointwise-exact for a linear flux only on
+        # the symmetric P1/P2 node layouts. A degree >= 3 trace places its interior
+        # nodes asymmetrically within each edge (PETSc's Gauss-Jacobi nodes), where
+        # lumping is only O(h) pointwise — the consistent line mass is exact there
+        # (up to the documented corner mixing, which it spreads over ~one element).
+        mass = "lumped" if max(orders, default=2) <= 3 else "consistent"
+    missing = {k for keys_e in uniq for k in keys_e if k not in gi}
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} trace nodes on {boundary!r} have no reaction entry — "
+            "the caller's node list does not cover the trace's interpolation nodes.")
     if mass == "lumped":
         mL = np.zeros(n)
-        for (ka, km, kb), h in uniq.items():
-            if trace_order == 2:
-                mL[gi[ka]] += h / 6.0; mL[gi[km]] += 2.0 * h / 3.0; mL[gi[kb]] += h / 6.0
+        for keys_e, (ts_e, h) in uniq.items():
+            if len(ts_e) == 2:
+                w = (0.5, 0.5)
+            elif len(ts_e) == 3:
+                w = (1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0)
             else:
-                mL[gi[ka]] += h / 2.0; mL[gi[kb]] += h / 2.0
+                w = _line_mass_1d(ts_e).sum(axis=1)     # ∫ L_i by partition of unity
+                if np.any(w <= 0.0):
+                    raise ValueError(
+                        f"The degree-{len(ts_e) - 1} line trace has non-positive "
+                        "lumped row sums; use mass='consistent'.")
+            for kk, wk in zip(keys_e, w):
+                mL[gi[kk]] += h * wk
         sig = Rg / mL
     else:
         # consistent line mass — a dense (n×n) solve in the number of boundary nodes
@@ -422,47 +697,89 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True):
         M = np.zeros((n, n))
         Me2 = np.array([[4., 2, -1], [2, 16, 2], [-1, 2, 4]])
         Me1 = np.array([[2., 1], [1, 2]])
-        for (ka, km, kb), h in uniq.items():
-            if trace_order == 2:
-                nodes = [gi[ka], gi[km], gi[kb]]; Mh = (h / 30.0) * Me2
+        for keys_e, (ts_e, h) in uniq.items():
+            if len(ts_e) == 3:
+                Mh = (h / 30.0) * Me2
+            elif len(ts_e) == 2:
+                Mh = (h / 6.0) * Me1
             else:
-                nodes = [gi[ka], gi[kb]]; Mh = (h / 6.0) * Me1
-            for ii in range(len(nodes)):
-                for jj in range(len(nodes)):
-                    M[nodes[ii], nodes[jj]] += Mh[ii, jj]
+                Mh = h * _line_mass_1d(ts_e)
+            idx = [gi[k] for k in keys_e]
+            M[np.ix_(idx, idx)] += Mh
         sig = np.linalg.solve(M, Rg)
     if remove_mean:
         sig = sig - sig.mean()
     return np.array([sig[gi[_key(x, dim)]] for x in xs])
 
 
+def _refuse_a_constrained_boundary(solver, boundary):
+    """CBF recovery reads the VELOCITY residual. On a boundary held by
+    ``add_constraint_bc`` the traction has been moved into the multiplier block, so
+    what remains in the velocity rows is a CONSTANT traction — the reaction comes back
+    exactly proportional to the nodal boundary mass, and de-smearing hands that constant
+    straight back (#614).
+
+    That is not an approximation, it is the wrong quantity: measured on SolCx the
+    recovered flux had a standard deviation of 2e-15 across the boundary while the
+    equivalent ``Stokes`` solve varied correctly and correlated -0.997 with the exact
+    topography. It returns a plausible-looking number, which is why it went unnoticed.
+
+    Refuse rather than mislead. The traction on such a boundary is
+    ``solver.traction(boundary)`` — ``h + r(n·u − g)``, the multiplier plus its
+    augmented-Lagrangian share (#607). ``solver.multiplier()`` returns ``h`` alone and
+    is short by that share, so it is not the thing to redirect a caller to."""
+    constraints = getattr(solver, "_block_constraint_bcs", None)
+    if not constraints:
+        return
+    if any(getattr(c, "boundary", None) == boundary for c in constraints):
+        raise NotImplementedError(
+            f"boundary_flux cannot recover the traction on {boundary!r}: it is held "
+            "by add_constraint_bc, so the traction is carried by the multiplier and "
+            "the velocity residual this reads holds only a constant (#614). Use "
+            f"solver.traction({boundary!r}) — h + r(n·u − g) — or "
+            f"solver.topography({boundary!r}) for the scaled version. "
+            "solver.multiplier() returns h alone and is short by the "
+            "augmented-Lagrangian share (#607)."
+        )
+
+
 def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None):
     """See ``SolverBaseClass.boundary_flux``. Returns ``(xs, flux)`` for this rank's
     boundary nodes; scalar solver → normal flux, vector solver → traction (or its normal
     component if ``normal`` is given)."""
+    _refuse_a_constrained_boundary(solver, boundary)
     dm = solver.dm; dim = solver.mesh.dim
     ra = np.asarray(solver._assemble_volume_reaction()).ravel()
-    nodes, lsec, csec, cvec, v0, v1 = _boundary_field_nodes(solver, boundary, field_id=0)
+    nodes, lsec, csec, cvec, v0, v1, edge_nodes = _boundary_field_nodes(
+        solver, boundary, field_id=0)
     ncomp = lsec.getFieldComponents(0)
-    xs = np.array([c for _q, c in nodes]) if nodes else np.zeros((0, dim))
+    xs = np.array([c for _q, _s, c in nodes]) if nodes else np.zeros((0, dim))
 
     if ncomp == 1:
-        R = np.array([ra[lsec.getFieldOffset(q, 0)] for q, _c in nodes]) if nodes else np.zeros(0)
-        flux = _desmear(solver, boundary, xs, R, mass, remove_mean)
+        # one reaction per interpolation node: slot s indexes within the point's
+        # field offset (two P3 edge-interior nodes → slots 0 and 1)
+        R = np.array([ra[lsec.getFieldOffset(q, 0) + s] for q, s, _c in nodes]) \
+            if nodes else np.zeros(0)
+        flux = _desmear(solver, boundary, xs, R, mass, remove_mean,
+                        edge_node_coords=edge_nodes)
         return xs, flux
 
-    # vector reaction (traction sigma.n at each node)
-    Rvec = np.array([ra[lsec.getFieldOffset(q, 0):lsec.getFieldOffset(q, 0) + ncomp]
-                     for q, _c in nodes]) if nodes else np.zeros((0, ncomp))
+    # vector reaction (traction sigma.n at each node); per-point DOFs are node-major
+    # with components contiguous per node
+    Rvec = np.array([ra[lsec.getFieldOffset(q, 0) + s * ncomp:
+                        lsec.getFieldOffset(q, 0) + (s + 1) * ncomp]
+                     for q, s, _c in nodes]) if nodes else np.zeros((0, ncomp))
     if normal is not None:
         # scalar NORMAL component sigma_nn = n.(sigma.n)
         nmap = _node_normals(solver, boundary, normal, nodes, dm, dim, cvec, csec, v0, v1)
-        Rn = np.array([float(np.dot(nmap[q], Rvec[i])) for i, (q, _c) in enumerate(nodes)]) \
-            if nodes else np.zeros(0)
-        return xs, _desmear(solver, boundary, xs, Rn, mass, remove_mean)
+        Rn = np.array([float(np.dot(nmap[(q, s)], Rvec[i]))
+                       for i, (q, s, _c) in enumerate(nodes)]) if nodes else np.zeros(0)
+        return xs, _desmear(solver, boundary, xs, Rn, mass, remove_mean,
+                            edge_node_coords=edge_nodes)
     # full traction vector: de-smear each component independently
     cols = [_desmear(solver, boundary, xs, Rvec[:, k] if len(Rvec) else np.zeros(0),
-                     mass, remove_mean) for k in range(ncomp)]
+                     mass, remove_mean, edge_node_coords=edge_nodes)
+            for k in range(ncomp)]
     return xs, (np.column_stack(cols) if nodes else np.zeros((0, ncomp)))
 
 

@@ -228,9 +228,9 @@ them applies to placing:
 |---|---|---|
 | a surface ending **inside** the mesh | refused — a triangle entered and not left has no split that represents it | the tip is a placed vertex like any other, and the cavity closes round it |
 | surface **finer than the local `h`** | impossible — the surface's vertices *are* the mesh's crossings | `spacing` is a parameter |
-| two surfaces **closer than one element** | refused (inherent) | refused (implementation) — see below |
+| two surfaces **closer than one element** | refused (inherent) | refused for zero-thickness pairs; a close PAIR is one finite-width zone — use `place_thin_volume` |
 | what it does to the mesh | moves vertices onto the surface (`snap_frac`) and splits edges | deletes vertices near the surface and refills the hole |
-| parallel | yes, and partition-independent | **serial only** — see below |
+| parallel | yes, and partition-independent | 3-D yes (gather-first, partition-independent); 2-D serial |
 
 ```{warning}
 An earlier version of this section claimed placement carried two parallel
@@ -241,71 +241,134 @@ back off the RESULT mesh.
 
 Measured on a 1/16 box, both surfaces checked intact afterwards: placing one at
 a time accepts 1.5 `h` separation and refuses 1.0 `h`; the cut accepts 1.0 `h`
-and refuses 0.5 `h`. **For closely spaced surfaces the cut is currently the more
-capable of the two.**
-
-The two limits are not the same kind. The cut's is inherent — converging flanks
-cross the same edge and an edge can be split at one point, so no implementation
-removes it. Placement's is an implementation limit: a cavity is cleared and
-filled for one surface, and the cells carrying an earlier surface's facets are
-held back so that surface survives, which eventually leaves no room. Lifting it
-means placing both surfaces into a single cavity — the finite-width ribbon,
-which is not built.
+and refuses 0.5 `h`. The cut's limit is inherent — converging flanks cross the
+same edge and an edge splits at one point. Placement's was an implementation
+limit, and it is lifted the way that paragraph predicted: two flanks closer
+than a cell are one **finite-width zone**, placed into one cavity by
+`place_thin_volume` below.
 ```
 
-The construction is the same operation in 2-D on a curve and in 3-D on a sheet —
-place, delete, refill — which matters because cutting tetrahedra along a surface
-is an unsolved pattern problem while filling a cavity is standard meshing
-practice. Only the 2-D half exists.
+The construction is the same operation in every dimension — place, delete,
+refill — which matters because cutting tetrahedra along a surface is an
+unsolved pattern problem while filling a cavity is standard meshing practice.
+All three forms exist: the 2-D curve (`place_along_lines`), the 3-D sheet
+(`place_sheet`), and the thin volume in both dimensions (`place_thin_volume`).
 
 ### How the cavity is filled
 
-Clearing the vertices in the way leaves one hole, and what has to be triangulated
-inside it depends only on how many ends of the surface reach the domain boundary:
-none leaves an annulus, one leaves a disc, two leave a disc per flank. All three
-are the same **walk** between two chains — the cavity ring outside, the surface
-traversed *out and back* inside — advancing whichever chain is further behind in a
-shared parameter.
+Clearing the vertices in the way leaves one hole, bounded by the cavity ring
+(2-D) or shell (3-D). The fill is delegated to **gmsh** and gated per call,
+never trusted: the ring or shell goes in as a discrete entity carrying its
+exact segmentation, the surface as a second discrete entity — embedded, its
+ends or rim free where they lie inside the volume — and the call is refused
+unless every constrained node comes back bit-identical, every input segment
+or triangle survives in the fill, and nothing is inverted. On top of that the
+caller gates conformity, the global Euler number, exact volume conservation,
+and every previously embedded surface's facet count, re-read off the result.
 
-The parameter is arc length around the surface's own boundary: down one flank,
-around the tip, back up the other. Two cheaper choices were tried and both fail.
-Arc length along each chain measures the cavity ring's *wiggle* rather than its
-progress, and the two rings drifted four surface widths apart. Position along
-strike is discontinuous at the tips, which is exactly where the difficulty lives.
-
-At a zero-thickness tip the two flanks meet at a point, so the parameter would go
-flat over the whole turn through 180 degrees and the walk would have nothing left
-to order by. The turn is therefore given a window of the parameter to itself, one
-point spacing wide, interpolated by **angle about the tip** — which turns the tip
-into a fan of one placed vertex against many cavity vertices.
-
-The walk has a third move, and without it it wedges. A cavity ring is not convex,
-so a corner of it can protrude into the region; clipping such a corner off as an
-**ear** consumes both of its ring edges and lets the walk carry on. Where even
-that fails the ring vertex is a *spike* of surviving mesh poking into the cavity —
-the only triangle that would fill the notch uses a vertex the walk has already
-passed — and the answer is to swallow that vertex and re-clear, which is what the
-routine does, up to eight times. Measured over 100 random traces on a uniform mesh
-and 100 on a graded adapt-on-top mesh: 2 and 8 failures respectively without the
-growth step, none with it, and the total area exact to 2e-16 throughout.
+A hand-rolled walk filled the 2-D cavity for one development generation — an
+arc-length parameter around the surface's boundary, an angle-interpolated fan
+at each tip, an ear-clipping third move. It was retired when the 3-D sheet
+proved the fill could be delegated under gates: one fill mechanism for every
+dimension, and the tip — the walk's hardest case — is gmsh's ordinary
+free-end embed. The gmsh fill is also better shaped: the graded-mesh fixture
+that reliably gave the walk cells under 15° comes out of the delegated fill
+with none.
 
 ### What it costs
 
-The walk fills the cavity by parameter, not by shape, so the cells it leaves are
-worse than the cut's before repair. Flipping (`reconnect.flip_to_reduce_max_angle`)
-fixes that, and both repair passes refuse to touch a labelled edge, so the surface
-itself comes through with the same facets. This is the normal composition, not a
-workaround.
+Flipping (`reconnect.flip_to_reduce_max_angle`) and deleting refuse to touch
+a labelled edge, so a placed surface comes through any later repair with the
+facets it was placed with. The fill itself rarely needs repair (see above),
+but the composition remains sound.
 
-Placement is **serial**. It adds points, and a point added across a partition seam
-needs the star-forest's leaf set extended — the chart-expansion rebuild, which does
-not exist. A parallel call is refused rather than returning a mesh whose
-star-forest is silently wrong. The cut remains the parallel path.
+The 3-D forms are **parallel** by gather-first: the surface's region is
+redistributed onto one rank, the serial carve-and-fill runs there, and every
+rank rebuilds its chart collectively (uninterpolate + `DMPlexInterpolate`).
+The gathered region is rank-interior, so nothing the surgery deletes or adds
+is shared, and the result is partition-independent by construction — measured
+bit-identical over np = 1..5. Every refusal is collective: all ranks raise
+the same error, or none does. The 2-D forms are serial; a parallel call is
+refused rather than returning a mesh whose star-forest is silently wrong.
+
+## The thin volume: finite-width zones, junctions in the volume
+
+`place_surface.place_thin_volume(dm, patches, width)` embeds a layer of real
+thickness rather than a zero-thickness surface — the finite-width fault
+representation, where the width `w` is a mesh parameter and constitutive
+(`V = 2 ε̇ w`), not something that tracks `h`. Sub-`h` widths are supported
+and measured (`w = h/4` passes every gate).
+
+The construction is "mesh the whole lot, then embed", and the two stages are
+forced by kernel: the OCC booleans — the only operations that resolve
+fault–fault intersections — see only CAD entities, and the cavity fill
+honours only discrete ones. So the network's patches are thickened by
+`±w/2` and resolved against one another **together** in OCC (a junction
+becomes ordinary volumes of the union — no geometric junction treatment, the
+rheology decides), the assembly is meshed standalone at layer scale, its
+boundary skin is extracted, and the meshed assembly is embedded whole: a
+cavity is carved around it and gmsh fills the annular gap with the skin as an
+interior **hole** in the fill volume, both surfaces verbatim.
+
+Which boolean resolves the overlaps is the `assembly` argument, and the
+default is `"fuse"` — the union as **one** region. The alternative,
+`"fragment"`, keeps every overlap piece as its own region, so the mesh must
+conform to the boundary of the overlap; where two zones converge
+tangentially that boundary is a lens closing at the convergence angle, and
+the mesh resolves it as a chain of slivers (measured on a ribbon soling into
+another: minimum angle 0°, 22 cells under 5°, against 37° and none for the
+fused union). Nothing downstream needs those internal boundaries: the zone
+carries a single label, and a cell's fault properties are read from the
+`Surface` objects by proximity, not from the piece it was meshed in. Ask for
+`"fragment"` only when the boundaries between overlapping zones are
+themselves the object of interest.
+
+In the result the layer's **cells** carry `(label, value)` — the zone exists
+to hand cells to the rheology — and the skin's faces carry
+`(label + "_skin", value)`. The split is deliberate: a label stratum
+containing cells is a *volume* label and invisible to the interface
+machinery, so it is the skin label that makes later surgery hold its cavity
+clear of the zone.
+
+In 2-D the same call takes polylines and produces ribbons — one
+**mitre-joined outline polygon** per polyline. (Per-segment quads fragmented
+together were measured to sliver at every kink: the overlap lens on the
+kink's inner side meshes at ~2°; a single outline has no internal seam to
+lens.) 3-D patches must currently be planar polygons; curved manifolds
+arrive with the fault-preparation lifecycle work.
+
+Two lessons of the carve, both dimensions: the reach is a **length**,
+`max(clearance·h, 0.6·width)`, so the cavity covers the layer's own
+half-width however sub-`h` the layer is; and the cavity around a *fat*
+object can **pinch** — the drop set is grown at every non-manifold shell
+edge or pinch vertex until the boundary is simple, which only enlarges the
+fill.
+
+## Outcropping faults: meeting the free surface
+
+Plate-boundary faults intersect the upper surface — the science case this
+machinery serves — and both representations support it under the
+**specify-long contract**: define the fault generously PAST the domain, and
+prep clips it. A sheet is clipped triangle-by-triangle (cut points exactly
+on the plane); a zone's assembly is intersected with the box in OCC. The
+trace left on the wall becomes the **outcrop** (a sheet's chain, a zone's
+band), the cavity opens onto that wall as a bowl, and the patch of wall
+over the cavity — the **cap** — is remeshed to conform: pre-meshed by the
+2-D fill (rim verbatim; the outcrop chain embedded, or the band outline as
+a hole) and handed to the 3-D fill as a *discrete* surface. Two measured
+rules make this sound: a geo surface bounded by a discrete rim RESAMPLES
+the rim (so caps must arrive discrete), and the cap's new wall faces are
+relabelled *explicitly* with whatever the replaced faces carried, full
+closures included — joins cannot recover new points, and an unlabelled
+boundary patch silently loses its Dirichlet conditions. Once placed,
+conformity is topological: the outcrop's nodes ARE surface nodes and ride a
+deforming surface; precision matters only at (re)placement.
+
+Refusals, stated: one flat wall per object (box-edge outcrops and
+multi-wall contact refuse); curved or deformed tops refuse (the cap's
+manifold-prep slot); removal of an outcropping object is not yet wired.
 
 ## Limitations
-
-* **Two dimensions.** The 3-D mechanism is validated on single tets and small
-  boxes but is not wired up.
 * **An essential boundary condition on the surface is not sound** under the
   geometric multigrid hierarchy. The coarse levels do not carry the surface, so
   the condition constrains the fine level and *zero* coarse degrees of freedom,

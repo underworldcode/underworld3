@@ -11,6 +11,7 @@ import numpy as np
 import sympy
 import pytest
 import underworld3 as uw
+from underworld3 import analytic as A
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
@@ -194,6 +195,88 @@ def test_boundary_flux_p1_trace_2d(mass):
         )
 
 
+def _unit_flux_2d(degree, res=8):
+    """Unit-box conduction, T = 1 - y: exact at every degree, unit flux on Top/Bottom."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(res, res), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=4)
+    T = uw.discretisation.MeshVariable(f"T459_{degree}", mesh, 1, degree=degree)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(1.0, "Bottom")
+    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.solve()
+    return poisson
+
+
+@pytest.mark.parametrize("degree", (1, 2, 3))
+def test_boundary_flux_degree_sweep_2d(degree):
+    """#459: the trace degree must not change the answer. T = 1 - y is exact at every
+    degree, so each wall node must read the exact unit flux. A degree-3 trace carries
+    TWO edge-interior reactions per edge; both were keyed by the edge's single
+    coordinate, collapsed onto one dictionary key, and the recovery silently returned
+    0.57-0.74 of the unit flux from 17 of the 25 trace nodes."""
+    poisson = _unit_flux_2d(degree)
+    for wall, sign in (("Top", -1.0), ("Bottom", +1.0)):
+        xs, flux = poisson.boundary_flux(wall)
+        assert np.allclose(np.asarray(flux), sign, atol=1e-3), (
+            f"{wall} (degree={degree}): flux range "
+            f"[{np.min(flux)}, {np.max(flux)}], expected {sign}")
+        if uw.mpi.size == 1:
+            # every trace node must report — the collapse also DROPPED nodes
+            assert len(np.asarray(xs)) == degree * 8 + 1
+
+
+def test_boundary_flux_p3_interior_node_placement():
+    """#459: each degree-3 edge-interior reaction pairs with its OWN node coordinate.
+    T = xy gives dT/dn = x on Top, so the recovered flux is linear in x; swapping the
+    two interior nodes of an edge (or mis-placing them at the midpoint) displaces the
+    flux by O(edge/3) ~ 2e-2 at this resolution. Corner columns are excluded: corner
+    reactions mix both driven walls and the consistent mass spreads that mixture over
+    about one element (documented corner semantics)."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 16), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=4)
+    T = uw.discretisation.MeshVariable("T459xy", mesh, 1, degree=3)
+    x, y = mesh.X
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        poisson.add_dirichlet_bc(sympy.Matrix([x * y]), wall)
+    poisson.solve()
+
+    xs, flux = poisson.boundary_flux("Top")          # auto -> consistent at degree 3
+    xs = np.asarray(xs)
+    flux = np.asarray(flux)
+    mid = (xs[:, 0] > 0.35) & (xs[:, 0] < 0.65)
+    if uw.mpi.size == 1:
+        assert np.count_nonzero(mid) > 0
+    assert np.allclose(flux[mid], xs[mid, 0], atol=5e-3), (
+        f"mid-wall flux error {np.max(np.abs(flux[mid] - xs[mid, 0])):.3e} — "
+        "degree-3 interior nodes mis-placed or mis-ordered")
+
+
+def test_boundary_flux_p3_collapse_guard(monkeypatch):
+    """#459 negative control: force the pre-fix behaviour (both edge-interior nodes
+    keyed by the edge's one coordinate) and the de-smear must REFUSE — the silent
+    overwrite is exactly what returned wrong flux before the fix."""
+    from underworld3.utilities import boundary_flux as bf
+
+    poisson = _unit_flux_2d(3, res=4)
+    true_coords = bf._trace_interior_coords
+
+    def collapsed(solver, degree):
+        full = true_coords(solver, degree)
+        return {e: np.repeat(a.mean(axis=0, keepdims=True), len(a), axis=0)
+                for e, a in full.items()}
+
+    monkeypatch.setattr(bf, "_trace_interior_coords", collapsed)
+    with pytest.raises(RuntimeError, match="collapse"):
+        poisson.boundary_flux("Top")
+
+
 def test_volume_residual_fields_insert_essential_values():
     """#411: compute_volume_residual_fields (Stokes-only diagnostic) missed the
     #407 insert — its residual must now match _assemble_volume_reaction (the
@@ -234,3 +317,45 @@ def test_volume_residual_fields_insert_essential_values():
             f"{name}: compute_volume_residual_fields diverges from "
             f"_assemble_volume_reaction on g != 0 walls — essential values not inserted"
         )
+
+
+@pytest.mark.level_2
+def test_cbf_refuses_a_multiplier_constrained_boundary():
+    """CBF must not silently return a constant on a constrained boundary (#614).
+
+    The back-calculation reads the VELOCITY residual. Where `add_constraint_bc`
+    holds the boundary, the traction has been moved into the multiplier block and
+    the velocity rows retain only a constant one — the reaction comes back exactly
+    proportional to the nodal boundary mass (ratio 4:2:1 at midpoint / interior
+    vertex / end vertex, the P2 line lumping), so de-smearing returns that constant.
+    Measured std across the boundary was 2e-15 where the equivalent `Stokes` solve
+    varied correctly. The danger is that the value LOOKS reasonable.
+
+    The unconstrained boundary of the same solver must keep working, or this is a
+    guard on the solver rather than on the boundary.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 16), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+    solver = uw.systems.Stokes_Constrained(mesh)
+    solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    solver.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    solver.bodyforce = sol.fn_bodyforce
+    solver.tolerance = 1.0e-9
+    solver.petsc_use_pressure_nullspace = True
+    solver.add_constraint_bc(0.0, "Top")
+    solver.add_dirichlet_bc((None, 0.0), "Bottom")
+    solver.add_dirichlet_bc((0.0, None), "Left")
+    solver.add_dirichlet_bc((0.0, None), "Right")
+    solver.solve()
+
+    with pytest.raises(NotImplementedError, match="add_constraint_bc"):
+        solver.boundary_flux("Top", normal=[[0.0, 1.0]])
+
+    # negative control: the Dirichlet boundary of the SAME solver still recovers,
+    # and recovers something with spatial content rather than a constant.
+    xs, flux = solver.boundary_flux("Bottom", normal=[[0.0, -1.0]])
+    assert len(xs) > 0
+    assert np.asarray(flux).std() > 1.0e-3, (
+        "the unconstrained boundary came back constant too — the guard is on the "
+        "solver, not on the boundary")

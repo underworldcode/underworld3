@@ -37,6 +37,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Data access | [subsystems/data-access.md](subsystems/data-access.md) (internals reference: [NDArray System](UW3_Developers_NDArrays.md)) |
 | Local scattered-point interpolation | [subsystems/interpolation.md](subsystems/interpolation.md) |
 | Rotated free-slip & wall-normal datum | [subsystems/rotated-freeslip.md](subsystems/rotated-freeslip.md) |
+| Analytic & benchmark solutions | [subsystems/analytic-solutions.md](subsystems/analytic-solutions.md) |
 | Units | [design/UNITS_SIMPLIFIED_DESIGN_2025-11.md](design/UNITS_SIMPLIFIED_DESIGN_2025-11.md) |
 | Testing tiers | [TESTING-RELIABILITY-SYSTEM.md](TESTING-RELIABILITY-SYSTEM.md) |
 | Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
@@ -136,6 +137,7 @@ guides/branching-strategy
 guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
+guides/mpi-hang-supervision
 ```
 
 ```{toctree}
@@ -163,6 +165,7 @@ design/PROJECTED_NORMALS_API_DESIGN
 design/TURBULENCE_MODEL_DESIGN
 design/declined-coord-units-proposal
 design/nonlinear-solver-homotopy-warmstart
+design/fault-zone-hybrid-architecture
 ```
 
 ```{toctree}
@@ -196,6 +199,7 @@ subsystems/constitutive-models-anisotropy
 subsystems/swarm-system
 subsystems/data-access
 subsystems/interpolation
+subsystems/analytic-solutions
 subsystems/expressions-functions
 subsystems/containers
 subsystems/checkpointing-system

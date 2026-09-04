@@ -463,9 +463,39 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
 
     # === ADDITIONAL DELEGATED METHODS ===
 
-    def clone(self):
-        """Clone the variable."""
-        return self._base_var.clone()
+    def clone(self, name, varsymbol):
+        """Create a copy of this variable with a new name and symbol.
+
+        Mirrors ``MeshVariable.clone(name, varsymbol)``: the new variable
+        shares the mesh, shape, type, degree and continuity of this one,
+        but has its own (zero-initialised) data.
+
+        Parameters
+        ----------
+        name : str
+            Name for the new variable.
+        varsymbol : str
+            LaTeX symbol for the new variable.
+
+        Returns
+        -------
+        EnhancedMeshVariable
+            New variable with copied structure but independent data.
+
+        Notes
+        -----
+        This forwarded no arguments at all until issue #498, so it raised
+        whichever way it was called: with the two arguments every caller uses,
+        and without them inside the base. Six shipped examples aborted on it.
+
+        The construction itself lives in ``_BaseMeshVariable.clone``, which
+        goes through the public ``uw.discretisation.MeshVariable`` factory and
+        so returns the enhanced type. Delegating keeps a single code path;
+        duplicating the constructor call here is what let the two halves of
+        #498 drift apart in the first place.
+        """
+
+        return self._base_var.clone(name, varsymbol)
 
     def max(self):
         """Maximum value of the variable."""

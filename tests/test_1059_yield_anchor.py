@@ -69,8 +69,12 @@ def test_delta_zero_is_exact_min_for_both_anchors():
 @pytest.mark.level_1
 @pytest.mark.tier_a
 @pytest.mark.parametrize("smoother", ("sqrt", "powermean"))
-def test_yield_anchor_keeps_onset_stress_exact(smoother):
-    """tau/tau_y = f*eta/eta_ve = 1 at f=1 for every delta. The onset anchor does NOT."""
+def test_the_yield_anchor_keeps_stress_exact_at_nominal_yield(smoother):
+    """tau/tau_y = f*eta/eta_ve = 1 at f=1 for every delta. The onset anchor does NOT.
+
+    Named for the anchor it exercises: this drives ``yield_anchor="yield"``, and
+    "onset" is the OTHER anchor — the one shown here to miss (#490).
+    """
     c = _model(smoother); c.yield_anchor = "yield"
     for d in DELTAS[smoother]:
         assert abs(eta(c, 1.0, d) - 1.0) < 1e-10, d

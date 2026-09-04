@@ -109,6 +109,29 @@ def test_boundary_flux_3d_pointwise_uniform_partition_independent(degree, mass):
     )
 
 
+def test_boundary_flux_degree3_partition_independent():
+    """#459 at np >= 2: a degree-3 trace keeps one coordinate per edge-interior node,
+    and the per-node coordinate build is COLLECTIVE — ranks owning none of the flux
+    boundary must still participate. T = 1 - y is exact, so every trace node on every
+    partition reads the exact unit flux."""
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(8, 8), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), qdegree=4)
+    T = uw.discretisation.MeshVariable("T459p", mesh, 1, degree=3)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 0.0
+    poisson.add_dirichlet_bc(1.0, "Bottom")
+    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.solve()
+    for wall, sign in (("Top", -1.0), ("Bottom", +1.0)):
+        _xs, flux = poisson.boundary_flux(wall)
+        local_error = float(np.max(np.abs(np.asarray(flux) - sign))) if len(flux) else 0.0
+        max_error = uw.mpi.comm.allreduce(local_error, op=MPI.MAX)
+        assert max_error < 1e-3, (
+            f"{wall}: degree-3 flux error {max_error:.3e} at np={uw.mpi.size}")
+
+
 if __name__ == "__main__":
     _b, _r = _flux_diagnostics()
     if uw.mpi.rank == 0:

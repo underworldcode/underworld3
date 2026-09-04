@@ -2718,6 +2718,338 @@ def _fault_collect_segments(faults):
     return [seg for poly in _fault_collect_polylines(faults) for seg in poly]
 
 
+def _polyline_arclengths(pts):
+    return np.concatenate(
+        [[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+
+
+def _point_at_arc(pts, s_arc):
+    s_ctrl = _polyline_arclengths(pts)
+    s_arc = float(np.clip(s_arc, 0.0, s_ctrl[-1]))
+    k = int(np.searchsorted(s_ctrl, s_arc, side="right") - 1)
+    k = min(k, len(pts) - 2)
+    f = (s_arc - s_ctrl[k]) / max(s_ctrl[k + 1] - s_ctrl[k], 1e-30)
+    return pts[k] + f * (pts[k + 1] - pts[k])
+
+
+def _sub_polyline(pts, s0, s1):
+    """The part of the polyline between arc lengths s0 < s1, with exact
+    endpoints (interior control points kept)."""
+    s_ctrl = _polyline_arclengths(pts)
+    keep = (s_ctrl > s0 + 1e-12) & (s_ctrl < s1 - 1e-12)
+    return np.vstack([_point_at_arc(pts, s0), pts[keep],
+                      _point_at_arc(pts, s1)])
+
+
+def damage_zone_yield(mesh, junctions, tau_damage, radius,
+                      tau_far=1.0e3):
+    """A composite yield-stress expression: damage plugs at junctions.
+
+    The gap-and-let-it-link policy: declared master faults keep
+    geometric continuity, every other junction is left as an offset gap
+    (:func:`prepare_fault_network`), and the gaps carry DAMAGE-ZONE
+    material — a yield cap ``tau_damage`` inside a disc of ``radius``
+    about each junction point, ``tau_far`` (effectively unyielding)
+    elsewhere — so the stress lobes of the abutting tips decide how the
+    faults link up. Assign the result to a ViscoPlastic model::
+
+        prepared, report, junctions = prepare_fault_network(
+            faults, spacing=h, through=["Main"], return_junctions=True)
+        child = mesh.add_fault(prepared)
+        stokes.constitutive_model = ViscoPlasticFlowModel
+        stokes.constitutive_model.Parameters.yield_stress = \\
+            uw.meshing.damage_zone_yield(child, junctions,
+                                         tau_damage=0.5, radius=3 * h)
+
+    Regions are SHARP (Piecewise), deliberately: blending a huge far
+    yield through any smooth mask tail contaminates the plug
+    (measured — the plug shrinks to a fraction of a cell).
+
+    Parameters
+    ----------
+    mesh : Mesh
+        Supplies the coordinate symbols.
+    junctions : sequence
+        Junction records from ``prepare_fault_network`` (anything with
+        a ``point`` key or a 2-vector as its second element), or bare
+        2-vectors.
+    tau_damage : float or sequence of float
+        The damage yield stress (one value, or one per junction).
+    radius : float or sequence of float
+        Plug radius (one value, or one per junction) — a couple of
+        ligaments is the measured sweet spot.
+    tau_far : float, optional
+        The unyielding far-field cap. Keep it finite and sane (1e3):
+        it only needs to exceed any stress the model can produce.
+    """
+    x, y = mesh.X[0], mesh.X[1]
+    pts = []
+    for j in junctions:
+        if isinstance(j, dict):
+            pts.append(np.asarray(j["point"], dtype=float))
+        else:
+            pts.append(np.asarray(j, dtype=float))
+    n = len(pts)
+    taus = (list(tau_damage) if np.ndim(tau_damage) else [tau_damage] * n)
+    radii = (list(radius) if np.ndim(radius) else [radius] * n)
+    expr = sympy.sympify(tau_far)
+    for P, tau, R in zip(pts, taus, radii):
+        r2 = (x - float(P[0])) ** 2 + (y - float(P[1])) ** 2
+        expr = sympy.Min(expr, sympy.Piecewise(
+            (float(tau), r2 < float(R) ** 2), (tau_far, True)))
+    return expr
+
+
+def prepare_fault_network(faults, spacing, ligament=1.5, through=None,
+                          hierarchy=None, verbose=True,
+                          return_junctions=False):
+    """Make an imported set of 2-D fault traces splittable.
+
+    The split-node pipeline refuses faults that cross or share vertices
+    — a junction vertex needs a non-binary DOF pairing, which is a
+    design of its own. The SUPPORTED representation of a junction is
+    the offset form: the traces stop short of the intersection, leaving
+    a ligament of intact material about a cell across. Stress transfers
+    across the ligament (the measured mechanism of the interaction
+    examples); slip does not transfer through the junction point.
+
+    This function detects the junctions in an imported set and applies
+    that conversion, loudly:
+
+    - X crossing (interiors intersect): BOTH traces are cut at the
+      intersection, every cut end pulled back ``ligament * spacing``
+      along its own trace; a trace cut into k pieces is renamed
+      ``<name>_1 .. <name>_k``. If exactly one of the two is listed in
+      ``through``, it stays CONTINUOUS and only the other is cut (the
+      through-going fault offsets the crossing one); two ``through``
+      faults crossing is a hard error.
+    - T abutment (an endpoint of one trace on or near another's
+      interior): the abutting END is pulled back; the through-going
+      trace is untouched.
+    - Y contact (endpoints of two traces closer than the ligament):
+      both endpoints pulled back.
+
+    Pieces left shorter than ``2 * ligament * spacing`` are dropped and
+    reported. Returns ``(prepared, report)`` where ``prepared`` is a
+    list of ``(name, points)`` ready for :meth:`Mesh.add_fault` and
+    ``report`` is the list of actions taken (printed when ``verbose``).
+
+    Parameters
+    ----------
+    faults : sequence of (name, points) and/or Surface
+        The imported traces (each an open polyline).
+    spacing : float
+        The local mesh size the network will be meshed at — sets the
+        ligament in mesh units.
+    ligament : float, optional
+        Ligament size in multiples of ``spacing`` (default 1.5; the
+        add_fault contract wants segments at least a cell or two apart).
+    through : iterable of str, optional
+        Names of MASTER faults: never cut at X crossings (the other
+        trace yields on both sides). T abutments never cut the
+        through-going trace regardless.
+    hierarchy : sequence of str, optional
+        Fault names in SENIORITY order (most major first). At an X
+        crossing between two ranked faults, the senior one runs
+        through and only the junior is cut — a pairwise version of
+        ``through`` (which remains absolute and wins over rank).
+        Unranked names always yield to ranked ones.
+    """
+    lig = float(ligament) * float(spacing)
+    through = set(through or ())
+    ranks = {n: k for k, n in enumerate(hierarchy)} if hierarchy else {}
+    junctions = []
+    traces = []
+    for entry in faults:
+        if isinstance(entry, tuple) and len(entry) == 2 \
+                and isinstance(entry[0], str):
+            name, pts = entry
+            pts = np.asarray(pts, dtype=float)[:, :2]
+        else:
+            name = entry.name
+            cp = np.asarray(entry._control_points, dtype=float)[:, :2]
+            pts = cp
+        traces.append([name, pts, []])          # [name, points, cut arcs]
+
+    report = []
+
+    def seg_intersect(p0, p1, q0, q1):
+        d1, d2 = p1 - p0, q1 - q0
+        den = d1[0] * d2[1] - d1[1] * d2[0]
+        if abs(den) < 1e-30:
+            return None
+        w = q0 - p0
+        t = (w[0] * d2[1] - w[1] * d2[0]) / den
+        u = (w[0] * d1[1] - w[1] * d1[0]) / den
+        if -1e-12 <= t <= 1 + 1e-12 and -1e-12 <= u <= 1 + 1e-12:
+            return t, u
+        return None
+
+    # pass 1: X crossings and T abutments -> cut/trim events per trace.
+    # The pull-back must give EUCLIDEAN clearance >= the ligament, and
+    # it is measured along each trace, so an oblique junction (crossing
+    # angle theta) needs pullback = lig / sin(theta) — a perpendicular
+    # crossing pulls back by exactly lig, a grazing one by more (capped,
+    # and reported, at 5 lig).
+    for i in range(len(traces)):
+        for j in range(i + 1, len(traces)):
+            ni, pi, ci = traces[i]
+            nj, pj, cj = traces[j]
+            si, sj = _polyline_arclengths(pi), _polyline_arclengths(pj)
+            for a in range(len(pi) - 1):
+                for b in range(len(pj) - 1):
+                    hit = seg_intersect(pi[a], pi[a + 1], pj[b], pj[b + 1])
+                    if hit is None:
+                        continue
+                    t, u = hit
+                    d1 = pi[a + 1] - pi[a]
+                    d2 = pj[b + 1] - pj[b]
+                    sin_th = abs(d1[0] * d2[1] - d1[1] * d2[0]) / (
+                        np.linalg.norm(d1) * np.linalg.norm(d2) + 1e-30)
+                    pull = lig / max(sin_th, 0.2)
+                    if sin_th < 0.2:
+                        report.append(
+                            f"grazing junction between {ni!r} and "
+                            f"{nj!r} (angle {np.degrees(np.arcsin(max(sin_th, 0.0))):.1f} deg): "
+                            f"pull-back capped at {pull:.4g}.")
+                    arc_i = si[a] + t * (si[a + 1] - si[a])
+                    arc_j = sj[b] + u * (sj[b + 1] - sj[b])
+                    end_i = min(arc_i, si[-1] - arc_i) < pull
+                    end_j = min(arc_j, sj[-1] - arc_j) < pull
+                    P = pi[a] + t * (pi[a + 1] - pi[a])
+                    # who yields: an abutting END always yields; a
+                    # through-going trace is only CUT at a genuine X
+                    # crossing, and never if it is a declared master
+                    if end_i and end_j:
+                        kind = "Y contact"
+                        cut_i = cut_j = True
+                    elif end_i:
+                        kind = f"T abutment ({ni!r} onto {nj!r})"
+                        cut_i, cut_j = True, False
+                    elif end_j:
+                        kind = f"T abutment ({nj!r} onto {ni!r})"
+                        cut_i, cut_j = False, True
+                    else:
+                        kind = "X crossing"
+                        if ni in through and nj in through:
+                            raise ValueError(
+                                f"two through-going faults ({ni!r}, "
+                                f"{nj!r}) cross at ({P[0]:.4g}, "
+                                f"{P[1]:.4g}) — one of them must be "
+                                "allowed to yield.")
+                        cut_i = ni not in through
+                        cut_j = nj not in through
+                        if cut_i and cut_j and ranks:
+                            # pairwise seniority: the senior trace runs
+                            # through this crossing; unranked yields to
+                            # ranked. Equal/absent ranks: both cut.
+                            ri = ranks.get(ni, len(ranks))
+                            rj = ranks.get(nj, len(ranks))
+                            if ri < rj:
+                                cut_i = False
+                            elif rj < ri:
+                                cut_j = False
+                    if cut_i:
+                        ci.append((arc_i, pull))
+                    if cut_j:
+                        cj.append((arc_j, pull))
+                    kept_name = ni if not cut_i else (
+                        nj if not cut_j else None)
+                    kept = ("" if kept_name is None
+                            else f" {kept_name!r} kept continuous;")
+                    junctions.append(dict(kind=kind, point=P.copy(),
+                                          pull=pull, faults=(ni, nj)))
+                    report.append(
+                        f"{kind} between {ni!r} and {nj!r} at "
+                        f"({P[0]:.4g}, {P[1]:.4g}):{kept} offset "
+                        f"junction (ligament {lig:.4g}, pull-back "
+                        f"{pull:.4g}).")
+
+    # pass 1b: NEAR-MISS abutments — an endpoint stopping just short of
+    # another trace never intersects, so pass 1 cannot see it, but the
+    # meshed ligament would be thinner than requested. Pull such an
+    # endpoint back until its Euclidean clearance reaches the ligament.
+    def dist_to(P, Q):
+        best = np.inf
+        for a, b in zip(Q[:-1], Q[1:]):
+            ab = b - a
+            t = float(np.clip(((P - a) @ ab) / max(ab @ ab, 1e-30),
+                              0.0, 1.0))
+            best = min(best, float(np.linalg.norm(P - (a + t * ab))))
+        return best
+
+    for i, (ni, pi, ci) in enumerate(traces):
+        s_i = _polyline_arclengths(pi)
+        for arc_end, P in ((0.0, pi[0]), (float(s_i[-1]), pi[-1])):
+            for j, (nj, pj, _cj) in enumerate(traces):
+                if j == i:
+                    continue
+                d0 = dist_to(P, pj)
+                if d0 >= lig:
+                    continue
+                if any(abs(arc - arc_end) < 4.0 * lig for arc, _ in ci):
+                    continue                    # already handled above
+                # Pull back by the clearance DEFICIT, not a whole ligament:
+                # the join should be as small as the mesh allows. When the
+                # other trace's END is the near part (two ends facing each
+                # other), each side yields half — the other end is pulled
+                # by its own pass below.
+                facing = (dist_to(pj[0], pi) < lig
+                          or dist_to(pj[-1], pi) < lig)
+                share = 0.5 if facing else 1.0
+                target = d0 + share * (lig - d0)
+                pull = share * (lig - d0)
+                for _ in range(6):
+                    s_q = arc_end + pull if arc_end < 1e-12 \
+                        else arc_end - pull
+                    if dist_to(_point_at_arc(pi, s_q), pj) >= target:
+                        break
+                    pull *= 1.6
+                ci.append((arc_end, pull))
+                junctions.append(dict(kind="near-miss", point=P.copy(),
+                                      pull=pull, faults=(ni, nj)))
+                report.append(
+                    f"near-miss abutment: the end of {ni!r} sits within "
+                    f"the ligament of {nj!r} — pulled back {pull:.4g}.")
+
+    # pass 2: apply the events trace by trace
+    prepared = []
+    for name, pts, cuts in traces:
+        total = _polyline_arclengths(pts)[-1]
+        if not cuts:
+            prepared.append((name, pts))
+            continue
+        pull_at = {}
+        for arc, pull in cuts:
+            pull_at[float(arc)] = max(pull_at.get(float(arc), 0.0), pull)
+        edges = sorted(set([0.0] + list(pull_at) + [total]))
+        pieces = []
+        for s0, s1 in zip(edges[:-1], edges[1:]):
+            a = s0 + pull_at.get(s0, 0.0)
+            b = s1 - pull_at.get(s1, 0.0)
+            if b - a < 2.0 * lig:
+                report.append(
+                    f"piece of {name!r} between arc {s0:.4g} and "
+                    f"{s1:.4g} is shorter than two ligaments — dropped.")
+                continue
+            pieces.append(_sub_polyline(pts, a, b))
+        if len(pieces) == 1:
+            prepared.append((name, pieces[0]))
+        else:
+            for k, piece in enumerate(pieces):
+                prepared.append((f"{name}_{k + 1}", piece))
+        if len(pieces) != 1:
+            report.append(
+                f"{name!r} became {len(pieces)} sub-fault(s).")
+
+    if verbose:
+        for line in report:
+            print(f"[prepare_fault_network] {line}")
+    if return_junctions:
+        return prepared, report, junctions
+    return prepared, report
+
+
 def fault_metric_tensor(mesh, faults, refinement=3.0, width="auto", base=1.0):
     r"""Build the analytic, Eulerian **normal-aligned anisotropic metric
     tensor** ``M(x)`` for refining a thin band of cells **across** one or more

@@ -16,6 +16,7 @@ import os
 import math
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_dir, write_gmsh
 from underworld3.discretisation import Mesh
 from underworld3 import VarType
 from underworld3.coordinates import CoordinateSystemType
@@ -73,7 +74,8 @@ def UnstructuredSimplexBox(
         Currently only works for 2D meshes.
     filename : str, optional
         Path to save the mesh file. If None, generates a unique name
-        in the ``.meshes/`` directory based on mesh parameters.
+        in the mesh-file directory (``.meshes/`` by default, or
+        ``UW_MESH_CACHE_DIR``) based on mesh parameters.
     refinement : int, optional
         Number of uniform refinement levels to apply after mesh
         generation. Each level approximately quadruples element count.
@@ -197,9 +199,9 @@ def UnstructuredSimplexBox(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_simplexbox_minC{minCoords}_maxC{maxCoords}_csize{cellSize}_reg{regular}.msh"
+        uw_filename = f"{mesh_file_dir()}/uw_simplexbox_minC{minCoords}_maxC{maxCoords}_csize{cellSize}_reg{regular}.msh"
     else:
         uw_filename = filename
 
@@ -309,7 +311,7 @@ def UnstructuredSimplexBox(
 
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
@@ -413,7 +415,8 @@ def BoxInternalBoundary(
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
-        Path to save the mesh file. If None, auto-generates in ``.meshes/``.
+        Path to save the mesh file. If None, auto-generates in the mesh-file
+        directory (``.meshes/`` by default, or ``UW_MESH_CACHE_DIR``).
     refinement : int, optional
         Number of uniform refinement levels to apply.
     gmsh_verbosity : int, default=0
@@ -540,12 +543,12 @@ def BoxInternalBoundary(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
         if not simplex:
             # structuredQuadBoxIB
-            uw_filename = f".meshes/uw_sqbIB_minC{minCoords}_maxC{maxCoords}.msh"
+            uw_filename = f"{mesh_file_dir()}/uw_sqbIB_minC{minCoords}_maxC{maxCoords}.msh"
         else:
-            uw_filename = f".meshes/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh"
+            uw_filename = f"{mesh_file_dir()}/uw_usbIB_minC{minCoords}_maxC{maxCoords}.msh"
     else:
         uw_filename = filename
 
@@ -646,7 +649,7 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_recombine(2, surface2)
 
             gmsh.model.mesh.generate(dim)
-            gmsh.write(uw_filename)
+            write_gmsh(uw_filename)
             gmsh.finalize()
 
         if dim == 3:
@@ -883,7 +886,7 @@ def BoxInternalBoundary(
                 gmsh.model.mesh.set_recombine(3, volume_b)
 
             gmsh.model.mesh.generate(dim)
-            gmsh.write(uw_filename)
+            write_gmsh(uw_filename)
             gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
@@ -970,6 +973,295 @@ def BoxInternalBoundary(
 
 
 @timing.routine_timer_decorator
+def BoxInternalPatch(
+    cellSize: float = 0.1,
+    minCoords: Optional[Tuple[float, float, float]] = (0, 0, 0),
+    maxCoords: Optional[Tuple[float, float, float]] = (1, 1, 1),
+    patch_points=None,
+    patch_name: str = "Fault",
+    patch_cellSize: Optional[float] = None,
+    grading_distance: Optional[float] = None,
+    degree: int = 1,
+    qdegree: int = 2,
+    filename=None,
+    refinement=None,
+    gmsh_verbosity=0,
+    units=None,
+    verbose=False,
+):
+    r"""
+    Create a 3-D simplex box with an interior conforming surface patch.
+
+    The patch is a planar polygon embedded in the tetrahedral mesh so that
+    a set of mesh FACES coincides with it exactly, labelled ``patch_name``.
+    Its rim stays strictly inside the box — this is the geometry a
+    split-node fault needs (:func:`underworld3.utilities.fault_split.
+    split_fault` duplicates everything inside the rim, and the rim is where
+    slip must taper to zero). Unlike :func:`BoxInternalBoundary`, the patch
+    does not span the domain and does not partition it into regions.
+
+    Parameters
+    ----------
+    cellSize : float
+        Target element size.
+    minCoords, maxCoords : tuple of float
+        Box corners.
+    patch_points : array_like, shape (N, 3)
+        Corners of the planar patch polygon, in order around its rim,
+        N >= 3. All points must be coplanar and strictly inside the box.
+        A disc (penny) patch is a many-sided polygon: sides of length
+        ``cellSize`` resolve the rim as well as the mesh can.
+    patch_name : str
+        Physical name for the patch — the fault name ``split_fault`` and
+        ``add_fault_bc`` will use.
+    patch_cellSize : float, optional
+        Target element size AT the patch. When set, the mesh grades from
+        ``patch_cellSize`` on the fault to ``cellSize`` in the far field
+        (gmsh Distance/Threshold size field from the patch surface) —
+        resolution belongs at the fault, exactly as the 2-D practice
+        refines on the cuts. Without it the box is uniform at
+        ``cellSize``.
+    grading_distance : float, optional
+        Distance from the patch at which the size reaches ``cellSize``
+        (default ``8 * patch_cellSize``). Only used with
+        ``patch_cellSize``.
+
+    Example
+    -------
+    >>> patch = np.array([[0.5, 0.3, 0.3], [0.5, 0.7, 0.3],
+    ...                   [0.5, 0.7, 0.7], [0.5, 0.3, 0.7]])
+    >>> mesh = uw.meshing.BoxInternalPatch(cellSize=0.1,
+    ...                                    patch_points=patch,
+    ...                                    patch_name="FltA")
+    >>> child = uw.utilities.fault_split.split_fault(mesh, "FltA")
+    """
+
+    class boundaries_3D(Enum):
+        Bottom = 11
+        Top = 12
+        Right = 13
+        Left = 14
+        Front = 15
+        Back = 16
+
+    class boundary_normals_3D(Enum):
+        Bottom = sympy.Matrix([0, 0, 1])
+        Top = sympy.Matrix([0, 0, 1])
+        Right = sympy.Matrix([1, 0, 0])
+        Left = sympy.Matrix([1, 0, 0])
+        Front = sympy.Matrix([0, 1, 0])
+        Back = sympy.Matrix([0, 1, 0])
+
+    minCoords = tuple(uw.scaling.non_dimensionalise(c) for c in minCoords)
+    maxCoords = tuple(uw.scaling.non_dimensionalise(c) for c in maxCoords)
+    cellSize = uw.scaling.non_dimensionalise(cellSize)
+
+    if len(minCoords) != 3:
+        raise ValueError("BoxInternalPatch is 3-D; in 2-D a fault is a "
+                         "polyline — use Mesh.add_fault on any box mesh.")
+    # a FaultSurface is the preferred input: it names itself, its rim
+    # polygon becomes the conforming patch, and it is stored on the mesh
+    # so add_fault_bc(..., normal="surface") can read the constraint
+    # frame from the surface's own face normals. A LIST of patches
+    # (FaultSurfaces and/or (name, polygon) pairs) embeds a NETWORK of
+    # DISJOINT patches — run prepare_fault_surfaces first; crossing
+    # patches are refused here.
+    def _one_patch(entry, default_name):
+        if hasattr(entry, "rim_polygon") and hasattr(entry, "name"):
+            return str(entry.name), np.asarray(entry.rim_polygon(),
+                                               dtype=float), entry
+        if isinstance(entry, tuple) and len(entry) == 2 \
+                and isinstance(entry[0], str):
+            return str(entry[0]), np.asarray(entry[1],
+                                             dtype=float)[:, :3], None
+        return default_name, np.asarray(entry, dtype=float), None
+
+    if isinstance(patch_points, (list,)) and len(patch_points) > 0 \
+            and not np.isscalar(patch_points[0]) \
+            and (hasattr(patch_points[0], "rim_polygon")
+                 or isinstance(patch_points[0], tuple)):
+        raw_entries = list(patch_points)
+    else:
+        raw_entries = [patch_points]
+    patches = []
+    for k, entry in enumerate(raw_entries):
+        nm = patch_name if len(raw_entries) == 1 else f"{patch_name}{k}"
+        patches.append(_one_patch(entry, nm))
+    if len({nm for nm, _p, _f in patches}) != len(patches):
+        raise ValueError(
+            f"duplicate patch names: {[nm for nm, _p, _f in patches]}")
+
+    lo, hi = np.asarray(minCoords), np.asarray(maxCoords)
+    for nm, patch, _fs in patches:
+        if patch.ndim != 2 or patch.shape[0] < 3 or patch.shape[1] != 3:
+            raise ValueError(f"patch {nm!r} must be an (N, 3) polygon, "
+                             "N >= 3.")
+        if not ((patch > lo).all() and (patch < hi).all()):
+            raise ValueError(
+                f"patch {nm!r} must sit strictly inside the box — a "
+                "fault that daylights is not yet supported.")
+    if len(patches) > 1:
+        from .fault_network_3d import crossing_segment
+        for i in range(len(patches)):
+            for j in range(i + 1, len(patches)):
+                if crossing_segment(patches[i][1], patches[j][1]) \
+                        is not None:
+                    raise ValueError(
+                        f"patches {patches[i][0]!r} and "
+                        f"{patches[j][0]!r} cross — the embed takes "
+                        "DISJOINT patches; run prepare_fault_surfaces "
+                        "(or FaultNetwork.prepare) first.")
+
+    # single-patch variables kept for the legacy filename/store paths
+    patch_name = patches[0][0]
+    patch = patches[0][1]
+    fault_surface = patches[0][2]
+
+    members = {b.name: b.value for b in boundaries_3D}
+    patch_tags = {}
+    for nm, _p, _fs in patches:
+        tag = max(members.values()) + 4
+        members[nm] = tag
+        patch_tags[nm] = tag
+    boundaries = Enum("boundaries", members)
+    patch_tag = patch_tags[patch_name]
+
+    if patch_cellSize is not None:
+        patch_cellSize = uw.scaling.non_dimensionalise(patch_cellSize)
+        if not 0 < patch_cellSize <= cellSize:
+            raise ValueError("patch_cellSize must be in (0, cellSize].")
+    if grading_distance is None and patch_cellSize is not None:
+        grading_distance = 8.0 * patch_cellSize
+
+    if filename is None:
+        if uw.mpi.rank == 0:
+            os.makedirs(mesh_file_dir(), exist_ok=True)
+        grade = ("" if patch_cellSize is None
+                 else f"_pcs{patch_cellSize}_gd{grading_distance}")
+        tagline = "_".join(f"{nm}{len(p)}" for nm, p, _f in patches)
+        uw_filename = (f"{mesh_file_dir()}/uw_boxpatch_minC{minCoords}_"
+                       f"maxC{maxCoords}_csize{cellSize}{grade}_"
+                       f"{tagline}.msh")
+    else:
+        uw_filename = filename
+
+    if uw.mpi.rank == 0:
+        import gmsh
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", gmsh_verbosity)
+        gmsh.model.add("BoxInternalPatch")
+
+        box = gmsh.model.occ.addBox(
+            minCoords[0], minCoords[1], minCoords[2],
+            maxCoords[0] - minCoords[0], maxCoords[1] - minCoords[1],
+            maxCoords[2] - minCoords[2])
+
+        patch_surfaces = {}
+        for nm, ppoly, _fs in patches:
+            corner_tags = [gmsh.model.occ.addPoint(
+                *p, patch_cellSize if patch_cellSize is not None
+                else cellSize) for p in ppoly]
+            line_tags = [gmsh.model.occ.addLine(
+                corner_tags[i], corner_tags[(i + 1) % len(ppoly)])
+                for i in range(len(ppoly))]
+            loop = gmsh.model.occ.addCurveLoop(line_tags)
+            patch_surfaces[nm] = gmsh.model.occ.addPlaneSurface([loop])
+        gmsh.model.occ.synchronize()
+
+        # The embed makes the volume mesh conform to the patches: their
+        # faces become tet faces, shared by one cell on each side.
+        gmsh.model.mesh.embed(2, list(patch_surfaces.values()), 3, box)
+
+        # OCC numbers the box walls itself; identify them by centre of mass.
+        centre = {
+            "Bottom": (None, None, minCoords[2]),
+            "Top": (None, None, maxCoords[2]),
+            "Left": (minCoords[0], None, None),
+            "Right": (maxCoords[0], None, None),
+            "Front": (None, minCoords[1], None),
+            "Back": (None, maxCoords[1], None),
+        }
+        patch_surface_tags = set(patch_surfaces.values())
+        for dim2, tag in gmsh.model.getEntities(2):
+            if tag in patch_surface_tags:
+                continue
+            com = gmsh.model.occ.getCenterOfMass(dim2, tag)
+            for wall, probe in centre.items():
+                if all(p is None or abs(c - p) < 1e-9
+                       for c, p in zip(com, probe)):
+                    value = boundaries[wall].value
+                    gmsh.model.addPhysicalGroup(2, [tag], value)
+                    gmsh.model.setPhysicalName(2, value, wall)
+                    break
+
+        for nm, stag in patch_surfaces.items():
+            gmsh.model.addPhysicalGroup(2, [stag], patch_tags[nm])
+            gmsh.model.setPhysicalName(2, patch_tags[nm], nm)
+        gmsh.model.addPhysicalGroup(3, [box], 99999)
+        gmsh.model.setPhysicalName(3, 99999, "Elements")
+
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cellSize)
+        if patch_cellSize is not None:
+            # grade from the fault outward: Distance field measured from
+            # the patch surfaces, thresholded to [patch_cellSize, cellSize]
+            df = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(
+                df, "SurfacesList", list(patch_surfaces.values()))
+            gmsh.model.mesh.field.setNumber(df, "Sampling", 100)
+            tf = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(tf, "InField", df)
+            gmsh.model.mesh.field.setNumber(tf, "SizeMin", patch_cellSize)
+            gmsh.model.mesh.field.setNumber(tf, "SizeMax", cellSize)
+            gmsh.model.mesh.field.setNumber(tf, "DistMin", patch_cellSize)
+            gmsh.model.mesh.field.setNumber(tf, "DistMax",
+                                            grading_distance)
+            gmsh.model.mesh.field.setAsBackgroundMesh(tf)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        # TODO(BUG): patch sets the crossing pre-check cannot classify
+        # (coplanar overlaps, patches touching along an edge) can still
+        # make the 3-D mesher fail with a raw "PLC Error" from tetgen;
+        # the embed should catch that and re-raise with its own
+        # message. Fault-session follow-up.
+        try:
+            gmsh.model.mesh.generate(3)
+            write_gmsh(uw_filename)
+        finally:
+            # A mesher failure must not leave the gmsh session
+            # initialized: a poisoned session makes the NEXT mesh
+            # constructor in the same process write an invalid .msh,
+            # which PETSc rejects with error 79 ("expecting $Nodes").
+            gmsh.finalize()
+
+    new_mesh = Mesh(
+        uw_filename,
+        degree=degree,
+        qdegree=qdegree,
+        boundaries=boundaries,
+        boundary_normals=boundary_normals_3D,
+        coordinate_system_type=CoordinateSystemType.CARTESIAN,
+        useMultipleTags=True,
+        useRegions=True,
+        markVertices=True,
+        refinement=refinement,
+        refinement_callback=None,
+        units=units,
+        verbose=verbose,
+    )
+
+    from underworld3.meshing.bounding_surface import register_box_face_surfaces
+    register_box_face_surfaces(new_mesh, minCoords, maxCoords)
+
+    stored = {nm: fs for nm, _p, fs in patches if fs is not None}
+    if stored:
+        new_mesh._fault_surfaces = stored
+
+    return new_mesh
+
+
+@timing.routine_timer_decorator
 def StructuredQuadBox(
     elementRes: Optional[Tuple[int, int, int]] = (16, 16),
     minCoords: Optional[Tuple[float, float, float]] = None,
@@ -1009,7 +1301,8 @@ def StructuredQuadBox(
     qdegree : int, default=2
         Quadrature degree for numerical integration.
     filename : str, optional
-        Path to save the mesh file. If None, auto-generates in ``.meshes/``.
+        Path to save the mesh file. If None, auto-generates in the mesh-file
+        directory (``.meshes/`` by default, or ``UW_MESH_CACHE_DIR``).
     refinement : int, optional
         Number of uniform refinement levels to apply.
     gmsh_verbosity : int, default=0
@@ -1132,9 +1425,18 @@ def StructuredQuadBox(
 
     if filename is None:
         if uw.mpi.rank == 0:
-            os.makedirs(".meshes", exist_ok=True)
+            os.makedirs(mesh_file_dir(), exist_ok=True)
 
-        uw_filename = f".meshes/uw_structuredQuadBox_minC{minCoords}_maxC{maxCoords}.msh"
+        # `elementRes` is part of the name because it is part of the mesh.
+        # Without it every StructuredQuadBox on the same box — 16x16, 32x32,
+        # a resolution sweep — writes and reads ONE path, so two processes at
+        # different resolutions race on it and one reads the other's mesh
+        # (#618). The annulus already carries its cell size for this reason:
+        # `uw_annulus_ro1.0_ri0.5_csize0.05.msh`.
+        uw_filename = (
+            f"{mesh_file_dir()}/uw_structuredQuadBox_minC{minCoords}"
+            f"_maxC{maxCoords}_res{tuple(elementRes)}.msh"
+        )
     else:
         uw_filename = filename
 
@@ -1327,7 +1629,7 @@ def StructuredQuadBox(
 
         # Generate Mesh
         gmsh.model.mesh.generate(dim)
-        gmsh.write(uw_filename)
+        write_gmsh(uw_filename)
         gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
