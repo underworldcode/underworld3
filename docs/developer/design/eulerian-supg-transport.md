@@ -103,7 +103,8 @@ $$
 - **Not yet:** discontinuity capturing (the prototype's residual omitted the time
   derivative and added first-order diffusion everywhere; a correct lagged residual
   needs $\phi^{n-1}$), a streamline element length from a mesh-owned metric tensor,
-  the ALE hook.
+  the ALE hook, and vector or tensor unknowns: the solver is scalar, where the
+  semi-Lagrangian trace-back carries vectors and tensors through the same machinery.
 
 ## Measurements
 

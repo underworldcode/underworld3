@@ -49,6 +49,21 @@ def test_slcn_order_theta_pairs_select_the_documented_schemes(mesh):
         _solver(mesh, "p4", order=2, theta=0.5)
 
 
+def test_theta_is_settable_after_construction_as_on_slcn(mesh):
+    """The convection examples set ``adv_diff.theta = 0.5`` after constructing
+    the semi-Lagrangian solver; the drop-in accepts the same, refreshing the
+    Adams-Moulton weights at the next solve without a recompile."""
+    adv, _T = _solver(mesh, "th")
+    adv.solve(timestep=0.01)
+    key = adv._current_jit_cache_key
+    adv.theta = 1.0
+    adv.solve(timestep=0.01)
+    assert adv.theta == 1.0 and adv.DuDt.theta == 1.0
+    assert adv._current_jit_cache_key == key
+    with pytest.raises(ValueError, match="theta applies"):
+        _solver(mesh, "th2", order=2)[0].theta = 0.5
+
+
 def test_semi_lagrangian_only_arguments_are_ignored_with_a_warning(mesh):
     with pytest.warns(UserWarning, match="monotone_mode, old_frame_traceback"):
         adv, _T = _solver(mesh, "q", monotone_mode="clamp", old_frame_traceback=True)
