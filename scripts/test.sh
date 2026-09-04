@@ -166,6 +166,18 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     # - Solver operations
     # - Global evaluations
 
+    # Every mpirun goes through the supervisor. A rank blocked in a collective
+    # produces nothing and never returns, so an unsupervised batch spends the
+    # whole job budget in silence and is cancelled from outside with no
+    # diagnosis -- measured at 76 minutes (#675). The supervisor bounds that on
+    # silence rather than total runtime, so a legitimately slow batch is not
+    # punished, and it dumps and compares the ranks before killing them.
+    #
+    # It matters more here than it did on the two globs it replaced: this pass
+    # covers the directory by enumeration, so files that had never run in CI
+    # now do, and a new file is exactly where an unbounded hang comes from.
+    SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
+
     # Every file under tests/parallel/, in BATCHES. Two things matter here and
     # they pull in opposite directions.
     #
@@ -187,7 +199,7 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     echo "Testing parallel operations, swarms and solvers"
     echo "  ${#PARALLEL_FILES[@]} files in batches of $PARALLEL_BATCH"
     for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
-      mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
+      $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
 
@@ -207,7 +219,7 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     if [ $FULL_PARALLEL -eq 1 ] && [ "$PARALLEL_RANKS" -ne 4 ]; then
       echo "Testing the same set at 4 ranks (np=2 is a special case)..."
       for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
-        mpirun -n 4 python -m pytest --with-mpi \
+        $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
           "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" \
           --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
           || status=1

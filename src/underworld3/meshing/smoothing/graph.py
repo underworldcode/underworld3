@@ -527,33 +527,76 @@ def _min_incident_edge_nd(cells, coords):
 # ``boundary_slip`` orchestration, and ``BoundingSurface`` facet restore.
 # ---------------------------------------------------------------------------
 
-def _slip_normals(mesh, boundary_coords):
-    """Unit outward normals at ``boundary_coords`` from the projected
-    boundary-normal field.
+#: Composite labels that cover every boundary at once. Summing a per-boundary
+#: normal over one of these would give a contribution at every boundary node and
+#: make each of them look like a corner, so they are never iterated.
+_COMPOSITE_BOUNDARY_LABELS = frozenset({"All_Boundaries"})
 
-    Re-projects ``mesh._projected_normals`` (``mesh.Gamma_P1``) first so the
-    normals reflect the mesh's *current* coordinates — the projected field is
-    stale after any deform. Returns ``(normals, valid)`` where ``normals`` is
-    ``(k, cdim)`` and ``valid`` is a boolean mask; ``valid`` is ``False`` for
-    nodes with a degenerate (zero / non-finite) normal (e.g. box corners
-    where opposing face normals cancel, or an occasional unlocatable vertex).
-    Such nodes should be pinned, not slipped.
+
+def _slip_normals(mesh, boundary_coords, boundaries=None):
+    """Unit outward normals at ``boundary_coords``, taken PER BOUNDARY.
+
+    Returns ``(normals, valid)``. ``valid`` is ``False`` where no boundary claims
+    the node, where the normal is degenerate, and -- deliberately -- where MORE
+    THAN ONE boundary claims it. Those are corners and 3-D edges: they have no
+    single normal, so they are pinned rather than slipped along a fabricated one.
+
+    This used to evaluate ``mesh.Gamma_P1`` once. That field is deprecated and
+    documented as falling back to a coordinate direction off-kernel; on a unit
+    box it returns the edge TANGENT on Left and Bottom -- ``(0, 1)`` where the
+    outward normal is ``(-1, 0)``. A node whose "normal" lies along its own edge
+    has its tangential motion projected out, which is exactly why
+    ``node_redistribution(..., slip_surfaces=True)`` left those two edges frozen
+    at *exactly* zero displacement while Right and Top moved (#538). Per
+    boundary, ``_assemble_boundary_normal`` is exact on all four edges to 1.6e-11.
+
+    NO NEW MeshVariable IS CREATED. The per-boundary normal is assembled into
+    ``_n_proj`` -- the field ``Gamma_P1`` already owns -- one boundary at a time.
+    That is not tidiness: creating even ONE extra variable on this path
+    restructures the DM, and the parent's static hierarchy stops matching what it
+    recorded (``test_0764::test_redistribute_then_adapt_composition``). Verified
+    by keeping the creation and reverting to the old normals, which still failed;
+    the creation is the trigger, not the normals. ``_n_proj`` is rebuilt by
+    ``_update_projected_normals`` on every call, so overwriting it here is safe.
+
+    ``boundaries`` names the labels to consider; ``None`` uses every
+    non-composite boundary. Prefer passing the slip set: each label costs one
+    evaluation.
     """
     cdim = mesh.cdim
-    n = np.zeros((boundary_coords.shape[0], cdim))
+    count = boundary_coords.shape[0]
+    total = np.zeros((count, cdim))
+    claims = np.zeros(count, dtype=int)
+
+    if boundaries is None:
+        boundaries = [b.name for b in mesh.boundaries
+                      if b.name not in _COMPOSITE_BOUNDARY_LABELS]
+
     try:
-        mesh._update_projected_normals()
-        n = np.asarray(
-            uw.function.evaluate(mesh.Gamma_P1, boundary_coords)
-        ).reshape(-1, cdim)
+        mesh._update_projected_normals()          # creates/refreshes _n_proj
+        scratch = mesh._projected_normals
     except Exception:
-        # Projection unavailable / degenerate on this mesh — fall back to
-        # all-pinned boundaries (valid stays all-False below).
-        n = np.zeros((boundary_coords.shape[0], cdim))
-    mag = np.linalg.norm(n, axis=1)
-    valid = np.isfinite(mag) & (mag > 0.5)
-    out = np.zeros_like(n)
-    out[valid] = n[valid] / mag[valid, None]
+        return np.zeros((count, cdim)), np.zeros(count, dtype=bool)
+
+    for name in boundaries:
+        if name in _COMPOSITE_BOUNDARY_LABELS:
+            continue
+        try:
+            mesh._assemble_boundary_normal(scratch, name)
+            here = np.asarray(
+                uw.function.evaluate(scratch.sym, boundary_coords)
+            ).reshape(-1, cdim)
+        except Exception:
+            continue        # label absent on this rank / this mesh: claims nothing
+        magnitude = np.linalg.norm(here, axis=1)
+        on_it = np.isfinite(magnitude) & (magnitude > 0.5)
+        total[on_it] += here[on_it]
+        claims[on_it] += 1
+
+    magnitude = np.linalg.norm(total, axis=1)
+    valid = (claims == 1) & np.isfinite(magnitude) & (magnitude > 0.5)
+    out = np.zeros_like(total)
+    out[valid] = total[valid] / magnitude[valid, None]
     return out, valid
 
 
