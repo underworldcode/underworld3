@@ -324,6 +324,27 @@ the shared boundary-mass machinery in `utilities/boundary_flux.py`;
 `dynamic_topography_field` writes `h = −(σ_nn − σ̄_nn)/(Δρ g)` onto a surface
 field for the free-surface integrator.
 
+### Which de-smearing mass (3-D)
+
+`mass="auto"` uses the **P1-projected** recovery on a 3-D P2 trace. The full
+("consistent") P2 **triangle** mass has vertex rows summing to exactly zero, so
+it is singular on constants along those rows and `M⁻¹` amplifies any
+perturbation of the nodal load at *vertices* by O(1) — independently of
+resolution. Measured on the Zhong l=2 shell (#633): consistent-mass vertex
+values are 7.6% low with no grad-div penalty, 28% low at `penalty=10` and 79%
+low at 100, and the error is flat across a 3.2× refinement. The 2-D P2 **line**
+mass has positive vertex row sums and is unaffected — which is why this appears
+only in 3-D, and not because of dimension or curvature as such.
+
+This is a trade rather than a strict improvement. Consistent-mass *midpoint*
+values are superconvergent (0.1–1.5% at every penalty) and the P1 projection
+gives that up, because under it the midpoints are the P1 interpolant of the
+vertices. `"p1"` is the default because its error converges under refinement
+(worst node 0.170 → 0.049 over cellSize 0.30 → 0.16) where the consistent
+vertex error does not. **If you sample only midpoints, pass
+`mass="consistent"`.** See also #404 (the vertex-integral checkerboard) and
+#637 (only P1/P2 triangular traces are supported in 3-D at all).
+
 ## Tests
 
 `tests/test_1018_rotated_freeslip.py` (serial: essential-equivalence, FMG,

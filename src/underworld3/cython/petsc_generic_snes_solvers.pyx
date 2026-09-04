@@ -222,6 +222,15 @@ class SolverBaseClass(uw_object):
         # untouched framework default (eligible for FMG upgrade) apart from an
         # explicit user override of pc_type, which must be respected.
         self._pc_managed_value = "gamg"
+        # Components per node in the field the managed block solves. Subclasses
+        # whose unknown is a vector set mesh.dim; 1 is right for a scalar. The
+        # GAMG bundle turns this into `mat_block_size` so that algebraic
+        # coarsening aggregates nodes rather than scalars — worth a factor of
+        # two to nine (#579). It has to live here rather than only at the
+        # __init__ call sites because _apply_preconditioner_options re-applies
+        # the bundle on EVERY build, and a bundle built without it would list
+        # `mat_block_size` as a stale key and delete what __init__ had set.
+        self._pc_block_size = 1
         # Latches once the user (or harness) is seen to have set the PC options
         # themselves. _apply_preconditioner_options() runs on EVERY _build (so
         # "auto" can re-resolve after a remesh), and without this latch the
@@ -772,6 +781,67 @@ class SolverBaseClass(uw_object):
         # Force a full rebuild so the new option bundle is pushed to PETSc.
         self.is_setup = False
 
+    def _withdraw_block_size_if_not_node_blocked(self, field_name=None, prefix=""):
+        """Remove ``mat_block_size`` when the block it describes is not node-blocked.
+
+        The GAMG bundle declares ``mat_block_size`` so that coarsening aggregates
+        nodes rather than scalars (#579). ``MatSetFromOptions`` hands that to
+        ``PetscLayoutSetBlockSize``, which is a HARD ERROR when a rank's local row
+        count is not divisible by it — PETSc does not treat it as a hint it may
+        decline:
+
+            Arguments are incompatible
+            Local size 67 not compatible with block size 2
+
+        Whether it divides is a property of the particular COMBINATION of
+        boundary conditions, not of their kind. Constrained degrees of freedom
+        are absent from the field's global section, so on a 3x3 P2 velocity
+        field: no velocity BCs gives 98, full vector Dirichlet on every wall
+        gives 50, and component-wise free slip gives 70 — all even, all fine —
+        while ``(0, 0)`` on one wall with ``(0, None)`` on the other three gives
+        67. There is then no node blocking to declare, and asking for one is not
+        a lost optimisation but an error.
+
+        The decision is COLLECTIVE. PETSc requires divisibility on every rank,
+        and a rank-local decision would leave ranks disagreeing about the
+        contents of the options DB.
+
+        Called immediately before ``setFromOptions`` because that is the first
+        point at which the field decomposition exists;
+        ``_apply_preconditioner_options`` re-pushes the bundle on every build, so
+        this has to run on every build too.
+        """
+
+        block_size = getattr(self, "_pc_block_size", 1)
+        if block_size <= 1:
+            return
+
+        names, isets, _ = self.dm.createFieldDecomposition()
+        names = list(names)
+        if field_name is None:
+            if len(names) != 1:
+                return
+            field_name = names[0]
+        elif field_name not in names:
+            return
+
+        local = isets[names.index(field_name)].getLocalSize()
+
+        from mpi4py import MPI
+
+        divides = self.dm.comm.tompi4py().allreduce(
+            local % block_size == 0, op=MPI.LAND
+        )
+        if divides:
+            return
+
+        key = f"{self.petsc_options_prefix}{prefix}mat_block_size"
+        options = PETSc.Options()
+        if key in options:
+            options.delValue(key)
+
+        self._pc_block_size_withdrawn = (field_name, block_size, local)
+
     def _apply_preconditioner_options(self):
         """Push the PETSc option bundle implied by ``self.preconditioner``.
 
@@ -915,9 +985,10 @@ class SolverBaseClass(uw_object):
                         f"mesh with refinement >= 1 to enable geometric multigrid.",
                         stacklevel=2,
                     )
-            multigrid_options.gamg_bundle().apply(
-                PETSc.Options(), self.petsc_options_prefix + prefix,
-                owned=self._managed_pc_options)
+            multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).apply(
+                    PETSc.Options(), self.petsc_options_prefix + prefix,
+                    owned=self._managed_pc_options)
             self._pc_managed_value = "gamg"
 
     def _enforce_galerkin_for_geometric_mg(self):
@@ -3055,9 +3126,17 @@ class SolverBaseClass(uw_object):
                     gvec.restoreSubVector(self._subdict[name][0], sgvec)
             else:
                 _names, _iss, _subdms = self.dm.createFieldDecomposition()
-                sgvec = gvec.getSubVector(_iss[0])
-                _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
-                gvec.restoreSubVector(_iss[0], sgvec)
+                try:
+                    sgvec = gvec.getSubVector(_iss[0])
+                    try:
+                        _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                    finally:
+                        gvec.restoreSubVector(_iss[0], sgvec)
+                finally:
+                    for _is in _iss:
+                        _is.destroy()
+                    for _subdm in _subdms:
+                        _subdm.destroy()
 
             self.dm.globalToLocal(gvec, xlocal)
 
@@ -3097,11 +3176,12 @@ class SolverBaseClass(uw_object):
         number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
         ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
 
-        ``mass`` de-smears the nodal reaction with ``"lumped"`` or ``"consistent"``
-        boundary mass. ``"auto"`` (default) selects lumped recovery for 2D P1/P2
-        traces and 3D P1 triangles, and the consistent solve for 3D P2 triangles and
-        2D traces of degree >= 3 (where row-sum lumping is respectively invalid and
-        only O(h) pointwise).
+        ``mass`` de-smears the nodal reaction with ``"lumped"``, ``"consistent"``,
+        ``"p1"`` or ``"midpoint"`` boundary mass. ``"auto"`` (default) selects lumped
+        recovery for 2D P1/P2 traces and 3D P1 triangles, MIDPOINT-RECONSTRUCTED
+        recovery for 3D P2 triangles (row-sum lumping is invalid there and the
+        consistent solve amplifies at vertices — #633), and the consistent solve for 2D
+        traces of degree >= 3 (where lumping is only O(h) pointwise).
         ``remove_mean`` subtracts the boundary mean — leave ``False`` for a physical
         flux (the mean is the Nusselt number); ``True`` gives a gauge-free field.
 
@@ -3254,16 +3334,10 @@ class SNES_Scalar(SolverBaseClass):
 
         self.petsc_options["snes_type"] = "newtonls"
         self._push_managed_option("ksp_type", "gmres")
-        self._push_managed_option("pc_type", "gamg")
-        self._push_managed_option("pc_gamg_type", "agg")
-        self._push_managed_option("pc_gamg_repartition", True)
-        self._push_managed_option("pc_mg_type", "additive")
-        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
-        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
+        for key, value in multigrid_options.gamg_bundle().settings.items():
+            self._push_managed_option(key, value)
 
         self.petsc_options["snes_rtol"] = 1.0e-4
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -3830,6 +3904,8 @@ class SNES_Scalar(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -4162,14 +4238,13 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self._push_managed_option("ksp_type", "gmres")
-        self._push_managed_option("pc_type", "gamg")
-        self._push_managed_option("pc_gamg_type", "agg")
-        self._push_managed_option("pc_gamg_repartition", True)
-        self._push_managed_option("pc_mg_type", "additive")
-        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
+        # A vector unknown: mesh.dim components per node, which GAMG has to be
+        # told. See multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.dim
+        for key, value in multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).settings.items():
+            self._push_managed_option(key, value)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
-        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -4906,6 +4981,8 @@ class SNES_Vector(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -5176,14 +5253,13 @@ class SNES_MultiComponent(SolverBaseClass):
         self.petsc_options["snes_type"] = "newtonls"
         self.petsc_options["ksp_rtol"] = 1.0e-3
         self._push_managed_option("ksp_type", "gmres")
-        self._push_managed_option("pc_type", "gamg")
-        self._push_managed_option("pc_gamg_type", "agg")
-        self._push_managed_option("pc_gamg_repartition", True)
-        self._push_managed_option("pc_mg_type", "additive")
-        self._push_managed_option("pc_gamg_agg_nsmooths", 2)
+        # Block size left at 1. The unknown here is a general multi-component
+        # field whose components-per-node is not mesh.dim in general, and
+        # claiming the wrong node size would cost rather than save. Worth
+        # revisiting per instantiation — see #579.
+        for key, value in multigrid_options.gamg_bundle().settings.items():
+            self._push_managed_option(key, value)
         self.petsc_options["snes_rtol"] = 1.0e-3
-        self._push_managed_option("mg_levels_ksp_max_it", 3)
-        self._push_managed_option("mg_levels_ksp_converged_maxits", None)
 
         if self.verbose == True:
             self.petsc_options["ksp_monitor"] = None
@@ -5663,6 +5739,8 @@ class SNES_MultiComponent(SolverBaseClass):
 
             self.dm.setUp()
 
+            self._withdraw_block_size_if_not_node_blocked()
+
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
@@ -6016,6 +6094,22 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
 
+        # The OUTER Krylov must be FLEXIBLE: both sub-blocks below are
+        # themselves Krylov solves run to a tolerance, so the operator the
+        # outer method applies differs from one outer iteration to the next
+        # and plain GMRES's residual recurrence does not hold — the
+        # velocity-block FGMRES reasoning (#147), one level up. PETSc's
+        # default is `gmres`; invisible on easy problems (isoviscous SolKz
+        # converges in two outer iterations), ruinous on hard ones: 14,400
+        # inner iterations / ~540 s on an 85k-cell contrast problem for both
+        # velocity preconditioners (#624), and on the Spiegelman notch at
+        # refinement 3, 983 velocity iterations per step and
+        # DIVERGED_LINEAR_SOLVE against 58 for fgmres — raising the velocity
+        # cap changes nothing (byte-identical residuals), so the failure is
+        # inconsistency, not iteration count (#576). Managed, so an explicit
+        # user ksp_type still wins.
+        self._push_managed_option("ksp_type", "fgmres")
+
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
         self.petsc_options["pc_fieldsplit_schur_fact_type"] = "full"     # diag is an alternative (quick/dirty)
@@ -6058,13 +6152,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options[f"fieldsplit_{v_name}_ksp_type"] = "fgmres"
         self.petsc_options[f"fieldsplit_{v_name}_ksp_max_it"] = 200
         self.petsc_options[f"fieldsplit_{v_name}_ksp_rtol"]  = self._tolerance * 0.1
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_type", "gamg")
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_type", "agg")
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_repartition", True)
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_mg_type", "additive")
-        self._push_managed_option(f"fieldsplit_{v_name}_pc_gamg_agg_nsmooths", 2)
-        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_max_it", 3)
-        self._push_managed_option(f"fieldsplit_{v_name}_mg_levels_ksp_converged_maxits", None)
+        # The velocity field carries mesh.dim components per node; say so, or
+        # GAMG aggregates scalars. See multigrid_options._gamg_settings.
+        self._pc_block_size = self.mesh.dim
+        for key, value in multigrid_options.gamg_bundle(
+                block_size=self._pc_block_size).settings.items():
+            self._push_managed_option(f"fieldsplit_{v_name}_{key}", value)
 
         # Create this dict
         self.fields = {}
@@ -6371,13 +6464,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         :meth:`solve`.
 
         ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
-        triangles, and the consistent surface-mass solve for 3D P2 triangles.
-        Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
-        mathematically valid, and ``"p1"`` selects P1-PROJECTED recovery on a 3D
-        P2 trace (edge-midpoint loads folded onto vertices, lumped P1 triangle
-        mass — sound where the consistent P2 path carries the vertex-integral
-        checkerboard; the FreeSurface default in 3D). Three-dimensional recovery
-        currently supports triangular P1/P2 traces only.
+        triangles, and MIDPOINT-RECONSTRUCTED recovery for 3D P2 triangles (the
+        consistent solve, keeping its superconvergent midpoints, with vertices rebuilt
+        from them). ``"p1"`` selects the simpler P1-projected recovery; explicit
+        ``"lumped"`` and ``"consistent"`` remain available where mathematically valid;
+        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
+        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
+        independently of h (#404, measured in #633). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only (#637).
 
         .. warning::
            On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
@@ -6402,8 +6496,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         interior left untouched.
 
         ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
-        ``mass="auto"`` selects lumped recovery where valid and the consistent
-        surface-mass solve for 3D P2 triangles. Requires a prior
+        ``mass="auto"`` selects lumped recovery where valid and
+        midpoint-reconstructed recovery for 3D P2 triangles. Requires a prior
         :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
 
         .. warning::
@@ -6934,6 +7028,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
+
+        # Flexible for the same reason as in __init__ (#576/#624): the
+        # sub-blocks are inexact Krylov solves, so the outer operator varies
+        # between iterations. Managed, so an explicit user ksp_type wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -8024,8 +8123,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # u-row residual:  fn_f = h·n  +  r(n·u − g)·n
             # The r-term is the augmented-Lagrangian penalty: it adds a uu
             # boundary stiffness r·(n⊗n) that conditions the Schur complement
-            # but does NOT bias the multiplier (the h-row stays the exact
-            # constraint, so h still converges to the true normal traction).
+            # but does not change what the constraint ENFORCES (the h-row stays
+            # the exact constraint). It does change what h IS: the traction is
+            # h + r(n.u - g), and only the sum is r-independent. Stokes_Constrained
+            # .traction() / .topography() return that sum; .multiplier() returns h.
             fn_f = sympy.Matrix(
                 [(hsym + r_sym * (u_dot_n - g_sym)) * n_row[i] for i in range(dim)]
             ).as_immutable()
@@ -8821,6 +8922,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # hierarchy for geometric MG/FMG. Must precede setFromOptions.
             if self._block_constraint_bcs:
                 self._setup_block_fieldsplit_options()
+
+            self._withdraw_block_size_if_not_node_blocked(
+                "velocity", prefix="fieldsplit_velocity_")
 
             self.snes = PETSc.SNES().create(PETSc.COMM_WORLD)
             self.snes.setDM(self.dm)

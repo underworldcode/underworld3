@@ -53,6 +53,13 @@ What a crack model cannot do at a branch point, measured in a shear box
 
 **[→ Branching Faults and Junctions](fault-branching-junctions.md)**
 
+### Visualising the Stress Tensor
+Principal-stress crosses sampled at seed points (2-D and 3-D) and
+stress trajectories — the tensor equivalents of velocity arrows and
+streamlines.
+
+**[→ Stress Visualisation](stress-visualisation.md)**
+
 ### Custom Meshes
 Create complex geometries with gmsh for research problems.
 
@@ -127,6 +134,7 @@ crossing-fault-zones
 gouge-zones
 fault-branching-junctions
 fault-mechanics-examples
+stress-visualisation
 custom-meshes
 curved-boundary-conditions
 mesh-adaptation

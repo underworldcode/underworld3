@@ -2712,6 +2712,11 @@ class Mesh(Stateful, uw_object):
             uw.pprint(f"PETScDS - (re) initialised")
 
         self._coord_array = {}
+        # Cleared with _coord_array because both describe the same node layout:
+        # the coordinates and which cell owns each of them. Topology only, so it
+        # survives node motion — but it is invalidated by the same re-creation
+        # of the DS that invalidates the coordinates.
+        self._cell_node_array = {}
 
         # let's go ahead and do an initial projection from linear (the default)
         # to linear. this really is a nothing operation, but a
@@ -5466,13 +5471,14 @@ class Mesh(Stateful, uw_object):
             self._coord_array[key] = self._get_coords_for_basis(var.degree, var.continuous)
             return self._coord_array[key]
 
-    def _get_coords_for_basis(self, degree, continuous):
-        """
-        This function returns the vertex array for the
-        provided variable. If the array does not already exist,
-        it is first created and then returned.
-        """
+    def _basis_coordinate_dm(self, degree, continuous):
+        """Coordinate DM carrying a degree-``degree`` Lagrange field.
 
+        Its local section defines the node layout that
+        :meth:`_get_coords_for_basis` reads, so anything that needs to know
+        WHICH node is which — as opposed to just where the nodes are — has to
+        come from this same DM. The caller destroys it.
+        """
         dmold = self.dm.getCoordinateDM()
         dmold.createDS()
         dmnew = dmold.clone()
@@ -5493,6 +5499,73 @@ class Mesh(Stateful, uw_object):
 
         dmnew.setField(0, dmfe)
         dmnew.createDS()
+        dmfe.destroy()          # DMSetField took its own reference
+        return dmnew
+
+    def _cell_node_indices(self, degree, continuous):
+        """Rows of each cell's degrees of freedom, indexing exactly the array
+        :meth:`_get_coords_for_basis` returns for the same ``(degree,
+        continuous)``.
+
+        Returns an ``(n_cells, nodes_per_cell)`` integer array; row ``k`` lists
+        cell ``cStart + k``'s DOF rows in closure order. The order within a row
+        is arbitrary but self-consistent, which is all any consumer needs: the
+        weights are computed from the coordinates read at these same rows, so
+        no reference-element node ordering is ever assumed. (Element assembly
+        WOULD care — the two DOFs on an edge follow the edge's own orientation,
+        not the cell's — so do not repurpose this for that.)
+
+        Knowing a cell's nodes is what turns the adapt parent-CELL map into an
+        exact transfer at any polynomial degree: for a Lagrange element the
+        basis is dual to its nodal points, so a coarse cell's own DOF
+        coordinates determine the coarse interpolant inside it (#425).
+        """
+        from math import comb
+
+        key = (self.isSimplex, degree, continuous)
+        if key in self._cell_node_array:
+            return self._cell_node_array[key]
+
+        dmnew = self._basis_coordinate_dm(degree, continuous)
+        section = dmnew.getLocalSection()
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        cdim = self.cdim
+
+        rows = []
+        for cell in range(cStart, cEnd):
+            cell_rows = []
+            for point in dmnew.getTransitiveClosure(cell)[0]:
+                ndof = section.getDof(point) // cdim
+                if ndof:
+                    offset = section.getOffset(point) // cdim
+                    cell_rows.extend(range(offset, offset + ndof))
+            rows.append(cell_rows)
+        dmnew.destroy()
+
+        expected = comb(degree + self.dim, self.dim)
+        if not self.isSimplex or any(len(r) != expected for r in rows):
+            # A tensor-product Q_k cell carries (k+1)^dim nodes, so the monomial
+            # basis of total degree <= k would not be square against them and
+            # the dual-basis construction does not apply. Say so here rather
+            # than return a ragged array the caller has to second-guess.
+            got = sorted({len(r) for r in rows})
+            raise NotImplementedError(
+                f"_cell_node_indices needs a simplex mesh: expected "
+                f"{expected} nodes per cell for degree {degree} in {self.dim}D, "
+                f"got {got}")
+
+        self._cell_node_array[key] = numpy.asarray(rows, dtype=numpy.int64)
+        return self._cell_node_array[key]
+
+    def _get_coords_for_basis(self, degree, continuous):
+        """
+        This function returns the vertex array for the
+        provided variable. If the array does not already exist,
+        it is first created and then returned.
+        """
+
+        dmold = self.dm.getCoordinateDM()
+        dmnew = self._basis_coordinate_dm(degree, continuous)
 
         matInterp, vecScale = dmold.createInterpolation(dmnew)
         coordsOld = self.dm.getCoordinates()
@@ -5513,7 +5586,6 @@ class Mesh(Stateful, uw_object):
         if vecScale is not None:
             vecScale.destroy()
         dmnew.destroy()
-        dmfe.destroy()
 
         return arrcopy
 
@@ -7107,10 +7179,22 @@ class Mesh(Stateful, uw_object):
     def _coarse_level_meshes(self):
         """The static coarse-mesh tail (one Mesh per base hierarchy level,
         coarsest..base-finest), built once and cached — they never change
-        because the base hierarchy is static across adapts."""
+        because the base hierarchy is static across adapts.
+
+        Each wrap is tagged with its ``(hierarchy token, level)`` slot — and so
+        is this mesh itself, whose ``dm`` is the finest hierarchy level. Two
+        levels whose slots are consecutive under the same token are a native
+        ``refine()`` pair, which is what lets ``custom_mg`` give that pair the
+        EXACT nested prolongation instead of a point-located one (#425/#629).
+        The token is a plain sentinel object: identity ties the family together
+        without a reference cycle back to this mesh."""
         cached = getattr(self, "_coarse_level_meshes_cache", None)
         if cached is None:
             cached = [self._wrap_coarse_level(d) for d in self.dm_hierarchy]
+            token = object()
+            for k, w in enumerate(cached):
+                w._refine_slot = (token, k)
+            self._refine_slot = (token, len(cached) - 1)
             self._coarse_level_meshes_cache = cached
         return cached
 
@@ -7563,13 +7647,76 @@ class Mesh(Stateful, uw_object):
         if label is None or label.getStratumSize(value) == 0:
             return zone
 
+        fS, fE = dm.getHeightStratum(1)
         for f in label.getStratumIS(value).getIndices():
-            # `_cells_on_edge` rather than `getSupport` directly: in 2-D an edge
-            # IS a facet and its support is already the cells, but in 3-D the
-            # support holds faces and the cells are one level further up.
-            # Applying the 2-D walk in 3-D returns nothing at all, silently.
-            for c in _cells_on_edge(dm, int(f)):
-                zone[c - cS] = True
+            p = int(f)
+            if fS <= p < fE:
+                # A FACET's support is the cells, in any dimension — a 2-D
+                # facet is an edge, a 3-D facet is a face. (This method only
+                # ever saw 2-D meshes before the 3-D conforming sheet, and
+                # the edge walk below returns NOTHING from a 3-D face,
+                # silently — the same trap `_cells_on_edge` documents, one
+                # level up.)
+                for c in dm.getSupport(p):
+                    if cS <= c < cE:
+                        zone[c - cS] = True
+            else:
+                # A labelled EDGE in 3-D (a trace chain): cells are one
+                # level further up.
+                for c in _cells_on_edge(dm, p):
+                    zone[c - cS] = True
+        return zone
+
+    def cells_labelled(self, name, value=None):
+        """The cells carrying DM label ``name`` (optionally stratum ``value``).
+
+        The cell-label partner of :meth:`cells_supporting`: where that method
+        derives a zone from a FACET label (a conforming surface's support),
+        this one reads a CELL label directly — the region a placement call
+        painted (:func:`~underworld3.utilities.place_surface.place_thin_volume`
+        labels its layer's cells), an imported region marker, or any other
+        authored cell stratum. It is the empty-safe way to build a fault-zone
+        patch key for ``set_custom_fmg(..., fac_zone=...)`` (#629): an absent
+        label or an empty stratum returns an all-``False`` mask rather than
+        touching the null IS that segfaults ``getIndices()`` (#589).
+
+        Parameters
+        ----------
+        name : str
+            The DM label name (e.g. the ``label=`` given to a placement call).
+        value : int or None
+            The stratum value; ``None`` takes the union over every value the
+            label carries.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean, one entry per cell, in **plex cell order** — also the DOF
+            order of a ``degree=0`` :class:`MeshVariable`. Points of the label
+            that are not cells (faces, edges) are ignored.
+
+        Examples
+        --------
+        >>> zone = mesh.cells_labelled("Band")
+        >>> set_custom_fmg(stokes, tail, field_id=0, fac_zone=zone)
+        """
+        from underworld3.utilities.dm_labels import label_stratum_indices
+
+        dm = self.dm
+        cS, cE = dm.getHeightStratum(0)
+        zone = numpy.zeros(cE - cS, dtype=bool)
+        label = dm.getLabel(name)
+        if label is None:
+            return zone
+        if value is None:
+            vis = label.getValueIS()
+            values = [int(v) for v in vis.getIndices()] if vis is not None else []
+        else:
+            values = [int(value)]
+        for v in values:
+            pts = label_stratum_indices(label, v)
+            pts = pts[(pts >= cS) & (pts < cE)]
+            zone[pts - cS] = True
         return zone
 
     @staticmethod
@@ -7607,6 +7754,87 @@ class Mesh(Stateful, uw_object):
             uw.pprint(f"[surface repair] {n_flips} flips, {n_removed} vertices "
                       f"removed, min angle now {info['min_angle']:.2f} deg")
         return cut_dm, info
+
+    def _adopt_cut_child(self, cut_dm, boundaries, info, mg_coarsening_ratio,
+                         verbose):
+        """Wrap a DM cut at the finest level as this mesh's child.
+
+        Shared by :meth:`add_conforming_surface` (2-D line cut) and
+        :meth:`add_conforming_sheet` (3-D placed sheet): the cut exists on
+        the finest level only, so this mesh plus everything below it is the
+        child's coarse multigrid tail. The coarse levels do not carry the
+        surface and do not need to — see the measured note in
+        :meth:`add_conforming_surface`.
+        """
+        child = Mesh(
+            cut_dm,
+            simplex=self.dm.isSimplex(),
+            coordinate_system_type=self.CoordinateSystem.coordinate_type,
+            qdegree=self.qdegree,
+            boundaries=boundaries,
+            verbose=False,
+        )
+        child.parent = self
+        child._relationship_kind = "refinement"
+        # ... but NOT a nested one. The cut moves or replaces parent vertices
+        # (the 2-D cut snaps them onto the surface; the 3-D carve deletes and
+        # refills), so a coarse DOF need not have a coincident fine DOF, and
+        # the injection that a bisection child's restriction relies on would
+        # quietly read the field at the displaced position instead.
+        child._refine_dofs_coincide = False
+        child.regions = self.regions
+        child._parent_mesh_version = self._mesh_version
+        child._surface_info = info
+
+        # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
+        # mesh, so this mesh plus everything below it is a valid coarse tail and
+        # the solver appends the child as the finest level. The transfers are
+        # coordinate-based and do not need the levels to nest — just as well,
+        # since a cut vertex is not an edge midpoint and the exact 1/2,1/2
+        # prolongation does not apply to it.
+        #
+        # A mesh that is ITSELF a child (a second surface, or an adapt child) has
+        # to EXTEND its own tail rather than read `dm_hierarchy`, which for a child
+        # holds only its own DM: reading it there would silently discard every
+        # level below and leave a two-level hierarchy calling itself multigrid.
+        #
+        # Tested with `is not None`, not for truthiness. A child whose own tail
+        # is EMPTY is still a child, and reading `dm_hierarchy` there returns
+        # just its own DM — the two-level collapse this comment warns about,
+        # reached by the one input the truth test cannot distinguish from a
+        # parent.
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        tail = (list(own_tail) + [self]) if own_tail is not None \
+            else self._coarse_level_meshes()
+
+        # A cut is not necessarily a refinement. It re-represents the same grid
+        # with the surface conformed, so `self` earns its place as a separate
+        # level only if the child is genuinely finer — the same question `adapt`
+        # asks of an engine pass, so ask it with the same routine rather than a
+        # second rule that could drift from it.
+        #
+        # Measured on a box fault before this: nine levels, of which the two
+        # added by the two cuts coarsened h by 1.11x and 1.17x on the 5th
+        # percentile against a threshold of 1.8 — each costing a full Galerkin
+        # RAP and smoother sweep for no correction. Worse, transfer 7->8, BETWEEN
+        # those two, is where the barycentric builder ran out of coarse DOFs with
+        # a fine image and fell back to the dense RBF one (#424).
+        #
+        # `_subsample_mg_levels` already does "replace the level below rather
+        # than append to it" for its own finest generation; handing it the pair
+        # (self, child) against the level beneath them puts that decision here
+        # too. One level back means it kept only the child.
+        if len(tail) >= 2:
+            kept, _Ps, _pc = self._subsample_mg_levels(
+                tail[-2].dm, [tail[-1].dm, cut_dm], [None, None], [],
+                ratio=mg_coarsening_ratio, verbose=verbose)
+            if len(kept) == 1:
+                tail = tail[:-1]
+        child._custom_mg_coarse_meshes = tail
+        child._custom_mg_builder = self._custom_mg_builder
+
+        self._registered_children.add(child)
+        return child
 
     def add_conforming_surface(self, surface, snap_frac=0.10, verbose=False,
                                snap_quality=0.15, snap_dist=0.0,
@@ -7772,9 +8000,10 @@ class Mesh(Stateful, uw_object):
 
         Notes
         -----
-        Two dimensions only. A surface **ending inside** the mesh (a fault tip) is
-        refused rather than silently mis-meshed, as is a triangle the surface
-        crosses three times.
+        Two dimensions only — in 3-D use :meth:`add_conforming_sheet`, where
+        a free rim (a fault tip) is the normal case. Here a surface **ending
+        inside** the mesh is refused rather than silently mis-meshed, as is a
+        triangle the surface crosses three times.
 
         See Also
         --------
@@ -7814,74 +8043,83 @@ class Mesh(Stateful, uw_object):
                       f"{info['n_cut_edges']} surface facets, "
                       f"min angle {info['min_angle']:.2f} deg")
 
-        child = Mesh(
-            cut_dm,
-            simplex=self.dm.isSimplex(),
-            coordinate_system_type=self.CoordinateSystem.coordinate_type,
-            qdegree=self.qdegree,
-            boundaries=boundaries,
-            verbose=False,
-        )
-        child.parent = self
-        child._relationship_kind = "refinement"
-        # ... but NOT a nested one. Snapping moves parent vertices onto the
-        # surface, so a coarse DOF need not have a coincident fine DOF, and the
-        # injection that a bisection child's restriction relies on would quietly
-        # read the field at the displaced position instead.
-        child._refine_dofs_coincide = False
-        child.regions = self.regions
-        child._parent_mesh_version = self._mesh_version
-        child._surface_info = info
+        return self._adopt_cut_child(cut_dm, boundaries, info,
+                                     mg_coarsening_ratio, verbose)
 
-        # Mesh-owned custom-P geometric-MG tail. Adding a surface refines this
-        # mesh, so this mesh plus everything below it is a valid coarse tail and
-        # the solver appends the child as the finest level. The transfers are
-        # coordinate-based and do not need the levels to nest — just as well,
-        # since a cut vertex is not an edge midpoint and the exact 1/2,1/2
-        # prolongation does not apply to it.
-        #
-        # A mesh that is ITSELF a child (a second surface, or an adapt child) has
-        # to EXTEND its own tail rather than read `dm_hierarchy`, which for a child
-        # holds only its own DM: reading it there would silently discard every
-        # level below and leave a two-level hierarchy calling itself multigrid.
-        #
-        # Tested with `is not None`, not for truthiness. A child whose own tail
-        # is EMPTY is still a child, and reading `dm_hierarchy` there returns
-        # just its own DM — the two-level collapse this comment warns about,
-        # reached by the one input the truth test cannot distinguish from a
-        # parent.
-        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
-        tail = (list(own_tail) + [self]) if own_tail is not None \
-            else self._coarse_level_meshes()
+    def add_conforming_sheet(self, points, triangles, name, *,
+                             clearance=0.6, setback=0.0, size=None,
+                             verbose=False, mg_coarsening_ratio=2.0):
+        r"""Add a triangulated sheet that the mesh conforms to (3-D).
 
-        # A cut is not necessarily a refinement. It re-represents the same grid
-        # with the surface conformed, so `self` earns its place as a separate
-        # level only if the child is genuinely finer — the same question `adapt`
-        # asks of an engine pass, so ask it with the same routine rather than a
-        # second rule that could drift from it.
-        #
-        # Measured on a box fault before this: nine levels, of which the two
-        # added by the two cuts coarsened h by 1.11x and 1.17x on the 5th
-        # percentile against a threshold of 1.8 — each costing a full Galerkin
-        # RAP and smoother sweep for no correction. Worse, transfer 7->8, BETWEEN
-        # those two, is where the barycentric builder ran out of coarse DOFs with
-        # a fine image and fell back to the dense RBF one (#424).
-        #
-        # `_subsample_mg_levels` already does "replace the level below rather
-        # than append to it" for its own finest generation; handing it the pair
-        # (self, child) against the level beneath them puts that decision here
-        # too. One level back means it kept only the child.
-        if len(tail) >= 2:
-            kept, _Ps, _pc = self._subsample_mg_levels(
-                tail[-2].dm, [tail[-1].dm, cut_dm], [None, None], [],
-                ratio=mg_coarsening_ratio, verbose=verbose)
-            if len(kept) == 1:
-                tail = tail[:-1]
-        child._custom_mg_coarse_meshes = tail
-        child._custom_mg_builder = self._custom_mg_builder
+        The 3-D twin of :meth:`add_conforming_surface`, and the Mesh-level
+        form of :func:`~underworld3.utilities.place_surface.place_sheet`:
+        the sheet's points become mesh vertices, every sheet triangle an
+        interior face labelled ``name``, and the rim is free inside the
+        mesh — a fault tip is the normal case here, not a refusal.
 
-        self._registered_children.add(child)
-        return child
+        The cut runs at the finest level ONLY. This mesh and every
+        multigrid level under it are untouched and become the child's
+        coarse tail, exactly as in 2-D: the coarse levels do not carry the
+        sheet and do not need to (custom-P sets ``pc_mg_galerkin=both``,
+        so every coarse operator is :math:`P^\mathsf{T} A P` from the fine
+        operator — see the measured note in :meth:`add_conforming_surface`,
+        whose warning about ESSENTIAL conditions on the surface applies
+        here unchanged; a material contrast across the sheet is the
+        supported use).
+
+        Everything :func:`place_sheet` documents holds: the sheet may run
+        PAST the domain (it is clipped against the mesh's own boundary,
+        and an outcrop trace is labelled ``<name>_trace``); ``setback``
+        stops it short as a BLIND fault with the would-be intersection
+        returned in ``child._surface_info["surface_trace"]``; ``size``
+        re-triangulates the sheet to match the mesh it cuts.
+
+        Parameters
+        ----------
+        points, triangles : array_like
+            The sheet: ``(N, 3)`` vertices and ``(M, 3)`` triangle
+            indices. Explicit arrays rather than an object, because a
+            sheet is DATA — a slab model, an authored parameter-space
+            triangulation — whose connectivity must be embedded verbatim
+            (:class:`~underworld3.meshing.FaultSurface` re-derives its
+            triangulation, so it cannot carry an authored one).
+        name : str
+            Becomes a boundary of the returned mesh, so a solver can
+            resolve the facets by name and :meth:`cells_supporting`
+            marks the fault zone.
+        clearance, setback, size, verbose
+            Passed through to :func:`place_sheet`.
+        mg_coarsening_ratio : float
+            As in :meth:`add_conforming_surface`: the cut replaces this
+            mesh in the tail unless it is genuinely finer.
+
+        Returns
+        -------
+        Mesh
+            A new mesh; this one is not modified. Placement metadata is
+            on ``child._surface_info``. Call again on the result to add
+            another sheet — a network is built one branch at a time.
+
+        See Also
+        --------
+        add_conforming_surface : the 2-D form.
+        add_fault : cut AND split, for a velocity discontinuity.
+        cells_supporting : the fault zone of the labelled facets.
+        """
+        from underworld3.utilities.place_surface import place_sheet
+
+        if self.dim != 3:
+            raise NotImplementedError(
+                "add_conforming_sheet is 3-D; in 2-D use "
+                "add_conforming_surface.")
+
+        boundaries = self._boundaries_with(name)
+        cut_dm, info = place_sheet(
+            self.dm, points, triangles, label=name,
+            label_value=boundaries[name].value, clearance=clearance,
+            verbose=verbose, setback=setback, size=size)
+        return self._adopt_cut_child(cut_dm, boundaries, info,
+                                     mg_coarsening_ratio, verbose)
 
     def add_fault(self, faults, verbose=False):
         """Cut AND split one or more faults; return the split mesh.
@@ -7899,7 +8137,10 @@ class Mesh(Stateful, uw_object):
         fault is one open polyline with both tips strictly inside the
         domain; segments must not share vertices, so branches and
         crossings are represented as OFFSET segments (a one-to-two-cell
-        ligament). The result is standalone — no geometric-MG tail, since
+        ligament). The result inherits a MESH-OWNED geometric-MG tail (the
+        parent's coarse levels, the cut mesh finest — a cut is the same
+        grid re-represented); a parent without one yields a standalone
+        mesh — no tail, since
         the coarse levels do not carry the fault (see
         :meth:`add_conforming_surface`); solvers take their
         algebraic-multigrid defaults.
@@ -7908,7 +8149,23 @@ class Mesh(Stateful, uw_object):
         and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
         """
         from underworld3.utilities.fault_split import add_fault
-        return add_fault(self, faults, verbose=verbose)
+        child = add_fault(self, faults, verbose=verbose)
+        # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
+        # re-represents the same grid with the surface conformed (finer only
+        # by the duplicated vertices), so the parent's coarse levels serve
+        # unchanged with the cut mesh as the finest level — the coarse
+        # levels do not need the fault (#620/#629). Without this every
+        # solver on a split mesh fell to GAMG unless it called
+        # set_custom_fmg by hand. The FAC zone is NOT inherited: a split
+        # fault needs no patch (the keying ruling).
+        own_tail = getattr(self, "_custom_mg_coarse_meshes", None)
+        if (own_tail is not None
+                and getattr(child, "_custom_mg_coarse_meshes", None) is None):
+            child._custom_mg_coarse_meshes = list(own_tail)
+            child._custom_mg_builder = getattr(self, "_custom_mg_builder",
+                                               "barycentric")
+            child._custom_mg_fac_zone = None
+        return child
 
 
     def adapt(self, metric_field, max_levels=None, node_budget=None,
@@ -8365,14 +8622,14 @@ class Mesh(Stateful, uw_object):
                     arr[mask] = s.restore(arr[mask])
                     snapped_any |= mask
             dm.setCoordinatesLocal(vec)
+            # A snap moves boundary vertices by the chord sagitta
+            # (~h²/8R); on a base coarse enough that h ≈ R this could
+            # invert a sliver silently. Fail loudly instead: no cell
+            # incident to a snapped vertex may flip orientation.
+            flipped = 0
             if snapped_any.any():
-                # A snap moves boundary vertices by the chord sagitta
-                # (~h²/8R); on a base coarse enough that h ≈ R this could
-                # invert a sliver silently. Fail loudly instead: no cell
-                # incident to a snapped vertex may flip orientation.
                 cs_, ce_ = dm.getHeightStratum(0)
                 vS_, vE_ = dm.getDepthStratum(0)
-                flipped = 0
                 for c in range(cs_, ce_):
                     vs = [p - vS_ for p in dm.getTransitiveClosure(c)[0]
                           if vS_ <= p < vE_]
@@ -8383,16 +8640,22 @@ class Mesh(Stateful, uw_object):
                     if (numpy.sign(numpy.linalg.det(e0))
                             != numpy.sign(numpy.linalg.det(e1))):
                         flipped += 1
-                if uw.mpi.size > 1:
-                    from mpi4py import MPI as _MPI
-                    flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
-                if flipped:
-                    raise RuntimeError(
-                        f"adapt: snapping boundary vertices to the analytic "
-                        f"surfaces inverted {flipped} cell(s) — the base mesh "
-                        "is too coarse for the boundary curvature (chord "
-                        "sagitta ~ cell size). Refine the base mesh or adapt "
-                        "without registered bounding surfaces.")
+
+            # The count is rank-local, so the REDUCTION must be reached
+            # unconditionally: a rank whose partition holds no vertex on a
+            # registered surface has an all-False `snapped_any`, and guarding
+            # the reduction on it starves the peers that are already in it
+            # (#627).
+            if uw.mpi.size > 1:
+                from mpi4py import MPI as _MPI
+                flipped = uw.mpi.comm.allreduce(flipped, op=_MPI.SUM)
+            if flipped:
+                raise RuntimeError(
+                    f"adapt: snapping boundary vertices to the analytic "
+                    f"surfaces inverted {flipped} cell(s) — the base mesh "
+                    "is too coarse for the boundary curvature (chord "
+                    "sagitta ~ cell size). Refine the base mesh or adapt "
+                    "without registered bounding surfaces.")
 
         # Refine from the mesh's CURRENT geometry. Node redistribution
         # (redistribute_nodes) moves mesh.dm's coordinates while the static
@@ -8593,12 +8856,28 @@ class Mesh(Stateful, uw_object):
             # so fewer edges are independent per pass.
             n_pass = 8 * dim * max_levels
             current_dm = base_finest
+            _pct5_of_dm = {}
             for level in range(n_pass):
                 centroids, _proxy_h, cs = cell_geometry(current_dm)
+                # The topology tables are read ONCE per pass and shared
+                # with the split — the per-cell closure walk is the
+                # loop's dominant cost and was paid twice (#610). The
+                # metric goes through marking_metric: the "nobody has
+                # cells" verdict is COLLECTIVE (rank-local branching on
+                # the raw metric is the np>1 deadlock class).
+                _edge_tables = None
                 M = marking_metric(centroids)
                 if M is not None and centroids.shape[0]:
                     h_target = 1.0 / numpy.sqrt(M)
-                    diameter = edge_split.cell_diameters(current_dm)
+                    diameter, _edge_tables = edge_split.cell_diameters(
+                        current_dm, return_tables=True)
+                    # The marking pass has just measured this dm; the MG
+                    # level selection re-derives the same 5th percentile
+                    # per retained generation, so it is cached here
+                    # rather than re-walking every level's topology.
+                    _pct5_of_dm[id(current_dm)] = (
+                        float(numpy.percentile(diameter, 5))
+                        if diameter.size else float("inf"))
                     sel = numpy.where(diameter > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
                         order = numpy.argsort(M[sel])[::-1]
@@ -8609,7 +8888,7 @@ class Mesh(Stateful, uw_object):
                 marked = [int(cs + j) for j in sel]
                 _coarse_for_P = current_dm
                 current_dm, n_split = edge_split.bisect_longest_edges(
-                    current_dm, marked)
+                    current_dm, marked, tables=_edge_tables)
                 # n_split is global, so this stop is collective without a further
                 # reduction — a rank with nothing marked still enters the split.
                 if n_split == 0:
@@ -8643,9 +8922,14 @@ class Mesh(Stateful, uw_object):
                         uw.pprint(0, f"[adapt] edge_split pass {level}: repaired "
                                      f"with {n_flips} flip(s)")
                 else:
-                    _nested_parent_cells.append(
-                        None if _vP is None
-                        else _nested_parents(_coarse_for_P, current_dm, _vP))
+                    # Parent maps are DEFERRED to the retained MG levels:
+                    # the subsampler discarded every per-pass map whose
+                    # span was more than one pass, so building ~76 of
+                    # them to keep 3-4 was almost entirely wasted work —
+                    # and the retained multi-pass spans now get EXACT
+                    # parents from the composed vertex transfer instead
+                    # of falling back to the geometric builder.
+                    _nested_parent_cells.append(None)
                 snap_level_boundaries(current_dm)
                 if _relax_mode == "per-generation":
                     _mg = Mesh(current_dm.clone(),
@@ -8836,7 +9120,9 @@ class Mesh(Stateful, uw_object):
         if level_dms:
             level_dms, _nested_Ps, _nested_parent_cells = self._subsample_mg_levels(
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
-                ratio=mg_coarsening_ratio, verbose=verbose)
+                ratio=mg_coarsening_ratio, verbose=verbose,
+                resolution_hint=(_pct5_of_dm if engine == "edge_split"
+                                 else None))
 
         # Exact per-generation prolongations when the engine could supply them
         # (cell-list path). Empty for the native transform path, which falls
@@ -8875,7 +9161,8 @@ class Mesh(Stateful, uw_object):
     _MG_RATIO_SLACK = 0.9      # a step of 1.92 counts as a doubling
 
     def _subsample_mg_levels(self, base_finest, level_dms, nested_Ps,
-                             nested_parent_cells, ratio=2.0, verbose=False):
+                             nested_parent_cells, ratio=2.0, verbose=False,
+                             resolution_hint=None):
         """Keep one multigrid level per DOUBLING OF RESOLUTION, not one per pass.
 
         A refinement engine takes as many passes as it needs to reach the size
@@ -8915,10 +9202,16 @@ class Mesh(Stateful, uw_object):
 
             A low percentile rather than the strict minimum, so one thin cell
             cannot declare a level; reduced with MIN so the finest region counts
-            wherever it happens to live.
+            wherever it happens to live. A caller that already measured a
+            dm during its own pass loop supplies the value through
+            ``resolution_hint`` instead of paying a second topology walk.
             """
-            d = edge_split.cell_diameters(dm)
-            local = float(numpy.percentile(d, 5)) if d.size else float("inf")
+            if resolution_hint is not None and id(dm) in resolution_hint:
+                local = resolution_hint[id(dm)]
+            else:
+                d = edge_split.cell_diameters(dm)
+                local = (float(numpy.percentile(d, 5)) if d.size
+                         else float("inf"))
             return uw.mpi.comm.allreduce(local, op=min)
 
         # An engine lands near the target, not on it (1.92, 1.97, 2.19 measured),
@@ -8948,15 +9241,9 @@ class Mesh(Stateful, uw_object):
 
         composed, parent_cells = [], []
         start = 0
+        level_coarse = base_finest
         for i in keep:
             span = [P for P in nested_Ps[start:i + 1]]
-            # One generation -> the level IS that pass, so its parent-cell map
-            # still describes it. More -> no single parent per cell. Not every
-            # engine records the maps at all (the native transform and SBR paths
-            # do not), so a short list means "none for this level".
-            parent_cells.append(nested_parent_cells[i]
-                                if i == start and i < len(nested_parent_cells)
-                                else None)
             if any(P is None for P in span) or not span:
                 composed.append(None)
             elif len(span) == 1:
@@ -8968,6 +9255,26 @@ class Mesh(Stateful, uw_object):
                 for P in span[1:]:
                     M = _compose_prolongations(P, M)
                 composed.append(M)
+            # The parent-cell map, for the RETAINED pair only. A map the
+            # engine recorded per pass (a single-pass span) is used as
+            # recorded; otherwise it is derived from the composed vertex
+            # transfer — nested_cell_parents is topological through the
+            # transfer, and a descendant's referenced coarse vertices are
+            # all corners of its ancestor at any depth, so multi-pass
+            # spans now carry exact parents instead of None.
+            recorded = (nested_parent_cells[i]
+                        if i == start and i < len(nested_parent_cells)
+                        else None)
+            if recorded is not None:
+                parent_cells.append(recorded)
+            elif composed[-1] is not None:
+                from underworld3.utilities.nvb import (
+                    nested_cell_parents as _parents_of)
+                parent_cells.append(
+                    _parents_of(level_coarse, level_dms[i], composed[-1]))
+            else:
+                parent_cells.append(None)
+            level_coarse = level_dms[i]
             start = i + 1
 
         if verbose:
