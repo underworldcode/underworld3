@@ -31,6 +31,7 @@ import sys as _sys
 import io as _io
 import threading as _threading
 import time as _time
+import warnings as _warnings
 from contextlib import contextmanager as _contextmanager
 
 # Pre-import EVERYTHING the watchdog reporter thread can touch. The
@@ -415,6 +416,46 @@ class _Watchdog:
             flush=True,
         )
 
+        # The signal side is set up ONCE, here, rather than on every arm().
+        # `checkpoint()` re-arms and is meant to be cheap enough to leave in a
+        # production loop, and `signal.signal` refuses to run anywhere but the
+        # main thread -- so doing this per checkpoint would make a checkpoint
+        # from a worker thread raise, with `abort` on, which is CI's setting.
+        self._previous_sigalrm = None
+        self._handler_installed = False
+        if _INTERVAL_TIMER_AVAILABLE:
+            pending, _interval = _signal.getitimer(_signal.ITIMER_REAL)
+            if pending > 0.0:
+                _warnings.warn(
+                    f"the hang watchdog takes over ITIMER_REAL, and one was "
+                    f"already armed with {pending:.3g} s to run. That timer is "
+                    f"now cancelled. There is one interval timer per process, "
+                    f"so the watchdog and any other user of signal.alarm() or "
+                    f"setitimer(ITIMER_REAL) cannot both have it.",
+                    RuntimeWarning, stacklevel=3,
+                )
+            self._install_signal_handler()
+
+    def _install_signal_handler(self):
+        """Take SIGALRM, remembering what was there.
+
+        Separate from ``__init__`` because a watchdog can be disarmed and armed
+        again -- ``watching`` cancels the outer one and restores it on exit. A
+        resumed watchdog that moved the clock without re-registering would let
+        the next SIGALRM reach the disposition underneath, which for ``abort``
+        is SIG_DFL: the timer would silently kill the process instead of
+        dumping.
+        """
+        self._previous_sigalrm = _signal.getsignal(_signal.SIGALRM)
+        if self.abort:
+            # Dump, then let SIGALRM's default action terminate us. The handler
+            # chains, so the disposition underneath has to be the default one
+            # rather than whatever was there before.
+            _signal.signal(_signal.SIGALRM, _signal.SIG_DFL)
+        _faulthandler.register(_signal.SIGALRM, file=self.stream,
+                               all_threads=True, chain=self.abort)
+        self._handler_installed = True
+
     def arm(self, label=None, resume=False):
         # `resume` is the deliberate re-arm of a watchdog that was cancelled on
         # purpose -- restoring an outer one after a nested `watching` block.
@@ -443,15 +484,12 @@ class _Watchdog:
         # whichever thread receives it, and disarming is a syscall that cannot
         # wait on anything.
         if _INTERVAL_TIMER_AVAILABLE:
-            # `abort` has to work on a rank blocked inside MPI, where no
-            # Python-level handler runs, so it is done by the kernel too: the
-            # C handler dumps and then CHAINS to SIGALRM's default action,
-            # which is to terminate. Without abort there is nothing to chain
-            # to and the dump simply repeats.
-            if self.abort:
-                _signal.signal(_signal.SIGALRM, _signal.SIG_DFL)
-            _faulthandler.register(_signal.SIGALRM, file=self.stream,
-                                   all_threads=True, chain=self.abort)
+            # Normally only the clock -- one syscall, safe from any thread,
+            # because the handler went in when the watchdog was built. A
+            # RESUMED watchdog has had its handler removed by the cancel that
+            # suspended it, so it goes back first.
+            if not self._handler_installed:
+                self._install_signal_handler()
             _signal.setitimer(_signal.ITIMER_REAL, self.seconds, self.seconds)
         self._rearm_timer()
 
@@ -472,6 +510,16 @@ class _Watchdog:
         if _INTERVAL_TIMER_AVAILABLE:
             _signal.setitimer(_signal.ITIMER_REAL, 0.0, 0.0)
             _faulthandler.unregister(_signal.SIGALRM)
+            self._handler_installed = False
+            # Leave the process's signal state as it was found. unregister()
+            # restores whatever was installed when register() ran, which for
+            # `abort` is the SIG_DFL we put there ourselves, so the caller's
+            # own handler has to be put back explicitly. signal.signal only
+            # runs on the main thread; a disarm from elsewhere leaves the
+            # handler in place, which is inert once the timer is off.
+            if (self._previous_sigalrm is not None
+                    and _threading.current_thread() is _threading.main_thread()):
+                _signal.signal(_signal.SIGALRM, self._previous_sigalrm)
         if self.timer is not None:
             self.timer.cancel()
             self.timer = None
