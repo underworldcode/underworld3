@@ -71,15 +71,30 @@ stokes.add_nitsche_bc(0.0, "Fault", direction=fault_normal, gamma=10)
 at 1e4 gives 0.15%).
 
 
-### 2. Penalty Free-Slip (Simple but Fragile)
-
-Use the mesh-derived normals directly with a penalty parameter:
+### 2. Penalty Free-Slip (Simple, and Only With the Node Normal)
 
 ```python
-Gamma = mesh.Gamma
+n = mesh.boundary_normal("Boundary")     # measure-weighted node normal
 penalty = 10000
-stokes.add_natural_bc(penalty * Gamma.dot(v.sym) * Gamma, "Boundary")
+stokes.add_natural_bc(penalty * n.dot(v.sym) * n, "Boundary")
 ```
+
+**Use `mesh.boundary_normal(boundary)`, not `mesh.Gamma`.** A penalty written
+against the per-facet normal asks a node shared by two facets to satisfy two
+different constraints, which on a two-component velocity leaves nothing: push
+the coefficient up and the boundary freezes. Measured on an annulus with an
+exact solution (Kramer et al. 2021), coefficient `1e6`, cell 0.15 → 0.035:
+
+| normal | leak `u·n` | velocity error | surface stress error |
+|---|---|---|---|
+| `mesh.Gamma` (facet) | 1e-5 | 0.60, flat under refinement | 0.21 → 0.26, growing |
+| `mesh.boundary_normal` (node) | 3e-5 | 1.0e-2 → 4.9e-4 | 2.4e-2 → 1.4e-3 |
+
+The facet-normal row does not converge, and the leak cannot see it: at `1e3` that
+penalty leaks 3e-2 and gets the surface stress right to 2e-3, while at `1e8` it
+leaks 1e-7 and is 26% wrong. This is the classical over-constraint that the
+*consistent* normal was introduced to avoid (Engelman, Sani & Gresho 1982), and
+`mesh.boundary_normal` is that normal.
 
 **When to use:**
 - Quick prototyping where high accuracy isn't critical
@@ -88,12 +103,16 @@ stokes.add_natural_bc(penalty * Gamma.dot(v.sym) * Gamma, "Boundary")
 **Limitations:**
 - Penalty must be tuned: too small → loose constraint, too large → ill-conditioning
 - On spherical shells, penalty can become unstable at moderate resolution
-- ~25-30% error on elliptical boundaries when using raw facet normals
+- Check the answer, not just the leak: a constraint that is satisfied is not
+  evidence that the solution is right
 
 
-### 3. Projected Normals (For Curved Boundaries with Penalty)
+### 3. Projected Normals (Superseded by `mesh.boundary_normal`)
 
-Project `mesh.Gamma` onto a continuous mesh variable, which interpolates and smooths the normals:
+`mesh.boundary_normal(boundary)` assembles the measure-weighted node normal
+directly, tracks mesh deformation, and is correct in parallel, so the recipe
+below is kept for reference rather than recommended. Project `mesh.Gamma` onto a
+continuous mesh variable, which interpolates and smooths the normals:
 
 ```python
 import sympy

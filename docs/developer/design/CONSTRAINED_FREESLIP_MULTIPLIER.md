@@ -2,8 +2,24 @@
 
 **Status**: shipped as `uw.systems.Stokes_Constrained` (serial). The constraint
 is enforced by a multiplier carried **inside** the saddle point (one coupled
-solve); the converged boundary multiplier is the normal traction = dynamic
-topography. An earlier augmented-Lagrangian **outer-loop** variant was removed in
+solve); the converged boundary traction is `λ + r(n·u − g)`, which is the dynamic
+topography, and it is returned by `traction()` / `topography()`.
+
+> **Correction, 2026-08-19.** This document said in several places that `λ` alone
+> is the normal traction and that the augmentation `r` is a pure speed knob. Both
+> are true only in the exact limit. Discretely the constraint row is satisfied to
+> the solver's tolerance and `r` multiplies that residual back into the traction,
+> so `λ` is short by `r(n·u − g)`. With the viscosity-weighted default
+> `r = 1e4·μ(x)` the omitted share is a few per cent of the surface traction on a
+> uniform-viscosity annulus, and across SolCx's `1e6` viscosity step it is most of
+> it — `λ` alone reads a tenth of the exact topography and is *anti-correlated*
+> with it. `traction()` and `topography()` now return the sum; `multiplier()`
+> still returns `λ`. See underworld3#607 and
+> `tests/test_1063_constrained_traction.py`.
+>
+> Why the existing validation did not catch it: it scored `corr(λ, −n·σ·n) ≈
+> 0.9999`. A correlation is scale-free and cannot see a systematic amplitude
+> deficit, which is exactly what a missing share of the load is. An earlier augmented-Lagrangian **outer-loop** variant was removed in
 favour of this in-saddle formulation (it is straightforward to reproduce in
 Python if needed). Validated against the exact SolCx analytic solution
 (`tests/test_1062_constrained_solcx.py`).
@@ -19,9 +35,9 @@ is ~100× too weak at Ra=1e6); too strong and the system ill-conditions and the
 Stokes solve diverges in line search.
 
 This feature enforces `u·n = g` on a curved boundary with a **true Lagrange
-multiplier** `λ` instead of a penalty. Because the converged multiplier *is* the
-normal traction holding the boundary, it is simultaneously a direct estimate of
-**dynamic surface topography**, `h = λ / (Δρ g)`. The equilibrium `λ` is also the
+multiplier** `λ` instead of a penalty. Because the converged boundary term *is*
+the normal traction holding the boundary, it is simultaneously a direct estimate
+of **dynamic surface topography**, `h = (λ + r(n·u − g)) / (Δρ g)`. The equilibrium `λ` is also the
 target end-state toward which a free surface can be integrated over a time
 interval (connecting to the ETD free-surface work on
 `feature/exp-integrator-freesurface`).
@@ -104,9 +120,10 @@ topo = stokes.topography("Upper", buoyancy_scale=delta_rho_g)   # h = lambda/(dr
 ```
 
 `solve()` does **one coupled solve** — no outer iteration or constraint tuning.
-The augmentation defaults to `1e4·μ(x)` (local-viscosity-weighted); accuracy is
-independent of it (the λ-row carries the exact constraint), so no per-problem
-tuning is needed.
+The augmentation defaults to `1e4·μ(x)` (local-viscosity-weighted). The
+CONSTRAINT is independent of it (the λ-row carries the exact constraint), so no
+per-problem tuning is needed, and so is the traction read through `traction()` /
+`topography()`. The bare `λ` is NOT: it is short by `r(n·u − g)`.
 
 Key design points:
 
@@ -139,15 +156,27 @@ Two regression tests cover the shipped solver:
   **exact analytic** solution: velocity `rel ≈ 8.7e-6` (== the Dirichlet
   baseline), constraint `RMS(u·n) ≈ 1.6e-10`.
 
-The consistent-boundary-flux identity `λ = −n·σ·n|_Γ` is the independent
-cross-check: the multiplier's boundary trace equals the recovered normal Cauchy
-stress (negative sign = the reaction traction holding the boundary), confirming
-`λ` is the dynamic topography signal.
+The consistent-boundary-flux identity is the independent cross-check, and it is
+an identity for the WHOLE boundary term rather than for `λ`:
+
+```
+M_Γ (λ + r(n·u − g)) = −(A·u − b)|_Γ        (the CBF nodal load)
+```
+
+so `λ + r(n·u − g)` is the CBF traction de-smeared by the boundary mass — the
+same computation `boundary_normal_traction` performs on a rotated constraint,
+arrived at by carrying the traction as an unknown instead of reading it out of
+the residual. Measured on SolCx at a `1e6` contrast, the corrected multiplier
+gives relative `l2` 0.047 against the exact topography where `λ` alone gives 1.04.
+
+A third test, `tests/test_1063_constrained_traction.py`, guards this with the
+bare multiplier as its negative control.
 
 ## The augmentation parameter `r`: true-work trade-off
 
-`r` is a *speed* knob, not an *accuracy* knob — this is the key advantage over a
-pure penalty, and it carries over to the in-saddle solver (accuracy is
+`r` is a *speed* knob for the CONSTRAINT, not an accuracy knob — this is the key
+advantage over a pure penalty, and it carries over to the in-saddle solver
+(accuracy is
 `r`-independent; `r` only sets the iteration count). The sweep table below is from
 the **historical outer-loop** variant (its "outer iterations" have no analogue in
 the one-shot coupled solve), but the shape and the conclusion stand. For the

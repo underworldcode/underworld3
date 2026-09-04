@@ -3126,9 +3126,17 @@ class SolverBaseClass(uw_object):
                     gvec.restoreSubVector(self._subdict[name][0], sgvec)
             else:
                 _names, _iss, _subdms = self.dm.createFieldDecomposition()
-                sgvec = gvec.getSubVector(_iss[0])
-                _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
-                gvec.restoreSubVector(_iss[0], sgvec)
+                try:
+                    sgvec = gvec.getSubVector(_iss[0])
+                    try:
+                        _subdms[0].localToGlobal(self.Unknowns.u.vec, sgvec)
+                    finally:
+                        gvec.restoreSubVector(_iss[0], sgvec)
+                finally:
+                    for _is in _iss:
+                        _is.destroy()
+                    for _subdm in _subdms:
+                        _subdm.destroy()
 
             self.dm.globalToLocal(gvec, xlocal)
 
@@ -3168,11 +3176,12 @@ class SolverBaseClass(uw_object):
         number); for a **vector** solver the traction :math:`\sigma\cdot\hat n` (pass
         ``normal`` to get the scalar normal component :math:`\hat n\cdot\sigma\cdot\hat n`).
 
-        ``mass`` de-smears the nodal reaction with ``"lumped"`` or ``"consistent"``
-        boundary mass. ``"auto"`` (default) selects lumped recovery for 2D P1/P2
-        traces and 3D P1 triangles, and the consistent solve for 3D P2 triangles and
-        2D traces of degree >= 3 (where row-sum lumping is respectively invalid and
-        only O(h) pointwise).
+        ``mass`` de-smears the nodal reaction with ``"lumped"``, ``"consistent"``,
+        ``"p1"`` or ``"midpoint"`` boundary mass. ``"auto"`` (default) selects lumped
+        recovery for 2D P1/P2 traces and 3D P1 triangles, MIDPOINT-RECONSTRUCTED
+        recovery for 3D P2 triangles (row-sum lumping is invalid there and the
+        consistent solve amplifies at vertices — #633), and the consistent solve for 2D
+        traces of degree >= 3 (where lumping is only O(h) pointwise).
         ``remove_mean`` subtracts the boundary mean — leave ``False`` for a physical
         flux (the mean is the Nusselt number); ``True`` gives a gauge-free field.
 
@@ -6085,19 +6094,21 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
 
-        # The outer Krylov must be FLEXIBLE, because both sub-blocks below are
-        # themselves Krylov solves run to a tolerance. Inside the Schur
-        # factorisation the velocity sub-solve computes the search direction, so
-        # the operator the outer method applies differs from one outer iteration
-        # to the next, and plain GMRES's residual recurrence assumes it does not.
-        # PETSc's default is `gmres`, and that default is invisible on easy
-        # problems -- isoviscous SolKz converges in two outer iterations -- and
-        # expensive on hard ones: on the Spiegelman notch at refinement 3, 983
-        # velocity iterations per step and DIVERGED_LINEAR_SOLVE, against 58 for
-        # fgmres and 23 with a loosened inner tolerance. Raising the velocity
-        # iteration cap changes nothing (byte-identical residuals), so the failure
-        # is inconsistency rather than too few iterations. See #576.
-        self.petsc_options["ksp_type"] = "fgmres"
+        # The OUTER Krylov must be FLEXIBLE: both sub-blocks below are
+        # themselves Krylov solves run to a tolerance, so the operator the
+        # outer method applies differs from one outer iteration to the next
+        # and plain GMRES's residual recurrence does not hold — the
+        # velocity-block FGMRES reasoning (#147), one level up. PETSc's
+        # default is `gmres`; invisible on easy problems (isoviscous SolKz
+        # converges in two outer iterations), ruinous on hard ones: 14,400
+        # inner iterations / ~540 s on an 85k-cell contrast problem for both
+        # velocity preconditioners (#624), and on the Spiegelman notch at
+        # refinement 3, 983 velocity iterations per step and
+        # DIVERGED_LINEAR_SOLVE against 58 for fgmres — raising the velocity
+        # cap changes nothing (byte-identical residuals), so the failure is
+        # inconsistency, not iteration count (#576). Managed, so an explicit
+        # user ksp_type still wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -6453,13 +6464,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         :meth:`solve`.
 
         ``mass="auto"`` (default) uses lumped recovery for 2D traces and 3D P1
-        triangles, and the consistent surface-mass solve for 3D P2 triangles.
-        Explicit ``"lumped"`` and ``"consistent"`` choices remain available where
-        mathematically valid, and ``"p1"`` selects P1-PROJECTED recovery on a 3D
-        P2 trace (edge-midpoint loads folded onto vertices, lumped P1 triangle
-        mass — sound where the consistent P2 path carries the vertex-integral
-        checkerboard; the FreeSurface default in 3D). Three-dimensional recovery
-        currently supports triangular P1/P2 traces only.
+        triangles, and MIDPOINT-RECONSTRUCTED recovery for 3D P2 triangles (the
+        consistent solve, keeping its superconvergent midpoints, with vertices rebuilt
+        from them). ``"p1"`` selects the simpler P1-projected recovery; explicit
+        ``"lumped"`` and ``"consistent"`` remain available where mathematically valid;
+        ``"consistent"`` is pointwise-exact on a P2 trace in exact arithmetic but
+        its zero vertex row sums amplify any load perturbation at VERTICES by O(1),
+        independently of h (#404, measured in #633). Three-dimensional recovery
+        currently supports triangular P1/P2 traces only (#637).
 
         .. warning::
            On CURVED boundaries, P2 vertex values of :math:`\sigma_{nn}` converge
@@ -6484,8 +6496,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         interior left untouched.
 
         ``buoyancy_scale`` is :math:`\Delta\rho\,g` (traction → length).
-        ``mass="auto"`` selects lumped recovery where valid and the consistent
-        surface-mass solve for 3D P2 triangles. Requires a prior
+        ``mass="auto"`` selects lumped recovery where valid and
+        midpoint-reconstructed recovery for 3D P2 triangles. Requires a prior
         :meth:`add_rotated_freeslip_bc` on ``boundary`` and a completed :meth:`solve`.
 
         .. warning::
@@ -7017,9 +7029,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.petsc_options["snes_ksp_ew"] = None
         self.petsc_options["snes_ksp_ew_version"] = 3
 
-        # Flexible for the same reason as in __init__ (#576): the sub-blocks are
-        # inexact Krylov solves, so the outer operator varies between iterations.
-        self.petsc_options["ksp_type"] = "fgmres"
+        # Flexible for the same reason as in __init__ (#576/#624): the
+        # sub-blocks are inexact Krylov solves, so the outer operator varies
+        # between iterations. Managed, so an explicit user ksp_type wins.
+        self._push_managed_option("ksp_type", "fgmres")
 
         self.petsc_options["pc_type"] = "fieldsplit"
         self.petsc_options["pc_fieldsplit_type"] = "schur"
@@ -8124,8 +8137,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # u-row residual:  fn_f = h·n  +  r(n·u − g)·n
             # The r-term is the augmented-Lagrangian penalty: it adds a uu
             # boundary stiffness r·(n⊗n) that conditions the Schur complement
-            # but does NOT bias the multiplier (the h-row stays the exact
-            # constraint, so h still converges to the true normal traction).
+            # but does not change what the constraint ENFORCES (the h-row stays
+            # the exact constraint). It does change what h IS: the traction is
+            # h + r(n.u - g), and only the sum is r-independent. Stokes_Constrained
+            # .traction() / .topography() return that sum; .multiplier() returns h.
             fn_f = sympy.Matrix(
                 [(hsym + r_sym * (u_dot_n - g_sym)) * n_row[i] for i in range(dim)]
             ).as_immutable()

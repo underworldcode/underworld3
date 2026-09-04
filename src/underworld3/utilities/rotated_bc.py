@@ -425,7 +425,44 @@ def build_rotation(solver, boundaries, datum_specs=None):
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
-        if any(g < 0 for g in grows):
+        free = [c for c in range(dim) if grows[c] >= 0]
+        if not free:                             # every component pinned already
+            continue
+        if len(free) < dim:
+            # PARTIALLY CONSTRAINED NODE — a rotated wall meeting an essential one.
+            # Some components are constrained out of the global vector (g < 0) and
+            # the rest are free. This used to `continue`, which left the wall-normal
+            # component UNCONSTRAINED at those nodes: the wall leaked at its own end
+            # points while every interior node was exact. Measured on a unit box with
+            # a rotated lid and component free slip on the other three walls,
+            # max|u_y| on the lid was 4.0e-3 against |u|max 2.5e-2 — 16%, entirely at
+            # the two corners — and the solve differed from the equivalent component
+            # Dirichlet lid by 2e-3 globally, with an exact linear solve on both
+            # sides (issue #616; the corner reaction of #608 is the same node).
+            #
+            # The constraint is still imposable on what is left: with the pinned
+            # components held at zero, n̂·v = 0 reduces to n̂_F·v_F = 0 on the free
+            # subspace F. Build the frame there and constrain its normal rows.
+            if q in node_dspec:
+                # A prescribed v_n datum at such a node needs the pinned components'
+                # values to reduce the affine constraint, which are not read here.
+                # Preserve the previous behaviour rather than impose the wrong datum.
+                _warn_once_partial_datum()
+                continue
+            Mf = np.array(nrms, dtype=float)[:, free]
+            scale = float(np.linalg.norm(np.array(nrms, dtype=float)))
+            if float(np.linalg.norm(Mf)) <= 1e-12 * max(scale, 1.0):
+                # the normal lies entirely in the pinned subspace: already implied
+                continue
+            rows = [grows[c] for c in free]
+            if not (rstart <= rows[0] < rend):   # not owned by this rank → skip
+                continue
+            _, svf, Vtf = np.linalg.svd(Mf)
+            rf = int((svf > 1e-8 * (svf[0] if svf.size else 1.0)).sum())
+            for i in range(len(free)):
+                for j in range(len(free)):
+                    Q.setValue(rows[i], rows[j], float(Vtf[i, j]))
+            normal_rows.extend(rows[:rf])
             continue
         if not (rstart <= grows[0] < rend):      # not owned by this rank → skip
             continue
@@ -542,6 +579,21 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 if val != 0.0:
                     datum_map[grow0] = float(sgn * val)
     return Q, Qt, sorted(set(normal_rows)), datum_map
+
+
+_PARTIAL_DATUM_WARNED = [False]
+
+
+def _warn_once_partial_datum():
+    """A prescribed wall-normal datum at a node shared with an essential BC is not
+    reduced here, so that node keeps the pre-#616 behaviour (unconstrained). Say so
+    once rather than silently."""
+    if not _PARTIAL_DATUM_WARNED[0]:
+        _PARTIAL_DATUM_WARNED[0] = True
+        print("[rotated_bc] WARNING: a prescribed v_n datum sits on a node shared "
+              "with an essential BC; the wall-normal component is left free there "
+              "(the affine reduction against the pinned components is not "
+              "implemented). Free-slip nodes are unaffected.")
 
 
 def _zero_rows_local(vec, normal_rows):
@@ -1778,16 +1830,45 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 A_vv, P_vv = vel_pc.getOperators()
                 vel_pc.reset()
                 vel_pc.setOperators(A_vv, P_vv)
-                # coarse="svd": the Galerkin-coarsened ROTATED velocity block
-                # inherits every rigid-rotation nullspace mode of the constrained
-                # problem (a closed circle: one; a spherical shell: three), and
-                # the default redundant/LU coarse solve hits a zero pivot there
-                # (SUBPC_ERROR, outer reason -11). Everything else in the bundle
-                # is identical to the native and standard custom-P routes.
-                custom_mg._configure_pcmg(
-                    vel_pc, custom_Pl, coarse="svd",
-                    smoother=solver._mg_smoother_variant)
+                # coarse="svd" ONLY when the rotated problem carries VERIFIED
+                # null modes (nsp): the Galerkin-coarsened ROTATED velocity
+                # block inherits every rigid-rotation mode of the constrained
+                # problem (a closed circle: one; a spherical shell: three),
+                # and the redundant/LU coarse solve hits a zero pivot there
+                # (SUBPC_ERROR, outer reason -11). When there are NO null
+                # modes — Dirichlet walls, a split-fault contact box — the
+                # blanket SVD is pure cost: a 3-D P2 coarse level is a DENSE
+                # factorisation (measured: most of ~0.8 s per V-cycle
+                # application at healthy iteration counts, #622). Everything
+                # else in the bundle is identical to the native and standard
+                # custom-P routes.
+                # nsp alone cannot discriminate: it is non-None whenever the
+                # constant-PRESSURE mode is attached (enclosed domains), which
+                # says nothing about the velocity block. The recorded count of
+                # verified ROTATION modes does.
+                _coarse = ("svd"
+                           if getattr(solver, "_rotated_velocity_null_modes",
+                                      1 if nsp is not None else 0)
+                           else "redundant")
+                # FAC patch smoothing (#629): the hierarchy that built custom_Pl
+                # recorded each level's patch/halo rows; row numbering is the
+                # velocity-block reduced numbering on both paths, and the split
+                # is per-node so the per-node rotation Q does not disturb it.
+                _hier = (getattr(solver, "_custom_mg", None) or {}).get("hierarchy")
+                _fac_keys = custom_mg._configure_pcmg(
+                    vel_pc, custom_Pl, coarse=_coarse,
+                    smoother=solver._mg_smoother_variant,
+                    patch_rows=getattr(_hier, "level_patch_rows", None))
                 vel_pc.setUp()
+                # Force the FAC levels' smoother setup NOW: PCASM creates its
+                # sub-KSP (which reads mg_levels_<l>_sub_* from the DB) lazily
+                # at first application, which on this path is AFTER the key
+                # cleanup below — the sub options would silently never apply
+                # (measured: a sub_pc_type override had no effect).
+                for _l in range(1, vel_pc.getMGLevels()):
+                    if _fac_keys and any(k.startswith(f"mg_levels_{_l}_")
+                                         for k in _fac_keys):
+                        vel_pc.getMGSmoother(_l).setUp()
                 # The bundle went into the GLOBAL options DB under the velocity
                 # sub-PC's prefix, which is derived from `pfx` and so is unique to
                 # this solve — drop it again now it is consumed, as the `finally`
@@ -1795,8 +1876,10 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
                 vopts = PETSc.Options()
                 vpfx = vel_pc.getOptionsPrefix() or ""
                 for key in multigrid_options.geometric_mg_bundle(
-                        coarse="svd",
+                        coarse=_coarse,
                         smoother=solver._mg_smoother_variant).settings:
+                    vopts.delValue(vpfx + key)
+                for key in _fac_keys or ():
                     vopts.delValue(vpfx + key)
             # Constant-pressure nullspace on the Schur COMPLEMENT (enclosed
             # domains): the IS-built fieldsplit does not propagate the coupled
@@ -1922,12 +2005,20 @@ def _rotated_nullspace(solver, Q, normal_rows):
         vecs.append(pv)
     # rigid rotations (rotated), each only if it satisfies the constraints.
     # COLLECTIVE: all ranks walk the same mode list, same order.
+    n_rot = 0
     for tg in _rigid_rotation_modes(solver):
         if _mode_satisfies_constraints(solver, Q, normal_rows, tg):
             tr = tg.duplicate()                    # tr persists in the NullSpace
             Q.mult(tg, tr)
             vecs.append(tr)
+            n_rot += 1
         dm.restoreGlobalVec(tg)                    # tg transient → return to pool
+    # The VELOCITY-block null-mode count, recorded for the coarse-solve
+    # choice in _solve_rotated_iterative: only a rotation mode makes the
+    # Galerkin-coarsened velocity block singular (the constant-pressure
+    # mode lives in the pressure block), so only then is the SVD coarse
+    # solve required.
+    solver._rotated_velocity_null_modes = n_rot
     if not vecs:
         return None
     # Make every null-space vector EXACTLY compatible with the strong v_n=0
@@ -2045,16 +2136,27 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     σ_nn is the boundary-mass de-smear of R.
 
     ``mass`` selects the de-smear:
-      * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles, consistent for
-        3D P2 triangles.
+      * ``"auto"`` (default) — lumped for 2D traces and 3D P1 triangles,
+        MIDPOINT-RECONSTRUCTED for 3D P2 triangles.
       * ``"lumped"`` — the diagonal row-sum mass. It is monotone for supported traces,
         but invalid for 3D P2 triangles because their vertex row sums are exactly zero.
-      * ``"consistent"`` — the full trace mass. Pointwise-exact 3D P2 recovery, but
-        carries the vertex-integral checkerboard on P2 triangles (#404 hold).
+      * ``"consistent"`` — the full trace mass. Its 3D P2 MIDPOINT values are
+        superconvergent (0.1–1.5% on the Zhong l=2 shell at every penalty), and that is
+        the reason to choose it. Its VERTEX values are not usable: the zero vertex row
+        sums make M singular on constants there, so M⁻¹ amplifies any perturbation of
+        the load by O(1) independently of h (7.6% low at ``penalty=0``, 28% at 10,
+        79% at 100) — the vertex-integral checkerboard (#404), measured in #633.
       * ``"p1"`` — P1-PROJECTED recovery on a 3D P2 trace (edge-midpoint loads folded
-        onto vertices, lumped P1 triangle mass). Sound where the consistent P2 path
-        checkerboards; the FreeSurface default in 3D. On a P1 trace, identical to
-        ``"lumped"``.
+        onto vertices, lumped P1 triangle mass). Monotone and sound, but it discards the
+        superconvergent midpoints along with the unusable vertices. On a P1 trace,
+        identical to ``"lumped"``.
+      * ``"midpoint"`` — the ``"auto"`` choice on a 3D P2 trace (#633). The consistent
+        solve, keeping its superconvergent midpoint values, with the VERTEX values
+        reconstructed from them: on each facet the three midpoints determine a unique
+        linear function, so a vertex reads its two adjacent midpoints and subtracts the
+        opposite one, averaged over incident facets. Beats ``"p1"`` on worst-node error
+        at every resolution measured (h 0.25 → 0.11), by 1.8x to 4.9x. On a P1 trace,
+        identical to ``"lumped"``.
 
     Parallel-safe: r_c is scattered to a local vector (ghosts included) and read by LOCAL
     section offset. In 3D, coordinate-keyed reactions and boundary elements are gathered
@@ -2101,7 +2203,8 @@ def dynamic_topography_field(solver, boundary, solve_result, field,
     """Populate a scalar MeshVariable ``field`` with the dynamic topography
     :math:`h = -(\\sigma_{nn}-\\overline{\\sigma_{nn}})/(\\Delta\\rho\\,g)` on ``boundary``,
     recovered from the rotated-free-slip constraint reaction. ``mass="auto"`` uses
-    lumped recovery where valid and the consistent surface mass for 3D P2 triangles.
+    lumped recovery where valid and midpoint-reconstructed recovery for 3D P2
+    triangles.
     Interior nodes are left untouched. Returns ``field``.
 
     This is the hand-off to the free-surface machinery: the 3-number topography

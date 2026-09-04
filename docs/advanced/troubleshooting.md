@@ -50,3 +50,55 @@ everywhere.
 
 See the `Stokes.penalty` property docstring for the full description, and the
 `CONSTRAINED_FREESLIP_MULTIPLIER` design note for the derivation.
+
+## A long output path can segfault parallel HDF5 output (#645)
+
+**Symptom.** A native segmentation fault inside `mesh.write()` or
+`mesh.write_timestep()` on an HPC filesystem, with no Python traceback. The mesh,
+labels, fields, solve, MPI size and output calls are all valid, and the same script
+succeeds when only the output directory is renamed.
+
+**Cause.** The failure follows the *length of the full generated filename*, not the
+validity of the path. UW3 appends its own suffixes to whatever you pass — a mesh write
+becomes `output.mesh.00000.h5`, and a P2 velocity variable becomes
+`output.mesh.U.00000.h5` — so a descriptive case directory can push the complete path
+past what the native PETSc/HDF5/MPI-I/O stack tolerates.
+
+```{warning}
+This happens **well below** the advertised limits. In the reported case every path
+component was under `NAME_MAX` (255), the filesystem allowed `PATH_MAX=4096`, and PETSc
+was configured with `PETSC_MAX_PATH_LEN=4096`. A 286-character filename still crashed.
+```
+
+**Reported thresholds.** On Gadi (PETSc 3.25.4, HDF5 1.12.2p, Open MPI 4.1.7, MPI-enabled
+h5py 3.16.0, GPFS) a staged test failed at a **259-character** filename, and 252
+characters is the shortest length observed to fail on that stack. The exact first unsafe
+length was not established, so treat these as observations on one stack rather than a
+portable threshold. A macOS stack (PETSc 3.25.0, HDF5 1.14.6, Open MPI 5.0.10) did not
+reproduce the original failure, though the full threshold matrix was not repeated there.
+
+**What to do.**
+
+1. Keep the output root and the generated case identifier **compact**, especially on HPC.
+2. Put fixed configuration in HDF5 metadata or a metrics file rather than encoding every
+   parameter in the directory name. A directory named for the two or three parameters
+   that actually vary across a campaign is enough to tell runs apart.
+3. If output segfaults natively, **print the full generated filename first** — including
+   the UW3 suffixes — before investigating the mesh, the labels or the solver.
+
+Shortening the longest filename from 286 to 189 characters made an otherwise unchanged
+eight-rank benchmark pass end to end, and a subsequent 192-rank run at 1/64 resolution
+completed every mesh, Stokes, HDF5, XDMF and postprocessing stage.
+
+**One source of path growth has since been removed.** The snapshot backend used to
+expand `mesh.name` — which is the full source path for a mesh loaded from file — into
+every generated filename, so a 123-character mesh name became a 346-character output
+filename on its own. It now writes deterministic `mesh_0000` stems and calls native
+PETSc/HDF5 from the artifact directory using short relative names, keeping the original
+name in the wrapper metadata. Snapshot writes are therefore no longer a path-length
+amplifier.
+
+That fix does not make the advice above unnecessary. It covers the snapshot backend
+only: `Mesh.write_timestep()` and anything else that builds its own output filenames
+still passes whatever you give it straight through to the native stack, and the
+underlying limit — wherever it actually sits — has not moved.

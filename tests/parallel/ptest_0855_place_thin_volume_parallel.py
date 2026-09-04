@@ -187,6 +187,59 @@ def test_a_2d_outcrop_on_the_annulus_embeds_in_parallel():
     assert n_bare == 0, "the relabel left boundary edges without a label"
 
 
+def test_a_3d_outcrop_on_a_rotated_box_embeds_in_parallel():
+    """The general 3-D cap at np>=2: no wall axis-aligned.
+
+    The same mesh, rotation and patch as the serial
+    test_0860_outcrop_general_boundary_3d, so the trace count is a
+    partition-independence check against the serial value by suite. The
+    boundary complex is gathered from UNSHARED support-1 faces and sorted
+    canonically, so the frame masks, the collar and the info dict are
+    functions of the mesh, not of the partition.
+    """
+    comm = uw.mpi.comm
+    a, b = np.deg2rad(20.0), np.deg2rad(15.0)
+    Rz = np.array([[np.cos(a), -np.sin(a), 0.0],
+                   [np.sin(a), np.cos(a), 0.0], [0.0, 0.0, 1.0]])
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, np.cos(b), -np.sin(b)],
+                   [0.0, np.sin(b), np.cos(b)]])
+    R = Rz @ Rx
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),
+        cellSize=0.12, regular=False, qdegree=2)
+    vec = mesh.dm.getCoordinatesLocal()
+    vec.array[:] = (vec.array.reshape(-1, 3) @ R.T).reshape(-1)
+    mesh.dm.setCoordinatesLocal(vec)
+    patch = np.array([[0.3, 0.45, 1.1], [0.7, 0.45, 1.1],
+                      [0.72, 0.55, 0.55], [0.32, 0.55, 0.55]]) @ R.T
+    new, info = place_thin_volume(mesh.dm, [patch], width=0.05,
+                                  label="Zone", label_value=5)
+    assert info["n_zone_cells"] > 0
+    assert info["n_trace_facets"] > 0, "the zone left no trace"
+    assert _owned_label_count(new, "Zone", 5) == info["n_zone_cells"]
+    assert _owned_label_count(new, "Zone_skin", 5) == info["n_skin_faces"]
+    assert _owned_label_count(new, "Zone_trace", 5) > 0
+    gathered = comm.allgather(info)
+    assert all(g == gathered[0] for g in gathered)
+
+    # Every true boundary face still carries a wall label — the relabel
+    # restored the rotated wall's labels per removed face.
+    from underworld3.utilities.place_surface import _shared_point_flags
+    pStart, _pEnd = new.getChart()
+    shared = _shared_point_flags(new).astype(bool)
+    fS, fE = new.getHeightStratum(1)
+    walls = [new.getLabel(n)
+             for n in ("Top", "Bottom", "Left", "Right", "Front", "Back")]
+    n_bare = 0
+    for f in range(fS, fE):
+        if shared[f - pStart] or len(new.getSupport(f)) != 1:
+            continue
+        if all(w.getValue(f) < 0 for w in walls):
+            n_bare += 1
+    n_bare = int(comm.allreduce(n_bare, op=MPI.SUM))
+    assert n_bare == 0, "the relabel left boundary faces without a label"
+
+
 def test_2d_refusals_are_collective():
     """A ribbon stopping short of the wall refuses IDENTICALLY everywhere."""
     comm = uw.mpi.comm

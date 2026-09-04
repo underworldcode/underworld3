@@ -265,7 +265,10 @@ def QuarterAnnulus(
         Right = new_mesh.CoordinateSystem.unit_e_1
         Centre = None
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # boundary_normals deprecated — use mesh.Gamma inside integrands and BCs,
+    # or mesh.boundary_normal(boundary) for a per-boundary P1 normal field.
+    # NOT mesh.Gamma_P1: it is deprecated too, and off-kernel it falls back to
+    # a coordinate direction rather than a normal (#538).
 
     return new_mesh
 
@@ -537,7 +540,10 @@ def Annulus(
         Upper = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # boundary_normals deprecated — use mesh.Gamma inside integrands and BCs,
+    # or mesh.boundary_normal(boundary) for a per-boundary P1 normal field.
+    # NOT mesh.Gamma_P1: it is deprecated too, and off-kernel it falls back to
+    # a coordinate direction rather than a normal (#538).
 
     # Full annulus: rigid rotation about z-axis
     x, y = new_mesh.X
@@ -790,7 +796,10 @@ def SegmentofAnnulus(
         Upper = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # boundary_normals deprecated — use mesh.Gamma inside integrands and BCs,
+    # or mesh.boundary_normal(boundary) for a per-boundary P1 normal field.
+    # NOT mesh.Gamma_P1: it is deprecated too, and off-kernel it falls back to
+    # a coordinate direction rather than a normal (#538).
 
     return new_mesh
 
@@ -1120,7 +1129,10 @@ def AnnulusWithSpokes(
         )
         Centre = None
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # boundary_normals deprecated — use mesh.Gamma inside integrands and BCs,
+    # or mesh.boundary_normal(boundary) for a per-boundary P1 normal field.
+    # NOT mesh.Gamma_P1: it is deprecated too, and off-kernel it falls back to
+    # a coordinate direction rather than a normal (#538).
 
     # Full annulus with spokes: rigid rotation about z-axis
     x, y = new_mesh.X
@@ -1715,7 +1727,10 @@ def DiscInternalBoundaries(
         Internal = new_mesh.CoordinateSystem.unit_e_0
         Centre = None
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # boundary_normals deprecated — use mesh.Gamma inside integrands and BCs,
+    # or mesh.boundary_normal(boundary) for a per-boundary P1 normal field.
+    # NOT mesh.Gamma_P1: it is deprecated too, and off-kernel it falls back to
+    # a coordinate direction rather than a normal (#538).
 
     # Full disc with internal boundaries: rigid rotation about z-axis
     x, y = new_mesh.X

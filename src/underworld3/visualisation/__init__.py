@@ -24,5 +24,14 @@ from .visualisation import (
     swarm_to_pv_cloud,
 )
 
+# Principal-stress glyphs and stress trajectories (glyphs.py)
+from .glyphs import (
+    tensor_fn_to_pv_points,
+    principal_stress_glyphs,
+    direction_trajectories,
+    trajectories_to_pv_lines,
+    plot_stress_glyphs,
+)
+
 # Import parallel visualization utilities
 from . import parallel
