@@ -137,10 +137,105 @@ Published reference solvers, such as the Zhong et al. propagator-matrix method,
 belong in `uw.analytic`; their computed topography coefficients can be passed to
 the pure post-processing functions above.
 
-The rotated harmonic projector gathers boundary samples to rank zero and
-reconstructs their spherical triangulation. A future boundary-reaction
-functional could replace this step with a direct distributed finite-element
-projection without changing the coefficient API.
+`Stokes.boundary_normal_traction_integral(boundary, fn)` contracts an assembled
+normal-reaction load directly with a scalar test function over owned degrees of
+freedom, followed by reductions on the mesh communicator. It is useful whenever
+only an integrated or fitted traction diagnostic is required. It avoids
+pointwise recovery and global boundary reconstruction; consumers that need a
+nodal field should continue to use `boundary_normal_traction()` or
+`dynamic_topography()` and follow their curved-P2 guidance.
+
+## 4. Cylindrical-annulus gravity and geoid response
+
+The cylindrical API uses the unnormalised real Fourier basis
+`cos(n theta)`. For a sheet-density coefficient `sigma_n` at radius `r_s`,
+the convention is
+
+```text
+laplacian(Phi) = -4*pi*G*rho
+gravity = grad(Phi)
+Phi_n(r_s) = 2*pi*G*r_s*sigma_n/n
+```
+
+The coefficient varies as `(r/r_s)^n` inside the sheet and `(r_s/r)^n`
+outside it. These branches are regular toward the axis and decay at infinity.
+They apply for integer modes `n >= 1`. The axisymmetric `n=0` solution is
+logarithmic and requires an explicit potential gauge, so this API rejects it.
+
+When topography coefficients are already available, use the pure operator:
+
+```python
+response = uw.postprocessing.geoid.cylindrical_annulus_geoid_response(
+    radius_inner=1.22,
+    radius_outer=2.22,
+    wavenumber=2,
+    outer_topography_coefficient=-0.77,
+    inner_topography_coefficient=-0.32,
+    outer_density_contrast=0.06,
+    inner_density_contrast=0.09,
+    outer_reference_gravity=1.7,
+    inner_reference_gravity=2.4,
+    internal_load_radius=2.0,
+    internal_surface_density_coefficient=0.027,
+    gravitational_constant=0.1,
+)
+```
+
+Potential and topography keep their physical signs; geoid is returned as
+`Phi_n/g_reference` independently at both boundaries. Radii, topography,
+sheet density, gravity, and the gravitational constant may be dimensional or
+nondimensional, but every input must use one consistent unit system. Density
+contrast is defined as the smaller-radius density minus the larger-radius
+density, so positive outward topography creates sheet density
+`Delta_rho*h`.
+
+Self-gravity solves the two-boundary coefficient equation
+
+```text
+(I - Q G_n) h_self_gravity = h + Q phi_load
+Q = diag(1/g_outer, 1/g_inner)
+```
+
+with `cylindrical_annulus_self_gravity_response()`. Explicit feedback factors
+can disable either row or represent another signed convention.
+
+For a completed two-dimensional rotated-free-slip Stokes solve, the adapter
+recovers the wall reactions, defines
+`h=-reaction_nn/signed_buoyancy_scale`, and performs the Fourier projection:
+
+```python
+response = (
+    uw.postprocessing.geoid.cylindrical_annulus_response_from_rotated_stokes(
+        stokes=stokes,
+        radius_inner=1.22,
+        radius_outer=2.22,
+        wavenumber=2,
+        outer_density_contrast=0.06,
+        inner_density_contrast=0.09,
+        outer_reference_gravity=1.7,
+        inner_reference_gravity=2.4,
+        outer_buoyancy_scale=1.0,
+        inner_buoyancy_scale=-1.0,
+        include_self_gravity=True,
+    )
+)
+```
+
+The Stokes adapter contracts the assembled reaction directly with
+`cos(n theta)` through `boundary_normal_traction_integral()`. The coefficient is
+normalised by the matching `BdIntegral` of `cos(n theta)**2`, so its numerator
+and denominator use the same faceted finite-element boundary geometry. The
+calculation counts owned reaction degrees of freedom and reduces on the mesh
+communicator; it does not recover pointwise traction, sort samples by angle, or
+gather a global boundary on rank zero. This construction remains valid on a
+deformed boundary, where the fitted coefficient is weighted by the actual
+finite-element boundary measure.
+
+`cylindrical_cosine_boundary_coefficient()` remains available for external
+sampled data on a mathematical circle; it is not used for finite-element
+reaction loads. The coefficient kernel follows Simons (1996), Appendix B.
+Complete Kramer--Simons finite-element convergence and physical-space Poisson
+comparisons remain in the separate mantle-convection benchmark repository.
 
 ## See also
 

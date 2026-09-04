@@ -2198,6 +2198,89 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
                         remove_mean=True, partial_reaction=False)
 
 
+def boundary_normal_traction_integral(solver, boundary, solve_result, fn,
+                                      remove_mean=True):
+    r"""Return ``integral((sigma_nn - mean) * fn, boundary)`` directly from the
+    assembled rotated-constraint reaction.
+
+    This is the weak/integral counterpart of :func:`boundary_normal_traction`.
+    It contracts the nodal reaction with ``fn`` at the velocity interpolation
+    nodes before any pointwise boundary-mass recovery. On curved P2 boundaries
+    this is a fitted quantity and therefore does not consume the slowly
+    converging recovered vertex values described in issue #414.
+
+    Each assembled reaction degree of freedom is counted on its owning rank,
+    followed by an MPI sum on the mesh communicator. The operation does not
+    gather boundary topology or recovered values onto rank zero.
+    ``remove_mean=True`` removes the constant-traction gauge using boundary
+    integrals of ``fn`` and one.
+    """
+    if not isinstance(remove_mean, (bool, np.bool_)):
+        raise TypeError("remove_mean must be True or False.")
+
+    import underworld3 as uw
+
+    fn = sympy.sympify(fn)
+    dm = solver.dm
+    comm = dm.comm.tompi4py()
+    dim = solver.mesh.dim
+    rc = solve_result["reaction"]
+    rstart, rend = rc.getOwnershipRange()
+    rcl = dm.getLocalVec()
+    dm.globalToLocal(rc, rcl)
+
+    try:
+        rca = np.asarray(rcl.getArray())
+        lsec = dm.getLocalSection()
+        l2g = dm.getLGMap()
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        v0, v1 = dm.getDepthStratum(0)
+        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(
+            boundary
+        )
+        nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
+
+        owned_coords = []
+        owned_reactions = []
+        for q, nrm in nodes:
+            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+            global_row = int(l2g.apply([lo])[0])
+            if not rstart <= global_row < rend:
+                continue
+            owned_coords.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
+            # sigma_nn load = -n.r_c, matching boundary_normal_traction().
+            owned_reactions.append(-float(np.dot(nrm, rca[lo:lo + dim])))
+    finally:
+        dm.restoreLocalVec(rcl)
+
+    if owned_coords:
+        coords = np.ascontiguousarray(owned_coords, dtype=float)
+        weights = np.asarray(uw.function.evaluate(fn, coords), dtype=float).reshape(-1)
+        if weights.size == 1 and len(owned_reactions) != 1:
+            weights = np.full(len(owned_reactions), float(weights[0]))
+        if weights.size != len(owned_reactions):
+            raise ValueError("fn must evaluate to one scalar per boundary node.")
+        local_weighted = float(np.dot(owned_reactions, weights))
+        local_total = float(np.sum(owned_reactions))
+    else:
+        local_weighted = 0.0
+        local_total = 0.0
+
+    weighted = float(comm.allreduce(local_weighted))
+    if not remove_mean:
+        return weighted
+
+    total = float(comm.allreduce(local_total))
+    area = float(uw.maths.BdIntegral(solver.mesh, fn=1.0, boundary=boundary).evaluate())
+    if not np.isfinite(area) or area <= 0.0:
+        raise RuntimeError(f"Boundary {boundary!r} has non-positive area {area}.")
+    fn_integral = float(
+        uw.maths.BdIntegral(solver.mesh, fn=fn, boundary=boundary).evaluate()
+    )
+    return weighted - (total / area) * fn_integral
+
+
 def dynamic_topography_field(solver, boundary, solve_result, field,
                              buoyancy_scale=1.0, mass="auto"):
     """Populate a scalar MeshVariable ``field`` with the dynamic topography
