@@ -1132,7 +1132,12 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             if (l < len(patch_rows) and patch_rows[l] is not None
                     and (_only is None or l in _only)):
                 key = f"mg_levels_{l}_pc_type"
-                opts[prefix + key] = "asm"
+                # TODO(MEASURE): #670 knob — UW_FAC_MODE=composite keeps the
+                # whole-level smoother and applies the fault blocks ON TOP
+                # (multiplicative composite), instead of replacing it; the
+                # replacement form starves whatever the blocks leave out.
+                opts[prefix + key] = ("composite" if os.environ.get(
+                    "UW_FAC_MODE", "composite") == "composite" else "asm")
                 fac_keys.append(key)
     # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
     # between applications, so its KSP must judge convergence flexibly), but on
@@ -1162,7 +1167,11 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
         # whole-level baseline of 4 — discarding the subdomain solve's halo
         # correction breaks the interface error systematically.
         _asm_type = os.environ.get("UW_FAC_ASM_TYPE", "basic")
-        _sub_pc = os.environ.get("UW_FAC_SUB_PC")
+        # The measured default (fine S-fault rig, TI 1e-3, 4 September):
+        # whole-level SOR then the fault blocks with an exact LU sub-solve
+        # and one overlap layer — 10 velocity iterations against 44 with
+        # no patch and 60 with the replacing patch; 11 against 57 at np=2.
+        _sub_pc = os.environ.get("UW_FAC_SUB_PC", "lu")
         _whole = os.environ.get("UW_FAC_WHOLE")        # asm WITHOUT subdomain
         for l in range(1, nlev):
             entry = patch_rows[l] if l < len(patch_rows) else None
@@ -1176,6 +1185,17 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             blocks = entry if isinstance(entry, list) else [entry]
             sm = pc.getMGSmoother(l)
             spc = sm.getPC()
+            _composite = os.environ.get("UW_FAC_MODE", "composite") == "composite"
+            if _composite:
+                # whole-level SOR first, then the fault blocks: the blocks
+                # correct the band the level smoother cannot, and the level
+                # smoother keeps everything the blocks leave out
+                spc.setType("composite")
+                spc.setCompositeType(PETSc.PC.CompositeType.MULTIPLICATIVE)
+                spc.addCompositePCType("sor")
+                spc.addCompositePCType("asm")
+                lvl_pc = spc
+                spc = spc.getCompositePC(1)
             spc.setType("asm")
             is_subs = [PETSc.IS().createGeneral(
                 np.asarray(sub_rows, dtype=PETSc.IntType),
@@ -1194,20 +1214,22 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
                 spc.setASMLocalSubdomains(len(blocks), is_subs, is_owns)
             # Extra operator-sparsity overlap layers on top of the transfer
             # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
-            spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "0")))
+            spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "1")))
             # Subdomain solver: SOR, the patch-restricted twin of the
             # whole-level smoother — no factorization, so no pivot to hit.
             # PCASM's default sub-solve (ILU-0) takes a NUMERIC_ZEROPIVOT on
             # the rotated Galerkin patch block (measured: min |diag| 8e-5 near
             # the constraint; PC_FAILED -11 before the first iteration).
-            opts[prefix + f"mg_levels_{l}_sub_pc_type"] = _sub_pc or "sor"
-            fac_keys.append(f"mg_levels_{l}_sub_pc_type")
+            _sub_key = (f"mg_levels_{l}_sub_1_sub_pc_type" if _composite
+                        else f"mg_levels_{l}_sub_pc_type")
+            opts[prefix + _sub_key] = _sub_pc or "sor"
+            fac_keys.append(_sub_key)
             if (_sub_pc or "sor") in ("lu", "ilu", "cholesky"):
                 # The rotated Galerkin patch block carries near-zero pivots
                 # (constraint-zeroed transfer rows leave weakly-attached
                 # coarse DOFs, min diag ~1e-5); an unshifted factorization
                 # takes NUMERIC_ZEROPIVOT even as exact LU.
-                key = f"mg_levels_{l}_sub_pc_factor_shift_type"
+                key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
                 opts[prefix + key] = "nonzero"
                 fac_keys.append(key)
             for _is in is_subs + is_owns:   # the PC holds its own references
@@ -1593,11 +1615,17 @@ class CustomMGHierarchy:
                     # fault-zone blocks alone, without the structural
                     # (non-nested transfer) rows; remove when settled.
                     split = None
-                    if os.environ.get("UW_FAC_STRUCTURAL", "1") != "0" or not blocks:
+                    # the split's cover gate is collective: decide whether
+                    # to take it from what ANY rank holds, not this rank
+                    mpi_comm = comm.tompi4py()
+                    zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
+                                                       op=MPI.LOR)
+                    if (os.environ.get("UW_FAC_STRUCTURAL", "0") != "0"
+                            or not zone_anywhere):
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
-                            comm.tompi4py(),
-                            cover_max=(1.01 if blocks else 0.75))
+                            mpi_comm,
+                            cover_max=(1.01 if zone_anywhere else 0.75))
                     if split is not None:
                         _own, sub = split
                         extra = np.asarray([g for g in sub if g not in covered],
@@ -1699,7 +1727,7 @@ class CustomMGHierarchy:
                         # its cap (measured: any off-cut zone, #629). Add
                         # the uncovered structural rows as one more block.
                         split = None
-                        if os.environ.get("UW_FAC_STRUCTURAL", "1") != "0":
+                        if os.environ.get("UW_FAC_STRUCTURAL", "0") != "0":
                             split = _fac_patch_split(
                                 Pr, coords[l - 1], coords[l], maps[l - 1],
                                 maps[l], nc, cover_max=1.01)

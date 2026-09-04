@@ -797,15 +797,37 @@ velocity iterations of the last apply and the repeat solve:
 | fault blocks + structural block | 60 its, 5.2 s (block 20290 of 23134 rows) | 66 its, 4.2 s (rank 0: 11944 of 22590) |
 | fault blocks alone | stalls (watchdog) | stalls (watchdog) |
 
-The patch engages in parallel exactly as in serial, and on this problem
-it is a net loss in both: the fault blocks alone leave the non-nested
-fill rows smoothed nowhere and the solve stalls, so the structural block
-is mandatory, and with it the "patch" is 88% of the level. The fill is
-the whole refined region here; on a long fault in a large domain both
-blocks are small, which is where the patch earned its keep. Whether the
-structural block is needed at all under a nested, co-partitioned tail is
-the open question the no-patch row raises. `UW_FAC_STRUCTURAL=0` is the
-measurement knob for it.
+That table says the replacing patch is a net loss and the fault blocks
+alone starve the level. Louis: with a full hierarchy everywhere and a
+plain mesh this should be the easy case. It is. The same mesh and
+hierarchy take 4 velocity iterations with no viscosity contrast, 9 at a
+tenfold weak plane, 44 at the thousandfold one, and one more base level
+under the band changes nothing (42): the hierarchy is stitched correctly,
+and the cost is the weak plane in a band thinner than the coarse cells,
+which the Galerkin coarse operators average away. That is a smoother
+problem on the band. The patch as first built replaced the level's
+smoother, so the blocks had to cover everything the coarse level could
+not represent, which on a placed mesh is the whole refined region. The
+form that works is the composite one: the whole-level smoother, then the
+fault blocks on top, with an exact LU sub-solve on the band block and one
+overlap layer.
+
+| finest-level smoother, fine rig, TI 1e-3 | serial | np=2 | np=4 |
+|---|---|---|---|
+| whole-level gmres/sor | 44 its, 4.2 s | 57 its, 3.7 s | 58 its |
+| replacing patch (fault + structural) | 60 its, 5.2 s | 66 its, 4.2 s | — |
+| composite, fault blocks, sor sub-solve | 33 its, 4.5 s | 46 its, 4.4 s | — |
+| composite, fault blocks, LU sub-solve | 14 its, 2.6 s | 16 its, 1.9 s | — |
+| composite, LU, one overlap layer | 10 its, 2.1 s | 11 its, 1.5 s | 12 its, 1.5 s |
+
+The last row is the default now when a zone is keyed: `fac_zone` masks
+give the blocks, the structural split is off, the sub-solve is LU with a
+nonzero shift, the overlap one layer (`UW_FAC_MODE`, `UW_FAC_SUB_PC`,
+`UW_FAC_OVERLAP`, `UW_FAC_STRUCTURAL` remain as measurement knobs). One
+parallel trap on the way: the structural split's cover gate is a
+collective, and a rank with no band cells decided alone to take it while
+the others skipped it, a hang at np=4; the decision is now made from
+what any rank holds.
 
 ### What follows
 
