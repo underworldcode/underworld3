@@ -164,6 +164,36 @@ def test_galerkin_baseline_needs_no_rebuild(mesh):
     assert adv.supg_weight == 0.0
 
 
+def test_multigrid_is_one_switch_away_on_a_refinement_hierarchy():
+    """The default linear solver is GMRES + additive-Schwarz ILU on any mesh,
+    one Newton iteration per step. ``preconditioner = "fmg"`` on a mesh with
+    a refinement hierarchy hands the block to geometric multigrid: custom-P
+    transfers over ``mesh.dm_hierarchy`` installed on the live PC at the next
+    solve, under a flexible outer Krylov solver; the two agree to the solve
+    tolerance, and switching back rebuilds the Schwarz solver."""
+    refined = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=0.5, qdegree=3,
+        refinement=2)
+    schwarz, T_s = _solver(refined, "schwarz")
+    schwarz.solve(timestep=0.01)
+    assert schwarz.snes.getKSP().getPC().getType() == "asm"
+    assert schwarz.snes.getIterationNumber() == 1
+
+    multigrid, T_m = _solver(refined, "multigrid")
+    multigrid.preconditioner = "fmg"
+    multigrid.solve(timestep=0.01)
+    ksp = multigrid.snes.getKSP()
+    assert ksp.getType() == "fgmres"
+    assert ksp.getPC().getType() == "mg"
+    assert ksp.getPC().getMGLevels() == len(refined.dm_hierarchy) == 3
+    a, b = np.array(T_s.array[:, 0, 0]), np.array(T_m.array[:, 0, 0])
+    assert np.abs(a - b).max() < 1e-6 * np.abs(a).max()
+
+    multigrid.preconditioner = "auto"
+    multigrid.solve(timestep=0.01)
+    assert multigrid.snes.getKSP().getPC().getType() == "asm"
+
+
 def test_solves_on_an_adapt_child_with_its_own_preconditioner():
     """An adapt child carries a mesh-owned multigrid hierarchy that the
     solver base installs opportunistically. This solver owns its (additive

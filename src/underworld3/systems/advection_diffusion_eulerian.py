@@ -208,9 +208,14 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     scalar solver; the solver starts with a
     :class:`~underworld3.constitutive_models.DiffusionModel` at
     :math:`\kappa = 0` (pure advection). The linear system is nonsymmetric,
-    so the solver defaults to GMRES with an additive-Schwarz ILU
-    preconditioner rather than the algebraic multigrid the symmetric scalar
-    solvers use; every option is overridable through ``petsc_options``.
+    so the solver uses GMRES with an additive-Schwarz ILU preconditioner, the
+    Krylov tolerance matched to the SNES tolerance so that a step is one
+    Newton iteration. ``preconditioner = "fmg"`` hands the linear solve to
+    geometric multigrid over the mesh's refinement hierarchy (a flexible GMRES
+    outer solver, Galerkin coarse operators); measured, the Schwarz solve is
+    cheaper at every Courant number to eight ranks, and multigrid is there for
+    the rank count where a one-level method runs out of coarse space. Every
+    option is overridable through ``petsc_options``.
     """
 
     @timing.routine_timer_decorator
@@ -322,17 +327,90 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self.constitutive_model = uw.constitutive_models.DiffusionModel
         self.constitutive_model.Parameters.diffusivity = 0.0
 
-        # Nonsymmetric operator: opt out of the managed GAMG/FMG block and
-        # use GMRES with an additive-Schwarz ILU preconditioner. RCM
-        # ordering improves the ILU fill on convection-dominated operators.
-        self._pc_option_prefix = None
-        self.petsc_options["ksp_type"] = "gmres"
-        self.petsc_options["ksp_gmres_restart"] = 200
-        self.petsc_options["pc_type"] = "asm"
-        self.petsc_options["sub_pc_type"] = "ilu"
-        self.petsc_options["sub_pc_factor_mat_ordering_type"] = "rcm"
+        # Linear solver: additive-Schwarz ILU by default, the managed multigrid
+        # block on request (see ``preconditioner``). One Newton iteration per
+        # step: the operator is linear in phi, so the Krylov tolerance must
+        # reach the SNES tolerance or the SNES takes a second step, and a
+        # second Jacobian assembly costs more than every linear solve of the
+        # step (design note, "Preconditioner").
+        self._set_linear_solver(multigrid=False)
         self.petsc_options["snes_rtol"] = 1.0e-8
+        self.petsc_options["ksp_rtol"] = 1.0e-9
         self.petsc_options["snes_max_it"] = 20
+
+    # ------------------------------------------------------------------
+    # Linear solver
+    # ------------------------------------------------------------------
+
+    _SCHWARZ_OPTIONS = {
+        "ksp_type": "gmres",
+        "ksp_gmres_restart": 200,
+        "pc_type": "asm",
+        "sub_pc_type": "ilu",
+        # RCM ordering improves the ILU fill on a convection-dominated operator.
+        "sub_pc_factor_mat_ordering_type": "rcm",
+    }
+
+    def _set_linear_solver(self, multigrid: bool):
+        """Own the linear solver (GMRES + additive-Schwarz ILU) or hand it to
+        the managed multigrid block.
+
+        Measured on the level-set advection step at 256^2 and 512^2 (design
+        note, "Preconditioner"): with the Krylov tolerance matched to the
+        SNES tolerance, additive Schwarz with ILU is the cheaper linear solve
+        at every Courant number from 1/2 to 32, its iteration count does not
+        change between one and eight ranks, and the geometric multigrid's
+        cycle count grows with the Courant number nearly as fast as the
+        Schwarz iteration count while each cycle costs about three Schwarz
+        iterations. The linear solve is under a tenth of the step either way;
+        assembly is the rest. Multigrid keeps its coarse space for a rank
+        count where a one-level method runs out of one, which is what
+        ``preconditioner = "fmg"`` is for.
+        """
+        from underworld3.utilities import multigrid_options
+
+        opts = self.petsc_options
+        bundle_keys = set()
+        for bundle in (multigrid_options.gamg_bundle(),
+                       multigrid_options.geometric_mg_bundle()):
+            bundle_keys |= set(bundle.settings) | set(bundle.stale)
+        if multigrid:
+            # The managed block starts from the scalar solver's own keys
+            # (GMRES + the GAMG bundle) and _apply_preconditioner_options
+            # resolves the request against the mesh hierarchy at build time.
+            self._pc_option_prefix = ""
+            for key in self._SCHWARZ_OPTIONS:
+                opts.delValue(key)
+            self._push_managed_option("ksp_type", "gmres")
+            for key, value in multigrid_options.gamg_bundle().settings.items():
+                self._push_managed_option(key, value)
+        else:
+            self._pc_option_prefix = None
+            for key in bundle_keys | {"ksp_type"}:
+                opts.delValue(key)
+                self._managed_pc_options.pop(self.petsc_options_prefix + key, None)
+            for key, value in self._SCHWARZ_OPTIONS.items():
+                opts[key] = value
+
+    @property
+    def preconditioner(self):
+        """Linear preconditioner: ``"auto"`` (default), ``"fmg"`` or ``"gamg"``.
+
+        ``"auto"`` is GMRES with an additive-Schwarz ILU preconditioner, the
+        measured choice for this operator (see :meth:`_set_linear_solver`).
+        ``"fmg"`` hands the block to the managed geometric-multigrid route:
+        custom-P transfers over the mesh's refinement hierarchy or an adapt
+        child's coarse tail, installed on the live PC at the first solve,
+        under a flexible GMRES outer solver; without a hierarchy it warns and
+        degrades to GAMG. ``"gamg"`` is algebraic multigrid. Setting the
+        property rebuilds the solver at the next solve.
+        """
+        return self._preconditioner
+
+    @preconditioner.setter
+    def preconditioner(self, value):
+        SNES_Scalar.preconditioner.fset(self, value)
+        self._set_linear_solver(multigrid=self._preconditioner != "auto")
 
     def _object_viewer(self):
         from IPython.display import Latex, display
@@ -637,10 +715,12 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
             self._needs_function_rewire = True
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
+        # The base ``_build`` resolves the preconditioner choice against the
+        # mesh hierarchy before the SNES reads its options. Running the three
+        # setup stages directly here (the semi-Lagrangian solvers' pattern)
+        # marks the solver set up, so ``_build`` returned early and the
+        # geometric-multigrid request was silently inert (#683).
+        self._build(verbose)
 
         self.DuDt.update_pre_solve(dt, verbose=verbose)
         super().solve(zero_init_guess, _force_setup, divergence_retries=divergence_retries)
