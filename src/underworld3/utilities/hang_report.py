@@ -26,8 +26,15 @@ import os
 import re
 import sys
 
-#: Start of one dump. faulthandler writes this before each set of stacks.
+#: Start of one dump, when it came from ``dump_traceback_later``, which prints
+#: this header before each set of stacks. Dumps taken through faulthandler's
+#: SIGNAL handler -- how the watchdog works since #661 -- carry no header, so
+#: it cannot be the only thing that separates one dump from the next.
 _TIMEOUT = re.compile(r"^Timeout \(")
+#: Start of the stack of the thread that took the dump. faulthandler prints
+#: exactly one of these per dump, ahead of the other threads, so it separates
+#: dumps in a headerless file and in a headed one alike.
+_CURRENT_THREAD = re.compile(r"^Current thread 0x[0-9a-fA-F]+")
 #: Start of one thread's stack within a dump.
 _THREAD = re.compile(r"^(?:Current thread|Thread) 0x[0-9a-fA-F]+")
 #: A single frame.
@@ -68,6 +75,13 @@ def parse_dump_file(text):
 
     for raw in text.splitlines():
         if _TIMEOUT.match(raw):
+            close_dump()
+            continue
+        # A headerless dump starts at its "Current thread" line. Closing the
+        # previous dump here is what keeps repeated signal dumps from merging
+        # into one; a "Timeout (" header immediately before simply closes an
+        # already-empty dump, so headed files parse exactly as they did.
+        if _CURRENT_THREAD.match(raw):
             close_dump()
             continue
         if _THREAD.match(raw):
