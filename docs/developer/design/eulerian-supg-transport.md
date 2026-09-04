@@ -268,7 +268,8 @@ multigrid (the managed GAMG bundle) 5 iterations, 2.07 / 0.245 s; the "fast"
 smoother (richardson/3 + SOR) 0.933 s, the same as gmres/4; gmres/2 needs two
 cycles and costs 1.61 s; an ILU smoother 1.62 s. At 512² with four levels the
 unmatched rows read 6.12 / 0.84 s (Schwarz, two Newton steps) against 3.71 /
-0.58 s (multigrid).
+0.58 s (multigrid); matched, with the shipped defaults, 3.51 / 0.48 s (Schwarz,
+5 iterations) against 3.62 / 0.54 s (multigrid, one cycle).
 
 ## Parallel
 
