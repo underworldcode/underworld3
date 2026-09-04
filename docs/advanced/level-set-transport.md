@@ -43,13 +43,37 @@ viscosity = level_set.material_property_field(psi.sym[0], [eta_outside, eta_insi
 | `order`, `theta` | the transport solver's time scheme; Crank-Nicolson by default, which preserves the profile's amplitude between reinitialisations |
 | `reini_frequency`, `reini_steps`, `reini_dt` | how often, how many pseudo-time steps, and how long each is (half the smallest $\varepsilon$ by default) |
 | `far_field` | the value of $\psi$ imposed on the domain boundary; set it whenever the flow crosses the boundary (an inflow boundary with no value lets mass in) |
-| `conserve_mass` | apply the global correction after every step |
+| `conserve_mass` | `"auto"` (default): the global correction is on for `"slcn"`, which loses volume by interpolation, and off for `"supg"`, which conserves it to solver tolerance on its own; the clip to [0, 1] of the ringing at a one-cell band then costs about 0.2% per revolution, which `volume_drift` reports |
 | `adv_solver_bc` | box wall labels on which a zero normal gradient is imposed by copying the neighbouring interior nodes |
+
+**Band thickness.** `interface_thickness(scale=0.35)`, the g-adopt default,
+gives a band well under one cell, which a continuous-Galerkin transport rings
+at. Measured on a rotating circle at 32 cells across, one revolution, SUPG with
+no mass correction:
+
+| `scale` | $\varepsilon / h$ | volume drift |
+|---|---|---|
+| 0.35 | 0.12 | +0.84% (clipped ringing) |
+| 1.0 | 0.36 | +0.28% |
+| 2.0 | 0.71 | -0.18% (ringing gone) |
+| 3.0 | 1.07 | -0.85% (reinitialisation curvature error) |
+
+For the SUPG transport a `scale` of 1.5 to 2, a band of two to three cells, is
+the sensible setting; the thickness trades interface resolution for a clean
+transport.
 
 `initialise_psi` accepts a precomputed signed distance, or a polygon, curve or
 `shapely` geometry (the latter three need the optional `shapely` package).
 `material_property_field` blends a property across one or more level sets with
 a sharp, arithmetic, geometric or harmonic transition.
+
+## Cost
+
+Per step at 64 by 64 (LeVeque flow, Courant 0.5, reinitialisation every fifth
+step): the SUPG advection takes 0.13 s and the SLCN advection 1.24 s; the
+reinitialisation 0.06 to 0.11 s averaged; the mass correction 0.13 to 0.24 s.
+Since the Eulerian transport does not need the correction, its level-set step
+costs about 0.19 s against 1.59 s for the semi-Lagrangian one.
 
 ## Which transport solver
 

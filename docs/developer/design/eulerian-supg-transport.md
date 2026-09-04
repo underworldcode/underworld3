@@ -214,6 +214,42 @@ Quarter-turn error on the uniform res-32 mesh with the exact history planted:
 BDF1 slopes 0.80 and 0.88 between $\Delta t$ = 0.02, 0.01, 0.005; BDF2 slopes above
 1.65 between 0.04, 0.02, 0.01.
 
+## Parallel
+
+LeVeque flow, conservative level set, 20 steps at 128 by 128 (16,384 cells) and 10 at
+256 by 256 (65,536 cells), wall time per advection step max-reduced over ranks;
+reinitialisation every fifth step timed separately (`~/+Simulations/supg_vs_slcn_657/parallel/`).
+
+| ranks | SUPG 128 | SLCN 128 | SUPG 256 | SLCN 256 |
+|---|---|---|---|---|
+| 1 | 0.55 s | 3.98 s | 2.22 s | 15.7 s |
+| 2 | 0.28 s | 1.77 s | | |
+| 4 | 0.145 s | 1.17 s | 0.80 s | 4.12 s |
+| 8 | 0.126 s | 1.06 s | 0.67 s | 3.50 s |
+
+Three observations.
+
+- Per step the Eulerian solve is seven times cheaper in serial at both sizes; the
+  gap narrows to about five times at eight ranks, because the departure-point
+  work of the semi-Lagrangian scheme parallelises perfectly while the
+  additive-Schwarz ILU preconditioner needs more GMRES iterations as its
+  subdomains shrink (SUPG speed-up 3.3 at eight ranks on 256 by 256 against 4.5
+  for SLCN). A multigrid or a two-level Schwarz preconditioner for the
+  nonsymmetric operator would recover that; the assembly itself scales.
+- The Eulerian answer is partition-independent: the enclosed volume agrees to
+  ten digits at every rank count. The semi-Lagrangian answer is not: it moves in
+  the sixth digit at two and four ranks and by 1.6% at eight ranks on the
+  128 by 128 mesh (0.06957 against 0.07068), which points at departure points
+  near partition boundaries being sampled wrongly at higher rank counts. That
+  is a defect in the semi-Lagrangian trace-back to chase separately; the
+  Eulerian scheme has no such path.
+- The 128 by 128 problem is too small for eight ranks (about 2,000 cells each);
+  the 256 by 256 rows are the ones to read for scaling.
+
+These are timings at equal step. The fair cost comparison is per unit of simulated
+time at equal error, each scheme at its own accuracy-limited step (the field-change
+fraction for SUPG, the trace-back arc for SLCN), which is the next measurement.
+
 ## What the timestep estimate means
 
 The cell-crossing time is not a stability limit for either scheme and says

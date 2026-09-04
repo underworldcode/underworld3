@@ -40,7 +40,7 @@ International Journal for Numerical Methods in Fluids, 63, 651-680.
 """
 
 import warnings
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import sympy
@@ -132,6 +132,16 @@ def interface_thickness(
     (or ``scale`` times the shortest edge), carried to ``phi``'s nodes from
     the nearest cell centroid. Returned as a scalar MeshVariable of the same
     degree as ``phi``.
+
+    ``scale=0.35`` (the default, following the discontinuous-Galerkin
+    setting of g-adopt) gives :math:`\varepsilon \approx h/8` on triangles,
+    a band well under one cell. A continuous-Galerkin transport rings at
+    that: on a rotating circle at 32 cells across, the clip of the ringing
+    changed the volume by 0.84% per revolution at 0.35, 0.28% at 1.0 and
+    0.18% at 2.0 (:math:`\varepsilon \approx 0.7h`, a band of two to three
+    cells, ringing gone); at 3.0 the reinitialisation's own curvature error
+    takes over (0.85%). For the SUPG transport, ``scale`` between 1.5 and 2
+    is the sensible setting.
     """
     from scipy.spatial import cKDTree
 
@@ -286,8 +296,18 @@ class LevelSetSolver:
         Box wall labels on which a zero normal gradient is imposed after
         each step by copying the neighbouring interior nodes (a box-mesh
         convenience).
-    conserve_mass : bool, default True
-        Apply the global mass correction after each step.
+    conserve_mass : bool or "auto", default "auto"
+        Apply the global mass correction after each step. ``"auto"`` turns
+        it on for the semi-Lagrangian transport, which loses volume through
+        interpolation, and off for the Eulerian one, which conserves the
+        enclosed volume to solver tolerance on its own once ``far_field`` is
+        set where the flow crosses the boundary (measured: 8e-5 over twenty
+        steps; the reinitialisation changes it at second order only). What
+        does change it is the clip to [0, 1] of the transport's ringing at a
+        thin band: 0.84% per revolution of a circle at the default thickness
+        (``scale=0.35``), 0.18% at ``scale=2.0`` (see
+        :func:`interface_thickness`). Turn the correction on if that
+        matters; it costs about as much as the Eulerian advection step.
     mass_correction_tol, mass_correction_max_iter
         Bisection tolerance on the volume and iteration cap.
 
@@ -318,7 +338,7 @@ class LevelSetSolver:
         far_field: Optional[float] = None,
         adv_solver_opts: Optional[dict] = None,
         adv_solver_bc=None,
-        conserve_mass: bool = True,
+        conserve_mass: Union[bool, str] = "auto",
         mass_correction_tol: float = 1.0e-10,
         mass_correction_max_iter: int = 40,
     ) -> None:
@@ -368,10 +388,13 @@ class LevelSetSolver:
 
         self._reini_frequency = int(reini_frequency) if reini_frequency is not None else self._default_frequency()
 
-        self.conserve_mass = conserve_mass
+        if conserve_mass == "auto":
+            conserve_mass = advection == "slcn"
+        self.conserve_mass = bool(conserve_mass)
         self._mass_correction_tol = float(mass_correction_tol)
         self._mass_correction_max_iter = int(mass_correction_max_iter)
-        self._target_volume = self.interface_volume() if conserve_mass else None
+        self._clip_volume_change = 0.0
+        self._target_volume = self.interface_volume()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -394,12 +417,17 @@ class LevelSetSolver:
     def solve(self, dt: float, *, reinitialise: bool = True) -> None:
         """Advance the level set by one step of size ``dt``."""
         self._adv_solver.solve(timestep=dt)
+        # The reinitialisation equation assumes psi in [0, 1]; the transport
+        # can overshoot at a band a cell wide, so clip before anything reads
+        # the field. Records what the clip removed, for the volume budget.
+        self._clip_volume_change += self._clip_in_place()
         if self._adv_solver_bc:
             self._apply_boundary_neumann(labels=self._adv_solver_bc)
         self.step += 1
 
         if reinitialise and self.step % self._reini_frequency == 0:
             self.reinitialise()
+            self._clip_volume_change += self._clip_in_place()   # RK stages can leave 1e-6 undershoots
             if self._adv_solver_bc:
                 self._apply_boundary_neumann(labels=self._adv_solver_bc)
 
@@ -411,6 +439,11 @@ class LevelSetSolver:
         for _ in range(self.reini_steps):
             self._reini_ssprk3_step(self.reini_dt)
 
+    @property
+    def volume_drift(self) -> float:
+        """Relative change of the enclosed volume since construction."""
+        return (self.interface_volume() - self._target_volume) / self._target_volume
+
     def interface_volume(self) -> float:
         r"""The enclosed volume :math:`\int\psi\,d\Omega`."""
         return uw.maths.Integral(self.mesh, self.phi.sym[0]).evaluate()
@@ -418,6 +451,16 @@ class LevelSetSolver:
     def clamp(self, lo: float = 0.0, hi: float = 1.0) -> None:
         """Clip the field to ``[lo, hi]`` in place. Not mass-conserving on its own."""
         self.phi.array[:, 0, 0] = np.clip(self.phi.array[:, 0, 0], lo, hi)
+
+    def _clip_in_place(self) -> float:
+        """Clip to [0, 1]; return the volume the clip changed (a nodal estimate)."""
+        values = np.asarray(self.phi.array[:, 0, 0])
+        clipped = np.clip(values, 0.0, 1.0)
+        if np.array_equal(values, clipped):
+            return 0.0
+        before = self.interface_volume()
+        self.phi.array[:, 0, 0] = clipped
+        return self.interface_volume() - before
 
     # ------------------------------------------------------------------
     # Reinitialisation
