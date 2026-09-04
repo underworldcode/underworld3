@@ -156,8 +156,16 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     # - Solver operations
     # - Global evaluations
 
+    # Every mpirun goes through the supervisor. A rank blocked in a collective
+    # produces nothing and never returns, so an unsupervised batch spends the
+    # whole job budget in silence and is cancelled from outside with no
+    # diagnosis -- measured at 76 minutes (#675). The supervisor bounds that on
+    # silence rather than total runtime, so a legitimately slow batch is not
+    # punished, and it dumps and compares the ranks before killing them.
+    SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
+
     echo "Testing global statistics and parallel operations..."
-    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py || status=1
+    $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_075*py || status=1
 
     # Parallel SOLVER tests. This line was commented out, so test_1017 and
     # test_1062..test_1069 — the whole rotated / constrained / MG parallel set,
@@ -165,7 +173,7 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
     # (#560) and the mesh boundary normal (#564) — executed at NO rank count
     # in CI.
     echo "Testing parallel solvers..."
-    mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_10*py || status=1
+    $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_10*py || status=1
 
     # echo "Testing parallel I/O..."
     # mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_io*py || status=1
