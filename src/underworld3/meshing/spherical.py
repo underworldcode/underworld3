@@ -1351,7 +1351,10 @@ def CubedSphere(
         Lower = new_mesh.CoordinateSystem.unit_e_0
         Upper = new_mesh.CoordinateSystem.unit_e_0
 
-    # boundary_normals deprecated — use mesh.Gamma_P1 for boundary normals
+    # boundary_normals deprecated — use mesh.Gamma inside integrands and BCs,
+    # or mesh.boundary_normal(boundary) for a per-boundary P1 normal field.
+    # NOT mesh.Gamma_P1: it is deprecated too, and off-kernel it falls back to
+    # a coordinate direction rather than a normal (#538).
 
     # Full cubed sphere: 3 rigid rotation modes
     x, y, z = new_mesh.X
