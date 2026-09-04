@@ -255,7 +255,7 @@ class FaultNetwork:
               max_levels=2, qdegree=2, mesher=None,
               width=None, realisation="split",
               margin_rings=2, carve_clearance=0.3,
-              seams="gather", seam_ligament=None):
+              seams="gather", seam_ligament=None, fill_grading=0.35):
         """Mesh the network: graded refinement along every RAW trace,
         then the chosen REALISATION of the faults on that mesh.
 
@@ -308,6 +308,12 @@ class FaultNetwork:
         too). ``seam_ligament`` widens it (a physical width; unrelated to
         ``prepare(ligament=)``, the junction gap). In serial both give
         the same mesh.
+
+        ``fill_grading`` is the power of the relative distance by which
+        the fill's cell size grows from the band's spacing at its skin to
+        the base's at the cavity ring: 1 linear, below 1 coarser sooner
+        (default 0.35, measured on the fine S-fault rig: 29% fewer cells
+        for the same answer).
         """
         if self.prepared is None:
             raise RuntimeError("call prepare(h=...) first")
@@ -405,7 +411,7 @@ class FaultNetwork:
                 clearance=carve_clearance,
                 split=(realisation == "split"), mesher=mesher,
                 spines=[(n, S) for n, S, _idx in self.spines],
-                seams=seams, ligament=seam_ligament)
+                seams=seams, ligament=seam_ligament, grading=fill_grading)
         self._make_surfaces()
         return self.mesh
 

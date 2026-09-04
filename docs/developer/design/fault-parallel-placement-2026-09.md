@@ -745,6 +745,38 @@ changes hands at fewer than two vertices; and 3-D, where the thin volume
 still gathers. A refused fill saves its inputs to
 `place_fill_failure_rank<r>.npz` beside the script.
 
+### The fill graded harder (4 September)
+
+Louis: the fill around the faults sits at band resolution about three
+band widths out and should be considerably less. Measured on the fine rig
+(w = 0.01, band spacing 0.005, base 0.03 near the traces), median cell
+size in band spacings by distance from the nearest trace:
+
+| distance / w | linear fill | exponent 0.5 | exponent 0.35 |
+|---|---|---|---|
+| 0.5–1 | 1.18 | 1.38 | 1.29 |
+| 1–1.5 | 1.34 | 1.93 | 2.23 |
+| 2–3 | 2.15 | 3.03 | 3.49 |
+| 4–6 | 4.03 | 4.52 | 4.71 |
+| fill cells within 3w | 3924 | 2328 | 1931 |
+| total cells | 8170 | 6278 | 5816 |
+| worst angle | 17.7° | 17.4° | 17.2° |
+| Main / Cont peak | 0.5683 / 0.3274 | 0.5682 / 0.3263 | 0.5681 / 0.3257 |
+
+The fill's size function is now a power of the relative distance across
+the cavity (`grading`, `FaultNetwork.build(fill_grading=)`), default
+0.35. The three-band-width extent itself is the cavity, one base cell
+wide, and cannot shrink: at a narrower clearance the fill is a sliver
+between 0.005 and 0.03 edges and gmsh never settles (a run at 0.3 spun
+for ten minutes inside `generate`). The ladder mesher keeps the linear
+fill, since its sequential cavities need the room between close strands.
+Two placement repairs came with the measurement: an island of kept
+cells enclosed by a narrow cavity is dropped rather than refused, and a
+band cell goes to the cavity holding its centroid when a rank carves
+several. At np=2 with the band through the seam the fine rig is now
+3363 cells on rank 0 and the repeat solve 3.7 s (serial linear: 7.0 s),
+the answer unchanged.
+
 ### What follows
 
 1. **A free tip at a ligament end.** The split's weld is the pinned tip.
