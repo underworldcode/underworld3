@@ -441,8 +441,24 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
     @property
     def theta(self) -> float:
-        """Adams-Moulton blend at order 1 (1.0 backward Euler, 0.5 Crank-Nicolson)."""
+        """Adams-Moulton blend at order 1 (1.0 backward Euler, 0.5 Crank-Nicolson).
+
+        Settable after construction, as on the semi-Lagrangian solver: the
+        blend is a runtime constant of the compiled kernels, refreshed from
+        the history manager before every solve, so nothing is recompiled.
+        """
         return self._theta
+
+    @theta.setter
+    def theta(self, value):
+        value = float(value)
+        if value != 1.0 and self._time_order != 1:
+            raise ValueError(
+                "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
+                "backward Euler); order 2 and 3 take theta=1.0."
+            )
+        self._theta = value
+        self.DuDt.theta = value
 
     @property
     def delta_t(self):
