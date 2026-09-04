@@ -21,6 +21,8 @@ AdvDiffusion : class
     Advection-diffusion with semi-Lagrangian transport.
 AdvDiffusionSUPG : class
     Advection-diffusion, implicit Eulerian with SUPG stabilisation.
+LevelSetSolver : class
+    Conservative level-set transport (advection, reinitialisation, mass correction).
 NavierStokes : class
     Navier-Stokes equations with inertia.
 Diffusion : class
@@ -94,3 +96,6 @@ from .ddt import Eulerian as Eulerian_DDt
 # δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
 from .yield_continuation import yield_continuation, YieldHomotopyControl
 from .solve_report import SolveReport
+
+from . import level_set
+from .level_set import LevelSetSolver

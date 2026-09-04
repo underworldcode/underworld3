@@ -72,6 +72,11 @@ the RK2 trace-back, a property of the flow rather than the mesh. Above roughly
 Courant 2 on the feature's own scale it keeps its accuracy where the Eulerian
 scheme loses it.
 
+In parallel the Eulerian step stays seven times cheaper in serial and about five
+times at eight ranks (the departure-point search parallelises perfectly, the
+ILU preconditioner a little less), and its answer is identical to ten digits
+at every rank count, where the semi-Lagrangian answer moves with the partition.
+
 A practical rule: if the timestep is chosen so that the temperature field itself
 is resolved in time (a fraction of a feature width per step), the Eulerian solver
 is cheaper and more accurate; if the step is deliberately long relative to the
