@@ -222,3 +222,42 @@ class TestEngineLessAdapt:
         assert n_cells(c_default) == n_cells(c_nvb)
         assert np.array_equal(np.asarray(c_default.X.coords),
                               np.asarray(c_nvb.X.coords))
+
+
+def test_slip_normals_are_outward_on_every_wall():
+    """Every wall gets its OWN outward normal, and corners are pinned (#538).
+
+    `_slip_normals` read the deprecated `mesh.Gamma_P1`, which off-kernel falls
+    back to a coordinate direction rather than a normal: on a unit box it
+    returned the edge TANGENT on Left and Bottom -- (0, 1) where the outward
+    normal is (-1, 0). A node whose "normal" lies along its own edge has its
+    tangential motion projected out, so `node_redistribution(slip_surfaces=True)`
+    froze those two walls at EXACTLY zero displacement while Right and Top moved
+    (left 0.00000 / right 0.18241, bottom 0.00000 / top 0.18427 on a metric band
+    placed symmetrically about the domain centre).
+
+    All four walls are asserted, not one: the defect was confined to two of them,
+    and a test on Right or Top alone passes throughout.
+    """
+    from underworld3.meshing.smoothing.graph import _slip_normals
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3)
+    along = np.linspace(0.2, 0.8, 4)
+    zeros, ones = np.zeros_like(along), np.ones_like(along)
+
+    for wall, points, expected in (
+            ("Left", np.column_stack([zeros, along]), (-1.0, 0.0)),
+            ("Bottom", np.column_stack([along, zeros]), (0.0, -1.0)),
+            ("Right", np.column_stack([ones, along]), (1.0, 0.0)),
+            ("Top", np.column_stack([along, ones]), (0.0, 1.0))):
+        normals, valid = _slip_normals(mesh, points)
+        assert valid.all(), f"{wall}: {(~valid).sum()} of {len(points)} nodes unusable"
+        assert np.allclose(normals, np.array(expected), atol=1.0e-9), (
+            f"{wall}: got {normals[0]}, expected {expected} — a tangent here "
+            "means the deprecated Gamma_P1 path is back")
+
+    # A corner belongs to two walls and has no single normal: pin, do not slip.
+    corners = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+    _normals, valid = _slip_normals(mesh, corners)
+    assert not valid.any(), "corners must be pinned, not slipped along one wall"

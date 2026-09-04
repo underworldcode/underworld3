@@ -212,9 +212,16 @@ run_level_2() {
             echo "Running parallel tests (MPI)"
             echo "=========================================="
 
-            # Parallel tests with specified number of ranks
+            # The WHOLE directory, not `test_07*py`. That glob covered
+            # test_0700..test_0790 and so missed test_0005, test_0855,
+            # test_0873 and the entire test_10* solver set. `scripts/test.sh`
+            # had a different hole (test_075* and test_10*, missing
+            # test_0760..test_0790), so between the two scripts three files ran
+            # at no rank count anywhere: test_0005, test_0855 and test_0873.
+            # A glob naming ranges grows holes as files are added between them
+            # (#570, #611).
             echo "Testing with $PARALLEL_RANKS MPI ranks..."
-            if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
+            if mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi tests/parallel/ $VERBOSE; then
                 echo "✅ PASSED: Parallel tests ($PARALLEL_RANKS ranks)"
             else
                 echo "❌ FAILED: Parallel tests ($PARALLEL_RANKS ranks)"
@@ -224,8 +231,14 @@ run_level_2() {
             # Optional: Test with 4 ranks if --full-parallel specified
             if [ $FULL_PARALLEL -eq 1 ]; then
                 echo ""
+                # The deselection is #611: this test passes at np=2 and hangs
+                # at np=4 on development. The node id carries no `tests/`
+                # prefix because tests/pytest.ini puts rootdir at `tests/`, and
+                # a deselect that does not match is ignored in silence.
                 echo "Running extended parallel tests (4 ranks)..."
-                if mpirun -n 4 python -m pytest --with-mpi tests/parallel/test_07*py $VERBOSE; then
+                if mpirun -n 4 python -m pytest --with-mpi tests/parallel/ \
+                    --deselect "parallel/test_0760_swarm_cache_migration.py::test_global_evaluate_after_migration" \
+                    $VERBOSE; then
                     echo "✅ PASSED: Parallel tests (4 ranks)"
                 else
                     echo "❌ FAILED: Parallel tests (4 ranks)"
