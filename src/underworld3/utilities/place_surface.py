@@ -5910,6 +5910,30 @@ def _ring_growing_multi(cells, drop, held_mask, allow_multiple=False,
         "`clearance`.")
 
 
+def _loop_self_crossings(P):
+    """The number of PROPER crossings between non-adjacent edges of the
+    closed polygon ``P`` (an ``(n, 2)`` array in loop order)."""
+    n = len(P)
+    if n < 4:
+        return 0
+
+    def orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    count = 0
+    for i in range(n):
+        A, B = P[i], P[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            C, D = P[j], P[(j + 1) % n]
+            d1, d2 = orient(A, B, C), orient(A, B, D)
+            d3, d4 = orient(C, D, A), orient(C, D, B)
+            if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+                count += 1
+    return count
+
+
 def _segments_cross(P, Q, A, B):
     """Whether segment PQ crosses segment AB (proper or touching)."""
     def orient(a, b, c):
@@ -6769,6 +6793,27 @@ def remove_embedded(dm, label, label_value=1, clearance=0.6, verbose=False):
 ZONE_LABEL = "uw_zone"
 
 
+def _assembly_edges_on_polylines(asm_pts, edges, polylines, tol):
+    """The assembly edges lying ON the polylines — the spine edges: both
+    ends and the midpoint within ``tol`` of a polyline segment."""
+    pts, segs, at = [], [], 0
+    for P in polylines:
+        P = np.asarray(P, dtype=float)
+        pts.append(P)
+        segs += [(at + i, at + i + 1) for i in range(len(P) - 1)]
+        at += len(P)
+    if not segs:
+        return []
+    pts = np.vstack(pts)
+    keys = list(edges)
+    E = np.asarray(keys, dtype=np.int64)
+    ends = np.vstack([asm_pts[E[:, 0]], asm_pts[E[:, 1]],
+                      0.5 * (asm_pts[E[:, 0]] + asm_pts[E[:, 1]])])
+    d = _segments_distance(ends, pts, segs).reshape(3, -1)
+    on = (d < tol).all(axis=0)
+    return [keys[i] for i in np.flatnonzero(on)]
+
+
 def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                           clearance, size, assembly, verbose, mesher=None,
                           seams="gather", ligament=None, grading=0.35):
@@ -6930,6 +6975,7 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     # band vertices both sides use become shared points of the rebuild.
     conform = seams == "conform" and comm.size > 1
     seam_edge_set = set()
+    n_spine_moved = 0
     if conform:
         # the seam survives wherever the band does not reach it: only a
         # seam vertex within the band's own margin is deleted (on both
@@ -7043,6 +7089,32 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                 f"place_thin_volume: {int((tri_owner >= comm.size).sum())} "
                 "assembly cell(s) lie in no rank's cavity; the reach did not "
                 "cover the band across the seam.")
+        # The two band cells of a SPINE edge stay with one rank. The seam
+        # inside the band is the boundary between the ranks' cells; the
+        # split cuts the spine THROUGH that seam at a shared vertex, and a
+        # seam running ALONG a spine edge — its two cells on different
+        # ranks — is the one crossing the cut cannot represent (the pair
+        # of facets would straddle ranks). The lower owner takes both.
+        # Every rank applies the same rule to the same reduced array.
+        tris_of_edge = {}
+        for t, tri in enumerate(asm_tris):
+            for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+                tris_of_edge.setdefault(
+                    (min(int(a), int(b)), max(int(a), int(b))), []).append(t)
+        spine_edges = _assembly_edges_on_polylines(asm_pts, tris_of_edge,
+                                                   polylines, 1e-6 * size)
+        for a, b in spine_edges:
+            ts = tris_of_edge[(a, b)]
+            if len(ts) == 2 and tri_owner[ts[0]] != tri_owner[ts[1]]:
+                tri_owner[ts] = tri_owner[ts].min()
+                n_spine_moved += 1
+        for a, b in spine_edges:
+            ts = tris_of_edge[(a, b)]
+            if len(ts) == 2 and tri_owner[ts[0]] != tri_owner[ts[1]]:
+                raise RuntimeError(
+                    "place_thin_volume: a band cell meets two spines whose "
+                    "seam owners disagree (a junction on the seam); move "
+                    "the seam or gather.")
 
     failure = None
     if do_surgery:
@@ -7302,6 +7374,13 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
                             t = ds / (ds + dr + 1e-30)
                             return _s + (_h - _s) * t ** _p
                 try:
+                    # a ring that crosses itself is never a fill boundary,
+                    # and gmsh does not refuse one — it spins (measured:
+                    # the conform walk on a junction beside the seam)
+                    n_x = _loop_self_crossings(Xall[np.asarray(ring)])
+                    if n_x:
+                        raise ValueError(
+                            f"the fill ring crosses itself {n_x} time(s)")
                     gap_tris, extra = _gmsh_fill_2d(Xall, ring, None,
                                                     holes=holes,
                                                     size_of=size_of)
@@ -7600,7 +7679,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
             "n_gathered": int(moved), "seams": seams,
             "n_ligament_cells": n_lig, "n_ligament_tris": int(len(lig_tris)),
             "n_surgery_ranks": n_ranks_carving,
-            "n_seam_crossings": int(comm.allreduce(n_cross_local, op=MPI.SUM))}
+            "n_seam_crossings": int(comm.allreduce(n_cross_local, op=MPI.SUM)),
+            "n_spine_cells_reassigned": n_spine_moved}
     if verbose:
         uw.pprint(f"[place_thin_volume {label!r}] {n_zone} zone cells, "
                   f"{n_skin} skin edges; placed {n_placed} vertices, "
@@ -8797,11 +8877,14 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         # and drops the earlier fault's).
         # Under the seam ligament the spines are already the mesh's edges
         # and the ligament is deliberately uncut: label, do not cut.
+        # Under the conforming seam the spines cross it and are split
+        # THROUGH it: a chain end on the seam is a crossing, not a tip.
         mesh = mesh.add_fault([(label, np.asarray(P, dtype=float))
                                for label, P in traces],
                               cut=(seams == "gather"),
                               exclude=(band_label + "_ligament"
-                                       if seams != "gather" else None))
+                                       if seams != "gather" else None),
+                              across_seams=(seams == "conform"))
         mesh._custom_mg_fac_zone = None     # a split fault needs no patch
 
     # Per-strand FAULT FOOTPRINT masks (the honoured-paint rule): band
@@ -8840,7 +8923,9 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
             "spines": [label for label, _P in spines],
             "seams": seams, "ligament": ligament_mask,
             "n_ligament_cells": int(_info.get("n_ligament_cells", 0))
-            if mesher == "network" else 0}
+            if mesher == "network" else 0,
+            "n_spine_cells_reassigned":
+            int(_info.get("n_spine_cells_reassigned", 0))}
     if verbose:
         import underworld3 as _uw
         _uw.pprint(f"[place_fault_ribbon_2d] {info['n_cells']} cells, "

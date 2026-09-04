@@ -8125,7 +8125,7 @@ class Mesh(Stateful, uw_object):
                                      mg_coarsening_ratio, verbose)
 
     def add_fault(self, faults, verbose=False, cut=True, exclude=None,
-                  blind=1):
+                  blind=1, across_seams=False):
         """Cut AND split one or more faults; return the split mesh.
 
         The split-node fault pipeline in one call: each fault becomes a
@@ -8149,12 +8149,19 @@ class Mesh(Stateful, uw_object):
         :meth:`add_conforming_surface`); solvers take their
         algebraic-multigrid defaults.
 
+        ``cut=False`` labels the mesh edges already on each polyline (the
+        embedded spines of a placed band); ``across_seams=True`` then
+        splits a spine THROUGH the partition seams it crosses (the band
+        meshed through them, ``seams="conform"``) instead of
+        redistributing — see ``fault_split.split_fault``.
+
         Implementation and design: ``underworld3.utilities.fault_split``
         and ``docs/developer/design/FAULT_CONTACT_DEPLOYMENT_2026-08.md``.
         """
         from underworld3.utilities.fault_split import add_fault
         child = add_fault(self, faults, verbose=verbose, cut=cut,
-                          exclude=exclude, blind=blind)
+                          exclude=exclude, blind=blind,
+                          across_seams=across_seams)
         # The split mesh INHERITS a mesh-owned geometric-MG tail: a cut
         # re-represents the same grid with the surface conformed (finer only
         # by the duplicated vertices), so the parent's coarse levels serve

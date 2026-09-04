@@ -1039,6 +1039,9 @@ class FaultNetwork:
         X = np.asarray(mesh.X.coords)
         vS, vE = dm.getDepthStratum(0)
         eS, eE = dm.getDepthStratum(1)
+        pStart = dm.getChart()[0]
+        from underworld3.utilities.place_surface import _shared_point_flags
+        shared = _shared_point_flags(dm).astype(bool)      # COLLECTIVE
         tips = []
         for name, P in self.prepared:
             lbl = f"{name}Plus"
@@ -1055,7 +1058,10 @@ class FaultNetwork:
             ends = np.asarray(P, dtype=float)[[0, -1]]
             for v, n in degree.items():
                 if n == 1 and np.linalg.norm(
-                        ends - X[v], axis=1).min() > 0.5 * self.h_near:
+                        ends - X[v], axis=1).min() > 0.5 * self.h_near \
+                        and not shared[v + vS - pStart]:
+                    # a chain end ON the seam is a crossing the split
+                    # carried through (seams="conform"), not a blind tip
                     tips.append(X[v])
         band = np.asarray(self.info["band"], dtype=bool)
         mask = lig.copy()

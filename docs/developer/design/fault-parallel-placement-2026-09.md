@@ -867,27 +867,139 @@ cells thick, its rows grow with the fault's area, and the cap turns that
 into more blocks of the same size rather than a larger factorisation;
 the iteration count is flat in the block count above the floor.
 
+### Built: the split through the seam (4 September, late)
+
+The conform build left the split gathering. The cut is now made THROUGH
+the seam (`split_fault(across_seams=True)`, reached from
+`add_fault(cut=False, across_seams=True)` and, through it, from
+`FaultNetwork.build(seams="conform", realisation="split")`). Nothing
+moves. The mechanism:
+
+- **The chain is global.** Each rank contributes its fault facets as
+  pairs of star-forest identities (owner rank, owner index) with their
+  coordinates; every rank assembles the same paths from the union, so a
+  vertex on the seam has the same two neighbours on both ranks and the
+  walk order — Plus is the left of the walk, from the tip lower in
+  coordinate order or along the trace's own direction — is one decision.
+  A fault facet that is itself shared (the seam running along the fault)
+  is refused: that is the along-strike case, still open.
+- **Sides at a seam vertex are geometric.** A rank holds part of the fan
+  there, so the fan cannot be walked; but the two fault facets are cell
+  edges, so every local cell lies wholly in one of the two angular
+  sectors they bound, and the sector its centroid falls in is its side.
+  Unshared vertices keep the fan walk, so the serial path is unchanged
+  (the walk was factored out, not rewritten).
+- **The replica exists on every rank that holds the vertex**, owned
+  where the original is. A seam that only touches the chain leaves one
+  rank with cells on one side only; that rank still makes the replica,
+  so the star-forest entries match. The coincident pair therefore never
+  straddles ranks, which is what the contact solve's pair block needs
+  (both points in one rank's diagonal portion).
+- **The star forest gains the replica pairs and the re-homed seam
+  edges.** Three root arrays broadcast over the old star forest — the
+  renumbering, the replica of each vertex, the fresh edge each re-homed
+  seam edge became — give each leaf its owner's new indices. A replica
+  or a re-homing made on one side only is refused on every rank.
+- **The pair normal at a seam vertex is recorded by the split**, from the
+  global chain: the contact solve's accumulator sums the facet normals a
+  rank holds, and at a seam vertex that is one facet of two. The split
+  stores the whole sum on the child (`_fault_seam_normals`) and the
+  accumulator takes it in place of its half. No exchange at solve time.
+- **A chain end on the seam is a crossing, not a tip**: the blind rule
+  of the ligament build and the network's `bridge_cells` skip it. The
+  blind rule's older clause — a chain left with fewer than two edges is
+  unlabelled whole — now applies only to a chain that was clipped: at
+  np=3 one rank held a single spine edge between two seam vertices, the
+  clause dropped it, and the global chain fell into two pinned pieces
+  (three pairs lost, the Main's peak down a third).
+
+Downstream nothing else changed. The interface assembler already adds
+facet contributions on global rows and reduces the trace mass over the
+star forest, the jump gauge reads owned rows only, and the rotated pair
+block skips the pair on the rank that does not own it. In serial the
+whole path reduces to the previous one exactly.
+
+One rule was added to the placement: the two band cells of a spine
+edge stay with one owner (the lower rank). Ownership by cavity had put
+the two cells of one spine edge on different ranks at np=3 on the long
+fault — the seam ran along that facet — and the cut cannot represent a
+facet whose Plus copy and Minus copy live on different ranks (the pair
+would straddle ranks). `info["n_spine_cells_reassigned"]` counts the
+cells moved by the rule.
+
+The long vertical fault (35 cells at h = 0.02, eta_1 = 0.01, the
+frictionless contact solve on the inherited FMG tail), split through the
+seam, against the gathered answer:
+
+| np | cells per rank | owned pairs | seam pairs | peak slip | leak |
+|---|---|---|---|---|---|
+| 1 | 2264 | 69 | — | 0.5094 | 0 |
+| 2 | 1212 / 1042 | 69 | 1 | 0.5094 | 0 |
+| 3 | 785 / 890 / 571 | 69 | 1 | 0.5094 | 0 |
+
+The answer is the serial one to four figures at both rank counts, with
+the cells balanced, where the ligament split had lost 8-15% per crossing.
+The seam pair is the vertex the seam crosses the spine at, duplicated on
+both ranks and owned by one. The three-piece vertical network of
+`ptest_0865` (Main crossed mid-fault by the np=2 seam, the Splay's
+junction 0.17 below it, h = 0.03) gives the same result:
+
+| np | cells per rank | Main | Cont | Splay |
+|---|---|---|---|---|
+| 1 | 630 | 0.3438 | 0.2130 | 0.0433 |
+| 2 | 346 / 280 | 0.3438 | 0.2130 | 0.0433 |
+| 3 | 127 / 224 / 265 | 0.3438 | 0.2130 | 0.0433 |
+
+`ptest_0865` pins the long fault at np=2 and 3 (owned pairs equal the
+serial count, the seam pair owned by one rank, star forest consistent,
+the owned-point Euler characteristic of a slit disc, the contact solve
+converged with no opening and the gathered peak within 3%) and a
+three-piece vertical network, crossed mid-fault, against the gathered
+peaks.
+
+Two placement limits surfaced on the way, both in the conform build and
+neither in the cut:
+
+- **Tips on the seam beside a junction.** The network of `ptest_0864`
+  (Main and Splay both ending exactly on y = 0.5, the np=2 seam of the
+  unit box) is refused by the conform fill — gmsh moves three constrained
+  nodes — because the fill-boundary walk doubles back there: the saved
+  ring (`place_fill_failure_rank0.npz`) has a 0.1-degree spike at a
+  Splay skin vertex and three self-crossings. The ligament build takes
+  the same network. A tip exactly on a seam is a coincidence of the box
+  partition rather than a configuration a user chooses, so the test
+  fixture moved its crossing mid-fault; the walk's treatment of a tip on
+  the seam is an open item.
+- **A junction within a band width or two of the seam.** With the
+  Splay branching 0.08 below the np=2 seam, rank 0's deleted seam span
+  ended at a base vertex well below the crossing, and the straight
+  connector from that ring end to the end of its skin run passed through
+  the bump the Splay's tip margin makes on Main's left skin: the ring
+  crossed itself once and gmsh SPUN rather than refusing. The connector
+  rule takes the nearest free run end with no visibility check; a
+  consistent retarget (both ranks sliding the hand-over vertex along the
+  skin until the connector is clear) needs an exchange between the
+  ranks and is the fix to build. Meanwhile a fill ring that crosses
+  itself is refused BEFORE gmsh (`_loop_self_crossings`) with the ring
+  saved, so the stall is a message. The np=4 build of the long fault
+  stalled the same way before that check; with the junction moved to
+  0.17 below the seam the network builds and splits.
+
 ### What follows
 
-1. **A free tip at a ligament end.** The split's weld is the pinned tip.
-   Where a sub-chain ends because the band was clipped rather than because
-   the fault ends, the tip vertex can be duplicated too, with its fan
-   assigned by the side of the trace's extension; the discontinuity then
-   ends inside the ligament's weak cells, which carry the jump as strain
-   over one cell. That is the bridging split the sketch asked for, done
-   at the tip rather than at the seam.
-2. **Steering the seam off the fault.** A segmented gather: chunks along
-   strike, each moved to the rank that holds most of it, so the seam
-   crosses the band only where the owner changes. `_gather_regions`
-   merges touching regions today; chunks need a `merge=False` form with
-   a deterministic claim of the overlap. Without this, an along-strike
-   seam leaves a fault's whole stretch as painted base cells.
-3. **The conforming interface is built** (`seams="conform"`, above). What
-   it leaves for the split is the cut through the seam: duplicating a
-   shared chain vertex on both ranks with star-forest entries for the
-   replica pair and a pairing record that agrees across ranks — the same
-   bookkeeping, applied to a duplicated point instead of a new one.
-4. **3-D.** The 2-D ribbon has the mechanism; the 3-D thin volume still
+1. **3-D.** The 2-D ribbon has the whole mechanism — the band meshed
+   through the seam and the cut through it. The 3-D thin volume still
    gathers. The clip and the manifold clean-up carry over one dimension
-   up (tets, faces), the multi-pass split already works in 3-D through
-   `split_along_label_3d`.
+   up (tets, faces); the split through the seam needs the global patch
+   in place of the global chain, with the side rule at a shared rim
+   vertex taken from the patch's face normals; the block cap needs
+   cutting down-dip as well as along strike.
+2. **The along-strike seam** (refused today, in the placement and in the
+   split): a seam-steering or segmented-gather answer, so the seam
+   crosses the band only where the owner changes. With it, the two
+   conform limits above: a tip on the seam beside a junction, and the
+   np=4 gmsh stall on the long fault.
+3. **Steering the seam off the fault.** A segmented gather: chunks along
+   strike, each moved to the rank that holds most of it. `_gather_regions`
+   merges touching regions today; chunks need a `merge=False` form with
+   a deterministic claim of the overlap.
