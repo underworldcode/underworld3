@@ -107,9 +107,14 @@ of the compiled kernels; nothing is recompiled.
 - The stabilisation parameter uses the local cell size (`mesh.cell_size()`) and
   three weights that are runtime constants (`solver.tau_weights`);
   `solver.supg_weight = 0` gives the plain Galerkin scheme for comparison.
-- The linear system is nonsymmetric, so the solver defaults to GMRES with an
-  additive-Schwarz ILU preconditioner instead of algebraic multigrid. Every
-  option can be overridden through `solver.petsc_options`.
+- The linear system is nonsymmetric, so the solver uses GMRES with an
+  additive-Schwarz ILU preconditioner, with the Krylov tolerance matched to the
+  SNES tolerance so that a step is one Newton iteration. Measured, this is the
+  cheaper solve at every Courant number up to eight ranks and its iteration
+  count does not grow with the rank count. `solver.preconditioner = "fmg"`
+  switches to geometric multigrid over the mesh's refinement hierarchy
+  (`refinement >= 1`) for very large rank counts. Every option can be
+  overridden through `solver.petsc_options`.
 
 ## Further reading
 

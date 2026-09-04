@@ -77,10 +77,24 @@ $$
   prototype recompiled its kernels on every change (1.2 s against 0.03 s for a step).
 - **Diffusivity on the constitutive model**, as for every scalar solver, starting at
   $\kappa = 0$. The prototype carried a float attribute with a warning bridge.
-- **Own preconditioner.** The operator is nonsymmetric, so GMRES with an
-  additive-Schwarz ILU preconditioner replaces the managed GAMG block. The solver
-  sets `_pc_option_prefix = None`, and the mesh-owned multigrid pickup on adapt
-  children now respects that (it segfaulted otherwise).
+- **Additive-Schwarz ILU, one Newton iteration per step.** The operator is
+  nonsymmetric, so the smoother and the outer Krylov solver have to be safe for
+  one. Measured (below), GMRES with an additive-Schwarz ILU preconditioner is the
+  cheaper linear solve at every Courant number from 1/2 to 32 and its iteration
+  count does not change between one and eight ranks; geometric multigrid's cycle
+  count grows with the Courant number nearly as fast, and a cycle costs about
+  three Schwarz iterations. The linear solve is under a tenth of a step either
+  way; assembly is the rest. What did matter was the tolerance pair: the Krylov
+  default (1e-5) does not reach the SNES tolerance (1e-8), so the SNES took a
+  second Newton step on a linear operator, and that Jacobian assembly cost more
+  than every linear solve of the step. The Krylov tolerance is now 1e-9.
+  `preconditioner = "fmg"` hands the block to the managed multigrid route
+  (custom-P transfers over the refinement hierarchy or an adapt child's coarse
+  tail, flexible GMRES outside), for the rank count where a one-level method
+  runs out of coarse space. The solver's `solve()` builds through the base
+  `_build`, which is where a preconditioner choice is resolved; the
+  semi-Lagrangian solvers run the three setup stages directly and their
+  `preconditioner` property is inert as a result (#683).
 - **Moving meshes, phase 1.** The unknown and its history stay on the default
   `REMAP` transfer policy with the material velocity. The remap re-interpolates old
   states onto the new nodes, so the Eulerian form is already correct to
@@ -214,6 +228,48 @@ Quarter-turn error on the uniform res-32 mesh with the exact history planted:
 BDF1 slopes 0.80 and 0.88 between $\Delta t$ = 0.02, 0.01, 0.005; BDF2 slopes above
 1.65 between 0.04, 0.02, 0.01.
 
+### Preconditioner
+
+Level-set advection step (`uw.systems.level_set`, a two-cell band, P2,
+Crank-Nicolson) on a structured quad box built with a refinement hierarchy, so
+every solver sees the same finest operator; the vortex velocity field of the
+level-set study. Wall time per step over ten steps after a warm-up step, on a
+sixteen-core workstation. Script and logs:
+`~/+Simulations/supg_vs_slcn_657/parallel/fmg_timing.py`, `fmg.log`.
+
+**Schwarz against geometric multigrid at matched tolerances** (Krylov 1e-9,
+SNES 1e-8; one Newton iteration per step for both), 256², three levels:
+
+| Courant | GMRES + ASM-ILU, its (np 1 / 8) | s/step (np 1 / 8) | fgmres + FMG, cycles (np 1 / 8) | s/step (np 1 / 8) |
+|---|---|---|---|---|
+| 1/2 | 5 / 5 | 0.913 / 0.121 | 1 / 1 | 0.943 / 0.145 |
+| 2 | 8.9 / 8.6 | 0.925 / 0.141 | 3.4 / 3.6 | 1.079 / 0.178 |
+| 8 | 16.6 / 16.5 | 0.971 / 0.146 | 12.8 / 12.8 | 1.657 / 0.299 |
+| 32 | 37 / 37.8 | 1.128 / 0.172 | 23.8 / 24.1 | 2.347 / 0.457 |
+
+The multigrid smoother is the managed bundle's gmres/4 + SOR with Galerkin coarse
+operators, which inherit the fine-grid $\tau$; four levels instead of three
+changes nothing at Courant 1/2 (one cycle, 0.935 s either way), so the coarse
+operators are not under-stabilised there. Above Courant 8 the scheme rings (the
+range of $\phi$ reaches $-0.29$ to $1.29$ at Courant 8), so the rows where
+multigrid's cycle count is closest to the Schwarz count are rows nobody runs.
+
+**Where the step goes** (`-log_view`, np 1, Courant 1/2, eleven solves): residual
+evaluation 4.0 s, Jacobian evaluation 4.4 s, `KSPSolve` 0.36 s under Schwarz and
+0.95 s under multigrid. With the Krylov tolerance left at its default of 1e-5 the
+Schwarz solver stopped at three iterations, the SNES took a second Newton step
+(22 Jacobian assemblies over eleven solves), and the step cost 1.54 s; one
+multigrid cycle happens to reduce the residual below the SNES tolerance, so it
+took one. That looked like a 1.65x win for multigrid and was a Jacobian
+assembly.
+
+**Controls** (Krylov tolerance at its default, 256², np 1 / 8): algebraic
+multigrid (the managed GAMG bundle) 5 iterations, 2.07 / 0.245 s; the "fast"
+smoother (richardson/3 + SOR) 0.933 s, the same as gmres/4; gmres/2 needs two
+cycles and costs 1.61 s; an ILU smoother 1.62 s. At 512² with four levels the
+unmatched rows read 6.12 / 0.84 s (Schwarz, two Newton steps) against 3.71 /
+0.58 s (multigrid).
+
 ## Parallel
 
 LeVeque flow, conservative level set, 20 steps at 128 by 128 (16,384 cells) and 10 at
@@ -234,8 +290,11 @@ Three observations.
   work of the semi-Lagrangian scheme parallelises perfectly while the
   additive-Schwarz ILU preconditioner needs more GMRES iterations as its
   subdomains shrink (SUPG speed-up 3.3 at eight ranks on 256 by 256 against 4.5
-  for SLCN). A multigrid or a two-level Schwarz preconditioner for the
-  nonsymmetric operator would recover that; the assembly itself scales.
+  for SLCN). These SUPG rows were taken with the Krylov tolerance at its default
+  and so carry a second Newton step (see "Preconditioner" above); with the
+  tolerance matched, the Schwarz iteration count on the two-cell band is the
+  same at one and eight ranks and geometric multigrid does not beat it. The
+  assembly itself scales.
 - The Eulerian answer is partition-independent: the enclosed volume agrees to
   ten digits at every rank count. The semi-Lagrangian answer is not: it moves in
   the sixth digit at two and four ranks and by 1.6% at eight ranks on the
