@@ -182,6 +182,17 @@ def test_rotated_adapter_requires_explicit_self_gravity_parameters():
         )
 
 
+def test_rotated_adapter_rejects_unknown_projection():
+    with pytest.raises(ValueError, match="projection must be"):
+        uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
+            stokes=object(),
+            radius_inner=0.55,
+            radius_outer=1.0,
+            harmonic_degree=2,
+            projection="nodal",
+        )
+
+
 def test_rotated_stokes_adapter_matches_zhong_table_2():
     radius_inner = 0.55
     radius_outer = 1.0
@@ -229,6 +240,21 @@ def test_rotated_stokes_adapter_matches_zhong_table_2():
         gravity=9.8,
         gravitational_constant=6.67e-11,
     )
+    reaction_response = uw.postprocessing.geoid.spherical_shell_response_from_rotated_stokes(
+        stokes=stokes,
+        radius_inner=radius_inner,
+        radius_outer=radius_outer,
+        harmonic_degree=2,
+        internal_load_radius=rint,
+        internal_load_coefficient=1.0,
+        include_self_gravity=True,
+        surface_density_contrast=3300.0,
+        cmb_density_contrast=5400.0,
+        planet_radius=6370000.0,
+        gravity=9.8,
+        gravitational_constant=6.67e-11,
+        projection="reaction",
+    )
 
     assert np.isclose(response.surface_topography, 0.41920, rtol=0.10)
     assert np.isclose(response.cmb_topography, 0.77060, rtol=0.10)
@@ -238,3 +264,7 @@ def test_rotated_stokes_adapter_matches_zhong_table_2():
     assert np.isclose(response.self_gravity.cmb_topography, 0.93130, rtol=0.10)
     assert np.isclose(response.self_gravity.surface_geoid, 0.04486, rtol=0.10)
     assert np.isclose(response.self_gravity.cmb_geoid, 0.05461, rtol=0.10)
+    assert np.isclose(reaction_response.surface_topography, 0.41920, rtol=0.03)
+    assert np.isclose(reaction_response.cmb_topography, 0.77060, rtol=0.03)
+    assert np.isclose(reaction_response.surface_geoid, 0.02579, rtol=0.03)
+    assert np.isclose(reaction_response.cmb_geoid, 0.03206, rtol=0.03)
