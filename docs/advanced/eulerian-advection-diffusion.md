@@ -140,6 +140,32 @@ then applies `delta_rate=-M_L^-1*F` to the rate and
 two corrections. Boundary values are reinserted at each correction.
 Automatic geometry is restricted to 2-D triangles and 3-D tetrahedra.
 
+### Finite-Correction Accuracy
+
+The correction mass is lumped, but the time-derivative term in the residual
+uses the consistent finite-element mass. Therefore `adv_gamma=0.5` and two
+corrections do **not** guarantee second-order time convergence for a
+nonuniform temperature field at fixed mesh. In pure diffusion, with
+consistent mass $M$, stiffness $K$, and $D=\operatorname{diag}(M\mathbf{1})$,
+two corrections approach the operator
+$(2I-D^{-1}M)D^{-1}K$ as the timestep vanishes. This generally differs from
+both $M^{-1}K$ and $D^{-1}K$. The startup rate $-D^{-1}KT$ is also only an
+approximation to the consistent semidiscrete rate $-M^{-1}KT$.
+
+`tests/test_1118_pc2_diffusion_time.py` isolates these effects on tiny
+triangular/tetrahedral meshes using independently integrated element
+matrices and exact discrete eigenmode/matrix-exponential solutions. It
+reproduces first-order timestep differences in serial and MPI. Uniform
+scalar decay is a special case where consistent and lumped mass agree;
+second order in that test does not establish PDE time accuracy.
+
+The CitcomS-compatible mode retains its fixed-correction semantics. Do not
+silently replace its residual mass or increase the iteration count and
+still claim an unchanged paper-reproduction method. An accurately solved
+implicit Crank-Nicolson update with consistent initialization provides a
+separate second-order reference. Production-scale validation is separate
+from these small mathematical tests.
+
 Its steady tau is `h/(2*speed) * max(0, 1-1/Pe)`, with
 `Pe=speed*h/(2*kappa)` and directional simplex
 `h=2*speed/sum_a(abs(u.grad(N_a)))`. Zero velocity gives zero tau;
