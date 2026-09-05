@@ -317,6 +317,10 @@ def test_bdf2_snapshot_restore_leaves_no_discarded_step_trace():
         V_fn=velocity.sym,
         order=2,
     )
+    thermal.petsc_options["ksp_rtol"] = 1e-14
+    thermal.petsc_options["ksp_atol"] = 0.0
+    thermal.petsc_options["snes_rtol"] = 1e-13
+    thermal.petsc_options["snes_atol"] = 1e-14
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.05
     thermal.add_dirichlet_bc(0.0, "Left")

@@ -83,6 +83,12 @@ def test_snapshot_restores_fields_and_timestep_estimator(settings, disk, tmp_pat
     orchestration_model = uw.get_default_model()
     mesh, temperature, velocity = _problem(2, "snapshot")
     thermal = uw.systems.AdvDiffusionSUPG(mesh, temperature, velocity.sym, **settings)
+    # Replay is compared near machine precision, independently of the default
+    # stopping tolerance and the preconditioner rebuilt after a discarded step.
+    thermal.petsc_options["ksp_rtol"] = 1e-14
+    thermal.petsc_options["ksp_atol"] = 0.0
+    thermal.petsc_options["snes_rtol"] = 1e-13
+    thermal.petsc_options["snes_atol"] = 1e-14
     thermal.constitutive_model.Parameters.diffusivity = 0.05
     thermal.add_dirichlet_bc(0.0, "Left")
     thermal.add_dirichlet_bc(1.0, "Right")
