@@ -393,6 +393,7 @@ units. Reference (Schaefer and Turek 1996): $C_D$ max 3.22 to 3.24, $C_L$ max
 | SUPG | extrapolated | 0.298 | 0.82 | 2.33 | 2.41 | 0.73 |
 | SUPG | extrapolated + 1 Picard pass | 0.296 | 0.75 | 2.30 | 2.39 | 1.02 |
 | SUPG | implicit (Newton) | 0.295 | 0.76 | 2.30 | 2.39 | 0.99 |
+| SLCN | (trace-back) | 0.259 | 0.68 | 2.72 | 2.30 | 2.36 |
 
 The shedding frequency and the pressure difference are on the reference; drag
 and lift are low by a quarter, which is the mesh (the channel cells are the
@@ -401,6 +402,10 @@ two fully implicit forms agree with each other to three digits, and the
 extrapolated step differs from them by 1% in frequency and 8% on the lift peak:
 at Courant 1 the lag is visible on a time-dependent wake but small, and a single
 Picard pass, or Newton, removes it at 40% more per step.
+The semi-Lagrangian solver on the same mesh and step has the shedding 13% too slow
+(St 0.259) at three times the cost, with a drag closer to the reference and a lower
+lift peak; the frequency is the quantity the time integration owns, and there the
+Eulerian scheme is the accurate one.
 
 ## What the timestep estimate means
 
