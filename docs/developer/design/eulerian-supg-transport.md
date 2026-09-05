@@ -359,6 +359,9 @@ y = 0.5) against Ghia, Ghia and Shin (1982). `~/+Simulations/navier_stokes_supg/
 | 400 | 1/48 | SUPG | 2 | 0 | -0.3076 | 0.2832 | -0.4288 | 1500 | 2.3 |
 | 400 | 1/48 | SUPG | 2 | 1 | -0.3076 | 0.2831 | -0.4288 | 976 (fixed point) | 2.8 |
 | 400 | 1/48 | SUPG | 1 | 0 | -0.3075 | 0.2828 | -0.4284 | 1500 (change 3e-6) | 2.1 |
+| 1000 | Ghia | | | | -0.3829 | 0.3709 | -0.5155 | | |
+| 1000 | 1/64, 3-level FMG | SUPG | 1 | 0 | -0.3413 | 0.0613 | -0.4687 | 1200 (t = 19, still moving) | 3.3 (np 4) |
+| 1000 | 1/64, 3-level FMG | Galerkin | 1 | 0 | -0.1437 | 0.0695 | -0.2031 | 300 (t = 4.7) | 3.7 (np 4) |
 
 At Re 100 SUPG is within 4% of Ghia on every extremum on a 1/32 mesh and
 reaches an exact fixed point; SLCN on the same mesh sits a little further out and
@@ -371,11 +374,17 @@ interior sits still. One Picard pass removes it (step change exactly zero) for
 20% more per step, and so does Courant 1 without any pass. That is the regime the
 Picard option was built for: Courant 2 with an element Reynolds number near eight.
 
-(The Re 1000 rows are recorded below when they land. Two earlier four-rank
-attempts stalled at the first logged step, which turned out to be the driver
-calling the collective centreline evaluation on rank 0 only, and a third was
-killed by the hang watchdog on a rank that never prints; none of them says
-anything about the solver.)
+At Re 1000 (element Reynolds number 16) on a 1/64 mesh built with a two-level
+refinement so the velocity block runs geometric multigrid, the extrapolated step
+takes one Newton and one Krylov iteration per step at 3.3 s on four ranks, and
+the Galerkin form runs just as stably for its 300 steps: neither oscillates on
+this mesh. The 1200-step run (t = 19) is still in the transient, with u_min and
+v_min at 89% and 91% of Ghia's values and the secondary vortex that sets v_max
+not yet formed; the Re 1000 cavity needs several times that to settle and is a
+long-run comparison for another day. Two earlier four-rank attempts stalled at
+their first logged step, which was the driver calling the collective centreline
+evaluation on rank 0 only, and a third was killed by the hang watchdog on a rank
+that never prints; none of those said anything about the solver.
 
 ### Cylinder wake (DFG 2D-2, Re 100)
 
@@ -394,14 +403,23 @@ units. Reference (Schaefer and Turek 1996): $C_D$ max 3.22 to 3.24, $C_L$ max
 | SUPG | extrapolated + 1 Picard pass | 0.296 | 0.75 | 2.30 | 2.39 | 1.02 |
 | SUPG | implicit (Newton) | 0.295 | 0.76 | 2.30 | 2.39 | 0.99 |
 | SLCN | (trace-back) | 0.259 | 0.68 | 2.72 | 2.30 | 2.36 |
+| SUPG, mesh 1/40 and 1/160, np 4 | extrapolated | 0.304 | 0.89 | 2.48 | | 1.0 (np 4) |
 
-The shedding frequency and the pressure difference are on the reference; drag
-and lift are low by a quarter, which is the mesh (the channel cells are the
-cylinder radius) and is left to the finer run recorded below when it lands. The
-two fully implicit forms agree with each other to three digits, and the
-extrapolated step differs from them by 1% in frequency and 8% on the lift peak:
-at Courant 1 the lag is visible on a time-dependent wake but small, and a single
-Picard pass, or Newton, removes it at 40% more per step.
+The shedding frequency and the pressure difference are on the reference at both
+meshes (St 0.304 on the finer one). The lift peak is 18% low on the coarse mesh
+and 11% low on the fine one; the drag is 28% and 23% low, and that does not
+close with the mesh: the stabilisation's streamline diffusion is the likely
+cause, and the tau weights (transient 2, advective 2, viscous 4, carried over from
+the scalar solver) have not been tuned for this. The control that would isolate it,
+the Galerkin form on the same mesh, cannot be run: with the term off the first step
+took four Newton iterations and 22 s and the second did not complete in forty
+minutes, against 0.5 s per step stabilised, which is the element Reynolds number
+of 19 at the cylinder doing to the solver what SUPG exists to prevent. The drag
+deficit against tau is the open measurement. The two fully implicit forms agree
+with each other to three digits, and the extrapolated step differs from them by
+1% in frequency and 8% on the lift peak: at Courant 1 the lag is visible on a
+time-dependent wake but small, and a single Picard pass, or Newton, removes it at
+40% more per step.
 The semi-Lagrangian solver on the same mesh and step has the shedding 13% too slow
 (St 0.259) at three times the cost, with a drag closer to the reference and a lower
 lift peak; the frequency is the quantity the time integration owns, and there the
