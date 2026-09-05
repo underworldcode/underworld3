@@ -177,3 +177,40 @@ def test_exact_matrix_controls_separate_mass_and_startup(diffusion):
             assert np.all((0.9 < rates) & (rates < 1.15)), rates
         else:
             assert np.all((1.9 < rates) & (rates < 2.2)), rates
+
+
+def test_uw3_cn_is_second_order_for_discrete_diffusion(diffusion):
+    pc2, _, ids, mass, _, initial, eigenvalues, _ = diffusion
+    exact = initial * np.exp(-0.1 * eigenvalues[1])
+    errors = []
+    for steps in (16, 32, 64, 128):
+        temperature = uw.discretisation.MeshVariable(
+            f"T_cn_{steps}", pc2.mesh, 1, degree=1)
+        temperature.array[:, 0, 0] = initial[ids]
+        thermal = uw.systems.AdvDiffusionSUPG(
+            pc2.mesh, temperature, pc2.V_fn, order=1, theta=0.5)
+        thermal.constitutive_model.Parameters.diffusivity = 0.1
+        # Time error on the finest dt is about 1e-8; solver error must be smaller.
+        thermal.petsc_options["ksp_rtol"] = 1e-14
+        thermal.petsc_options["ksp_atol"] = 0.0
+        thermal.petsc_options["snes_rtol"] = 1e-13
+        thermal.petsc_options["snes_atol"] = 1e-14
+        dt = 0.1 / steps
+        for _ in range(steps):
+            thermal.solve(timestep=dt)
+        factor = (1 - 0.5 * dt * eigenvalues[1]) / (1 + 0.5 * dt * eigenvalues[1])
+        expected = initial * factor**steps
+        discrepancy = max(uw.mpi.comm.allgather(float(np.max(
+            np.abs(temperature.array[:, 0, 0] - expected[ids])))))
+        assert discrepancy < 1e-10, discrepancy
+        actual = np.zeros(len(initial))
+        for local_ids, values in uw.mpi.comm.allgather(
+                (ids, np.array(temperature.array[:, 0, 0]))):
+            actual[local_ids] = values
+        errors.append(_norm(actual - exact, mass) / _norm(exact, mass))
+        uw.pprint(
+            f"UW3_CN_DIFFUSION dim={pc2.mesh.dim} steps={steps} dt={dt:.12g} "
+            f"relative_error={errors[-1]:.12g} map_error={discrepancy:.12g}")
+    rates = _orders(errors)
+    assert np.all((1.9 < rates) & (rates < 2.2)), rates
+    uw.pprint(f"UW3_CN_TIME_ORDER dim={pc2.mesh.dim} rates={rates.tolist()}")
