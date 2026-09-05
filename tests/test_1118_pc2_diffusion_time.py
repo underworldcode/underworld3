@@ -214,3 +214,48 @@ def test_uw3_cn_is_second_order_for_discrete_diffusion(diffusion):
     rates = _orders(errors)
     assert np.all((1.9 < rates) & (rates < 2.2)), rates
     uw.pprint(f"UW3_CN_TIME_ORDER dim={pc2.mesh.dim} rates={rates.tolist()}")
+
+
+def test_converged_pc_is_second_order_for_discrete_diffusion(diffusion):
+    pc2, _, ids, mass, _, initial, eigenvalues, _ = diffusion
+    temperature = uw.discretisation.MeshVariable(
+        "T_pc_converged", pc2.mesh, 1, degree=1)
+    thermal = uw.systems.AdvDiffusionSUPG(
+        pc2.mesh,
+        temperature,
+        pc2.V_fn,
+        time_integrator="pc_converged",
+        corrector_rtol=1.0e-12,
+        corrector_atol=1.0e-14,
+        max_corrector_steps=200,
+    )
+    thermal.constitutive_model.Parameters.diffusivity = 0.1
+    initial_state = thermal.state
+    exact = initial * np.exp(-0.1 * eigenvalues[1])
+    errors = []
+    for steps in (4, 8, 16):
+        temperature.array[:, 0, 0] = initial[ids]
+        thermal.temperature_rate.array[...] = 0.0
+        thermal.state = initial_state
+        dt = 0.1 / steps
+        for _ in range(steps):
+            thermal.solve(timestep=dt)
+        actual = np.zeros(len(initial))
+        for local_ids, values in uw.mpi.comm.allgather(
+                (ids, np.array(temperature.array[:, 0, 0]))):
+            actual[local_ids] = values
+        factor = (1 - 0.5 * dt * eigenvalues[1]) / (1 + 0.5 * dt * eigenvalues[1])
+        expected = initial * factor**steps
+        map_error = _norm(actual - expected, mass) / _norm(expected, mass)
+        errors.append(_norm(actual - exact, mass) / _norm(exact, mass))
+        assert map_error < 1.0e-9, map_error
+        assert thermal.last_corrector_iterations <= thermal.max_corrector_steps
+        assert thermal.last_corrector_residual <= thermal.corrector_target
+        uw.pprint(
+            f"PC_CONVERGED_DIFFUSION dim={pc2.mesh.dim} steps={steps} "
+            f"dt={dt:.12g} relative_error={errors[-1]:.12g} "
+            f"map_error={map_error:.12g} corrections={thermal.last_corrector_iterations} "
+            f"residual={thermal.last_corrector_residual:.12g}")
+    rates = _orders(errors)
+    assert np.all((1.9 < rates) & (rates < 2.2)), rates
+    uw.pprint(f"PC_CONVERGED_TIME_ORDER dim={pc2.mesh.dim} rates={rates.tolist()}")

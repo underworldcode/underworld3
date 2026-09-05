@@ -146,6 +146,58 @@ def test_citcoms_integrator_requires_continuous_p1_temperature():
         )
 
 
+def test_converged_pc_validates_correction_controls():
+    mesh, temperature, velocity = _mesh_temperature_velocity("pc_converged_api")
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="pc_converged",
+    )
+    assert thermal.integrator == "pc_converged"
+    assert thermal.corrector_rtol == pytest.approx(1.0e-10)
+    assert thermal.corrector_atol == pytest.approx(1.0e-12)
+    assert thermal.max_corrector_steps == 100
+
+    invalid = (
+        ({"corrector_rtol": 0.0}, "corrector_rtol"),
+        ({"corrector_atol": -1.0}, "corrector_atol"),
+        ({"max_corrector_steps": 0}, "max_corrector_steps"),
+        ({"adv_gamma": 0.6}, "adv_gamma=0.5"),
+    )
+    for kwargs, message in invalid:
+        with pytest.raises(ValueError, match=message):
+            uw.systems.AdvDiffusionSUPG(
+                mesh,
+                u_Field=temperature,
+                V_fn=velocity.sym,
+                time_integrator="pc_converged",
+                **kwargs,
+            )
+
+
+def test_converged_pc_fails_when_residual_tolerance_is_not_reached():
+    mesh, temperature, velocity = _mesh_temperature_velocity(
+        "pc_converged_failure", velocity=(0.0, 0.0)
+    )
+    temperature.array[:, 0, 0] = np.prod(
+        np.sin(np.pi * np.asarray(temperature.coords)), axis=1
+    )
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh,
+        u_Field=temperature,
+        V_fn=velocity.sym,
+        time_integrator="pc_converged",
+        corrector_rtol=1.0e-15,
+        corrector_atol=0.0,
+        max_corrector_steps=1,
+    )
+    _configure_diffusion(thermal, diffusivity=0.1)
+
+    with pytest.raises(RuntimeError, match="did not reach"):
+        thermal.solve(timestep=0.01)
+
+
 def test_citcoms_lumped_mass_matches_constant_residual():
     mesh, temperature, velocity = _mesh_temperature_velocity(
         "citcoms_mass", velocity=(0.0, 0.0)

@@ -169,6 +169,35 @@ in serial and on eight ranks, with the nodal CN amplification map agreeing
 within 1.6e-14. Production-scale validation is separate from these small
 mathematical tests.
 
+For a predictor-corrector reference that retains the same SUPG residual and
+gamma update, select the residual-converged mode explicitly:
+
+```python
+adv = uw.systems.AdvDiffusionSUPG(
+    mesh,
+    T,
+    v.sym,
+    time_integrator="pc_converged",
+    temperature_rate_field=Tdot,
+)
+```
+
+This mode uses the row-lumped mass only as an iterative preconditioner. It
+solves the consistent Petrov-Galerkin rate equation at startup and after each
+prediction until the full residual is no larger than the greater of
+`corrector_atol` and `corrector_rtol*initial_residual`. The defaults are
+`corrector_rtol=1e-10`, `corrector_atol=1e-12`, and
+`max_corrector_steps=100`; non-convergence raises `RuntimeError` rather than
+silently accepting an inaccurate step.
+
+The exact discrete diffusion regression measures temporal order 2.00 in both
+2-D and 3-D, in serial and on eight ranks, and agrees with the trapezoidal
+amplification map to below 5.2e-14. With deliberately strict `1e-12` relative
+tolerance, its small meshes require 48-63 corrections per step in 2-D and
+63-81 in 3-D. The mode is therefore an accuracy reference, not a claim that
+repeated diagonal correction is the most efficient production-scale
+consistent-mass solve.
+
 Its steady tau is `h/(2*speed) * max(0, 1-1/Pe)`, with
 `Pe=speed*h/(2*kappa)` and directional simplex
 `h=2*speed/sum_a(abs(u.grad(N_a)))`. Zero velocity gives zero tau;
@@ -196,12 +225,13 @@ orchestration_model.load_state("checkpoint.h5")
 ```
 
 The PETSc-backed snapshot captures T and the required history automatically:
-Tdot and startup status for CitcomS; DDt fields, timestep history, theta,
-and the field-change estimator state for implicit integration. A T-only
-checkpoint is not an exact restart. Disk snapshots currently require the
-same model layout and MPI rank count. Old full-model snapshots with a
-different solver/history layout require migration; importing the old module
-name does not make those layouts equivalent.
+Tdot, startup status, and correction controls for both predictor-corrector
+modes; DDt fields, timestep history, theta, and the field-change estimator
+state for implicit integration. A T-only checkpoint is not an exact restart.
+Disk snapshots currently require the same model layout and MPI rank count.
+Old full-model snapshots with a different solver/history layout require
+migration; importing the old module name does not make those layouts
+equivalent.
 
 A fresh interpreter can construct the matching mesh, variables, and solver,
 then load the snapshot without a dummy timestep. Generic SUPG registers its

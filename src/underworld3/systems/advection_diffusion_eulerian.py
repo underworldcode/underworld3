@@ -82,6 +82,9 @@ class AdvDiffusionSUPGState(SnapshottableState):
     theta: float = 0.5
     adv_gamma: float = 0.5
     corrector_steps: int = 2
+    corrector_rtol: float = 1.0e-10
+    corrector_atol: float = 1.0e-12
+    max_corrector_steps: int = 100
 
 
 class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
@@ -102,24 +105,32 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     V_fn : MeshVariable or sympy Matrix
         Advecting velocity.
     order : int, default 1
-        Implicit history order: 1, 2 or 3. Leave at 1 for CitcomS,
-        which manages its own rate instead of DDt history.
+        Implicit history order: 1, 2 or 3. Leave at 1 for either
+        predictor-corrector mode, which manages its own rate.
     theta : float, optional
         At order 1, 0.5 selects Crank-Nicolson (implicit default) and 1
-        backward Euler. Orders 2 and 3 require 1. Leave unset for CitcomS.
-    time_integrator : {"implicit", "citcoms", "bdf"}, default "implicit"
+        backward Euler. Orders 2 and 3 require 1. Leave unset for either
+        predictor-corrector mode.
+    time_integrator : {"implicit", "citcoms", "pc_converged", "bdf"}, default "implicit"
         "implicit" selects CN/BE/BDF2/BDF3 through order and theta.
         "citcoms" selects the P1 lumped-mass predictor-corrector used by
-        CitcomS-style mantle-convection benchmarks. "bdf" retains the
-        previous BDF selection, including backward Euler at order 1.
+        CitcomS-style mantle-convection benchmarks. "pc_converged" uses the
+        same predictor-multicorrector residual but iterates its consistent
+        mass equation to tolerance. "bdf" retains the previous BDF selection,
+        including backward Euler at order 1.
     temperature_rate_field : MeshVariable, optional
-        Separate continuous P1 field storing the CitcomS rate. A stable
-        name such as Tdot is useful for field checkpoints. Created internally
-        if omitted; not used by implicit integrators.
+        Separate continuous P1 field storing the predictor-corrector rate. A
+        stable name such as Tdot is useful for field checkpoints. Created
+        internally if omitted; not used by implicit integrators.
     adv_gamma : float, default 0.5
         CitcomS predictor/corrector weight, in (0, 1].
     corrector_steps : int, default 2
         Number of fixed CitcomS residual corrections.
+    corrector_rtol, corrector_atol : float
+        Relative and absolute residual tolerances for ``pc_converged``.
+    max_corrector_steps : int, default 100
+        Maximum residual corrections for ``pc_converged``. Failure to reach
+        the requested tolerance raises ``RuntimeError``.
     tau : scalar expression, optional
         Explicit stabilisation parameter; zero gives Galerkin transport.
     tau_model : {"generic", "citcoms"}, optional
@@ -128,12 +139,14 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         CitcomS uses a clipped steady parameter on directional simplex
         lengths. Its automatic operations require triangles or tetrahedra.
     DuDt : Eulerian, optional
-        Pre-built implicit history manager with V_fn=None. Not used by CitcomS.
+        Pre-built implicit history manager with V_fn=None. Not used by either
+        predictor-corrector mode.
     verbose : bool, default False
         Solver verbosity.
     restore_points_func, monotone_mode, old_frame_traceback, DFDt
         SLCN-only compatibility arguments, ignored with a warning for
-        implicit transport. CitcomS rejects supplied history operators.
+        implicit transport. Predictor-corrector modes reject supplied history
+        operators.
 
     Notes
     -----
@@ -154,6 +167,11 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     to temperature. Boundary values are reinserted at every correction.
     Its default timestep is 0.9*min(dt_adv, dt_diff), not the implicit
     field-change accuracy estimate.
+
+    ``pc_converged`` uses gamma=0.5 and the same update relation, but treats
+    the lumped mass only as a correction preconditioner. It converges the full
+    Petrov-Galerkin residual during rate initialisation and every timestep,
+    recovering the consistent semidiscrete trapezoidal update.
 
     Implicit transport defaults to GMRES/ASM-ILU. preconditioner="fmg"
     selects geometric multigrid when a mesh hierarchy is available.
@@ -192,6 +210,9 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         temperature_rate_field: Optional[uw.discretisation.MeshVariable] = None,
         adv_gamma: float = 0.5,
         corrector_steps: int = 2,
+        corrector_rtol: float = 1.0e-10,
+        corrector_atol: float = 1.0e-12,
+        max_corrector_steps: int = 100,
         tau=None,
         tau_model: Optional[str] = None,
     ):
@@ -200,19 +221,29 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
                 "u_Field must be a continuous MeshVariable: the SUPG weak form "
                 "is continuous Galerkin."
             )
-        if time_integrator not in ("implicit", "bdf", "citcoms"):
-            raise ValueError("time_integrator must be 'implicit', 'bdf' or 'citcoms'.")
+        pc_integrators = ("citcoms", "pc_converged")
+        if time_integrator not in ("implicit", "bdf", *pc_integrators):
+            raise ValueError(
+                "time_integrator must be 'implicit', 'bdf', 'citcoms' or "
+                "'pc_converged'."
+            )
         if u_Field.num_components != 1:
             raise ValueError("u_Field must be scalar.")
         if mesh.dim != mesh.cdim:
             raise NotImplementedError("SUPG currently requires a volume mesh.")
-        if time_integrator == "citcoms":
+        if time_integrator in pc_integrators:
             if u_Field.degree != 1:
-                raise ValueError("The CitcomS predictor-corrector requires continuous P1 temperature.")
+                raise ValueError("Predictor-corrector transport requires continuous P1 temperature.")
             if order != 1 or (theta is not None and float(theta) != 1.0):
-                raise ValueError("CitcomS uses gamma, not order/theta; leave order=1 and theta unset.")
+                raise ValueError(
+                    "Predictor-corrector transport uses gamma, not order/theta; "
+                    "leave order=1 and theta unset."
+                )
             if DuDt is not None or DFDt is not None:
-                raise ValueError("CitcomS manages its own derivative; do not supply DuDt or DFDt.")
+                raise ValueError(
+                    "Predictor-corrector transport manages its own derivative; "
+                    "do not supply DuDt or DFDt."
+                )
             if not 0.0 < float(adv_gamma) <= 1.0:
                 raise ValueError("adv_gamma must be in (0, 1].")
             if int(corrector_steps) != corrector_steps or corrector_steps < 1:
@@ -225,18 +256,44 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
                 or temperature_rate_field.num_components != 1
             ):
                 raise ValueError("temperature_rate_field must be a separate continuous scalar P1 variable on the solver mesh.")
-        elif temperature_rate_field is not None or adv_gamma != 0.5 or corrector_steps != 2:
-            raise ValueError("temperature_rate_field, adv_gamma and corrector_steps configure CitcomS only.")
-        if time_integrator in ("bdf", "citcoms"):
+            if time_integrator == "pc_converged":
+                if float(adv_gamma) != 0.5:
+                    raise ValueError("pc_converged requires adv_gamma=0.5 for second-order time accuracy.")
+                if corrector_steps != 2:
+                    raise ValueError("corrector_steps configures fixed CitcomS corrections only.")
+                if not np.isfinite(float(corrector_rtol)) or float(corrector_rtol) <= 0.0:
+                    raise ValueError("corrector_rtol must be finite and positive.")
+                if not np.isfinite(float(corrector_atol)) or float(corrector_atol) < 0.0:
+                    raise ValueError("corrector_atol must be finite and non-negative.")
+                if (int(max_corrector_steps) != max_corrector_steps
+                        or max_corrector_steps < 1):
+                    raise ValueError("max_corrector_steps must be a positive integer.")
+            elif (corrector_rtol != 1.0e-10 or corrector_atol != 1.0e-12
+                  or max_corrector_steps != 100):
+                raise ValueError(
+                    "corrector_rtol, corrector_atol and max_corrector_steps "
+                    "configure pc_converged only."
+                )
+        elif (temperature_rate_field is not None or adv_gamma != 0.5
+              or corrector_steps != 2 or corrector_rtol != 1.0e-10
+              or corrector_atol != 1.0e-12 or max_corrector_steps != 100):
+            raise ValueError(
+                "temperature_rate_field and predictor-corrector controls require "
+                "time_integrator='citcoms' or 'pc_converged'."
+            )
+        if time_integrator in ("bdf", *pc_integrators):
             if theta is not None and float(theta) != 1.0:
-                raise ValueError("The bdf and citcoms modes require theta=1.0.")
+                raise ValueError("The bdf and predictor-corrector modes require theta=1.0.")
             theta = 1.0
         if tau_model is None:
-            tau_model = "citcoms" if time_integrator == "citcoms" else "generic"
+            tau_model = "citcoms" if time_integrator in pc_integrators else "generic"
         if tau_model not in ("generic", "citcoms"):
             raise ValueError("tau_model must be 'generic' or 'citcoms'.")
-        if time_integrator == "citcoms" and tau_model != "citcoms":
-            raise ValueError("CitcomS requires its steady tau model; supply tau for a custom value.")
+        if time_integrator in pc_integrators and tau_model != "citcoms":
+            raise ValueError(
+                "Predictor-corrector transport requires the CitcomS steady tau "
+                "model; supply tau for a custom value."
+            )
         ignored = [name for name, value in (
             ("restore_points_func", restore_points_func),
             ("monotone_mode", monotone_mode),
@@ -261,7 +318,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         # orders 2 and 3 is assembled by the same code but is not offered:
         # its bounded stability region blows up on an advection operator
         # from about Courant 1 (design note, integrator study).
-        integrator = ("citcoms" if time_integrator == "citcoms" else
+        integrator = (time_integrator if time_integrator in pc_integrators else
                       "bdf" if time_integrator == "bdf" or order > 1 else "am")
         if theta != 1.0 and order != 1:
             raise ValueError(
@@ -277,6 +334,12 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self.tau_model = tau_model
         self.adv_gamma = float(adv_gamma)
         self.corrector_steps = int(corrector_steps)
+        self.corrector_rtol = float(corrector_rtol)
+        self.corrector_atol = float(corrector_atol)
+        self.max_corrector_steps = int(max_corrector_steps)
+        self.last_corrector_iterations = 0
+        self.last_corrector_residual = np.inf
+        self.corrector_target = np.inf
         self.f = sympy.Matrix.zeros(1, 1)
         self._integrator = integrator
         self._time_order = order
@@ -299,7 +362,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
             public_expression(rf"C^{{\tau}}_{{\kappa,{tag}}}", 4.0, "tau diffusive weight"),
         ]
 
-        if time_integrator == "citcoms":
+        if time_integrator in pc_integrators:
             self.Unknowns.DuDt = None
         elif DuDt is None:
             self.Unknowns.DuDt = Eulerian_DDt(
@@ -361,7 +424,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._directional_rate_mesh_version = None
         self._diffusion_dt_cache = None
         self._rate_initialised = False
-        if time_integrator == "citcoms":
+        if time_integrator in pc_integrators:
             self._temperature_rate = temperature_rate_field
             if self._temperature_rate is None:
                 self._temperature_rate = uw.discretisation.MeshVariable(
@@ -496,8 +559,8 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
                 "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
                 "backward Euler); order 2 and 3 take theta=1.0."
             )
-        if self.time_integrator == "citcoms" and value != 1.0:
-            raise ValueError("CitcomS uses adv_gamma, not theta.")
+        if self.time_integrator in ("citcoms", "pc_converged") and value != 1.0:
+            raise ValueError("Predictor-corrector transport uses adv_gamma, not theta.")
         self._theta = value
         if self.DuDt is not None:
             self.DuDt.theta = value
@@ -569,13 +632,13 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
     def _states(self):
         r"""``[phi^{n+1}, phi^{n}, phi^{n-1}, ...]`` as scalar field symbols."""
-        if self.time_integrator == "citcoms":
+        if self.time_integrator in ("citcoms", "pc_converged"):
             return [self.u.sym[0]]
         return [self.u.sym[0]] + [ps.sym[0] for ps in self.DuDt.psi_star]
 
     def _spatial_weights(self):
         """Weight of the spatial operator at each time level of ``_states``."""
-        if self.time_integrator == "citcoms":
+        if self.time_integrator in ("citcoms", "pc_converged"):
             return [sympy.Integer(1)]
         n = len(self.DuDt.psi_star)
         if self._integrator == "bdf":
@@ -583,7 +646,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         return self.DuDt.am_coefficient_expressions[: n + 1]
 
     def _time_derivative(self):
-        if self.time_integrator == "citcoms":
+        if self.time_integrator in ("citcoms", "pc_converged"):
             return self._temperature_rate.sym[0]
         if self._integrator == "bdf":
             return self.DuDt.bdf()[0] / self._delta_t
@@ -715,11 +778,17 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         """
         from mpi4py import MPI
 
-        if self.time_integrator == "citcoms":
+        if self.time_integrator in ("citcoms", "pc_converged"):
             if basis not in (None, "stability"):
-                raise ValueError("CitcomS requires basis='stability', not an implicit accuracy estimate.")
+                raise ValueError(
+                    "Predictor-corrector transport requires basis='stability', "
+                    "not an implicit accuracy estimate."
+                )
             if fraction != 0.02 or direction_aware or percentile != 0.0:
-                raise ValueError("CitcomS uses its fixed 0.9 stability factor and directional simplex length.")
+                raise ValueError(
+                    "Predictor-corrector transport uses its fixed 0.9 stability "
+                    "factor and directional simplex length."
+                )
             return _dimensionalise_dt(self._estimate_citcoms_dt())
         if basis is None:
             basis = "accuracy"
@@ -797,8 +866,8 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
         if _force_setup:
             self._needs_function_rewire = True
-        if self.time_integrator == "citcoms":
-            return self._solve_citcoms(dt, verbose=verbose)
+        if self.time_integrator in ("citcoms", "pc_converged"):
+            return self._solve_predictor_corrector(dt, verbose=verbose)
         self._update_automatic_tau()
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
@@ -826,7 +895,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
     @property
     def temperature_rate(self):
-        """Stored derivative for CitcomS, or None for an implicit method."""
+        """Stored predictor-corrector derivative, or None for an implicit method."""
         return self._temperature_rate
 
     @property
@@ -839,6 +908,9 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
             last_change_rate=self._last_change_rate,
             order=self.order, theta=self.theta,
             adv_gamma=self.adv_gamma, corrector_steps=self.corrector_steps,
+            corrector_rtol=self.corrector_rtol,
+            corrector_atol=self.corrector_atol,
+            max_corrector_steps=self.max_corrector_steps,
         )
 
     @state.setter
@@ -848,7 +920,10 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         if (state.time_integrator != self.time_integrator
                 or state.order != self.order
                 or state.adv_gamma != self.adv_gamma
-                or state.corrector_steps != self.corrector_steps):
+                or state.corrector_steps != self.corrector_steps
+                or state.corrector_rtol != self.corrector_rtol
+                or state.corrector_atol != self.corrector_atol
+                or state.max_corrector_steps != self.max_corrector_steps):
             raise ValueError("AdvDiffusionSUPG integration settings changed since snapshot.")
         self.theta = state.theta
         self._rate_initialised = bool(state.rate_initialised)
@@ -1076,7 +1151,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     def _estimate_citcoms_dt(self):
         """Estimate a simplex advection-diffusion timestep.
 
-        The CitcomS-compatible predictor-corrector uses
+        The predictor-corrector modes use
         ``0.9 * min(1/max(lambda_adv), 2/max(rowsum(abs(M_L^-1 K))))``.
         Generic implicit transport retains its separate Eulerian estimator.
         """
@@ -1176,8 +1251,86 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self.snes.computeFunction(solution, residual)
         return solution, residual
 
-    def _solve_citcoms(self, timestep, verbose=False):
-        """Advance one CitcomS-compatible predictor-corrector timestep."""
+    def _apply_pc_correction(
+        self,
+        temperature_global,
+        residual,
+        delta_rate,
+        rate_global,
+        mass,
+        dt,
+        *,
+        advance_temperature,
+    ):
+        """Apply one lumped-preconditioned correction to rate and temperature."""
+        delta_rate.pointwiseDivide(residual, mass)
+        delta_rate.scale(-1.0)
+        rate_global.set(0.0)
+        self.dm.localToGlobal(self._temperature_rate.vec, rate_global, addv=False)
+        rate_global.axpy(1.0, delta_rate)
+        if advance_temperature:
+            temperature_global.axpy(self.adv_gamma * dt, delta_rate)
+
+        self._temperature_rate.vec.set(0.0)
+        self.dm.globalToLocal(rate_global, self._temperature_rate.vec)
+        if advance_temperature:
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_insert_boundary_values,
+            )
+
+            self.u.vec.set(0.0)
+            self.dm.globalToLocal(temperature_global, self.u.vec)
+            petsc_dm_insert_boundary_values(self.dm, self.u.vec)
+        self.mesh._stale_lvec = True
+
+    def _converge_pc_residual(
+        self,
+        temperature_global,
+        residual,
+        delta_rate,
+        rate_global,
+        mass,
+        dt,
+        *,
+        advance_temperature,
+    ):
+        """Iterate the predictor-corrector residual to its configured tolerance."""
+        initial_norm = None
+        for corrections in range(self.max_corrector_steps + 1):
+            self._compute_citcoms_residual(temperature_global, residual)
+            residual_norm = float(residual.norm(PETSc.NormType.NORM_2))
+            if not np.isfinite(residual_norm):
+                raise RuntimeError("pc_converged produced a non-finite residual norm.")
+            if initial_norm is None:
+                initial_norm = residual_norm
+                self.corrector_target = max(
+                    self.corrector_atol,
+                    self.corrector_rtol * initial_norm,
+                )
+            self.last_corrector_iterations = corrections
+            self.last_corrector_residual = residual_norm
+            if residual_norm <= self.corrector_target:
+                return
+            if corrections == self.max_corrector_steps:
+                break
+            self._apply_pc_correction(
+                temperature_global,
+                residual,
+                delta_rate,
+                rate_global,
+                mass,
+                dt,
+                advance_temperature=advance_temperature,
+            )
+        raise RuntimeError(
+            "pc_converged did not reach its predictor-corrector residual "
+            f"tolerance after {self.max_corrector_steps} corrections: "
+            f"residual={self.last_corrector_residual:.6e}, "
+            f"target={self.corrector_target:.6e}."
+        )
+
+    def _solve_predictor_corrector(self, timestep, verbose=False):
+        """Advance one fixed or residual-converged predictor-corrector step."""
         if timestep is None:
             timestep = float(self.delta_t.data)
         self.delta_t = timestep
@@ -1192,12 +1345,24 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
         if not self._rate_initialised:
             self._temperature_rate.array[:, 0, 0] = 0.0
-            self._compute_citcoms_residual(temperature_global, residual)
-            delta_rate.pointwiseDivide(residual, mass)
-            delta_rate.scale(-1.0)
-            self._temperature_rate.vec.set(0.0)
-            self.dm.globalToLocal(delta_rate, self._temperature_rate.vec)
-            self.mesh._stale_lvec = True
+            if self.time_integrator == "pc_converged":
+                self.mesh._stale_lvec = True
+                self._converge_pc_residual(
+                    temperature_global,
+                    residual,
+                    delta_rate,
+                    rate_global,
+                    mass,
+                    dt,
+                    advance_temperature=False,
+                )
+            else:
+                self._compute_citcoms_residual(temperature_global, residual)
+                delta_rate.pointwiseDivide(residual, mass)
+                delta_rate.scale(-1.0)
+                self._temperature_rate.vec.set(0.0)
+                self.dm.globalToLocal(delta_rate, self._temperature_rate.vec)
+                self.mesh._stale_lvec = True
             self._rate_initialised = True
 
         self.u.array[:, 0, 0] += (
@@ -1206,26 +1371,34 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._temperature_rate.array[:, 0, 0] = 0.0
         self.mesh._stale_lvec = True
 
-        from underworld3.cython.petsc_discretisation import (
-            petsc_dm_insert_boundary_values,
-        )
+        if self.time_integrator == "pc_converged":
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_insert_boundary_values,
+            )
 
-        for _ in range(self.corrector_steps):
-            self._compute_citcoms_residual(temperature_global, residual)
-            delta_rate.pointwiseDivide(residual, mass)
-            delta_rate.scale(-1.0)
-
-            rate_global.set(0.0)
-            self.dm.localToGlobal(self._temperature_rate.vec, rate_global, addv=False)
-            rate_global.axpy(1.0, delta_rate)
-            temperature_global.axpy(self.adv_gamma * dt, delta_rate)
-
-            self._temperature_rate.vec.set(0.0)
-            self.u.vec.set(0.0)
-            self.dm.globalToLocal(rate_global, self._temperature_rate.vec)
-            self.dm.globalToLocal(temperature_global, self.u.vec)
             petsc_dm_insert_boundary_values(self.dm, self.u.vec)
             self.mesh._stale_lvec = True
+            self._converge_pc_residual(
+                temperature_global,
+                residual,
+                delta_rate,
+                rate_global,
+                mass,
+                dt,
+                advance_temperature=True,
+            )
+        else:
+            for _ in range(self.corrector_steps):
+                self._compute_citcoms_residual(temperature_global, residual)
+                self._apply_pc_correction(
+                    temperature_global,
+                    residual,
+                    delta_rate,
+                    rate_global,
+                    mass,
+                    dt,
+                    advance_temperature=True,
+                )
 
         _invalidate_solution_cache(self.u)
         _invalidate_solution_cache(self._temperature_rate)

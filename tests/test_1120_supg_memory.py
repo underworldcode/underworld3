@@ -21,7 +21,7 @@ def _workspace(thermal):
     """Record identities, not contents that should change during transport."""
     identity = [thermal.snes.handle, thermal.dm.handle,
                 tuple((name, field.vec.handle) for name, field in thermal.mesh.vars.items())]
-    if thermal.time_integrator == "citcoms":
+    if thermal.time_integrator in ("citcoms", "pc_converged"):
         identity.extend([
             thermal._lumped_mass.handle,
             tuple(vector.handle for vector in thermal._citcoms_work_vectors),
@@ -43,6 +43,8 @@ def _transport_problem(dim, method):
     velocity.array[...] = 0.0
     velocity.array[:, 0, 0] = 0.2
     settings = ({"time_integrator": "citcoms"} if method == "pc2"
+                else {"time_integrator": "pc_converged"}
+                if method == "pc_converged"
                 else {"order": 1, "theta": 0.5} if method == "cn"
                 else {"order": 2})
     thermal = uw.systems.AdvDiffusionSUPG(
@@ -63,7 +65,7 @@ def _advance(thermal, velocity, step):
 
 @pytest.mark.level_2
 @pytest.mark.parametrize("dim", [2, 3])
-@pytest.mark.parametrize("method", ["pc2", "cn", "bdf2"])
+@pytest.mark.parametrize("method", ["pc2", "pc_converged", "cn", "bdf2"])
 def test_transport_workspace_reuse(dim, method):
     thermal, temperature, velocity = _transport_problem(dim, method)
     _advance(thermal, velocity, 1)

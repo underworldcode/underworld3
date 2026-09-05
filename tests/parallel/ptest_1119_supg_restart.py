@@ -11,7 +11,7 @@ params = uw.Params(
     uw_method=uw.Param("pc2", type=uw.ParamType.STRING),
     uw_phase=uw.Param("full", type=uw.ParamType.STRING),
 )
-assert params.uw_method in ("pc2", "cn", "bdf2")
+assert params.uw_method in ("pc2", "pc_converged", "cn", "bdf2")
 assert params.uw_phase in ("full", "write", "resume")
 uw.reset_default_model()
 orchestration_model = uw.get_default_model()
@@ -25,6 +25,8 @@ temperature.array[:, 0, 0] = np.prod(np.sin(np.pi * np.asarray(temperature.coord
 velocity.array[...] = 0.0
 velocity.array[:, 0, 0] = 0.2
 settings = ({"time_integrator": "citcoms"} if params.uw_method == "pc2"
+            else {"time_integrator": "pc_converged"}
+            if params.uw_method == "pc_converged"
             else {"order": 1, "theta": 0.5} if params.uw_method == "cn"
             else {"order": 2})
 thermal = uw.systems.AdvDiffusionSUPG(mesh, temperature, velocity.sym, **settings)

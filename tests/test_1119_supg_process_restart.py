@@ -1,4 +1,4 @@
-"""Fresh-process transport snapshots: pc2, CN and BDF2 on tiny tetrahedra.
+"""Fresh-process transport snapshots on tiny tetrahedra.
 
 Run this parent pytest in serial. UW_SUPG_TEST_RANKS=8 requests eight-rank
 workers; the default uses singleton workers. Every phase starts a fresh
@@ -21,7 +21,7 @@ from parallel.serial_reference import _MPI_ENV_PREFIXES
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
-@pytest.mark.parametrize("method", ["pc2", "cn", "bdf2"])
+@pytest.mark.parametrize("method", ["pc2", "pc_converged", "cn", "bdf2"])
 def test_fresh_process_transport_restart(method, tmp_path):
     if uw.mpi.size != 1:
         pytest.skip("Run the parent in serial; UW_SUPG_TEST_RANKS selects worker ranks.")
