@@ -221,14 +221,14 @@ silently interpreted as unsupported physics on only one rank.
 
 ### Small Lifecycle Regressions
 
-`tests/test_1120_supg_memory.py` runs PC2, CN, and BDF2 for 200 updates on
-tiny triangles and tetrahedra with prescribed changing velocity. It checks
-current per-rank RSS after 40 warm-up steps, fits late slopes over steps
-120-200, and checks stable solver/vector handles and PC2 workspace reuse.
-There are no Stokes solves, checkpoints, reaction diagnostics, or forced
-garbage collections in the measured loop. Serial and eight-rank tests pass
-the preset limits of 16 MiB growth and 0.05 MiB/step per rank. These bounds
-detect repeated-allocation regressions, not prove zero leaks at every size.
+`tests/test_1120_supg_memory.py` checks PC2, CN, and BDF2 workspace reuse over
+eight updates on tiny triangles and tetrahedra. This fast Level 2 test runs by
+default. The same file also provides an opt-in 200-update Level 3 soak test.
+The soak records current per-rank RSS after 40 warm-up steps, fits late slopes
+over steps 120-200, and checks stable solver/vector handles and PC2 workspace
+reuse. There are no Stokes solves, checkpoints, reaction diagnostics, or
+forced garbage collections in either loop. RSS measurements are platform
+sensitive and are not part of routine CI.
 
 Run the restart parent in serial; it starts independent worker interpreters
 and uses the existing MPI supervisor for bounded cleanup:
@@ -237,7 +237,10 @@ and uses the existing MPI supervisor for bounded cleanup:
 python -m pytest -x -s tests/test_1119_supg_process_restart.py
 UW_SUPG_TEST_RANKS=8 python -m pytest -x -s tests/test_1119_supg_process_restart.py
 python -m pytest -x -s tests/test_1120_supg_memory.py
-mpirun -np 8 python -m mpi4py -m pytest --with-mpi -x -s tests/test_1120_supg_memory.py
+UW_RUN_SUPG_MEMORY_SOAK=1 python -m pytest -x -s \
+  tests/test_1120_supg_memory.py -k repeated_transport_memory
+UW_RUN_SUPG_MEMORY_SOAK=1 mpirun -np 8 python -m mpi4py -m pytest \
+  --with-mpi -x -s tests/test_1120_supg_memory.py -k repeated_transport_memory
 ```
 
 Use the MPI launcher matching the active Python/PETSc environment. These

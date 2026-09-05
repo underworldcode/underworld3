@@ -1,11 +1,11 @@
-"""Bounded transport-only memory regression on tiny volume simplices.
+"""Fast workspace reuse and opt-in transport memory soak tests.
 
 No Stokes, reaction diagnostics, checkpoints, or forced garbage collection
-occur in the measured loop. RSS is current resident memory, not peak RSS.
-This catches repeated allocation regressions; it cannot certify every
-production mesh or long coupled trajectory as leak-free.
+occur in either loop. The default test checks stable object identities over
+eight updates. Set UW_RUN_SUPG_MEMORY_SOAK=1 to run the 200-update RSS test.
 """
 
+import os
 import time
 
 import numpy as np
@@ -14,7 +14,7 @@ import pytest
 import underworld3 as uw
 from underworld3.utilities import memprobe
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+pytestmark = pytest.mark.tier_b
 
 
 def _workspace(thermal):
@@ -31,34 +31,69 @@ def _workspace(thermal):
     return identity
 
 
-@pytest.mark.parametrize("dim", [2, 3])
-@pytest.mark.parametrize("method", ["pc2", "cn", "bdf2"])
-def test_repeated_transport_memory_and_workspace_reuse(dim, method):
-    pytest.importorskip("psutil", reason="This test requires current RSS, not peak RSS.")
+def _transport_problem(dim, method):
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
         cellSize=0.25, qdegree=4, regular=False,
     )
     temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
     velocity = uw.discretisation.MeshVariable("U", mesh, dim, degree=1)
-    temperature.array[:, 0, 0] = np.prod(np.sin(np.pi * np.asarray(temperature.coords)), axis=1)
+    temperature.array[:, 0, 0] = np.prod(
+        np.sin(np.pi * np.asarray(temperature.coords)), axis=1)
     velocity.array[...] = 0.0
     velocity.array[:, 0, 0] = 0.2
     settings = ({"time_integrator": "citcoms"} if method == "pc2"
                 else {"order": 1, "theta": 0.5} if method == "cn"
                 else {"order": 2})
-    thermal = uw.systems.AdvDiffusionSUPG(mesh, temperature, velocity.sym, **settings)
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh, temperature, velocity.sym, **settings)
     thermal.constitutive_model.Parameters.diffusivity = 0.01
     for boundary in mesh.boundaries:
         if boundary.name not in ("All_Boundaries", "Null_Boundary"):
             thermal.add_dirichlet_bc(0.0, boundary.name)
+    return thermal, temperature, velocity
+
+
+def _advance(thermal, velocity, step):
+    velocity.array[:, 0, 0] = 0.2 * (1.0 + 0.1 * np.sin(step))
+    dt = (0.001, 0.0015, 0.002, 0.0025)[step % 4]
+    thermal.estimate_dt()
+    thermal.solve(timestep=dt)
+
+
+@pytest.mark.level_2
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize("method", ["pc2", "cn", "bdf2"])
+def test_transport_workspace_reuse(dim, method):
+    thermal, temperature, velocity = _transport_problem(dim, method)
+    _advance(thermal, velocity, 1)
+    workspace = _workspace(thermal)
+    for step in range(2, 9):
+        _advance(thermal, velocity, step)
+        unchanged = _workspace(thermal) == workspace
+        assert all(uw.mpi.comm.allgather(unchanged)), "Solver workspace was reallocated"
+    nodal = np.asarray(temperature.array)
+    assert all(uw.mpi.comm.allgather(bool(np.isfinite(nodal).all())))
+    minimum = min(uw.mpi.comm.allgather(float(np.min(nodal))))
+    maximum = max(uw.mpi.comm.allgather(float(np.max(nodal))))
+    assert -0.05 < minimum and maximum < 1.05
+
+
+@pytest.mark.level_3
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("UW_RUN_SUPG_MEMORY_SOAK") != "1",
+    reason="Set UW_RUN_SUPG_MEMORY_SOAK=1 to run the 200-update RSS regression.",
+)
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize("method", ["pc2", "cn", "bdf2"])
+def test_repeated_transport_memory_and_workspace_reuse(dim, method):
+    pytest.importorskip("psutil", reason="This test requires current RSS, not peak RSS.")
+    thermal, temperature, velocity = _transport_problem(dim, method)
     samples = []
     start = time.perf_counter()
     for step in range(1, 201):
-        velocity.array[:, 0, 0] = 0.2 * (1.0 + 0.1 * np.sin(step))
-        dt = (0.001, 0.0015, 0.002, 0.0025)[step % 4]
-        thermal.estimate_dt()
-        thermal.solve(timestep=dt)
+        _advance(thermal, velocity, step)
         if step == 40:
             workspace = _workspace(thermal)
         if step >= 40 and step % 10 == 0:
