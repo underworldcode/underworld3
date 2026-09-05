@@ -5220,6 +5220,61 @@ def _footprint_from_samples(dm, band_mask, samples_ext, is_user_sample):
     return out
 
 
+def _polyline_distance_and_overhang(X, P):
+    """Distance from each point of ``X`` to the polyline ``P`` (clamped to
+    its segments), and the OVERHANG: how far the point's projection lies
+    beyond the polyline's first or last vertex along the end segment,
+    zero when the nearest point is interior."""
+    P = np.asarray(P, dtype=float)
+    best = np.full(len(X), np.inf)
+    over = np.zeros(len(X))
+    for i in range(len(P) - 1):
+        A, B = P[i], P[i + 1]
+        e = B - A
+        L2 = float(e @ e)
+        u = ((X - A) @ e) / L2
+        uc = np.clip(u, 0.0, 1.0)
+        d = np.linalg.norm(X - (A + uc[:, None] * e), axis=1)
+        closer = d < best
+        best[closer] = d[closer]
+        o = np.zeros(len(X))
+        if i == 0:
+            o = np.where(u < 0.0, -u * np.sqrt(L2), o)
+        if i == len(P) - 2:
+            o = np.where(u > 1.0, (u - 1.0) * np.sqrt(L2), o)
+        over[closer] = o[closer]
+    return best, over
+
+
+def _footprints_by_user_polyline(dm, band_mask, traces, half_reach, overhang):
+    """The honoured footprints of a network: a band cell belongs to the
+    trace whose USER polyline is nearest, provided that polyline passes
+    within ``half_reach`` of the cell's centroid and the centroid does
+    not overhang the polyline's ends by more than ``overhang`` (the
+    extrapolated tip margin stays unpainted). Exclusive: one trace per
+    cell. This replaces the nearest-sample rule over the concatenated
+    spine samples for networks, where one strand's extrapolated margin
+    samples could claim another strand's honoured cells — at a genuine
+    fork the Splay's margin ran back through the Main's band and left a
+    strong plug of several cells in the Main at the junction (measured:
+    the Main's slip notched to 0.32 from 0.50 there at w = 0.01).
+    Returns ``{label: cell mask}``."""
+    ids, cen = _cell_centroids_of(dm, band_mask)
+    out = {label: np.zeros_like(band_mask) for label, _P in traces}
+    if len(ids) == 0:
+        return out
+    best_d = np.full(len(ids), np.inf)
+    best_k = np.full(len(ids), -1)
+    for k, (_label, P) in enumerate(traces):
+        d, over = _polyline_distance_and_overhang(cen, P)
+        better = (d < half_reach) & (over <= overhang) & (d < best_d)
+        best_d[better] = d[better]
+        best_k[better] = k
+    for k, (label, _P) in enumerate(traces):
+        out[label][ids[best_k == k]] = True
+    return out
+
+
 def _extend_polyline_2d(P, rings):
     """Continue a polyline ``rings`` points outward at both ends, linearly
     — the 2-D tip-margin builder (:func:`_extend_grid` one dimension
@@ -8892,14 +8947,14 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     # vertices. This is the mask a volumetric rheology (or a fac_zone
     # key) should use — never the whole band, whose margin is
     # extrapolated surround (and, on a shared spine, whose gap edges
-    # belong to no trace). A band cell belongs to the trace whose vertex
-    # is nearest to it, read off the CONCATENATED spine samples.
+    # belong to no trace). A band cell belongs to the trace whose USER
+    # polyline is nearest, within the band's reach of it and not past
+    # its ends by more than half a rung (_footprints_by_user_polyline).
     band = np.zeros_like(band_all)
     for k in range(len(spines)):
         band |= mesh.cells_labelled(band_label, band_value + k)
     S_all = np.vstack(extended)
     scale = 1e-9 * float(np.mean(spacing_all))
-    footprints = {}
     for label, P in traces:
         P = np.asarray(P, dtype=float)
         d = S_all[:, None, :] - P[None, :, :]
@@ -8909,8 +8964,11 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                 f"trace {label!r}: {int(is_user.sum())} of its {len(P)} "
                 f"vertices lie on a spine; every trace vertex must be a "
                 f"spine vertex")
-        footprints[label] = _footprint_from_samples(
-            mesh.dm, band, S_all, is_user)
+    footprints = _footprints_by_user_polyline(
+        mesh.dm, band, [(label, np.asarray(P, dtype=float))
+                        for label, P in traces],
+        half_reach=0.6 * float(width),
+        overhang=0.5 * float(np.mean(spacing_all)))
 
     # The seam ligament's cells (empty under the gather): the band material
     # the fault is NOT cut through, for apply() to paint the weak plane on.

@@ -1078,8 +1078,9 @@ class FaultNetwork:
         """The weak-plane (TI) realisation's painted P0 fields.
 
         ``eta_1`` inside each fault's HONOURED footprint — the band cells
-        whose nearest spine sample is a USER point, never the whole band,
-        whose margin is extrapolated surround — and the background
+        within the band's reach of the fault's USER polyline and not past
+        its ends, never the whole band, whose margin is extrapolated
+        surround — and the background
         elsewhere; the director is the unit normal of the nearest segment
         of the strand that owns the cell, so a curved trace carries its
         own orientation cell by cell.
