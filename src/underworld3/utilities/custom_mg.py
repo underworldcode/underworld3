@@ -39,6 +39,7 @@ Notes
 """
 
 import os
+from mpi4py import MPI
 from typing import NamedTuple
 
 import numpy as np
@@ -707,6 +708,120 @@ def _fac_patch_split(P_csr, coords_c, coords_f, map_c, map_f, nc,
 #  its block of P from its LOCAL (ghost-inclusive) coarse coords — point-location
 #  is rank-local. The reduced global numbering rides the DM global section.
 # --------------------------------------------------------------------------- #
+def _segment_block(rows, node_of_row, coords, max_rows):
+    """Split one patch block into contiguous pieces along its strike.
+
+    ``rows`` are the block's rows, ``node_of_row`` their nodes, ``coords``
+    the level's node coordinates. The nodes are ordered along the block's
+    leading principal direction (the strike of a fault band) and cut into
+    the fewest pieces of at most ``max_rows`` rows, whole nodes kept
+    together. An exact sub-solve costs superlinearly in the block, so the
+    cap bounds the factorisation as the band grows; the overlap layer
+    joins the pieces. ``max_rows`` None or non-positive keeps one block.
+    """
+    rows = np.asarray(rows, dtype=np.int64)
+    if not max_rows or max_rows <= 0 or rows.size <= max_rows:
+        return [rows]
+    nodes = np.asarray(node_of_row, dtype=np.int64)
+    uniq, inv = np.unique(nodes, return_inverse=True)
+    P = np.asarray(coords)[uniq]
+    c0 = P - P.mean(axis=0)
+    _u, _s, Vt = np.linalg.svd(c0, full_matrices=False)
+    along = c0 @ Vt[0]
+    order = np.argsort(along, kind="stable")
+    k = int(np.ceil(rows.size / max_rows))
+    pieces = []
+    for chunk in np.array_split(order, k):
+        sel = np.isin(inv, chunk)
+        if sel.any():
+            pieces.append(rows[sel])
+    return pieces
+
+
+def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
+                              w_tol=1e-8, x_tol=1e-9, cover_max=0.75):
+    """:func:`_fac_patch_split` for a distributed transfer, in GLOBAL rows.
+
+    This rank's owned rows of ``P`` are classified as in the serial split
+    (an identity row onto a coincident coarse node is background, anything
+    else is patch, split duplicates are patch); a coarse column this rank
+    does not hold locally counts as patch. The halo is the background rows
+    whose coarse node some patch row of THIS rank references. The cover
+    gate is decided on the global counts, so every rank returns the same
+    verdict. Returns ``(owned_global_rows, subdomain_global_rows)`` or
+    ``None``.
+    """
+    cover_max = float(os.environ.get("UW_FAC_COVER", cover_max))
+    fstart, fend = lay_f.rstart, lay_f.rend
+    n = fend - fstart
+    indptr, cols, data = P.getValuesCSR()
+    # owned global row -> local full DOF (for its node and coordinates)
+    l2g_f = np.asarray(lay_f.l2g)
+    owned_local = np.flatnonzero((l2g_f >= fstart) & (l2g_f < fend))
+    local_of_row = np.full(n, -1, dtype=np.int64)
+    local_of_row[l2g_f[owned_local] - fstart] = owned_local
+    l2g_c = np.asarray(lay_c.l2g)
+    held_c = np.flatnonzero(l2g_c >= 0)
+    c_local_of_global = dict(zip(l2g_c[held_c].tolist(), held_c.tolist()))
+
+    bg_cnode = np.full(n, -1, dtype=np.int64)
+    patch_row = np.zeros(n, dtype=bool)
+    ref_cnodes = []                      # coarse nodes patch rows reference
+    for r in range(n):
+        sl = slice(indptr[r], indptr[r + 1])
+        w = data[sl]
+        li = local_of_row[r]
+        if w.size == 0 or li < 0:
+            patch_row[r] = True
+            continue
+        aw = np.abs(w)
+        j = int(np.argmax(aw))
+        if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
+            patch_row[r] = True
+            ref_cnodes += [c_local_of_global.get(int(g), -1) // nc
+                           for g in cols[sl]]
+            continue
+        cl = c_local_of_global.get(int(cols[sl][j]), -1)
+        if cl < 0:
+            patch_row[r] = True
+            continue
+        cnode = cl // nc
+        if np.max(np.abs(coords_f[li // nc] - coords_c[cnode])) > x_tol:
+            patch_row[r] = True
+            ref_cnodes.append(cnode)
+            continue
+        bg_cnode[r] = cnode
+    node_of_row = local_of_row // nc
+    nn = int(node_of_row.max()) + 1 if n else 0
+    node_is_patch = np.zeros(max(nn, 1), dtype=bool)
+    node_is_patch[node_of_row[patch_row]] = True
+    bgr = np.flatnonzero(bg_cnode >= 0)
+    if bgr.size:
+        pairs = np.unique(np.stack([bg_cnode[bgr], node_of_row[bgr]], axis=1),
+                          axis=0)
+        counts = np.bincount(pairs[:, 0])
+        dup = np.flatnonzero(counts > 1)
+        if dup.size:
+            node_is_patch[pairs[np.isin(pairs[:, 0], dup), 1]] = True
+    row_is_patch = node_is_patch[node_of_row] if n else np.zeros(0, dtype=bool)
+    csel = np.zeros(coords_c.shape[0], dtype=bool)
+    ref = np.asarray([c for c in ref_cnodes if c >= 0], dtype=np.int64)
+    if ref.size:
+        csel[ref] = True
+    halo_rows = (~row_is_patch) & (bg_cnode >= 0) & csel[np.clip(bg_cnode, 0, None)]
+    node_in_sub = node_is_patch.copy()
+    if n:
+        node_in_sub[node_of_row[halo_rows]] = True
+    sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
+    n_sub = comm.allreduce(int(sub_local.size), op=MPI.SUM)
+    n_all = comm.allreduce(int(n), op=MPI.SUM)
+    if n_sub > cover_max * n_all:
+        return None
+    owned = (np.flatnonzero(row_is_patch) + fstart).astype(np.int64)
+    sub = (sub_local + fstart).astype(np.int64)
+    return owned, sub
+
+
 class LevelLayout(NamedTuple):
     """Parallel DOF layout of one MG level.
 
@@ -1047,7 +1162,12 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             if (l < len(patch_rows) and patch_rows[l] is not None
                     and (_only is None or l in _only)):
                 key = f"mg_levels_{l}_pc_type"
-                opts[prefix + key] = "asm"
+                # TODO(MEASURE): #670 knob — UW_FAC_MODE=composite keeps the
+                # whole-level smoother and applies the fault blocks ON TOP
+                # (multiplicative composite), instead of replacing it; the
+                # replacement form starves whatever the blocks leave out.
+                opts[prefix + key] = ("composite" if os.environ.get(
+                    "UW_FAC_MODE", "composite") == "composite" else "asm")
                 fac_keys.append(key)
     # ``ksp_type`` is in the bundle (#514: a Krylov smoother makes this PC vary
     # between applications, so its KSP must judge convergence flexibly), but on
@@ -1077,7 +1197,11 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
         # whole-level baseline of 4 — discarding the subdomain solve's halo
         # correction breaks the interface error systematically.
         _asm_type = os.environ.get("UW_FAC_ASM_TYPE", "basic")
-        _sub_pc = os.environ.get("UW_FAC_SUB_PC")
+        # The measured default (fine S-fault rig, TI 1e-3, 4 September):
+        # whole-level SOR then the fault blocks with an exact LU sub-solve
+        # and one overlap layer — 10 velocity iterations against 44 with
+        # no patch and 60 with the replacing patch; 11 against 57 at np=2.
+        _sub_pc = os.environ.get("UW_FAC_SUB_PC", "lu")
         _whole = os.environ.get("UW_FAC_WHOLE")        # asm WITHOUT subdomain
         for l in range(1, nlev):
             entry = patch_rows[l] if l < len(patch_rows) else None
@@ -1091,6 +1215,17 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
             blocks = entry if isinstance(entry, list) else [entry]
             sm = pc.getMGSmoother(l)
             spc = sm.getPC()
+            _composite = os.environ.get("UW_FAC_MODE", "composite") == "composite"
+            if _composite:
+                # whole-level SOR first, then the fault blocks: the blocks
+                # correct the band the level smoother cannot, and the level
+                # smoother keeps everything the blocks leave out
+                spc.setType("composite")
+                spc.setCompositeType(PETSc.PC.CompositeType.MULTIPLICATIVE)
+                spc.addCompositePCType("sor")
+                spc.addCompositePCType("asm")
+                lvl_pc = spc
+                spc = spc.getCompositePC(1)
             spc.setType("asm")
             is_subs = [PETSc.IS().createGeneral(
                 np.asarray(sub_rows, dtype=PETSc.IntType),
@@ -1109,20 +1244,22 @@ def _configure_pcmg(pc, Ps, coarse="redundant", smoother="robust", owned=None,
                 spc.setASMLocalSubdomains(len(blocks), is_subs, is_owns)
             # Extra operator-sparsity overlap layers on top of the transfer
             # halo (PCASM extends via MatIncreaseOverlap at PCSetUp).
-            spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "0")))
+            spc.setASMOverlap(int(os.environ.get("UW_FAC_OVERLAP", "1")))
             # Subdomain solver: SOR, the patch-restricted twin of the
             # whole-level smoother — no factorization, so no pivot to hit.
             # PCASM's default sub-solve (ILU-0) takes a NUMERIC_ZEROPIVOT on
             # the rotated Galerkin patch block (measured: min |diag| 8e-5 near
             # the constraint; PC_FAILED -11 before the first iteration).
-            opts[prefix + f"mg_levels_{l}_sub_pc_type"] = _sub_pc or "sor"
-            fac_keys.append(f"mg_levels_{l}_sub_pc_type")
+            _sub_key = (f"mg_levels_{l}_sub_1_sub_pc_type" if _composite
+                        else f"mg_levels_{l}_sub_pc_type")
+            opts[prefix + _sub_key] = _sub_pc or "sor"
+            fac_keys.append(_sub_key)
             if (_sub_pc or "sor") in ("lu", "ilu", "cholesky"):
                 # The rotated Galerkin patch block carries near-zero pivots
                 # (constraint-zeroed transfer rows leave weakly-attached
                 # coarse DOFs, min diag ~1e-5); an unshifted factorization
                 # takes NUMERIC_ZEROPIVOT even as exact LU.
-                key = f"mg_levels_{l}_sub_pc_factor_shift_type"
+                key = _sub_key.replace("sub_pc_type", "sub_pc_factor_shift_type")
                 opts[prefix + key] = "nonzero"
                 fac_keys.append(key)
             for _is in is_subs + is_owns:   # the PC holds its own references
@@ -1276,7 +1413,7 @@ class CustomMGHierarchy:
     """
 
     def __init__(self, level_meshes, builder="barycentric", field_id=None,
-                 cross_partition="auto", fac_zone=None):
+                 cross_partition="auto", fac_zone=None, fac_block_rows=2000):
         if builder not in _BUILDERS:
             raise ValueError("builder must be 'barycentric' or 'rbf'")
         if len(level_meshes) < 2:
@@ -1289,6 +1426,12 @@ class CustomMGHierarchy:
         self.field_id = field_id
         self.cross_partition = cross_partition
         self.fac_zone = self._validated_fac_zone(fac_zone)
+        # rows per band block before its overlap layer. Measured on the
+        # fine S-fault rig (TI 1e-3, 4 September): one block of 15736 rows
+        # takes 10 velocity iterations, blocks of ~2000 rows 12, of ~600
+        # rows 15 in serial and 30 at np=2 — and the exact sub-solve's
+        # cost is bounded by the cap however long the band grows.
+        self.fac_block_rows = int(fac_block_rows)
         self.transfers = None
 
     def _validated_fac_zone(self, fac_zone):
@@ -1428,9 +1571,8 @@ class CustomMGHierarchy:
 
         Ps = []
         # FAC patch smoothing (#629): one entry per PCMG level; level ``l``'s
-        # patch is read off its own transfer ``Ps[l-1]``. Serial-only for now,
-        # like the rest of the custom-P specifics; parallel leaves every entry
-        # None, which _configure_pcmg reads as whole-level smoothing.
+        # patch is read off its own transfer ``Ps[l-1]``, in the level
+        # operator's row numbering (global rows in parallel, #670).
         self.level_patch_rows = [None] * nlev
         comm = solver.dm.comm
         for l in range(1, nlev):
@@ -1443,10 +1585,31 @@ class CustomMGHierarchy:
                     P = _build_parallel_transfer(*args)
                     # "auto": a zero-column transfer means the coarse level is NOT
                     # co-partitioned with the fine level (a fine leaf sits in an
-                    # off-rank coarse cell). Rebuild it spanning partitions.
-                    if (self.cross_partition == "auto"
-                            and _count_zero_columns_parallel(P, comm) > 0):
-                        P = _build_crosspart_transfer(*args)
+                    # off-rank coarse cell). Rebuild it spanning partitions —
+                    # and keep the rebuild only where it does better. On a
+                    # placed band distributed over two ranks (#671) the
+                    # co-partitioned build left 3 orphan columns and the
+                    # cross-partition build 16,791 of 96,009; the repair then
+                    # injected all of them and the coarse operator was
+                    # nonsense (KSP reason -11 at the first iteration). The
+                    # few genuine orphans are the repair's job below.
+                    n_zero = _count_zero_columns_parallel(P, comm)
+                    if self.cross_partition == "auto" and n_zero > 0:
+                        P_x = _build_crosspart_transfer(*args)
+                        n_x = _count_zero_columns_parallel(P_x, comm)
+                        if n_x < n_zero:
+                            P.destroy()
+                            P = P_x
+                        else:
+                            P_x.destroy()
+                            if n_x > n_zero:
+                                import warnings
+                                warnings.warn(
+                                    f"custom_mg: the cross-partition transfer "
+                                    f"{l - 1}->{l} left {n_x} coarse DOF(s) "
+                                    f"without a fine image where the "
+                                    f"co-partitioned one left {n_zero}; kept "
+                                    f"the co-partitioned transfer (#671).")
                 # the same orphan repair the serial path has: a coarse DOF no
                 # fine node reaches gets its nearest fine DOF as an injection
                 if _count_zero_columns_parallel(P, comm) > 0:
@@ -1462,6 +1625,70 @@ class CustomMGHierarchy:
                             f"(non-nested levels); repaired by "
                             f"nearest-fine-DOF injection.")
                 _assert_no_zero_columns_parallel(P, comm)
+                # FAC in parallel (#670): the same blocks as the serial branch
+                # below, in GLOBAL row numbering — the layout's ghost-resolved
+                # l2g puts a masked cell's off-rank nodes into this rank's
+                # subdomain, which is the seam halo; the structural split
+                # reads this rank's owned rows of the distributed transfer;
+                # the cover gate is one collective verdict.
+                if (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
+                        and l == nlev - 1):
+                    lay = maps[l]
+                    blocks = []
+                    covered = set()
+                    if self.fac_zone is not None:
+                        cn = self.level_meshes[l]._cell_node_indices(
+                            degree, continuous)
+                        for mk in self.fac_zone:
+                            nodes = np.unique(cn[np.asarray(mk, dtype=bool)])
+                            full = (nodes[:, None] * nc
+                                    + np.arange(nc)[None, :]).ravel()
+                            rows = lay.l2g[full]
+                            keep = rows >= 0
+                            rows, node_r = rows[keep], full[keep] // nc
+                            # TODO(MEASURE): #670 knob — rows per block;
+                            # the default comes from the size sweep.
+                            cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                     self.fac_block_rows))
+                            for piece in _segment_block(rows, node_r,
+                                                        coords[l], cap):
+                                piece = np.unique(piece).astype(np.int64)
+                                if piece.size:
+                                    blocks.append((piece, piece))
+                                    covered.update(piece.tolist())
+                    # TODO(MEASURE): #670 knob — UW_FAC_STRUCTURAL=0 keeps the
+                    # fault-zone blocks alone, without the structural
+                    # (non-nested transfer) rows; remove when settled.
+                    split = None
+                    # the split's cover gate is collective: decide whether
+                    # to take it from what ANY rank holds, not this rank
+                    mpi_comm = comm.tompi4py()
+                    zone_anywhere = mpi_comm.allreduce(len(blocks) > 0,
+                                                       op=MPI.LOR)
+                    if (os.environ.get("UW_FAC_STRUCTURAL", "0") != "0"
+                            or not zone_anywhere):
+                        split = _fac_patch_split_parallel(
+                            P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
+                            mpi_comm,
+                            cover_max=(1.01 if zone_anywhere else 0.75))
+                    if split is not None:
+                        _own, sub = split
+                        extra = np.asarray([g for g in sub if g not in covered],
+                                           dtype=np.int64)
+                        if blocks:
+                            if extra.size:
+                                blocks.append((extra, extra))
+                        else:
+                            blocks.append((np.asarray(_own, dtype=np.int64),
+                                           np.asarray(sub, dtype=np.int64)))
+                    # every rank installs the patch, or none does: a rank with
+                    # no rows of its own still sets the smoother type
+                    n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)
+                    if n_any:
+                        self.level_patch_rows[l] = (
+                            blocks if len(blocks) != 1 else blocks[0]) \
+                            if blocks else (np.zeros(0, dtype=np.int64),
+                                            np.zeros(0, dtype=np.int64))
                 Ps.append(P)
             else:
                 # A native refine() pair gets the EXACT nested embedding at the
@@ -1527,15 +1754,19 @@ class CustomMGHierarchy:
                         node_of_row = np.asarray(maps[l]) // nc
                         blocks = []
                         covered = np.zeros(len(node_of_row), dtype=bool)
+                        cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
+                                                 self.fac_block_rows))
                         for mk in masks:
                             node_in = np.zeros(coords[l].shape[0], dtype=bool)
                             node_in[np.unique(
                                 cn[np.asarray(mk, dtype=bool)])] = True
                             rows = np.flatnonzero(
                                 node_in[node_of_row]).astype(np.int64)
-                            if rows.size:
-                                blocks.append((rows, rows))
-                                covered[rows] = True
+                            for piece in _segment_block(
+                                    rows, node_of_row[rows], coords[l], cap):
+                                if piece.size:
+                                    blocks.append((piece, piece))
+                                    covered[piece] = True
                         # The patch smoother REPLACES whole-level smoothing,
                         # so it inherits every row the coarse level cannot
                         # represent — the STRUCTURAL (non-identity) transfer
@@ -1544,9 +1775,11 @@ class CustomMGHierarchy:
                         # smoothed nowhere and the velocity solve stalls at
                         # its cap (measured: any off-cut zone, #629). Add
                         # the uncovered structural rows as one more block.
-                        split = _fac_patch_split(
-                            Pr, coords[l - 1], coords[l], maps[l - 1],
-                            maps[l], nc, cover_max=1.01)
+                        split = None
+                        if os.environ.get("UW_FAC_STRUCTURAL", "0") != "0":
+                            split = _fac_patch_split(
+                                Pr, coords[l - 1], coords[l], maps[l - 1],
+                                maps[l], nc, cover_max=1.01)
                         if split is not None:
                             _own, sub = split
                             extra = sub[~covered[sub]].astype(np.int64)
@@ -1675,6 +1908,7 @@ class _DMLevelView:
 # --------------------------------------------------------------------------- #
 def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
                    field_id=None, cross_partition="auto", fac_zone=None,
+                   fac_block_rows=2000,
                    verbose=False):
     """Generalized custom-P FMG with BC-per-level reduction (the correct path).
 
@@ -1690,7 +1924,9 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
     :class:`CustomMGHierarchy`); the default ``"auto"`` handles both nested and
     non-nested coarse tails.
 
-    ``fac_zone`` keys the finest level's strong patch smoother on the fault
+    ``fac_block_rows`` caps the rows of each band block (before its overlap
+    layer); a longer band is cut into more blocks along its strike, so the
+    exact sub-solve stays bounded. ``fac_zone`` keys the finest level's strong patch smoother on the fault
     zone (#629): a boolean mask over the solver mesh's cells — e.g.
     ``mesh.cells_labelled("Band")`` for a placed ribbon, or
     ``mesh.cells_supporting("Fault")`` for a split surface's support — or a
@@ -1702,7 +1938,8 @@ def set_custom_fmg(solver, coarse_meshes, *, builder="barycentric",
         "hierarchy": CustomMGHierarchy(list(coarse_meshes) + [solver.mesh],
                                        builder=builder, field_id=field_id,
                                        cross_partition=cross_partition,
-                                       fac_zone=fac_zone),
+                                       fac_zone=fac_zone,
+                                       fac_block_rows=fac_block_rows),
         "verbose": verbose,
     }
     solver.is_setup = False

@@ -578,6 +578,15 @@ def _fault_pair_nodes(solver, boundary):
         for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
             if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
                 nacc[q] = nacc.get(q, np.zeros(dim)) + float(vol) * ne
+    # A pair node ON the partition seam (the split through the seam,
+    # fault_split.split_fault(across_seams=True)) has one of its two
+    # facets on the other rank; the split records the whole sum from the
+    # global chain, and it replaces the half this rank accumulated. No
+    # exchange here — the value was formed where the chain was known.
+    for q, whole in getattr(mesh, "_fault_seam_normals", {}).get(
+            boundary, {}).items():
+        if int(q) in nacc:
+            nacc[int(q)] = np.asarray(whole, dtype=float)
 
     override = _compiled_normal_override(solver, boundary)
     if override is not None:
