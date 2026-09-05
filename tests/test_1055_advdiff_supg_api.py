@@ -146,14 +146,19 @@ def test_timestep_change_reaches_the_kernels(mesh):
     adv2.DuDt.initialise_history()
     adv2.solve(timestep=0.02)
     # to the linear-solver tolerance (measured 2e-11 against a 2e-2 control)
-    assert np.allclose(np.asarray(T1.array), np.asarray(T2.array), rtol=0, atol=1e-8)
+    matches = np.allclose(np.asarray(T1.array), np.asarray(T2.array), rtol=0, atol=1e-8)
+    assert all(uw.mpi.comm.allgather(matches))
 
     # negative control: a different timestep gives a visibly different field
     adv3, T3 = _solver(mesh, "f3")
     T3.array[...] = state
     adv3.DuDt.initialise_history()
     adv3.solve(timestep=0.01)
-    assert np.abs(np.asarray(T2.array) - np.asarray(T3.array)).max() > 1e-3
+    # The pulse need not occupy every partition; require a global change.
+    local_change = float(np.abs(np.asarray(T2.array) - np.asarray(T3.array)).max(initial=0.0))
+    changes = uw.mpi.comm.allgather(local_change)
+    uw.pprint(f"SUPG_DT_CONTROL rank_changes={changes}")
+    assert max(changes) > 1e-3
 
 
 def test_order_ramps_from_one_unless_history_is_planted(mesh):
@@ -202,7 +207,11 @@ def test_multigrid_is_one_switch_away_on_a_refinement_hierarchy():
     assert ksp.getPC().getType() == "mg"
     assert ksp.getPC().getMGLevels() == len(refined.dm_hierarchy) == 3
     a, b = np.array(T_s.array[:, 0, 0]), np.array(T_m.array[:, 0, 0])
-    assert np.abs(a - b).max() < 1e-6 * np.abs(a).max()
+    # Compare global infinity norms, independent of where the pulse is partitioned.
+    error = max(uw.mpi.comm.allgather(float(np.abs(a - b).max(initial=0.0))))
+    scale = max(uw.mpi.comm.allgather(float(np.abs(a).max(initial=0.0))))
+    uw.pprint(f"SUPG_FMG_CONTROL error={error:.12g} scale={scale:.12g}")
+    assert error < 1e-6 * scale
 
     multigrid.preconditioner = "auto"
     multigrid.solve(timestep=0.01)
@@ -235,7 +244,9 @@ def test_solves_on_an_adapt_child_with_its_own_preconditioner():
     assert adv.snes.getKSP().getPC().getType() == "asm"
     assert adv._custom_mg is None
     data = np.asarray(T.array[:, 0, 0])
-    assert np.isfinite(data).all() and 0.9 < data.max() < 1.01
+    assert all(uw.mpi.comm.allgather(bool(np.isfinite(data).all())))
+    maximum = max(uw.mpi.comm.allgather(float(data.max(initial=-np.inf))))
+    assert 0.9 < maximum < 1.01
 
 
 def test_estimate_dt_is_accuracy_based_and_resolution_on_request(mesh):
