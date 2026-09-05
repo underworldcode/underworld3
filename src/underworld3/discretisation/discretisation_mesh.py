@@ -3224,7 +3224,8 @@ class Mesh(Stateful, uw_object):
 
         Returns the ``.sym`` of a cell-constant (degree-0, discontinuous)
         scalar MeshVariable holding each cell's characteristic length (the
-        ``volume**(1/dim)`` equivalent radius, i.e. ``self._radii``). Unlike
+        RMS distance of its vertices from their own centroid). This is a
+        purely cell-local quantity, independent of the MPI partition. Unlike
         the single *global* scalar from :meth:`get_min_radius` (the smallest
         cell anywhere), this varies cell to cell, so a stabilisation that
         scales as :math:`1/h` — e.g. the Nitsche free-slip penalty
@@ -3290,9 +3291,9 @@ class Mesh(Stateful, uw_object):
     def _assemble_cell_size(self, var):
         """Fill ``var`` (degree-0 scalar) with each cell's characteristic size.
 
-        Uses the per-cell characteristic lengths ``self._radii`` computed by
+        Uses the own-cell characteristic lengths ``self._radii_own`` computed by
         :meth:`_get_mesh_sizes` on the *current* geometry. A degree-0
-        discontinuous variable's local DOFs and ``self._radii`` are BOTH
+        discontinuous variable's local DOFs and ``self._radii_own`` are BOTH
         indexed by this rank's cell-stratum order, so a direct assignment is
         correct on every rank.
 
@@ -3300,24 +3301,9 @@ class Mesh(Stateful, uw_object):
         access, no collective): mixing a rank-local fast path with a
         collective fallback would diverge across ranks and deadlock, because
         ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
-        # TODO(BUG): this field is PARTITION-DEPENDENT, and so therefore is the
-        # Nitsche penalty gamma*mu/h that consumes it (local_h=True, the default).
-        # Not the indexing here — the values. `_get_mesh_sizes` measures a cell by
-        # the distance from its vertices to the NEAREST CENTROID in a kd-tree built
-        # from THIS RANK's centroids, so near a partition seam the nearest centroid
-        # may simply be absent. Measured on Annulus(cellSize=0.12): the field's sum
-        # is 26.0822 at np=1, 26.1211 at np=2 and 26.1386 at np=4, and its max moves
-        # at np=4. End to end that is 6.6e-03 in the velocity of a Nitsche free-slip
-        # annulus and it does NOT shrink with solver tolerance.
-        # This is a DIFFERENT defect from the boundary normal fixed for #564 (which
-        # is now clean: the same solve with local_h=False agrees to 3.6e-10 at
-        # np=1..4). It is the local h that is left, and it also reaches every other
-        # consumer of `cell_size()`. Not fixed here because `_get_mesh_sizes` also
-        # feeds `get_min_radius`, the adaptivity metrics and the free-surface
-        # relaxation, and it needs its own benchmarking.
-        # Guard/measurement: tests/parallel/test_1069_boundary_normal_parallel.py
-        # (_nitsche_annulus_diagnostics docstring records the numbers).
-        radii = numpy.asarray(self._radii).reshape(-1)
+        # Own-cell radii fix #687 without changing the legacy kd-tree radii
+        # used by global timestep estimates, adaptivity, and mesh relaxation.
+        radii = numpy.asarray(self._radii_own).reshape(-1)
         # Empty partition (no local cells): nothing to fill on this rank.
         if radii.size == 0 or var.data.shape[0] == 0:
             return
@@ -6895,8 +6881,11 @@ class Mesh(Stateful, uw_object):
 
     def _get_mesh_sizes(self, verbose=False):
         """
-        Obtain the (local) mesh radii and centroids using kdtree distances
-        This routine is called when the mesh is built / rebuilt
+        Cache own-cell radii for cell_size and return legacy kd-tree radii.
+
+        Own-cell sizes use current DM vertices, so neither partition-local
+        neighbours nor stale coordinate views affect stabilization (#687).
+        Legacy radii remain unchanged for their other consumers.
         """
 
         centroids = self._get_coords_for_basis(0, False)
@@ -6909,6 +6898,9 @@ class Mesh(Stateful, uw_object):
         cell_length = np.empty(centroids.shape[0])
         cell_min_r = np.empty(centroids.shape[0])
         cell_r = np.empty(centroids.shape[0])
+        cell_r_own = np.empty(centroids.shape[0])
+        coordinate_section = self.dm.getCoordinateDM().getLocalSection()
+        vertex_coordinates = self.dm.getCoordinatesLocal().array
 
         for cell in range(cEnd - cStart):
             cell_num_points = self.dm.getConeSize(cell)
@@ -6922,6 +6914,16 @@ class Mesh(Stateful, uw_object):
             cell_r[cell] = np.sqrt(distsq.mean())
             cell_min_r[cell] = np.sqrt(distsq.min())
 
+            # A hex has six faces but eight vertices: select the vertex
+            # stratum, not a cone-sized suffix of its transitive closure.
+            closure = self.dm.getTransitiveClosure(cStart + cell)[0]
+            vertices = closure[(closure >= pStart) & (closure < pEnd)]
+            offsets = np.array([coordinate_section.getOffset(int(v)) for v in vertices])
+            own_coords = vertex_coordinates[offsets[:, None] + np.arange(self.cdim)]
+            delta = own_coords - own_coords.mean(axis=0)
+            cell_r_own[cell] = np.sqrt(np.mean(np.sum(delta ** 2, axis=1)))
+
+        self._radii_own = cell_r_own
         return cell_min_r, cell_r, centroids, cell_length
 
     # ==========
