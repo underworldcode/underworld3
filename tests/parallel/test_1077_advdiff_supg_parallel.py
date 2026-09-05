@@ -16,9 +16,10 @@ from serial_reference import emit, mesh_fingerprint, serial_reference
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a, pytest.mark.mpi]
 
-def _run():
+def _run(cellsize=1.0 / 8):
+    """Shared solve for the fixed 1/8 gate and explicit resolution diagnostics."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8,
+        minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=cellsize,
         qdegree=3, regular=False)
     x, y = mesh.X
     sol = uw.analytic.RotatingGaussian(mesh, sigma=0.12, centre_radius=0.5, omega=1.0)
