@@ -6,6 +6,31 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### Unified SUPG Time Integrators (September 2026)
+
+The Eulerian SUPG solver now owns the CitcomS P1 predictor-corrector as an
+optional time integrator. CN, backward Euler, BDF2 and CitcomS use one public
+class and common residual assembly; the former SUPG module contains imports
+only. CitcomS retains its directional simplex stabilisation, positive lumped
+mass, two corrections, explicit timestep bound and cached workspaces. It no
+longer allocates unused implicit history fields.
+
+Snapshot state includes the implicit field-change timestep estimator as well
+as CitcomS startup state. Focused tests compare the migrated implementation
+against frozen pre-migration source on triangles and tetrahedra and exercise
+in-memory and PETSc-backed snapshot/replay. The Gaussian MPI test now obtains
+its serial reference on the same host and mesh rather than comparing against
+a host-dependent stored value; its error threshold is unchanged. Production
+Gadi benchmark and memory acceptance remain separate validation gates.
+
+The first eight-rank gate exposed an inherited empty-partition limitation
+in the automatic simplex helper. Layout rejection is now collective, so
+unsupported local geometry cannot leave peers waiting in reductions. The
+old/new equivalence fixture has enough cells for eight ranks, and a separate
+test exercises collective rejection where the partition has empty ranks.
+
+See [the transport guide](../advanced/eulerian-advection-diffusion.md).
+
 ### A Singular Recovery Mass, Mistaken for a Penalty Defect (August 2026)
 
 **The grad-div penalty default stays off**, but the reason it was held off turned out to

@@ -12,17 +12,14 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from serial_reference import emit, mesh_fingerprint, serial_reference
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a, pytest.mark.mpi]
 
-# Serial reference, res 16, BDF2, dt 0.05, 8 steps (recorded with this file;
-# np=2 reproduced it to 1.4e-12).
-SERIAL_ERROR = 0.0301522514
-
-
-def _run():
+def _run(cellsize=1.0 / 8):
+    """Shared solve for the fixed 1/8 gate and explicit resolution diagnostics."""
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8,
+        minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=cellsize,
         qdegree=3, regular=False)
     x, y = mesh.X
     sol = uw.analytic.RotatingGaussian(mesh, sigma=0.12, centre_radius=0.5, omega=1.0)
@@ -37,13 +34,20 @@ def _run():
         dt=dt)
     for _ in range(8):
         adv.solve(timestep=dt)
-    return sol.error(sol.at(8 * dt), T, norm="integral")
+    return sol.error(sol.at(8 * dt), T, norm="integral"), mesh_fingerprint(mesh)
 
 
 def test_error_is_partition_independent():
-    err = _run()
+    err, fingerprint = _run()
     assert np.isfinite(err) and err < 0.05, err
     gathered = uw.mpi.comm.allgather(err)
     assert max(gathered) - min(gathered) < 1e-12, gathered
-    if SERIAL_ERROR is not None:
-        assert abs(err - SERIAL_ERROR) < 1e-8, (err, SERIAL_ERROR)
+    reference = serial_reference(__file__, "gaussian")
+    assert int(fingerprint[0]) == int(reference["fingerprint"][0])
+    np.testing.assert_allclose(fingerprint[1], reference["fingerprint"][1], rtol=1e-12)
+    assert abs(err - reference["values"][0]) < 1e-8, (err, reference)
+
+
+if __name__ == "__main__":
+    error, fingerprint = _run()
+    emit([error], fingerprint)
