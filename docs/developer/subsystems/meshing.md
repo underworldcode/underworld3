@@ -33,6 +33,24 @@ The meshing subsystem handles computational mesh generation and manipulation for
 - QuadBox / HexBox            # Structured meshes
 ```
 
+## Empty MPI Partitions
+
+Use `mesh.isSimplex` for the mesh-wide cell family. PETSc's
+`mesh.dm.isSimplex()` is a rank-local query and returns `False` on a rank
+with no cells, even when the distributed mesh consists of triangles or
+tetrahedra. UW3 infers the family collectively from populated ranks before
+constructing coordinate finite elements or element metadata.
+
+This is also an MPI correctness requirement: constructing simplex and
+tensor-product coordinate elements on the same communicator consumes
+different PETSc message tags. The first mesh may appear to construct
+successfully, but a later HDF5 boundary-label load can deadlock in
+`PetscSFSetUp_Basic`. This failure does not require a transport solver.
+
+`tests/parallel/test_0781_empty_rank_mesh_sequence.py` covers triangles,
+tetrahedra, quadrilaterals and hexahedra with deliberately empty partitions,
+then verifies a second mesh's volume and boundary integrals using P2 data.
+
 ## Documentation Needs
 
 ### Critical Gaps
