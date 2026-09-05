@@ -5083,7 +5083,9 @@ class Swarm(Stateful, uw_object):
         # silently disabling advection's step_limit substepping (BF-16).
         vel = np.asarray(vel)
         if vel.ndim == 3:
-            vel = vel.reshape(vel.shape[0], -1)
+            # Explicit trailing size: a rank holding no particles has shape
+            # (0, 1, dim), and reshape(0, -1) cannot infer the -1 (#693).
+            vel = vel.reshape(vel.shape[0], vel.shape[1] * vel.shape[2])
 
         try:
             magvel_squared = vel[:, 0] ** 2 + vel[:, 1] ** 2
