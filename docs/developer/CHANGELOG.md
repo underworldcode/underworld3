@@ -23,6 +23,12 @@ its serial reference on the same host and mesh rather than comparing against
 a host-dependent stored value; its error threshold is unchanged. Production
 Gadi benchmark and memory acceptance remain separate validation gates.
 
+The first eight-rank gate exposed an inherited empty-partition limitation
+in the automatic simplex helper. Layout rejection is now collective, so
+unsupported local geometry cannot leave peers waiting in reductions. The
+old/new equivalence fixture has enough cells for eight ranks, and a separate
+test exercises collective rejection where the partition has empty ranks.
+
 See [the transport guide](../advanced/eulerian-advection-diffusion.md).
 
 ### A Singular Recovery Mass, Mistaken for a Penalty Defect (August 2026)

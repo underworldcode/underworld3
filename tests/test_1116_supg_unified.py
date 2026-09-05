@@ -13,10 +13,10 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
-def _problem(dim, tag):
+def _problem(dim, tag, cellsize=0.25):
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
-        cellSize=0.5, qdegree=4, regular=False,
+        cellSize=cellsize, qdegree=4, regular=False,
     )
     temperature = uw.discretisation.MeshVariable(f"T_{tag}", mesh, 1, degree=1)
     velocity = uw.discretisation.MeshVariable(f"U_{tag}", mesh, dim, degree=1)
@@ -127,3 +127,15 @@ def test_citcoms_does_not_allocate_unused_multistep_history():
         thermal.estimate_dt(basis="accuracy")
     with pytest.raises(ValueError, match="gamma"):
         thermal.theta = 0.5
+
+
+def test_empty_partition_is_rejected_on_every_rank():
+    mesh, temperature, velocity = _problem(2, "empty_partition", cellsize=0.5)
+    counts = uw.mpi.comm.allgather(
+        mesh.dm.getHeightStratum(0)[1] - mesh.dm.getHeightStratum(0)[0])
+    if min(counts) > 0:
+        pytest.skip(f"This partition has no empty ranks: {counts}")
+    thermal = uw.systems.AdvDiffusionSUPG(
+        mesh, temperature, velocity.sym, time_integrator="citcoms")
+    with pytest.raises(NotImplementedError, match="on every rank"):
+        thermal.estimate_dt()

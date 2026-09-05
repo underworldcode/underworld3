@@ -854,7 +854,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._last_change_rate = state.last_change_rate
 
     def _simplex_data(self):
-        """Return local simplex connectivity, basis gradients, and volumes."""
+        """Return local simplex data; validate the layout collectively on rebuild."""
         from underworld3.meshing.smoothing import _tet_cells, _tri_cells
 
         mesh_version = getattr(self.mesh, "_mesh_version", 0)
@@ -869,9 +869,17 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
             if self.mesh.dim == 2
             else _tet_cells(self.mesh.dm) if self.mesh.dim == 3 else None
         )
-        if cells is None or self.mesh.dim != self.mesh.cdim:
+        cell_start, cell_end = self.mesh.dm.getHeightStratum(0)
+        invalid = (
+            (uw.mpi.rank, cell_end - cell_start, self.mesh.dim, self.mesh.cdim)
+            if cells is None or self.mesh.dim != self.mesh.cdim else None
+        )
+        invalid_ranks = [item for item in uw.mpi.comm.allgather(invalid) if item is not None]
+        if invalid_ranks:
             raise NotImplementedError(
-                "Automatic SUPG operations require a 2-D or 3-D volume " "simplex mesh."
+                "Automatic CitcomS operations require a non-empty 2-D or 3-D "
+                "volume simplex partition on every rank. Unsupported local "
+                f"layouts (rank, cells, dim, cdim): {invalid_ranks}."
             )
 
         coords = np.asarray(self.mesh.X.coords)
@@ -1066,8 +1074,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
         The CitcomS-compatible predictor-corrector uses
         ``0.9 * min(1/max(lambda_adv), 2/max(rowsum(abs(M_L^-1 K))))``.
-        The same conservative value is also available for the implicit BDF
-        path as a resolution-accuracy estimate.
+        Generic implicit transport retains its separate Eulerian estimator.
         """
         from mpi4py import MPI
         from underworld3.meshing.smoothing import _owned_cell_mask

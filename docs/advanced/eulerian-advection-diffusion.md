@@ -175,6 +175,12 @@ different solver/history layout require migration; importing the old module
 name does not make those layouts equivalent.
 
 Implementation ownership is `systems/advection_diffusion_eulerian.py`.
+
+Automatic CitcomS simplex geometry currently requires a non-empty volume
+partition on every rank. If a very small test mesh leaves ranks empty, the
+solver rejects that layout collectively before mass assembly. Use fewer
+ranks or a sufficiently resolved test mesh; an empty partition is not
+silently interpreted as unsupported physics on only one rank.
 `systems/advdiff_supg.py` contains compatibility imports only.
 
 ## Further Reading
