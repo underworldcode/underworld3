@@ -589,9 +589,19 @@ class Mesh(Stateful, uw_object):
         self._setup_symbolic_coordinates(coordinate_system_type)
 
         try:
-            self.isSimplex = self.dm.isSimplex()
+            local_simplex = self.dm.isSimplex()
         except:
-            self.isSimplex = simplex
+            local_simplex = simplex
+
+        # DMPlexIsSimplex is rank-local and returns False on empty ranks.
+        # Coordinate FE construction must use one cell family everywhere;
+        # mixed simplex/tensor construction desynchronises PETSc MPI tags.
+        cell_start, cell_end = self.dm.getHeightStratum(0)
+        cell_families = self.dm.comm.tompi4py().allgather(
+            local_simplex if cell_end > cell_start else None
+        )
+        populated_families = [family for family in cell_families if family is not None]
+        self.isSimplex = all(populated_families) if populated_families else simplex
 
         # Using WeakValueDictionary to prevent circular references
         self._vars = weakref.WeakValueDictionary()
@@ -650,7 +660,7 @@ class Mesh(Stateful, uw_object):
             entities: tuple
             face_entities: tuple
 
-        if self.dm.isSimplex():
+        if self.isSimplex:
             if self.dim == 2:
                 self._element = ElementInfo("triangle", (1, 3, 3), (0, 1, 2))
             else:
