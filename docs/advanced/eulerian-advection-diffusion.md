@@ -111,7 +111,73 @@ of the compiled kernels; nothing is recompiled.
   (`refinement >= 1`) for very large rank counts. Every option can be
   overridden through `solver.petsc_options`.
 
-## Further reading
+## CitcomS Predictor-Corrector
+
+The same public solver also provides the continuous-P1, row-lumped
+predictor-corrector used by the Zhong mantle-convection benchmark:
+
+```python
+Tdot = uw.discretisation.MeshVariable("Tdot", mesh, 1, degree=1)
+adv = uw.systems.AdvDiffusionSUPG(
+    mesh, T, v.sym,
+    time_integrator="citcoms",
+    temperature_rate_field=Tdot,
+)
+adv.constitutive_model.Parameters.diffusivity = 1.0
+adv.add_dirichlet_bc(0.0, "Upper")
+adv.add_dirichlet_bc(1.0, "Lower")
+adv.solve(timestep=adv.estimate_dt())
+```
+
+This is an optional time integrator, not a second SUPG solver. The implicit
+and CitcomS paths share the source/advection/diffusion residual, boundary
+assembly, and runtime constants. Only the temporal update and its
+stabilisation/timestep policy differ.
+
+CitcomS predicts temperature with `(1-gamma)*dt*Tdot`, resets the rate,
+then applies `delta_rate=-M_L^-1*F` to the rate and
+`gamma*dt*delta_rate` to temperature. Defaults are `adv_gamma=0.5` and
+two corrections. Boundary values are reinserted at each correction.
+Automatic geometry is restricted to 2-D triangles and 3-D tetrahedra.
+
+Its steady tau is `h/(2*speed) * max(0, 1-1/Pe)`, with
+`Pe=speed*h/(2*kappa)` and directional simplex
+`h=2*speed/sum_a(abs(u.grad(N_a)))`. Zero velocity gives zero tau;
+zero diffusivity uses the advective limit. It is not the generic transient
+norm tau.
+
+The CitcomS timestep estimate is `0.9*min(dt_adv, dt_diff)`, using the
+directional advective rate and the row-sum bound on the lumped diffusion
+operator. The implicit field-change estimate is not a stability bound for
+this method. A fixed comparison timestep must respect the explicit bound.
+SUPG does not guarantee a nodal maximum principle; check temperature bounds
+and heat balance for every method.
+
+Diffusion is absent only from the strong SUPG residual. Its omission is
+exact for affine P1 fields with elementwise constant diffusivity, not for
+arbitrary curved mappings, variable coefficients or P2 temperature.
+
+### Checkpoint State
+
+```python
+orchestration_model = uw.get_default_model()
+orchestration_model.save_state(file="checkpoint.h5")
+# With the matching model, fields and integration method constructed:
+orchestration_model.load_state("checkpoint.h5")
+```
+
+The PETSc-backed snapshot captures T and the required history automatically:
+Tdot and startup status for CitcomS; DDt fields, timestep history, theta,
+and the field-change estimator state for implicit integration. A T-only
+checkpoint is not an exact restart. Disk snapshots currently require the
+same model layout and MPI rank count. Old full-model snapshots with a
+different solver/history layout require migration; importing the old module
+name does not make those layouts equivalent.
+
+Implementation ownership is `systems/advection_diffusion_eulerian.py`.
+`systems/advdiff_supg.py` contains compatibility imports only.
+
+## Further Reading
 
 - Design note and measurements: `docs/developer/design/eulerian-supg-transport.md`
 - The semi-Lagrangian schemes: {doc}`semi-lagrangian-time-integration`
