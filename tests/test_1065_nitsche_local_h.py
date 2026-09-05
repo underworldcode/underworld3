@@ -151,12 +151,13 @@ def _box_wobble(X0, amp):
 # 1. The penalty size is LOCAL, not the global minimum
 # --------------------------------------------------------------------------
 def test_cell_size_is_local_per_cell():
-    """``mesh.cell_size()`` is a per-cell field equal to each cell's
-    characteristic size (``mesh._radii``), not the single global minimum."""
+    """``mesh.cell_size()`` is a per-cell field equal to each cell's own
+    radius (``mesh._radii_own``, the RMS distance of its vertices from its own
+    centroid; #687), not the single global minimum."""
     mesh = _graded_box()
     h = mesh.cell_size()  # sympy symbol -> backed by a P0 field
     field = np.asarray(mesh._cell_size_variable.data[:, 0]).reshape(-1)
-    radii = np.asarray(mesh._radii).reshape(-1)
+    radii = np.asarray(mesh._radii_own).reshape(-1)
 
     # field exactly mirrors the per-cell characteristic size (rank-local check,
     # reduced to a single global pass/fail so all ranks agree)
@@ -168,8 +169,10 @@ def test_cell_size_is_local_per_cell():
     gfmin, gfmax = _gmin(field), _gmax(field)
     assert gfmax / gfmin > 3.0
 
-    # the global scalar that global-h would use is just the minimum cell size
-    assert np.isclose(mesh.get_min_radius(), gfmin, rtol=1e-6)
+    # the global scalar that global-h would use is the kd-tree minimum, the
+    # same quantity measured against the nearest centroid rather than the
+    # cell's own (#687): the same size, not the same number
+    assert np.isclose(mesh.get_min_radius(), gfmin, rtol=0.4)
 
 
 def test_local_h_at_coarse_freeslip_boundary_exceeds_global_min():
@@ -211,7 +214,7 @@ def test_cell_size_tracks_deformation():
     assert moved  # geometry actually changed
 
     h_after = mesh._cell_size_variable.data[:, 0].copy()
-    radii_after = np.asarray(mesh._radii).reshape(-1)
+    radii_after = np.asarray(mesh._radii_own).reshape(-1)   # the field's definition (#687)
 
     # not stale: the field changed with the geometry SOMEWHERE (global OR) ...
     nb = min(h_after.shape[0], h_before.shape[0])
