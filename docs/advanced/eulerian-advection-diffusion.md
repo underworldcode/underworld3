@@ -200,6 +200,13 @@ same model layout and MPI rank count. Old full-model snapshots with a
 different solver/history layout require migration; importing the old module
 name does not make those layouts equivalent.
 
+A fresh interpreter can construct the matching mesh, variables, and solver,
+then load the snapshot without a dummy timestep. Generic SUPG registers its
+cell-size geometry dependency at construction so the saved auxiliary field
+is present before the first residual build. The independent process test
+`tests/test_1119_supg_process_restart.py` checks PC2, CN, and BDF2 with changing
+velocity and timesteps, including exact restored history and continuation.
+
 Implementation ownership is `systems/advection_diffusion_eulerian.py`.
 
 Automatic CitcomS simplex geometry currently requires a non-empty volume

@@ -371,6 +371,10 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
                 f"_supg_h_{tag}", mesh, 1, degree=0, continuous=False)
             self._supg_tau = uw.discretisation.MeshVariable(
                 f"_supg_tau_{tag}", mesh, 1, degree=0, continuous=False)
+        elif self._tau_override is None:
+            # Generic tau needs this field on a fresh-process checkpoint restore,
+            # before the first residual build would otherwise create it lazily.
+            mesh.cell_size()
         uw.get_default_model()._register_state_bearer(self)
 
     # ------------------------------------------------------------------
