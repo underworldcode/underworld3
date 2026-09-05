@@ -358,6 +358,7 @@ y = 0.5) against Ghia, Ghia and Shin (1982). `~/+Simulations/navier_stokes_supg/
 | 400 | Ghia | | | | -0.3273 | 0.3020 | -0.4499 | | |
 | 400 | 1/48 | SUPG | 2 | 0 | -0.3076 | 0.2832 | -0.4288 | 1500 | 2.3 |
 | 400 | 1/48 | SUPG | 2 | 1 | -0.3076 | 0.2831 | -0.4288 | 976 (fixed point) | 2.8 |
+| 400 | 1/48 | SUPG | 1 | 0 | -0.3075 | 0.2828 | -0.4284 | 1500 (change 3e-6) | 2.1 |
 
 At Re 100 SUPG is within 4% of Ghia on every extremum on a 1/32 mesh and
 reaches an exact fixed point; SLCN on the same mesh sits a little further out and
@@ -367,19 +368,39 @@ extrema are steady to four digits), but the extrapolated step alone never
 becomes stationary: the max-norm change per step grows to 0.1 and saturates, an
 alternating mode of the lagged coefficient fed by the lid singularity while the
 interior sits still. One Picard pass removes it (step change exactly zero) for
-20% more per step. That is the regime the Picard option was built for, Courant 2
-with an element Reynolds number near eight.
+20% more per step, and so does Courant 1 without any pass. That is the regime the
+Picard option was built for: Courant 2 with an element Reynolds number near eight.
 
-At Re 1000 on 1/64 (element Reynolds number 16, Courant 4) the first step did not
-complete in fifteen minutes on four ranks: the algebraic-multigrid velocity block
-is the limit the plan flagged, not the scheme. The rerun with a refinement
-hierarchy (geometric multigrid on the velocity block) at Courant 1 is recorded
-below when it lands.
+(The Re 1000 rows are recorded below when they land. Two earlier four-rank
+attempts stalled at the first logged step, which turned out to be the driver
+calling the collective centreline evaluation on rank 0 only, and a third was
+killed by the hang watchdog on a rank that never prints; none of them says
+anything about the solver.)
 
 ### Cylinder wake (DFG 2D-2, Re 100)
 
-(filled in as the runs land: drag, lift, Strouhal against Schaefer and Turek 1996;
-extrapolated against Picard against Newton on a time-dependent wake)
+Channel 2.2 by 0.41, cylinder of radius 0.05 at (0.2, 0.2), parabolic inflow with
+mean velocity 1, $\nu = 10^{-3}$; mesh 1/20 in the channel and 1/80 on the
+cylinder, P2-P1, Courant 1 on the cylinder cells (dt 0.0083), twelve time units
+from the parabolic profile; drag and lift from the traction integral on the
+cylinder, the Strouhal number from the lift zero crossings over the last three
+units. Reference (Schaefer and Turek 1996): $C_D$ max 3.22 to 3.24, $C_L$ max
+0.99 to 1.01, St 0.295 to 0.305, $\Delta p$ 2.46 to 2.50.
+`~/+Simulations/navier_stokes_supg/cylinder/`.
+
+| scheme | advecting velocity | St | $C_L$ max | $C_D$ max | $\Delta p$ | s/step |
+|---|---|---|---|---|---|---|
+| SUPG | extrapolated | 0.298 | 0.82 | 2.33 | 2.41 | 0.73 |
+| SUPG | extrapolated + 1 Picard pass | 0.296 | 0.75 | 2.30 | 2.39 | 1.02 |
+| SUPG | implicit (Newton) | 0.295 | 0.76 | 2.30 | 2.39 | 0.99 |
+
+The shedding frequency and the pressure difference are on the reference; drag
+and lift are low by a quarter, which is the mesh (the channel cells are the
+cylinder radius) and is left to the finer run recorded below when it lands. The
+two fully implicit forms agree with each other to three digits, and the
+extrapolated step differs from them by 1% in frequency and 8% on the lift peak:
+at Courant 1 the lag is visible on a time-dependent wake but small, and a single
+Picard pass, or Newton, removes it at 40% more per step.
 
 ## What the timestep estimate means
 
