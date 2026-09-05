@@ -116,8 +116,13 @@ def test_snapshot_restores_fields_and_timestep_estimator(settings, disk, tmp_pat
     np.testing.assert_allclose(temperature.array, expected, rtol=2e-14, atol=2e-14)
     assert thermal.state.last_timestep == expected_state.last_timestep
     if expected_state.last_change_rate is not None:
+        # The estimator is max(|T_new - T_old|) / dt. Propagate the field
+        # assertion's absolute-plus-relative bound through that division.
+        field_bound = max(uw.mpi.comm.allgather(
+            2e-14 * (1.0 + float(np.max(np.abs(expected), initial=0.0)))))
         assert thermal.state.last_change_rate == pytest.approx(
-            expected_state.last_change_rate, rel=5e-12, abs=1e-12)
+            expected_state.last_change_rate, rel=0.0,
+            abs=field_bound / expected_state.last_timestep)
     if expected_rate is not None:
         np.testing.assert_array_equal(thermal.temperature_rate.array, expected_rate)
     uw.reset_default_model()
