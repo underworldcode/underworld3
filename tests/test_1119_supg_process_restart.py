@@ -7,7 +7,6 @@ interpreter. No forked in-memory snapshot can satisfy the restore check.
 
 import os
 from pathlib import Path
-import signal
 import shutil
 import subprocess
 import sys
@@ -40,20 +39,14 @@ def test_fresh_process_transport_restart(method, tmp_path):
         launcher = [str(executable), "-np", str(ranks)]
     for phase in ("full", "write", "resume"):
         command = [sys.executable, str(root / "scripts/mpi_supervisor.py"),
-                   "--silence", "45", "--", *launcher,
+                   "--silence", "45", "--hard-cap", "60", "--", *launcher,
                    sys.executable, "-m", "mpi4py", str(worker),
                    "-uw_method", method, "-uw_phase", phase]
         with (tmp_path / f"{phase}.log").open("w") as log:
-            process = subprocess.Popen(command, cwd=tmp_path, env=env,
-                                       stdout=log, stderr=subprocess.STDOUT,
-                                       start_new_session=True)
-            try:
-                status = process.wait(timeout=120)
-            except subprocess.TimeoutExpired:
-                # Bound the entire child group, including its MPI ranks.
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-                pytest.fail(f"{method}/{phase} exceeded 120 seconds; see {tmp_path}")
+            # The supervisor owns all descendant ranks, including separate
+            # process groups, and performs bounded diagnosis/cleanup on timeout.
+            status = subprocess.run(command, cwd=tmp_path, env=env,
+                                    stdout=log, stderr=subprocess.STDOUT).returncode
         assert status == 0, (tmp_path / f"{phase}.log").read_text(errors="replace")
     maxima = {"field": 0.0, "estimate": 0.0}
     for rank in range(ranks):

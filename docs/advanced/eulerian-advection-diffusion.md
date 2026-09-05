@@ -163,8 +163,11 @@ The CitcomS-compatible mode retains its fixed-correction semantics. Do not
 silently replace its residual mass or increase the iteration count and
 still claim an unchanged paper-reproduction method. An accurately solved
 implicit Crank-Nicolson update with consistent initialization provides a
-separate second-order reference. Production-scale validation is separate
-from these small mathematical tests.
+separate second-order reference. The same test file also exercises actual
+UW3 CN (not only a matrix control): temporal order 2.00 on both geometries
+in serial and on eight ranks, with the nodal CN amplification map agreeing
+within 1.6e-14. Production-scale validation is separate from these small
+mathematical tests.
 
 Its steady tau is `h/(2*speed) * max(0, 1-1/Pe)`, with
 `Pe=speed*h/(2*kappa)` and directional simplex
@@ -215,6 +218,30 @@ solver rejects that layout collectively before mass assembly. Use fewer
 ranks or a sufficiently resolved test mesh; an empty partition is not
 silently interpreted as unsupported physics on only one rank.
 `systems/advdiff_supg.py` contains compatibility imports only.
+
+### Small Lifecycle Regressions
+
+`tests/test_1120_supg_memory.py` runs PC2, CN, and BDF2 for 200 updates on
+tiny triangles and tetrahedra with prescribed changing velocity. It checks
+current per-rank RSS after 40 warm-up steps, fits late slopes over steps
+120-200, and checks stable solver/vector handles and PC2 workspace reuse.
+There are no Stokes solves, checkpoints, reaction diagnostics, or forced
+garbage collections in the measured loop. Serial and eight-rank tests pass
+the preset limits of 16 MiB growth and 0.05 MiB/step per rank. These bounds
+detect repeated-allocation regressions, not prove zero leaks at every size.
+
+Run the restart parent in serial; it starts independent worker interpreters
+and uses the existing MPI supervisor for bounded cleanup:
+
+```bash
+python -m pytest -x -s tests/test_1119_supg_process_restart.py
+UW_SUPG_TEST_RANKS=8 python -m pytest -x -s tests/test_1119_supg_process_restart.py
+python -m pytest -x -s tests/test_1120_supg_memory.py
+mpirun -np 8 python -m mpi4py -m pytest --with-mpi -x -s tests/test_1120_supg_memory.py
+```
+
+Use the MPI launcher matching the active Python/PETSc environment. These
+small mathematical and lifecycle checks do not require a coupled A1 run.
 
 ## Further Reading
 
