@@ -8,9 +8,11 @@ https://doi.org/10.1006/jcph.1999.6369
 The rotation uses uw.analytic.RotatingGaussian. The spherical test follows
 directly from (r*T)_t = kappa*(r*T)_rr. All spatial refinements use one fixed
 timestep selected from the most restrictive mesh. Set UW_PC2_RESULTS to retain
-small HDF5 metrics files; serial and MPI runs must share UW_MESH_CACHE_DIR.
+small HDF5 metrics files. Separate jobs use separate UW_MESH_CACHE_DIR paths;
+Gmsh SHA256 fingerprints must match before comparing their numerical results.
 """
 
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -22,6 +24,7 @@ import sympy
 from mpi4py import MPI
 
 import underworld3 as uw
+from underworld3.meshing._mesh_files import mesh_file_path
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -35,15 +38,24 @@ def _pulse(x, time_value, speed, diffusivity):
 
 
 def _problem(case, h, dim=2, speed=0.0, diffusivity=0.0):
+    filename = mesh_file_path(f"pc2_{case}_{dim}d_h{h:g}.msh")
     if case == "shell":
         mesh = uw.meshing.SphericalShell(
-            radiusInner=0.55, radiusOuter=1.0, cellSize=h, qdegree=4)
+            radiusInner=0.55, radiusOuter=1.0, cellSize=h, qdegree=4, filename=filename)
     else:
         lower = (-2.0, -2.0) if case == "rotation" else (-1.5,) + (-0.25,) * (dim - 1)
         upper = tuple(-value for value in lower)
         mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=lower, maxCoords=upper, cellSize=h,
-            qdegree=4, regular=False)
+            qdegree=4, regular=False, filename=filename)
+    fingerprint = None
+    if uw.mpi.rank == 0:
+        try:
+            fingerprint = (None, hashlib.sha256(Path(filename).read_bytes()).hexdigest())
+        except OSError as exc:
+            fingerprint = (str(exc), None)
+    failure, mesh_sha256 = uw.mpi.comm.bcast(fingerprint, root=0)
+    assert failure is None, failure
     temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
     velocity = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
     velocity.array[...] = 0.0
@@ -88,7 +100,7 @@ def _problem(case, h, dim=2, speed=0.0, diffusivity=0.0):
     thermal.constitutive_model.Parameters.diffusivity = diffusivity
     for boundary in boundaries:
         thermal.add_dirichlet_bc(0.0, boundary)
-    return mesh, temperature, thermal, initial, exact, end_time, boundary_tail
+    return mesh, temperature, thermal, initial, exact, end_time, boundary_tail, mesh_sha256
 
 
 def _integral(mesh, expression):
@@ -100,7 +112,8 @@ def _save_result(name, metrics):
     error = None
     if uw.mpi.rank == 0:
         print("PC2_ANALYTICAL " + name + " " + " ".join(
-            f"{key}={value:.12g}" for key, value in metrics.items()), flush=True)
+            f"{key}={value}" if isinstance(value, str) else f"{key}={value:.12g}"
+            for key, value in metrics.items()), flush=True)
         directory = os.environ.get("UW_PC2_RESULTS")
         if directory:
             try:
@@ -118,50 +131,61 @@ def _save_result(name, metrics):
     assert error is None, error
 
 
-def _spatial_refinement(case, sizes, dim=2, speed=0.0, diffusivity=0.0):
-    problems = [_problem(case, h, dim, speed, diffusivity) for h in sizes]
+def _step_count(problems):
     dt_limit = min(float(problem[2].estimate_dt()) for problem in problems)
     end_time = problems[0][5]
     # Round down before choosing an integer number of steps, avoiding a
     # partition-dependent ceil when a stability estimate differs by roundoff.
     dt_cap = 2.0**math.floor(math.log2(min(0.005, 0.5 * dt_limit)))
-    steps = math.ceil(end_time / dt_cap)
+    return math.ceil(end_time / dt_cap)
+
+
+def _advance(problem, h, steps):
+    mesh, temperature, thermal, initial, exact, end_time, tail, mesh_sha256 = problem
     timestep = end_time / steps
+    norm_squared = _integral(mesh, exact**2)
+    interpolation_error = math.sqrt(_integral(
+        mesh, (temperature.sym[0] - initial)**2) / _integral(mesh, initial**2))
+    start = time.perf_counter()
+    for _ in range(steps):
+        thermal.solve(timestep=timestep)
+    solve_seconds = uw.mpi.comm.allreduce(time.perf_counter() - start, op=MPI.MAX)
+    error = math.sqrt(_integral(mesh, (temperature.sym[0] - exact)**2) / norm_squared)
+    heat = _integral(mesh, temperature.sym[0])
+    exact_heat = _integral(mesh, exact)
+    nodal = temperature.array[:, 0, 0]
+    minimum = uw.mpi.comm.allreduce(float(np.min(nodal, initial=np.inf)), op=MPI.MIN)
+    maximum = uw.mpi.comm.allreduce(float(np.max(nodal, initial=-np.inf)), op=MPI.MAX)
+    return dict(
+        cellsize=h, dim=mesh.dim, ncpus=uw.mpi.size, timestep=timestep,
+        steps=steps, end_time=end_time, relative_l2=error,
+        initial_relative_l2=interpolation_error,
+        temperature_integral=heat, exact_temperature_integral=exact_heat,
+        relative_heat_error=(heat - exact_heat) / exact_heat,
+        minimum=minimum, maximum=maximum, solve_seconds=solve_seconds,
+        boundary_tail_bound=tail, volume=_integral(mesh, sympy.Integer(1)),
+        mesh_sha256=mesh_sha256)
+
+
+def _spatial_refinement(case, sizes, dim=2, speed=0.0, diffusivity=0.0):
+    problems = [_problem(case, h, dim, speed, diffusivity) for h in sizes]
+    steps = _step_count(problems)
     errors = []
-    for h, (mesh, temperature, thermal, initial, exact, _, tail) in zip(sizes, problems):
-        norm_squared = _integral(mesh, exact**2)
-        initial_norm_squared = _integral(mesh, initial**2)
-        interpolation_error = math.sqrt(_integral(
-            mesh, (temperature.sym[0] - initial)**2) / initial_norm_squared)
-        start = time.perf_counter()
-        for _ in range(steps):
-            thermal.solve(timestep=timestep)
-        solve_seconds = uw.mpi.comm.allreduce(time.perf_counter() - start, op=MPI.MAX)
-        error = math.sqrt(_integral(mesh, (temperature.sym[0] - exact)**2) / norm_squared)
-        heat = _integral(mesh, temperature.sym[0])
-        exact_heat = _integral(mesh, exact)
-        nodal = temperature.array[:, 0, 0]
-        minimum = uw.mpi.comm.allreduce(float(np.min(nodal, initial=np.inf)), op=MPI.MIN)
-        maximum = uw.mpi.comm.allreduce(float(np.max(nodal, initial=-np.inf)), op=MPI.MAX)
-        metrics = dict(
-            cellsize=h, dim=mesh.dim, ncpus=uw.mpi.size, timestep=timestep,
-            steps=steps, end_time=end_time, relative_l2=error,
-            initial_relative_l2=interpolation_error,
-            temperature_integral=heat, exact_temperature_integral=exact_heat,
-            relative_heat_error=(heat - exact_heat) / exact_heat,
-            minimum=minimum, maximum=maximum, solve_seconds=solve_seconds,
-            boundary_tail_bound=tail, volume=_integral(mesh, sympy.Integer(1)))
+    for h, problem in zip(sizes, problems):
+        mesh, temperature, thermal = problem[:3]
+        metrics = _advance(problem, h, steps)
         if case == "rotation":
-            centre = [_integral(mesh, coordinate * temperature.sym[0]) / heat
+            centre = [_integral(mesh, coordinate * temperature.sym[0]) / metrics["temperature_integral"]
                       for coordinate in mesh.X]
-            metrics["phase_error_radians"] = math.atan2(centre[1], centre[0]) - end_time
+            metrics["phase_error_radians"] = math.atan2(centre[1], centre[0]) - metrics["end_time"]
         if speed != 0 or case == "rotation":
             tau = uw.function.evaluate(thermal.tau, mesh._centroids)
             assert uw.mpi.comm.allreduce(bool(np.any(tau > 0)), op=MPI.LOR)
         name = f"{case}_{mesh.dim}d_u{speed:g}_k{diffusivity:g}_h{h:g}"
         _save_result(name, metrics)
-        assert np.isfinite(error) and minimum > -0.05 and maximum < 1.05, metrics
-        errors.append(error)
+        assert (np.isfinite(metrics["relative_l2"])
+                and metrics["minimum"] > -0.05 and metrics["maximum"] < 1.05), metrics
+        errors.append(metrics["relative_l2"])
     return errors
 
 
@@ -180,9 +204,40 @@ def test_pc2_exact_rotating_gaussian():
 
 
 def test_pc2_exact_spherical_diffusion():
-    errors = _spatial_refinement("shell", (0.25, 0.125), dim=3, diffusivity=0.02)
+    errors = _spatial_refinement("shell", (0.125, 0.0625), dim=3, diffusivity=0.02)
     assert errors[1] < 0.7 * errors[0], errors
     assert errors[1] < 0.08, errors
+
+
+def test_pc2_spherical_diffusion_timestep_sensitivity():
+    """Separate finite-step changes from the continuum spatial error at h=1/8."""
+    problem = _problem("shell", 0.125, dim=3, diffusivity=0.02)
+    mesh, temperature, thermal = problem[:3]
+    difference = uw.discretisation.MeshVariable("T_difference", mesh, 1, degree=1)
+    initial_values = np.array(temperature.array)
+    initial_state = thermal.state
+    base_steps = _step_count([problem])
+    metrics, solutions = [], []
+    for factor in (1, 2, 4):
+        temperature.array[...] = initial_values
+        thermal.temperature_rate.array[...] = 0.0
+        thermal.state = initial_state
+        metrics.append(_advance(problem, 0.125, base_steps * factor))
+        solutions.append(np.array(temperature.array))
+    norm_squared = _integral(mesh, problem[4]**2)
+    changes = []
+    for index in (0, 1):
+        difference.array[...] = solutions[index] - solutions[index + 1]
+        changes.append(math.sqrt(_integral(mesh, difference.sym[0]**2) / norm_squared))
+        metrics[index]["relative_difference_to_next_dt"] = changes[-1]
+    if min(changes) > 0:
+        metrics[-1]["observed_time_order"] = math.log2(changes[0] / changes[1])
+    for factor, result in zip((1, 2, 4), metrics):
+        _save_result(f"shell_time_h0.125_dtdiv{factor}", result)
+    assert all(np.isfinite(item["relative_l2"]) for item in metrics), metrics
+    assert all(item["minimum"] > -0.05 and item["maximum"] < 1.05 for item in metrics), metrics
+    assert changes[1] < changes[0], changes
+    assert changes[1] < 0.05 * metrics[-1]["relative_l2"], (changes, metrics)
 
 
 def test_exact_spherical_diffusion_satisfies_radial_heat_equation():
