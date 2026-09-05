@@ -20,6 +20,7 @@ Projection : class
 AdvDiffusion : class
     Advection-diffusion with semi-Lagrangian transport.
 AdvDiffusionSUPG : class
+NavierStokesSUPG : class
     Advection-diffusion, implicit Eulerian with SUPG stabilisation.
 NavierStokes : class
     Navier-Stokes equations with inertia.
@@ -67,6 +68,7 @@ from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
 from .advection_diffusion_eulerian import SNES_AdvectionDiffusion_SUPG as AdvDiffusionSUPG
+from .navier_stokes_eulerian import SNES_NavierStokes_SUPG as NavierStokesSUPG
 
 # import diffusion-only solver
 from .solvers import SNES_Diffusion as Diffusion

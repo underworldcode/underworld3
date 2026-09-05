@@ -15,9 +15,9 @@ import underworld3 as uw
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a, pytest.mark.mpi]
 
-# Serial reference, res 16, BDF2, dt 0.05, 8 steps (recorded with this file;
+# Serial reference, res 16, BDF2, dt 0.05, 8 steps (re-recorded with the local cell size, #687;
 # np=2 reproduced it to 1.4e-12).
-SERIAL_ERROR = 0.0301522514
+SERIAL_ERROR = 0.030152131513640566
 
 
 def _run():
