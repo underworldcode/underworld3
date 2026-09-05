@@ -272,6 +272,115 @@ unmatched rows read 6.12 / 0.84 s (Schwarz, two Newton steps) against 3.71 /
 0.58 s (multigrid); matched, with the shipped defaults, 3.51 / 0.48 s (Schwarz,
 5 iterations) against 3.62 / 0.54 s (multigrid, one cycle).
 
+## Navier-Stokes with SUPG momentum transport
+
+`uw.systems.NavierStokesSUPG` (`systems/navier_stokes_eulerian.py`) is the vector
+form of the scalar solver on the Stokes saddle-point class: the momentum advection
+is assembled implicitly and the streamline term stabilises it. The residual is
+
+$$
+\mathbf{f}_0 = \rho\,\big(\dot{\mathbf{u}} + \textstyle\sum_k w_k (\mathbf{a}_k\cdot\nabla)\mathbf{u}^{(k)}\big) - \mathbf{f},
+\qquad
+\mathbf{F}_1 = \textstyle\sum_k w_k\,\boldsymbol{\tau}(\mathbf{u}^{(k)}) - p_\mathrm{mech}\mathbf{I} + \tau_s\,\mathbf{R}\otimes\mathbf{a},
+$$
+
+with $\mathbf{R} = \mathbf{f}_0 + \nabla p$ the strong residual the SUPG term sees,
+$\mathbf{a}$ the advecting velocity at the new level and $\mathbf{a}_k = \mathbf{u}^{(k)}$
+at the stored ones, $w_k$ the weights of the spatial operator (Adams-Moulton at
+order 1, all on n+1 for BDF2), and $\tau_s$ the scalar formula with $\nu = \eta/\rho$.
+The pressure equation is the Stokes constraint; Taylor-Hood needs no pressure
+stabilisation. Decisions, and what they rest on:
+
+- **No stress history.** The semi-Lagrangian solver carries a stress history
+  because its Crank-Nicolson viscous term needs the old flux at the departure
+  points. On the grid the old flux is needed where it was formed, so
+  $\boldsymbol{\tau}(\mathbf{u}^n) = 2\eta\,\dot\varepsilon(\mathbf{u}^n)$ is rebuilt
+  from the stored velocity level with the current effective viscosity (exact for
+  a constant viscosity; use BDF2 with a strain-rate dependent one). Pressure has
+  no history. A history-dependent stress is the constitutive model's business.
+- **The advecting velocity is pluggable.** `advection="extrapolated"` (default),
+  $\mathbf{a} = 2\mathbf{u}^n - \mathbf{u}^{n-1}$, makes each step one linear Oseen
+  solve through the Stokes fieldsplit, with a second-order lag and no explicit
+  stability limit; `picard_iterations=n` re-solves with the latest iterate for the
+  fully implicit fixed point without a tangent; `advection="implicit"` puts
+  $\mathbf{u}^{n+1}$ in the term and the SNES takes Newton steps with the symbolic
+  tangent. At a steady state all three coincide, which the Kovasznay rows below
+  confirm to every digit; the cylinder wake is where they differ.
+- **The pressure gradient belongs in the SUPG residual.** Without it $\mathbf{R}$ is
+  O(1) at the exact solution and the stabilisation injects an O($\tau$) error:
+  Kovasznay at 1/16 read 1.9e-3 against 6.6e-4 with it (three times). The viscous
+  term needs second derivatives the kernels do not see and is the remaining
+  inconsistency, O($h^2$) for P2 velocity in diffusion-limited cells; a recovered
+  Laplacian would close it and is deferred.
+- **`mesh.cell_size()` was partition-dependent** (#687): the kd-tree radius picked
+  the nearest centroid among the rank's own cells, so $\tau$ differed across a
+  partition seam (two-rank Kovasznay error 5e-4 off serial, 1e-15 with a
+  constant $h$), and after a deform it read stale vertex coordinates against fresh
+  centroids. The field now reports each cell's own radius from the DM's
+  coordinates; the kd-tree radii still feed `get_min_radius`.
+- **`solve()` builds through `_build`**, one Newton iteration per step at matched
+  tolerances, as for the scalar solver.
+
+### Kovasznay flow (Re 40)
+
+Exact steady Navier-Stokes on $[-0.5, 1] \times [-0.5, 0.5]$, Dirichlet velocity
+from the exact solution, P2-P1, 40 steps at Courant 1 from the exact solution
+(or 80 from rest); relative $L_2$ velocity error at the end
+(`~/+Simulations/navier_stokes_supg/kovasznay/`).
+
+| h | SUPG, CN | Galerkin, CN | SUPG, BDF2 | SLCN | s/step SUPG / SLCN |
+|---|---|---|---|---|---|
+| 1/16 | 6.6e-4 | 1.1e-4 | 6.3e-4 | 5.8e-3 | 0.27 / 1.9 |
+| 1/32 | 2.6e-4 | 1.6e-5 | 2.5e-4 | 2.9e-3 | 1.5 / 3.7 |
+| 1/64 | 6.7e-5 | | | | 6.8 / |
+
+Galerkin converges at third order here (the interpolation error), SUPG at 1.4
+rising to 2.0 (the missing viscous term), SLCN at first order. At Re 40 the
+element Reynolds number is below three on every mesh and the stabilisation is not
+needed; it costs a factor of six to sixteen against Galerkin and is still nine
+times more accurate than the semi-Lagrangian scheme at seven times less cost per
+step. Newton (`advection="implicit"`), two Picard passes, Courant 4, and the
+from-rest starts all reach the same steady state (6.60e-4 at 1/16); BDF2 sits at
+an exact fixed point (step change 0) where Crank-Nicolson keeps a 5e-5 flicker.
+Two ranks reproduce the serial error to 1e-7 (test_1078).
+
+### Lid-driven cavity
+
+Unit square, no-slip walls, unit lid (singular at the corners), P2-P1 on an
+unstructured mesh, marched from rest; centreline extrema (u on x = 0.5, v on
+y = 0.5) against Ghia, Ghia and Shin (1982). `~/+Simulations/navier_stokes_supg/cavity/`.
+
+| Re | h | scheme | Courant | Picard | u_min | v_max | v_min | steps | s/step |
+|---|---|---|---|---|---|---|---|---|---|
+| 100 | Ghia | | | | -0.2109 | 0.1753 | -0.2453 | | |
+| 100 | 1/32 | SUPG | 1 | 0 | -0.2025 | 0.1710 | -0.2437 | 543 (fixed point) | 0.73 |
+| 100 | 1/32 | SLCN | 1 | | -0.1977 | 0.1695 | -0.2365 | 1000 (still moving) | 2.9 |
+| 400 | Ghia | | | | -0.3273 | 0.3020 | -0.4499 | | |
+| 400 | 1/48 | SUPG | 2 | 0 | -0.3076 | 0.2832 | -0.4288 | 1500 | 2.3 |
+| 400 | 1/48 | SUPG | 2 | 1 | -0.3076 | 0.2831 | -0.4288 | 976 (fixed point) | 2.8 |
+
+At Re 100 SUPG is within 4% of Ghia on every extremum on a 1/32 mesh and
+reaches an exact fixed point; SLCN on the same mesh sits a little further out and
+has not settled after 1000 steps at four times the cost. At Re 400 on 1/48 both
+runs give the same extrema, 5 to 6% below Ghia (the mesh, not the scheme: the
+extrema are steady to four digits), but the extrapolated step alone never
+becomes stationary: the max-norm change per step grows to 0.1 and saturates, an
+alternating mode of the lagged coefficient fed by the lid singularity while the
+interior sits still. One Picard pass removes it (step change exactly zero) for
+20% more per step. That is the regime the Picard option was built for, Courant 2
+with an element Reynolds number near eight.
+
+At Re 1000 on 1/64 (element Reynolds number 16, Courant 4) the first step did not
+complete in fifteen minutes on four ranks: the algebraic-multigrid velocity block
+is the limit the plan flagged, not the scheme. The rerun with a refinement
+hierarchy (geometric multigrid on the velocity block) at Courant 1 is recorded
+below when it lands.
+
+### Cylinder wake (DFG 2D-2, Re 100)
+
+(filled in as the runs land: drag, lift, Strouhal against Schaefer and Turek 1996;
+extrapolated against Picard against Newton on a time-dependent wake)
+
 ## What the timestep estimate means
 
 The cell-crossing time is not a stability limit for either scheme and says
