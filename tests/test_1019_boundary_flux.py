@@ -11,6 +11,7 @@ import numpy as np
 import sympy
 import pytest
 import underworld3 as uw
+from underworld3 import analytic as A
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
@@ -332,3 +333,45 @@ def test_volume_residual_fields_insert_essential_values():
             f"{name}: compute_volume_residual_fields diverges from "
             f"_assemble_volume_reaction on g != 0 walls — essential values not inserted"
         )
+
+
+@pytest.mark.level_2
+def test_cbf_refuses_a_multiplier_constrained_boundary():
+    """CBF must not silently return a constant on a constrained boundary (#614).
+
+    The back-calculation reads the VELOCITY residual. Where `add_constraint_bc`
+    holds the boundary, the traction has been moved into the multiplier block and
+    the velocity rows retain only a constant one — the reaction comes back exactly
+    proportional to the nodal boundary mass (ratio 4:2:1 at midpoint / interior
+    vertex / end vertex, the P2 line lumping), so de-smearing returns that constant.
+    Measured std across the boundary was 2e-15 where the equivalent `Stokes` solve
+    varied correctly. The danger is that the value LOOKS reasonable.
+
+    The unconstrained boundary of the same solver must keep working, or this is a
+    guard on the solver rather than on the boundary.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 16), minCoords=(0, 0), maxCoords=(1, 1), qdegree=3)
+    sol = A.SolCx(mesh, eta_A=1.0, eta_B=1.0e3, x_c=0.5, n=1)
+    solver = uw.systems.Stokes_Constrained(mesh)
+    solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    solver.constitutive_model.Parameters.shear_viscosity_0 = sol.fn_viscosity
+    solver.bodyforce = sol.fn_bodyforce
+    solver.tolerance = 1.0e-9
+    solver.petsc_use_pressure_nullspace = True
+    solver.add_constraint_bc(0.0, "Top")
+    solver.add_dirichlet_bc((None, 0.0), "Bottom")
+    solver.add_dirichlet_bc((0.0, None), "Left")
+    solver.add_dirichlet_bc((0.0, None), "Right")
+    solver.solve()
+
+    with pytest.raises(NotImplementedError, match="add_constraint_bc"):
+        solver.boundary_flux("Top", normal=[[0.0, 1.0]])
+
+    # negative control: the Dirichlet boundary of the SAME solver still recovers,
+    # and recovers something with spatial content rather than a constant.
+    xs, flux = solver.boundary_flux("Bottom", normal=[[0.0, -1.0]])
+    assert len(xs) > 0
+    assert np.asarray(flux).std() > 1.0e-3, (
+        "the unconstrained boundary came back constant too — the guard is on the "
+        "solver, not on the boundary")

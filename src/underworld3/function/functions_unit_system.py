@@ -25,6 +25,8 @@ This clean separation ensures:
 - Single source of truth for unit handling logic
 """
 
+import warnings
+
 import numpy as np
 import underworld3 as uw
 
@@ -293,17 +295,20 @@ def _evaluate_impl(
         evalf=evalf,
         rbf=rbf_flag,
         data_layout=data_layout,
-        check_extrapolated=check_extrapolated,
+        check_extrapolated=True,      # always: free, and needed for the guard below
         force_l2=force_l2_flag,
         smoothing=smoothing,
     )
 
-    # Step 4: Unpack extrapolation flag if needed
-    if check_extrapolated:
-        raw_values, extrapolated = raw_result_nondim
-    else:
-        raw_values = raw_result_nondim
-        extrapolated = None
+    # Step 4: Unpack the extrapolation flag.
+    #
+    # It is requested UNCONDITIONALLY. Measured cost of asking for it: none —
+    # 0.0073 s/call against 0.0075 s/call without, on 1969 points, i.e. inside the
+    # noise. The locator has to decide whether it located a point in order to fall
+    # back, so the mask is already known and returning it is free.
+    raw_values, extrapolated = raw_result_nondim
+
+    _warn_if_points_are_not_owned(extrapolated)
 
     # Step 5: Re-dimensionalize and wrap with units
     # GATEWAY PRINCIPLE: evaluate() ALWAYS returns dimensional values when units are known
@@ -763,6 +768,50 @@ def _apply_monotone_limit(
 
 
 @uw.timing.routine_timer_decorator
+def _warn_if_points_are_not_owned(extrapolated):
+    """Warn when a parallel `evaluate` silently answered for points this rank does
+    not own.
+
+    `evaluate` is RANK-LOCAL: it answers from this rank's portion of the mesh. In
+    serial that is the whole mesh and everything is exact. In parallel, a query
+    point owned by another rank is not located here, so the locator falls back to
+    extrapolation and returns a plausible number that is simply wrong — and two
+    ranks asked the identical question return different answers.
+
+    Measured (#606), P2 field holding x^2+2y^2 on a unit box, querying every rank's
+    own DOF coordinates allgathered — so every point is a mesh node:
+
+        np=1  all coords   max error 8.9e-16
+        np=2  own coords   max error 6.7e-16      <- rank-local use is exact
+        np=2  all coords   max error 1.48         <- on a field whose range is 3
+        np=4  all coords   max error 2.59, two thirds of points wrong
+
+    The extrapolation mask is an EXACT detector of those points: at np=2, 69 of 166
+    flagged and 69 wrong, with no wrong-but-unflagged and no flagged-but-fine; at
+    np=4, 120 and 120. Maximum error among unflagged points was 8.9e-16. So this
+    warning has neither false negatives nor false positives on the case that
+    motivated it.
+
+    Serial is deliberately NOT warned about: there, an extrapolated point is one
+    genuinely outside the domain, which is a legitimate thing to ask for.
+    """
+    if uw.mpi.size == 1 or extrapolated is None:
+        return
+    flagged = int(np.count_nonzero(extrapolated))
+    if not flagged:
+        return
+    total = int(np.asarray(extrapolated).size)
+    warnings.warn(
+        f"evaluate() is rank-local: {flagged} of {total} query points are not "
+        f"located on this rank (rank {uw.mpi.rank} of {uw.mpi.size}), so their "
+        "values were EXTRAPOLATED and are wrong — different ranks will disagree "
+        "for the same query. Use global_evaluate() for points that may be owned "
+        "elsewhere, or restrict the query to this rank's own coordinates (#606).",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 def evaluate(
     expr,
     coords,
@@ -786,6 +835,21 @@ def evaluate(
     (dimensional coordinates in, unit-aware results out) happens
     automatically. With the default ``monotone=False`` the result is
     bit-identical to the historical ``evaluate``.
+
+    .. warning::
+       **This is RANK-LOCAL.** It answers from this rank's portion of the
+       mesh. In serial that is the whole mesh. In parallel, a point owned by
+       another rank cannot be located here, so it is EXTRAPOLATED and the
+       value returned is wrong — and two ranks asked the same question return
+       different answers. Measured on a P2 field exact in P2 (#606): querying
+       every rank's own DOF coordinates allgathered gave a maximum error of
+       1.48 at ``np=2`` and 2.59 at ``np=4``, on a field whose whole range is
+       3, with two thirds of the points wrong at ``np=4`` — while the same
+       query restricted to each rank's own coordinates was exact to 1e-16.
+
+       Use :func:`global_evaluate` for points that may be owned elsewhere. A
+       parallel call that extrapolates any point now emits a
+       ``RuntimeWarning`` naming the count.
 
     Parameters
     ----------

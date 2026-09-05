@@ -60,6 +60,44 @@ _P2_TRIANGLE_MASS = np.array(
 )
 
 
+def _rebuild_vertices_from_midpoints(elements, global_index, flux):
+    """Replace the VERTEX entries of a 3D P2 recovery with values reconstructed from
+    its edge-midpoint entries, averaged over the facets incident on each vertex.
+
+    The P2 triangle vertex basis function has zero mean (``_P2_TRIANGLE_MASS`` vertex
+    row sums are exactly 0), so the vertex DOF of an L2 recovery carries no mass and is
+    fixed by cancellation — O(1) error, independent of h. The midpoints carry all of it
+    and are superconvergent, so the vertices are better obtained from them than asked
+    for directly.
+
+    On one triangle the three midpoint values determine a unique linear function.
+    Because ``m01 = (v0+v1)/2`` and so on, that function takes the value
+    ``m01 + m20 - m12`` at ``v0`` — each vertex reads its two ADJACENT midpoints and
+    subtracts the OPPOSITE one. The subtraction amplifies noise up to 3x, which is
+    tolerable only because the midpoints are superconvergent; averaging over the
+    (typically ~6) incident facets damps it further.
+
+    Mean removal is unaffected: it weights by ``M·1``, which is zero at exactly these
+    vertices, so the gauge is set by the midpoints either way — and the reconstruction
+    is linear, so removing the mean before or after gives the same answer.
+    """
+    total = np.zeros_like(flux)
+    count = np.zeros(len(flux), dtype=np.int64)
+    for _order, nodes, _area in elements.values():
+        v0, v1, v2 = (global_index[k] for k in nodes[:3])
+        m01, m12, m20 = (global_index[k] for k in nodes[3:])
+        for vertex, near_a, near_b, far in (
+                (v0, m01, m20, m12),      # v0 lies on edges 01 and 20
+                (v1, m01, m12, m20),      # v1 lies on edges 01 and 12
+                (v2, m12, m20, m01)):     # v2 lies on edges 12 and 20
+            total[vertex] += flux[near_a] + flux[near_b] - flux[far]
+            count[vertex] += 1
+    rebuilt = np.array(flux, dtype=float, copy=True)
+    touched = count > 0
+    rebuilt[touched] = total[touched] / count[touched]
+    return rebuilt
+
+
 def _key(c, dim):
     return tuple(round(float(t), 9) for t in np.asarray(c).ravel()[:dim])
 
@@ -300,9 +338,10 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
     csec = dm.getCoordinateSection()
     cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
     v0, v1 = dm.getDepthStratum(0)
-    if mass not in ("auto", "lumped", "consistent", "p1"):
-        raise ValueError("mass must be 'auto', 'lumped', 'consistent', or 'p1' "
-                         "(P1-projected recovery on a 3D P2 trace).")
+    if mass not in ("auto", "lumped", "consistent", "p1", "midpoint"):
+        raise ValueError("mass must be 'auto', 'lumped', 'consistent', 'p1' "
+                         "(P1-projected) or 'midpoint' (midpoint-reconstructed) "
+                         "— the last two apply to a 3D P2 trace.")
     if dim == 3:
         lsec = dm.getLocalSection()
         ncomp = lsec.getFieldComponents(0)
@@ -399,7 +438,34 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
                     )
                 order = orders.pop()
                 if mass == "auto":
-                    mass = "consistent" if order == 2 else "lumped"
+                    # A P2 TRIANGLE mass has vertex rows that sum to EXACTLY zero
+                    # (_P2_TRIANGLE_MASS, row sums [0,0,0,60,60,60]). Row sum i of a
+                    # mass matrix IS the integral of basis function i, because the
+                    # basis is a partition of unity:
+                    #     sum_j INT(phi_i phi_j) = INT(phi_i sum_j phi_j) = INT(phi_i)
+                    # so this says INT(phi_vertex) = 0 — a property of the P2 triangle
+                    # element, not of this code. A vertex DOF carries no mass, so an
+                    # L2 recovery fixes it by cancellation and amplifies whatever noise
+                    # is present: O(1), and independently of h. Measured on the Zhong
+                    # l=2 shell (#633), the consistent vertex error over cellSize
+                    # 0.25 -> 0.11 runs 0.076 / 0.074 / 0.070 / 0.119 / 0.093 — flat
+                    # and erratic, never converging.
+                    #
+                    # The midpoints carry all of the mass (row sums 60) and are
+                    # superconvergent (to 5e-4). So do not ask the recovery for vertex
+                    # values at all: keep the midpoints and RECONSTRUCT the vertices
+                    # from them ('midpoint'). Worst-node error against the analytic
+                    # coefficient beats the P1-projected recovery at every resolution
+                    # measured, on both boundaries, by 1.8x to 4.9x:
+                    #     h      0.25   0.20   0.16   0.13   0.11
+                    #     p1     .041   .026   .018   .013   .008   (Upper)
+                    #     mid    .016   .012   .012   .003   .004
+                    #     p1     .116   .067   .047   .030   .025   (Lower)
+                    #     mid    .094   .058   .043   .024   .015
+                    # 'p1' remains available and is sound; it simply discards the good
+                    # data along with the bad. The 2-D P2 LINE mass has vertex row sums
+                    # of 5 and needs none of this.
+                    mass = "midpoint" if order == 2 else "lumped"
                 if order == 2 and mass == "lumped":
                     raise ValueError(
                         "A 3D P2 triangular trace has zero row-sum mass at its "
@@ -435,6 +501,13 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
                         elements = new_elements
                         order = 1
                         mass = "lumped"
+
+                # 'midpoint' IS the consistent solve, plus a vertex reconstruction
+                # from its midpoint values afterwards.
+                reconstruct = mass == "midpoint"
+                if reconstruct:
+                    mass = "consistent" if order == 2 else "lumped"
+                    reconstruct = order == 2   # a P1 trace has no midpoints to use
 
                 keys = sorted(R_by)
                 global_index = {key: i for i, key in enumerate(keys)}
@@ -485,6 +558,9 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
                         raise RuntimeError(
                             "Consistent boundary-mass solve failed on boundary " f"{boundary!r}."
                         )
+                    if reconstruct:
+                        flux = _rebuild_vertices_from_midpoints(
+                            elements, global_index, flux)
                 if remove_mean:
                     mean = float(np.dot(flux, boundary_mass) / np.sum(boundary_mass))
                     flux -= mean
@@ -519,8 +595,11 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
         raise NotImplementedError(
             f"Boundary-flux recovery is not implemented for mesh dimension {dim}."
         )
-    if mass == "p1":
-        mass = "lumped"    # P1 consumers read vertex values; vertex lumping is sound
+    if mass in ("p1", "midpoint"):
+        # Both exist to work around the 3D P2 TRIANGLE's zero-mean vertex basis. A 2D
+        # P2 LINE trace has vertex row sums of 5, so its vertex values are sound as
+        # recovered and neither workaround is needed here.
+        mass = "lumped"
 
     lsec = dm.getLocalSection()
     ncomp = lsec.getFieldComponents(0)
@@ -633,10 +712,42 @@ def _desmear(solver, boundary, xs, R, mass, remove_mean, partial_reaction=True,
     return np.array([sig[gi[_key(x, dim)]] for x in xs])
 
 
+def _refuse_a_constrained_boundary(solver, boundary):
+    """CBF recovery reads the VELOCITY residual. On a boundary held by
+    ``add_constraint_bc`` the traction has been moved into the multiplier block, so
+    what remains in the velocity rows is a CONSTANT traction — the reaction comes back
+    exactly proportional to the nodal boundary mass, and de-smearing hands that constant
+    straight back (#614).
+
+    That is not an approximation, it is the wrong quantity: measured on SolCx the
+    recovered flux had a standard deviation of 2e-15 across the boundary while the
+    equivalent ``Stokes`` solve varied correctly and correlated -0.997 with the exact
+    topography. It returns a plausible-looking number, which is why it went unnoticed.
+
+    Refuse rather than mislead. The traction on such a boundary is
+    ``solver.traction(boundary)`` — ``h + r(n·u − g)``, the multiplier plus its
+    augmented-Lagrangian share (#607). ``solver.multiplier()`` returns ``h`` alone and
+    is short by that share, so it is not the thing to redirect a caller to."""
+    constraints = getattr(solver, "_block_constraint_bcs", None)
+    if not constraints:
+        return
+    if any(getattr(c, "boundary", None) == boundary for c in constraints):
+        raise NotImplementedError(
+            f"boundary_flux cannot recover the traction on {boundary!r}: it is held "
+            "by add_constraint_bc, so the traction is carried by the multiplier and "
+            "the velocity residual this reads holds only a constant (#614). Use "
+            f"solver.traction({boundary!r}) — h + r(n·u − g) — or "
+            f"solver.topography({boundary!r}) for the scaled version. "
+            "solver.multiplier() returns h alone and is short by the "
+            "augmented-Lagrangian share (#607)."
+        )
+
+
 def boundary_flux(solver, boundary, mass="auto", remove_mean=False, normal=None):
     """See ``SolverBaseClass.boundary_flux``. Returns ``(xs, flux)`` for this rank's
     boundary nodes; scalar solver → normal flux, vector solver → traction (or its normal
     component if ``normal`` is given)."""
+    _refuse_a_constrained_boundary(solver, boundary)
     dm = solver.dm; dim = solver.mesh.dim
     ra = np.asarray(solver._assemble_volume_reaction()).ravel()
     nodes, lsec, csec, cvec, v0, v1, edge_nodes = _boundary_field_nodes(

@@ -611,7 +611,7 @@ def test_rotated_freeslip_spherical_shell_3d():
         assert rotfrac < 1e-8, f"rotation mode {k} gauge {rotfrac:.2e} not removed"
 
 
-def _spherical3d_reaction_topography(cell_size=0.25):
+def _spherical3d_reaction_topography(cell_size=0.13):
     """Zhong l=2 topography recovered directly from rotated constraint reactions."""
 
     radius_inner = 0.55
@@ -689,19 +689,64 @@ def _spherical3d_reaction_topography(cell_size=0.25):
     )
 
 
+def test_p2_triangle_mass_has_zero_vertex_row_sums():
+    """WHY mass='auto' is P1-projected on a 3D P2 trace, and not the consistent solve.
+
+    The P2 TRIANGLE mass has vertex rows summing to exactly zero, so it is singular
+    on constants along those rows and M^-1 amplifies any perturbation of the nodal
+    load at VERTICES without bound -- by O(1), and independently of h (#633: the
+    vertex error is flat at ~0.28 over a 3.2x node-count range, while the same
+    measurement on a 2-D annulus converges away ~O(h^2)). The 2-D P2 LINE mass has
+    positive vertex row sums and needs none of this, which is why 2-D never showed
+    the defect. Guarding the identity here keeps the reason attached to the choice.
+    """
+    from underworld3.utilities.boundary_flux import _P2_TRIANGLE_MASS
+
+    row_sums = _P2_TRIANGLE_MASS.sum(axis=1)
+    # Row sum i IS the integral of basis function i: sum_j INT(phi_i phi_j) =
+    # INT(phi_i sum_j phi_j) = INT(phi_i), the basis being a partition of unity.
+    # So this asserts INT(phi_vertex) = 0 — the P2 triangle vertex basis has ZERO
+    # MEAN, which is why its DOF carries no mass and why 'auto' reconstructs the
+    # vertices from the midpoints instead of recovering them.
+    assert np.allclose(row_sums[:3], 0.0), (
+        f"P2 triangle vertex row sums {row_sums[:3]} are no longer zero — the "
+        "reason mass='auto' avoids the consistent solve has changed")
+    assert np.all(row_sums[3:] > 0.0), "P2 triangle midpoint rows should be positive"
+
+
 @pytest.mark.level_2
 def test_rotated_freeslip_spherical3d_reaction_topography():
-    """3D reaction loads must be divided by boundary mass to recover pointwise stress."""
+    """3D reaction loads must be divided by boundary mass to recover pointwise stress.
+
+    Every node class is asserted, because the failure this guards is confined to ONE
+    of them: under the consistent P2 surface mass the VERTEX values were 7.6% low with
+    no penalty at all and 28% low at penalty=10, while the midpoints stayed within 1%
+    and the facet-integrated value stayed correct (#633). An assertion on the
+    aggregate alone passes straight through that.
+
+    Tolerances are the measured discretisation error at this resolution with ~2x
+    headroom, not round numbers: at cellSize=0.13 the midpoint-reconstructed recovery
+    lands within 0.26% on the surface and 2.4% at the CMB.
+
+    #414 asked that these goldens NOT be tightened, because at rtol 0.10-0.12 they were
+    absorbing the curved-boundary vertex bias and tightening them would have been
+    tightening against the wrong reference. That caveat is discharged rather than
+    ignored: `mass="auto"` no longer consumes the biased vertex reactions at all. It
+    reconstructs vertices from the superconvergent midpoints, which is #414's own
+    action item (2) — "consider having dynamic_topography on curved boundaries return a
+    midpoint-weighted or fitted field". The quantity under test changed; the tolerance
+    follows it.
+    """
 
     surface, surface_vertices, surface_midpoints, cmb, cmb_vertices, cmb_midpoints = (
         _spherical3d_reaction_topography()
     )
-    assert np.isclose(surface, 0.41920, rtol=0.10)
-    assert np.isclose(cmb, 0.77060, rtol=0.10)
-    assert np.isclose(surface_vertices, 0.41920, rtol=0.12)
-    assert np.isclose(surface_midpoints, 0.41920, rtol=0.12)
-    assert np.isclose(cmb_vertices, 0.77060, rtol=0.12)
-    assert np.isclose(cmb_midpoints, 0.77060, rtol=0.12)
+    assert np.isclose(surface, 0.41920, rtol=0.01)
+    assert np.isclose(surface_vertices, 0.41920, rtol=0.01)
+    assert np.isclose(surface_midpoints, 0.41920, rtol=0.01)
+    assert np.isclose(cmb, 0.77060, rtol=0.05)
+    assert np.isclose(cmb_vertices, 0.77060, rtol=0.05)
+    assert np.isclose(cmb_midpoints, 0.77060, rtol=0.05)
 
 
 def test_rotated_freeslip_annulus_zero_leakage():

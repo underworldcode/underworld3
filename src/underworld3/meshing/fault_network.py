@@ -558,7 +558,6 @@ class FaultNetwork:
             coordinate_system_type=base.CoordinateSystem.coordinate_type,
             boundaries=Enum("boundaries", members), verbose=False)
         band = mesh.cells_labelled("Band", 71)
-        adopt_hierarchy(mesh, base, fac_zone=band)
         if realisation == "split":
             mesh = split_faults(mesh, [n for n, _P in self.prepared])
             # reduce first, then branch: the defect must raise on every
@@ -575,8 +574,15 @@ class FaultNetwork:
                     "both sides of a pairing — the embedded "
                     "mid-surfaces are degenerate (a defect, not a "
                     "configuration error).")
-            mesh._custom_mg_fac_zone = None   # a split fault needs no patch
             band = mesh.cells_labelled("Band", 71)
+        # Adopt the base's multigrid tail on the FINAL mesh: a child of
+        # split_faults does not inherit (only Mesh.add_fault's wrapper
+        # does), and adopting first then splitting silently dropped the
+        # tail — every solver fell back to GAMG. The keying ruling
+        # stands: the split needs no FAC patch; the weak plane's patch
+        # is its band.
+        adopt_hierarchy(mesh, base,
+                        fac_zone=None if realisation == "split" else band)
         # honoured footprints: band cells within the USER patch's own
         # in-plane outline and half a width of its plane — planar patches
         # make the rule exact; the expanded margin stays unpainted. Near a
@@ -1245,9 +1251,21 @@ class FaultNetwork:
     # ------------------------------------------------------------------
     def solve(self, solver, **kwargs):
         """Solve with the fault contact imposed (thin convenience
-        wrapper over ``fault_contact.solve_with_fault``)."""
+        wrapper over ``fault_contact.solve_with_fault``). The velocity
+        preconditioner is reported when it falls back to algebraic
+        multigrid: a lost geometric tail must never decline quietly."""
+        import underworld3 as uw
         from underworld3.utilities.fault_contact import solve_with_fault
-        return solve_with_fault(solver, **kwargs)
+
+        info = solve_with_fault(solver, **kwargs)
+        if info.get("velocity_pc") == "GAMG":
+            uw.pprint(
+                "[FaultNetwork.solve] the velocity block ran on ALGEBRAIC "
+                "multigrid: this mesh owns no geometric tail, or it was "
+                "not engaged. Production runs want the FMG tail — "
+                "build(width=...) adopts it from its own base "
+                "automatically.")
+        return info
 
     # ------------------------------------------------------------------
     def slips(self, solver):
@@ -1285,11 +1303,34 @@ class FaultNetwork:
     def _slips_ti(self, solver):
         """The weak plane's slip: the tangential velocity jump across the
         band, one half-width plus a cell either side of each spine (2-D)
-        or patch (3-D, where the jump is projected onto the plane)."""
+        or patch (3-D, where the jump is projected onto the plane).
+
+        COLLECTIVE (every rank calls it), rank-local ANSWER: only probe
+        pairs whose BOTH points this rank owns count. ``evaluate``
+        answers for any point it is handed — extrapolating from the
+        nearest local cell when the point is not in the local mesh
+        (#641) — so on a distributed mesh a band-less rank would
+        otherwise report a far-field extrapolation as the band's slip
+        (measured 3x the true value at np=2). Every rank still evaluates
+        every probe — the call migrates an evaluation swarm, and a rank
+        that skipped it on a rank-local test would leave its peers
+        spinning (the conditional-collective hang) — and masks the answer
+        afterwards. A piece with no owned pair on this rank is absent
+        from the result, so a max-reduction across ranks recovers the
+        network's answer. Under co-located placement the band and its
+        skirt live on one rank, so no pair straddles a seam; a pair that
+        did would go unsampled on both sides."""
         import underworld3 as uw
 
         if self.info is None:
             raise RuntimeError("no band on this mesh: build(width=...)")
+        mesh = solver.u.mesh
+
+        def owned(points):
+            # rank-local, no communication: safe to differ across ranks
+            return mesh._robust_owning_cells(
+                np.ascontiguousarray(points)) >= 0
+
         out = {}
         for k, (name, P) in enumerate(self.prepared):
             P = np.asarray(P, dtype=float)
@@ -1302,11 +1343,17 @@ class FaultNetwork:
                 n_hat = _patch_normal(P)
                 S = np.vstack([P, 0.5 * (P + np.roll(P, -1, axis=0)),
                                P.mean(axis=0)])
+                plus, minus = S + skirt * n_hat, S - skirt * n_hat
+                # collective pair, unconditional, before any rank-local
+                # branch
                 vp = np.asarray(uw.function.evaluate(
-                    solver.u.sym, S + skirt * n_hat)).reshape(len(S), -1)
+                    solver.u.sym, plus)).reshape(len(S), -1)[:, :3]
                 vm = np.asarray(uw.function.evaluate(
-                    solver.u.sym, S - skirt * n_hat)).reshape(len(S), -1)
-                dv = (vp - vm)[:, :3]
+                    solver.u.sym, minus)).reshape(len(S), -1)[:, :3]
+                keep = owned(plus) & owned(minus)
+                if not keep.any():
+                    continue
+                dv = (vp - vm)[keep]
                 dv -= np.outer(dv @ n_hat, n_hat)
                 out[name] = float(np.linalg.norm(dv, axis=1).max())
                 continue
@@ -1314,12 +1361,16 @@ class FaultNetwork:
             t = np.gradient(P, axis=0)
             t /= np.linalg.norm(t, axis=1)[:, None]
             n = np.column_stack([-t[:, 1], t[:, 0]])
+            plus, minus = P + skirt * n, P - skirt * n
             vp = np.asarray(uw.function.evaluate(
-                solver.u.sym, P + skirt * n)).reshape(len(P), -1)[:, :2]
+                solver.u.sym, plus)).reshape(len(P), -1)[:, :2]
             vm = np.asarray(uw.function.evaluate(
-                solver.u.sym, P - skirt * n)).reshape(len(P), -1)[:, :2]
-            out[name] = float(
-                np.abs(np.einsum("ij,ij->i", vp - vm, t)).max())
+                solver.u.sym, minus)).reshape(len(P), -1)[:, :2]
+            keep = owned(plus) & owned(minus)
+            if not keep.any():
+                continue
+            out[name] = float(np.abs(
+                np.einsum("ij,ij->i", (vp - vm)[keep], t[keep])).max())
         return out
 
     # ------------------------------------------------------------------
