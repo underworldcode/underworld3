@@ -3291,9 +3291,9 @@ class Mesh(Stateful, uw_object):
     def _assemble_cell_size(self, var):
         """Fill ``var`` (degree-0 scalar) with each cell's characteristic size.
 
-        Uses the own-cell characteristic lengths ``self._radii_own`` computed by
+        Uses the cell-geometry characteristic lengths ``self._cell_radii`` computed by
         :meth:`_get_mesh_sizes` on the *current* geometry. A degree-0
-        discontinuous variable's local DOFs and ``self._radii_own`` are BOTH
+        discontinuous variable's local DOFs and ``self._cell_radii`` are BOTH
         indexed by this rank's cell-stratum order, so a direct assignment is
         correct on every rank.
 
@@ -3303,7 +3303,7 @@ class Mesh(Stateful, uw_object):
         ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
         # Own-cell radii fix #687 without changing the legacy kd-tree radii
         # used by global timestep estimates, adaptivity, and mesh relaxation.
-        radii = numpy.asarray(self._radii_own).reshape(-1)
+        radii = numpy.asarray(self._cell_radii).reshape(-1)
         # Empty partition (no local cells): nothing to fill on this rank.
         if radii.size == 0 or var.data.shape[0] == 0:
             return
@@ -6898,7 +6898,7 @@ class Mesh(Stateful, uw_object):
         cell_length = np.empty(centroids.shape[0])
         cell_min_r = np.empty(centroids.shape[0])
         cell_r = np.empty(centroids.shape[0])
-        cell_r_own = np.empty(centroids.shape[0])
+        cell_radii = np.empty(centroids.shape[0])
         coordinate_section = self.dm.getCoordinateDM().getLocalSection()
         vertex_coordinates = self.dm.getCoordinatesLocal().array
 
@@ -6921,9 +6921,9 @@ class Mesh(Stateful, uw_object):
             offsets = np.array([coordinate_section.getOffset(int(v)) for v in vertices])
             own_coords = vertex_coordinates[offsets[:, None] + np.arange(self.cdim)]
             delta = own_coords - own_coords.mean(axis=0)
-            cell_r_own[cell] = np.sqrt(np.mean(np.sum(delta ** 2, axis=1)))
+            cell_radii[cell] = np.sqrt(np.mean(np.sum(delta ** 2, axis=1)))
 
-        self._radii_own = cell_r_own
+        self._cell_radii = cell_radii
         return cell_min_r, cell_r, centroids, cell_length
 
     # ==========

@@ -152,11 +152,11 @@ def _box_wobble(X0, amp):
 # --------------------------------------------------------------------------
 def test_cell_size_is_local_per_cell():
     """``mesh.cell_size()`` is a per-cell field equal to each cell's
-    own-vertex RMS size (``mesh._radii_own``), not the single global minimum."""
+    own-vertex RMS size (``mesh._cell_radii``), not the single global minimum."""
     mesh = _graded_box()
     h = mesh.cell_size()  # sympy symbol -> backed by a P0 field
     field = np.asarray(mesh._cell_size_variable.array[:, 0, 0]).reshape(-1)
-    radii = np.asarray(mesh._radii_own).reshape(-1)
+    radii = np.asarray(mesh._cell_radii).reshape(-1)
 
     # field exactly mirrors the per-cell characteristic size (rank-local check,
     # reduced to a single global pass/fail so all ranks agree)
@@ -178,7 +178,7 @@ def test_local_h_at_coarse_freeslip_boundary_exceeds_global_min():
     times the global minimum. global-h would over-stiffen that penalty by
     exactly this factor; local-h scales it correctly."""
     mesh = _graded_box(h_fine=0.04, h_coarse=0.12)
-    # build/exercise the field; its data equals mesh._radii_own (asserted in
+    # build/exercise the field; its data equals mesh._cell_radii (asserted in
     # test_cell_size_is_local_per_cell), so we read the per-cell sizes directly
     # from the field / _centroids — a rank-local lookup, avoiding the collective
     # arbitrary-point uw.function.evaluate (which deadlocks in parallel).
@@ -212,7 +212,7 @@ def test_cell_size_tracks_deformation():
     assert moved  # geometry actually changed
 
     h_after = np.array(mesh._cell_size_variable.array[:, 0, 0])
-    radii_after = np.asarray(mesh._radii_own).reshape(-1)
+    radii_after = np.asarray(mesh._cell_radii).reshape(-1)
 
     # not stale: the field changed with the geometry SOMEWHERE (global OR) ...
     nb = min(h_after.shape[0], h_before.shape[0])
