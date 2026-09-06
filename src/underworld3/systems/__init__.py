@@ -85,6 +85,7 @@ from .solver_health import SubSolveReport
 # are the Lagrangian implementations actually distinct in reality ?
 from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
+from .ddt import IntegrationPointSemiLagrangian as IntegrationPointSemiLagrangian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
 

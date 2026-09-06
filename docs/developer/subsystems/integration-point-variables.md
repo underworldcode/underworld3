@@ -110,3 +110,34 @@ Scalar components only for now; use one variable per component.
 Tests: `tests/test_0064_quadrature_point_fe.py` (the element),
 `tests/test_0065_integration_point_variable.py` (the variable, the assembler
 reading it, `evaluate`, the guards).
+
+## Semi-Lagrangian history on the integration points
+
+`uw.systems.ddt.IntegrationPointSemiLagrangian` is the SLCN history built on
+this variable. Its slots `psi_star[k]` are integration-point variables, so
+the value the weak form sees at each integration point is the solution from
+`k+1` steps ago evaluated exactly at the departure point of that
+integration point. A nodal history cannot be sampled from a delta field, so
+the slot-to-slot chain of `SemiLagrangian` is replaced by nodal snapshots of
+the solution and of the velocity at the last `order` times: slot `k` is
+filled by tracing `k+1` RK2 segments back from every integration point,
+segment `j` with the velocity at time `n-j` and that step's `dt`, and
+evaluating the snapshot from time `n-k` at the foot. Every slot carries one
+evaluation error rather than one per generation.
+
+```python
+DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V_fn, degree=2, order=1)
+adv = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=V_fn, DuDt=DuDt, order=1)
+```
+
+The diffusive flux history (`DFDt`) keeps its nodal projection, since it
+carries derivatives. Scalar histories only; no ALE or old-frame trace-back,
+no checkpoint state yet.
+
+For a P2 field in a uniform velocity the slots reproduce the exact
+departure-point values to round-off, for one and for two segments
+(`tests/test_0066_integration_point_slcn.py`). On a rotating Gaussian at
+Courant 1 (`cellSize=0.05`, `dt=0.1`, half a revolution) the L2 error drops
+from 3.6e-3 (nodal SLCN) to 3.2e-3 and the peak is kept at 0.9998 instead
+of 0.987. The trace-back samples six points per cell rather than the P2
+nodes, so the update costs about twice the nodal one.
