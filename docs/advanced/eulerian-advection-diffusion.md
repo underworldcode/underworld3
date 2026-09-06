@@ -101,7 +101,12 @@ of the compiled kernels; nothing is recompiled.
   derivatives only. For linear elements the missing term is identically zero.
 - The stabilisation parameter uses the local cell size (`mesh.cell_size()`) and
   three weights that are runtime constants (`solver.tau_weights`);
-  `solver.supg_weight = 0` gives the plain Galerkin scheme for comparison.
+  `solver.supg_weight = 0` gives the plain Galerkin scheme for comparison. The term is
+  also weighted by the cell Péclet number, $Pe^2/(Pe^2 + Pe_c^2)$ with
+  $Pe = |\mathbf{u}| h / 2\kappa$ and $Pe_c$ the `peclet_weight` argument (default 4),
+  so the stabilisation is off where a cell is diffusion-dominated and full where advection
+  dominates (pure advection, $\kappa = 0$, is unaffected); `peclet_weight=0` gives the
+  uniform weight.
 - The linear system is nonsymmetric, so the solver uses GMRES with an
   additive-Schwarz ILU preconditioner, with the Krylov tolerance matched to the
   SNES tolerance so that a step is one Newton iteration. Measured, this is the
