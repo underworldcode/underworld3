@@ -552,6 +552,40 @@ expression's `is_zero` assumption from its value, had evaluated $e^{-2\nu t}$ ou
 boundary formula before the JIT saw it (issue #696, not patched; the driver creates the
 expression at a non-zero value).
 
+### The recovered viscous term (`recovered_viscous`)
+
+The SUPG column above is the stabilisation's consistency error: the strong residual the
+term weights lacks $\nabla\cdot\boldsymbol{\sigma}$ (second derivatives the kernels do
+not see), and the Péclet turn-down of $\tau_s$ does not remove it, because at low Péclet
+number $\tau_s \to h^2/(4\nu)$ while the missing term is $\nu\nabla^2\mathbf{u}$: the
+product is $O(h^2)$ with no $\nu$ in it. Two ways of supplying the term were measured
+(velocity error at $t = 1$, dt 0.0125; Kovasznay at Re 40):
+
+| case | SUPG | Galerkin | balance form | projected stress |
+|---|---|---|---|---|
+| vortex 1/32 | 7.8e-5 | 4.9e-5 | 4.9e-5 | 7.8e-5 |
+| vortex 1/64 | 1.6e-5 | 4.0e-6 | 4.1e-6 | diverged |
+| vortex 1/32, dt 0.1 | 2.1e-4 | 4.8e-5 | 5.7e-5 | |
+| Kovasznay 1/16 | 6.6e-4 | 1.1e-4 | 1.1e-4 | |
+| Kovasznay 1/32 | 2.6e-4 | 1.6e-5 | 1.6e-5 | diverged |
+| cylinder 1/20, $C_D$ max | 3.046 | 3.098 | diverged at step 25 to 50 | |
+
+The projected stress (the deviatoric stress of the advecting velocity fitted to a
+continuous P2 tensor and differentiated) does nothing at 1/32 and is unstable finer: a
+differentiated fit to a discontinuous strain rate is not a Laplacian. The balance form
+(Louis, 2026-09-06) takes the term from the momentum balance of the stored level,
+$\nabla\cdot\boldsymbol{\sigma}^n = \rho(D\mathbf{u}/Dt)^n + \nabla p^n - \mathbf{f}$,
+first derivatives of stored fields and one stored pressure level, so the residual becomes
+the increment of the out-of-balance force between levels. On resolved viscous flow it
+returns the Galerkin accuracy to two digits at every mesh, with a small O(dt) remainder at
+dt 0.1. Where advection dominates it fails: the residual of a stationary wiggle pattern is
+zero, so the stabilisation gives it no damping, and the lagged term feeds the previous
+residual back as a source; on the cylinder (element Reynolds number 19 at the wall, where
+plain Galerkin runs) the drag was 7% high at step 25 and the linear solve diverged before
+step 50. The consistency the SUPG term needs is with the continuum, not with the discrete
+equations of the previous step. The option is kept for resolved viscous problems and is
+off by default; a smoothed form of the balance term is the next thing to measure.
+
 ### A defect in the integrals (#695)
 
 The first error metric of this benchmark, an integral of $|\mathbf{v} - \mathbf{u}(t)|^2$
