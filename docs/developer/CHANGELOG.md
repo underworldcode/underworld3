@@ -506,6 +506,11 @@ in `Stokes_Constrained` (#224), then made parallel-correct.
 minimum radius, restoring correct stiffness on graded and adapted meshes
 (#275).
 
+- The local size now comes from each cell's own geometry instead of a kd-tree
+  over the centroids held by the current MPI rank. The old field changed at
+  partition boundaries and moved the default ``local_h=True`` Nitsche velocity
+  answer by 6.6e-3 between rank counts; the replacement is cell-by-cell
+  identical from one to eight ranks (#569, #687).
 - `mesh.boundary_slip` API with `BoundingSurface` objects for boundary
   tangent-slip (#225); `Surface.influence_function` respects finite edges
   (#241).
