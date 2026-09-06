@@ -440,6 +440,7 @@ serial; the last row is the whole mesh at 1/40 on four ranks at its own Courant-
 | 1/160, dt 0.0042 | 1 | 3.131 / 3.153 | 0.841 | 2.43 | 0.298 | 2880 | 0.47 |
 | 1/320 | 4 | 3.198 / 3.204 | 0.969 | 2.48 | 0.300 | 1440 | 1.0 |
 | 1/640 | 8 | 3.237 / 3.252 | 1.067 | 2.49 | 0.299 | 1440 | 1.6 |
+| 1/640, one Picard pass | 8 | 3.218 / 3.220 | 1.018 | 2.48 | 0.296 | 1440 | 1.6 |
 | whole mesh 1/40 (cylinder 1/160), np 4 | 1 | 3.182 / 3.204 | 0.979 | | 0.304 | 2880 | 1.5 (np 4) |
 | FMG: base 1/10 refined once (cylinder 1/80) | 1 | 3.108 / 3.156 | 0.976 | 2.49 | 0.303 | 1440 | 1.6 |
 | FMG: base 1/10 refined once (cylinder 1/160) | 2 | 3.181 / 3.202 | 1.006 | 2.49 | 0.302 | 1440 | 2.4 |
@@ -451,9 +452,11 @@ apart with the wall shear in one cell, 0.2% at 1/320), and the time step does no
 the 1/160 rows at Courant 1 and 2 give the same drag to three digits. Refining the whole
 mesh to 1/40 (four ranks, twice the steps) buys less than the 1/320 cylinder cells do on
 one core with the 1/20 channel. The lift peak converges from below and overshoots the band
-by 6% at 1/640 (Courant 8 on those cells); whether that is the extrapolated advecting
-velocity's lag at that Courant number or the mesh is the Picard run on the same mesh,
-pending at the time of writing. Earlier reads of this benchmark (drag "23 to 28% low, not
+by 6% at 1/640 (Courant 8 on those cells); one Picard pass on the same mesh brings it to
+1.018 with the drag at 3.218 and the two force measurements 0.1% apart, so the overshoot is
+the extrapolated advecting velocity's lag at that local Courant number, not the mesh. That
+is the regime the Picard option exists for, and at Courant 8 on the cells that set the
+forces it is worth its 40% per step. Earlier reads of this benchmark (drag "23 to 28% low, not
 closing with the mesh, not moving with tau") were the missing viscous traction (#695): the
 SUPG weight from 1 to 0 and the tau weights over a factor of four move the drag peak by
 2.6%, and the Galerkin form that "could not run" was the GAMG fallback spinning inside the
