@@ -3305,24 +3305,38 @@ class Mesh(Stateful, uw_object):
         indexed by this rank's cell-stratum order, so a direct assignment is
         correct on every rank.
 
-        This is deliberately a purely RANK-LOCAL operation (no ``var.coords``
-        access, no collective): mixing a rank-local fast path with a
-        collective fallback would diverge across ranks and deadlock, because
-        ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
+        ``var.data`` is touched on EVERY rank before the empty-partition test,
+        which is load-bearing. Its first access lazily reaches
+        ``MeshVariable._set_vec``, and that calls ``dm.createSubDM`` and
+        ``createGlobalVector`` -- both collective on the DM. A rank owning no
+        cells used to short-circuit on ``radii.size == 0`` and return without
+        ever touching it, so it skipped two collectives its populated peers
+        made and the job diverged (#698). Reduce, or in this case ALLOCATE,
+        before branching.
+
+        Beyond that first access this stays rank-local: ``var.coords`` is
+        deliberately not read, because it triggers the collective
+        ``_get_coords_for_basis`` from inside a branch that only some ranks
+        take."""
         # `_cell_radii` is PETSc's volume**(1/dim), a property of each cell, so
         # the values here do not depend on the partition -- and neither does the
         # Nitsche penalty gamma*mu/h that consumes them under the default
         # local_h=True. It was a kd-tree distance to the nearest centroid among
         # THIS RANK's centroids, which near a seam could simply be absent (#694).
+        # FIRST, on every rank: this allocates the variable's vectors through
+        # two DM collectives (see the docstring). It must not sit behind the
+        # empty-partition test.
+        data = var.data
+
         radii = numpy.asarray(self._cell_radii).reshape(-1)
-        # Empty partition (no local cells): nothing to fill on this rank.
-        if radii.size == 0 or var.data.shape[0] == 0:
+        # Empty partition (no local cells): nothing left to fill on this rank.
+        if radii.size == 0 or data.shape[0] == 0:
             return
         # Assign over the common length. In practice these match exactly (same
         # local cell set / ordering); the slice only guards a stray off-by-ghost
-        # mismatch without ever taking a collective path on a subset of ranks.
-        n = min(var.data.shape[0], radii.shape[0])
-        var.data[:n, 0] = radii[:n]
+        # mismatch.
+        n = min(data.shape[0], radii.shape[0])
+        data[:n, 0] = radii[:n]
 
     @property
     def Gamma_P1(self):
