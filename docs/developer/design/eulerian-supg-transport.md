@@ -599,6 +599,34 @@ question that remains. The options were removed from the solver after the measur
 knob that quietly disables the stabilisation should not ship); the drivers' `-uw_recovered`
 switches went with them and the runs are in the study directory (`rec_*`, `bal_*`, `sm_*`).
 
+### The shape of tau (`tau_shape`)
+
+The inverse-sum $\tau_s$ is above the optimal 1-D curve at cell Péclet numbers of order
+1 to 10 (Louis: the shape of the correction was always the debated trade-off between
+accuracy and cost). Two further shapes are selectable, each combined with the same
+transient cap $[(C_t c_0/\Delta t)^2 + \tau^{-2}]^{-1/2}$: Brooks-Hughes,
+$\tau = (h/2|a|)(\coth Pe - 1/Pe)$, and the doubly asymptotic $(h/2|a|)\min(Pe/3, 1)$,
+$Pe = |a|h/2\nu$. Same cases as above (cell Péclet number in brackets):
+
+| case | inverse sum | Brooks-Hughes | doubly asymptotic | Galerkin |
+|---|---|---|---|---|
+| vortex 1/32, dt 0.0125 (Pe 5) | 7.8e-5 | 7.8e-5 | 7.8e-5 | 4.9e-5 |
+| vortex 1/32, dt 0.1 | 2.1e-4 | 1.7e-4 | 1.8e-4 | 4.8e-5 |
+| vortex 1/64, dt 0.0125 (Pe 2.5) | 1.6e-5 | 1.4e-5 | 1.4e-5 | 4.0e-6 |
+| Kovasznay 1/16 (Pe 1 to 3) | 6.6e-4 | 4.1e-4 | 4.8e-4 | 1.1e-4 |
+| Kovasznay 1/32 | 2.6e-4 | 1.2e-4 | 1.2e-4 | 1.6e-5 |
+| cylinder $C_D$ / $C_L$ max (Pe 10 at the wall) | 3.046 / 0.897 | 3.057 / 0.903 | 3.046 / 0.896 | 3.098 / 0.909 |
+
+The shape matters where the cell Péclet number is near one: on Kovasznay the optimal
+form halves the error (1.6 to 2.3 times) and on the 1/64 vortex it takes 15% off; where
+the transient term caps $\tau_s$ (the 1/32 vortex at dt 0.0125) or advection dominates
+(the cylinder, where all three shapes are $h/2|a|$) nothing moves. What remains after the
+optimal shape is still seven times the Galerkin error on Kovasznay at 1/32: the shape
+reduces the excess of $\tau_s$ over the 1-D optimum, it cannot remove the $O(h^2)$ product
+of $\tau_s$ and the missing viscous term. The two 1-D shapes are exposed as options; the
+inverse sum stays the default (smooth, no per-cell Péclet evaluation), and the weight,
+by cell Péclet number, remains the lever that reaches the Galerkin value.
+
 ### A defect in the integrals (#695)
 
 The first error metric of this benchmark, an integral of $|\mathbf{v} - \mathbf{u}(t)|^2$
