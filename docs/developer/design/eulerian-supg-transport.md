@@ -441,6 +441,8 @@ serial; the last row is the whole mesh at 1/40 on four ranks at its own Courant-
 | 1/320 | 4 | 3.198 / 3.204 | 0.969 | 2.48 | 0.300 | 1440 | 1.0 |
 | 1/640 | 8 | 3.237 / 3.252 | 1.067 | 2.49 | 0.299 | 1440 | 1.6 |
 | whole mesh 1/40 (cylinder 1/160), np 4 | 1 | 3.182 / 3.204 | 0.979 | | 0.304 | 2880 | 1.5 (np 4) |
+| FMG: base 1/10 refined once (cylinder 1/80) | 1 | 3.108 / 3.156 | 0.976 | 2.49 | 0.303 | 1440 | 1.6 |
+| FMG: base 1/10 refined once (cylinder 1/160) | 2 | 3.181 / 3.202 | 1.006 | 2.49 | 0.302 | 1440 | 2.4 |
 | reference | | 3.22 to 3.24 | 0.99 to 1.01 | 2.46 to 2.50 | 0.295 to 0.305 | | |
 
 The drag, the pressure difference and the frequency converge onto the reference bands as
@@ -459,8 +461,12 @@ Schur complement at weak stabilisation (native stack), not the discretisation.
 
 FMG on this gmsh mesh: building the base mesh at 1/10 and refining once through the circle
 callback (`-uw_refinement 1`, the callback snaps the new vertices to the circle) gives the
-velocity block its geometric hierarchy, one Krylov iteration per Newton step, no fallback;
-its timing against LU is recorded in `cylinder/summary.log` (`fmg_*` rows).
+velocity block its geometric hierarchy, one Krylov iteration per Newton step and no
+fallback (the two FMG rows). The refined mesh also gives a better lift and pressure
+difference than the directly meshed 1/20 channel with the same cylinder cell: at 1/160 on
+the cylinder every quantity but the drag (1% low) is inside the reference band. The
+per-step times were taken with twelve cores busy and are not a like-for-like comparison
+with LU.
 
 ### Vortex decay (Taylor-Green)
 
