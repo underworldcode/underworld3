@@ -110,13 +110,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         a discrete steady state, where the stabilisation switches off. Without
         it the residual lacks the viscous term, an O(h^2) inconsistency for P2
         velocity that shows on resolved, viscous flow (Kovasznay, vortex
-        decay); it is immaterial where advection dominates, and unstable
-        there (the cylinder): the residual of a stationary wiggle pattern is
-        zero and the stabilisation gives it no damping.
-    recovered_smoothing : float, default 0
-        A length. When positive the balance term is projected onto a
-        continuous vector field with that screened-Poisson smoothing length
-        (one vector projection per step), filtering its grid-scale part.
+        decay); it is immaterial where advection dominates.
     degree, p_continuous, verbose
         As for :class:`~underworld3.systems.Stokes`.
 
@@ -149,7 +143,6 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         picard_iterations: int = 0,
         picard_tolerance: float = 1.0e-4,
         recovered_viscous: bool = False,
-        recovered_smoothing: float = 0.0,
         degree: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: bool = False,
@@ -255,25 +248,12 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         # (A differentiated projection of the stress was tried first and was
         # unstable: design note, "Vortex decay".)
         self._recovered_viscous = bool(recovered_viscous)
-        self._recovered_smoothing = float(recovered_smoothing)
         self._p_prev = None
-        self._B_rec = None
-        self._B_rec_proj = None
-        self._B_rec_fn_set = False
         if self._recovered_viscous:
             p_var = self.Unknowns.p
             self._p_prev = uw.discretisation.MeshVariable(
                 f"p_prev_NSSUPG_{tag}", self.mesh, 1, degree=p_var.degree,
                 continuous=p_var.continuous, varsymbol=rf"p^{{n}}_{{{tag}}}")
-            if self._recovered_smoothing > 0.0:
-                # The balance term projected onto a continuous field with a
-                # screened-Poisson smoothing length: the grid-scale part of the
-                # previous residual is filtered, the smooth viscous divergence kept.
-                self._B_rec = uw.discretisation.MeshVariable(
-                    f"B_rec_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
-                    continuous=True, varsymbol=rf"\mathbf{{B}}^{{n}}_{{{tag}}}")
-                self._B_rec_proj = uw.systems.Vector_Projection(self.mesh, self._B_rec)
-                self._B_rec_proj.smoothing = self._recovered_smoothing ** 2
 
     # ------------------------------------------------------------------
     # Scheme description and knobs
@@ -441,10 +421,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             X = self.mesh.X
             R = R + sympy.Matrix([[self.p.sym[0].diff(X[i]) for i in range(dim)]])
             if self._recovered_viscous:
-                if self._B_rec is not None:
-                    R = R - self._B_rec.sym
-                else:
-                    R = R - self._previous_out_of_balance()
+                R = R - self._previous_out_of_balance()
         return R
 
     def _previous_out_of_balance(self):
@@ -462,13 +439,8 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         return self._rho * dudt + grad_p - f
 
     def _update_recovered_viscous(self):
-        """With a smoothing length, project the balance term of the stored level."""
-        if self._B_rec_proj is None:
-            return
-        if not self._B_rec_fn_set:                    # the projection's default is a zero matrix, not None
-            self._B_rec_proj.uw_function = self._previous_out_of_balance()
-            self._B_rec_fn_set = True
-        self._B_rec_proj.solve()
+        """Nothing to compute: the balance term reads stored levels."""
+        return
 
     def _viscous_stress(self, u_row):
         r"""Deviatoric stress ``2 eta strain(u)`` for a velocity row, with the
@@ -619,11 +591,11 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         from mpi4py import MPI
         comm = uw.mpi.comm
         self._picard_count = 0
-        self._update_recovered_viscous()             # reads stored levels only: once per step
         for k in range(passes):
             if k > 0:
                 previous = np.array(self.u.array[...])
                 self._set_advecting_velocity(previous)
+            self._update_recovered_viscous()
             SNES_Stokes.solve(
                 self, zero_init_guess if k == 0 else False,
                 _force_setup=_force_setup if k == 0 else False,
