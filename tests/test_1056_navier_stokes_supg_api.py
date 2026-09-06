@@ -89,3 +89,21 @@ def test_timestep_is_a_runtime_constant_and_theta_is_settable(mesh):
     ns.solve(timestep=0.02)
     assert ns.theta == 1.0 and ns.DuDt.theta == 1.0
     assert ns._current_jit_cache_key == key
+
+
+def test_recovered_viscous_term_builds_and_projects(mesh):
+    """The option projects the deviatoric stress of the advecting velocity and
+    puts its divergence in the SUPG residual; the projection must be fresh each
+    step and the step must still be one linear solve."""
+    ns, v, _p = _cavity(mesh, "r", rho=1.0, recovered_viscous=True)
+    assert ns.recovered_viscous
+    ns.solve(timestep=0.05)
+    assert np.abs(np.asarray(ns._sigma_rec.array)).max() == 0.0   # first step: the advecting velocity is the rest state
+    ns.solve(timestep=0.05)
+    sigma = np.asarray(ns._sigma_rec.array)
+    assert sigma.shape[0] > 0 and np.isfinite(sigma).all()
+    assert np.abs(sigma).max() > 0.0                       # second step: the lid's shear stress
+    assert ns.snes.getIterationNumber() == 1
+    # The residual carries the divergence of the projected stress.
+    R = ns._strong_residual(with_pressure=True)
+    assert any(str(a).startswith("sigma_rec") or "sigma" in str(a) for a in R.atoms(sympy.Function))

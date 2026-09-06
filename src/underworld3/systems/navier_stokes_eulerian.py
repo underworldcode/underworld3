@@ -101,6 +101,14 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     picard_tolerance : float, default 1e-4
         Relative change of the velocity (max norm) below which the Picard
         passes stop.
+    recovered_viscous : bool, default False
+        Carry the viscous term in the SUPG residual as the divergence of the
+        deviatoric stress of the advecting velocity projected onto a
+        continuous symmetric tensor (one component-wise mass-matrix solve
+        before each pass). Without it the residual lacks the viscous term,
+        an O(h^2) inconsistency for P2 velocity that shows on resolved,
+        viscous flow (Kovasznay, vortex decay); it is immaterial where
+        advection dominates.
     degree, p_continuous, verbose
         As for :class:`~underworld3.systems.Stokes`.
 
@@ -132,6 +140,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         advection: str = "extrapolated",
         picard_iterations: int = 0,
         picard_tolerance: float = 1.0e-4,
+        recovered_viscous: bool = False,
         degree: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: bool = False,
@@ -227,6 +236,28 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
         self._history_primed = False
 
+        # The recovered viscous term of the strong residual: the deviatoric
+        # stress of the advecting velocity projected onto a continuous
+        # symmetric tensor before each solve, whose divergence the kernels
+        # can form from first derivatives. Without it the residual the SUPG
+        # term sees is missing the viscous term, an O(h^2) inconsistency for
+        # P2 velocity (Kovasznay: SUPG 16x the Galerkin error at h = 1/32).
+        self._recovered_viscous = bool(recovered_viscous)
+        self._sigma_rec = None
+        self._sigma_rec_proj = None
+        self._sigma_rec_fn_set = False
+        if self._recovered_viscous:
+            self._sigma_rec = uw.discretisation.MeshVariable(
+                f"sigma_rec_NSSUPG_{tag}", self.mesh, (self.mesh.dim, self.mesh.dim),
+                vtype=uw.VarType.SYM_TENSOR, degree=u.degree, continuous=True,
+                varsymbol=rf"\boldsymbol{{\sigma}}^{{rec}}_{{{tag}}}")
+            self._sigma_rec_work = uw.discretisation.MeshVariable(
+                f"sigma_rec_work_NSSUPG_{tag}", self.mesh, 1, degree=u.degree, continuous=True)
+            self._sigma_rec_proj = uw.systems.Tensor_Projection(
+                self.mesh, tensor_Field=self._sigma_rec, scalar_Field=self._sigma_rec_work)
+            self._sigma_rec_proj.smoothing = 0.0
+            # The function needs the constitutive model: set at the first solve.
+
     # ------------------------------------------------------------------
     # Scheme description and knobs
     # ------------------------------------------------------------------
@@ -275,6 +306,11 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     @picard_iterations.setter
     def picard_iterations(self, value):
         self._picard_iterations = int(value)
+
+    @property
+    def recovered_viscous(self) -> bool:
+        """Whether the SUPG residual carries the projected viscous term (constructor choice)."""
+        return self._recovered_viscous
 
     @property
     def picard_count(self) -> int:
@@ -377,7 +413,8 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         exact solution and the stabilisation then injects an O(tau) error
         (measured on Kovasznay flow: 50 times the Galerkin error). The
         viscous term needs second derivatives the kernels do not see; it is
-        the remaining inconsistency for P2 velocity.
+        the remaining inconsistency for P2 velocity unless ``recovered_viscous``
+        supplies it as the divergence of the projected stress.
         """
         # The body-force setter may store a column; the residual is a row.
         dim = self.mesh.dim
@@ -386,7 +423,19 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         if with_pressure:
             X = self.mesh.X
             R = R + sympy.Matrix([[self.p.sym[0].diff(X[i]) for i in range(dim)]])
+            if self._recovered_viscous:
+                sigma = self._sigma_rec.sym
+                R = R - sympy.Matrix([[sum(sigma[i, j].diff(X[j]) for j in range(dim))
+                                       for i in range(dim)]])
         return R
+
+    def _update_recovered_viscous(self):
+        """Project the deviatoric stress of the current advecting velocity."""
+        if self._recovered_viscous:
+            if not self._sigma_rec_fn_set:            # the projection's default is a zero matrix, not None
+                self._sigma_rec_proj.uw_function = self._viscous_stress(self._advecting_velocity())
+                self._sigma_rec_fn_set = True
+            self._sigma_rec_proj.solve()
 
     def _viscous_stress(self, u_row):
         r"""Deviatoric stress ``2 eta strain(u)`` for a velocity row, with the
@@ -539,6 +588,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             if k > 0:
                 previous = np.array(self.u.array[...])
                 self._set_advecting_velocity(previous)
+            self._update_recovered_viscous()
             SNES_Stokes.solve(
                 self, zero_init_guess if k == 0 else False,
                 _force_setup=_force_setup if k == 0 else False,
