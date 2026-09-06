@@ -224,7 +224,7 @@ def test_cell_size_tracks_deformation():
 # --------------------------------------------------------------------------
 # 3. local-h still solves free-slip correctly (back-compat / correctness)
 # --------------------------------------------------------------------------
-def _solve_freeslip(mesh, method, gamma=10.0):
+def _solve_freeslip(mesh, method, gamma=12.5):
     v = uw.discretisation.MeshVariable(
         "U", mesh, mesh.dim, degree=2, vtype=uw.VarType.VECTOR)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
