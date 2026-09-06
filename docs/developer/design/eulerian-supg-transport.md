@@ -294,8 +294,8 @@ $Pe^2/(Pe^2 + Pe_c^2)$ with $Pe_c = 4$ by default (Louis: "the code is still 100
 so we should probably just switch to this strategy right away"), measured in "The weight
 by cell Péclet number" below; every table before that subsection was made with the
 uniform weight (`peclet_weight=0`), and the Pe_c = 4 column there gives the change. The
-scalar transport solver keeps the uniform weight until its convection benchmarks are
-re-measured with it. Decisions, and what they rest on:
+scalar transport solver carries the same weight (its convection rows are in that
+subsection). Decisions, and what they rest on:
 
 - **No stress history.** The semi-Lagrangian solver carries a stress history
   because its Crank-Nicolson viscous term needs the old flux at the departure
@@ -661,8 +661,21 @@ term. The weight does what neither the recovered viscous term nor the shape of $
 could: it removes the cost of stabilisation where the 1-D analysis says none is needed
 and leaves it where it is. The default stays at zero (uniform weight) so that the
 recorded benchmarks and the test references do not move; $Pe_c = 4$ is the recommended
-setting for resolved or mixed problems, and whether it becomes the default is a ruling
-for the maintainers, since it changes every answer in the fourth digit.
+setting for resolved or mixed problems. Louis's ruling (2026-09-06, the code being
+unreleased): $Pe_c = 4$ is the default of both solvers. The scalar solver on the convection
+benchmarks with it (`~/+Simulations/supg_vs_slcn_657/convection_benchmarks/`, runs
+`*_pew4`; Blankenbach 1a reference Nu 4.884, Vrms 42.865):
+
+| case | uniform weight: Vrms / Nu cold / Nu mid | $Pe_c = 4$: Vrms / Nu cold / Nu mid | transport s/step |
+|---|---|---|---|
+| box, Ra 1e4, 1/32 | 42.790 / 4.913 / 4.872 | 42.868 / 4.920 / 4.884 | 0.066 / 0.070 |
+| annulus, Ra 1e4, 0.03 | 38.39 / 2.514 / 2.500 | 38.61 / 2.525 / 2.514 | 0.179 / 0.178 |
+
+The box lands on the reference to four digits in Vrms and in the mid-plane Nusselt
+number (the cells there sit at a Péclet number near one, where the term was costing
+accuracy); the annulus moves 0.6% in the same direction; the cost does not move. The
+parallel test's serial reference for the Navier-Stokes solver (Kovasznay at 1/8) goes
+from 3.83e-3 to 1.42e-3; the pure-advection references are unchanged (weight 1).
 
 ### A defect in the integrals (#695)
 
