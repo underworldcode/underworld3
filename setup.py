@@ -195,6 +195,14 @@ extensions = [
         **conf,
     ),
     Extension(
+        "underworld3.cython.petsc_quadrature_fe",
+        sources=[
+            "src/underworld3/cython/petsc_quadrature_fe.pyx",
+        ],
+        extra_compile_args=extra_compile_args,
+        **conf,
+    ),
+    Extension(
         "underworld3.cython.petsc_maths",
         sources=[
             "src/underworld3/cython/petsc_maths.pyx",

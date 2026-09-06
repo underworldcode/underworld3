@@ -1,0 +1,192 @@
+# cython: language_level=3
+r"""
+Quadrature-point finite element (the "delta space").
+
+A ``PetscFE`` whose basis functions are Kronecker deltas at the points of a
+quadrature rule and whose dual space is point evaluation at those same
+points. Tabulated on its own rule the basis is the identity matrix, so a
+field of this type that is read by the assembler as an auxiliary field
+(``a[]`` in the pointwise functions) delivers the stored value at each
+quadrature point with no interpolation at all. The dofs all sit on the cell
+interior, so the local vector is laid out cell-major, point-minor.
+
+Use it for values that are *injected* at the integration points (a
+semi-Lagrangian history, a per-point material property reconstructed from a
+swarm). It cannot be *sampled* anywhere else: the derivative tabulation is
+zero and evaluation at points off the rule returns zeros.
+
+Built from a UW3-registered prime space ``uwdelta`` (``uw_delta_space.h``,
+a PETSc plugin type: PETSc's own ``PETSCSPACEPOINT`` cannot be tabulated
+anywhere but its own points, which breaks ``PetscFESetUp``, face tabulation
+and boundary integrals) and a ``PETSCDUALSPACESIMPLE`` dual space, through
+``PetscFECreateFromSpaces``. Works on any PETSc build. petsc4py cannot
+construct the one-point delta functionals itself (``Quad`` has no
+``setData``), which is why this helper is Cython.
+
+Scalar (one-component) elements only.
+"""
+
+from petsc4py import PETSc
+from petsc4py.PETSc cimport FE, PetscFE, Quad, PetscQuadrature, DM, PetscDM
+from petsc4py.PETSc cimport PetscSpace, PetscDualSpace, PetscObject, MPI_Comm
+from petsc4py.PETSc cimport CHKERR as CHKERRQ
+from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscErrorCode
+
+import numpy as np
+
+
+cdef extern from "petsc.h" nogil:
+    MPI_Comm PETSC_COMM_SELF
+    ctypedef int DMPolytopeType
+
+    PetscErrorCode PetscSpaceCreate(MPI_Comm, PetscSpace*)
+    PetscErrorCode PetscSpaceSetType(PetscSpace, const char*)
+    PetscErrorCode PetscSpaceSetNumVariables(PetscSpace, PetscInt)
+    PetscErrorCode PetscSpaceSetNumComponents(PetscSpace, PetscInt)
+    PetscErrorCode PetscSpaceSetUp(PetscSpace)
+
+    PetscErrorCode PetscDualSpaceCreate(MPI_Comm, PetscDualSpace*)
+    PetscErrorCode PetscDualSpaceSetType(PetscDualSpace, const char*)
+    PetscErrorCode PetscDualSpaceSetDM(PetscDualSpace, PetscDM)
+    PetscErrorCode PetscDualSpaceSetNumComponents(PetscDualSpace, PetscInt)
+    PetscErrorCode PetscDualSpaceSimpleSetDimension(PetscDualSpace, PetscInt)
+    PetscErrorCode PetscDualSpaceSimpleSetFunctional(PetscDualSpace, PetscInt, PetscQuadrature)
+    PetscErrorCode PetscDualSpaceSetUp(PetscDualSpace)
+
+    PetscErrorCode DMPlexCreateReferenceCell(MPI_Comm, DMPolytopeType, PetscDM*)
+    PetscErrorCode DMDestroy(PetscDM*)
+
+    PetscErrorCode PetscQuadratureCreate(MPI_Comm, PetscQuadrature*)
+    PetscErrorCode PetscQuadratureSetData(PetscQuadrature, PetscInt, PetscInt, PetscInt, const PetscReal*, const PetscReal*)
+    PetscErrorCode PetscQuadratureGetData(PetscQuadrature, PetscInt*, PetscInt*, PetscInt*, const PetscReal**, const PetscReal**)
+    PetscErrorCode PetscQuadratureDestroy(PetscQuadrature*)
+
+    PetscErrorCode PetscFECreateFromSpaces(PetscSpace, PetscDualSpace, PetscQuadrature, PetscQuadrature, PetscFE*)
+    PetscErrorCode PetscObjectReference(PetscObject)
+    PetscErrorCode PetscObjectSetName(PetscObject, const char*)
+    PetscErrorCode PetscMalloc(size_t, void**)
+
+    ctypedef struct _n_PetscTabulation:
+        PetscInt K
+        PetscInt Nr
+        PetscInt Np
+        PetscInt Nb
+        PetscInt Nc
+        PetscInt cdim
+        PetscReal **T
+    ctypedef _n_PetscTabulation* PetscTabulation
+    PetscErrorCode PetscFECreateTabulation(PetscFE, PetscInt, PetscInt, const PetscReal*, PetscInt, PetscTabulation*)
+    PetscErrorCode PetscTabulationDestroy(PetscTabulation*)
+
+cdef extern from "uw_delta_space.h" nogil:
+    PetscErrorCode UWDeltaSpaceRegister()
+    PetscErrorCode UWDeltaSpaceSetPoints(PetscSpace, PetscQuadrature)
+
+
+# Register the plugin space type once, at import.
+CHKERRQ(UWDeltaSpaceRegister())
+
+
+def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
+    r"""Build the scalar quadrature-point element on ``quad``.
+
+    Parameters
+    ----------
+    quad : petsc4py.PETSc.Quad
+        The cell rule the element's points coincide with. Take it from an
+        existing field, ``fe.getQuadrature()``, so it is the mesh's rule.
+    polytope : int
+        The reference cell type (``dm.getCellType(cStart)``) for the dual
+        space's reference cell.
+    name : str
+        PETSc object name.
+
+    Returns
+    -------
+    petsc4py.PETSc.FE
+        Element of dimension ``Nq`` (points in the rule), one component,
+        with ``quad`` as its cell quadrature and no face quadrature.
+    """
+    cdef PetscInt qdim = 0, qNc = 0, Nq = 0, i, d
+    cdef const PetscReal *points = NULL
+    cdef const PetscReal *weights = NULL
+    cdef PetscReal *fpts = NULL
+    cdef PetscReal *fwts = NULL
+    cdef PetscQuadrature functional = NULL
+    cdef PetscSpace P = NULL
+    cdef PetscDualSpace Q = NULL
+    cdef PetscDM refcell = NULL
+    cdef PetscFE cfe = NULL
+    cdef FE pyfe
+
+    CHKERRQ(PetscQuadratureGetData(quad.quad, &qdim, &qNc, &Nq, &points, &weights))
+    if qNc != 1:
+        raise ValueError("create_delta_fe: the rule must have one component")
+
+    # Prime space: deltas at the rule's points.
+    CHKERRQ(PetscSpaceCreate(PETSC_COMM_SELF, &P))
+    CHKERRQ(PetscSpaceSetType(P, b"uwdelta"))
+    CHKERRQ(PetscSpaceSetNumVariables(P, qdim))
+    CHKERRQ(PetscSpaceSetNumComponents(P, 1))
+    CHKERRQ(UWDeltaSpaceSetPoints(P, quad.quad))
+    CHKERRQ(PetscSpaceSetUp(P))
+
+    # Dual space: one point-evaluation functional per rule point, all on the
+    # cell interior of the reference cell.
+    CHKERRQ(DMPlexCreateReferenceCell(PETSC_COMM_SELF, <DMPolytopeType>polytope, &refcell))
+    CHKERRQ(PetscDualSpaceCreate(PETSC_COMM_SELF, &Q))
+    CHKERRQ(PetscDualSpaceSetType(Q, b"simple"))
+    CHKERRQ(PetscDualSpaceSetDM(Q, refcell))
+    CHKERRQ(PetscDualSpaceSetNumComponents(Q, 1))
+    CHKERRQ(PetscDualSpaceSimpleSetDimension(Q, Nq))
+    for i in range(Nq):
+        # PetscQuadratureSetData takes ownership: arrays must be PetscMalloc'd.
+        CHKERRQ(PetscMalloc(sizeof(PetscReal) * qdim, <void**>&fpts))
+        CHKERRQ(PetscMalloc(sizeof(PetscReal), <void**>&fwts))
+        for d in range(qdim):
+            fpts[d] = points[i * qdim + d]
+        fwts[0] = 1.0
+        CHKERRQ(PetscQuadratureCreate(PETSC_COMM_SELF, &functional))
+        CHKERRQ(PetscQuadratureSetData(functional, qdim, 1, 1, fpts, fwts))
+        # SimpleSetFunctional duplicates; release ours.
+        CHKERRQ(PetscDualSpaceSimpleSetFunctional(Q, i, functional))
+        CHKERRQ(PetscQuadratureDestroy(&functional))
+    CHKERRQ(PetscDualSpaceSetUp(Q))
+    CHKERRQ(DMDestroy(&refcell))
+
+    # PetscFECreateFromSpaces consumes P, Q and the quadrature: keep the
+    # caller's Quad alive by taking a reference first. No face quadrature.
+    CHKERRQ(PetscObjectReference(<PetscObject>quad.quad))
+    CHKERRQ(PetscFECreateFromSpaces(P, Q, quad.quad, NULL, &cfe))
+    CHKERRQ(PetscObjectSetName(<PetscObject>cfe, name.encode()))
+
+    pyfe = FE()
+    pyfe.fe = cfe
+    return pyfe
+
+
+def tabulate(FE fe, points, int K=0):
+    r"""Tabulate ``fe``'s basis at reference-cell ``points``.
+
+    Returns the value tabulation as an array shaped ``(Np, Nb, Nc)``.
+    Exposed for tests: on its own rule the delta element returns the
+    identity.
+    """
+    cdef PetscTabulation T = NULL
+    cdef PetscInt Np, Nb, Nc, p, b, c
+    pts = np.ascontiguousarray(points, dtype=np.float64)
+    if pts.ndim != 2:
+        raise ValueError("points must be (Np, dim)")
+    cdef double[:, ::1] pv = pts
+    Np = pts.shape[0]
+    CHKERRQ(PetscFECreateTabulation(fe.fe, 1, Np, &pv[0, 0], K, &T))
+    Nb = T.Nb
+    Nc = T.Nc
+    out = np.empty((Np, Nb, Nc), dtype=np.float64)
+    cdef double[:, :, ::1] ov = out
+    for p in range(Np):
+        for b in range(Nb):
+            for c in range(Nc):
+                ov[p, b, c] = T.T[0][(p * Nb + b) * Nc + c]
+    CHKERRQ(PetscTabulationDestroy(&T))
+    return out
