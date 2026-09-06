@@ -589,9 +589,19 @@ class Mesh(Stateful, uw_object):
         self._setup_symbolic_coordinates(coordinate_system_type)
 
         try:
-            self.isSimplex = self.dm.isSimplex()
+            local_simplex = self.dm.isSimplex()
         except:
-            self.isSimplex = simplex
+            local_simplex = simplex
+
+        # DMPlexIsSimplex is rank-local and returns False on empty ranks.
+        # Coordinate FE construction must use one cell family everywhere;
+        # mixed simplex/tensor construction desynchronises PETSc MPI tags.
+        cell_start, cell_end = self.dm.getHeightStratum(0)
+        cell_families = self.dm.comm.tompi4py().allgather(
+            local_simplex if cell_end > cell_start else None
+        )
+        populated_families = [family for family in cell_families if family is not None]
+        self.isSimplex = all(populated_families) if populated_families else simplex
 
         # Using WeakValueDictionary to prevent circular references
         self._vars = weakref.WeakValueDictionary()
@@ -650,7 +660,7 @@ class Mesh(Stateful, uw_object):
             entities: tuple
             face_entities: tuple
 
-        if self.dm.isSimplex():
+        if self.isSimplex:
             if self.dim == 2:
                 self._element = ElementInfo("triangle", (1, 3, 3), (0, 1, 2))
             else:
@@ -3299,23 +3309,11 @@ class Mesh(Stateful, uw_object):
         access, no collective): mixing a rank-local fast path with a
         collective fallback would diverge across ranks and deadlock, because
         ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
-        # TODO(BUG): this field is PARTITION-DEPENDENT, and so therefore is the
-        # Nitsche penalty gamma*mu/h that consumes it (local_h=True, the default).
-        # Not the indexing here — the values. `_get_mesh_sizes` measures a cell by
-        # the distance from its vertices to the NEAREST CENTROID in a kd-tree built
-        # from THIS RANK's centroids, so near a partition seam the nearest centroid
-        # may simply be absent. Measured on Annulus(cellSize=0.12): the field's sum
-        # is 26.0822 at np=1, 26.1211 at np=2 and 26.1386 at np=4, and its max moves
-        # at np=4. End to end that is 6.6e-03 in the velocity of a Nitsche free-slip
-        # annulus and it does NOT shrink with solver tolerance.
-        # This is a DIFFERENT defect from the boundary normal fixed for #564 (which
-        # is now clean: the same solve with local_h=False agrees to 3.6e-10 at
-        # np=1..4). It is the local h that is left, and it also reaches every other
-        # consumer of `cell_size()`. Not fixed here because `_get_mesh_sizes` also
-        # feeds `get_min_radius`, the adaptivity metrics and the free-surface
-        # relaxation, and it needs its own benchmarking.
-        # Guard/measurement: tests/parallel/test_1069_boundary_normal_parallel.py
-        # (_nitsche_annulus_diagnostics docstring records the numbers).
+        # `_cell_radii` is PETSc's volume**(1/dim), a property of each cell, so
+        # the values here do not depend on the partition -- and neither does the
+        # Nitsche penalty gamma*mu/h that consumes them under the default
+        # local_h=True. It was a kd-tree distance to the nearest centroid among
+        # THIS RANK's centroids, which near a seam could simply be absent (#694).
         radii = numpy.asarray(self._cell_radii).reshape(-1)
         # Empty partition (no local cells): nothing to fill on this rank.
         if radii.size == 0 or var.data.shape[0] == 0:
@@ -6929,7 +6927,7 @@ class Mesh(Stateful, uw_object):
 
     # ==========
 
-    # Deprecated in favour of _get_mesh_sizes (above)
+    # Deprecated in favour of _get_cell_radii (above)
     def _get_mesh_centroids(self):
         """
         Obtain and cache the (local) mesh centroids using underworld swarm technology.

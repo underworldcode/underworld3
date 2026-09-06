@@ -387,6 +387,9 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   weak contraction of the assembled normal reaction. Cylindrical-annulus
   Stokes responses use this fitted integral and its matching finite-element
   boundary norm instead of gathering pointwise samples for angular quadrature.
+- The spherical-shell geoid adapter accepts `projection="reaction"` to use
+  the same fitted integral without pointwise P2 recovery or a rank-zero
+  surface triangulation; `projection="centroid"` remains the default.
 - `uw.analytic.Zhong2008` implements the Hager--O'Connell propagator-matrix
   oracle used for the Zhong et al. spherical-shell response benchmark. It
   supports piecewise-constant radial viscosity and reproduces every analytical
@@ -506,6 +509,11 @@ in `Stokes_Constrained` (#224), then made parallel-correct.
 minimum radius, restoring correct stiffness on graded and adapted meshes
 (#275).
 
+- The local size now comes from each cell's own geometry instead of a kd-tree
+  over the centroids held by the current MPI rank. The old field changed at
+  partition boundaries and moved the default ``local_h=True`` Nitsche velocity
+  answer by 6.6e-3 between rank counts; the replacement is cell-by-cell
+  identical from one to eight ranks (#569, #687).
 - `mesh.boundary_slip` API with `BoundingSurface` objects for boundary
   tangent-slip (#225); `Surface.influence_function` respects finite edges
   (#241).

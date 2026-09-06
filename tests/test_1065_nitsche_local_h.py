@@ -152,10 +152,10 @@ def _box_wobble(X0, amp):
 # --------------------------------------------------------------------------
 def test_cell_size_is_local_per_cell():
     """``mesh.cell_size()`` is a per-cell field equal to each cell's
-    characteristic size (``mesh._cell_radii``), not the single global minimum."""
+    per-cell size (``mesh._cell_radii``, PETSc's ``volume**(1/dim)``), not the single global minimum."""
     mesh = _graded_box()
     h = mesh.cell_size()  # sympy symbol -> backed by a P0 field
-    field = np.asarray(mesh._cell_size_variable.data[:, 0]).reshape(-1)
+    field = np.asarray(mesh._cell_size_variable.array[:, 0, 0]).reshape(-1)
     radii = np.asarray(mesh._cell_radii).reshape(-1)
 
     # field exactly mirrors the per-cell characteristic size (rank-local check,
@@ -168,8 +168,9 @@ def test_cell_size_is_local_per_cell():
     gfmin, gfmax = _gmin(field), _gmax(field)
     assert gfmax / gfmin > 3.0
 
-    # the global scalar that global-h would use is just the minimum cell size
-    assert np.isclose(mesh.get_min_radius(), gfmin, rtol=1e-6)
+    # The unchanged nearest-centroid minimum cannot exceed the own-cell
+    # minimum; these are no longer the same definition on an irregular mesh.
+    assert 0.0 < mesh.get_min_radius() <= gfmin * (1.0 + 1e-12)
 
 
 def test_local_h_at_coarse_freeslip_boundary_exceeds_global_min():
@@ -179,11 +180,11 @@ def test_local_h_at_coarse_freeslip_boundary_exceeds_global_min():
     mesh = _graded_box(h_fine=0.04, h_coarse=0.12)
     # build/exercise the field; its data equals mesh._cell_radii (asserted in
     # test_cell_size_is_local_per_cell), so we read the per-cell sizes directly
-    # from _radii / _centroids — a rank-local lookup, avoiding the collective
+    # from the field / _centroids — a rank-local lookup, avoiding the collective
     # arbitrary-point uw.function.evaluate (which deadlocks in parallel).
     _ = mesh.cell_size()
     cen = np.asarray(mesh._centroids)
-    radii = np.asarray(mesh._cell_radii).reshape(-1)
+    radii = np.asarray(mesh._cell_size_variable.array[:, 0, 0]).reshape(-1)
 
     near_top = cen[:, 1] > 0.85          # cells adjacent to the Top free-slip edge
     h_top = radii[near_top]
@@ -204,13 +205,13 @@ def test_cell_size_tracks_deformation():
     the Nitsche mis-scaling on the free surface."""
     mesh = _graded_box()
     _ = mesh.cell_size()
-    h_before = mesh._cell_size_variable.data[:, 0].copy()
+    h_before = np.array(mesh._cell_size_variable.array[:, 0, 0])
 
     X = np.asarray(mesh.X.coords).copy()
     moved = mesh.deform(_box_wobble(X, amp=0.04))
     assert moved  # geometry actually changed
 
-    h_after = mesh._cell_size_variable.data[:, 0].copy()
+    h_after = np.array(mesh._cell_size_variable.array[:, 0, 0])
     radii_after = np.asarray(mesh._cell_radii).reshape(-1)
 
     # not stale: the field changed with the geometry SOMEWHERE (global OR) ...

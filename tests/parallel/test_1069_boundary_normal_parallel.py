@@ -334,16 +334,13 @@ def _nitsche_annulus_diagnostics():
     solve.
 
     This runs with the DEFAULT ``local_h=True``. It used to pass ``local_h=False``
-    because ``mesh.cell_size()`` was itself partition-dependent -- built from a
-    kd-tree over THIS RANK's cell centroids, so on this mesh the field's sum was
-    26.0822 at np=1, 26.1211 at np=2 and 26.1386 at np=4 -- and leaving it on
-    would have made this test measure two defects at once. ``cell_size()`` now
-    comes from PETSc's ``volume**(1/dim)`` and is partition-independent (#694),
-    so the default path is the one under test again, which is what a guard on
-    the boundary normal should be exercising.
-
-    See the
-    TODO(BUG) on ``Mesh._assemble_cell_size``.
+    because ``mesh.cell_size()`` was itself partition-dependent -- a kd-tree over
+    THIS RANK's cell centroids, so on this mesh the field's sum was 26.0822 at
+    np=1, 26.1211 at np=2 and 26.1386 at np=4 -- and leaving the default on would
+    have made this test measure two defects at once. ``cell_size()`` is now
+    PETSc's ``volume**(1/dim)`` and is partition independent (#569, #687, #694),
+    so keeping the default guards the normal assembly and the Nitsche penalty
+    path users actually run, together.
     """
     RI, RO = 0.5, 1.0
     mesh = uw.meshing.Annulus(radiusInner=RI, radiusOuter=RO, cellSize=0.12, qdegree=3)
