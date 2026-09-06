@@ -397,7 +397,13 @@ units. Reference (Schaefer and Turek 1996): $C_D$ max 3.22 to 3.24, $C_L$ max
 0.99 to 1.01, St 0.295 to 0.305, $\Delta p$ 2.46 to 2.50.
 `~/+Simulations/navier_stokes_supg/cylinder/`.
 
-| scheme | advecting velocity | St | $C_L$ max | $C_D$ max | $\Delta p$ | s/step |
+Every drag value in the first table below is the PRESSURE drag only: the boundary
+integral of the traction dropped the viscous part, because the viscosity is a runtime
+expression and the integral kernels read every expression as zero (#695, found through
+this benchmark and fixed on this branch). The lift and the Strouhal number were never
+affected (the lift is pressure-dominated and the frequency does not go through an integral).
+
+| scheme | advecting velocity | St | $C_L$ max | $C_D$ max (pressure part only, #695) | $\Delta p$ | s/step |
 |---|---|---|---|---|---|---|
 | SUPG | extrapolated | 0.298 | 0.82 | 2.33 | 2.41 | 0.73 |
 | SUPG | extrapolated + 1 Picard pass | 0.296 | 0.75 | 2.30 | 2.39 | 1.02 |
@@ -405,25 +411,117 @@ units. Reference (Schaefer and Turek 1996): $C_D$ max 3.22 to 3.24, $C_L$ max
 | SLCN | (trace-back) | 0.259 | 0.68 | 2.72 | 2.30 | 2.36 |
 | SUPG, mesh 1/40 and 1/160, np 4 | extrapolated | 0.304 | 0.89 | 2.48 | | 1.0 (np 4) |
 
-The shedding frequency and the pressure difference are on the reference at both
-meshes (St 0.304 on the finer one). The lift peak is 18% low on the coarse mesh
-and 11% low on the fine one; the drag is 28% and 23% low, and that does not
-close with the mesh: the stabilisation's streamline diffusion is the likely
-cause, and the tau weights (transient 2, advective 2, viscous 4, carried over from
-the scalar solver) have not been tuned for this. The control that would isolate it,
-the Galerkin form on the same mesh, cannot be run: with the term off the first step
-took four Newton iterations and 22 s and the second did not complete in forty
-minutes, against 0.5 s per step stabilised, which is the element Reynolds number
-of 19 at the cylinder doing to the solver what SUPG exists to prevent. The drag
-deficit against tau is the open measurement. The two fully implicit forms agree
-with each other to three digits, and the extrapolated step differs from them by
-1% in frequency and 8% on the lift peak: at Courant 1 the lag is visible on a
-time-dependent wake but small, and a single Picard pass, or Newton, removes it at
-40% more per step.
-The semi-Lagrangian solver on the same mesh and step has the shedding 13% too slow
-(St 0.259) at three times the cost, with a drag closer to the reference and a lower
-lift peak; the frequency is the quantity the time integration owns, and there the
-Eulerian scheme is the accurate one.
+The shedding frequency and the pressure difference are on the reference at both meshes.
+The two fully implicit forms agree with each other to three digits, and the extrapolated
+step differs from them by 1% in frequency and 8% on the lift peak: at Courant 1 the lag is
+visible on a time-dependent wake but small, and a single Picard pass, or Newton, removes
+it at 40% more per step. The semi-Lagrangian solver on the same mesh and step has the
+shedding 13% too slow (St 0.259) at three times the cost; the frequency is the quantity
+the time integration owns, and there the Eulerian scheme is the accurate one.
+
+**The drag deficit was a measurement, not the scheme.** The drag read 28% low on the
+1/20 mesh and 23% on 1/40, and did not move with the SUPG weights: with the velocity
+block solved by LU (the GAMG fallback on this gmsh mesh spins at weak stabilisation, so
+the "Galerkin cannot run" of the first attempt was the preconditioner, not the
+discretisation), the SUPG weight from 1 to 0 and the tau weights over a factor of four
+moved the peak by 2.6%, with the reaction-form drag (the momentum residual integrated
+against a hat function on the cylinder nodes) 6% above the traction integral throughout.
+The log then showed the total traction drag equal to its pressure part to four digits.
+With the integrals fixed, the channel mesh held at 1/20 and only the cylinder cells
+refined through gmsh (Louis's prescription: refine the cylinder, keep the step), all at
+dt 0.0083 (Courant 1 on the 1/80 cylinder cells, 8 on the 1/640 ones), velocity block LU,
+serial; the last row is the whole mesh at 1/40 on four ranks at its own Courant-1 step:
+
+| cylinder cells | Courant at the cylinder | $C_D$ max traction / reaction | $C_L$ max | $\Delta p$ | St | steps | s/step |
+|---|---|---|---|---|---|---|---|
+| 1/80 (SUPG) | 1 | 3.046 / 3.115 | 0.897 | 2.41 | 0.298 | 1440 | 0.38 |
+| 1/80 (Galerkin) | 1 | 3.098 / 3.168 | 0.909 | 2.41 | 0.295 | 1440 | 0.38 |
+| 1/160 | 2 | 3.134 / 3.155 | 0.866 | 2.43 | 0.300 | 1440 | 0.64 |
+| 1/160, dt 0.0042 | 1 | 3.131 / 3.153 | 0.841 | 2.43 | 0.298 | 2880 | 0.47 |
+| 1/320 | 4 | 3.198 / 3.204 | 0.969 | 2.48 | 0.300 | 1440 | 1.0 |
+| 1/640 | 8 | 3.237 / 3.252 | 1.067 | 2.49 | 0.299 | 1440 | 1.6 |
+| whole mesh 1/40 (cylinder 1/160), np 4 | 1 | 3.182 / 3.204 | 0.979 | | 0.304 | 2880 | 1.5 (np 4) |
+| reference | | 3.22 to 3.24 | 0.99 to 1.01 | 2.46 to 2.50 | 0.295 to 0.305 | | |
+
+The drag, the pressure difference and the frequency converge onto the reference bands as
+the cylinder cells alone are refined, the two force measurements close on each other (6%
+apart with the wall shear in one cell, 0.2% at 1/320), and the time step does not enter:
+the 1/160 rows at Courant 1 and 2 give the same drag to three digits. Refining the whole
+mesh to 1/40 (four ranks, twice the steps) buys less than the 1/320 cylinder cells do on
+one core with the 1/20 channel. The lift peak converges from below and overshoots the band
+by 6% at 1/640 (Courant 8 on those cells); whether that is the extrapolated advecting
+velocity's lag at that Courant number or the mesh is the Picard run on the same mesh,
+pending at the time of writing. Earlier reads of this benchmark (drag "23 to 28% low, not
+closing with the mesh, not moving with tau") were the missing viscous traction (#695): the
+SUPG weight from 1 to 0 and the tau weights over a factor of four move the drag peak by
+2.6%, and the Galerkin form that "could not run" was the GAMG fallback spinning inside the
+Schur complement at weak stabilisation (native stack), not the discretisation.
+
+FMG on this gmsh mesh: building the base mesh at 1/10 and refining once through the circle
+callback (`-uw_refinement 1`, the callback snaps the new vertices to the circle) gives the
+velocity block its geometric hierarchy, one Krylov iteration per Newton step, no fallback;
+its timing against LU is recorded in `cylinder/summary.log` (`fmg_*` rows).
+
+### Vortex decay (Taylor-Green)
+
+The exact unsteady solution on $[0,\pi]^2$, $\mathbf{u} = (-\sin x\cos y,\ \cos x\sin y)\,e^{-2\nu t}$,
+$p = \tfrac14(\cos 2x + \cos 2y)\,e^{-4\nu t}$, has no normal flow and no tangential
+stress on the walls, so free-slip walls (the normal component fixed) are exact and carry
+no time dependence. Relative $L_2$ velocity error at $t = 1$ against the exact solution,
+$\nu = 0.01$, P2-P1 on a regular simplex mesh, velocity block by LU, from the exact
+initial state (`~/+Simulations/navier_stokes_supg/vortex_decay/`, `scripts/taylor_green.py`).
+The interpolation error of the exact field is 1.7e-5 on the 1/32 mesh and 2.2e-6 on 1/64.
+
+| dt (mesh 1/32) | SUPG, CN | Galerkin, CN | SUPG, BDF2 | Galerkin, BDF2 |
+|---|---|---|---|---|
+| 0.2 | 4.3e-4 | 6.8e-5 | 2.5e-4 | 5.3e-5 |
+| 0.1 | 2.1e-4 | 4.8e-5 | 2.0e-4 | 4.9e-5 |
+| 0.05 | 1.7e-4 | 4.9e-5 | 1.4e-4 | 4.9e-5 |
+| 0.025 | 1.2e-4 | 4.9e-5 | 9.2e-5 | 4.9e-5 |
+| 0.0125 | 7.8e-5 | 4.9e-5 | 6.5e-5 | 4.9e-5 |
+
+| h (dt 0.0125) | SUPG | Galerkin | interpolation |
+|---|---|---|---|
+| 1/8 | 9.0e-3 | 9.3e-3 | 1.1e-3 |
+| 1/16 | 6.7e-4 | 6.6e-4 | 1.4e-4 |
+| 1/32 | 7.8e-5 | 4.9e-5 | 1.7e-5 |
+| 1/64 | 1.6e-5 | 4.0e-6 | 2.2e-6 |
+
+The Galerkin form is spatially limited at every time step in the table: its error is the
+same at dt 0.2 as at dt 0.0125 and converges at third order in $h$, three times the
+interpolation error. The time integration is not what limits this problem, because the
+pattern is steady and only the amplitude decays, and Crank-Nicolson integrates
+$e^{-2\nu t}$ with $2\nu\,\Delta t \le 0.004$ almost exactly. What the SUPG column measures
+is the stabilisation's consistency error, and it scales with $\tau_s$: halving the time
+step raises the transient term in $\tau_s$ and lowers the error by 1.5 to 1.8 until the
+advective term takes over, and on the 1/64 mesh the floor is four times the Galerkin
+error. The advecting-velocity choices coincide to four digits (1.723e-4 at dt 0.05 for
+extrapolated, three Picard passes and Newton). Across the viscosity range at dt 0.025 on
+1/32 the SUPG error is 4.2e-4 at $\nu = 1$ (the energy has decayed to 1.8%), 1.9e-5 at
+0.1, 1.2e-4 at 0.01 and 5.1e-4 at 0.001 (element Reynolds number 100). The kinetic energy
+ratio follows $e^{-4\nu t}$ to 1e-6 with free-slip walls for both forms.
+
+Imposing the exact velocity on the walls instead (`-uw_bc dirichlet`, the time a runtime
+expression in the condition) gives 1.13e-4 at dt 0.025 on 1/32, the free-slip value. It
+first gave 4.7e-3 on every mesh and at every time step, with the decay 10% too slow, and
+freezing the time deliberately reproduced that number to four digits: the time expression
+had been created at the value zero, and sympy's automatic evaluation, reading the
+expression's `is_zero` assumption from its value, had evaluated $e^{-2\nu t}$ out of the
+boundary formula before the JIT saw it (issue #696, not patched; the driver creates the
+expression at a non-zero value).
+
+### A defect in the integrals (#695)
+
+The first error metric of this benchmark, an integral of $|\mathbf{v} - \mathbf{u}(t)|^2$
+with the time as a runtime expression, returned $1 - e^{-2\nu t}$ at every time step: the
+exact field inside the integral never left $t = 0$. `uw.maths.Integral`, `BdIntegral` and
+`CellWiseIntegral` compile through the same JIT as the solvers, which routes every
+`uw.function.expression` to PETSc's constants array, but none of them set the constants on
+the DS they integrate with, so the kernels read zeros: any expression in an integrand
+integrated to nothing, and a fresh Integral returned the cached zero. The constitutive
+viscosity is such an expression, which is where the cylinder drag went (next section). Fixed
+on this branch (`petsc_maths.pyx`, the boundary integral sets them on its sandbox DS);
+`tests/test_0503_integral_expression_constants.py`.
 
 ## What the timestep estimate means
 
