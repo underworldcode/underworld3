@@ -226,6 +226,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         V_fn,
         order: int = 1,
         theta: Optional[float] = None,
+        peclet_weight: float = 4.0,
         verbose: bool = False,
         DuDt: Optional[Eulerian_DDt] = None,
         DFDt=None,
@@ -289,6 +290,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         # compiled kernels read them from PETSc's constants[] array.
         self._supg_weight = public_expression(
             rf"w^{{\mathrm{{SUPG}}}}_{{{tag}}}", 1.0, "SUPG term weight (0 = Galerkin)")
+        self._peclet_weight = float(peclet_weight)
         self._tau_weights = [
             public_expression(rf"C^{{\tau}}_{{t,{tag}}}", 2.0, "tau transient weight"),
             public_expression(rf"C^{{\tau}}_{{u,{tag}}}", 2.0, "tau advective weight"),
@@ -501,6 +503,11 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._needs_function_rewire = True
 
     @property
+    def peclet_weight(self) -> float:
+        """The critical cell Péclet number of the weight (constructor choice; 0 = uniform)."""
+        return self._peclet_weight
+
+    @property
     def supg_weight(self) -> float:
         """Scale of the SUPG term: 1 (default) or 0 for plain Galerkin. No rebuild."""
         return float(self._supg_weight.sym)
@@ -591,7 +598,16 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         transient = (ct * c0 / self._delta_t) ** 2
         advective = (cu * sympy.sqrt(u_mag2) / h) ** 2
         diffusive = (ck * kappa / h ** 2) ** 2
-        return self._supg_weight / sympy.sqrt(transient + advective + diffusive + 1.0e-30)
+        weight = self._supg_weight
+        if self._peclet_weight > 0.0:
+            # The cell-Peclet weight Pe^2 / (Pe^2 + Pe_c^2), Pe = |u| h / 2 kappa, written
+            # without dividing by kappa (1 for pure advection): the term is off where a
+            # cell is diffusion-dominated, where it costs a fixed multiple of the Galerkin
+            # error and is not needed, and full where advection dominates (measured on
+            # the Navier-Stokes solver's benchmarks, design note).
+            uh2 = u_mag2 * h ** 2
+            weight = weight * uh2 / (uh2 + 4 * self._peclet_weight ** 2 * kappa ** 2 + 1.0e-30)
+        return weight / sympy.sqrt(transient + advective + diffusive + 1.0e-30)
 
     F0 = Template(
         r"f_0(\phi)",

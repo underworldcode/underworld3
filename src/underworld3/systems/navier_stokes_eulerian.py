@@ -455,8 +455,9 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         transient = (ct * c0 / self._delta_t) ** 2
         weight = self._supg_weight
         if self._peclet_weight > 0.0:
-            Pe2 = a_mag2 * h ** 2 / (4 * nu ** 2)
-            weight = weight * Pe2 / (Pe2 + self._peclet_weight ** 2)
+            # Pe^2 / (Pe^2 + Pe_c^2) written without dividing by nu.
+            ah2 = a_mag2 * h ** 2
+            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + 1.0e-30)
         if self._tau_shape == "inverse_sum":
             advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
             viscous = (cv * nu / h ** 2) ** 2
