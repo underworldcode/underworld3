@@ -387,6 +387,9 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   weak contraction of the assembled normal reaction. Cylindrical-annulus
   Stokes responses use this fitted integral and its matching finite-element
   boundary norm instead of gathering pointwise samples for angular quadrature.
+- The spherical-shell geoid adapter accepts `projection="reaction"` to use
+  the same fitted integral without pointwise P2 recovery or a rank-zero
+  surface triangulation; `projection="centroid"` remains the default.
 - `uw.analytic.Zhong2008` implements the Hager--O'Connell propagator-matrix
   oracle used for the Zhong et al. spherical-shell response benchmark. It
   supports piecewise-constant radial viscosity and reproduces every analytical
