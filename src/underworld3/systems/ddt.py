@@ -3592,14 +3592,16 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         has local dofs.
 
         The solve fits the sampled departure-point values to the continuous
-        space by weighted least squares on the rule. With as many points per
-        cell as the element has dofs (P2 on a triangle: 6 dofs, 6 points at
-        ``qdegree=2``) that fit is a per-cell interpolant through interior
-        points, which extrapolates, and a mode grows by ~1.1 per step at
-        small Courant number (measured: rotating Gaussian, C=0.25, blow-up
-        after ~80 steps). With twice the points (``qdegree=3``, 12 on a
-        triangle) the fit is contractive and the scheme is ~20x more
-        accurate than nodal SLCN. Below 2x we warn; at or below 1x we raise.
+        space by weighted least squares on the rule (the mass matrix is exact
+        on the rule, so Galerkin with a sampled load *is* that fit). The fit
+        contracts in the sampled norm only, and the shifted field's sampled
+        norm can exceed its true norm (aliasing of the rule on grid-scale
+        modes), so the pure-advection map is never strictly contractive.
+        Measured one-step growth factors, P2 on triangles, Courant 0.25
+        (power iteration): 6 points 1.03-1.14 (blows up), 9 points 1.005,
+        12 points 1.0003; with physical diffusion at cell Peclet 100: 6
+        points 1.01 (still unstable), 9 and 12 points 0.996 (stable). Nodal
+        SLCN: 0.999. So: raise at <= 1x oversampling, warn below 2x.
         """
         PETSc.Options().setValue(f"ipsl_check_{self.instance_number}_petscspace_degree", degree)
         fe = PETSc.FE().createDefault(
@@ -3618,8 +3620,9 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         if Nq < 2 * local_dofs:
             warnings.warn(
                 f"IntegrationPointSemiLagrangian: {Nq} rule points per cell for "
-                f"{local_dofs} local dofs is under 2x oversampling; stability at small "
-                "Courant number has only been verified at 2x (qdegree 3 for P2 on triangles).",
+                f"{local_dofs} local dofs is under 2x oversampling: weakly unstable under pure "
+                "advection (growth ~1.005/step at 1.5x, Courant 0.25) and stable with physical "
+                "diffusion at cell Peclet <= 100. 2x (qdegree 3 for P2 on triangles) is neutral.",
                 stacklevel=3,
             )
 

@@ -148,9 +148,43 @@ which extrapolates, and at small Courant number a mode grows by about 1.1
 per step: on the rotating Gaussian below at Courant 0.25 the run was flat
 for 75 steps and then blew up. At twice the points (`qdegree=3`, 12 on a
 triangle) the fit is contractive and the scheme is stable through a full
-revolution. The constructor therefore raises when the rule has no more
-points than local dofs and warns below 2x. Raising `qdegree` costs every
-solver on the mesh its assembly time, which is the price of this scheme.
+revolution. At 1.5x (PETSc's conical rule, 9 points at degree 4, selected
+with `-<prefix>petscfe_default_quadrature_type conic`) it is also bounded
+through a full revolution, with a 0.07 % rise in energy that saturates and
+twice the L2 error of the 12-point rule. The constructor raises when the
+rule has no more points than local dofs and warns below 2x. Raising the
+rule costs every solver on the mesh its assembly time, which is the price
+of this scheme; `qdegree` is the polynomial exactness of the rule, and the
+extra exactness is incidental here, only the point count matters.
+
+Why a fit at all: with the load vector formed from point samples and the
+mass matrix exact on the same rule, the Galerkin step is algebraically the
+weighted least-squares fit `min Σ_q w_q (T(x_q) - g_q)²`. The composed
+field `T^n ∘ X_dep` is piecewise P2 on the *shifted* mesh, so on the actual
+cells it carries interior kinks wherever a cell's feet straddle a source
+edge, and it is not in the space. The fit contracts in the sampled norm,
+not in L2; a grid-scale mode shifted by a fraction of a cell can have a
+sampled norm above its true norm (an aliasing error of the rule), and that
+ratio is the growth per step. The nodal scheme is stable for a different
+reason: interpolation at the nodes is bounded by the source's nodal values.
+
+Measured directly, by power iteration on the one-step operator (random
+field renormalised every step, P2, `cellSize=0.1`, Courant 0.25):
+
+| growth per step | pure advection | cell Péclet 100 |
+|---|---|---|
+| nodal SLCN | 0.9989 | — |
+| integration-point, 6 points (1x) | 1.028 | 1.0095 |
+| integration-point, 9 points (1.5x) | 1.005 | 0.9960 |
+| integration-point, 12 points (2x) | 1.0003 | 0.9962 |
+
+Under pure advection the integration-point map is never strictly
+contractive; oversampling brings it toward neutral. That is the flip side
+of not dissipating: the nodal scheme's 0.999 is its numerical diffusion.
+With the physical diffusion a real problem carries (cell Péclet 100 here)
+9 and 12 points are stable and 6 is not. The 1.5x case is therefore usable
+with diffusion and slowly unstable without it (invisible over one
+revolution, not over ten); 2x is neutral either way.
 
 ### Measured against nodal SLCN
 
