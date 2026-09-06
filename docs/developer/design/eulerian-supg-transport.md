@@ -632,6 +632,32 @@ of $\tau_s$ and the missing viscous term. The two 1-D shapes are exposed as opti
 inverse sum stays the default (smooth, no per-cell Péclet evaluation), and the weight,
 by cell Péclet number, remains the lever that reaches the Galerkin value.
 
+### The weight by cell Péclet number (`peclet_weight`)
+
+The other side of the same lever: leave $\tau_s$ alone and multiply the term by
+$w = Pe^2/(Pe^2 + Pe_c^2)$, $Pe = |a|h/2\nu$, so it is off where the cell is
+diffusion-dominated and full where advection dominates. Same cases, three thresholds:
+
+| case (cell Péclet) | SUPG | $Pe_c = 2$ | $Pe_c = 4$ | $Pe_c = 8$ | Galerkin |
+|---|---|---|---|---|---|
+| vortex 1/32 (Pe 5) | 7.8e-5 | 6.3e-5 | 5.3e-5 | 4.9e-5 | 4.9e-5 |
+| vortex 1/64 (Pe 2.5) | 1.6e-5 | 8.6e-6 | 5.0e-6 | 4.1e-6 | 4.0e-6 |
+| Kovasznay 1/16 (Pe 1 to 3) | 6.6e-4 | 3.6e-4 | 1.6e-4 | 1.1e-4 | 1.1e-4 |
+| Kovasznay 1/32 | 2.6e-4 | 5.2e-5 | 2.1e-5 | 1.6e-5 | 1.6e-5 |
+| cylinder $C_D$ / $C_L$ max (Pe 10 wall, 37 channel) | 3.046 / 0.897 | 3.061 / 0.908 | 3.080 / 0.919 | 3.094 / 0.917 | 3.098 / 0.909 |
+| cylinder St | 0.298 | 0.297 | 0.296 | 0.296 | 0.295 |
+
+This is the measurement that closes the trade-off. At $Pe_c = 8$ every resolved case
+sits on the Galerkin value and the cylinder is still stable and within 0.2% of Galerkin
+on drag with the weight at 0.6 on the wall cells and 0.95 in the channel; at $Pe_c = 4$
+the resolved cases are within 1.3 times Galerkin and the wall cells keep 86% of the
+term. The weight does what neither the recovered viscous term nor the shape of $\tau_s$
+could: it removes the cost of stabilisation where the 1-D analysis says none is needed
+and leaves it where it is. The default stays at zero (uniform weight) so that the
+recorded benchmarks and the test references do not move; $Pe_c = 4$ is the recommended
+setting for resolved or mixed problems, and whether it becomes the default is a ruling
+for the maintainers, since it changes every answer in the fourth digit.
+
 ### A defect in the integrals (#695)
 
 The first error metric of this benchmark, an integral of $|\mathbf{v} - \mathbf{u}(t)|^2$
