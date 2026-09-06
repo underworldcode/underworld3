@@ -1,7 +1,7 @@
 """Parallel regression tests for issue #405 — reductions on a zero-cell rank.
 
 A rank that owns NO CELLS used to raise a rank-local ``ValueError`` from an
-unguarded local reduction (``self._radii.min()`` and friends) while its
+unguarded local reduction (``self._cell_radii.min()`` and friends) while its
 populated peers sat in the matching collective. The job then hung or aborted
 asymmetrically. Every global quantity computed from rank-local data must
 instead reduce across ranks, with the starved rank contributing the identity
@@ -89,7 +89,7 @@ def test_negative_control_rank_local_minimum_would_be_caught():
     """
     mesh = _starved_box()
 
-    radii = np.asarray(mesh._radii).reshape(-1)
+    radii = np.asarray(mesh._cell_radii).reshape(-1)
     rank_local_min = float(radii.min()) if radii.size else float("inf")
     gathered = uw.mpi.comm.allgather(rank_local_min)
 

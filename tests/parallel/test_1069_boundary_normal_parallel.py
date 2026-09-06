@@ -333,13 +333,16 @@ def _nitsche_annulus_diagnostics():
     leakage. Both are stable from tolerance 1e-9 to 1e-12, so neither is the linear
     solve.
 
-    ``local_h=False`` is deliberate and it is not a workaround for this fix. The
-    default ``local_h=True`` scales the Nitsche penalty by ``mesh.cell_size()``, which
-    is built from ``Mesh._get_mesh_sizes`` — a kd-tree query against THIS RANK's cell
-    centroids, and so partition-dependent in its own right (on this mesh the field's
-    sum is 26.0822 at np=1, 26.1211 at np=2, 26.1386 at np=4, and its max moves at
-    np=4). That is a SEPARATE defect from the boundary normal, it is not what #564 is
-    about, and leaving it in would make this test measure the two together. See the
+    This runs with the DEFAULT ``local_h=True``. It used to pass ``local_h=False``
+    because ``mesh.cell_size()`` was itself partition-dependent -- built from a
+    kd-tree over THIS RANK's cell centroids, so on this mesh the field's sum was
+    26.0822 at np=1, 26.1211 at np=2 and 26.1386 at np=4 -- and leaving it on
+    would have made this test measure two defects at once. ``cell_size()`` now
+    comes from PETSc's ``volume**(1/dim)`` and is partition-independent (#694),
+    so the default path is the one under test again, which is what a guard on
+    the boundary normal should be exercising.
+
+    See the
     TODO(BUG) on ``Mesh._assemble_cell_size``.
     """
     RI, RO = 0.5, 1.0
@@ -357,7 +360,7 @@ def _nitsche_annulus_diagnostics():
         y / r * sympy.cos(4 * theta) * (r - RI) * (RO - r) * 40.0]])
     stokes.add_essential_bc((0.0, 0.0), "Lower")
     # default normal= is the assembled one — that is what is under test
-    stokes.add_nitsche_bc(0.0, "Upper", local_h=False)
+    stokes.add_nitsche_bc(0.0, "Upper")
     stokes.tolerance = 1.0e-9
     stokes.petsc_options["snes_type"] = "ksponly"
     stokes.solve()
