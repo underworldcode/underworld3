@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
 
 def test_slots_are_exact_departure_point_values():
-    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2)
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=3)
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
     f = lambda X: 1.0 + 2.0 * X[:, 0] - 3.0 * X[:, 1] + 0.5 * X[:, 0] ** 2 + X[:, 0] * X[:, 1]
     T.data[:, 0] = f(np.asarray(T.coords))
@@ -82,10 +82,23 @@ def _rotating_gaussian(mesh, kind, dt, nsteps):
     return l2, T.data[:, 0].max()
 
 
+def test_undersampled_rule_is_refused():
+    """P2 history on a qdegree-2 triangle mesh: 6 points for 6 local dofs.
+    That configuration blows up at small Courant number, so it is refused."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.2, qdegree=2)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+    V = sympy.Matrix([[1.0, 0.0]])
+    with pytest.raises(RuntimeError, match="oversampled"):
+        uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V, degree=2)
+    # P1 on the same rule is 2x oversampled and accepted.
+    T1 = uw.discretisation.MeshVariable("T1", mesh, 1, degree=1)
+    uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T1, V, degree=1)
+
+
 @pytest.mark.level_2
 def test_rotating_gaussian_beats_nodal_slcn():
     mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.08, qdegree=2
+        minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.08, qdegree=3
     )
     dt, nsteps = 0.1, 16
     l2_nodal, peak_nodal = _rotating_gaussian(mesh, "nodal", dt, nsteps)

@@ -3526,6 +3526,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         order: int = 1,
         theta: float = 0.5,
         v_degree: Optional[int] = None,
+        monotone_mode: Optional[str] = None,
         **_unsupported,
     ):
         super().__init__()
@@ -3533,6 +3534,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             raise NotImplementedError(
                 "IntegrationPointSemiLagrangian: scalar histories only for now"
             )
+        self.monotone_mode = monotone_mode
         self.mesh = mesh
         self.bcs = bcs
         self.verbose = verbose
@@ -3551,6 +3553,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self._v_meshVar = V_fn if (hasattr(V_fn, "sym") and not isinstance(V_fn, sympy.Basic)) else None
 
         self._init_history_tracking(order)
+        self._check_rule_oversampling(degree)
 
         if varsymbol is None:
             varsymbol = rf"u_{{ [{self.instance_number}] }}"
@@ -3583,6 +3586,42 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             for k in range(order)
         ]
         self._init_coefficient_expressions(order, self.theta, with_exp=False)
+
+    def _check_rule_oversampling(self, degree):
+        """Refuse a rule with no more points per cell than the history space
+        has local dofs.
+
+        The solve fits the sampled departure-point values to the continuous
+        space by weighted least squares on the rule. With as many points per
+        cell as the element has dofs (P2 on a triangle: 6 dofs, 6 points at
+        ``qdegree=2``) that fit is a per-cell interpolant through interior
+        points, which extrapolates, and a mode grows by ~1.1 per step at
+        small Courant number (measured: rotating Gaussian, C=0.25, blow-up
+        after ~80 steps). With twice the points (``qdegree=3``, 12 on a
+        triangle) the fit is contractive and the scheme is ~20x more
+        accurate than nodal SLCN. Below 2x we warn; at or below 1x we raise.
+        """
+        PETSc.Options().setValue(f"ipsl_check_{self.instance_number}_petscspace_degree", degree)
+        fe = PETSc.FE().createDefault(
+            self.mesh.dim, 1, self.mesh.isSimplex, self.mesh.qdegree,
+            f"ipsl_check_{self.instance_number}_", PETSc.COMM_SELF,
+        )
+        local_dofs = fe.getDimension()
+        Nq = len(np.asarray(self.mesh.integration_rule.getData()[1]))
+        if Nq <= local_dofs:
+            raise RuntimeError(
+                f"IntegrationPointSemiLagrangian: the mesh rule has {Nq} points per cell "
+                f"but a degree-{degree} history has {local_dofs} local dofs; the "
+                "least-squares fit is not oversampled and is unstable at small Courant "
+                f"number. Build the mesh with qdegree >= {self.mesh.qdegree + 1}."
+            )
+        if Nq < 2 * local_dofs:
+            warnings.warn(
+                f"IntegrationPointSemiLagrangian: {Nq} rule points per cell for "
+                f"{local_dofs} local dofs is under 2x oversampling; stability at small "
+                "Courant number has only been verified at 2x (qdegree 3 for P2 on triangles).",
+                stacklevel=3,
+            )
 
     # ------------------------------------------------------------------
     @property
@@ -3666,7 +3705,9 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             # Segment k extends the trace from slot k-1's feet, so the
             # feet for slot k are those of slot k-1 traced one more step.
             X = self._trace_segment(X, self.v_snap[k].sym, self._segment_dt(k, dt), evalf)
-            vals = uw.function.global_evaluate(self.psi_snap[k].sym[0], X, evalf=evalf)
+            vals = uw.function.global_evaluate(
+                self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
+            )
             self.psi_star[k].data[:, 0] = np.asarray(vals).reshape(-1)
 
     def initialise_history(self):

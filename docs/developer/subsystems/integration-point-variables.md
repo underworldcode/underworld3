@@ -136,8 +136,53 @@ no checkpoint state yet.
 
 For a P2 field in a uniform velocity the slots reproduce the exact
 departure-point values to round-off, for one and for two segments
-(`tests/test_0066_integration_point_slcn.py`). On a rotating Gaussian at
-Courant 1 (`cellSize=0.05`, `dt=0.1`, half a revolution) the L2 error drops
-from 3.6e-3 (nodal SLCN) to 3.2e-3 and the peak is kept at 0.9998 instead
-of 0.987. The trace-back samples six points per cell rather than the P2
-nodes, so the update costs about twice the nodal one.
+(`tests/test_0066_integration_point_slcn.py`).
+
+### The rule must oversample the history space
+
+The solve fits the sampled departure-point values to the continuous space
+by weighted least squares on the rule. With as many points per cell as the
+element has local dofs (P2 on a triangle: 6 dofs, and 6 points at
+`qdegree=2`) that fit is a per-cell interpolant through interior points,
+which extrapolates, and at small Courant number a mode grows by about 1.1
+per step: on the rotating Gaussian below at Courant 0.25 the run was flat
+for 75 steps and then blew up. At twice the points (`qdegree=3`, 12 on a
+triangle) the fit is contractive and the scheme is stable through a full
+revolution. The constructor therefore raises when the rule has no more
+points than local dofs and warns below 2x. Raising `qdegree` costs every
+solver on the mesh its assembly time, which is the price of this scheme.
+
+### Measured against nodal SLCN
+
+Rotating Gaussian (solid-body rotation, width 0.1 at radius 0.5), P2, unit
+square of side 2, `cellSize=0.05`, `qdegree=3`, half a revolution, pure
+advection. L2 error against the exact rotated field and the peak value:
+
+| Courant | nodal SLCN | integration-point | peak nodal / IP |
+|---|---|---|---|
+| 0.25 | 1.30e-2 | 6.3e-4 | 0.935 / 0.994 |
+| 0.5 | 3.55e-3 | 9.0e-4 | 0.974 / 0.992 |
+| 1 | 3.62e-3 | 3.24e-3 | 0.987 / 0.997 |
+| 2 | 1.33e-2 | 1.33e-2 | 0.996 / 1.000 |
+
+The gain is largest at small Courant number, where the nodal scheme
+re-interpolates most often per unit of transport; at Courant 2 the RK2
+trace-back error dominates and the two agree. Over a full revolution at
+Courant 0.25 the error is 1.17e-3, twice the half-revolution value, so it
+grows linearly.
+
+What the scheme conserves (Courant 0.5, 63 steps, relative change):
+
+| | integral of T | integral of T² |
+|---|---|---|
+| nodal SLCN | fluctuates within 3e-4 | -1.4 % (monotone) |
+| integration-point | -3e-5 | -0.03 % |
+
+Neither scheme is exactly conservative (a Galerkin projection of a
+transported field conserves the integral only with exact integration), but
+the second moment is where the nodal scheme's diffusion shows and the
+integration-point scheme loses 45 times less of it.
+
+The trace-back samples twelve points per cell rather than the P2 nodes, and
+the snapshot evaluation at the moving feet misses the locator cache every
+step, so the update costs about three times the nodal one.
