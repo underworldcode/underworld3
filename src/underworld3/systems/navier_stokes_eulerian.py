@@ -102,13 +102,15 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         Relative change of the velocity (max norm) below which the Picard
         passes stop.
     recovered_viscous : bool, default False
-        Carry the viscous term in the SUPG residual as the divergence of the
-        deviatoric stress of the advecting velocity projected onto a
-        continuous symmetric tensor (one component-wise mass-matrix solve
-        before each pass). Without it the residual lacks the viscous term,
-        an O(h^2) inconsistency for P2 velocity that shows on resolved,
-        viscous flow (Kovasznay, vortex decay); it is immaterial where
-        advection dominates.
+        Carry the viscous term in the SUPG residual as the previous level's
+        out-of-balance force, ``rho (Du/Dt)^n + grad p^n - f``, which equals
+        ``div sigma^n`` there and needs first derivatives only (one stored
+        pressure level, no extra solve). The residual then reduces to the
+        increment of the out-of-balance force between levels and vanishes at
+        a discrete steady state, where the stabilisation switches off. Without
+        it the residual lacks the viscous term, an O(h^2) inconsistency for P2
+        velocity that shows on resolved, viscous flow (Kovasznay, vortex
+        decay); it is immaterial where advection dominates.
     degree, p_continuous, verbose
         As for :class:`~underworld3.systems.Stokes`.
 
@@ -236,27 +238,22 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
         self._history_primed = False
 
-        # The recovered viscous term of the strong residual: the deviatoric
-        # stress of the advecting velocity projected onto a continuous
-        # symmetric tensor before each solve, whose divergence the kernels
-        # can form from first derivatives. Without it the residual the SUPG
-        # term sees is missing the viscous term, an O(h^2) inconsistency for
-        # P2 velocity (Kovasznay: SUPG 16x the Galerkin error at h = 1/32).
+        # The recovered viscous term of the strong residual. The kernels see
+        # first derivatives only, so the residual the SUPG term weights lacks
+        # the viscous term, an O(h^2) inconsistency for P2 velocity. The
+        # momentum balance of the previous step supplies it without a second
+        # derivative: div sigma^n = rho (Du/Dt)^n + grad p^n - f, formed from the
+        # stored velocity levels and a stored pressure level, so the residual
+        # becomes the increment of the out-of-balance force between levels.
+        # (A differentiated projection of the stress was tried first and was
+        # unstable: design note, "Vortex decay".)
         self._recovered_viscous = bool(recovered_viscous)
-        self._sigma_rec = None
-        self._sigma_rec_proj = None
-        self._sigma_rec_fn_set = False
+        self._p_prev = None
         if self._recovered_viscous:
-            self._sigma_rec = uw.discretisation.MeshVariable(
-                f"sigma_rec_NSSUPG_{tag}", self.mesh, (self.mesh.dim, self.mesh.dim),
-                vtype=uw.VarType.SYM_TENSOR, degree=u.degree, continuous=True,
-                varsymbol=rf"\boldsymbol{{\sigma}}^{{rec}}_{{{tag}}}")
-            self._sigma_rec_work = uw.discretisation.MeshVariable(
-                f"sigma_rec_work_NSSUPG_{tag}", self.mesh, 1, degree=u.degree, continuous=True)
-            self._sigma_rec_proj = uw.systems.Tensor_Projection(
-                self.mesh, tensor_Field=self._sigma_rec, scalar_Field=self._sigma_rec_work)
-            self._sigma_rec_proj.smoothing = 0.0
-            # The function needs the constitutive model: set at the first solve.
+            p_var = self.Unknowns.p
+            self._p_prev = uw.discretisation.MeshVariable(
+                f"p_prev_NSSUPG_{tag}", self.mesh, 1, degree=p_var.degree,
+                continuous=p_var.continuous, varsymbol=rf"p^{{n}}_{{{tag}}}")
 
     # ------------------------------------------------------------------
     # Scheme description and knobs
@@ -414,7 +411,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         (measured on Kovasznay flow: 50 times the Galerkin error). The
         viscous term needs second derivatives the kernels do not see; it is
         the remaining inconsistency for P2 velocity unless ``recovered_viscous``
-        supplies it as the divergence of the projected stress.
+        supplies it from the previous level's momentum balance.
         """
         # The body-force setter may store a column; the residual is a row.
         dim = self.mesh.dim
@@ -424,18 +421,26 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             X = self.mesh.X
             R = R + sympy.Matrix([[self.p.sym[0].diff(X[i]) for i in range(dim)]])
             if self._recovered_viscous:
-                sigma = self._sigma_rec.sym
-                R = R - sympy.Matrix([[sum(sigma[i, j].diff(X[j]) for j in range(dim))
-                                       for i in range(dim)]])
+                R = R - self._previous_out_of_balance()
         return R
 
+    def _previous_out_of_balance(self):
+        r"""``rho (Du/Dt)^n + grad p^n - f``: the momentum balance of the stored
+        level, which equals ``div sigma^n`` there, as a ``(1, dim)`` row. A
+        backward difference and single-level advection: O(dt) accurate, which
+        is all the residual needs."""
+        dim = self.mesh.dim
+        X = self.mesh.X
+        u_n = self._states()[1]
+        u_prev = self._u_prev.sym
+        f = sympy.Matrix(self.bodyforce.sym).reshape(1, dim)
+        dudt = (u_n - u_prev) / self._delta_t + self._convective(u_n, u_n)
+        grad_p = sympy.Matrix([[self._p_prev.sym[0].diff(X[i]) for i in range(dim)]])
+        return self._rho * dudt + grad_p - f
+
     def _update_recovered_viscous(self):
-        """Project the deviatoric stress of the current advecting velocity."""
-        if self._recovered_viscous:
-            if not self._sigma_rec_fn_set:            # the projection's default is a zero matrix, not None
-                self._sigma_rec_proj.uw_function = self._viscous_stress(self._advecting_velocity())
-                self._sigma_rec_fn_set = True
-            self._sigma_rec_proj.solve()
+        """Nothing to compute: the balance term reads stored levels."""
+        return
 
     def _viscous_stress(self, u_row):
         r"""Deviatoric stress ``2 eta strain(u)`` for a velocity row, with the
@@ -508,6 +513,8 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         """First solve: the extrapolation level equals the current velocity."""
         if not self._history_primed:
             self._u_prev.array[...] = self.u.array[...]
+            if self._recovered_viscous:
+                self._p_prev.array[...] = self.p.array[...]
             self._history_primed = True
 
     @timing.routine_timer_decorator
@@ -609,7 +616,9 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         local = float(change.max()) if change.size else 0.0
         self._last_change_rate = comm.allreduce(local, op=MPI.MAX) / dt
 
-        # Shift the extrapolation level, then the history.
+        # Shift the extrapolation level, the stored pressure, then the history.
+        if self._recovered_viscous:
+            self._p_prev.array[...] = self.p.array[...]
         self._u_prev.array[...] = self.DuDt.psi_star[0].array[...]
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
