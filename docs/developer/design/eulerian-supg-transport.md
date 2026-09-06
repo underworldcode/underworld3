@@ -552,39 +552,52 @@ expression's `is_zero` assumption from its value, had evaluated $e^{-2\nu t}$ ou
 boundary formula before the JIT saw it (issue #696, not patched; the driver creates the
 expression at a non-zero value).
 
-### The recovered viscous term (`recovered_viscous`)
+### The recovered viscous term: measured and withdrawn
 
 The SUPG column above is the stabilisation's consistency error: the strong residual the
 term weights lacks $\nabla\cdot\boldsymbol{\sigma}$ (second derivatives the kernels do
-not see), and the Péclet turn-down of $\tau_s$ does not remove it, because at low Péclet
-number $\tau_s \to h^2/(4\nu)$ while the missing term is $\nu\nabla^2\mathbf{u}$: the
-product is $O(h^2)$ with no $\nu$ in it. Two ways of supplying the term were measured
-(velocity error at $t = 1$, dt 0.0125; Kovasznay at Re 40):
+not see). The Péclet turn-down of $\tau_s$ does not remove it: at low Péclet number
+$\tau_s \to h^2/(4\nu)$ while the missing term is $\nu\nabla^2\mathbf{u}$, and the product
+is $O(h^2)$ with no $\nu$ in it. Three ways of supplying the term were built and measured
+(velocity error at $t = 1$, dt 0.0125; Kovasznay at Re 40; the cylinder on the 1/20 mesh):
 
-| case | SUPG | Galerkin | balance form | projected stress |
-|---|---|---|---|---|
-| vortex 1/32 | 7.8e-5 | 4.9e-5 | 4.9e-5 | 7.8e-5 |
-| vortex 1/64 | 1.6e-5 | 4.0e-6 | 4.1e-6 | diverged |
-| vortex 1/32, dt 0.1 | 2.1e-4 | 4.8e-5 | 5.7e-5 | |
-| Kovasznay 1/16 | 6.6e-4 | 1.1e-4 | 1.1e-4 | |
-| Kovasznay 1/32 | 2.6e-4 | 1.6e-5 | 1.6e-5 | diverged |
-| cylinder 1/20, $C_D$ max | 3.046 | 3.098 | diverged at step 25 to 50 | |
+| case | SUPG | Galerkin | projected stress | balance form (Louis) | balance, smoothed L = 0.01 to 0.2 |
+|---|---|---|---|---|---|
+| vortex 1/32 | 7.8e-5 | 4.9e-5 | 7.8e-5 | 4.9e-5 | 7.8e-5 |
+| vortex 1/64 | 1.6e-5 | 4.0e-6 | diverged | 4.1e-6 | |
+| Kovasznay 1/16 | 6.6e-4 | 1.1e-4 | | 1.1e-4 | |
+| Kovasznay 1/32 | 2.6e-4 | 1.6e-5 | diverged | 1.6e-5 | |
+| cylinder $C_D$ / $C_L$ max | 3.046 / 0.897 | 3.098 / 0.909 | | diverged (step 25 to 50) | 3.04 / 0.85 to 0.87 |
 
-The projected stress (the deviatoric stress of the advecting velocity fitted to a
-continuous P2 tensor and differentiated) does nothing at 1/32 and is unstable finer: a
-differentiated fit to a discontinuous strain rate is not a Laplacian. The balance form
-(Louis, 2026-09-06) takes the term from the momentum balance of the stored level,
-$\nabla\cdot\boldsymbol{\sigma}^n = \rho(D\mathbf{u}/Dt)^n + \nabla p^n - \mathbf{f}$,
-first derivatives of stored fields and one stored pressure level, so the residual becomes
-the increment of the out-of-balance force between levels. On resolved viscous flow it
-returns the Galerkin accuracy to two digits at every mesh, with a small O(dt) remainder at
-dt 0.1. Where advection dominates it fails: the residual of a stationary wiggle pattern is
-zero, so the stabilisation gives it no damping, and the lagged term feeds the previous
-residual back as a source; on the cylinder (element Reynolds number 19 at the wall, where
-plain Galerkin runs) the drag was 7% high at step 25 and the linear solve diverged before
-step 50. The consistency the SUPG term needs is with the continuum, not with the discrete
-equations of the previous step. The option is kept for resolved viscous problems and is
-off by default; a smoothed form of the balance term is the next thing to measure.
+- **Projected stress**: the deviatoric stress of the advecting velocity fitted to a
+  continuous P2 tensor and differentiated. No change at 1/32, unstable finer: a
+  differentiated fit to a discontinuous strain rate is not a Laplacian.
+- **Balance form**: $\nabla\cdot\boldsymbol{\sigma}^n = \rho(D\mathbf{u}/Dt)^n + \nabla p^n
+  - \mathbf{f}$ from the stored levels and a stored pressure, so the residual is the
+  increment of the out-of-balance force between levels. It returns the Galerkin accuracy
+  to two digits on every resolved case, and it does so because it is a tautology: for any
+  slowly varying discrete solution the residual it builds is zero, so it does not recover
+  the viscous term, it switches the stabilisation off. Where the stabilisation is needed it
+  fails the same way, with the lagged residual fed back as a source (cylinder, drag 7% high
+  at step 25, linear solve diverged before step 50, on a mesh where plain Galerkin runs).
+- **Balance form projected with a smoothing length** (screened Poisson, 0.01 to 0.2 on the
+  vortex, one to two cylinder cells on the cylinder): the projected term matches the exact
+  $\nu\nabla^2\mathbf{u}$ to a few per cent and the SUPG error does not move at any length,
+  while the cylinder stays stable and within 1% of plain SUPG on drag. A continuous
+  recovery of the viscous term, however accurate, does not touch the error.
+
+What the three say together: the consistency error on resolved P2 flow is not the smooth
+part of the missing viscous term. It is the pointwise, element-wise residual of the
+discrete solution (the piecewise-constant P1 pressure gradient and the second derivatives
+of the P2 velocity, both O(h) pointwise) that $\tau_s\,\mathbf{a}\cdot\nabla\mathbf{w}$
+integrates; only a term that cancels it pointwise removes it, and that term cancels the
+stabilisation with it. The remedy the measurements support is not a recovered Laplacian
+but the weight: where the cell Péclet number is small the term is not needed and costs a
+fixed multiple of the Galerkin error, second order in $h$ (`supg_weight`, or the Galerkin
+form; Kovasznay's recommendation stands). A Péclet-dependent weight is the design
+question that remains. The options were removed from the solver after the measurement (a
+knob that quietly disables the stabilisation should not ship); the drivers' `-uw_recovered`
+switches went with them and the runs are in the study directory (`rec_*`, `bal_*`, `sm_*`).
 
 ### A defect in the integrals (#695)
 
