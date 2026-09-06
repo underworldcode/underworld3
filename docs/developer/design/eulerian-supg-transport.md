@@ -473,6 +473,32 @@ with LU. LU on the velocity block is serial-only: on more than one rank PETSc's 
 factorisation has no parallel path and the run dies in the first solve, so the multigrid
 hierarchy is the parallel route on this mesh.
 
+The same cylinder-only refinement through FMG (base 1/10 refined once, channel 1/20,
+fixed dt 0.0083, no LU), the route that scales:
+
+| cylinder cells | Courant there | advecting velocity | $C_D$ max traction / reaction | $C_L$ max | $\Delta p$ | St | s/step |
+|---|---|---|---|---|---|---|---|
+| 1/320 | 4 | extrapolated | 3.208 / 3.215 | 1.004 | 2.48 | 0.300 | 4.9 |
+| 1/320 | 4 | one Picard pass | 3.187 / 3.194 | 0.954 | 2.47 | 0.297 | 6.1 |
+| 1/640 | 8 | one Picard pass | 3.204 / 3.206 | 0.969 | 2.47 | 0.297 | 10.9 |
+| 1/640, np 4 | 8 | one Picard pass | 3.205 / 3.206 | 0.969 | | 0.297 | 6.2 (np 4) |
+| 1/640 | 8 | Newton | 3.204 / 3.205 | 0.969 | 2.47 | 0.296 | 7.4 |
+| 1/640 | 8 | one Picard pass, BDF2 | 3.196 / 3.198 | 0.939 | 2.47 | 0.295 | 8.6 |
+| reference | | | 3.22 to 3.24 | 0.99 to 1.01 | 2.46 to 2.50 | 0.295 to 0.305 | |
+
+(Times with the machine shared by five runs.) The drag and the pressure difference sit
+within 1% of the bands with the two force measurements 0.05% apart at 1/640; the
+frequency is in band throughout. The lift is the sensitive quantity: the extrapolated step
+reads 1.004 at Courant 4 on the cylinder cells and 1.067 at Courant 8 on the unrefined
+mesh, the implicit forms 0.954 to 0.969, and BDF2 0.939, so at these local Courant numbers
+the extrapolation's lag and BDF2's damping each move the lift peak by 3 to 5% and the
+Crank-Nicolson implicit forms are the ones to compare with the reference. One Picard
+pass and Newton agree to three digits at 1/640 and Newton is the cheaper of the two.
+Serial and four ranks agree to four digits (3.204 / 3.205, 0.9692 / 0.9689), the
+partition independence the assembled operator should give, at 1.8x on four ranks with
+the machine loaded. `figures/13_cylinder_Re100_supg_c320_picard_tracers.mp4` is the wake
+at the 1/320-cell, one-Picard setup with tracers released in the central band.
+
 Parallel tracers (#693) work with the empty-rank guard from #680: the two further
 failures reported there were the driver's (an advection before the first release, on a
 swarm that had never been populated and so carries the DMSwarm local size of −1, which
