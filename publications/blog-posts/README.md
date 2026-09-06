@@ -116,6 +116,16 @@ Each post is self-contained but feeds into larger pieces.
     Content: Material interfaces, level-set weighted composites,
     population control.
 
+15a. **"Two Ways to Move a Field"**
+    Status: ready (slcn-vs-supg.md; figures in figures/slcn-vs-supg/ with their scripts)
+    Feeds into: Paper 2 (transport), release post
+    Content: The semi-Lagrangian scheme against the implicit Eulerian SUPG
+    scheme on the same problems: rotating Gaussian Courant sweep, Blankenbach
+    box and annulus convection. Same answers, SUPG ten times cheaper per
+    transport step and partition-independent; SLCN keeps large Courant numbers
+    and vector/tensor fields. Navier-Stokes and the level set are later posts
+    (navier-stokes-supg.md is the held-back draft).
+
 ## Geometry & Meshing (→ Paper 2)
 
 16. **"Meshing for Planetary Scale"**
