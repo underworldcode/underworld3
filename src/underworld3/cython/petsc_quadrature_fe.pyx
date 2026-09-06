@@ -77,6 +77,9 @@ cdef extern from "petsc.h" nogil:
     ctypedef _n_PetscTabulation* PetscTabulation
     PetscErrorCode PetscFECreateTabulation(PetscFE, PetscInt, PetscInt, const PetscReal*, PetscInt, PetscTabulation*)
     PetscErrorCode PetscTabulationDestroy(PetscTabulation*)
+    PetscErrorCode DMPlexComputeCellGeometryFEM(PetscDM, PetscInt, PetscQuadrature, PetscReal*, PetscReal*, PetscReal*, PetscReal*)
+    PetscErrorCode DMPlexGetHeightStratum(PetscDM, PetscInt, PetscInt*, PetscInt*)
+    PetscErrorCode DMGetCoordinateDim(PetscDM, PetscInt*)
 
 cdef extern from "uw_delta_space.h" nogil:
     PetscErrorCode UWDeltaSpaceRegister()
@@ -189,4 +192,42 @@ def tabulate(FE fe, points, int K=0):
             for c in range(Nc):
                 ov[p, b, c] = T.T[0][(p * Nb + b) * Nc + c]
     CHKERRQ(PetscTabulationDestroy(&T))
+    return out
+
+
+def cell_quadrature_points(DM dm, Quad quad):
+    r"""Physical coordinates of the rule's points in every local cell.
+
+    Returns an array shaped ``(ncells, Nq, cdim)`` in local cell order, computed
+    by ``DMPlexComputeCellGeometryFEM`` - the same map the assembler uses for
+    its integration points, so row ``(c, q)`` is exactly where the pointwise
+    functions see quadrature point ``q`` of cell ``c``. No locator involved.
+    """
+    cdef PetscInt cStart = 0, cEnd = 0, cdim = 0, Nq = 0, c, q, d
+    cdef PetscReal *v = NULL
+    cdef PetscReal *J = NULL
+    cdef PetscReal *invJ = NULL
+    cdef PetscReal *detJ = NULL
+    CHKERRQ(DMPlexGetHeightStratum(dm.dm, 0, &cStart, &cEnd))
+    CHKERRQ(DMGetCoordinateDim(dm.dm, &cdim))
+    CHKERRQ(PetscQuadratureGetData(quad.quad, NULL, NULL, &Nq, NULL, NULL))
+    ncells = cEnd - cStart
+    out = np.empty((ncells, Nq, cdim), dtype=np.float64)
+    cdef double[:, :, ::1] ov = out
+    vbuf = np.empty(Nq * cdim, dtype=np.float64)
+    Jbuf = np.empty(Nq * cdim * cdim, dtype=np.float64)
+    iJbuf = np.empty(Nq * cdim * cdim, dtype=np.float64)
+    dJbuf = np.empty(Nq, dtype=np.float64)
+    cdef double[::1] vv = vbuf
+    cdef double[::1] Jv = Jbuf
+    cdef double[::1] iJv = iJbuf
+    cdef double[::1] dJv = dJbuf
+    if ncells == 0:
+        return out
+    v = &vv[0]; J = &Jv[0]; invJ = &iJv[0]; detJ = &dJv[0]
+    for c in range(cStart, cEnd):
+        CHKERRQ(DMPlexComputeCellGeometryFEM(dm.dm, c, quad.quad, v, J, invJ, detJ))
+        for q in range(Nq):
+            for d in range(cdim):
+                ov[c - cStart, q, d] = v[q * cdim + d]
     return out

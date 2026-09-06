@@ -709,6 +709,7 @@ class SolverBaseClass(uw_object):
         current field values (callbacks may have changed v, p, or auxiliary fields)."""
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
 
     def _dispatch_snes_update(self, snes, iteration):
         """PETSc SNESSetUpdate hook: sync iterate->fields, run callbacks, sync back.
@@ -3108,6 +3109,7 @@ class SolverBaseClass(uw_object):
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
         self._update_constants()
 
         gvec = self.dm.getGlobalVec()
@@ -9089,6 +9091,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
         self._update_constants()
 
         gvec = self.dm.getGlobalVec()
@@ -9233,6 +9236,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self.mesh.update_lvec()
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self.mesh._verify_integration_rule(getattr(self, "petsc_fe_u", None))
         self._update_constants()
 
         gvec = self.dm.getGlobalVec()

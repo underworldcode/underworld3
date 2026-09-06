@@ -1449,6 +1449,23 @@ def petsc_interpolate(   expr,
                 rbf_vals = np.asarray(var.rbf_interpolate(fallback_coords))
                 rbf_vals = rbf_vals.reshape(len(fallback_coords), var.num_components)
                 outarray[unlocated, var_start:var_start + var.num_components] = rbf_vals
+
+        # Integration-point variables: the FE interpolation above tabulates
+        # their delta basis at the query points, which is zero anywhere but
+        # on the rule. Their defined extension is the nearest integration
+        # point of the owning cell; overwrite their columns with it.
+        ip_vars = [v for v in vars if getattr(v, "is_integration_point", False)]
+        if ip_vars:
+            ip_cells = getattr(cached_info, "cells", None)
+            if ip_cells is None:
+                ip_cells = mesh._robust_owning_cells(coords)
+            ip_cells = np.asarray(ip_cells).reshape(-1).copy()
+            if unlocated is not None:
+                ip_cells[np.asarray(unlocated, dtype=bool)] = -1
+            for var in ip_vars:
+                var_start = var_start_index[var]
+                outarray[:, var_start:var_start + var.num_components] = \
+                    var._nearest_point_values(coords, ip_cells)
         # === END CACHING ===
 
         # Create map between array slices and variable functions
