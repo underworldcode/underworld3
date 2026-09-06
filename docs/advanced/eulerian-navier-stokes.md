@@ -38,7 +38,13 @@ chosen by `advection=`:
 The stabilisation parameter is
 $\tau = [(C_t/\Delta t)^2 + (C_u |\mathbf{a}|/h)^2 + (C_\nu \nu/h^2)^2]^{-1/2}$
 with $h$ the local cell size and the three weights in `ns.tau_weights`;
-`ns.supg_weight = 0` gives the plain Galerkin scheme. The strong residual the
+`ns.supg_weight = 0` gives the plain Galerkin scheme. The term is also weighted by the
+cell Péclet number, $Pe^2/(Pe^2 + Pe_c^2)$ with $Pe = |\mathbf{a}| h / 2\nu$ and
+$Pe_c$ the `peclet_weight` argument (default 4), so the stabilisation is off where a cell
+is diffusion-dominated, where it is not needed and costs a fixed multiple of the Galerkin
+error, and full where advection dominates; `peclet_weight=0` gives the uniform weight.
+`tau_shape` selects the Brooks-Hughes or doubly asymptotic form of $\tau$ in place of the
+inverse sum. The strong residual the
 term acts on carries the time derivative, the advection, the pressure gradient
 and the body force, but not the viscous term (the kernels see first derivatives
 only), so on a smooth, well-resolved flow the Galerkin form is the more accurate

@@ -15,7 +15,7 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a, pytest.mark.mpi]
 
 # Serial reference, res 8, Crank-Nicolson, dt 0.05, 6 steps (recorded with this file).
-SERIAL_ERROR = 0.003826100946494964
+SERIAL_ERROR = 0.0014183247882657037     # peclet_weight 4 (the default since 2026-09-06); 0.003826100946494964 at 0
 
 
 def _run(tolerance=1.0e-8):

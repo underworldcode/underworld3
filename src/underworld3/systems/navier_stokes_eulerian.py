@@ -111,13 +111,16 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         (2\nu)`; both are combined with the transient term as
         :math:`[(C_t c_0/\Delta t)^2 + \tau^{-2}]^{-1/2}` so the time step still
         caps them. The advective and viscous weights are not used by these two.
-    peclet_weight : float, default 0
-        A critical cell Péclet number. When positive the SUPG term is
-        multiplied by :math:`Pe^2 / (Pe^2 + Pe_c^2)`, :math:`Pe = |a| h / 2\nu`,
-        so the stabilisation is off where the cell is diffusion-dominated
-        (where it is not needed and costs a fixed multiple of the Galerkin
-        error) and full where advection dominates. Zero leaves the weight at
-        ``supg_weight`` everywhere.
+    peclet_weight : float, default 4
+        A critical cell Péclet number. The SUPG term is multiplied by
+        :math:`Pe^2 / (Pe^2 + Pe_c^2)`, :math:`Pe = |a| h / 2\nu`, so the
+        stabilisation is off where the cell is diffusion-dominated (where it
+        is not needed and costs a fixed multiple of the Galerkin error) and
+        full where advection dominates. Measured on the vortex decay,
+        Kovasznay and the cylinder: at 4 the resolved cases are within 1.3
+        times the Galerkin error and the cylinder wall cells keep 86% of the
+        term; at 8 the resolved cases sit on Galerkin and the cylinder is still
+        stable. Zero gives the uniform weight ``supg_weight`` everywhere.
     degree, p_continuous, verbose
         As for :class:`~underworld3.systems.Stokes`.
 
@@ -150,7 +153,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         picard_iterations: int = 0,
         picard_tolerance: float = 1.0e-4,
         tau_shape: str = "inverse_sum",
-        peclet_weight: float = 0.0,
+        peclet_weight: float = 4.0,
         degree: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: bool = False,

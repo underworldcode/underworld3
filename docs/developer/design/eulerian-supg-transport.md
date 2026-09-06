@@ -289,7 +289,13 @@ $\mathbf{a}$ the advecting velocity at the new level and $\mathbf{a}_k = \mathbf
 at the stored ones, $w_k$ the weights of the spatial operator (Adams-Moulton at
 order 1, all on n+1 for BDF2), and $\tau_s$ the scalar formula with $\nu = \eta/\rho$.
 The pressure equation is the Stokes constraint; Taylor-Hood needs no pressure
-stabilisation. Decisions, and what they rest on:
+stabilisation. Since 2026-09-06 the term carries the cell-Péclet weight
+$Pe^2/(Pe^2 + Pe_c^2)$ with $Pe_c = 4$ by default (Louis: "the code is still 100% local,
+so we should probably just switch to this strategy right away"), measured in "The weight
+by cell Péclet number" below; every table before that subsection was made with the
+uniform weight (`peclet_weight=0`), and the Pe_c = 4 column there gives the change. The
+scalar transport solver keeps the uniform weight until its convection benchmarks are
+re-measured with it. Decisions, and what they rest on:
 
 - **No stress history.** The semi-Lagrangian solver carries a stress history
   because its Crank-Nicolson viscous term needs the old flux at the departure
