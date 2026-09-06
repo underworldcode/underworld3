@@ -469,7 +469,14 @@ fallback (the two FMG rows). The refined mesh also gives a better lift and press
 difference than the directly meshed 1/20 channel with the same cylinder cell: at 1/160 on
 the cylinder every quantity but the drag (1% low) is inside the reference band. The
 per-step times were taken with twelve cores busy and are not a like-for-like comparison
-with LU.
+with LU. LU on the velocity block is serial-only: on more than one rank PETSc's native
+factorisation has no parallel path and the run dies in the first solve, so the multigrid
+hierarchy is the parallel route on this mesh.
+
+Parallel tracers (#693) work with the empty-rank guard from #680: the two further
+failures reported there were the driver's (an advection before the first release, on a
+swarm that had never been populated and so carries the DMSwarm local size of −1, which
+fails in serial in the same way; and a timing variable shadowed by a rank-local array).
 
 ### Vortex decay (Taylor-Green)
 
