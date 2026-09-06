@@ -362,6 +362,7 @@ y = 0.5) against Ghia, Ghia and Shin (1982). `~/+Simulations/navier_stokes_supg/
 | 1000 | Ghia | | | | -0.3829 | 0.3709 | -0.5155 | | |
 | 1000 | 1/64, 3-level FMG | SUPG | 1 | 0 | -0.3413 | 0.0613 | -0.4687 | 1200 (t = 19, still moving) | 3.3 (np 4) |
 | 1000 | 1/64, 3-level FMG | Galerkin | 1 | 0 | -0.1437 | 0.0695 | -0.2031 | 300 (t = 4.7) | 3.7 (np 4) |
+| 1000 | 1/64, 3-level FMG | SUPG | 2 | 1 | -0.3620 | 0.3491 | -0.4940 | 2281 (t = 71, steady) | 3.3 (np 4) |
 
 At Re 100 SUPG is within 4% of Ghia on every extremum on a 1/32 mesh and
 reaches an exact fixed point; SLCN on the same mesh sits a little further out and
@@ -378,10 +379,14 @@ At Re 1000 (element Reynolds number 16) on a 1/64 mesh built with a two-level
 refinement so the velocity block runs geometric multigrid, the extrapolated step
 takes one Newton and one Krylov iteration per step at 3.3 s on four ranks, and
 the Galerkin form runs just as stably for its 300 steps: neither oscillates on
-this mesh. The 1200-step run (t = 19) is still in the transient, with u_min and
-v_min at 89% and 91% of Ghia's values and the secondary vortex that sets v_max
-not yet formed; the Re 1000 cavity needs several times that to settle and is a
-long-run comparison for another day. Two earlier four-rank attempts stalled at
+this mesh. The Courant-2, one-Picard run reaches the steady tolerance at step 2281
+(t = 71) with the three extrema at 94 to 96% of Ghia and their positions within 0.01
+(u_min at y 0.175, v_max at x 0.163, v_min at x 0.907), the same shortfall as Re 400
+on 1/48, and the flow (primary vortex, both bottom-corner eddies) as the reference
+shows it. The v_max of 0.05 to 0.07 the earlier rows print is the driver reading rank
+0's own `evaluate` on four ranks (the left-wall upflow sits in another partition); the
+driver now reduces the extrema across ranks, and the row above is a serial
+re-evaluation of the final checkpoint. Two earlier four-rank attempts stalled at
 their first logged step, which was the driver calling the collective centreline
 evaluation on rank 0 only, and a third was killed by the hang watchdog on a rank
 that never prints; none of those said anything about the solver.
