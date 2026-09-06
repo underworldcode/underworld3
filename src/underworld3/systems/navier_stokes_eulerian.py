@@ -101,6 +101,16 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     picard_tolerance : float, default 1e-4
         Relative change of the velocity (max norm) below which the Picard
         passes stop.
+    tau_shape : {"inverse_sum", "brooks_hughes", "doubly_asymptotic"}
+        The shape of the stabilisation parameter. ``"inverse_sum"`` (default)
+        is the Shakib-Tezduyar form above, smooth and cheap but above the
+        optimal 1-D curve at cell Péclet numbers of order 1 to 10.
+        ``"brooks_hughes"`` is the optimal 1-D form :math:`\tau = (h/2|a|)\,
+        (\coth Pe - 1/Pe)`, ``"doubly_asymptotic"`` its two-limit
+        approximation :math:`(h/2|a|)\min(Pe/3, 1)`, with :math:`Pe = |a| h /
+        (2\nu)`; both are combined with the transient term as
+        :math:`[(C_t c_0/\Delta t)^2 + \tau^{-2}]^{-1/2}` so the time step still
+        caps them. The advective and viscous weights are not used by these two.
     degree, p_continuous, verbose
         As for :class:`~underworld3.systems.Stokes`.
 
@@ -132,6 +142,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         advection: str = "extrapolated",
         picard_iterations: int = 0,
         picard_tolerance: float = 1.0e-4,
+        tau_shape: str = "inverse_sum",
         degree: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: bool = False,
@@ -173,6 +184,10 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         self._theta = theta
         self._integrator = "am" if order == 1 else "bdf"
         self._advection_mode = advection
+        if tau_shape not in ("inverse_sum", "brooks_hughes", "doubly_asymptotic"):
+            raise ValueError(
+                f"tau_shape must be 'inverse_sum', 'brooks_hughes' or 'doubly_asymptotic', got {tau_shape!r}")
+        self._tau_shape = str(tau_shape)
         self._picard_iterations = int(picard_iterations)
         self._picard_tolerance = float(picard_tolerance)
         self._picard_count = 0
@@ -275,6 +290,11 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     @picard_iterations.setter
     def picard_iterations(self, value):
         self._picard_iterations = int(value)
+
+    @property
+    def tau_shape(self) -> str:
+        """The shape of the stabilisation parameter (constructor choice)."""
+        return self._tau_shape
 
     @property
     def picard_count(self) -> int:
@@ -416,9 +436,19 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             c0 = sympy.Integer(1)
         ct, cu, cv = self._tau_weights
         transient = (ct * c0 / self._delta_t) ** 2
-        advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
-        viscous = (cv * nu / h ** 2) ** 2
-        return self._supg_weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
+        if self._tau_shape == "inverse_sum":
+            advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
+            viscous = (cv * nu / h ** 2) ** 2
+            return self._supg_weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
+        # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
+        a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
+        Pe = a_mag * h / (2 * nu)
+        if self._tau_shape == "brooks_hughes":
+            xi = 1 / sympy.tanh(Pe) - 1 / Pe      # coth is not C99: the printer would rewrite it through exp
+        else:
+            xi = sympy.Min(Pe / 3, 1)
+        tau_steady = h / (2 * a_mag) * xi
+        return self._supg_weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
 
     @property
     def F0(self):

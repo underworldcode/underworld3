@@ -89,3 +89,13 @@ def test_timestep_is_a_runtime_constant_and_theta_is_settable(mesh):
     ns.solve(timestep=0.02)
     assert ns.theta == 1.0 and ns.DuDt.theta == 1.0
     assert ns._current_jit_cache_key == key
+
+
+def test_tau_shapes_construct_and_step(mesh):
+    for shape in ("brooks_hughes", "doubly_asymptotic"):
+        ns, v, _p = _cavity(mesh, f"s_{shape}", rho=1.0, tau_shape=shape)
+        assert ns.tau_shape == shape
+        ns.solve(timestep=0.05)
+        assert np.isfinite(np.asarray(v.array)).all() and ns.snes.getIterationNumber() == 1
+    with pytest.raises(ValueError, match="tau_shape"):
+        _cavity(mesh, "s_bad", tau_shape="optimal")
