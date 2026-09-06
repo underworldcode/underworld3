@@ -99,3 +99,10 @@ def test_tau_shapes_construct_and_step(mesh):
         assert np.isfinite(np.asarray(v.array)).all() and ns.snes.getIterationNumber() == 1
     with pytest.raises(ValueError, match="tau_shape"):
         _cavity(mesh, "s_bad", tau_shape="optimal")
+
+
+def test_peclet_weight_constructs_and_steps(mesh):
+    ns, v, _p = _cavity(mesh, "pe", rho=1.0, peclet_weight=2.0)
+    assert ns.peclet_weight == 2.0
+    ns.solve(timestep=0.05)
+    assert np.isfinite(np.asarray(v.array)).all() and ns.snes.getIterationNumber() == 1

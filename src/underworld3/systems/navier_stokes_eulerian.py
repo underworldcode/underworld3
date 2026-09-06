@@ -111,6 +111,13 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         (2\nu)`; both are combined with the transient term as
         :math:`[(C_t c_0/\Delta t)^2 + \tau^{-2}]^{-1/2}` so the time step still
         caps them. The advective and viscous weights are not used by these two.
+    peclet_weight : float, default 0
+        A critical cell Péclet number. When positive the SUPG term is
+        multiplied by :math:`Pe^2 / (Pe^2 + Pe_c^2)`, :math:`Pe = |a| h / 2\nu`,
+        so the stabilisation is off where the cell is diffusion-dominated
+        (where it is not needed and costs a fixed multiple of the Galerkin
+        error) and full where advection dominates. Zero leaves the weight at
+        ``supg_weight`` everywhere.
     degree, p_continuous, verbose
         As for :class:`~underworld3.systems.Stokes`.
 
@@ -143,6 +150,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         picard_iterations: int = 0,
         picard_tolerance: float = 1.0e-4,
         tau_shape: str = "inverse_sum",
+        peclet_weight: float = 0.0,
         degree: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: bool = False,
@@ -188,6 +196,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             raise ValueError(
                 f"tau_shape must be 'inverse_sum', 'brooks_hughes' or 'doubly_asymptotic', got {tau_shape!r}")
         self._tau_shape = str(tau_shape)
+        self._peclet_weight = float(peclet_weight)
         self._picard_iterations = int(picard_iterations)
         self._picard_tolerance = float(picard_tolerance)
         self._picard_count = 0
@@ -290,6 +299,11 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     @picard_iterations.setter
     def picard_iterations(self, value):
         self._picard_iterations = int(value)
+
+    @property
+    def peclet_weight(self) -> float:
+        """The critical cell Péclet number of the weight (0 = no Péclet weighting)."""
+        return self._peclet_weight
 
     @property
     def tau_shape(self) -> str:
@@ -436,10 +450,14 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             c0 = sympy.Integer(1)
         ct, cu, cv = self._tau_weights
         transient = (ct * c0 / self._delta_t) ** 2
+        weight = self._supg_weight
+        if self._peclet_weight > 0.0:
+            Pe2 = a_mag2 * h ** 2 / (4 * nu ** 2)
+            weight = weight * Pe2 / (Pe2 + self._peclet_weight ** 2)
         if self._tau_shape == "inverse_sum":
             advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
             viscous = (cv * nu / h ** 2) ** 2
-            return self._supg_weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
+            return weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
         # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
         a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
         Pe = a_mag * h / (2 * nu)
@@ -448,7 +466,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         else:
             xi = sympy.Min(Pe / 3, 1)
         tau_steady = h / (2 * a_mag) * xi
-        return self._supg_weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
+        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
 
     @property
     def F0(self):
