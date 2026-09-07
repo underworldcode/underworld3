@@ -62,3 +62,18 @@ def test_constitutive_flux_in_a_boundary_integral(setup):
     v.array[:, 0, :] = uw.function.evaluate(sympy.Matrix([[y ** 2, 0.0]]), v.coords).reshape(-1, 2)
     sigma_xy = stokes.constitutive_model.flux[0, 1]                        # 2 eta (du/dy)/2 = 2y * 2 / ... = eta * 2y
     assert np.isclose(uw.maths.BdIntegral(mesh, sigma_xy, "Top").evaluate(), 4.0, rtol=1e-8)
+
+
+def test_a_constant_created_at_zero_still_reaches_the_kernel(setup):
+    """#696: a runtime constant whose value is zero at construction must not be
+    folded away by sympy (exp(c) with c.is_zero became 1 at construction, so a
+    ramp that started at t = 0 stayed frozen); setting it later must change the
+    value."""
+    mesh, x, y, T = setup
+    c0 = uw.function.expression(r"c_{0}", 0.0, "starts at zero")
+    integrand = sympy.exp(c0) * T.sym[0].diff(y)
+    assert c0 in integrand.atoms(sympy.Symbol), "sympy folded exp(c) at construction"
+    integral = uw.maths.Integral(mesh, integrand)
+    assert abs(float(integral.evaluate()) - 1.0) < 1e-10      # int dT/dy = 1 on this box
+    c0.sym = 1.0
+    assert abs(float(uw.maths.Integral(mesh, integrand).evaluate()) - np.e) < 1e-9

@@ -560,8 +560,9 @@ first gave 4.7e-3 on every mesh and at every time step, with the decay 10% too s
 freezing the time deliberately reproduced that number to four digits: the time expression
 had been created at the value zero, and sympy's automatic evaluation, reading the
 expression's `is_zero` assumption from its value, had evaluated $e^{-2\nu t}$ out of the
-boundary formula before the JIT saw it (issue #696, not patched; the driver creates the
-expression at a non-zero value).
+boundary formula before the JIT saw it (issue #696, since fixed: a `UWexpression` no longer
+reports `is_zero`, `is_positive` or `is_negative` from its current value, so sympy cannot fold on
+them; `tests/test_0503` carries the `exp(c)` control).
 
 ### The recovered viscous term: measured and withdrawn
 

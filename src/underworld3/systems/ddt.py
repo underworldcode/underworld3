@@ -552,7 +552,7 @@ class _DDtBase(uw_object):
         # The timestep as a runtime constant of the compiled kernels: every
         # flavour writes it through the ``_dt`` property, so a solver that
         # composes its residual from :meth:`time_derivative` never recompiles
-        # when the step changes. Created non-zero (#696).
+        # when the step changes.
         self._delta_t = _UWexpression(
             rf"\Delta t_{{{self.instance_number}}}", 1.0, "DDt timestep",
             _unique_name_generation=True)
@@ -1658,7 +1658,7 @@ class EulerianSUPG(Eulerian):
         self._tau_shape = str(tau_shape)
         self._peclet_weight = float(peclet_weight)
 
-        # The stabilisation knobs are runtime constants (created non-zero, #696).
+        # The stabilisation knobs are runtime constants.
         tag = self.instance_number
         unique = dict(_unique_name_generation=True)
         self._supg_weight = _UWexpression(
