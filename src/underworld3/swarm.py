@@ -4894,6 +4894,13 @@ class Swarm(Stateful, uw_object):
             substep). Default ``False`` here; note
             :meth:`NodalPointSwarm.advection` defaults it to ``True``.
         """
+        if self.local_size < 0:
+            # DMSwarm reports -1 until particles have been added on some rank (#702);
+            # an EMPTY rank of a populated swarm is size 0 and is handled below.
+            raise RuntimeError(
+                "This swarm has never been populated (no particles were added on any "
+                "rank): call populate() or add_particles_with_coordinates() before advection."
+            )
         # Convert delta_t to model units if it has units
         # This ensures consistent arithmetic: velocity is in model units, so time must be too
         import underworld3 as uw
