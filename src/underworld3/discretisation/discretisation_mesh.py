@@ -589,9 +589,19 @@ class Mesh(Stateful, uw_object):
         self._setup_symbolic_coordinates(coordinate_system_type)
 
         try:
-            self.isSimplex = self.dm.isSimplex()
+            local_simplex = self.dm.isSimplex()
         except:
-            self.isSimplex = simplex
+            local_simplex = simplex
+
+        # DMPlexIsSimplex is rank-local and returns False on empty ranks.
+        # Coordinate FE construction must use one cell family everywhere;
+        # mixed simplex/tensor construction desynchronises PETSc MPI tags.
+        cell_start, cell_end = self.dm.getHeightStratum(0)
+        cell_families = self.dm.comm.tompi4py().allgather(
+            local_simplex if cell_end > cell_start else None
+        )
+        populated_families = [family for family in cell_families if family is not None]
+        self.isSimplex = all(populated_families) if populated_families else simplex
 
         # Using WeakValueDictionary to prevent circular references
         self._vars = weakref.WeakValueDictionary()
@@ -650,7 +660,7 @@ class Mesh(Stateful, uw_object):
             entities: tuple
             face_entities: tuple
 
-        if self.dm.isSimplex():
+        if self.isSimplex:
             if self.dim == 2:
                 self._element = ElementInfo("triangle", (1, 3, 3), (0, 1, 2))
             else:
@@ -3224,8 +3234,8 @@ class Mesh(Stateful, uw_object):
 
         Returns the ``.sym`` of a cell-constant (degree-0, discontinuous)
         scalar MeshVariable holding each cell's characteristic length (the
-        RMS distance of its vertices from its own centroid, purely local
-        so the field is the same on any partition, #687). Unlike
+        RMS distance of its vertices from their own centroid). This is a
+        purely cell-local quantity, independent of the MPI partition. Unlike
         the single *global* scalar from :meth:`get_min_radius` (the smallest
         cell anywhere), this varies cell to cell, so a stabilisation that
         scales as :math:`1/h` — e.g. the Nitsche free-slip penalty
@@ -3291,9 +3301,9 @@ class Mesh(Stateful, uw_object):
     def _assemble_cell_size(self, var):
         """Fill ``var`` (degree-0 scalar) with each cell's characteristic size.
 
-        Uses the per-cell characteristic lengths ``self._radii`` computed by
+        Uses the cell-geometry characteristic lengths ``self._cell_radii`` computed by
         :meth:`_get_mesh_sizes` on the *current* geometry. A degree-0
-        discontinuous variable's local DOFs and ``self._radii`` are BOTH
+        discontinuous variable's local DOFs and ``self._cell_radii`` are BOTH
         indexed by this rank's cell-stratum order, so a direct assignment is
         correct on every rank.
 
@@ -3301,19 +3311,9 @@ class Mesh(Stateful, uw_object):
         access, no collective): mixing a rank-local fast path with a
         collective fallback would diverge across ranks and deadlock, because
         ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
-        # The field is the cell's OWN radius (#687), not the kd-tree radius
-        # ``_radii`` that feeds get_min_radius, the adaptivity metrics and the
-        # free-surface relaxation: that one measures a cell by the distance
-        # from its vertices to the nearest centroid among THIS RANK's cells,
-        # so near a partition seam it depends on the partition (measured on
-        # Annulus(cellSize=0.12): field sum 26.0822 at np=1, 26.1211 at np=2,
-        # 26.1386 at np=4; 6.6e-3 in a Nitsche free-slip velocity). The own
-        # radius is identical on any partition and equal to the kd-tree one on
-        # a regular mesh. Guard: tests/parallel/test_1078 (the SUPG
-        # Navier-Stokes error matches serial to 1e-15 with it, 5e-4 without).
-        # The cell's own radius (#687): partition-independent, unlike the
-        # kd-tree radii that feed get_min_radius.
-        radii = numpy.asarray(getattr(self, "_radii_own", self._radii)).reshape(-1)
+        # Own-cell radii fix #687 without changing the legacy kd-tree radii
+        # used by global timestep estimates, adaptivity, and mesh relaxation.
+        radii = numpy.asarray(self._cell_radii).reshape(-1)
         # Empty partition (no local cells): nothing to fill on this rank.
         if radii.size == 0 or var.data.shape[0] == 0:
             return
@@ -3892,21 +3892,13 @@ class Mesh(Stateful, uw_object):
             # The field decomposition seems to fail if coarse DMs are present
             names, isets, dms = self.dm.createFieldDecomposition()
 
-            # Traverse the DM's fields BY NAME. `self.vars` holds its
-            # variables weakly, so a dropped-and-collected variable leaves
-            # a field behind in the DM; a positional zip would then pack
-            # every later variable into the wrong field (measured: the
-            # cell-size field landing in a P2 slot as garbage, NaN
-            # residuals in a solver that reads it). An orphaned field is
-            # zeroed so nothing stale can reach a kernel.
-            for name, subiset, subdm in zip(names, isets, dms):
-                var = self.vars.get(name)
+            # traverse subdms, taking user generated data in the subdm
+            # local vec, pushing it into a global sub vec
+            for var, subiset, subdm in zip(self.vars.values(), isets, dms):
+                # var.vec lazily creates the PETSc local vector on first access
+                lvec = var.vec
                 subvec = a_global.getSubVector(subiset)
-                if var is None:
-                    subvec.set(0.0)
-                else:
-                    # var.vec lazily creates the PETSc local vector on first access
-                    subdm.localToGlobal(var.vec, subvec, addv=False)
+                subdm.localToGlobal(lvec, subvec, addv=False)
                 a_global.restoreSubVector(subiset, subvec)
 
             for iset in isets:
@@ -4840,9 +4832,10 @@ class Mesh(Stateful, uw_object):
         - ``create_xdmf=True`` writes ParaView/XDMF output. Variable files also
           receive ``/vertex_fields`` or ``/cell_fields`` compatibility groups,
           and rank 0 writes the companion ``.xdmf`` file.
-        - ``petsc_reload=True`` writes PETSc DMPlex section/vector metadata into
-          the same per-variable HDF5 files. These files can then be loaded with
-          ``MeshVariable.read_checkpoint()`` for PETSc-native same-mesh reload.
+        - ``petsc_reload=True`` writes PETSc DMPlex section/local-vector
+          metadata and an in-place global-vector payload into the same
+          per-variable HDF5 files. These files can then be loaded with
+          ``MeshVariable.read_checkpoint()`` for exact restart.
 
         Common choices are:
 
@@ -5019,7 +5012,7 @@ class Mesh(Stateful, uw_object):
             subdm.destroy()
 
     def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
-        """Write PETSc DMPlex section/vector reload metadata."""
+        """Write DMPlex reload metadata and in-place vector payloads."""
 
         old_dm_name = self.dm.getName()
         self.dm.setName("uw_mesh")
@@ -5040,6 +5033,23 @@ class Mesh(Stateful, uw_object):
             viewer.destroy()
             if old_dm_name is not None:
                 self.dm.setName(old_dm_name)
+
+        viewer = PETSc.ViewerHDF5().create(
+            checkpoint_file, "a", comm=PETSc.COMM_WORLD
+        )
+        try:
+            viewer.pushGroup("/uw_checkpoint")
+            for var in variables:
+                var._sync_lvec_to_gvec()
+                checkpoint_vec = PETSc.Vec().createWithArray(
+                    var._gvec.array_r, comm=PETSc.COMM_WORLD
+                )
+                checkpoint_vec.setName(var.clean_name)
+                viewer(checkpoint_vec)
+                checkpoint_vec.destroy()
+            viewer.popGroup()
+        finally:
+            viewer.destroy()
 
     @timing.routine_timer_decorator
     def write_checkpoint(
@@ -6881,8 +6891,11 @@ class Mesh(Stateful, uw_object):
 
     def _get_mesh_sizes(self, verbose=False):
         """
-        Obtain the (local) mesh radii and centroids using kdtree distances
-        This routine is called when the mesh is built / rebuilt
+        Cache own-cell radii for cell_size and return legacy kd-tree radii.
+
+        Own-cell sizes use current DM vertices, so neither partition-local
+        neighbours nor stale coordinate views affect stabilization (#687).
+        Legacy radii remain unchanged for their other consumers.
         """
 
         centroids = self._get_coords_for_basis(0, False)
@@ -6895,10 +6908,9 @@ class Mesh(Stateful, uw_object):
         cell_length = np.empty(centroids.shape[0])
         cell_min_r = np.empty(centroids.shape[0])
         cell_r = np.empty(centroids.shape[0])
-        cell_r_own = np.empty(centroids.shape[0])
-        # Vertex coordinates from the DM itself (rank-local): the cached
-        # ``_coords`` can be one deform behind at this point.
-        vertex_coords = np.asarray(self.dm.getCoordinatesLocal().array).reshape(-1, self.cdim)
+        cell_radii = np.empty(centroids.shape[0])
+        coordinate_section = self.dm.getCoordinateDM().getLocalSection()
+        vertex_coordinates = self.dm.getCoordinatesLocal().array
 
         for cell in range(cEnd - cStart):
             cell_num_points = self.dm.getConeSize(cell)
@@ -6911,15 +6923,17 @@ class Mesh(Stateful, uw_object):
             cell_length[cell] = np.sqrt(distsq.max())
             cell_r[cell] = np.sqrt(distsq.mean())
             cell_min_r[cell] = np.sqrt(distsq.min())
-            # The cell's own radius: RMS distance of its vertices from its
-            # own centroid. Purely local, so identical on any partition, where
-            # the kd-tree radius above can pick a neighbour's centroid and
-            # differ at partition boundaries (#687). cell_size() reports it.
-            own_coords = vertex_coords[cell_points - pStart]
-            own = own_coords - own_coords.mean(axis=0)
-            cell_r_own[cell] = np.sqrt((own ** 2).sum(axis=1).mean())
 
-        self._radii_own = cell_r_own
+            # A hex has six faces but eight vertices: select the vertex
+            # stratum, not a cone-sized suffix of its transitive closure.
+            closure = self.dm.getTransitiveClosure(cStart + cell)[0]
+            vertices = closure[(closure >= pStart) & (closure < pEnd)]
+            offsets = np.array([coordinate_section.getOffset(int(v)) for v in vertices])
+            own_coords = vertex_coordinates[offsets[:, None] + np.arange(self.cdim)]
+            delta = own_coords - own_coords.mean(axis=0)
+            cell_radii[cell] = np.sqrt(np.mean(np.sum(delta ** 2, axis=1)))
+
+        self._cell_radii = cell_radii
         return cell_min_r, cell_r, centroids, cell_length
 
     # ==========

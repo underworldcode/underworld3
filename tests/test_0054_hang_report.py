@@ -172,11 +172,16 @@ def _wait_for(condition, what, cap=600.0, poll=0.25):
 
 
 def _dump_count(dumps, rank):
-    """How many times this rank has dumped so far."""
+    """How many times this rank has dumped so far.
+
+    Counted by the "Current thread" line rather than the "Timeout (" header:
+    the watchdog dumps through faulthandler's signal handler (#661), which
+    writes no header, and there is exactly one such line per dump either way.
+    """
     path = dumps / f"rank{rank:04d}.log"
     if not path.exists():
         return 0
-    return path.read_text(errors="replace").count("Timeout (")
+    return path.read_text(errors="replace").count("Current thread ")
 
 
 def _run_until_the_evidence_exists(argv, ranks, environment, dumps, ready,

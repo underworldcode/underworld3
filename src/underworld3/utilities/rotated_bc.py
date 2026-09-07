@@ -425,7 +425,44 @@ def build_rotation(solver, boundaries, datum_specs=None):
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
-        if any(g < 0 for g in grows):
+        free = [c for c in range(dim) if grows[c] >= 0]
+        if not free:                             # every component pinned already
+            continue
+        if len(free) < dim:
+            # PARTIALLY CONSTRAINED NODE — a rotated wall meeting an essential one.
+            # Some components are constrained out of the global vector (g < 0) and
+            # the rest are free. This used to `continue`, which left the wall-normal
+            # component UNCONSTRAINED at those nodes: the wall leaked at its own end
+            # points while every interior node was exact. Measured on a unit box with
+            # a rotated lid and component free slip on the other three walls,
+            # max|u_y| on the lid was 4.0e-3 against |u|max 2.5e-2 — 16%, entirely at
+            # the two corners — and the solve differed from the equivalent component
+            # Dirichlet lid by 2e-3 globally, with an exact linear solve on both
+            # sides (issue #616; the corner reaction of #608 is the same node).
+            #
+            # The constraint is still imposable on what is left: with the pinned
+            # components held at zero, n̂·v = 0 reduces to n̂_F·v_F = 0 on the free
+            # subspace F. Build the frame there and constrain its normal rows.
+            if q in node_dspec:
+                # A prescribed v_n datum at such a node needs the pinned components'
+                # values to reduce the affine constraint, which are not read here.
+                # Preserve the previous behaviour rather than impose the wrong datum.
+                _warn_once_partial_datum()
+                continue
+            Mf = np.array(nrms, dtype=float)[:, free]
+            scale = float(np.linalg.norm(np.array(nrms, dtype=float)))
+            if float(np.linalg.norm(Mf)) <= 1e-12 * max(scale, 1.0):
+                # the normal lies entirely in the pinned subspace: already implied
+                continue
+            rows = [grows[c] for c in free]
+            if not (rstart <= rows[0] < rend):   # not owned by this rank → skip
+                continue
+            _, svf, Vtf = np.linalg.svd(Mf)
+            rf = int((svf > 1e-8 * (svf[0] if svf.size else 1.0)).sum())
+            for i in range(len(free)):
+                for j in range(len(free)):
+                    Q.setValue(rows[i], rows[j], float(Vtf[i, j]))
+            normal_rows.extend(rows[:rf])
             continue
         if not (rstart <= grows[0] < rend):      # not owned by this rank → skip
             continue
@@ -542,6 +579,21 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 if val != 0.0:
                     datum_map[grow0] = float(sgn * val)
     return Q, Qt, sorted(set(normal_rows)), datum_map
+
+
+_PARTIAL_DATUM_WARNED = [False]
+
+
+def _warn_once_partial_datum():
+    """A prescribed wall-normal datum at a node shared with an essential BC is not
+    reduced here, so that node keeps the pre-#616 behaviour (unconstrained). Say so
+    once rather than silently."""
+    if not _PARTIAL_DATUM_WARNED[0]:
+        _PARTIAL_DATUM_WARNED[0] = True
+        print("[rotated_bc] WARNING: a prescribed v_n datum sits on a node shared "
+              "with an essential BC; the wall-normal component is left free there "
+              "(the affine reduction against the pinned components is not "
+              "implemented). Free-slip nodes are unaffected.")
 
 
 def _zero_rows_local(vec, normal_rows):
@@ -2144,6 +2196,89 @@ def boundary_normal_traction(solver, boundary, solve_result, mass="auto"):
     # at a partition-cut node — must OVERWRITE, not sum, else shared nodes double-count).
     return xs, _desmear(solver, boundary, xs, -Rn, mass,
                         remove_mean=True, partial_reaction=False)
+
+
+def boundary_normal_traction_integral(solver, boundary, solve_result, fn,
+                                      remove_mean=True):
+    r"""Return ``integral((sigma_nn - mean) * fn, boundary)`` directly from the
+    assembled rotated-constraint reaction.
+
+    This is the weak/integral counterpart of :func:`boundary_normal_traction`.
+    It contracts the nodal reaction with ``fn`` at the velocity interpolation
+    nodes before any pointwise boundary-mass recovery. On curved P2 boundaries
+    this is a fitted quantity and therefore does not consume the slowly
+    converging recovered vertex values described in issue #414.
+
+    Each assembled reaction degree of freedom is counted on its owning rank,
+    followed by an MPI sum on the mesh communicator. The operation does not
+    gather boundary topology or recovered values onto rank zero.
+    ``remove_mean=True`` removes the constant-traction gauge using boundary
+    integrals of ``fn`` and one.
+    """
+    if not isinstance(remove_mean, (bool, np.bool_)):
+        raise TypeError("remove_mean must be True or False.")
+
+    import underworld3 as uw
+
+    fn = sympy.sympify(fn)
+    dm = solver.dm
+    comm = dm.comm.tompi4py()
+    dim = solver.mesh.dim
+    rc = solve_result["reaction"]
+    rstart, rend = rc.getOwnershipRange()
+    rcl = dm.getLocalVec()
+    dm.globalToLocal(rc, rcl)
+
+    try:
+        rca = np.asarray(rcl.getArray())
+        lsec = dm.getLocalSection()
+        l2g = dm.getLGMap()
+        csec = dm.getCoordinateSection()
+        cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+        v0, v1 = dm.getDepthStratum(0)
+        normal = dict(_boundary_spec(s) for s in solve_result["boundaries"]).get(
+            boundary
+        )
+        nodes = _boundary_velocity_nodes(solver, boundary, normal=normal)
+
+        owned_coords = []
+        owned_reactions = []
+        for q, nrm in nodes:
+            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
+            global_row = int(l2g.apply([lo])[0])
+            if not rstart <= global_row < rend:
+                continue
+            owned_coords.append(_point_coord(dm, dim, cvec, csec, v0, v1, q))
+            # sigma_nn load = -n.r_c, matching boundary_normal_traction().
+            owned_reactions.append(-float(np.dot(nrm, rca[lo:lo + dim])))
+    finally:
+        dm.restoreLocalVec(rcl)
+
+    if owned_coords:
+        coords = np.ascontiguousarray(owned_coords, dtype=float)
+        weights = np.asarray(uw.function.evaluate(fn, coords), dtype=float).reshape(-1)
+        if weights.size == 1 and len(owned_reactions) != 1:
+            weights = np.full(len(owned_reactions), float(weights[0]))
+        if weights.size != len(owned_reactions):
+            raise ValueError("fn must evaluate to one scalar per boundary node.")
+        local_weighted = float(np.dot(owned_reactions, weights))
+        local_total = float(np.sum(owned_reactions))
+    else:
+        local_weighted = 0.0
+        local_total = 0.0
+
+    weighted = float(comm.allreduce(local_weighted))
+    if not remove_mean:
+        return weighted
+
+    total = float(comm.allreduce(local_total))
+    area = float(uw.maths.BdIntegral(solver.mesh, fn=1.0, boundary=boundary).evaluate())
+    if not np.isfinite(area) or area <= 0.0:
+        raise RuntimeError(f"Boundary {boundary!r} has non-positive area {area}.")
+    fn_integral = float(
+        uw.maths.BdIntegral(solver.mesh, fn=fn, boundary=boundary).evaluate()
+    )
+    return weighted - (total / area) * fn_integral
 
 
 def dynamic_topography_field(solver, boundary, solve_result, field,

@@ -137,6 +137,7 @@ guides/branching-strategy
 guides/state-as-dataclass
 guides/BINDER_CONTAINER_SETUP
 guides/hpc-cluster-setup
+guides/mpi-hang-supervision
 ```
 
 ```{toctree}

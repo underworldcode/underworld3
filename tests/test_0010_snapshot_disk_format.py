@@ -193,6 +193,7 @@ def _fresh_model_mesh_and_vars():
 def test_write_snapshot_produces_wrapper_and_bulk_dir(tmp_path):
     """The two artifacts the convention promises: wrapper file +
     sibling .bulk/ directory containing PETSc HDF5 files."""
+    import h5py
     import os
     import underworld3 as uw
 
@@ -212,6 +213,16 @@ def test_write_snapshot_produces_wrapper_and_bulk_dir(tmp_path):
     assert any(f.endswith(".mesh.00000.h5") for f in files)
     assert any("T.00000.h5" in f for f in files)
     assert any("V.00000.h5" in f for f in files)
+
+    for variable_name in ("T", "V"):
+        variable_file = next(
+            filename
+            for filename in files
+            if filename.endswith(f".{variable_name}.00000.h5")
+        )
+        with h5py.File(os.path.join(bulk, variable_file), "r") as h5:
+            assert variable_name in h5["topologies"]["uw_mesh"]["dms"]
+            assert variable_name in h5["uw_checkpoint"]
 
 
 def test_snapshot_bulk_filenames_do_not_expand_loaded_mesh_name(tmp_path):
@@ -289,8 +300,7 @@ def test_write_snapshot_populates_wrapper_layout(tmp_path):
 def test_write_read_snapshot_bit_exact_roundtrip(tmp_path):
     """The core phase-2 guarantee: write a snapshot, scribble all
     variables, read snapshot back, all variables match write-time
-    values bit-for-bit (#146's PETSc DMPlex same-rank reload, just
-    delivered via the wrapper)."""
+    values bit-for-bit through the exact same-layout PETSc vector payload."""
     import underworld3 as uw
 
     uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
@@ -319,6 +329,49 @@ def test_write_read_snapshot_bit_exact_roundtrip(tmp_path):
     )
 
 
+def test_disk_restore_refreshes_packed_auxiliary_fields_before_solve(tmp_path):
+    """A solve after disk restore must use restored coefficient fields."""
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0),
+        maxCoords=(1.0, 1.0),
+        cellSize=0.5,
+    )
+    solution = uw.discretisation.MeshVariable("U", mesh, 1, degree=1)
+    source = uw.discretisation.MeshVariable("source", mesh, 1, degree=1)
+
+    poisson = uw.systems.Poisson(mesh, u_Field=solution)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = source.sym[0]
+    poisson.add_dirichlet_bc(0.0, "All_Boundaries")
+
+    source.array[...] = 1.0
+    poisson.solve(zero_init_guess=True)
+    reference = np.asarray(solution.array[...]).copy()
+
+    path = str(tmp_path / "auxiliary.snap.h5")
+    model.save_state(file=path)
+
+    source.array[...] = 4.0
+    poisson.solve(zero_init_guess=True)
+    assert not np.allclose(np.asarray(solution.array[...]), reference)
+
+    model.load_state(path)
+    assert mesh._stale_lvec is True
+    poisson.solve(zero_init_guess=True)
+
+    assert np.allclose(
+        np.asarray(solution.array[...]),
+        reference,
+        rtol=0.0,
+        atol=1.0e-5,
+    )
+
+
 def test_read_snapshot_rejects_missing_bulk_dir(tmp_path):
     """If the user moves the wrapper without the bulk dir, read fails
     with a clear pointer rather than an obscure h5py error."""
@@ -335,6 +388,22 @@ def test_read_snapshot_rejects_missing_bulk_dir(tmp_path):
 
     uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
     with pytest.raises(FileNotFoundError, match="bulk directory missing"):
+        model.load_state(path)
+
+
+def test_read_snapshot_rejects_different_mpi_rank_count(tmp_path):
+    """Exact disk restart must not silently remap a different MPI layout."""
+    import h5py
+    import underworld3 as uw
+
+    uw, model, mesh, T, V = _fresh_model_mesh_and_vars()
+    path = str(tmp_path / "rank_count.snap.h5")
+    model.save_state(file=path)
+
+    with h5py.File(path, "r+") as h5:
+        h5["metadata"].attrs["mpi_ranks_at_write"] = uw.mpi.size + 1
+
+    with pytest.raises(ValueError, match="same rank count"):
         model.load_state(path)
 
 

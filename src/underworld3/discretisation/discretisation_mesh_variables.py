@@ -1449,14 +1449,21 @@ class _BaseMeshVariable(Stateful, uw_object):
         self,
         filename: str,
         data_name: Optional[str] = None,
+        same_layout: bool = False,
     ):
         """Load this mesh variable from PETSc reload output.
 
-        This is an exact PETSc DMPlex section/vector reload path. It does not
-        use the coordinate/KDTree remapping used by ``read_timestep()``. New
-        output should be written with ``Mesh.write_timestep(...,
-        petsc_reload=True)``; legacy ``Mesh.write_checkpoint()`` files are also
-        supported.
+        The default path restores DMPlex section/local-vector data through the
+        topology migration SF, so a mesh reconstructed from its checkpoint may
+        have a different parallel DOF ordering. Set ``same_layout=True`` only
+        for an in-place restore onto the exact mesh object that wrote the file;
+        that path reloads the saved global vector directly.
+
+        This method does not use the coordinate/KDTree remapping provided by
+        ``read_timestep()``. New output should be written with
+        ``Mesh.write_timestep(..., petsc_reload=True)``; legacy
+        ``Mesh.write_checkpoint()`` files are also supported by the default
+        DMPlex path.
         """
 
         if data_name is None:
@@ -1464,6 +1471,27 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         if self._lvec is None:
             self._set_vec(available=True)
+
+        if same_layout:
+            import h5py
+
+            if uw.mpi.rank == 0:
+                with h5py.File(filename, "r") as checkpoint_h5:
+                    has_direct_vector = (
+                        "uw_checkpoint" in checkpoint_h5
+                        and data_name in checkpoint_h5["uw_checkpoint"]
+                    )
+            else:
+                has_direct_vector = None
+            has_direct_vector = uw.mpi.comm.bcast(
+                has_direct_vector,
+                root=0,
+            )
+            if not has_direct_vector:
+                raise RuntimeError(
+                    f"{filename} has no in-place checkpoint vector for "
+                    f"{data_name!r}. Reload it with same_layout=False."
+                )
 
         indexset, subdm = self.mesh.dm.createSubDM(self.field_id)
         sectiondm = self.mesh.dm.clone()
@@ -1481,40 +1509,53 @@ class _BaseMeshVariable(Stateful, uw_object):
             self._lvec.setName(data_name)
             self._gvec.setName(data_name)
 
-            from underworld3.cython.petsc_discretisation import (
-                petsc_dmplex_load_local_vector,
-            )
-
-            loaded_lvec = petsc_dmplex_load_local_vector(
-                self.mesh.dm, viewer, sectiondm, self.mesh.sf, data_name
-            )
-
-            source_section = sectiondm.getSection()
-            target_section = subdm.getSection()
-            source_array = loaded_lvec.array_r
-            target_array = self._lvec.array
-            p_start, p_end = target_section.getChart()
-
-            for point in range(p_start, p_end):
-                target_dof = target_section.getDof(point)
-                if target_dof == 0:
-                    continue
-
-                source_dof = source_section.getDof(point)
-                if source_dof < target_dof:
-                    raise RuntimeError(
-                        f"Checkpoint section has {source_dof} dofs for point {point}, "
-                        f"but target variable requires {target_dof}."
-                    )
-
-                source_offset = source_section.getOffset(point)
-                target_offset = target_section.getOffset(point)
-                target_array[target_offset : target_offset + target_dof] = (
-                    source_array[source_offset : source_offset + target_dof]
+            if same_layout:
+                checkpoint_vec = PETSc.Vec().createMPI(
+                    (self._gvec.getLocalSize(), self._gvec.getSize()),
+                    comm=PETSc.COMM_WORLD,
+                )
+                checkpoint_vec.setName(data_name)
+                viewer.pushGroup("/uw_checkpoint")
+                checkpoint_vec.load(viewer)
+                viewer.popGroup()
+                self._gvec.array[...] = checkpoint_vec.array_r
+                checkpoint_vec.destroy()
+                subdm.globalToLocal(self._gvec, self._lvec, addv=False)
+            else:
+                from underworld3.cython.petsc_discretisation import (
+                    petsc_dmplex_load_local_vector,
                 )
 
-            loaded_lvec.destroy()
-            self._sync_lvec_to_gvec()
+                loaded_lvec = petsc_dmplex_load_local_vector(
+                    self.mesh.dm, viewer, sectiondm, self.mesh.sf, data_name
+                )
+
+                source_section = sectiondm.getSection()
+                target_section = subdm.getSection()
+                source_array = loaded_lvec.array_r
+                target_array = self._lvec.array
+                p_start, p_end = target_section.getChart()
+
+                for point in range(p_start, p_end):
+                    target_dof = target_section.getDof(point)
+                    if target_dof == 0:
+                        continue
+
+                    source_dof = source_section.getDof(point)
+                    if source_dof < target_dof:
+                        raise RuntimeError(
+                            f"Checkpoint section has {source_dof} dofs for point "
+                            f"{point}, but target variable requires {target_dof}."
+                        )
+
+                    source_offset = source_section.getOffset(point)
+                    target_offset = target_section.getOffset(point)
+                    target_array[target_offset : target_offset + target_dof] = (
+                        source_array[source_offset : source_offset + target_dof]
+                    )
+
+                loaded_lvec.destroy()
+                self._sync_lvec_to_gvec()
         finally:
             self._lvec.setName(old_lvec_name)
             self._gvec.setName(old_vec_name)
@@ -1525,6 +1566,11 @@ class _BaseMeshVariable(Stateful, uw_object):
             sectiondm.destroy()
             indexset.destroy()
             subdm.destroy()
+
+        # The mesh-wide auxiliary vector packs every registered field and may
+        # still contain values from before this reload. Force the next residual
+        # assembly to rebuild it from the restored per-variable vectors.
+        self.mesh._stale_lvec = True
 
         return
 

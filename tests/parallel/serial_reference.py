@@ -42,7 +42,13 @@ import numpy as np
 import underworld3 as uw
 
 # Launcher variables that would make a spawned singleton try to join the parent job.
-_MPI_ENV_PREFIXES = ("OMPI_", "PMIX_", "PMI_", "MPI_", "HYDRA_", "I_MPI_", "SLURM_")
+# Every implementation we run under is named here, because a list that covers only
+# the one on your desk passes locally and fails on the other one: a copy of this
+# naming just the Open MPI family passed under Open MPI and aborted the child's
+# MPI_Init under MPICH, whose variables are PMI_* (#675). PRTE_/PRTERUN_/OPAL_ are
+# Open MPI 5's runtime, which is a separate family again from OMPI_.
+_MPI_ENV_PREFIXES = ("OMPI_", "PMIX_", "PMI_", "MPI_", "HYDRA_", "I_MPI_", "SLURM_",
+                     "PRTE_", "PRTERUN_", "OPAL_")
 
 _CACHE = {}
 
