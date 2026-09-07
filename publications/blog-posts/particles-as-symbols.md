@@ -1,26 +1,26 @@
 ---
 title: "Particles That Know Calculus"
-status: draft
+status: published
+published: 2026-06-03
+url: https://www.underworldcode.org/particles-in-underworld3/
 feeds_into: [paper-2]
 target: underworldcode.org (Ghost)
 tags: [underworld, particles, swarm, proxy, symbolic, geodynamics]
 ---
 
-# Particles as first-class participants in underworld3 symbolic algebra. 
+Lagrangian particles in a fixed-mesh, finite-element code can be used to carry material properties with the flow. Composition, strain history, stress memory, damage. Finite element solvers operate on fields defined on the mesh, so scattered data on particles always demand special treatment of some kind. In Underworld 1 and Underworld 2, we created dynamic integration schemes for particle swarms on an element-by-element basis. This option is not available with the [PETSc point-wise function approach](/how-underworld3-turns-sympy-into-c/) that UW3 uses. For this, we need to project particle data onto the available interpolating functions before each solve. 
 
-Lagrangian particles in a fixed mesh, finite element code can be used to carry material properties with the flow. Composition, strain history, stress memory, damage. Finite element solvers operate on fields defined on the mesh, not scattered data on particles. In Underworld 1 and Underworld 2, we created dynamic integration schemes for particle swarms on an element-by-element basis. This option is not available with the PETSc point wise-function approach. For this, we need to project particle data onto the available interpolating functions before each solve. 
+We also need to be able to represent the particle-based data and its derivatives symbolically for the underworld3 representation to be composable with mesh-based data when we construct the weak form. In Underworld3, we create `swarmVariables` as natural, symbolic objects to fulfil this requirement. 
 
-We also need to be able to represent the particle-based data and its derivatives symbolically for the underworld3 representation to be composable with mesh-based data when we contruct the weak form. 
-
-In Underworld3, swarm variables are symbolic objects. A particle-carried quantity has a `.sym` property that returns a SymPy symbol, just like a mesh variable. That symbol participates in the solver's weak form, the constitutive model, the boundary conditions. The solver does not know whether it is reading a field computed on the mesh or a field projected from particles. The distinction is invisible at the symbolic level.
+A swarm variable has a `.sym` property that returns a SymPy symbol, just like a mesh variable. That symbol participates in the solver's weak form, the constitutive model, the boundary conditions. The solver does not know whether it is reading a field computed on the mesh or a field projected from particles. The distinction is invisible at the symbolic level.
 
 ## The Problem
 
 A Stokes solver assembles the weak form by evaluating expressions at quadrature points inside each element. The expressions reference field variables defined at mesh nodes. If the viscosity depends on a material property stored on particles, that property must first be available as a mesh field.
 
-In UW2, the user managed this explicitly. You would call a projection routine before each solve, mapping particle data onto the mesh. Forget the projection, and the solver uses stale data. Call it too often, and you waste time on redundant work.
+In Underworld2, the user managed this explicitly. You would call a projection routine before each solve, mapping particle data onto the mesh. Forget the projection, and the solver would use stale data. 
 
-UW3 automates this through the proxy mesh variable pattern.
+UW3 automates this through a ***"proxy mesh variable"*** pattern.
 
 ## Swarm Variables
 
@@ -34,7 +34,7 @@ material_C = uw.swarm.SwarmVariable("material_C", swarm, size=1)
 material_C.array[:] = initial_values
 ```
 
-Each swarm variable is stored as a PETSc field on a `DMSwarm`. When particles migrate between processors, their variable data travels with them automatically. The `.array` property provides access to the underlying array, with the same NDArray_With_Callback mechanism described in the [arrays-in-sync post](/mesh-variables-and-petsc-vectors-keeping-arrays-in-sync/). Behind the `.array` is a `.data` variable that has non-dimensional, raw information in PETSc form.
+Each swarm variable is stored as a PETSc field on a `DMSwarm`. When particles migrate between processors, their variable data travels with them automatically. The `.array` property provides user-facing access to the underlying storage, with the same NDArray_With_Callback mechanism described in the [arrays-in-sync post](/mesh-variables-and-petsc-vectors-keeping-arrays-in-sync/). Underneath `.array` sits the `.data` property, which exposes the raw non-dimensional values PETSc operates on directly.
 
 A swarm variable can be scalar, vector, or tensor, or an arbitrary matrix shape:
 
@@ -44,7 +44,7 @@ stress_history = uw.swarm.SwarmVariable(
 )
 ```
 
-The `proxy_degree` parameter is optional and sets the polynomial degree of the companion mesh variable that UW3 uses to project particle data onto the mesh. It defaults to `1` (linear interpolation); higher values give a smoother proxy at the cost of more mesh degrees of freedom. Every swarm variable gets a proxy by default — you do not have to ask for one.
+The `proxy_degree` parameter is optional and sets the polynomial degree of the companion mesh variable that UW3 uses to project particle data onto the mesh. It defaults to `1` (linear interpolation); higher values give a smoother proxy at the cost of more mesh degrees of freedom. Every swarm variable gets a proxy by default: you do not have to ask for one, but you can ask *not* to proxy the variable (for example, it makes no sense to proxy a discrete-index variable)
 
 ## The Proxy Mesh Variable
 
@@ -75,7 +75,7 @@ UW3 handles this through lazy evaluation. The swarm variable tracks whether its 
 
 ```python
 # Modify particle data
-material_C.data[some_particles] = new_values   # marks proxy as stale
+material_C.array[some_particles] = new_values   # marks proxy as stale
 
 # Next access to .sym triggers projection
 viscosity_fn = eta_0 * sympy.exp(-material_C.sym)   # projection happens here
@@ -83,14 +83,15 @@ viscosity_fn = eta_0 * sympy.exp(-material_C.sym)   # projection happens here
 
 During solver assembly, the same symbol may be evaluated many times at different quadrature points. The projection happens once, on the first access after a modification. Subsequent accesses within the same solve use the cached mesh field.
 
-This means the user never calls a projection routine. Modify particle data, use the symbol, the framework will handle everything behind the scenes.
+This means the user never calls a projection routine. Modify particle data, use the symbol, the framework does the rest.
 
 ## Particles in Expressions
 
 Because `.sym` returns a standard SymPy symbol, particle data composes with everything else in UW3's symbolic layer:
 
 ```python
-# Material-dependent viscosity from particle data
+# material_C is a swarm variable (per-particle);
+# Temp is a mesh variable (per-node).
 viscosity_fn = eta_0 * sympy.exp(-material_C.sym * Temp.sym)
 
 # Use in constitutive model
@@ -100,7 +101,7 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 # It does not know that material_C.sym comes from particles
 ```
 
-The same pattern works for stress history in viscoelastic models, where the DFDt infrastructure stores previous stress values on swarm variables with proxies. The constitutive model reads `stress_star.sym` as part of its effective strain rate expression. The projection from particles to mesh is lazy, the symbol is SymPy, and the Jacobian derivation is automatic.
+The same pattern works for stress history in viscoelastic models. The DFDt infrastructure stores previous stress values on a swarm variable like the `stress_history` declared above, and the constitutive model reads its `.sym` as part of the effective strain-rate expression. The projection from particles to mesh is lazy, the symbol is SymPy, and the Jacobian derivation is automatic.
 
 This is the same design principle that applies throughout UW3: separate the physics from the numerics through symbolic expressions. For [constitutive models](/constitutive-models-in-symbolic-form/), the boundary is the stress tensor. For [time derivatives](/symbolic-time-derivatives-in-underworld3/), the boundary is the BDF/AM expression. For particles, the boundary is the proxy mesh variable symbol.
 
@@ -110,7 +111,7 @@ Migration involves MPI communication and KDTree reconstruction. If you are updat
 
 ```python
 with uw.synchronised_array_update():
-    swarm.particle_coordinates.data[...] = new_coords
+    swarm.particle_coordinates.array[...] = new_coords
     material_C.array[:] = new_values
 # Migration and cache invalidation happen here, once
 ```

@@ -12,7 +12,7 @@ Underworld3 now has two schemes for moving a scalar field with the flow. The sem
 
 The semi-Lagrangian scheme (`uw.systems.AdvDiffusionSLCN`) never assembles an advection operator. Each step it integrates the velocity backwards from every node to find where the material now at the node came from, interpolates the previous field there, and solves a diffusion problem with that history as the source. Nothing in the linear system depends on the velocity, so the system is symmetric and has no stability limit on the time step. What it costs is the trace-back: an interpolation of a P2 field at scattered points every step, which in parallel means finding which rank owns each departure point.
 
-The Eulerian scheme (`uw.systems.AdvDiffusionSUPG`) puts $\mathbf{u}\cdot\nabla\phi$ in the residual and integrates it in time with Crank-Nicolson by default, or BDF2 with `order=2`. On its own, the Galerkin form of the advection term produces oscillations wherever advection dominates diffusion in a cell. SUPG adds a term to the weak form that weights the strong residual along the streamline direction:
+The Eulerian scheme (`uw.systems.AdvDiffusion`) puts $\mathbf{u}\cdot\nabla\phi$ in the residual and integrates it in time with Crank-Nicolson by default, or BDF2 with `order=2`. On its own, the Galerkin form of the advection term produces oscillations wherever advection dominates diffusion in a cell. SUPG adds a term to the weak form that weights the strong residual along the streamline direction:
 
 $$
 \mathbf{F} _ 1 \mathrel{+}= \tau \, \mathbf{u} \, R, \qquad R = \dot\phi + \mathbf{u}\cdot\nabla\phi - f .
@@ -23,7 +23,7 @@ Because $R$ is the residual of the equation we are solving, this term vanishes a
 The two classes have the same constructor and the same `solve(timestep=dt)` call, so switching between them is one line:
 
 ```python
-adv = uw.systems.AdvDiffusionSUPG(mesh, T, V_fn=v.sym, order=1)   # or AdvDiffusionSLCN
+adv = uw.systems.AdvDiffusion(mesh, T, V_fn=v.sym, order=1)   # or AdvDiffusionSLCN
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0
 adv.solve(timestep=dt)

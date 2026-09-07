@@ -74,7 +74,7 @@ def run(name):
     T.data[:, 0] = uw.function.evaluate(T0_expr, T.coords).reshape(-1)
 
     if name == "supg":
-        adv = uw.systems.AdvDiffusionSUPG(mesh, T, v_expr, diffusivity=0.0,
+        adv = uw.systems.AdvDiffusion(mesh, T, v_expr, diffusivity=0.0,
                                           discontinuity_capturing=use_dc)
     else:
         adv = uw.systems.AdvDiffusionSLCN(mesh, T, v_expr, order=1)

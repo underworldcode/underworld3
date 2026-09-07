@@ -68,7 +68,7 @@ else:
     stokes.add_dirichlet_bc((0.0, 0.0), "Lower")
 stokes.bodyforce = body * T.sym[0]
 
-Solver = {"supg": uw.systems.AdvDiffusionSUPG, "slcn": uw.systems.AdvDiffusionSLCN}[scheme]
+Solver = {"supg": uw.systems.AdvDiffusion, "slcn": uw.systems.AdvDiffusionSLCN}[scheme]
 adv = Solver(mesh, u_Field=T, V_fn=v)
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0

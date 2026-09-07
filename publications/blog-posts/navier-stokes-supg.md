@@ -10,13 +10,13 @@ Underworld3 has had a Navier-Stokes solver for a while, built on the semi-Lagran
 
 ## Why a second solver
 
-Earlier this year we added an Eulerian, implicit SUPG solver for scalar transport (`uw.systems.AdvDiffusionSUPG`) as a drop-in alternative to the semi-Lagrangian scheme. On the mantle-convection benchmarks the two schemes give equivalent answers, but the Eulerian one costs about a tenth as much per step, is exactly conservative, and gives the same answer on any number of processors. The semi-Lagrangian scheme keeps its advantage at large Courant numbers, where the grid scheme's Crank-Nicolson step starts to ring. So we now recommend SUPG for convection and the semi-Lagrangian scheme when the time step is much larger than the cell-crossing time.
+Earlier this year we added an Eulerian, implicit SUPG solver for scalar transport (`uw.systems.AdvDiffusion`) as a drop-in alternative to the semi-Lagrangian scheme. On the mantle-convection benchmarks the two schemes give equivalent answers, but the Eulerian one costs about a tenth as much per step, is exactly conservative, and gives the same answer on any number of processors. The semi-Lagrangian scheme keeps its advantage at large Courant numbers, where the grid scheme's Crank-Nicolson step starts to ring. So we now recommend SUPG for convection and the semi-Lagrangian scheme when the time step is much larger than the cell-crossing time.
 
 The scalar solver has one limitation that matters for us: it moves scalars. The semi-Lagrangian scheme extends to vectors and tensors with no extra work because the trace-back is the same for every component. A grid scheme needs the vector residual and a stabilisation parameter for the vector equation, and that extra work is what stands between the scalar solver and a stress-transport scheme for viscoelastic materials. Momentum is the natural first vector problem. It has exact solutions and a literature of benchmarks, and it is the problem where the advection term is nonlinear, so it exercises everything the viscoelastic case will need.
 
 ## The residual, and what goes into the stabilisation
 
-The solver is `uw.systems.NavierStokesSUPG`. It is a subclass of the Stokes saddle-point solver, so it inherits the block preconditioning, the constitutive models, and the boundary condition machinery. What it adds is a momentum residual with the material derivative in it:
+The solver is `uw.systems.NavierStokes`. It is a subclass of the Stokes saddle-point solver, so it inherits the block preconditioning, the constitutive models, and the boundary condition machinery. What it adds is a momentum residual with the material derivative in it:
 
 $$
 \mathbf{f} _ 0 = \rho \left( \dot{\mathbf{u}} + (\mathbf{a}\cdot\nabla)\mathbf{u} \right) - \mathbf{f},
@@ -39,7 +39,7 @@ The point of this is not the memory saved. A stress that depends on its own hist
 The momentum equation is nonlinear in the velocity. The solver lets you choose how to treat that, with the `advection` argument:
 
 ```python
-ns = uw.systems.NavierStokesSUPG(mesh, v, p, rho=1.0, order=1,
+ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1,
                                  advection="extrapolated")
 ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
 ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0 / Re
