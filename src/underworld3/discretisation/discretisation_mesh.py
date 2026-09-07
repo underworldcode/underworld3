@@ -3305,36 +3305,37 @@ class Mesh(Stateful, uw_object):
         indexed by this rank's cell-stratum order, so a direct assignment is
         correct on every rank.
 
-        ``var.data`` is touched on EVERY rank before the empty-partition test,
-        which is load-bearing. Its first access lazily reaches
-        ``MeshVariable._set_vec``, and that calls ``dm.createSubDM`` and
-        ``createGlobalVector`` -- both collective on the DM. A rank owning no
-        cells used to short-circuit on ``radii.size == 0`` and return without
-        ever touching it, so it skipped two collectives its populated peers
-        made and the job diverged (#698). Reduce, or in this case ALLOCATE,
-        before branching.
+        This routine has TWO collectives in it and therefore no early return,
+        which is the opposite of what its previous docstring claimed (#698):
 
-        Beyond that first access this stays rank-local: ``var.coords`` is
-        deliberately not read, because it triggers the collective
-        ``_get_coords_for_basis`` from inside a branch that only some ranks
-        take."""
+        * the first ``var.data`` access lazily reaches ``MeshVariable._set_vec``,
+          which calls ``dm.createSubDM`` and ``createGlobalVector``;
+        * assigning into ``var.data`` fires the array's write-back callback,
+          ``pack_raw_data_to_petsc``.
+
+        A rank owning no cells used to short-circuit on ``radii.size == 0`` and
+        return before either, while its populated peers made both. Measured on a
+        region submesh at np=8 with cells per rank ``[12, 11, 0, 19, 0, 0, 0, 0]``:
+        the populated ranks sat in ``pack_raw_data_to_petsc`` and the job never
+        finished. A starved rank now walks the same path writing a zero-length
+        slice.
+
+        ``var.coords`` is still deliberately not read: it triggers the collective
+        ``_get_coords_for_basis``, and reading it only on some ranks would put a
+        third conditional collective back in."""
         # `_cell_radii` is PETSc's volume**(1/dim), a property of each cell, so
         # the values here do not depend on the partition -- and neither does the
         # Nitsche penalty gamma*mu/h that consumes them under the default
         # local_h=True. It was a kd-tree distance to the nearest centroid among
         # THIS RANK's centroids, which near a seam could simply be absent (#694).
-        # FIRST, on every rank: this allocates the variable's vectors through
-        # two DM collectives (see the docstring). It must not sit behind the
-        # empty-partition test.
-        data = var.data
-
+        # There is NO early return here, and that is the point. Both steps below
+        # are collective, so a rank owning no cells has to walk through them
+        # writing nothing rather than skipping them (#698).
+        data = var.data                                   # allocates: createSubDM + createGlobalVector
         radii = numpy.asarray(self._cell_radii).reshape(-1)
-        # Empty partition (no local cells): nothing left to fill on this rank.
-        if radii.size == 0 or data.shape[0] == 0:
-            return
-        # Assign over the common length. In practice these match exactly (same
-        # local cell set / ordering); the slice only guards a stray off-by-ghost
-        # mismatch.
+
+        # `n` is 0 on a starved rank. The assignment still fires the array's
+        # write-back callback, which is the second collective.
         n = min(data.shape[0], radii.shape[0])
         data[:n, 0] = radii[:n]
 
