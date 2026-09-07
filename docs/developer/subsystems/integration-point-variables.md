@@ -61,7 +61,8 @@ agrees with what the assembler used at that point; an interpolant or a
 projection would report a different viscosity from the one the solver saw.
 Points no cell owns take the nearest integration point on the rank.
 
-Evaluating the variable at its own `coords` returns its own `data` exactly.
+Evaluating the variable at its own `coords` returns its own `data` to round-off
+(the point selection is exact; the evaluator pipeline can add an ulp).
 
 If a smooth nodal picture is wanted (a plot, a diagnostic), project the
 symbol onto a `MeshVariable` explicitly with `SNES_Projection`; the

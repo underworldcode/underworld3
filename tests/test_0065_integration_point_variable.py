@@ -60,6 +60,7 @@ def test_layout_and_geometry(kind):
     assert np.allclose(cent, np.asarray(mesh._centroids)[:n], atol=1e-12)
 
 
+@pytest.mark.skipif(uw.mpi.size > 1, reason="the hand quadrature sum is over the rank's local cells; serial only")
 def test_assembler_reads_the_stored_values():
     """Integral of random point data == the quadrature sum done by hand."""
     mesh = _mesh("triangle")
@@ -111,18 +112,22 @@ def test_evaluate_is_nearest_point_of_owning_cell():
     rng = np.random.default_rng(2)
     h.data[:, 0] = rng.uniform(size=h.data.shape[0])
 
-    # Exact at its own points.
+    # Exact at its own points (the index selection is exact; the evaluator
+    # pipeline can add an ulp of round-off on the way out).
     own = uw.function.evaluate(h.sym[0], np.asarray(h.coords)).reshape(-1)
-    assert np.array_equal(own, h.data[:, 0])
+    assert np.allclose(own, h.data[:, 0], rtol=0, atol=1e-14)
 
-    # Nearest point of the owning cell elsewhere.
+    # Nearest point of the owning cell elsewhere. In parallel keep only the
+    # points this rank owns (the locator returns -1 for the others).
     pts = rng.uniform(0.05, 0.95, size=(300, 2))
-    cells = mesh._robust_owning_cells(pts)
+    cells = np.asarray(mesh._robust_owning_cells(pts)).reshape(-1)
+    pts, cells = pts[cells >= 0], cells[cells >= 0]
+    assert len(pts) > 20
     ipc = h.integration_points
     j = ((ipc[cells] - pts[:, None, :]) ** 2).sum(-1).argmin(1)
     expected = h.cell_data[cells, j, 0]
     got = uw.function.evaluate(h.sym[0], pts).reshape(-1)
-    assert np.array_equal(got, expected)
+    assert np.allclose(got, expected, rtol=0, atol=1e-14)
 
     # Negative control: a nodal P1 interpolant of the same data does not
     # match this definition (it smooths), so the test discriminates.

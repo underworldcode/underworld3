@@ -79,7 +79,9 @@ def _rotating_gaussian(mesh, kind, dt, nsteps):
     E = uw.discretisation.MeshVariable(f"E_{kind}", mesh, 1, degree=2)
     E.data[:, 0] = T.data[:, 0] - exact
     l2 = np.sqrt(uw.maths.Integral(mesh, E.sym[0] ** 2).evaluate())
-    return l2, T.data[:, 0].max()
+    from mpi4py import MPI
+    peak = uw.mpi.comm.allreduce(float(T.data[:, 0].max()), op=MPI.MAX)  # global, not rank-local
+    return l2, peak
 
 
 def test_undersampled_rule_is_refused():
