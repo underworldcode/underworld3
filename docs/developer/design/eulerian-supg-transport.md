@@ -690,6 +690,57 @@ viscosity is such an expression, which is where the cylinder drag went (next sec
 on this branch (`petsc_maths.pyx`, the boundary integral sets them on its sandbox DS);
 `tests/test_0503_integral_expression_constants.py`.
 
+## The DDt as the transport plugin
+
+Louis asked (2026-09-06) whether the history manager could be the object that decides
+how transport is done, so that one solver takes SUPG where it is needed and a
+semi-Lagrangian history where it is not. It can, and it now is. Every solver that owns an
+unknown composes its residual from three contributions of its `DuDt`:
+
+| contribution | `EulerianSUPG` | `SemiLagrangian`, `Eulerian`, `Lagrangian` |
+|---|---|---|
+| `time_derivative()` | $(\psi^{n+1}-\psi^n)/\Delta t$ (theta rule) or the BDF stencil over the history | the same, over its own history |
+| `advection()` | $\sum_k w_k\,(\mathbf{a}_k\cdot\nabla)\psi^{(k)}$, entry by entry of the unknown | zero (the history carries it) |
+| `stabilisation_flux(R)` | $\tau\,R\otimes\mathbf{a}$, one flux row per component of $R$ | zero |
+| `states()`, `spatial_weights()` | the levels and the weights $w_k$ of the scheme, for the solver's own flux | the same |
+
+The scalar solver assembles $f_0 = \dot\phi + \mathbf{u}\cdot\nabla\phi - f$ and
+$\mathbf{f}_1 = \sum_k w_k\kappa\nabla\phi^{(k)} + \tau R\mathbf{u}$ from these; the
+Navier-Stokes solver multiplies the first two by $\rho$, adds $\nabla p$ to the residual
+the flux sees, and keeps the viscous flux of the scheme and the pressure as its own. The
+manager owns what the transport needs: the advecting velocity as data (`V_fn`, and
+`V_fn_history` for the stored levels, which is the stored velocity itself for momentum),
+the timestep as a runtime constant (`delta_t`, written by every flavour's
+`update_pre_solve`), the time scheme, the diffusivity that $\tau$ sees (set by the solver
+from its constitutive model), and the stabilisation knobs. The nonlinearity of a
+self-advected unknown lives in what `V_fn` is: the extrapolated field, the Picard iterate,
+or the unknown's own symbol for Newton.
+
+What this bought, measured: the refactor moved no physics. The Péclet-weight rows of
+Kovasznay at 1/16 and 1/32 (1.596e-4, 2.082e-5), the vortex decay at 1/32 (5.272e-5,
+energy ratio 0.960789) and the Blankenbach box (42.8675 / 4.9204 / 4.8840) reproduce to
+every printed digit, and the two-rank tests keep their serial constants. The cylinder at
+1/20 with LU keeps its mean drag, lift extrema, reaction drag and Strouhal number to the
+printed digits (3.0532, 0.9193 / -0.9652, 3.1219, 0.2964) while the drag peak moves from
+3.0797 to 3.0802 and the pressure difference at peak lift from 2.4134 to 2.4125: the
+assembled expressions are the same terms in a different order, and a shedding wake
+amplifies the last bits over 1400 steps where a steady state does not. A `SemiLagrangian` manager dropped into `AdvDiffusionSUPG` reproduces
+`AdvDiffusionSLCN` to the solver tolerance on pure advection (test_1057): the solver's
+equation with zero advection and zero stabilisation is the semi-Lagrangian one. A tensor
+unknown, flattened to its independent components on a `MATRIX` variable, is transported
+through the multi-component solver with a residual that is nothing but the manager's
+terms (test_1057, uniform translation of a Gaussian stress to 5%). That is stress
+transport without rotation; the rotation of a transported tensor is a constitutive
+matter and stays out of the transport.
+
+Two things the plain `Eulerian` manager keeps: with a velocity it still applies the
+explicit splitting correction to the history (its `_advection_mode` is `"split"`), which
+is what the Richards and Darcy solvers rely on; `EulerianSUPG` sets the mode to
+`"assembled"` and the solver's residual carries the advection instead. And the
+semi-Lagrangian Stokes stress history (`DFDt` on a viscoelastic Stokes solve) is
+untouched: it advects a stress that is not an unknown of the solve, which is a different
+job from the one the contract describes.
+
 ## What the timestep estimate means
 
 The cell-crossing time is not a stability limit for either scheme and says

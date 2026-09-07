@@ -36,32 +36,15 @@ import underworld3.timing as timing
 from underworld3.systems import SNES_Scalar
 from underworld3.utilities._api_tools import Template
 from underworld3.function import expression as public_expression
+from underworld3.systems.ddt import _DDtBase, _as_row_vector
 from underworld3.systems.ddt import Eulerian as Eulerian_DDt
+from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.solvers import (
     _advective_diffusive_dt,
     _dimensionalise_dt,
     _invalidate_solution_cache,
     _nondimensionalise_timestep,
 )
-
-
-def _as_row_vector(V_fn, dim):
-    """Coerce a velocity expression to a ``(1, dim)`` sympy row Matrix."""
-    if isinstance(V_fn, uw.discretisation.MeshVariable):
-        V_fn = V_fn.sym
-    if isinstance(V_fn, sympy.MatrixBase):
-        if V_fn.shape == (1, dim):
-            return V_fn
-        if V_fn.shape == (dim, 1):
-            return V_fn.T
-        raise ValueError(
-            f"V_fn has shape {V_fn.shape} but the mesh is {dim}-D; expected a "
-            f"(1, {dim}) row vector such as `v.sym` of a vector MeshVariable."
-        )
-    raise ValueError(
-        f"V_fn must be a (1, {dim}) sympy Matrix or a vector MeshVariable, "
-        f"not {type(V_fn).__name__}."
-    )
 
 
 class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
@@ -196,8 +179,16 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         consistent value is 1.0, which is taken when ``theta`` is not given
         and refused when 0.5 is asked for explicitly.
     verbose : bool, default False
-    DuDt : Eulerian, optional
-        A pre-built history manager (order at least ``order``, no ``V_fn``).
+    DuDt : DDt history manager, optional
+        The transport plugin. By default an
+        :class:`~underworld3.systems.ddt.EulerianSUPG` built from ``V_fn``,
+        ``order`` and ``theta``. Any history manager that follows the DDt
+        transport contract (``time_derivative``, ``advection``,
+        ``stabilisation_flux``) can be supplied instead: a
+        :class:`~underworld3.systems.ddt.SemiLagrangian` history turns this
+        solver into a semi-Lagrangian scheme on the field history, with no
+        assembled advection and no stabilisation. A supplied manager fixes
+        ``order`` and ``theta``.
     restore_points_func, monotone_mode, old_frame_traceback, DFDt
         Semi-Lagrangian arguments, accepted for drop-in compatibility and
         ignored with a warning: there is no trace-back here.
@@ -263,7 +254,6 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         # orders 2 and 3 is assembled by the same code but is not offered:
         # its bounded stability region blows up on an advection operator
         # from about Courant 1 (design note, integrator study).
-        integrator = "am" if order == 1 else "bdf"
         if theta != 1.0 and order != 1:
             raise ValueError(
                 "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
@@ -275,54 +265,34 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         super().__init__(mesh, u_Field, u_Field.degree, verbose, DuDt=DuDt, DFDt=None)
 
         self.f = sympy.Matrix.zeros(1, 1)
-        self._integrator = integrator
-        self._time_order = order
-        self._theta = theta
-        self._V_fn = _as_row_vector(V_fn, mesh.dim)
-
-        tag = self.instance_number
-        self._delta_t = public_expression(
-            rf"\Delta t_{{{tag}}}", 1.0, "Eulerian advection-diffusion timestep")
         self._last_timestep = None
         self._last_change_rate = None
 
-        # SUPG on/off and the three tau weights are runtime constants: the
-        # compiled kernels read them from PETSc's constants[] array.
-        self._supg_weight = public_expression(
-            rf"w^{{\mathrm{{SUPG}}}}_{{{tag}}}", 1.0, "SUPG term weight (0 = Galerkin)")
-        self._peclet_weight = float(peclet_weight)
-        self._tau_weights = [
-            public_expression(rf"C^{{\tau}}_{{t,{tag}}}", 2.0, "tau transient weight"),
-            public_expression(rf"C^{{\tau}}_{{u,{tag}}}", 2.0, "tau advective weight"),
-            public_expression(rf"C^{{\tau}}_{{\kappa,{tag}}}", 4.0, "tau diffusive weight"),
-        ]
-
+        # The transport plugin: the history manager owns the time scheme, the
+        # advecting velocity, the assembled advection and the stabilisation.
         if DuDt is None:
-            self.Unknowns.DuDt = Eulerian_DDt(
+            self.Unknowns.DuDt = EulerianSUPG_DDt(
                 self.mesh,
                 u_Field,
+                V_fn,
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
                 continuous=u_Field.continuous,
-                V_fn=None,
+                order=order,
                 theta=theta,
                 varsymbol=u_Field.symbol,
                 verbose=verbose,
                 bcs=self.essential_bcs,
-                order=order,
                 smoothing=0.0,
+                peclet_weight=peclet_weight,
             )
         else:
-            if DuDt.order < order:
-                raise ValueError(
-                    f"DuDt supplied is order {DuDt.order} but order {order} was requested."
-                )
-            if getattr(DuDt, "V_fn", None) is not None:
-                raise ValueError(
-                    "DuDt must be built with V_fn=None: advection is assembled "
-                    "implicitly by this solver, not as an explicit history correction."
-                )
+            if not isinstance(DuDt, _DDtBase):
+                raise TypeError(f"DuDt must be a DDt history manager, not {type(DuDt).__name__}.")
+            if sympy.Matrix(DuDt.psi_fn).shape != u_Field.sym.shape:
+                raise ValueError("DuDt tracks a different unknown from u_Field.")
             self.Unknowns.DuDt = DuDt
+        self._theta = float(getattr(self.DuDt, "theta", theta))
 
         # Diffusivity lives on the constitutive model, as for every scalar
         # solver; kappa = 0 until the user sets it.
@@ -420,11 +390,11 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         super()._object_viewer()
         scheme = {("am", 1): f"Adams-Moulton order 1, theta = {self._theta}",
                   ("bdf", 1): "backward Euler"}.get(
-            (self._integrator, self._time_order),
-            f"{self._integrator.upper()} order {self._time_order}")
+            (self.integrator, self.order),
+            f"{self.integrator.upper()} order {self.order}")
         display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{v} = $ " + self._V_fn._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self._delta_t._repr_latex_()))
+        display(Latex(r"$\quad\mathbf{v} = $ " + self.V_fn._repr_latex_()))
+        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
         display(Latex(rf"$\quad$ time scheme: {scheme}"))
 
     # ------------------------------------------------------------------
@@ -434,12 +404,12 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     @property
     def integrator(self) -> str:
         """The multistep family in use: ``"am"`` (the theta rule) at order 1, ``"bdf"`` above."""
-        return self._integrator
+        return self.DuDt.integrator
 
     @property
     def order(self) -> int:
         """Requested order of the time integration."""
-        return self._time_order
+        return self.DuDt.order
 
     @property
     def theta(self) -> float:
@@ -454,7 +424,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     @theta.setter
     def theta(self, value):
         value = float(value)
-        if value != 1.0 and self._time_order != 1:
+        if value != 1.0 and self.order != 1:
             raise ValueError(
                 "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
                 "backward Euler); order 2 and 3 take theta=1.0."
@@ -471,7 +441,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         the semi-Lagrangian solver. A new value updates a runtime constant of
         the compiled kernels; nothing is recompiled.
         """
-        return self._delta_t
+        return self.DuDt.delta_t
 
     @delta_t.setter
     def delta_t(self, value):
@@ -479,17 +449,17 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         if dt <= 0.0:
             raise ValueError(f"timestep must be positive, not {dt}.")
         if dt != self._last_timestep:
-            self._delta_t.sym = dt
+            self.DuDt.delta_t.sym = dt
             self._last_timestep = dt
 
     @property
     def V_fn(self):
-        """Advecting velocity, ``(1, dim)``."""
-        return self._V_fn
+        """Advecting velocity, ``(1, dim)`` (the history manager's)."""
+        return self.DuDt.V_fn
 
     @V_fn.setter
     def V_fn(self, value):
-        self._V_fn = _as_row_vector(value, self.mesh.dim)
+        self.DuDt.V_fn = _as_row_vector(value, self.mesh.dim)
         self.is_setup = False
 
     @property
@@ -502,78 +472,50 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._f = sympy.Matrix((value,))
         self._needs_function_rewire = True
 
+    # The stabilisation knobs live on the history manager; these pass through.
+
     @property
     def peclet_weight(self) -> float:
         """The critical cell Péclet number of the weight (constructor choice; 0 = uniform)."""
-        return self._peclet_weight
+        return self.DuDt.peclet_weight
 
     @property
     def supg_weight(self) -> float:
         """Scale of the SUPG term: 1 (default) or 0 for plain Galerkin. No rebuild."""
-        return float(self._supg_weight.sym)
+        return self.DuDt.supg_weight
 
     @supg_weight.setter
     def supg_weight(self, value):
-        self._supg_weight.sym = float(value)
+        self.DuDt.supg_weight = value
 
     @property
     def tau_weights(self):
         r"""The weights :math:`(C_t, C_u, C_\kappa)` of the three terms in :math:`\tau`."""
-        return tuple(float(w.sym) for w in self._tau_weights)
+        return self.DuDt.tau_weights
 
     @tau_weights.setter
     def tau_weights(self, values):
-        ct, cu, ck = (float(v) for v in values)
-        self._tau_weights[0].sym = ct
-        self._tau_weights[1].sym = cu
-        self._tau_weights[2].sym = ck
+        self.DuDt.tau_weights = values
 
     # ------------------------------------------------------------------
-    # Residual pieces (raw field symbols only, so the Jacobian sees them)
+    # The residual, composed from the history manager's contributions
     # ------------------------------------------------------------------
-
-    def _states(self):
-        r"""``[phi^{n+1}, phi^{n}, phi^{n-1}, ...]`` as scalar field symbols."""
-        return [self.u.sym[0]] + [ps.sym[0] for ps in self.DuDt.psi_star]
-
-    def _spatial_weights(self):
-        """Weight of the spatial operator at each time level of ``_states``."""
-        n = len(self.DuDt.psi_star)
-        if self._integrator == "bdf":
-            return [sympy.Integer(1)] + [sympy.Integer(0)] * n
-        return self.DuDt.am_coefficient_expressions[: n + 1]
-
-    def _time_derivative(self):
-        if self._integrator == "bdf":
-            return self.DuDt.bdf()[0] / self._delta_t
-        phi_new, phi_old = self._states()[:2]
-        return (phi_new - phi_old) / self._delta_t
-
-    def _advection(self):
-        dim = self.mesh.dim
-        u = self._V_fn
-        total = sympy.Integer(0)
-        for w, phi in zip(self._spatial_weights(), self._states()):
-            if w == 0:
-                continue
-            grad = self.mesh.vector.gradient(phi)
-            total = total + w * sum(u[0, i] * grad[0, i] for i in range(dim))
-        return total
 
     def _diffusive_flux(self):
         r"""``(1, dim)`` flux :math:`\sum_k w_k\,\nabla\phi^{(k)}\cdot\kappa` from the constitutive tensor."""
         dim = self.mesh.dim
         c = self.constitutive_model.c
         total = sympy.zeros(1, dim)
-        for w, phi in zip(self._spatial_weights(), self._states()):
+        for w, phi in zip(self.DuDt.spatial_weights(), self.DuDt.states()):
             if w == 0:
                 continue
-            grad = self.mesh.vector.gradient(phi)
+            grad = self.mesh.vector.gradient(phi[0])
             total = total + w * (grad * c)
         return total
 
     def _strong_residual(self):
-        return self._time_derivative() + self._advection() - self._f[0]
+        """Time derivative, advection and source, as a ``(1, 1)`` matrix."""
+        return self.DuDt.time_derivative() + self.DuDt.advection() - self._f
 
     def _scalar_diffusivity(self):
         kappa = self.constitutive_model.Parameters.diffusivity
@@ -584,39 +526,19 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
             )
         return kappa
 
-    def _tau(self):
-        dim = self.mesh.dim
-        u = self._V_fn
-        u_mag2 = sum(u[0, i] ** 2 for i in range(dim))
-        h = self.mesh.cell_size()
-        kappa = self._scalar_diffusivity()
-        if self._integrator == "bdf":
-            c0 = self.DuDt.bdf_coefficient_expressions[0]
-        else:
-            c0 = sympy.Integer(1)
-        ct, cu, ck = self._tau_weights
-        transient = (ct * c0 / self._delta_t) ** 2
-        advective = (cu * sympy.sqrt(u_mag2) / h) ** 2
-        diffusive = (ck * kappa / h ** 2) ** 2
-        weight = self._supg_weight
-        if self._peclet_weight > 0.0:
-            # The cell-Peclet weight Pe^2 / (Pe^2 + Pe_c^2), Pe = |u| h / 2 kappa, written
-            # without dividing by kappa (1 for pure advection): the term is off where a
-            # cell is diffusion-dominated, where it costs a fixed multiple of the Galerkin
-            # error and is not needed, and full where advection dominates (measured on
-            # the Navier-Stokes solver's benchmarks, design note).
-            uh2 = u_mag2 * h ** 2
-            weight = weight * uh2 / (uh2 + 4 * self._peclet_weight ** 2 * kappa ** 2 + 1.0e-30)
-        return weight / sympy.sqrt(transient + advective + diffusive + 1.0e-30)
+    def _stabilisation_flux(self):
+        if hasattr(self.DuDt, "diffusivity"):
+            self.DuDt.diffusivity = self._scalar_diffusivity()
+        return self.DuDt.stabilisation_flux(self._strong_residual())
 
     F0 = Template(
         r"f_0(\phi)",
-        lambda self: sympy.Matrix([[self._strong_residual()]]),
+        lambda self: self._strong_residual(),
         "Strong residual of the time scheme: time derivative, advection and source.",
     )
     F1 = Template(
         r"\mathbf{F}_1(\phi)",
-        lambda self: self._diffusive_flux() + self._tau() * self._strong_residual() * self._V_fn,
+        lambda self: self._diffusive_flux() + self._stabilisation_flux(),
         "Diffusive flux of the time scheme plus the SUPG flux tau R u.",
     )
 
@@ -673,7 +595,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
         if basis == "resolution":
             dt_estimate, dt_adv, dt_diff = _advective_diffusive_dt(
-                self.constitutive_model.K, self._V_fn, self.mesh,
+                self.constitutive_model.K, self.V_fn, self.mesh,
                 direction_aware=direction_aware, percentile=percentile)
             self.dt_adv = dt_adv if not np.isinf(dt_adv) else 0.0
             self.dt_diff = dt_diff if not np.isinf(dt_diff) else 0.0
@@ -712,7 +634,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         n = coords.shape[0]
         if n:
             grad = np.asarray(compute_clement_gradient_at_nodes(self.u), dtype=float).reshape(n, -1)
-            vel = uw.function.evaluate(self._V_fn, coords)
+            vel = uw.function.evaluate(self.V_fn, coords)
             vel = np.asarray(getattr(vel, "magnitude", vel), dtype=float).reshape(n, -1)
             local = float(np.abs((vel[:, :grad.shape[1]] * grad).sum(axis=1)).max())
         else:

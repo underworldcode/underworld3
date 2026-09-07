@@ -58,6 +58,21 @@ $\rho|\mathbf{a}|h/\eta$ exceeds one.
 first solve, and with `basis="resolution"`, it returns the Stokes solver's
 cell-crossing time.
 
+## The history manager is the transport plugin
+
+The momentum transport is not written into the solver. Its history manager
+(`ns.DuDt`, an `EulerianSUPG` on the velocity) contributes the time derivative, the
+implicit advection $\sum_k w_k (\mathbf{a}_k\cdot\nabla)\mathbf{u}^{(k)}$ and the
+stabilisation flux $\tau\,\mathbf{R}\otimes\mathbf{a}$; the solver adds the density,
+the pressure gradient and the body force to form $\mathbf{R}$, the viscous flux of the
+scheme, and the pressure. The advecting velocity is data on the manager: the solver sets
+it to the extrapolated field, the latest Picard iterate, or the unknown itself according
+to `advection`, and names the stored velocity as the carrier of the stored levels
+(`DuDt.V_fn_history`). The stabilisation knobs (`supg_weight`, `tau_weights`,
+`tau_shape`, `peclet_weight`) and `delta_t` live on the manager and the solver's
+properties pass through. The scalar solver `AdvDiffusionSUPG` composes the same three
+terms from the same class, and a semi-Lagrangian manager can be supplied to either.
+
 ## Further reading
 
 - Design note and measurements: `docs/developer/design/eulerian-supg-transport.md`

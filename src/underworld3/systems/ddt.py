@@ -541,11 +541,42 @@ class _DDtBase(uw_object):
 
     def _init_history_tracking(self, order):
         """Deferred-initialisation and variable-dt bookkeeping attributes."""
+        # The timestep as a runtime constant of the compiled kernels: every
+        # flavour writes it through the ``_dt`` property, so a solver that
+        # composes its residual from :meth:`time_derivative` never recompiles
+        # when the step changes. Created non-zero (#696).
+        self._delta_t = _UWexpression(
+            rf"\Delta t_{{{self.instance_number}}}", 1.0, "DDt timestep")
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
         self._n_solves_completed = 0
         self._dt = None  # current timestep (set by solver or update_pre_solve)
         self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
+
+    @property
+    def _dt(self):
+        return self._dt_value
+
+    @_dt.setter
+    def _dt(self, value):
+        self._dt_value = value
+        if value is None:
+            return
+        try:
+            dt = float(_as_float(value))
+        except Exception:
+            return
+        if dt > 0.0:
+            self._delta_t.sym = dt
+
+    @property
+    def delta_t(self):
+        r"""The timestep :math:`\Delta t` as a UW expression (a runtime constant).
+
+        Written by ``update_pre_solve`` and by a solver's ``delta_t`` setter;
+        read by :meth:`time_derivative`.
+        """
+        return self._delta_t
 
     def _init_coefficient_expressions(self, order, theta, with_exp):
         """Create BDF/AM (and optionally ETD-2 exp) coefficient UWexpressions.
@@ -730,6 +761,88 @@ class _DDtBase(uw_object):
     def initiate_history_fn(self):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
+
+    # ----- The transport contract -----
+    #
+    # A solver that owns an unknown composes its residual from these terms
+    # and never asks which flavour it holds:
+    #
+    #     F0 = time_derivative() + advection() - f
+    #     F1 = <the solver's own flux of the levels in spatial_weights()>
+    #          + stabilisation_flux(R)
+    #
+    # The history flavours (Symbolic, Eulerian, SemiLagrangian, Lagrangian)
+    # carry their transport in the history itself, so advection() and the
+    # stabilisation flux are zero for them; EulerianSUPG assembles both.
+
+    @property
+    def integrator(self) -> str:
+        """``"am"`` (the theta rule on the spatial terms) at order 1, ``"bdf"`` above."""
+        return "am" if self.order == 1 else "bdf"
+
+    def _shape(self):
+        psi = self.psi_fn
+        return psi.shape if isinstance(psi, sympy.MatrixBase) else (1, 1)
+
+    def states(self):
+        r"""``[psi^{n+1}, psi^{n}, psi^{n-1}, ...]`` as matrices of the unknown's shape."""
+        return [sympy.Matrix(self.psi_fn)] + [sympy.Matrix(h) for h in self._history_syms()]
+
+    def spatial_weights(self):
+        """Weight of a spatial operator at each level of :meth:`states`.
+
+        ``[1, 0, ...]`` for the BDF family (every spatial term at n+1); the
+        Adams-Moulton weights for the theta rule.
+        """
+        n = len(self.psi_star)
+        if self.integrator == "bdf":
+            return [sympy.Integer(1)] + [sympy.Integer(0)] * n
+        return list(self.am_coefficient_expressions[: n + 1])
+
+    def time_derivative(self):
+        r"""The time derivative of the scheme, a matrix of the unknown's shape.
+
+        ``(psi^{n+1} - psi^{n}) / dt`` for the theta rule, the BDF stencil over
+        the history divided by ``dt`` above order 1, with ``dt`` the runtime
+        constant :attr:`delta_t`.
+        """
+        if self.integrator == "am":
+            new, old = self.states()[:2]
+            return (new - old) / self._delta_t
+        return sympy.Matrix(self.bdf()) / self._delta_t
+
+    def advection(self):
+        """The assembled advection term: zero for a history-carrying flavour."""
+        return sympy.zeros(*self._shape())
+
+    def stabilisation_flux(self, R):
+        r"""The stabilisation flux for a strong residual ``R``: zero here.
+
+        Shape ``(len(R), dim)``: one flux row per component of ``R``.
+        """
+        mesh = getattr(self, "mesh", None)
+        if mesh is None:
+            raise TypeError(f"{type(self).__name__} has no mesh: no flux shape to return.")
+        return sympy.zeros(len(sympy.Matrix(R)), mesh.dim)
+
+
+def _as_row_vector(V_fn, dim):
+    """Coerce a velocity expression to a ``(1, dim)`` sympy row Matrix."""
+    if isinstance(V_fn, uw.discretisation.MeshVariable):
+        V_fn = V_fn.sym
+    if isinstance(V_fn, sympy.MatrixBase):
+        if V_fn.shape == (1, dim):
+            return V_fn
+        if V_fn.shape == (dim, 1):
+            return V_fn.T
+        raise ValueError(
+            f"V_fn has shape {V_fn.shape} but the mesh is {dim}-D; expected a "
+            f"(1, {dim}) row vector such as `v.sym` of a vector MeshVariable."
+        )
+    raise ValueError(
+        f"V_fn must be a (1, {dim}) sympy Matrix or a vector MeshVariable, "
+        f"not {type(V_fn).__name__}."
+    )
 
 
 class Symbolic(_DDtBase):
@@ -1073,11 +1186,16 @@ class Eulerian(_DDtBase):
         bcs=[],
         order=1,
         smoothing=0.0,
+        num_components=None,
     ):
         super().__init__()
 
         self.mesh = mesh
         self.V_fn = V_fn
+        # With a velocity, the plain Eulerian flavour applies it as an
+        # explicit splitting correction of the history ("split");
+        # EulerianSUPG assembles it in the solver's residual instead.
+        self._advection_mode = "split"
         self.theta = theta
         self.bcs = bcs
         self.verbose = verbose
@@ -1086,6 +1204,7 @@ class Eulerian(_DDtBase):
         self.continuous = continuous
         self.smoothing = smoothing
         self.evalf = evalf
+        self.num_components = num_components
 
         self._init_history_tracking(order)
 
@@ -1116,6 +1235,7 @@ class Eulerian(_DDtBase):
                 uw.discretisation.MeshVariable(
                     f"psi_star_Eulerian_{self.instance_number}_{i}",
                     self.mesh,
+                    num_components,
                     vtype=vtype,
                     degree=degree,
                     continuous=continuous,
@@ -1353,31 +1473,35 @@ class Eulerian(_DDtBase):
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
-        if self.V_fn is not None and dt is not None:
-            coords = self.psi_star[0].coords
-            dim = self.mesh.dim
-            X = self.mesh.X
-
-            # Build u·∇φ symbolically for each component of psi_fn
-            # psi_fn is a Matrix; V_fn is also a Matrix. For scalar
-            # psi_fn the shape is (1,1); for vector it is (1,dim).
-            psi = self.psi_fn
-            V = self.V_fn
-            ncomp = max(psi.shape)  # number of tracked components
-
-            for c in range(ncomp):
-                # ∂φ_c/∂x_i for each spatial dimension
-                grad_c = sympy.Matrix([psi[c].diff(X[i]) for i in range(dim)])
-                # u·∇φ_c = V_i * ∂φ_c/∂x_i
-                advection_expr = sum(V[i] * grad_c[i] for i in range(dim))
-
-                advection_vals = uw.function.evaluate(
-                    advection_expr, coords, evalf=evalf,
-                ).reshape(-1)
-
-                self.psi_star[0].data[:, c] -= dt * advection_vals
+        if self.V_fn is not None and dt is not None and self._advection_mode == "split":
+            self._apply_split_advection(dt, evalf)
 
         return
+
+    def _apply_split_advection(self, dt, evalf=False):
+        """Explicit operator-splitting correction: ``psi_star[0] -= dt (V . grad) psi``."""
+        coords = self.psi_star[0].coords
+        dim = self.mesh.dim
+        X = self.mesh.X
+
+        # Build u·∇φ symbolically for each component of psi_fn
+        # psi_fn is a Matrix; V_fn is also a Matrix. For scalar
+        # psi_fn the shape is (1,1); for vector it is (1,dim).
+        psi = self.psi_fn
+        V = self.V_fn
+        ncomp = max(psi.shape)  # number of tracked components
+
+        for c in range(ncomp):
+            # ∂φ_c/∂x_i for each spatial dimension
+            grad_c = sympy.Matrix([psi[c].diff(X[i]) for i in range(dim)])
+            # u·∇φ_c = V_i * ∂φ_c/∂x_i
+            advection_expr = sum(V[i] * grad_c[i] for i in range(dim))
+
+            advection_vals = uw.function.evaluate(
+                advection_expr, coords, evalf=evalf,
+            ).reshape(-1)
+
+            self.psi_star[0].data[:, c] -= dt * advection_vals
 
     def update_post_solve(
         self,
@@ -1411,6 +1535,246 @@ class Eulerian(_DDtBase):
     def update_exp_coefficients(self, dt, tau_eff):
         r"""Update the ETD-2 (exponential) coefficient values for this step."""
         _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
+
+class EulerianSUPG(Eulerian):
+    r"""Eulerian history manager that assembles its transport: implicit advection with SUPG.
+
+    The transport plugin of the Eulerian solvers. It holds the history of
+    one unknown on the mesh, as :class:`Eulerian` does, and contributes the
+    three terms a solver composes its residual from: the time derivative of
+    the multistep scheme, the implicit advection
+    :math:`\sum_k w_k\,(\mathbf{a}_k\cdot\nabla)\psi^{(k)}` applied
+    component-wise to a scalar, a vector or a tensor unknown, and the
+    streamline-upwind Petrov-Galerkin flux :math:`\tau\,R\otimes\mathbf{a}`
+    of the solver's strong residual :math:`R`. The same solver takes a
+    :class:`SemiLagrangian` history in its place: that flavour answers zero
+    for the advection and the flux because its history is already traced
+    back along the characteristics.
+
+    ``V_fn`` is data: the velocity the transport uses at the new level. The
+    nonlinearity of a self-advected unknown lives in what ``V_fn`` is (the
+    unknown's own symbol for Newton, an extrapolated or Picard field for a
+    linear step), and ``V_fn_history`` names the velocity at the stored
+    levels when it is not ``V_fn`` (the stored velocity itself for momentum).
+
+    The stabilisation parameter is
+
+    .. math::
+        \tau = \frac{w}{\sqrt{(C_t c_0/\Delta t)^2 + (C_u|\mathbf{a}|/h)^2 + (C_\kappa\kappa/h^2)^2}}
+
+    (``tau_shape="inverse_sum"``) with :math:`h` the local cell size,
+    :math:`c_0` the leading multistep coefficient, :math:`\kappa` the
+    :attr:`diffusivity` the solver declares (the diffusivity of a scalar,
+    :math:`\eta/\rho` for momentum, zero for a transported stress) and
+    :math:`w` the product of ``supg_weight`` and the cell-Péclet weight
+    :math:`Pe^2/(Pe^2 + Pe_c^2)`, :math:`Pe = |\mathbf{a}|h/2\kappa`, which
+    switches the term off where diffusion dominates. ``"brooks_hughes"`` and
+    ``"doubly_asymptotic"`` are the optimal 1-D shapes, each capped by the
+    transient term. Every weight is a runtime constant of the kernels.
+
+    Parameters
+    ----------
+    mesh, psi_fn, vtype, degree, continuous, varsymbol, verbose, bcs, smoothing
+        As for :class:`Eulerian`; ``psi_fn`` is the unknown's MeshVariable.
+    V_fn : MeshVariable or sympy row Matrix
+        The advecting velocity, ``(1, dim)``.
+    order : int, default 1
+        1 is the theta rule (Crank-Nicolson at ``theta=0.5``), 2 and 3 BDF.
+    theta : float, optional
+        Crank-Nicolson blend at order 1 (0.5 default; 1.0 backward Euler).
+        Orders 2 and 3 take ``theta=1.0`` and refuse anything else.
+    diffusivity : expression, default 0
+        What :math:`\tau` sees as the diffusive rate; a solver sets it from
+        its constitutive model when it builds its flux.
+    supg_weight, tau_weights, tau_shape, peclet_weight
+        The stabilisation knobs described above.
+    num_components : tuple, optional
+        The history variable shape when ``vtype`` is ``MATRIX``.
+    """
+
+    _TAU_SHAPES = ("inverse_sum", "brooks_hughes", "doubly_asymptotic")
+
+    @timing.routine_timer_decorator
+    def __init__(
+        self,
+        mesh: uw.discretisation.Mesh,
+        psi_fn,
+        V_fn,
+        vtype: uw.VarType,
+        degree: int,
+        continuous: bool,
+        order: int = 1,
+        theta: Optional[float] = None,
+        varsymbol: Optional[str] = r"u",
+        verbose: Optional[bool] = False,
+        bcs=[],
+        smoothing: float = 0.0,
+        diffusivity=0,
+        supg_weight: float = 1.0,
+        tau_weights=(2.0, 2.0, 4.0),
+        tau_shape: str = "inverse_sum",
+        peclet_weight: float = 4.0,
+        num_components=None,
+    ):
+        order = int(order)
+        if order not in (1, 2, 3):
+            raise ValueError(f"order must be 1, 2 or 3, not {order}.")
+        theta = float(theta) if theta is not None else (0.5 if order == 1 else 1.0)
+        if theta != 1.0 and order != 1:
+            raise ValueError(
+                "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
+                "backward Euler); order 2 and 3 take theta=1.0 (a BDF stencil "
+                "pairs with terms at n+1, not with a centred flux)."
+            )
+        if tau_shape not in self._TAU_SHAPES:
+            raise ValueError(f"tau_shape must be one of {self._TAU_SHAPES}, got {tau_shape!r}")
+
+        super().__init__(
+            mesh, psi_fn, vtype, degree, continuous, V_fn=None, theta=theta,
+            varsymbol=varsymbol, verbose=verbose, bcs=bcs, order=order,
+            smoothing=smoothing, num_components=num_components,
+        )
+        self._advection_mode = "assembled"
+        self._integrator = "am" if order == 1 else "bdf"
+        self.V_fn = V_fn
+        self.V_fn_history = None
+        self.diffusivity = diffusivity
+        self._tau_shape = str(tau_shape)
+        self._peclet_weight = float(peclet_weight)
+
+        # The stabilisation knobs are runtime constants (created non-zero, #696).
+        tag = self.instance_number
+        self._supg_weight = _UWexpression(
+            rf"w^{{\mathrm{{SUPG}}}}_{{{tag}}}", 1.0, "SUPG term weight (0 = Galerkin)")
+        self._tau_weights = [
+            _UWexpression(rf"C^{{\tau}}_{{t,{tag}}}", 2.0, "tau transient weight"),
+            _UWexpression(rf"C^{{\tau}}_{{u,{tag}}}", 2.0, "tau advective weight"),
+            _UWexpression(rf"C^{{\tau}}_{{\kappa,{tag}}}", 4.0, "tau diffusive weight"),
+        ]
+        self.supg_weight = supg_weight
+        self.tau_weights = tau_weights
+
+    # ----- data -----
+
+    @property
+    def V_fn(self):
+        """The advecting velocity at the new level, ``(1, dim)``."""
+        return self._V_fn
+
+    @V_fn.setter
+    def V_fn(self, value):
+        self._V_fn = None if value is None else _as_row_vector(value, self.mesh.dim)
+
+    @property
+    def integrator(self) -> str:
+        return self._integrator
+
+    def advecting_velocity(self, level: int = 0):
+        """The velocity carrying the unknown at ``states()[level]``."""
+        if level == 0 or not self.V_fn_history:
+            return self.V_fn
+        return _as_row_vector(self.V_fn_history[level - 1], self.mesh.dim)
+
+    @property
+    def tau_shape(self) -> str:
+        return self._tau_shape
+
+    @property
+    def peclet_weight(self) -> float:
+        return self._peclet_weight
+
+    @property
+    def supg_weight(self) -> float:
+        """Scale of the SUPG term: 1 (default) or 0 for plain Galerkin. No rebuild."""
+        return float(self._supg_weight.sym)
+
+    @supg_weight.setter
+    def supg_weight(self, value):
+        self._supg_weight.sym = float(value)
+
+    @property
+    def tau_weights(self):
+        r"""The weights :math:`(C_t, C_u, C_\kappa)` of the three terms in :math:`\tau`."""
+        return tuple(float(w.sym) for w in self._tau_weights)
+
+    @tau_weights.setter
+    def tau_weights(self, values):
+        for w, v in zip(self._tau_weights, values):
+            w.sym = float(v)
+
+    # ----- the contract -----
+
+    def _convective(self, a, psi):
+        r"""``(a . grad) psi`` entry by entry, a matrix of ``psi``'s shape."""
+        dim = self.mesh.dim
+        grad = self.mesh.vector.gradient
+
+        def entry(r, c):
+            g = grad(psi[r, c])
+            return sum(a[0, i] * g[0, i] for i in range(dim))
+
+        return sympy.Matrix(*psi.shape, entry)
+
+    def advection(self):
+        r""":math:`\sum_k w_k\,(\mathbf{a}_k\cdot\nabla)\psi^{(k)}` over the levels of the scheme."""
+        total = sympy.zeros(*self._shape())
+        for k, (w, psi_k) in enumerate(zip(self.spatial_weights(), self.states())):
+            if w == 0:
+                continue
+            total = total + w * self._convective(self.advecting_velocity(k), psi_k)
+        return total
+
+    def tau(self):
+        r"""The stabilisation parameter :math:`\tau` (times the weights)."""
+        dim = self.mesh.dim
+        a = self.advecting_velocity(0)
+        a_mag2 = sum(a[0, i] ** 2 for i in range(dim))
+        h = self.mesh.cell_size()
+        nu = self.diffusivity
+        if self.integrator == "bdf":
+            c0 = self.bdf_coefficient_expressions[0]
+        else:
+            c0 = sympy.Integer(1)
+        ct, cu, cv = self._tau_weights
+        transient = (ct * c0 / self._delta_t) ** 2
+        weight = self._supg_weight
+        if self._peclet_weight > 0.0:
+            # Pe^2 / (Pe^2 + Pe_c^2) written without dividing by nu (1 for nu = 0).
+            ah2 = a_mag2 * h ** 2
+            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + 1.0e-30)
+        if self._tau_shape == "inverse_sum":
+            advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
+            viscous = (cv * nu / h ** 2) ** 2
+            return weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
+        # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
+        a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
+        Pe = a_mag * h / (2 * nu)
+        if self._tau_shape == "brooks_hughes":
+            xi = 1 / sympy.tanh(Pe) - 1 / Pe      # coth is not C99: the printer would rewrite it through exp
+        else:
+            xi = sympy.Min(Pe / 3, 1)
+        tau_steady = h / (2 * a_mag) * xi
+        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
+
+    def stabilisation_flux(self, R):
+        r"""The SUPG flux :math:`\tau\,R\otimes\mathbf{a}`, one row per component of ``R``.
+
+        ``R`` is the solver's strong residual of the unknown's shape (first
+        derivatives only). The result has shape ``(len(R), dim)``: for a
+        scalar the row :math:`\tau R\mathbf{a}`, for a vector
+        :math:`F_{ij} = \tau R_i a_j`.
+        """
+        R = sympy.Matrix(R)
+        column = R.reshape(len(R), 1)
+        return self.tau() * (column * self.advecting_velocity(0))
+
+    def _object_viewer(self):
+        from IPython.display import Latex, display
+
+        super()._object_viewer()
+        display(Latex(r"$\quad\mathbf{a} = $ " + self.V_fn._repr_latex_()))
+        display(Latex(rf"$\quad$ integrator: {self.integrator}, tau shape: {self.tau_shape}"))
 
 
 class SemiLagrangian(_DDtBase):

@@ -116,6 +116,33 @@ of the compiled kernels; nothing is recompiled.
   (`refinement >= 1`) for very large rank counts. Every option can be
   overridden through `solver.petsc_options`.
 
+## The history manager is the transport plugin
+
+The solver does not assemble its transport itself. Its history manager (`solver.DuDt`)
+contributes three symbolic terms, and the solver composes its residual from them:
+the time derivative of the scheme, the advection, and the stabilisation flux of the
+strong residual. The default manager is `uw.systems.ddt.EulerianSUPG`, which owns the
+advecting velocity (`V_fn` is data on it), the time scheme (`order`, `theta`), and the
+stabilisation knobs (`supg_weight`, `tau_weights`, `tau_shape`, `peclet_weight`); the
+solver's properties of the same names pass through to it.
+
+Any history manager that follows the contract can be supplied instead. A semi-Lagrangian
+manager answers zero for the advection and the stabilisation, because its history is
+already traced back along the characteristics, so the same solver becomes a
+semi-Lagrangian scheme on the field history:
+
+```python
+history = uw.systems.ddt.SemiLagrangian(mesh, T.sym, v.sym, vtype=uw.VarType.SCALAR,
+                                        degree=T.degree, continuous=True, order=1)
+adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, DuDt=history)   # no assembled advection
+```
+
+On pure advection this reproduces `AdvDiffusionSLCN` to the solver tolerance; with
+diffusion the two differ in where the diffusive flux history comes from (the traced-back
+field here, the traced-back flux there). The manager works for a vector or tensor unknown
+as well (`vtype`), applying the advection component by component, which is how the
+Navier-Stokes solver and a transported stress use it.
+
 ## Further reading
 
 - Design note and measurements: `docs/developer/design/eulerian-supg-transport.md`

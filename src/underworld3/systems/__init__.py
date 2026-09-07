@@ -33,8 +33,9 @@ Richards : class
 
 Time Derivative Schemes
 -----------------------
-Lagrangian_DDt, SemiLagragian_DDt, Eulerian_DDt
-    Time derivative approximations for transient problems.
+Lagrangian_DDt, SemiLagragian_DDt, Eulerian_DDt, EulerianSUPG_DDt
+    Time derivative approximations for transient problems; EulerianSUPG_DDt
+    is the transport plugin of the Eulerian solvers (assembled advection, SUPG).
 
 See Also
 --------
@@ -92,6 +93,7 @@ from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
+from .ddt import EulerianSUPG as EulerianSUPG_DDt
 
 # δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
 from .yield_continuation import yield_continuation, YieldHomotopyControl

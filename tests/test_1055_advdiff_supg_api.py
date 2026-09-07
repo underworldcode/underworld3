@@ -37,8 +37,9 @@ def test_exported_and_constructs_with_the_slcn_defaults(mesh):
     assert type(adv).__name__ == "SNES_AdvectionDiffusion_SUPG"
     # order 1, theta 0.5: Crank-Nicolson, the semi-Lagrangian solver's default
     assert adv.integrator == "am" and adv.order == 1 and adv.theta == 0.5
-    assert isinstance(adv.DuDt, uw.systems.ddt.Eulerian)
-    assert adv.DuDt.V_fn is None, "advection is implicit, not a history correction"
+    assert isinstance(adv.DuDt, uw.systems.ddt.EulerianSUPG)
+    # V_fn is data on the history manager: the velocity the transport uses
+    assert adv.DuDt.V_fn == adv.V_fn and adv.DuDt._advection_mode == "assembled"
 
 
 def test_slcn_order_theta_pairs_select_the_documented_schemes(mesh):
@@ -110,15 +111,15 @@ def test_multistep_weights_reach_every_stored_time_level(mesh):
     # offered publicly (unstable for advection), so the family is switched
     # on the instance here to cover the weighted-sum path.
     adv, _T = _solver(mesh, "d", order=2)
-    adv._integrator = "am"
-    weights = adv._spatial_weights()
+    adv.DuDt._integrator = "am"
+    weights = adv.DuDt.spatial_weights()
     assert len(weights) == 3
-    states = adv._states()
+    states = adv.DuDt.states()
     assert len(states) == 3
     # every history state appears (through its derivatives) in the advection operator
-    names = {str(atom.func) for atom in adv._advection().atoms(sympy.Function)}
+    names = {str(atom.func) for atom in adv.DuDt.advection().atoms(sympy.Function)}
     for s in states[1:]:
-        assert any(str(s.func) in n for n in names), (s, names)
+        assert any(str(s[0].func) in n for n in names), (s, names)
 
 
 def test_timestep_change_is_a_constant_update_not_a_recompile(mesh):

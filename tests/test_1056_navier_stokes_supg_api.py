@@ -38,7 +38,8 @@ def test_exported_and_constructs_with_the_scalar_solver_rules(mesh):
     ns, _v, _p = _cavity(mesh, "a", rho=1.0)
     assert type(ns).__name__ == "SNES_NavierStokes_SUPG"
     assert ns.integrator == "am" and ns.order == 1 and ns.theta == 0.5
-    assert isinstance(ns.DuDt, uw.systems.ddt.Eulerian) and ns.DuDt.V_fn is None
+    assert isinstance(ns.DuDt, uw.systems.ddt.EulerianSUPG)
+    assert ns.DuDt.V_fn == ns._a_var.sym and ns.DuDt.V_fn_history[0] == ns.DuDt.psi_star[0].sym
     assert ns.DFDt is None
     assert _cavity(mesh, "b", order=2)[0].integrator == "bdf"
     with pytest.raises(ValueError, match="theta applies"):

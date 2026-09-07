@@ -30,7 +30,8 @@ from typing import Optional, Union
 import underworld3 as uw
 import underworld3.timing as timing
 from underworld3.function import expression as public_expression
-from underworld3.systems.ddt import Eulerian as Eulerian_DDt
+from underworld3.systems.ddt import _DDtBase
+from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.solvers import SNES_Stokes
 
 _ADVECTION_MODES = ("extrapolated", "implicit")
@@ -157,7 +158,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         degree: Optional[int] = 2,
         p_continuous: Optional[bool] = True,
         verbose: bool = False,
-        DuDt: Optional[Eulerian_DDt] = None,
+        DuDt: Optional[_DDtBase] = None,
         DFDt=None,
         restore_points_func=None,
     ):
@@ -191,15 +192,8 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             DuDt=None, DFDt=None,
         )
 
-        self._time_order = order
         self._theta = theta
-        self._integrator = "am" if order == 1 else "bdf"
         self._advection_mode = advection
-        if tau_shape not in ("inverse_sum", "brooks_hughes", "doubly_asymptotic"):
-            raise ValueError(
-                f"tau_shape must be 'inverse_sum', 'brooks_hughes' or 'doubly_asymptotic', got {tau_shape!r}")
-        self._tau_shape = str(tau_shape)
-        self._peclet_weight = float(peclet_weight)
         self._picard_iterations = int(picard_iterations)
         self._picard_tolerance = float(picard_tolerance)
         self._picard_count = 0
@@ -208,44 +202,11 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
 
         tag = self.instance_number
         self._rho = public_expression(rf"\rho_{{{tag}}}", rho, "Density")
-        self._delta_t = public_expression(rf"\Delta t_{{{tag}}}", 1.0, "Navier-Stokes timestep")
-        self._supg_weight = public_expression(
-            rf"w^{{\mathrm{{SUPG}}}}_{{{tag}}}", 1.0, "SUPG term weight (0 = Galerkin)")
-        self._tau_weights = [
-            public_expression(rf"C^{{\tau}}_{{t,{tag}}}", 2.0, "tau transient weight"),
-            public_expression(rf"C^{{\tau}}_{{u,{tag}}}", 2.0, "tau advective weight"),
-            public_expression(rf"C^{{\tau}}_{{\nu,{tag}}}", 4.0, "tau viscous weight"),
-        ]
-
-        u = self.Unknowns.u
-        if DuDt is None:
-            self.Unknowns.DuDt = Eulerian_DDt(
-                self.mesh,
-                u,
-                vtype=uw.VarType.VECTOR,
-                degree=u.degree,
-                continuous=u.continuous,
-                V_fn=None,
-                theta=theta,
-                varsymbol=u.symbol,
-                verbose=verbose,
-                bcs=self.essential_bcs,
-                order=order,
-                smoothing=0.0,
-            )
-        else:
-            if DuDt.order < order:
-                raise ValueError(
-                    f"DuDt supplied is order {DuDt.order} but order {order} was requested.")
-            if getattr(DuDt, "V_fn", None) is not None:
-                raise ValueError(
-                    "DuDt must be built with V_fn=None: advection is assembled "
-                    "implicitly by this solver, not as an explicit history correction.")
-            self.Unknowns.DuDt = DuDt
 
         # The advecting velocity at the new level (values set before each
         # solve: the extrapolation, or the latest Picard iterate) and the
         # level n-1 the extrapolation needs beyond what the history holds.
+        u = self.Unknowns.u
         self._a_var = uw.discretisation.MeshVariable(
             f"a_NSSUPG_{tag}", self.mesh, self.mesh.dim, degree=u.degree,
             continuous=u.continuous, varsymbol=rf"\mathbf{{a}}_{{{tag}}}")
@@ -254,6 +215,35 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             continuous=u.continuous, varsymbol=rf"\mathbf{{u}}^{{n-1}}_{{{tag}}}")
         self._history_primed = False
 
+        # The transport plugin: the history manager owns the time scheme, the
+        # advecting velocity, the assembled advection and the stabilisation.
+        # At the stored levels the momentum is carried by the stored velocity.
+        if DuDt is None:
+            self.Unknowns.DuDt = EulerianSUPG_DDt(
+                self.mesh,
+                u,
+                self._advecting_velocity(),
+                vtype=uw.VarType.VECTOR,
+                degree=u.degree,
+                continuous=u.continuous,
+                order=order,
+                theta=theta,
+                varsymbol=u.symbol,
+                verbose=verbose,
+                bcs=self.essential_bcs,
+                smoothing=0.0,
+                tau_shape=tau_shape,
+                peclet_weight=peclet_weight,
+            )
+            self.DuDt.V_fn_history = [ps.sym for ps in self.DuDt.psi_star]
+        else:
+            if not isinstance(DuDt, _DDtBase):
+                raise TypeError(f"DuDt must be a DDt history manager, not {type(DuDt).__name__}.")
+            if sympy.Matrix(DuDt.psi_fn).shape != u.sym.shape:
+                raise ValueError("DuDt tracks a different unknown from the velocity.")
+            self.Unknowns.DuDt = DuDt
+            self._theta = float(getattr(DuDt, "theta", theta))
+
     # ------------------------------------------------------------------
     # Scheme description and knobs
     # ------------------------------------------------------------------
@@ -261,12 +251,12 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     @property
     def integrator(self) -> str:
         """``"am"`` (the theta rule) at order 1, ``"bdf"`` at order 2."""
-        return self._integrator
+        return self.DuDt.integrator
 
     @property
     def order(self) -> int:
         """Time scheme order."""
-        return self._time_order
+        return self.DuDt.order
 
     @property
     def theta(self) -> float:
@@ -276,7 +266,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     @theta.setter
     def theta(self, value):
         value = float(value)
-        if value != 1.0 and self._time_order != 1:
+        if value != 1.0 and self.order != 1:
             raise ValueError("theta applies at order 1 only; order 2 takes theta=1.0.")
         self._theta = value
         self.DuDt.theta = value
@@ -293,6 +283,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             raise ValueError(f"advection must be one of {_ADVECTION_MODES}, not {value!r}.")
         if value != self._advection_mode:
             self._advection_mode = value
+            self.DuDt.V_fn = self._advecting_velocity()
             self.is_setup = False
 
     @property
@@ -306,12 +297,12 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     @property
     def peclet_weight(self) -> float:
         """The critical cell Péclet number of the weight (0 = no Péclet weighting)."""
-        return self._peclet_weight
+        return self.DuDt.peclet_weight
 
     @property
     def tau_shape(self) -> str:
         """The shape of the stabilisation parameter (constructor choice)."""
-        return self._tau_shape
+        return self.DuDt.tau_shape
 
     @property
     def picard_count(self) -> int:
@@ -329,78 +320,44 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
 
     @property
     def delta_t(self):
-        r"""The timestep :math:`\Delta t` as a UW expression (a runtime constant)."""
-        return self._delta_t
+        r"""The timestep :math:`\Delta t` as a UW expression (the history manager's runtime constant)."""
+        return self.DuDt.delta_t
 
     @delta_t.setter
     def delta_t(self, value):
         value = self._nondimensional_time(value)
-        self._delta_t.sym = value
+        self.DuDt.delta_t.sym = value
         self._last_timestep = value
+
+    # The stabilisation knobs live on the history manager; these pass through.
 
     @property
     def supg_weight(self) -> float:
         """Weight of the SUPG term; 0 gives the plain Galerkin scheme."""
-        return float(self._supg_weight.sym)
+        return self.DuDt.supg_weight
 
     @supg_weight.setter
     def supg_weight(self, value):
-        self._supg_weight.sym = float(value)
+        self.DuDt.supg_weight = value
 
     @property
     def tau_weights(self):
         """The three weights of tau: transient, advective, viscous."""
-        return tuple(float(w.sym) for w in self._tau_weights)
+        return self.DuDt.tau_weights
 
     @tau_weights.setter
     def tau_weights(self, values):
-        ct, cu, cv = values
-        for w, v in zip(self._tau_weights, (ct, cu, cv)):
-            w.sym = float(v)
+        self.DuDt.tau_weights = values
 
     # ------------------------------------------------------------------
-    # The residual
+    # The residual, composed from the history manager's contributions
     # ------------------------------------------------------------------
-
-    def _states(self):
-        r"""``[u^{n+1}, u^{n}, u^{n-1}, ...]`` as ``(1, dim)`` row matrices."""
-        return [self.u.sym] + [ps.sym for ps in self.DuDt.psi_star]
-
-    def _spatial_weights(self):
-        """Weight of the spatial operator at each level of ``_states``."""
-        n = len(self.DuDt.psi_star)
-        if self._integrator == "bdf":
-            return [sympy.Integer(1)] + [sympy.Integer(0)] * n
-        return self.DuDt.am_coefficient_expressions[: n + 1]
 
     def _advecting_velocity(self):
         """The advecting velocity at the new level, as a ``(1, dim)`` row."""
         if self._advection_mode == "implicit":
             return self.u.sym
         return self._a_var.sym
-
-    def _time_derivative(self):
-        if self._integrator == "bdf":
-            return self.DuDt.bdf() / self._delta_t
-        u_new, u_old = self._states()[:2]
-        return (u_new - u_old) / self._delta_t
-
-    def _convective(self, a, u):
-        r"""``(a . grad) u`` as a ``(1, dim)`` row for rows ``a`` and ``u``."""
-        dim = self.mesh.dim
-        X = self.mesh.X
-        return sympy.Matrix([[sum(a[0, j] * u[0, i].diff(X[j]) for j in range(dim))
-                              for i in range(dim)]])
-
-    def _advection(self):
-        states = self._states()
-        total = sympy.zeros(1, self.mesh.dim)
-        for k, (w, u_k) in enumerate(zip(self._spatial_weights(), states)):
-            if w == 0:
-                continue
-            a_k = self._advecting_velocity() if k == 0 else u_k
-            total = total + w * self._convective(a_k, u_k)
-        return total
 
     def _strong_residual(self, with_pressure=False):
         r"""The strong momentum residual of the time scheme, first derivatives only.
@@ -419,7 +376,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         # The body-force setter may store a column; the residual is a row.
         dim = self.mesh.dim
         f = sympy.Matrix(self.bodyforce.sym).reshape(1, dim)
-        R = self._rho * (self._time_derivative() + self._advection()) - f
+        R = self._rho * (self.DuDt.time_derivative() + self.DuDt.advection()) - f
         if with_pressure:
             X = self.mesh.X
             R = R + sympy.Matrix([[self.p.sym[0].diff(X[i]) for i in range(dim)]])
@@ -432,8 +389,8 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         return 2 * eta * sympy.Matrix(self.mesh.vector.strain_tensor(u_row))
 
     def _viscous_flux(self):
-        states = self._states()
-        weights = self._spatial_weights()
+        states = self.DuDt.states()
+        weights = self.DuDt.spatial_weights()
         total = weights[0] * self.stress_deviator
         for w, u_k in zip(weights[1:], states[1:]):
             if w == 0:
@@ -441,36 +398,10 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
             total = total + w * self._viscous_stress(u_k)
         return total
 
-    def _tau(self):
-        dim = self.mesh.dim
-        a = self._advecting_velocity()
-        a_mag2 = sum(a[0, i] ** 2 for i in range(dim))
-        h = self.mesh.cell_size()
-        nu = self.constitutive_model.K / self._rho
-        if self._integrator == "bdf":
-            c0 = self.DuDt.bdf_coefficient_expressions[0]
-        else:
-            c0 = sympy.Integer(1)
-        ct, cu, cv = self._tau_weights
-        transient = (ct * c0 / self._delta_t) ** 2
-        weight = self._supg_weight
-        if self._peclet_weight > 0.0:
-            # Pe^2 / (Pe^2 + Pe_c^2) written without dividing by nu.
-            ah2 = a_mag2 * h ** 2
-            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + 1.0e-30)
-        if self._tau_shape == "inverse_sum":
-            advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
-            viscous = (cv * nu / h ** 2) ** 2
-            return weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
-        # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
-        a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
-        Pe = a_mag * h / (2 * nu)
-        if self._tau_shape == "brooks_hughes":
-            xi = 1 / sympy.tanh(Pe) - 1 / Pe      # coth is not C99: the printer would rewrite it through exp
-        else:
-            xi = sympy.Min(Pe / 3, 1)
-        tau_steady = h / (2 * a_mag) * xi
-        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
+    def _stabilisation_flux(self):
+        if hasattr(self.DuDt, "diffusivity"):
+            self.DuDt.diffusivity = self.constitutive_model.K / self._rho
+        return self.DuDt.stabilisation_flux(self._strong_residual(with_pressure=True))
 
     @property
     def F0(self):
@@ -489,12 +420,10 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         dim = self.mesh.dim
         mechanical_pressure = (
             self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
-        R = self._strong_residual(with_pressure=True)
-        a = self._advecting_velocity()
         F1 = public_expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
             self._viscous_flux() - sympy.eye(dim) * mechanical_pressure
-            + self._tau() * (R.T * a),
+            + self._stabilisation_flux(),
             "Navier-Stokes SUPG: viscous flux of the time scheme, pressure, tau R (x) a",
         )
         self._u_f1 = F1
