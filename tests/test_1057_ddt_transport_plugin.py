@@ -192,3 +192,30 @@ def test_tensor_unknown_is_transported_through_the_multicomponent_solver():
         assert err < 0.05, (k, err)
         # negative control: the field moved away from where it started
         assert np.linalg.norm(data[:, 0, k] - amp * g0) / np.linalg.norm(amp * g0) > 0.3
+
+
+def test_dimensional_timestep_reaches_the_manager_non_dimensional():
+    """A quantity timestep handed to a manager's pre-solve is scaled by the model's
+    reference time before it becomes the kernels' runtime constant (#701): the
+    semi-Lagrangian solver passes its Pint step straight through."""
+    from underworld3.systems.ddt import _as_float
+    q = uw.quantity(100.0, "kyr")
+    assert _as_float(q) == 100.0                       # no reference scales: the magnitude
+    orchestration_model = uw.get_default_model()
+    orchestration_model.set_reference_quantities(
+        length=uw.quantity(1000.0, "km"), time=uw.quantity(1.0, "Myr"))
+    try:
+        assert abs(_as_float(q) - 0.1) < 1e-12
+        assert abs(_as_float(q._pint_qty) - 0.1) < 1e-12   # a raw Pint quantity too
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+        x, y = mesh.X
+        T = uw.discretisation.MeshVariable("T_dim", mesh, 1, degree=2)
+        T.array[:, 0, 0] = uw.function.evaluate(_gaussian(x, y), T.coords).reshape(-1)
+        slcn = uw.systems.AdvDiffusionSLCN(mesh, T, sympy.Matrix([[-y, x]]))
+        slcn.constitutive_model = uw.constitutive_models.DiffusionModel
+        slcn.constitutive_model.Parameters.diffusivity = 0.0
+        slcn.solve(timestep=q)
+        assert abs(float(slcn.DuDt.delta_t.sym) - 0.1) < 1e-12, slcn.DuDt.delta_t.sym
+    finally:
+        uw.reset_default_model()

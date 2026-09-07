@@ -169,13 +169,21 @@ class DDtLagrangianSwarmState(_DDtCoreState):
 
 
 def _as_float(value):
-    """Extract a plain float from various numeric types (Pint, UWQuantity, etc.)."""
+    """A plain, NON-DIMENSIONAL float from a number, a Pint quantity or a UWQuantity.
+
+    A quantity is scaled by the active model's reference scales (#701: taking
+    its magnitude gave the kernels a dimensional timestep); without reference
+    scales the magnitude is what non-dimensionalisation returns.
+    """
     if value is None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
-    if hasattr(value, "magnitude"):
-        return float(value.magnitude)
+    if hasattr(value, "magnitude") or hasattr(value, "dimensionality"):
+        nd = uw.non_dimensionalise(value)
+        if hasattr(nd, "magnitude"):
+            return float(nd.magnitude)
+        return float(nd)
     if hasattr(value, "value"):
         return float(value.value)
     try:
