@@ -701,16 +701,26 @@ class _DDtBase(uw_object):
             f"vcache_{tag}_{self.instance_number}", self.mesh, self.mesh.dim,
             degree=self._velocity_degree(), continuous=True,
             varsymbol=rf"{{ V^{{ ({tag}) }}_{{ [{self.instance_number}] }} }}",
+            units=self._velocity_units(),   # same frame as V_fn, so 1.5 v - 0.5 v_prev is consistent
         )
         snap.remesh_policy = RemeshPolicy.CARRY
         snap._remesh_managed_by = self
         return {"var": snap, "expr": snap.sym}
 
+    def _velocity_units(self):
+        """Units of ``V_fn`` under an active units model, else None."""
+        units = uw.get_units(self._V_matrix())
+        if units is not None and not uw.get_default_model().has_units():
+            units = None
+        return units
+
     def _copy_velocity_level(self, dst, src=None):
         """``dst`` <- ``src`` (another level) or, with ``src=None``, ``V_fn``
-        evaluated now at ``dst``'s nodes."""
+        evaluated now at ``dst``'s nodes (reduced to the non-dimensional
+        frame ``.data`` stores, issue #267)."""
         if src is None:
             vals = uw.function.evaluate(self._V_matrix(), np.asarray(dst["var"].coords_nd))
+            vals = _to_nondim_ndarray(vals, units=self._velocity_units())
             dst["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
         else:
             dst["var"].data[...] = src["var"].data[...]
@@ -3645,11 +3655,17 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             varsymbol = rf"u_{{ [{self.instance_number}] }}"
         inst = self.instance_number
 
+        psi_units = uw.get_units(self._psi_fn)
+        if psi_units is not None and not uw.get_default_model().has_units():
+            psi_units = None
+        self._psi_units = psi_units
+
         # History slots at the integration points (injected, never sampled).
         self.psi_star = [
             uw.discretisation.IntegrationPointVariable(
                 f"psi_star_ip_{inst}_{k}", mesh,
                 varsymbol=rf"{{ {varsymbol}^{{ {'*' * (k + 1)} }} }}",
+                units=psi_units,
             )
             for k in range(order)
         ]
@@ -3659,6 +3675,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             uw.discretisation.MeshVariable(
                 f"psi_snap_ip_{inst}_{k}", mesh, 1, degree=degree, continuous=continuous,
                 varsymbol=rf"{{ {varsymbol}^{{ (n-{k}) }} }}",
+                units=psi_units,
             )
             for k in range(order)
         ]
@@ -3747,12 +3764,12 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             ps.data[...] = self._psi_meshVar.data[...]
         else:
             vals = uw.function.evaluate(self.psi_fn[0], self._nudged_node_coords(ps))
-            ps.data[:, 0] = np.asarray(vals).reshape(-1)
+            ps.data[:, 0] = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
         self._copy_velocity_level(self.v_levels[0])
 
     def _velocity_at(self, v_sym, coords, evalf):
         v = uw.function.global_evaluate(v_sym, coords, evalf=evalf)
-        v = np.asarray(v)
+        v = np.asarray(_to_nondim_ndarray(v, units=self._velocity_units()))
         if v.ndim == 3:
             v = v[:, 0, :]
         return v.reshape(coords.shape[0], self.mesh.dim)
@@ -3804,7 +3821,8 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             vals = uw.function.global_evaluate(
                 self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
             )
-            self.psi_star[k].data[:, 0] = np.asarray(vals).reshape(-1)
+            self.psi_star[k].data[:, 0] = np.asarray(
+                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
 
     def initialise_history(self):
         """Start every snapshot and slot from the current field, so
@@ -3815,7 +3833,8 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for k in range(1, self._n_v):
             self._copy_velocity_level(self.v_levels[k], self.v_levels[0])
         X = np.asarray(self.psi_star[0].coords_nd)
-        vals = np.asarray(uw.function.evaluate(self.psi_snap[0].sym[0], X)).reshape(-1)
+        vals = uw.function.evaluate(self.psi_snap[0].sym[0], X)
+        vals = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
         for k in range(self.order):
             self.psi_star[k].data[:, 0] = vals
         self._history_initialised = True
