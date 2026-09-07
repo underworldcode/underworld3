@@ -37,6 +37,7 @@ import underworld3.timing as timing
 from underworld3.function import expression as public_expression
 from underworld3.systems.ddt import _DDtBase
 from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
+from underworld3.systems.advection_diffusion_eulerian import _check_supplied_manager
 from underworld3.systems.solvers import SNES_Stokes
 
 _ADVECTION_MODES = ("extrapolated", "implicit")
@@ -241,14 +242,20 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
                 tau_shape=tau_shape,
                 peclet_weight=peclet_weight,
             )
-            self.DuDt.V_fn_history = [ps.sym for ps in self.DuDt.psi_star]
         else:
             if not isinstance(DuDt, _DDtBase):
                 raise TypeError(f"DuDt must be a DDt history manager, not {type(DuDt).__name__}.")
             if sympy.Matrix(DuDt.psi_fn).shape != u.sym.shape:
                 raise ValueError("DuDt tracks a different unknown from the velocity.")
+            _check_supplied_manager(DuDt, order, theta)
             self.Unknowns.DuDt = DuDt
             self._theta = float(getattr(DuDt, "theta", theta))
+        # This solver decides the advecting velocity (per step: the extrapolation,
+        # the Picard iterate, or the unknown) and names the stored velocity as the
+        # carrier of the stored levels, whoever built the manager.
+        if hasattr(self.DuDt, "V_fn_history"):
+            self.DuDt.V_fn = self._advecting_velocity()
+            self.DuDt.V_fn_history = [ps.sym for ps in self.DuDt.psi_star]
 
     # ------------------------------------------------------------------
     # Scheme description and knobs
@@ -274,6 +281,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         value = float(value)
         if value != 1.0 and self.order != 1:
             raise ValueError("theta applies at order 1 only; order 2 takes theta=1.0.")
+        if not hasattr(self.DuDt, "theta"):
+            raise AttributeError(f"{type(self.DuDt).__name__} has no theta to set.")
         self._theta = value
         self.DuDt.theta = value
 
@@ -289,7 +298,8 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             raise ValueError(f"advection must be one of {_ADVECTION_MODES}, not {value!r}.")
         if value != self._advection_mode:
             self._advection_mode = value
-            self.DuDt.V_fn = self._advecting_velocity()
+            if hasattr(self.DuDt, "V_fn_history"):
+                self.DuDt.V_fn = self._advecting_velocity()
             self.is_setup = False
 
     @property

@@ -54,6 +54,17 @@ from underworld3.systems.solvers import (
 )
 
 
+def _check_supplied_manager(DuDt, order, theta):
+    """A supplied history manager fixes the scheme: the arguments must agree with it."""
+    if DuDt.order != order:
+        raise ValueError(
+            f"DuDt supplied is order {DuDt.order} but order={order} was asked for: a "
+            "supplied manager fixes the scheme, pass the matching order.")
+    if theta is not None and hasattr(DuDt, "theta") and float(DuDt.theta) != float(theta):
+        raise ValueError(
+            f"DuDt supplied has theta={DuDt.theta} but theta={theta} was asked for.")
+
+
 class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     r"""Advection-diffusion solver composed from its DDt transport manager.
 
@@ -301,6 +312,7 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
                 raise TypeError(f"DuDt must be a DDt history manager, not {type(DuDt).__name__}.")
             if sympy.Matrix(DuDt.psi_fn).shape != u_Field.sym.shape:
                 raise ValueError("DuDt tracks a different unknown from u_Field.")
+            _check_supplied_manager(DuDt, order, theta)
             self.Unknowns.DuDt = DuDt
         self._theta = float(getattr(self.DuDt, "theta", theta))
 
@@ -439,6 +451,8 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
                 "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
                 "backward Euler); order 2 and 3 take theta=1.0."
             )
+        if not hasattr(self.DuDt, "theta"):
+            raise AttributeError(f"{type(self.DuDt).__name__} has no theta to set.")
         self._theta = value
         self.DuDt.theta = value
 
@@ -687,13 +701,14 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         self._build(verbose)
 
         self.DuDt.update_pre_solve(dt, verbose=verbose)
+        before = np.array(self.u.data).reshape(-1)
         super().solve(zero_init_guess, _force_setup, divergence_retries=divergence_retries)
         _invalidate_solution_cache(self.u)
         # The realised rate of change of the field over this step feeds the
-        # accuracy-based estimate_dt; psi_star[0] still holds phi^n here.
+        # accuracy-based estimate_dt (from a copy of the unknown: the manager's
+        # history may live on a swarm or carry units).
         from mpi4py import MPI
-        change = np.abs(np.asarray(self.u.array).reshape(-1)
-                        - np.asarray(self.DuDt.psi_star[0].array).reshape(-1))
+        change = np.abs(np.asarray(self.u.data).reshape(-1) - before)
         local = float(change.max()) if change.size else 0.0
         self._last_change_rate = uw.mpi.comm.allreduce(local, op=MPI.MAX) / dt
         self.DuDt.update_post_solve(dt, verbose=verbose)

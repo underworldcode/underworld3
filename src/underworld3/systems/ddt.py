@@ -546,7 +546,8 @@ class _DDtBase(uw_object):
         # composes its residual from :meth:`time_derivative` never recompiles
         # when the step changes. Created non-zero (#696).
         self._delta_t = _UWexpression(
-            rf"\Delta t_{{{self.instance_number}}}", 1.0, "DDt timestep")
+            rf"\Delta t_{{{self.instance_number}}}", 1.0, "DDt timestep",
+            _unique_name_generation=True)
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
         self._n_solves_completed = 0
@@ -780,7 +781,8 @@ class _DDtBase(uw_object):
         """``"am"`` (the theta rule on the spatial terms) at order 1, ``"bdf"`` above."""
         return "am" if self.order == 1 else "bdf"
 
-    def _shape(self):
+    def _unknown_shape(self):
+        """Shape of the unknown as a matrix (``Symbolic`` stores ``_shape`` as data)."""
         psi = self.psi_fn
         return psi.shape if isinstance(psi, sympy.MatrixBase) else (1, 1)
 
@@ -813,7 +815,7 @@ class _DDtBase(uw_object):
 
     def advection(self):
         """The assembled advection term: zero for a history-carrying flavour."""
-        return sympy.zeros(*self._shape())
+        return sympy.zeros(*self._unknown_shape())
 
     def stabilisation_flux(self, R):
         r"""The stabilisation flux for a strong residual ``R``: zero here.
@@ -823,7 +825,12 @@ class _DDtBase(uw_object):
         mesh = getattr(self, "mesh", None)
         if mesh is None:
             raise TypeError(f"{type(self).__name__} has no mesh: no flux shape to return.")
-        return sympy.zeros(len(sympy.Matrix(R)), mesh.dim)
+        return sympy.zeros(len(_as_matrix(R)), mesh.dim)
+
+
+def _as_matrix(R):
+    """A residual as a sympy Matrix: a bare scalar becomes ``(1, 1)``."""
+    return R if isinstance(R, sympy.MatrixBase) else sympy.Matrix([[R]])
 
 
 def _as_row_vector(V_fn, dim):
@@ -1645,12 +1652,13 @@ class EulerianSUPG(Eulerian):
 
         # The stabilisation knobs are runtime constants (created non-zero, #696).
         tag = self.instance_number
+        unique = dict(_unique_name_generation=True)
         self._supg_weight = _UWexpression(
-            rf"w^{{\mathrm{{SUPG}}}}_{{{tag}}}", 1.0, "SUPG term weight (0 = Galerkin)")
+            rf"w^{{\mathrm{{SUPG}}}}_{{{tag}}}", 1.0, "SUPG term weight (0 = Galerkin)", **unique)
         self._tau_weights = [
-            _UWexpression(rf"C^{{\tau}}_{{t,{tag}}}", 2.0, "tau transient weight"),
-            _UWexpression(rf"C^{{\tau}}_{{u,{tag}}}", 2.0, "tau advective weight"),
-            _UWexpression(rf"C^{{\tau}}_{{\kappa,{tag}}}", 4.0, "tau diffusive weight"),
+            _UWexpression(rf"C^{{\tau}}_{{t,{tag}}}", 2.0, "tau transient weight", **unique),
+            _UWexpression(rf"C^{{\tau}}_{{u,{tag}}}", 2.0, "tau advective weight", **unique),
+            _UWexpression(rf"C^{{\tau}}_{{\kappa,{tag}}}", 4.0, "tau diffusive weight", **unique),
         ]
         self.supg_weight = supg_weight
         self.tau_weights = tau_weights
@@ -1718,7 +1726,7 @@ class EulerianSUPG(Eulerian):
 
     def advection(self):
         r""":math:`\sum_k w_k\,(\mathbf{a}_k\cdot\nabla)\psi^{(k)}` over the levels of the scheme."""
-        total = sympy.zeros(*self._shape())
+        total = sympy.zeros(*self._unknown_shape())
         for k, (w, psi_k) in enumerate(zip(self.spatial_weights(), self.states())):
             if w == 0:
                 continue
@@ -1749,7 +1757,7 @@ class EulerianSUPG(Eulerian):
             return weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
         # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
         a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
-        Pe = a_mag * h / (2 * nu)
+        Pe = a_mag * h / (2 * nu + 1.0e-30)      # finite at zero diffusivity (the default)
         if self._tau_shape == "brooks_hughes":
             xi = 1 / sympy.tanh(Pe) - 1 / Pe      # coth is not C99: the printer would rewrite it through exp
         else:
@@ -1765,7 +1773,7 @@ class EulerianSUPG(Eulerian):
         scalar the row :math:`\tau R\mathbf{a}`, for a vector
         :math:`F_{ij} = \tau R_i a_j`.
         """
-        R = sympy.Matrix(R)
+        R = _as_matrix(R)
         column = R.reshape(len(R), 1)
         return self.tau() * (column * self.advecting_velocity(0))
 
