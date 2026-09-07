@@ -2291,14 +2291,32 @@ class SemiLagrangian(_DDtBase):
             self._v_prev.remesh_policy = RemeshPolicy.CARRY
             self._v_prev._remesh_managed_by = self
             self._v_prev_valid = False
-        v_src = self.V_fn if not isinstance(self.V_fn, sympy.Basic) else None
+        v_src = self._velocity_mesh_variable()
         if v_src is not None and getattr(v_src, "degree", None) == self._v_prev.degree:
+            # Exact copy. Evaluating at (nudged) nodes instead leaves a
+            # 0.001 h |grad v| bias in v_prev that the extrapolation feeds
+            # into every trace: on Blankenbach 1a it moved the wall Nusselt
+            # number by 0.9 % (first-cell temperature, 5e-4).
             self._v_prev.data[...] = v_src.data[...]
         else:
             coords = self._centroid_shifted_var_coords(self._v_prev)
             vals = uw.function.evaluate(self._V_matrix(), coords)
             self._v_prev.data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
         self._v_prev_valid = True
+
+    def _velocity_mesh_variable(self):
+        """The mesh variable behind ``V_fn`` if ``V_fn`` is one, or exactly
+        one's symbol; else None."""
+        V = self.V_fn
+        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+            return V
+        try:
+            found = uw.discretisation.meshVariable_lookup_by_symbol(self.mesh, sympy.Matrix(V))
+        except Exception:
+            found = None
+        if found is not None and found[1] == -1:
+            return found[0]
+        return None
 
     def _centroid_shifted_var_coords(self, var):
         """ND node coordinates of ``var`` nudged 0.1 % toward their cell
