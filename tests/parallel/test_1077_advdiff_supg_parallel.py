@@ -46,4 +46,5 @@ def test_error_is_partition_independent():
     gathered = uw.mpi.comm.allgather(err)
     assert max(gathered) - min(gathered) < 1e-12, gathered
     if SERIAL_ERROR is not None:
-        assert abs(err - SERIAL_ERROR) < 1e-8, (err, SERIAL_ERROR)
+        # the partition effect this guards against was 5e-4 (#687); platforms differ at 1e-7
+        assert abs(err - SERIAL_ERROR) < 1e-6 * SERIAL_ERROR, (err, SERIAL_ERROR)
