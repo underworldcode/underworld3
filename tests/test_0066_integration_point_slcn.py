@@ -106,3 +106,50 @@ def test_rotating_gaussian_beats_nodal_slcn():
     assert l2_ip <= l2_nodal
     assert peak_ip >= peak_nodal
     assert l2_ip < 0.02
+
+
+def _unsteady_uniform_flow_check(kind):
+    """Uniform velocity that changes linearly in time, v(t) = a + b t. The
+    exact foot for the interval [t1, t1 + dt] is x - dt (a + b (t1 + dt/2)).
+    With the mid-time velocity extrapolated from v(t1) and v(t0) the trace
+    reproduces it; with v(t1) alone the foot is off by b dt^2 / 2."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=3)
+    T = uw.discretisation.MeshVariable(f"T_{kind}", mesh, 1, degree=2)
+    v_var = uw.discretisation.MeshVariable(f"v_{kind}", mesh, mesh.dim, degree=2)
+    f = lambda X: 1.0 + 2.0 * X[:, 0] - 3.0 * X[:, 1] + 0.5 * X[:, 0] ** 2 + X[:, 0] * X[:, 1]
+    T.data[:, 0] = f(np.asarray(T.coords))
+    a, b, dt = np.array([1.0, 0.5]), np.array([2.0, -1.0]), 0.1
+
+    if kind == "ip":
+        ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, v_var, degree=2, order=1)
+    else:
+        ddt = uw.systems.ddt.SemiLagrangian(mesh, T, v_var, uw.VarType.SCALAR, degree=2, continuous=True, order=1)
+
+    v_var.data[...] = a + b * 0.0
+    ddt.update_pre_solve(dt)
+    ddt.update_post_solve(dt)
+    v_var.data[...] = a + b * dt
+    ddt.update_pre_solve(dt)
+
+    X = np.asarray(ddt.psi_star[0].coords)
+    exact_foot = X - dt * (a + b * (dt + 0.5 * dt))
+    naive_foot = X - dt * (a + b * dt)
+    inside = (exact_foot > 0.02).all(1) & (exact_foot < 0.98).all(1) & (naive_foot > 0.02).all(1) & (naive_foot < 0.98).all(1)
+    assert inside.sum() > 100
+    got = np.asarray(ddt.psi_star[0].data[:, 0])
+    return np.abs(got[inside] - f(exact_foot[inside])).max(), np.abs(got[inside] - f(naive_foot[inside])).max()
+
+
+@pytest.mark.parametrize("kind", ["ip", "nodal"])
+def test_midtime_velocity_makes_the_trace_second_order(kind):
+    err_exact, err_naive = _unsteady_uniform_flow_check(kind)
+    # The trace is exact to round-off. Integration-point: the tolerance
+    # covers the evaluator, which returns one foot in ~2000 a few 1e-6 off
+    # (a locator edge case shared by evaluate and global_evaluate). Nodal:
+    # the scheme traces from nodes nudged 0.1 % toward the cell centroid
+    # and stores at the unnudged node, an error of order 0.001 h |grad psi|
+    # per step (2e-4 here) that the integration-point scheme does not have.
+    assert err_exact < (1e-5 if kind == "ip" else 1e-3)
+    # Negative control: the foot from v^n alone is b dt^2/2 away, which for
+    # this quadratic field is a visible difference.
+    assert err_naive > 1e-3

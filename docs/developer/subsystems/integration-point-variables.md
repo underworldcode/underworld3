@@ -134,6 +134,22 @@ The diffusive flux history (`DFDt`) keeps its nodal projection, since it
 carries derivatives. Scalar histories only; no ALE or old-frame trace-back,
 no checkpoint state yet.
 
+### The mid-point velocity is taken at the mid time
+
+The RK2 trace, `x_mid = x - dt/2 v(x)`, `x_dep = x - dt v(x_mid)`, is second
+order only if `v(x_mid)` is the velocity at `t^{n+1/2}`. Both schemes now
+take it there: on the current interval by extrapolation from the two most
+recent velocity fields, `1.5 v^n - 0.5 v^{n-1}` (the velocity at `n+1` is
+not known when the history is built), and on the older segments of a
+multi-step history by the average of the two known ends. With `v^n` alone
+the foot is off by `b dt²/2` in a flow accelerating at rate `b`, first
+order in an unsteady flow; the rotating Gaussian did not show it because
+that velocity is steady. `tests/test_0066_integration_point_slcn.py`
+checks both schemes against the exact foot in a uniformly accelerating
+flow, with the `v^n`-only foot as the control. `SemiLagrangian` keeps the
+previous velocity in a `v_prev` mesh variable it manages; the
+integration-point scheme keeps at least two velocity snapshots.
+
 For a P2 field in a uniform velocity the slots reproduce the exact
 departure-point values to round-off, for one and for two segments
 (`tests/test_0066_integration_point_slcn.py`).

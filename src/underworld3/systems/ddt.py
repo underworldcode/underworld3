@@ -2256,12 +2256,59 @@ class SemiLagrangian(_DDtBase):
         except Exception:
             return None
 
+    def _midtime_velocity_expr(self):
+        r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
+        trace-back: :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` once a previous
+        velocity has been recorded, else :math:`v^n`."""
+        v_prev = getattr(self, "_v_prev", None)
+        if v_prev is None or not getattr(self, "_v_prev_valid", False):
+            return None
+        return self._V_matrix() * sympy.Rational(3, 2) - v_prev.sym * sympy.Rational(1, 2)
+
+    def _V_matrix(self):
+        """``V_fn`` as a sympy row matrix (a mesh variable contributes its symbol)."""
+        V = self.V_fn
+        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+            return sympy.Matrix(V.sym)
+        return sympy.Matrix(V)
+
+    def _record_velocity_history(self):
+        """Store the current advecting velocity at the nodes as v^{n-1}
+        for the next step."""
+        if getattr(self, "_v_prev", None) is None:
+            v_degree = getattr(self.V_fn, "degree", 2)
+            self._v_prev = uw.discretisation.MeshVariable(
+                f"v_prev_sl_{self.instance_number}", self.mesh, self.mesh.dim,
+                degree=v_degree, continuous=True,
+                varsymbol=rf"{{ V^{{ (n-1) }}_{{ [{self.instance_number}] }} }}",
+            )
+            self._v_prev.remesh_policy = RemeshPolicy.CARRY
+            self._v_prev._remesh_managed_by = self
+            self._v_prev_valid = False
+        v_src = self.V_fn if not isinstance(self.V_fn, sympy.Basic) else None
+        if v_src is not None and getattr(v_src, "degree", None) == self._v_prev.degree:
+            self._v_prev.data[...] = v_src.data[...]
+        else:
+            coords = self._centroid_shifted_var_coords(self._v_prev)
+            vals = uw.function.evaluate(self._V_matrix(), coords)
+            self._v_prev.data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        self._v_prev_valid = True
+
+    def _centroid_shifted_var_coords(self, var):
+        """ND node coordinates of ``var`` nudged 0.1 % toward their cell
+        centroids (see :meth:`_centroid_shifted_node_coords`)."""
+        coords = np.asarray(var.coords_nd)
+        cellid = self.mesh.get_closest_cells(coords).reshape(-1)
+        cent = np.asarray(self.mesh._centroids)[cellid]
+        return 0.999 * coords + 0.001 * cent
+
     def _velocity_nd_at(
         self,
         coords,
         use_global: bool = False,
         evalf: bool = False,
         subtract_v_mesh: bool = False,
+        expr=None,
     ):
         r"""Evaluate the advecting velocity at ``coords``, reduced to ND space.
 
@@ -2293,15 +2340,16 @@ class SemiLagrangian(_DDtBase):
             (rather than symbolically as ``V_fn − v_mesh.sym``) so the
             subtraction inherits the same unit treatment as ``V_fn``.
         """
+        fn = self._V_matrix() if expr is None else expr
         if use_global:
-            v_result = uw.function.global_evaluate(self.V_fn, coords, evalf=evalf)
+            v_result = uw.function.global_evaluate(fn, coords, evalf=evalf)
             if subtract_v_mesh:
                 v_mesh = uw.function.global_evaluate(
                     self._v_mesh_var.sym, coords, evalf=evalf
                 )
                 v_result = v_result - v_mesh
         else:
-            v_result = uw.function.evaluate(self.V_fn, coords)
+            v_result = uw.function.evaluate(fn, coords)
             if subtract_v_mesh:
                 v_mesh = uw.function.evaluate(self._v_mesh_var.sym, coords)
                 v_result = v_result - v_mesh
@@ -2562,12 +2610,17 @@ class SemiLagrangian(_DDtBase):
 
         # Mid-point velocities may lie off-rank, so route through
         # global_evaluate (with evalf forwarded), unlike the on-node
-        # evaluation above.
+        # evaluation above. The mid-point velocity is taken at the mid
+        # TIME, t^{n+1/2}, by extrapolation from the two most recent
+        # velocity fields, 1.5 v^n - 0.5 v^{n-1}; with v^n alone the
+        # trace is only first order in an unsteady flow. On the first
+        # step (no previous velocity) v^n is used.
         v_at_mid_pts = self._velocity_nd_at(
             mid_pt_coords,
             use_global=True,
             evalf=evalf,
             subtract_v_mesh=subtract_v_mesh,
+            expr=self._midtime_velocity_expr(),
         )
 
         # Upstream (departure) coordinates: current position - velocity * timestep
@@ -2778,6 +2831,10 @@ class SemiLagrangian(_DDtBase):
                 i, end_pt_coords, evalf, monotone_mode,
                 _oldframe_active, _oldframe_X,
             )
+
+        # The velocity used this step becomes v^{n-1} for the next
+        # step's mid-time extrapolation.
+        self._record_velocity_history()
 
         # Phase-2 ALE: consume the one-step v_mesh pulse. Subsequent
         # non-adapt steps will see no pending displacement and run a
@@ -3578,12 +3635,15 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         ]
         if v_degree is None:
             v_degree = getattr(V_fn, "degree", 2)
+        # At least two velocity levels: the current interval's mid-time
+        # velocity is extrapolated from v^n and v^{n-1}.
+        self._n_v = max(order, 2)
         self.v_snap = [
             uw.discretisation.MeshVariable(
                 f"v_snap_ip_{inst}_{k}", mesh, mesh.dim, degree=v_degree, continuous=True,
                 varsymbol=rf"{{ V^{{ (n-{k}) }} }}",
             )
-            for k in range(order)
+            for k in range(self._n_v)
         ]
         self._init_coefficient_expressions(order, self.theta, with_exp=False)
 
@@ -3679,15 +3739,16 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             v = v[:, 0, :]
         return v.reshape(coords.shape[0], self.mesh.dim)
 
-    def _trace_segment(self, X, v_sym, dt, evalf):
+    def _trace_segment(self, X, v_start_sym, v_mid_sym, dt, evalf):
         r"""One RK2 (midpoint) segment of the characteristic, backwards:
-        ``x_mid = x - dt/2 v(x)``, ``x_dep = x - dt v(x_mid)``."""
+        ``x_mid = x - dt/2 v_start(x)``, ``x_dep = x - dt v_mid(x_mid)``,
+        with ``v_mid`` the velocity at the segment's mid TIME."""
         clamp = self.mesh.return_coords_to_bounds
-        v0 = self._velocity_at(v_sym, X, evalf)
+        v0 = self._velocity_at(v_start_sym, X, evalf)
         Xm = X - 0.5 * dt * v0
         if clamp is not None:
             Xm = clamp(Xm)
-        vm = self._velocity_at(v_sym, Xm, evalf)
+        vm = self._velocity_at(v_mid_sym, Xm, evalf)
         Xd = X - dt * vm
         if clamp is not None:
             Xd = clamp(Xd)
@@ -3704,10 +3765,23 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         """Trace back from the integration points and sample the snapshots."""
         X0 = np.asarray(self.psi_star[0].coords_nd)
         X = X0.copy()
+        half = sympy.Rational(1, 2)
         for k in range(self.order):
             # Segment k extends the trace from slot k-1's feet, so the
             # feet for slot k are those of slot k-1 traced one more step.
-            X = self._trace_segment(X, self.v_snap[k].sym, self._segment_dt(k, dt), evalf)
+            # Segment k runs from t^{n+1-k} back to t^{n-k}. Its mid-time
+            # velocity: for k=0 extrapolated, 1.5 v^n - 0.5 v^{n-1} (v^{n+1}
+            # is not known yet); for k>=1 both ends are known, so the
+            # average of v^{n+1-k} and v^{n-k}. The first stage, which
+            # only places the mid-point, uses the velocity at the
+            # segment's start time.
+            if k == 0:
+                v_start = self.v_snap[0].sym
+                v_mid = self.v_snap[0].sym * sympy.Rational(3, 2) - self.v_snap[1].sym * half
+            else:
+                v_start = self.v_snap[k - 1].sym
+                v_mid = (self.v_snap[k - 1].sym + self.v_snap[k].sym) * half
+            X = self._trace_segment(X, v_start, v_mid, self._segment_dt(k, dt), evalf)
             vals = uw.function.global_evaluate(
                 self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
             )
@@ -3719,6 +3793,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self._record_current()
         for k in range(1, self.order):
             self.psi_snap[k].data[...] = self.psi_snap[0].data[...]
+        for k in range(1, self._n_v):
             self.v_snap[k].data[...] = self.v_snap[0].data[...]
         X = np.asarray(self.psi_star[0].coords_nd)
         vals = np.asarray(uw.function.evaluate(self.psi_snap[0].sym[0], X)).reshape(-1)
@@ -3734,6 +3809,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
         for k in range(self.order - 1, 0, -1):
             self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
+        for k in range(self._n_v - 1, 0, -1):
             self.v_snap[k].data[...] = self.v_snap[k - 1].data[...]
         self._record_current()
         self._fill_slots(dt, evalf)
