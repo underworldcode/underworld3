@@ -149,14 +149,20 @@ checks both schemes against the exact foot in a uniformly accelerating
 flow, for `V_fn` given as the variable, as `-v` and as `v/2`, with the
 `v^n`-only foot as the control.
 
-`V_fn` stays symbolic by design (`-v`, `v/2`, `v - v_mesh` must all just
-work), so the previous velocity is never a separate field evaluated from
-it. Each scheme snapshots the mesh variables that `V_fn` contains and forms
-`v^{n-1}` as `V_fn` with those variables substituted by their copies: exact
-for any expression, and an analytic `V_fn` reduces to itself. Evaluating
-`V_fn` at the (nudged) nodes instead left a `0.001 h |grad v|` bias that the
-extrapolation fed into every trace; on Blankenbach 1a it moved the wall
-Nusselt number by 0.9 %.
+`V_fn` stays symbolic by design (`-v`, `v/2`, `c(t) v`, `v - v_mesh` must
+all just work), and the previous velocity is **cached by evaluation**:
+`V_fn` evaluated at the true nodes of a vector field of the highest degree
+among the variables it contains. That captures everything the expression
+depends on as it was at that time: the variables, constants that ramp,
+swarm proxies, the mesh geometry. Substituting snapshots of the mesh
+variables into the expression would read a ramping constant at its
+current value. Evaluating at nodes *nudged* into their cells, the old
+boundary-node workaround, left a `0.001 h |grad v|` bias that the
+extrapolation fed into every trace and moved the Blankenbach 1a wall
+Nusselt number by 0.9 %; the evaluator is exact at the true node
+coordinates on simplex, quad and annulus meshes (2e-16), so no nudge is
+used here. The test covers `V_fn` as the variable, `-v`, `v/2` and `c v`
+with `c` changed between steps.
 
 For a P2 field in a uniform velocity the slots reproduce the exact
 departure-point values to round-off, for one and for two segments

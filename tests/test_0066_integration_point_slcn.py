@@ -120,7 +120,12 @@ def _unsteady_uniform_flow_check(kind, vform="var"):
     T.data[:, 0] = f(np.asarray(T.coords))
     a, b, dt = np.array([1.0, 0.5]), np.array([2.0, -1.0]), 0.1
     # V_fn is symbolic by design: any expression of the variable must work.
-    V_fn, factor = {"var": (v_var, 1.0), "neg": (-v_var.sym, -1.0), "half": (v_var.sym / 2, 0.5)}[vform]
+    # "ramp": a constant that changes between the two steps; the cached
+    # previous velocity must carry the OLD value (substituting snapshots of
+    # the variables into the expression would read the new one).
+    c = uw.expression(r"c_{ramp}", 1.0, "ramping factor")
+    V_fn, factor = {"var": (v_var, 1.0), "neg": (-v_var.sym, -1.0), "half": (v_var.sym / 2, 0.5),
+                    "ramp": (c * v_var.sym, 1.0)}[vform]
 
     if kind == "ip":
         ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V_fn, degree=2, order=1)
@@ -130,19 +135,29 @@ def _unsteady_uniform_flow_check(kind, vform="var"):
     v_var.data[...] = a + b * 0.0
     ddt.update_pre_solve(dt)
     ddt.update_post_solve(dt)
-    v_var.data[...] = a + b * dt
+    if vform == "ramp":
+        # v(t1) = 1.5 (a + b dt) through the constant; v(t0) = a. Extrapolated
+        # mid-time velocity 1.5 v(t1) - 0.5 v(t0) = 2.25 (a + b dt) - 0.5 a.
+        c.sym = 1.5
+        v_var.data[...] = a + b * dt
+        v_mid = 2.25 * (a + b * dt) - 0.5 * a
+        v_naive = 1.5 * (a + b * dt)
+    else:
+        v_var.data[...] = a + b * dt
+        v_mid = factor * (a + b * (dt + 0.5 * dt))
+        v_naive = factor * (a + b * dt)
     ddt.update_pre_solve(dt)
 
     X = np.asarray(ddt.psi_star[0].coords)
-    exact_foot = X - dt * factor * (a + b * (dt + 0.5 * dt))
-    naive_foot = X - dt * factor * (a + b * dt)
+    exact_foot = X - dt * v_mid
+    naive_foot = X - dt * v_naive
     inside = (exact_foot > 0.02).all(1) & (exact_foot < 0.98).all(1) & (naive_foot > 0.02).all(1) & (naive_foot < 0.98).all(1)
     assert inside.sum() > 100
     got = np.asarray(ddt.psi_star[0].data[:, 0])
     return np.abs(got[inside] - f(exact_foot[inside])).max(), np.abs(got[inside] - f(naive_foot[inside])).max()
 
 
-@pytest.mark.parametrize("vform", ["var", "neg", "half"])
+@pytest.mark.parametrize("vform", ["var", "neg", "half", "ramp"])
 @pytest.mark.parametrize("kind", ["ip", "nodal"])
 def test_midtime_velocity_makes_the_trace_second_order(kind, vform):
     err_exact, err_naive = _unsteady_uniform_flow_check(kind, vform)

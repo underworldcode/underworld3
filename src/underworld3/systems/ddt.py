@@ -683,46 +683,37 @@ class _DDtBase(uw_object):
             return sympy.Matrix(V.sym)
         return sympy.Matrix(V)
 
-    def _velocity_variables(self):
-        """The distinct mesh variables ``V_fn`` is built from (may be empty:
-        an analytic velocity)."""
+    def _velocity_degree(self):
+        """Degree of the nodal velocity cache: the highest degree among the
+        mesh variables in ``V_fn`` (2 for an analytic velocity)."""
         _, varfns, _ = uw.function.expressions.mesh_vars_in_expression(self._V_matrix())
-        seen, out = set(), []
-        for fn in varfns:
-            var = fn.meshvar()
-            if id(var) not in seen:
-                seen.add(id(var))
-                out.append(var)
-        return out
+        degs = [fn.meshvar().degree for fn in varfns]
+        return max(degs) if degs else 2
 
     def _make_velocity_level(self, tag):
-        """A snapshot level: one copy of every mesh variable in ``V_fn`` plus
-        ``V_fn`` with those variables substituted by their copies. ``V_fn``
-        stays whatever expression the user gave (``-v``, ``v/2``, ``v - v_mesh``):
-        the substitution keeps it exact at any earlier time."""
-        copies, subs = {}, {}
-        for k, var in enumerate(self._velocity_variables()):
-            snap = uw.discretisation.MeshVariable(
-                f"vsnap_{tag}_{self.instance_number}_{k}", self.mesh, var.num_components,
-                vtype=var.vtype, degree=var.degree, continuous=var.continuous,
-                varsymbol=rf"{{ {var.symbol}^{{ ({tag}) }} }}",
-            )
-            snap.remesh_policy = RemeshPolicy.CARRY
-            snap._remesh_managed_by = self
-            copies[var.clean_name] = (var, snap)
-            for a, b in zip(var.sym_1d, snap.sym_1d):
-                subs[a] = b
-        expr = self._V_matrix().applyfunc(lambda e: e.xreplace(subs)) if subs else self._V_matrix()
-        return {"copies": copies, "expr": expr}
+        """A cached velocity level: ``V_fn`` EVALUATED at the true nodes of a
+        vector field (no nudge; the evaluator is exact at node coordinates on
+        simplex, quad and annulus meshes). Caching by evaluation, rather than
+        by substituting snapshots of the mesh variables into the expression,
+        is what captures everything ``V_fn`` depends on at that time: the
+        variables, constants that ramp, swarm proxies, the mesh geometry."""
+        snap = uw.discretisation.MeshVariable(
+            f"vcache_{tag}_{self.instance_number}", self.mesh, self.mesh.dim,
+            degree=self._velocity_degree(), continuous=True,
+            varsymbol=rf"{{ V^{{ ({tag}) }}_{{ [{self.instance_number}] }} }}",
+        )
+        snap.remesh_policy = RemeshPolicy.CARRY
+        snap._remesh_managed_by = self
+        return {"var": snap, "expr": snap.sym}
 
-    @staticmethod
-    def _copy_velocity_level(dst, src=None):
-        """``dst`` <- ``src`` (another level) or, with ``src=None``, the live variables."""
-        for name, (var, snap) in dst["copies"].items():
-            if src is None:
-                snap.data[...] = var.data[...]
-            else:
-                snap.data[...] = src["copies"][name][1].data[...]
+    def _copy_velocity_level(self, dst, src=None):
+        """``dst`` <- ``src`` (another level) or, with ``src=None``, ``V_fn``
+        evaluated now at ``dst``'s nodes."""
+        if src is None:
+            vals = uw.function.evaluate(self._V_matrix(), np.asarray(dst["var"].coords_nd))
+            dst["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        else:
+            dst["var"].data[...] = src["var"].data[...]
 
     def bdf(self, order: Optional[int] = None):
         r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
@@ -2313,9 +2304,9 @@ class SemiLagrangian(_DDtBase):
         r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
         trace-back: :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` once a previous
         velocity has been recorded, else :math:`v^n`. :math:`v^{n-1}` is
-        ``V_fn`` with the mesh variables it contains replaced by their
-        snapshots, so any expression (``-v``, ``v/2``, ``v - v_mesh``) is
-        carried exactly; an analytic ``V_fn`` reduces to itself."""
+        ``V_fn`` as evaluated at the previous step and cached at the nodes,
+        so any expression (``-v``, ``v/2``, ``c(t) v``, ``v - v_mesh``) is
+        carried as it was then."""
         if not getattr(self, "midtime_velocity", True):
             return None
         level = getattr(self, "_v_prev_level", None)
@@ -2324,10 +2315,10 @@ class SemiLagrangian(_DDtBase):
         return self._V_matrix() * sympy.Rational(3, 2) - level["expr"] * sympy.Rational(1, 2)
 
     def _record_velocity_history(self):
-        """Snapshot the mesh variables inside ``V_fn`` as v^{n-1} for the
-        next step. A copy, never an evaluation: evaluating at (nudged) nodes
-        left a 0.001 h |grad v| bias that the extrapolation fed into every
-        trace and moved the Blankenbach 1a wall Nusselt number by 0.9 %."""
+        """Cache ``V_fn`` evaluated at the true nodes as v^{n-1} for the
+        next step. Evaluating at NUDGED nodes left a 0.001 h |grad v| bias
+        that the extrapolation fed into every trace and moved the
+        Blankenbach 1a wall Nusselt number by 0.9 %."""
         if getattr(self, "_v_prev_level", None) is None:
             self._v_prev_level = self._make_velocity_level("n-1")
             self._v_prev_valid = False
@@ -3605,8 +3596,8 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         As for :class:`SemiLagrangian`. ``psi_fn`` may be a scalar
         ``MeshVariable`` (its nodal data is then copied into the snapshot
         rather than re-evaluated) or a scalar expression.
-    ``V_fn`` may be any expression of mesh variables (``-v``, ``v/2``); the
-    velocity history snapshots the variables it contains.
+    ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
+    velocity history caches it by evaluation at each time level.
     """
 
     def __init__(
@@ -3672,9 +3663,9 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             for k in range(order)
         ]
         # At least two velocity levels: the current interval's mid-time
-        # velocity is extrapolated from v^n and v^{n-1}. Each level is a
-        # snapshot of the mesh variables inside V_fn, substituted into the
-        # expression, so V_fn may be any expression of them.
+        # velocity is extrapolated from v^n and v^{n-1}. Each level caches
+        # V_fn evaluated at the nodes at that time, so V_fn may be any
+        # expression (variables, ramping constants, swarm proxies).
         self._n_v = max(order, 2)
         self.v_levels = [self._make_velocity_level(f"n-{k}") for k in range(self._n_v)]
         self._init_coefficient_expressions(order, self.theta, with_exp=False)
