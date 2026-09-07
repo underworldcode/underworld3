@@ -810,3 +810,36 @@ def test_place_fault_ribbon_2d_two_strand_network():
     verts = {tuple(q) for q in ps._coords(mesh.dm).round(9).tolist()}
     for P in (main, branch):
         assert all(tuple(q) in verts for q in P.round(9).tolist())
+
+
+def test_an_absent_cell_label_reads_as_no_cells():
+    """``Mesh.cells_labelled`` promised an all-False mask for a label the
+    mesh does not carry; it aborted the process instead (petsc4py hands
+    back a wrapper around a NULL label, not None). Found by the seam
+    ligament's ``<label>_ligament`` query in serial, where no ligament
+    exists (#670)."""
+    mesh = _box2(0.2)
+    mask = mesh.cells_labelled("NoSuchLabel")
+    assert mask.dtype == bool and len(mask) == mesh.dm.getHeightStratum(0)[1]
+    assert not mask.any()
+
+
+def test_seams_ligament_reduces_to_the_gather_path_in_serial():
+    """With no seam there is no ligament: ``seams="ligament"`` must give
+    the gather path's mesh exactly — same cells, same coordinates, no
+    ligament cells — so the two can be compared like for like in
+    parallel (#670)."""
+    line = np.array([[0.3, 0.5], [0.5, 0.52], [0.7, 0.5]])
+    out = {}
+    for seams in ("gather", "ligament"):
+        mesh = _box2(0.07)
+        new, info = place_thin_volume(mesh.dm, [line], width=0.03,
+                                      mesher="network", seams=seams)
+        X = np.asarray(uw.discretisation.Mesh(new, simplex=True).X.coords)
+        out[seams] = (info["n_zone_cells"], info["n_placed"],
+                      X[np.lexsort((X[:, 1], X[:, 0]))],
+                      info["n_ligament_cells"])
+    g, l = out["gather"], out["ligament"]
+    assert g[0] == l[0] and g[1] == l[1]
+    assert np.array_equal(g[2], l[2])
+    assert l[3] == 0

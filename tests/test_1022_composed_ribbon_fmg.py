@@ -118,6 +118,15 @@ def _solve_and_probe(stokes):
     return ctx, velpc
 
 
+def _patch_pc(spc):
+    """The ASM patch of a level: the level PC itself in the replacing form,
+    the second member of the composite in the default form (the whole-level
+    smoother first, the fault blocks on top — #670)."""
+    if spc.getType() == "composite":
+        return spc.getCompositePC(1)
+    return spc
+
+
 def test_pure_contact_structural_patch(composed_stack):
     """The benchmark of record: split contact, structural patch alone."""
     mesh, tail = composed_stack
@@ -141,7 +150,7 @@ def test_pure_contact_structural_patch(composed_stack):
         # Recorded 24-28 everywhere; structural-zero fattening measured
         # 90-481. The bound is the fat-chain tripwire, not a target.
         assert nnz_row <= 40, f"level {l}: nnz/row {nnz_row:.0f} (fat chain)"
-        spc = sm.getPC()
+        spc = _patch_pc(sm.getPC())
         if spc.getType() == "asm":
             assert not spc.getFailedReason(), f"level {l} ASM PC failed"
             if l == nlev - 1:
@@ -173,11 +182,17 @@ def test_fac_zone_key_installs_union_block(composed_stack):
     ctx, velpc = _solve_and_probe(stokes)
     assert ctx.get("vel_its_last") <= 15
 
-    spc = velpc.getMGSmoother(velpc.getMGLevels() - 1).getPC()
+    spc = _patch_pc(velpc.getMGSmoother(velpc.getMGLevels() - 1).getPC())
     assert spc.getType() == "asm"
-    assert len(spc.getASMSubKSP()) >= 2, (
-        "zone key must install the zone block plus the automatic "
-        "structural-union block")
+    level_pc = velpc.getMGSmoother(velpc.getMGLevels() - 1).getPC()
+    if level_pc.getType() == "composite":
+        # the default form (#670): the whole-level smoother covers the
+        # structural rows, and the zone block stands alone on top of it
+        assert len(spc.getASMSubKSP()) >= 1, "zone key must install the zone block"
+    else:
+        assert len(spc.getASMSubKSP()) >= 2, (
+            "zone key must install the zone block plus the automatic "
+            "structural-union block")
 
     # The retired spelling must fail LOUDLY, never decline silently.
     stokes2 = _contact_stokes(mesh, "C")
