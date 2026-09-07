@@ -38,7 +38,7 @@ from underworld3.function import expression as public_expression
 from underworld3.systems.ddt import _DDtBase
 from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.advection_diffusion_eulerian import _check_supplied_manager
-from underworld3.systems.solvers import SNES_Stokes
+from underworld3.systems.solvers import SNES_Stokes, _dimensionalise_dt
 
 _ADVECTION_MODES = ("extrapolated", "implicit")
 
@@ -479,7 +479,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         dt = fraction * hi / rate if rate > 0.0 else np.inf
         if np.isinf(dt) or hi <= 0.0:
             return SNES_Stokes.estimate_dt(self)
-        return dt
+        # The same units as the resolution estimate: a quantity when a model
+        # with reference scales is active, a plain number otherwise.
+        return _dimensionalise_dt(dt)
 
     @timing.routine_timer_decorator
     def solve(

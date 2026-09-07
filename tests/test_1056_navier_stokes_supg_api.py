@@ -107,3 +107,24 @@ def test_peclet_weight_constructs_and_steps(mesh):
     assert ns.peclet_weight == 2.0
     ns.solve(timestep=0.05)
     assert np.isfinite(np.asarray(v.array)).all() and ns.snes.getIterationNumber() == 1
+
+
+def test_estimate_dt_carries_time_units_on_both_bases():
+    """Under a model with reference scales both estimates come back as time
+    quantities (Copilot on #688: the accuracy basis returned a bare number
+    while the resolution fallback returned a quantity)."""
+    orchestration_model = uw.get_default_model()
+    orchestration_model.set_reference_quantities(
+        length=uw.quantity(1.0, "m"), time=uw.quantity(1.0, "s"))
+    try:
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+        ns, v, _p = _cavity(mesh, "units", rho=1.0)
+        ns.solve(timestep=0.05)
+        before = ns.estimate_dt(basis="resolution")
+        after = ns.estimate_dt()
+        for dt in (before, after):
+            assert hasattr(dt, "dimensionality") and "[time]" in str(dt.dimensionality), dt
+        assert float(after.magnitude) > 0
+    finally:
+        uw.reset_default_model()

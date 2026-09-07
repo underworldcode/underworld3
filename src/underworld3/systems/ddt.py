@@ -1623,7 +1623,7 @@ class EulerianSUPG(Eulerian):
         theta: Optional[float] = None,
         varsymbol: Optional[str] = r"u",
         verbose: Optional[bool] = False,
-        bcs=[],
+        bcs=None,
         smoothing: float = 0.0,
         diffusivity=0,
         supg_weight: float = 1.0,
@@ -1645,10 +1645,13 @@ class EulerianSUPG(Eulerian):
         if tau_shape not in self._TAU_SHAPES:
             raise ValueError(f"tau_shape must be one of {self._TAU_SHAPES}, got {tau_shape!r}")
 
+        # A caller's list is kept BY REFERENCE on purpose: a solver passes its
+        # live essential_bcs so conditions added later reach the projections.
+        # Only the default gets a fresh list, never a shared one.
         super().__init__(
             mesh, psi_fn, vtype, degree, continuous, V_fn=None, theta=theta,
-            varsymbol=varsymbol, verbose=verbose, bcs=bcs, order=order,
-            smoothing=smoothing, num_components=num_components,
+            varsymbol=varsymbol, verbose=verbose, bcs=[] if bcs is None else bcs,
+            order=order, smoothing=smoothing, num_components=num_components,
         )
         self._advection_mode = "assembled"
         self._integrator = "am" if order == 1 else "bdf"
