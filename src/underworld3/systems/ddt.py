@@ -675,6 +675,55 @@ class _DDtBase(uw_object):
         """
         return [ps.sym for ps in self.psi_star]
 
+    # ----- velocity-expression snapshots (mid-time trace-back) -----
+    def _V_matrix(self):
+        """``V_fn`` as a sympy row matrix (a mesh variable contributes its symbol)."""
+        V = self.V_fn
+        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+            return sympy.Matrix(V.sym)
+        return sympy.Matrix(V)
+
+    def _velocity_variables(self):
+        """The distinct mesh variables ``V_fn`` is built from (may be empty:
+        an analytic velocity)."""
+        _, varfns, _ = uw.function.expressions.mesh_vars_in_expression(self._V_matrix())
+        seen, out = set(), []
+        for fn in varfns:
+            var = fn.meshvar()
+            if id(var) not in seen:
+                seen.add(id(var))
+                out.append(var)
+        return out
+
+    def _make_velocity_level(self, tag):
+        """A snapshot level: one copy of every mesh variable in ``V_fn`` plus
+        ``V_fn`` with those variables substituted by their copies. ``V_fn``
+        stays whatever expression the user gave (``-v``, ``v/2``, ``v - v_mesh``):
+        the substitution keeps it exact at any earlier time."""
+        copies, subs = {}, {}
+        for k, var in enumerate(self._velocity_variables()):
+            snap = uw.discretisation.MeshVariable(
+                f"vsnap_{tag}_{self.instance_number}_{k}", self.mesh, var.num_components,
+                vtype=var.vtype, degree=var.degree, continuous=var.continuous,
+                varsymbol=rf"{{ {var.symbol}^{{ ({tag}) }} }}",
+            )
+            snap.remesh_policy = RemeshPolicy.CARRY
+            snap._remesh_managed_by = self
+            copies[var.clean_name] = (var, snap)
+            for a, b in zip(var.sym_1d, snap.sym_1d):
+                subs[a] = b
+        expr = self._V_matrix().applyfunc(lambda e: e.xreplace(subs)) if subs else self._V_matrix()
+        return {"copies": copies, "expr": expr}
+
+    @staticmethod
+    def _copy_velocity_level(dst, src=None):
+        """``dst`` <- ``src`` (another level) or, with ``src=None``, the live variables."""
+        for name, (var, snap) in dst["copies"].items():
+            if src is None:
+                snap.data[...] = var.data[...]
+            else:
+                snap.data[...] = src["copies"][name][1].data[...]
+
     def bdf(self, order: Optional[int] = None):
         r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
 
@@ -2263,60 +2312,27 @@ class SemiLagrangian(_DDtBase):
     def _midtime_velocity_expr(self):
         r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
         trace-back: :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` once a previous
-        velocity has been recorded, else :math:`v^n`."""
+        velocity has been recorded, else :math:`v^n`. :math:`v^{n-1}` is
+        ``V_fn`` with the mesh variables it contains replaced by their
+        snapshots, so any expression (``-v``, ``v/2``, ``v - v_mesh``) is
+        carried exactly; an analytic ``V_fn`` reduces to itself."""
         if not getattr(self, "midtime_velocity", True):
             return None
-        v_prev = getattr(self, "_v_prev", None)
-        if v_prev is None or not getattr(self, "_v_prev_valid", False):
+        level = getattr(self, "_v_prev_level", None)
+        if level is None or not getattr(self, "_v_prev_valid", False):
             return None
-        return self._V_matrix() * sympy.Rational(3, 2) - v_prev.sym * sympy.Rational(1, 2)
-
-    def _V_matrix(self):
-        """``V_fn`` as a sympy row matrix (a mesh variable contributes its symbol)."""
-        V = self.V_fn
-        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
-            return sympy.Matrix(V.sym)
-        return sympy.Matrix(V)
+        return self._V_matrix() * sympy.Rational(3, 2) - level["expr"] * sympy.Rational(1, 2)
 
     def _record_velocity_history(self):
-        """Store the current advecting velocity at the nodes as v^{n-1}
-        for the next step."""
-        if getattr(self, "_v_prev", None) is None:
-            v_degree = getattr(self.V_fn, "degree", 2)
-            self._v_prev = uw.discretisation.MeshVariable(
-                f"v_prev_sl_{self.instance_number}", self.mesh, self.mesh.dim,
-                degree=v_degree, continuous=True,
-                varsymbol=rf"{{ V^{{ (n-1) }}_{{ [{self.instance_number}] }} }}",
-            )
-            self._v_prev.remesh_policy = RemeshPolicy.CARRY
-            self._v_prev._remesh_managed_by = self
+        """Snapshot the mesh variables inside ``V_fn`` as v^{n-1} for the
+        next step. A copy, never an evaluation: evaluating at (nudged) nodes
+        left a 0.001 h |grad v| bias that the extrapolation fed into every
+        trace and moved the Blankenbach 1a wall Nusselt number by 0.9 %."""
+        if getattr(self, "_v_prev_level", None) is None:
+            self._v_prev_level = self._make_velocity_level("n-1")
             self._v_prev_valid = False
-        v_src = self._velocity_mesh_variable()
-        if v_src is not None and getattr(v_src, "degree", None) == self._v_prev.degree:
-            # Exact copy. Evaluating at (nudged) nodes instead leaves a
-            # 0.001 h |grad v| bias in v_prev that the extrapolation feeds
-            # into every trace: on Blankenbach 1a it moved the wall Nusselt
-            # number by 0.9 % (first-cell temperature, 5e-4).
-            self._v_prev.data[...] = v_src.data[...]
-        else:
-            coords = self._centroid_shifted_var_coords(self._v_prev)
-            vals = uw.function.evaluate(self._V_matrix(), coords)
-            self._v_prev.data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        self._copy_velocity_level(self._v_prev_level)
         self._v_prev_valid = True
-
-    def _velocity_mesh_variable(self):
-        """The mesh variable behind ``V_fn`` if ``V_fn`` is one, or exactly
-        one's symbol; else None."""
-        V = self.V_fn
-        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
-            return V
-        try:
-            found = uw.discretisation.meshVariable_lookup_by_symbol(self.mesh, sympy.Matrix(V))
-        except Exception:
-            found = None
-        if found is not None and found[1] == -1:
-            return found[0]
-        return None
 
     def _centroid_shifted_var_coords(self, var):
         """ND node coordinates of ``var`` nudged 0.1 % toward their cell
@@ -3589,9 +3605,8 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         As for :class:`SemiLagrangian`. ``psi_fn`` may be a scalar
         ``MeshVariable`` (its nodal data is then copied into the snapshot
         rather than re-evaluated) or a scalar expression.
-    v_degree : int, optional
-        Degree of the velocity snapshots (default: ``V_fn.degree`` if
-        ``V_fn`` is a mesh variable, else 2).
+    ``V_fn`` may be any expression of mesh variables (``-v``, ``v/2``); the
+    velocity history snapshots the variables it contains.
     """
 
     def __init__(
@@ -3607,7 +3622,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         bcs=[],
         order: int = 1,
         theta: float = 0.5,
-        v_degree: Optional[int] = None,
         monotone_mode: Optional[str] = None,
         **_unsupported,
     ):
@@ -3632,7 +3646,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         else:
             self._psi_meshVar = None
             self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
-        self._v_meshVar = V_fn if (hasattr(V_fn, "sym") and not isinstance(V_fn, sympy.Basic)) else None
 
         self._init_history_tracking(order)
         self._check_rule_oversampling(degree)
@@ -3658,18 +3671,12 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             )
             for k in range(order)
         ]
-        if v_degree is None:
-            v_degree = getattr(V_fn, "degree", 2)
         # At least two velocity levels: the current interval's mid-time
-        # velocity is extrapolated from v^n and v^{n-1}.
+        # velocity is extrapolated from v^n and v^{n-1}. Each level is a
+        # snapshot of the mesh variables inside V_fn, substituted into the
+        # expression, so V_fn may be any expression of them.
         self._n_v = max(order, 2)
-        self.v_snap = [
-            uw.discretisation.MeshVariable(
-                f"v_snap_ip_{inst}_{k}", mesh, mesh.dim, degree=v_degree, continuous=True,
-                varsymbol=rf"{{ V^{{ (n-{k}) }} }}",
-            )
-            for k in range(self._n_v)
-        ]
+        self.v_levels = [self._make_velocity_level(f"n-{k}") for k in range(self._n_v)]
         self._init_coefficient_expressions(order, self.theta, with_exp=False)
 
     def _check_rule_oversampling(self, degree):
@@ -3750,12 +3757,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         else:
             vals = uw.function.evaluate(self.psi_fn[0], self._nudged_node_coords(ps))
             ps.data[:, 0] = np.asarray(vals).reshape(-1)
-        vs = self.v_snap[0]
-        if self._v_meshVar is not None and self._v_meshVar.degree == vs.degree:
-            vs.data[...] = self._v_meshVar.data[...]
-        else:
-            vals = uw.function.evaluate(sympy.Matrix(self.V_fn), self._nudged_node_coords(vs))
-            vs.data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        self._copy_velocity_level(self.v_levels[0])
 
     def _velocity_at(self, v_sym, coords, evalf):
         v = uw.function.global_evaluate(v_sym, coords, evalf=evalf)
@@ -3800,12 +3802,13 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             # average of v^{n+1-k} and v^{n-k}. The first stage, which
             # only places the mid-point, uses the velocity at the
             # segment's start time.
+            V = [lvl["expr"] for lvl in self.v_levels]
             if k == 0:
-                v_start = self.v_snap[0].sym
-                v_mid = self.v_snap[0].sym * sympy.Rational(3, 2) - self.v_snap[1].sym * half
+                v_start = V[0]
+                v_mid = V[0] * sympy.Rational(3, 2) - V[1] * half
             else:
-                v_start = self.v_snap[k - 1].sym
-                v_mid = (self.v_snap[k - 1].sym + self.v_snap[k].sym) * half
+                v_start = V[k - 1]
+                v_mid = (V[k - 1] + V[k]) * half
             X = self._trace_segment(X, v_start, v_mid, self._segment_dt(k, dt), evalf)
             vals = uw.function.global_evaluate(
                 self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
@@ -3819,7 +3822,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for k in range(1, self.order):
             self.psi_snap[k].data[...] = self.psi_snap[0].data[...]
         for k in range(1, self._n_v):
-            self.v_snap[k].data[...] = self.v_snap[0].data[...]
+            self._copy_velocity_level(self.v_levels[k], self.v_levels[0])
         X = np.asarray(self.psi_star[0].coords_nd)
         vals = np.asarray(uw.function.evaluate(self.psi_snap[0].sym[0], X)).reshape(-1)
         for k in range(self.order):
@@ -3835,7 +3838,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for k in range(self.order - 1, 0, -1):
             self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
         for k in range(self._n_v - 1, 0, -1):
-            self.v_snap[k].data[...] = self.v_snap[k - 1].data[...]
+            self._copy_velocity_level(self.v_levels[k], self.v_levels[k - 1])
         self._record_current()
         self._fill_slots(dt, evalf)
 

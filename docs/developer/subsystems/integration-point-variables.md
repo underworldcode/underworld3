@@ -146,9 +146,17 @@ the foot is off by `b dt²/2` in a flow accelerating at rate `b`, first
 order in an unsteady flow; the rotating Gaussian did not show it because
 that velocity is steady. `tests/test_0066_integration_point_slcn.py`
 checks both schemes against the exact foot in a uniformly accelerating
-flow, with the `v^n`-only foot as the control. `SemiLagrangian` keeps the
-previous velocity in a `v_prev` mesh variable it manages; the
-integration-point scheme keeps at least two velocity snapshots.
+flow, for `V_fn` given as the variable, as `-v` and as `v/2`, with the
+`v^n`-only foot as the control.
+
+`V_fn` stays symbolic by design (`-v`, `v/2`, `v - v_mesh` must all just
+work), so the previous velocity is never a separate field evaluated from
+it. Each scheme snapshots the mesh variables that `V_fn` contains and forms
+`v^{n-1}` as `V_fn` with those variables substituted by their copies: exact
+for any expression, and an analytic `V_fn` reduces to itself. Evaluating
+`V_fn` at the (nudged) nodes instead left a `0.001 h |grad v|` bias that the
+extrapolation fed into every trace; on Blankenbach 1a it moved the wall
+Nusselt number by 0.9 %.
 
 For a P2 field in a uniform velocity the slots reproduce the exact
 departure-point values to round-off, for one and for two segments
