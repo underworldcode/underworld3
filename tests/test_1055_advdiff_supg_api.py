@@ -26,7 +26,7 @@ def _solver(mesh, tag, **kwargs):
     T = uw.discretisation.MeshVariable(f"T_{tag}", mesh, 1, degree=2)
     T.array[:, 0, 0] = uw.function.evaluate(
         sympy.exp(-((x - 0.5) ** 2 + y ** 2) / 0.03), T.coords).reshape(-1)
-    adv = uw.systems.AdvDiffusionSUPG(mesh, T, sympy.Matrix([[-y, x]]), **kwargs)
+    adv = uw.systems.AdvDiffusion(mesh, T, sympy.Matrix([[-y, x]]), **kwargs)
     for b in ("Left", "Right", "Top", "Bottom"):
         adv.add_dirichlet_bc(0.0, b)
     return adv, T
@@ -34,7 +34,7 @@ def _solver(mesh, tag, **kwargs):
 
 def test_exported_and_constructs_with_the_slcn_defaults(mesh):
     adv, _T = _solver(mesh, "a")
-    assert type(adv).__name__ == "SNES_AdvectionDiffusion_SUPG"
+    assert type(adv).__name__ == "SNES_AdvectionDiffusion_Composed"
     # order 1, theta 0.5: Crank-Nicolson, the semi-Lagrangian solver's default
     assert adv.integrator == "am" and adv.order == 1 and adv.theta == 0.5
     assert isinstance(adv.DuDt, uw.systems.ddt.EulerianSUPG)
@@ -229,7 +229,7 @@ def test_solves_on_an_adapt_child_with_its_own_preconditioner():
     T = uw.discretisation.MeshVariable("T_child", child, 1, degree=2)
     T.array[:, 0, 0] = uw.function.evaluate(
         sympy.exp(-((xc - 0.5) ** 2 + yc ** 2) / 0.03), T.coords).reshape(-1)
-    adv = uw.systems.AdvDiffusionSUPG(child, T, sympy.Matrix([[-yc, xc]]))
+    adv = uw.systems.AdvDiffusion(child, T, sympy.Matrix([[-yc, xc]]))
     for b in ("Left", "Right", "Top", "Bottom"):
         adv.add_dirichlet_bc(0.0, b)
     adv.solve(timestep=0.02)

@@ -18,12 +18,14 @@ VE_Stokes : class
 Projection : class
     L2 projection of fields onto mesh variables.
 AdvDiffusion : class
-    Advection-diffusion with semi-Lagrangian transport.
-AdvDiffusionSUPG : class
-NavierStokesSUPG : class
-    Advection-diffusion, implicit Eulerian with SUPG stabilisation.
+    Advection-diffusion composed from a DDt transport manager (the default
+    manager, EulerianSUPG, assembles implicit advection with SUPG).
+AdvDiffusionSLCN : class
+    Advection-diffusion with semi-Lagrangian transport (flux history).
 NavierStokes : class
-    Navier-Stokes equations with inertia.
+    Navier-Stokes composed from a DDt transport manager (EulerianSUPG default).
+NavierStokesSLCN : class
+    Navier-Stokes with semi-Lagrangian transport and a stress history.
 Diffusion : class
     Pure diffusion (no advection).
 TransientDarcy : class
@@ -67,9 +69,10 @@ from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
-from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
-from .advection_diffusion_eulerian import SNES_AdvectionDiffusion_SUPG as AdvDiffusionSUPG
-from .navier_stokes_eulerian import SNES_NavierStokes_SUPG as NavierStokesSUPG
+# The generic names are the composing solvers: the transport (assembled SUPG
+# advection, or a semi-Lagrangian history) is the DDt manager they hold.
+from .advection_diffusion_eulerian import SNES_AdvectionDiffusion_Composed as AdvDiffusion
+from .navier_stokes_eulerian import SNES_NavierStokes_Composed as NavierStokes
 
 # import diffusion-only solver
 from .solvers import SNES_Diffusion as Diffusion
@@ -81,7 +84,6 @@ from .solvers import SNES_Richards as Richards
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_NavierStokes as NavierStokesSwarm
 from .solvers import SNES_NavierStokes as NavierStokesSLCN
-from .solvers import SNES_NavierStokes as NavierStokes
 
 from .free_surface import FreeSurface
 

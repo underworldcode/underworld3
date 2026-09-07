@@ -8,7 +8,7 @@
 
 ## Description
 
-The lid-driven cavity at Re = 100 with `uw.systems.NavierStokesSUPG`, the
+The lid-driven cavity at Re = 100 with `uw.systems.NavierStokes`, the
 Navier-Stokes solver that assembles the momentum advection on the grid and
 stabilises it with streamline-upwind Petrov-Galerkin weighting. Each step is
 one linear Oseen solve with the advecting velocity extrapolated from the two
@@ -63,7 +63,7 @@ p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 """
 ## The solver
 
-`NavierStokesSUPG` is a subclass of the Stokes solver: it takes the same
+`NavierStokes` is a subclass of the Stokes solver: it takes the same
 constitutive model and boundary conditions. `rho=1` with viscosity `1/RE`
 gives Re on the unit cavity. `advection="extrapolated"` (the default) makes
 each step one linear solve; `picard_iterations` re-solves with the latest
@@ -72,7 +72,7 @@ nonlinear solver take Newton steps instead.
 """
 
 # %%
-ns = uw.systems.NavierStokesSUPG(
+ns = uw.systems.NavierStokes(
     mesh, v, p, rho=1.0, order=1, advection="extrapolated", picard_iterations=PICARD)
 ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
 ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0 / RE

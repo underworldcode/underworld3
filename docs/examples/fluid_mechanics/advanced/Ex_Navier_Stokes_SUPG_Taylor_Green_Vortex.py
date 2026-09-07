@@ -74,7 +74,7 @@ A partial Dirichlet condition fixes one component and leaves the other free:
 """
 
 # %%
-ns = uw.systems.NavierStokesSUPG(mesh, v, p, rho=1.0, order=1, peclet_weight=PECLET_WEIGHT)
+ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1, peclet_weight=PECLET_WEIGHT)
 ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
 ns.constitutive_model.Parameters.shear_viscosity_0 = NU
 ns.tolerance = 1.0e-8

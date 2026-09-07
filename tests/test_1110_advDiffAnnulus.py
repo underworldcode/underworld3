@@ -41,7 +41,7 @@ def test_adv_diff_annulus():
     r_o = 1.0
     delta_t = 0.05  ## 1/20 rotation in one step
 
-    adv_diff = uw.systems.AdvDiffusion(
+    adv_diff = uw.systems.AdvDiffusionSLCN(
         mesh,
         u_Field=t_soln,
         V_fn=v_soln,

@@ -1,9 +1,14 @@
-r"""Navier-Stokes with Eulerian SUPG momentum transport.
+r"""Navier-Stokes composed from a DDt transport manager.
+
+The solver assembles the viscous flux, the pressure and the body force and
+takes the momentum transport from the history manager it holds. With the
+default manager, :class:`~underworld3.systems.ddt.EulerianSUPG`, it is the
+Eulerian scheme with SUPG momentum transport described below.
 
 The incompressible Navier-Stokes equations solved on the mesh with the
 momentum advection assembled implicitly in the saddle-point residual and
 stabilised by the streamline-upwind Petrov-Galerkin term, the vector
-counterpart of :class:`~underworld3.systems.AdvDiffusionSUPG`. The time
+counterpart of :class:`~underworld3.systems.AdvDiffusion`. The time
 scheme is the same multistep family: Crank-Nicolson (the theta rule) at
 order 1, BDF2 at order 2, with the history held on the mesh by the
 Eulerian history manager. No stress history is carried: the viscous stress
@@ -37,8 +42,9 @@ from underworld3.systems.solvers import SNES_Stokes
 _ADVECTION_MODES = ("extrapolated", "implicit")
 
 
-class SNES_NavierStokes_SUPG(SNES_Stokes):
-    r"""Navier-Stokes solver with Eulerian SUPG momentum transport.
+class SNES_NavierStokes_Composed(SNES_Stokes):
+    r"""Navier-Stokes solver composed from its DDt transport manager
+    (Eulerian SUPG momentum transport by default).
 
     Solves
 
@@ -164,13 +170,13 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
     ):
         if DFDt is not None:
             raise ValueError(
-                "AdvDiffusionSUPG-style Navier-Stokes carries no stress history: "
+                "AdvDiffusion-style Navier-Stokes carries no stress history: "
                 "the viscous stress at earlier levels is rebuilt from the stored "
                 "velocity. Do not pass DFDt."
             )
         if restore_points_func is not None:
             warnings.warn(
-                "NavierStokesSUPG ignores restore_points_func: it configures the "
+                "NavierStokes ignores restore_points_func: it configures the "
                 "semi-Lagrangian trace-back and the Eulerian scheme has none.",
                 stacklevel=2,
             )
@@ -487,7 +493,7 @@ class SNES_NavierStokes_SUPG(SNES_Stokes):
         for name in ("time", "order", "evalf", "_evalf", "homotopy"):
             kwargs.pop(name, None)
         if kwargs:
-            warnings.warn(f"NavierStokesSUPG.solve ignores {sorted(kwargs)}", stacklevel=2)
+            warnings.warn(f"NavierStokes.solve ignores {sorted(kwargs)}", stacklevel=2)
         if timestep is not None:
             self.delta_t = timestep
         elif self._last_timestep is None:

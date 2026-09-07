@@ -28,7 +28,7 @@ def _run(tolerance=1.0e-8):
                           lam / (2 * sympy.pi) * sympy.exp(lam * x) * sympy.sin(2 * sympy.pi * y)]])
     v = uw.discretisation.MeshVariable("U1078", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("P1078", mesh, 1, degree=1)
-    ns = uw.systems.NavierStokesSUPG(mesh, v, p, rho=1.0)
+    ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0)
     ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
     ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0 / Re
     ns.tolerance = tolerance

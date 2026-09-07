@@ -1,14 +1,16 @@
-# Navier-Stokes with Eulerian SUPG momentum transport
+# Navier-Stokes composed from a transport manager (Eulerian SUPG by default)
 
-`uw.systems.NavierStokesSUPG` solves the incompressible Navier-Stokes equations on
-the mesh, with the momentum advection assembled implicitly in the Stokes
-saddle-point residual and stabilised by the streamline-upwind Petrov-Galerkin
-term. It is the vector counterpart of {doc}`eulerian-advection-diffusion` and
+`uw.systems.NavierStokes` solves the incompressible Navier-Stokes equations with
+the momentum transport taken from the history manager it holds. With the default
+manager, `uw.systems.ddt.EulerianSUPG`, the momentum advection is assembled implicitly
+in the Stokes saddle-point residual and stabilised by the streamline-upwind
+Petrov-Galerkin term, which is the scheme this page describes; the semi-Lagrangian
+solver with a stress history is `uw.systems.NavierStokesSLCN`. It is the vector counterpart of {doc}`eulerian-advection-diffusion` and
 takes the same constructor as `uw.systems.Stokes` plus the density and the time
 scheme:
 
 ```python
-ns = uw.systems.NavierStokesSUPG(mesh, v, p, rho=1.0, order=1)   # Crank-Nicolson
+ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1)   # Crank-Nicolson
 ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
 ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0 / Re
 ns.add_dirichlet_bc((0.0, 0.0), "Bottom")
@@ -70,10 +72,10 @@ it to the extrapolated field, the latest Picard iterate, or the unknown itself a
 to `advection`, and names the stored velocity as the carrier of the stored levels
 (`DuDt.V_fn_history`). The stabilisation knobs (`supg_weight`, `tau_weights`,
 `tau_shape`, `peclet_weight`) and `delta_t` live on the manager and the solver's
-properties pass through. The scalar solver `AdvDiffusionSUPG` composes the same three
+properties pass through. The scalar solver `AdvDiffusion` composes the same three
 terms from the same class, and a semi-Lagrangian manager can be supplied to either.
 
 ## Further reading
 
 - Design note and measurements: `docs/developer/design/eulerian-supg-transport.md`
-- The semi-Lagrangian Navier-Stokes solver: `uw.systems.NavierStokes`
+- The semi-Lagrangian Navier-Stokes solver: `uw.systems.NavierStokesSLCN`

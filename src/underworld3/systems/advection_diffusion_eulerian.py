@@ -1,4 +1,11 @@
-r"""Fully implicit Eulerian advection-diffusion with SUPG stabilisation.
+r"""Advection-diffusion composed from a DDt transport manager.
+
+The solver assembles the diffusive flux and the source on the mesh and takes
+its transport (time derivative, advection, stabilisation) from the history
+manager it holds. The default manager, :class:`~underworld3.systems.ddt.EulerianSUPG`,
+makes it the fully implicit Eulerian scheme with SUPG stabilisation described
+below; a :class:`~underworld3.systems.ddt.SemiLagrangian` manager makes it a
+semi-Lagrangian scheme on the field history.
 
 The scalar transport equation
 
@@ -47,8 +54,11 @@ from underworld3.systems.solvers import (
 )
 
 
-class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
-    r"""Eulerian advection-diffusion solver, implicit in time, SUPG in space.
+class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
+    r"""Advection-diffusion solver composed from its DDt transport manager.
+
+    With the default manager (:class:`~underworld3.systems.ddt.EulerianSUPG`):
+    implicit in time, assembled on the mesh, SUPG in space.
 
     .. math::
         \frac{\partial \phi}{\partial t} + \mathbf{u}\cdot\nabla\phi
@@ -60,7 +70,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     ``solve`` all keep the semi-Lagrangian solver's meaning, so a script changes
     the class name and nothing else::
 
-        adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
+        adv = uw.systems.AdvDiffusion(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
         adv.constitutive_model = uw.constitutive_models.DiffusionModel
         adv.constitutive_model.Parameters.diffusivity = 1.0e-3
         adv.add_dirichlet_bc(0.0, "Left")
@@ -238,7 +248,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         ) if value]
         if ignored:
             warnings.warn(
-                f"AdvDiffusionSUPG ignores {', '.join(ignored)}: these configure "
+                f"AdvDiffusion ignores {', '.join(ignored)}: these configure "
                 "the semi-Lagrangian trace-back and the Eulerian scheme has none.",
                 stacklevel=2,
             )

@@ -119,7 +119,7 @@ def test_semi_lagrangian_manager_drops_into_the_supg_solver():
     T_plug = field("plug")
     history = uw.systems.ddt.SemiLagrangian(
         mesh, T_plug.sym, V, vtype=uw.VarType.SCALAR, degree=2, continuous=True, order=1)
-    plug = uw.systems.AdvDiffusionSUPG(mesh, T_plug, V, DuDt=history)
+    plug = uw.systems.AdvDiffusion(mesh, T_plug, V, DuDt=history)
     assert plug.DuDt is history and plug.integrator == "am" and plug.order == 1
     assert _is_zero(plug.DuDt.advection()) and _is_zero(plug._stabilisation_flux())
     with pytest.raises(AttributeError):
@@ -131,7 +131,7 @@ def test_semi_lagrangian_manager_drops_into_the_supg_solver():
     slcn.constitutive_model.Parameters.diffusivity = 0.0
 
     T_supg = field("supg")
-    supg = uw.systems.AdvDiffusionSUPG(mesh, T_supg, V)
+    supg = uw.systems.AdvDiffusion(mesh, T_supg, V)
 
     for solver in (plug, slcn, supg):
         for b in ("Left", "Right", "Top", "Bottom"):

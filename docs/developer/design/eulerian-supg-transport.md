@@ -274,7 +274,7 @@ unmatched rows read 6.12 / 0.84 s (Schwarz, two Newton steps) against 3.71 /
 
 ## Navier-Stokes with SUPG momentum transport
 
-`uw.systems.NavierStokesSUPG` (`systems/navier_stokes_eulerian.py`) is the vector
+`uw.systems.NavierStokes` (`systems/navier_stokes_eulerian.py`) is the vector
 form of the scalar solver on the Stokes saddle-point class: the momentum advection
 is assembled implicitly and the streamline term stabilises it. The residual is
 
@@ -724,7 +724,7 @@ every printed digit, and the two-rank tests keep their serial constants. The cyl
 printed digits (3.0532, 0.9193 / -0.9652, 3.1219, 0.2964) while the drag peak moves from
 3.0797 to 3.0802 and the pressure difference at peak lift from 2.4134 to 2.4125: the
 assembled expressions are the same terms in a different order, and a shedding wake
-amplifies the last bits over 1400 steps where a steady state does not. A `SemiLagrangian` manager dropped into `AdvDiffusionSUPG` reproduces
+amplifies the last bits over 1400 steps where a steady state does not. A `SemiLagrangian` manager dropped into `AdvDiffusion` reproduces
 `AdvDiffusionSLCN` to the solver tolerance on pure advection (test_1057): the solver's
 equation with zero advection and zero stabilisation is the semi-Lagrangian one. A tensor
 unknown, flattened to its independent components on a `MATRIX` variable, is transported

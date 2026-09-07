@@ -64,7 +64,7 @@ Fluid mechanics forms the foundation for understanding mantle convection, magma 
 10. **Navier-Stokes on the grid: lid-driven cavity** - `Ex_Navier_Stokes_SUPG_Lid_Driven_Cavity.py`
    - The Eulerian SUPG Navier-Stokes solver at Re 100 against Ghia et al. (1982)
    - One linear solve per step; Picard or Newton for the fully implicit form
-   - Introduces: `NavierStokesSUPG`, the cell-Peclet weight of the stabilisation
+   - Introduces: `NavierStokes`, the cell-Peclet weight of the stabilisation
 
 11. **Navier-Stokes on the grid: Taylor-Green vortex decay** - `Ex_Navier_Stokes_SUPG_Taylor_Green_Vortex.py`
    - An exact unsteady solution: the velocity error and the energy decay measured directly

@@ -28,7 +28,7 @@ def _run():
     sol = uw.analytic.RotatingGaussian(mesh, sigma=0.12, centre_radius=0.5, omega=1.0)
     T = uw.discretisation.MeshVariable("T1077", mesh, 1, degree=2)
     T.array[:, 0, 0] = uw.function.evaluate(sol.at(0.0), T.coords).reshape(-1)
-    adv = uw.systems.AdvDiffusionSUPG(mesh, T, sympy.Matrix([[-y, x]]), order=2)
+    adv = uw.systems.AdvDiffusion(mesh, T, sympy.Matrix([[-y, x]]), order=2)
     for b in ("Left", "Right", "Top", "Bottom"):
         adv.add_dirichlet_bc(0.0, b)
     dt = 0.05

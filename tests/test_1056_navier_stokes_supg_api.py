@@ -25,7 +25,7 @@ def _cavity(mesh, tag, **kwargs):
     """Lid-driven cavity: no-slip walls, a unit lid, unit viscosity."""
     v = uw.discretisation.MeshVariable(f"U_{tag}", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1)
-    ns = uw.systems.NavierStokesSUPG(mesh, v, p, **kwargs)
+    ns = uw.systems.NavierStokes(mesh, v, p, **kwargs)
     ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
     ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     for b in ("Left", "Right", "Bottom"):
@@ -36,7 +36,7 @@ def _cavity(mesh, tag, **kwargs):
 
 def test_exported_and_constructs_with_the_scalar_solver_rules(mesh):
     ns, _v, _p = _cavity(mesh, "a", rho=1.0)
-    assert type(ns).__name__ == "SNES_NavierStokes_SUPG"
+    assert type(ns).__name__ == "SNES_NavierStokes_Composed"
     assert ns.integrator == "am" and ns.order == 1 and ns.theta == 0.5
     assert isinstance(ns.DuDt, uw.systems.ddt.EulerianSUPG)
     assert ns.DuDt.V_fn == ns._a_var.sym and ns.DuDt.V_fn_history[0] == ns.DuDt.psi_star[0].sym

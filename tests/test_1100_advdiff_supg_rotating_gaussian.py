@@ -38,7 +38,7 @@ def _problem(mesh, tag, order, theta=None, kappa=0.0):
                                        omega=1.0, diffusivity=kappa)
     T = uw.discretisation.MeshVariable(f"T_{tag}", mesh, 1, degree=2)
     T.array[:, 0, 0] = uw.function.evaluate(sol.at(0.0), T.coords).reshape(-1)
-    adv = uw.systems.AdvDiffusionSUPG(mesh, T, sympy.Matrix([[-y, x]]),
+    adv = uw.systems.AdvDiffusion(mesh, T, sympy.Matrix([[-y, x]]),
                                       order=order, theta=theta)
     adv.constitutive_model.Parameters.diffusivity = kappa
     for b in ("Left", "Right", "Top", "Bottom"):

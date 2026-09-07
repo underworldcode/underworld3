@@ -94,7 +94,7 @@ swarm.populate(fill_param=5)
 
 
 # +
-ad = uw.systems.AdvDiffusion(meshbox, t_soln, T1.sym, order=3)
+ad = uw.systems.AdvDiffusionSLCN(meshbox, t_soln, T1.sym, order=3)
 
 ad._u_star_projector.smoothing = 0.0
 

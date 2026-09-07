@@ -1,7 +1,10 @@
-# Eulerian advection-diffusion (SUPG): a drop-in for SLCN
+# Advection-diffusion composed from a transport manager (Eulerian SUPG by default)
 
-`uw.systems.AdvDiffusionSUPG` solves the same scalar transport equation as the
-semi-Lagrangian solver `uw.systems.AdvDiffusionSLCN`,
+`uw.systems.AdvDiffusion` is the general scalar transport solver. It assembles the
+diffusive flux and the source itself and takes the transport from the history manager
+it holds (`DuDt`); with the default manager, `uw.systems.ddt.EulerianSUPG`, it is the
+Eulerian SUPG scheme this page describes, a drop-in for the semi-Lagrangian solver
+`uw.systems.AdvDiffusionSLCN`. Both solve
 
 $$
 \frac{\partial \phi}{\partial t} + \mathbf{u}\cdot\nabla\phi
@@ -13,7 +16,7 @@ but assembles every term on the mesh, implicit in time, with streamline-upwind
 classes share their interface, so switching is one line:
 
 ```python
-adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
+adv = uw.systems.AdvDiffusion(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0e-3
 adv.add_dirichlet_bc(1.0, "Bottom")
@@ -134,7 +137,7 @@ semi-Lagrangian scheme on the field history:
 ```python
 history = uw.systems.ddt.SemiLagrangian(mesh, T.sym, v.sym, vtype=uw.VarType.SCALAR,
                                         degree=T.degree, continuous=True, order=1)
-adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, DuDt=history)   # no assembled advection
+adv = uw.systems.AdvDiffusion(mesh, T, v.sym, DuDt=history)   # no assembled advection
 ```
 
 On pure advection this reproduces `AdvDiffusionSLCN` to the solver tolerance; with
