@@ -523,20 +523,22 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         comm = uw.mpi.comm
         self._picard_count = 0
         for k in range(passes):
+            previous = np.array(self.u.array[...])
             if k > 0:
-                previous = np.array(self.u.array[...])
                 self._set_advecting_velocity(previous)
             SNES_Stokes.solve(
                 self, zero_init_guess if k == 0 else False,
                 _force_setup=_force_setup if k == 0 else False,
                 verbose=verbose, picard=0, divergence_retries=divergence_retries,
             )
+            # The reductions run on every pass, outside any branch: a rank must
+            # never skip a collective its peers take (tests/test_0052).
+            change = np.abs(np.asarray(self.u.array[...]) - previous).max() if previous.size else 0.0
+            scale = np.abs(np.asarray(self.u.array[...])).max() if previous.size else 0.0
+            change = comm.allreduce(float(change), op=MPI.MAX)
+            scale = comm.allreduce(float(scale), op=MPI.MAX)
             if k > 0:
                 self._picard_count = k
-                change = np.abs(np.asarray(self.u.array[...]) - previous).max() if previous.size else 0.0
-                scale = np.abs(np.asarray(self.u.array[...])).max() if previous.size else 0.0
-                change = comm.allreduce(float(change), op=MPI.MAX)
-                scale = comm.allreduce(float(scale), op=MPI.MAX)
                 if change <= self._picard_tolerance * max(scale, 1.0e-300):
                     break
 

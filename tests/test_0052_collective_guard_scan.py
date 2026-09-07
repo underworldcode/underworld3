@@ -90,6 +90,12 @@ ACCEPTED = {
         "`_domain_boundary_facets`, which is allgathered and deduplicated by "
         "exact coordinate identity. Both are the same bytes everywhere, so "
         "every rank computes the same flag.",
+    ("systems/navier_stokes_eulerian.py", "solve"):
+        "the Picard loop breaks on `change <= tol * scale`, and both `change` "
+        "and `scale` are `comm.allreduce(..., MAX)` results taken on every "
+        "pass by every rank before the test, so every rank leaves the loop on "
+        "the same pass and the reductions of the next pass are reached by all "
+        "or by none.",
     ("utilities/rotated_bc.py", "solve_rotated_freeslip"):
         "the cache is created and destroyed on all ranks together, so "
         "`cache is not None` is uniform; the allgather inside exists "
