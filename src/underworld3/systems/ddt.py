@@ -1545,6 +1545,7 @@ class SemiLagrangian(_DDtBase):
         monotone_mode: Optional[str] = None,
         theta: float = 0.5,
         old_frame_traceback: bool = False,
+        midtime_velocity: bool = True,
     ):
         super().__init__()
 
@@ -1556,6 +1557,9 @@ class SemiLagrangian(_DDtBase):
         self._psi_fn = psi_fn
         self.V_fn = V_fn
         self.order = order
+        # Mid-point velocity of the RK2 trace at the mid TIME (1.5 v^n -
+        # 0.5 v^{n-1}); False reproduces the pre-2026-09 v^n-only trace.
+        self.midtime_velocity = bool(midtime_velocity)
         if preserve_moments:
             raise NotImplementedError(
                 "preserve_moments is not currently implemented"
@@ -2260,6 +2264,8 @@ class SemiLagrangian(_DDtBase):
         r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
         trace-back: :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` once a previous
         velocity has been recorded, else :math:`v^n`."""
+        if not getattr(self, "midtime_velocity", True):
+            return None
         v_prev = getattr(self, "_v_prev", None)
         if v_prev is None or not getattr(self, "_v_prev_valid", False):
             return None
@@ -2834,7 +2840,8 @@ class SemiLagrangian(_DDtBase):
 
         # The velocity used this step becomes v^{n-1} for the next
         # step's mid-time extrapolation.
-        self._record_velocity_history()
+        if getattr(self, "midtime_velocity", True):
+            self._record_velocity_history()
 
         # Phase-2 ALE: consume the one-step v_mesh pulse. Subsequent
         # non-adapt steps will see no pending displacement and run a
