@@ -214,3 +214,53 @@ def test_composed_advdiffusion_reachability(config):
     # Same history, same time derivative; the solvers differ only in how the
     # (negligible) diffusion is applied, so the fields agree closely.
     assert np.abs(T_composed - T_slcn).max() < 5e-3
+
+
+def test_value_and_flux_histories_share_one_characteristic_trace():
+    """The SLCN solver's value and flux histories follow the same velocity
+    from the same nodes: one trace per step (two velocity evaluations for
+    the RK2 segment), the flux history served from the cache. With theta=1
+    the old-level flux is never read, so the flux history is not traced at
+    all and the trace records one velocity level per step."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.2, qdegree=2)
+    x, y = mesh.X
+    V = sympy.Matrix([[-y, x]])
+    for theta, hits in ((0.5, 1), (1.0, 0)):
+        T = uw.discretisation.MeshVariable(f"T{int(theta * 10)}", mesh, 1, degree=2)
+        T.data[:, 0] = np.exp(-((np.asarray(T.coords) - 0.5) ** 2).sum(1) / 0.02)
+        adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V, order=1, theta=theta)
+        adv.constitutive_model = uw.constitutive_models.DiffusionModel
+        adv.constitutive_model.Parameters.diffusivity = 1e-3
+        for b in ("Left", "Right", "Top", "Bottom"):
+            adv.add_dirichlet_bc(0.0, b)
+        trace = adv._characteristics
+        assert trace is not None
+        assert adv.DuDt.characteristics is trace and adv.DFDt.characteristics is trace
+        assert not adv.DuDt._owns_characteristics
+        adv.solve(timestep=0.05)
+        n0, h0 = trace.n_velocity_evaluations, trace.n_cache_hits
+        adv.solve(timestep=0.05)
+        # per step: one RK2 segment = 2 velocity evaluations, plus the one
+        # evaluation that records v^{n-1} at the nodes
+        assert trace.n_velocity_evaluations - n0 == 2, trace.n_velocity_evaluations - n0
+        assert trace.n_cache_hits - h0 == hits
+        assert adv._flux_history_is_read() == (theta < 1.0)
+        if theta == 1.0:
+            assert not adv.DFDt._history_initialised
+
+
+def test_private_trace_when_a_manager_stands_alone():
+    """A manager used without a solver owns its trace and delimits its own
+    steps; the mid-time velocity becomes available after the first step."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25, qdegree=2)
+    x, y = mesh.X
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+    T.data[:, 0] = np.asarray(T.coords)[:, 0]
+    D = uw.systems.ddt.SemiLagrangian(mesh, T.sym, sympy.Matrix([[1.0, 0.0]]), vtype=uw.VarType.SCALAR, degree=2, continuous=True)
+    tr = D.characteristics
+    assert D._owns_characteristics
+    assert tr.midtime_expr() == tr.V_matrix()           # nothing recorded yet
+    D.update_pre_solve(0.1)
+    assert tr.level_valid(1)
+    assert tr.midtime_expr() != tr.V_matrix()           # 1.5 v^n - 0.5 v^{n-1}
+    assert tr.n_velocity_evaluations == 2

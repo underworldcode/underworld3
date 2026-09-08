@@ -742,6 +742,49 @@ semi-Lagrangian Stokes stress history (`DFDt` on a viscoelastic Stokes solve) is
 untouched: it advects a stress that is not an unknown of the solve, which is a different
 job from the one the contract describes.
 
+### The histories share one characteristic trace
+
+The composable terms are the right design, and they exposed a cost: two histories on
+the same nodes each traced their own characteristics. A profile of the nodal
+`AdvDiffusionSLCN` step (2026-09-08) counted, per step, two managers (the value and the
+flux history) each recording its field, tracing the same nodes with the same velocity
+(two evaluations), sampling its history and caching the same velocity level: ten
+evaluate-class calls and a projection where the work is one trace, two samples and a
+copy. A hidden `simplify` in the parallel evaluator, run on every evaluation of an
+expression holding a mesh variable, had been adding 14 of 25 seconds on top.
+
+The mathematics stays with the term. What the terms now share is the evaluation behind
+`update_pre_solve`: a `CharacteristicTrace` (`systems/ddt.py`) owned by the solver
+holds the departure points per node set and segment structure for the current step, and
+the velocity levels $v^{n-1}, v^{n-2}, \dots$ cached by evaluation at the true nodes. Each
+history asks it for "the feet of my nodes through these segments" and samples its own
+field; the second history on the same nodes, and the older slots of a one-segment
+history, are served from the cache. The solver delimits the step (`begin_step`,
+`finish_step`, which records the velocity used this step); a manager used on its own
+owns a private trace and delimits its own steps, so nothing changes for standalone use.
+`share_characteristics(DuDt, DFDt)` attaches one trace to every manager that follows
+the same velocity on the same mesh; the Navier-Stokes SLCN solver shares the velocity
+levels this way even though its stress history lives on different nodes.
+
+A history is skipped only when it is a derived quantity the weak form does not read:
+the diffusive flux history under BDF or theta = 1, whose old-level weight is zero. It is
+never a state history. The flux history of a viscoelastic solve is state (the stress at
+the old time cannot be rebuilt from the present velocity gradient and rheology), and
+Crank-Nicolson is what keeps the elastic response undamped, so that history is always
+carried.
+
+Measured on the rotating Gaussian (h = 0.1, C = 0.25, one revolution, answer identical
+to every printed digit, L2 5.142e-2, peak 0.6859):
+
+| | nodal SLCN | integration-point SLCN |
+|---|---|---|
+| before | 1350 ms per step | 2250 |
+| `simplify` forwarded | 510 | 1250 |
+| shared trace, unread flux skipped | 250 | 660 |
+
+The cost ratio against SUPG in the convection comparison above was measured before
+both fixes and should be re-read with that in mind.
+
 ## What the timestep estimate means
 
 The cell-crossing time is not a stability limit for either scheme and says

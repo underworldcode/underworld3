@@ -753,22 +753,25 @@ class _DDtBase(uw_object):
         degs = [fn.meshvar().degree for fn in varfns]
         return max(degs) if degs else 2
 
-    def _make_velocity_level(self, tag):
-        """A cached velocity level: ``V_fn`` EVALUATED at the true nodes of a
-        vector field (no nudge; the evaluator is exact at node coordinates on
-        simplex, quad and annulus meshes). Caching by evaluation, rather than
-        by substituting snapshots of the mesh variables into the expression,
-        is what captures everything ``V_fn`` depends on at that time: the
-        variables, constants that ramp, swarm proxies, the mesh geometry."""
-        snap = uw.discretisation.MeshVariable(
-            f"vcache_{tag}_{self.instance_number}", self.mesh, self.mesh.dim,
-            degree=self._velocity_degree(), continuous=True,
-            varsymbol=rf"{{ V^{{ ({tag}) }}_{{ [{self.instance_number}] }} }}",
-            units=self._velocity_units(),   # same frame as V_fn, so 1.5 v - 0.5 v_prev is consistent
-        )
-        snap.remesh_policy = RemeshPolicy.CARRY
-        snap._remesh_managed_by = self
-        return {"var": snap, "expr": snap.sym}
+    def attach_characteristics(self, trace):
+        """Trace along ``trace`` (a :class:`CharacteristicTrace` on this
+        mesh and velocity) instead of a private one. The owner of the trace
+        (a solver) delimits the steps with ``begin_step`` / ``finish_step``."""
+        self._characteristics = trace
+        self._owns_characteristics = False
+
+    @property
+    def characteristics(self):
+        """The :class:`CharacteristicTrace` this history samples from; a
+        private one is created on first use when no solver shared one."""
+        tr = getattr(self, "_characteristics", None)
+        if tr is None:
+            tr = CharacteristicTrace(
+                self.mesh, self.V_fn, midtime_velocity=getattr(self, "midtime_velocity", True)
+            )
+            self._characteristics = tr
+            self._owns_characteristics = True
+        return tr
 
     def _velocity_units(self):
         """Units of ``V_fn`` under an active units model, else None."""
@@ -776,17 +779,6 @@ class _DDtBase(uw_object):
         if units is not None and not uw.get_default_model().has_units():
             units = None
         return units
-
-    def _copy_velocity_level(self, dst, src=None):
-        """``dst`` <- ``src`` (another level) or, with ``src=None``, ``V_fn``
-        evaluated now at ``dst``'s nodes (reduced to the non-dimensional
-        frame ``.data`` stores, issue #267)."""
-        if src is None:
-            vals = uw.function.evaluate(self._V_matrix(), np.asarray(dst["var"].coords_nd))
-            vals = _to_nondim_ndarray(vals, units=self._velocity_units())
-            dst["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
-        else:
-            dst["var"].data[...] = src["var"].data[...]
 
     def bdf(self, order: Optional[int] = None):
         r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
@@ -1846,6 +1838,247 @@ class EulerianSUPG(Eulerian):
         display(Latex(rf"$\quad$ integrator: {self.integrator}, tau shape: {self.tau_shape}"))
 
 
+class CharacteristicTrace:
+    r"""Departure points and cached velocity levels for one advecting
+    velocity on one mesh, shared by every history that follows it.
+
+    The mathematics of a history term stays with the term: its symbols,
+    its BDF / Adams-Moulton stencils, its view. What the terms share is the
+    evaluation behind them: the characteristic traced back from a node set,
+    and the velocity levels :math:`v^{n-1}, v^{n-2}, \dots` cached by
+    EVALUATION at the true nodes, so any expression for ``V_fn`` (a
+    variable, ``-v``, ``v/2``, ``c(t)\,v``) is carried as it was then.
+
+    A solver creates one trace per advecting velocity and attaches it to
+    each history manager (:meth:`_DDtBase.attach_characteristics`); a
+    manager used on its own owns a private one. Within a step every request
+    for the same node set and the same segment structure is served from the
+    cache, so two histories on the same nodes cost one trace, and the older
+    slots of a one-segment history cost nothing beyond the first.
+
+    Steps are delimited by :meth:`begin_step` (clears the cache) and
+    :meth:`finish_step` (records the velocity used this step as
+    :math:`v^{n-1}`), called by the solver that owns the trace, or by the
+    manager when the trace is private.
+
+    A segment is ``("first", 0, dt)``: from the launch points, start velocity
+    :math:`v^n` (``V_fn`` live), mid-time velocity
+    :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` (``V_fn`` alone until a level is
+    recorded, or with ``midtime_velocity=False``); or ``("older", k, dt)``:
+    one more step back through cached levels, start :math:`v^{n-k}`, mid
+    :math:`\tfrac12 (v^{n-k} + v^{n-k-1})`. A chain of segments is cached by
+    prefix, so slot ``k`` of a multi-segment history extends slot ``k-1``.
+    """
+
+    _next_instance = 0
+
+    def __init__(self, mesh, V_fn, midtime_velocity=True):
+        self.mesh = mesh
+        self.V_fn = V_fn
+        self.midtime_velocity = midtime_velocity
+        self.instance_number = CharacteristicTrace._next_instance
+        CharacteristicTrace._next_instance += 1
+        self._levels = [None]          # index k >= 1 holds v^{n-k}
+        self._levels_valid = 0         # levels 1..valid hold a recorded velocity
+        self._cache = {}
+        self._step = 0
+        self._dt = None
+        self.n_velocity_evaluations = 0
+        self.n_cache_hits = 0
+
+    # -- the velocity ---------------------------------------------------------
+
+    def V_matrix(self):
+        V = self.V_fn
+        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+            return sympy.Matrix(V.sym)
+        return sympy.Matrix(V)
+
+    def velocity_degree(self):
+        _, varfns, _ = uw.function.expressions.mesh_vars_in_expression(self.V_matrix())
+        degs = [fn.meshvar().degree for fn in varfns]
+        return max(degs) if degs else 2
+
+    def velocity_units(self):
+        units = uw.get_units(self.V_matrix())
+        if units is not None and not uw.get_default_model().has_units():
+            units = None
+        return units
+
+    def _new_level(self, k):
+        snap = uw.discretisation.MeshVariable(
+            f"vtrace_{self.instance_number}_n{k}", self.mesh, self.mesh.dim,
+            degree=self.velocity_degree(), continuous=True,
+            varsymbol=rf"{{ V^{{ (n-{k}) }}_{{ [{self.instance_number}] }} }}",
+            units=self.velocity_units(),
+        )
+        snap.remesh_policy = RemeshPolicy.CARRY
+        snap._remesh_managed_by = self
+        return {"var": snap, "expr": snap.sym}
+
+    def ensure_levels(self, n):
+        """Make cached levels ``1 .. n-1`` exist (level 0 is ``V_fn`` live)."""
+        while len(self._levels) < n:
+            self._levels.append(self._new_level(len(self._levels)))
+
+    def level_expr(self, k):
+        if k == 0:
+            return self.V_matrix()
+        self.ensure_levels(k + 1)
+        return self._levels[k]["expr"]
+
+    def level_valid(self, k):
+        return k == 0 or k <= self._levels_valid
+
+    def _evaluate_into(self, level):
+        vals = uw.function.evaluate(self.V_matrix(), np.asarray(level["var"].coords_nd))
+        vals = _to_nondim_ndarray(vals, units=self.velocity_units())
+        level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+
+    def initialise_levels(self, n):
+        """Every cached level ``1 .. n-1`` <- ``V_fn`` now (a history starting
+        from rest in time: the older velocities are the current one)."""
+        self.ensure_levels(n)
+        if n > 1:
+            self._evaluate_into(self._levels[1])
+            for k in range(2, n):
+                self._levels[k]["var"].data[...] = self._levels[1]["var"].data[...]
+        self._levels_valid = max(self._levels_valid, n - 1)
+
+    def record_velocity(self):
+        """Shift the cached levels and record ``V_fn`` now as :math:`v^{n-1}`."""
+        if len(self._levels) < 2:
+            return
+        for k in range(len(self._levels) - 1, 1, -1):
+            self._levels[k]["var"].data[...] = self._levels[k - 1]["var"].data[...]
+        self._evaluate_into(self._levels[1])
+        self._levels_valid = min(self._levels_valid + 1, len(self._levels) - 1)
+
+    def midtime_expr(self):
+        r""":math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, or :math:`v^n` alone."""
+        if not self.midtime_velocity:
+            return self.V_matrix()
+        self.ensure_levels(2)
+        if not self.level_valid(1):
+            return self.V_matrix()
+        return self.V_matrix() * sympy.Rational(3, 2) - self.level_expr(1) * sympy.Rational(1, 2)
+
+    def velocity_at(self, expr, coords, use_global=False, evalf=False,
+                    subtract_v_mesh=False, v_mesh_var=None):
+        """``expr`` (a velocity expression) at ``coords``, as a plain
+        non-dimensional ``(N, dim)`` array. Node points are rank-local and
+        use ``evaluate``; points that may have left the partition route
+        through ``global_evaluate``. With ``subtract_v_mesh`` the mesh
+        velocity sampled at the same points is removed (ALE), after the
+        evaluation so it inherits the unit treatment of ``V_fn``."""
+        self.n_velocity_evaluations += 1
+        if use_global:
+            v_result = uw.function.global_evaluate(expr, coords, evalf=evalf)
+            if subtract_v_mesh:
+                v_result = v_result - uw.function.global_evaluate(v_mesh_var.sym, coords, evalf=evalf)
+        else:
+            v_result = uw.function.evaluate(expr, coords)
+            if subtract_v_mesh:
+                v_result = v_result - uw.function.evaluate(v_mesh_var.sym, coords)
+        if isinstance(v_result, UnitAwareArray):
+            v_at_pts = v_result[:, 0, :]
+            if not isinstance(v_at_pts, UnitAwareArray):
+                v_at_pts = UnitAwareArray(v_at_pts, units=v_result.units)
+        else:
+            v_at_pts = np.asarray(v_result)
+            v_at_pts = v_at_pts[:, 0, :] if v_at_pts.ndim == 3 else v_at_pts
+        out = _to_nondim_ndarray(v_at_pts, units=uw.get_units(self.V_fn))
+        return np.asarray(out).reshape(coords.shape[0], self.mesh.dim)
+
+    # -- the steps and the trace -----------------------------------------------
+
+    def begin_step(self, dt):
+        self._step += 1
+        self._dt = dt
+        self._cache.clear()
+
+    def finish_step(self):
+        """The velocity used this step becomes :math:`v^{n-1}`."""
+        self.record_velocity()
+
+    def _segment_exprs(self, seg):
+        kind, k, _ = seg
+        if kind == "first":
+            return self.V_matrix(), self.midtime_expr()
+        half = sympy.Rational(1, 2)
+        return self.level_expr(k - 1), (self.level_expr(k - 1) + self.level_expr(k)) * half
+
+    def departure_points(self, key, X0, segments, evalf=False, X_eval=None,
+                         clamp_final=True, subtract_v_mesh=False, v_mesh_var=None):
+        r"""Trace ``X0`` back through ``segments`` (RK2 midpoint each):
+        ``x_mid = x - dt/2 v_start(x)``, ``x_dep = x - dt v_mid(x_mid)``.
+
+        ``key`` names the launch node set (a variable's ``_basis_key`` plus
+        a tag for the nudge); ``X_eval`` are the points where the first
+        segment's start velocity is evaluated when they differ from ``X0``
+        (the centroid-nudged nodes of the nodal history). Midpoints are
+        clamped to the domain; the last point is clamped unless
+        ``clamp_final`` is False (old-frame reach-back).
+        """
+        clamp = self.mesh.return_coords_to_bounds
+        vm = id(v_mesh_var) if subtract_v_mesh else None
+        X = np.asarray(X0)
+        for j in range(len(segments)):
+            last = j == len(segments) - 1
+            clamp_this = clamp_final or not last
+            ckey = (key, tuple(segments[: j + 1]), clamp_this, subtract_v_mesh, vm)
+            hit = self._cache.get(ckey)
+            if hit is not None:
+                self.n_cache_hits += 1
+                X = hit
+                continue
+            kind, k, dt = segments[j]
+            v_start, v_mid = self._segment_exprs(segments[j])
+            X_start = X_eval if (j == 0 and X_eval is not None) else X
+            v0 = self.velocity_at(v_start, X_start, use_global=j > 0, evalf=evalf,
+                                  subtract_v_mesh=subtract_v_mesh, v_mesh_var=v_mesh_var)
+            Xm = X - v0 * (0.5 * dt)
+            if clamp is not None:
+                Xm = clamp(Xm)
+            vmid = self.velocity_at(v_mid, Xm, use_global=True, evalf=evalf,
+                                    subtract_v_mesh=subtract_v_mesh, v_mesh_var=v_mesh_var)
+            X = X - vmid * dt
+            if clamp is not None and clamp_this:
+                X = clamp(X)
+            self._cache[ckey] = X
+        return X
+
+
+def share_characteristics(*managers, midtime_velocity=None):
+    """One :class:`CharacteristicTrace` for every manager that traces along
+    the same velocity on the same mesh; managers that do not trace (Eulerian,
+    swarm, symbolic) are left alone. Returns the trace, or None."""
+    tracers = [m for m in managers
+               if m is not None and hasattr(m, "attach_characteristics") and getattr(m, "V_fn", None) is not None]
+    if not tracers:
+        return None
+    first = tracers[0]
+    same = [m for m in tracers
+            if m.mesh is first.mesh and (m.V_fn is first.V_fn or sympy.Matrix(_matrix_of(m.V_fn)) == sympy.Matrix(_matrix_of(first.V_fn)))]
+    if midtime_velocity is None:
+        midtime_velocity = getattr(first, "midtime_velocity", True)
+    trace = CharacteristicTrace(first.mesh, first.V_fn, midtime_velocity=midtime_velocity)
+    for m in same:
+        m.attach_characteristics(trace)
+    return trace
+
+
+def _basis_key_of(var):
+    """A variable's node-set key (the enhanced wrapper hides underscore names)."""
+    return getattr(var, "_base_var", var)._basis_key
+
+
+def _matrix_of(V):
+    if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+        return V.sym
+    return V
+
+
 class SemiLagrangian(_DDtBase):
     r"""
     Semi-Lagrangian history manager using nodal swarm.
@@ -2725,21 +2958,15 @@ class SemiLagrangian(_DDtBase):
         carried as it was then."""
         if not getattr(self, "midtime_velocity", True):
             return None
-        level = getattr(self, "_v_prev_level", None)
-        if level is None or not getattr(self, "_v_prev_valid", False):
-            return None
-        return self._V_matrix() * sympy.Rational(3, 2) - level["expr"] * sympy.Rational(1, 2)
+        return self.characteristics.midtime_expr()
 
     def _record_velocity_history(self):
         """Cache ``V_fn`` evaluated at the true nodes as v^{n-1} for the
         next step. Evaluating at NUDGED nodes left a 0.001 h |grad v| bias
         that the extrapolation fed into every trace and moved the
         Blankenbach 1a wall Nusselt number by 0.9 %."""
-        if getattr(self, "_v_prev_level", None) is None:
-            self._v_prev_level = self._make_velocity_level("n-1")
-            self._v_prev_valid = False
-        self._copy_velocity_level(self._v_prev_level)
-        self._v_prev_valid = True
+        if getattr(self, "_owns_characteristics", True):
+            self.characteristics.finish_step()
 
     def _centroid_shifted_var_coords(self, var):
         """ND node coordinates of ``var`` nudged 0.1 % toward their cell
@@ -2788,31 +3015,10 @@ class SemiLagrangian(_DDtBase):
             subtraction inherits the same unit treatment as ``V_fn``.
         """
         fn = self._V_matrix() if expr is None else expr
-        if use_global:
-            v_result = uw.function.global_evaluate(fn, coords, evalf=evalf)
-            if subtract_v_mesh:
-                v_mesh = uw.function.global_evaluate(
-                    self._v_mesh_var.sym, coords, evalf=evalf
-                )
-                v_result = v_result - v_mesh
-        else:
-            v_result = uw.function.evaluate(fn, coords)
-            if subtract_v_mesh:
-                v_mesh = uw.function.evaluate(self._v_mesh_var.sym, coords)
-                v_result = v_result - v_mesh
-
-        # Slicing can drop the UnitAwareArray wrapper — rewrap before the
-        # ND reduction so the units are not silently lost.
-        if isinstance(v_result, UnitAwareArray):
-            v_at_pts = v_result[:, 0, :]
-            if not isinstance(v_at_pts, UnitAwareArray):
-                v_at_pts = UnitAwareArray(v_at_pts, units=v_result.units)
-        else:
-            v_at_pts = v_result[:, 0, :]
-
-        # Non-dimensionalise to the DM/ND space: the trace-back arithmetic
-        # and the subsequent point-location both work in ND coordinates.
-        return _to_nondim_ndarray(v_at_pts, units=uw.get_units(self.V_fn))
+        return self.characteristics.velocity_at(
+            fn, coords, use_global=use_global, evalf=evalf,
+            subtract_v_mesh=subtract_v_mesh, v_mesh_var=getattr(self, "_v_mesh_var", None),
+        )
 
     def update(
         self,
@@ -3033,51 +3239,20 @@ class SemiLagrangian(_DDtBase):
         any foot that falls outside the old mesh, matching the validated
         prototype, which omits this clamp).
         """
-        # Use shifted ND coords to avoid quad mesh boundary issues
-        # (node_coords_nd is slightly shifted toward cell centroids —
-        # see _centroid_shifted_node_coords)
-        v_at_node_pts = self._velocity_nd_at(
-            node_coords_nd, subtract_v_mesh=subtract_v_mesh
-        )
-
-        # Departure point in the mesh's ND (DM) coordinate space. coords_nd is
-        # the ND reduction of the (possibly dimensional) node coordinates —
-        # identical to .coords for a non-units model, and the DM-space values
-        # (0..L_model) when units are active, matching what global_evaluate /
-        # the DM point-location expect. See #267.
-        coords = np.asarray(self.psi_star[i].coords_nd)
-
-        # CRITICAL (2025-11-27): Multiply velocity FIRST so UnitAwareArray.__mul__ handles it.
-        # If we do `dt_for_calc * v_at_node_pts`, Pint handles it and loses UnitAwareArray units.
-        mid_pt_coords = coords - v_at_node_pts * (0.5 * dt_for_calc)
-
-        # Clamp midpoint coordinates to the domain boundary
-        if self.mesh.return_coords_to_bounds is not None:
-            mid_pt_coords = self.mesh.return_coords_to_bounds(mid_pt_coords)
-
-        # Mid-point velocities may lie off-rank, so route through
-        # global_evaluate (with evalf forwarded), unlike the on-node
-        # evaluation above. The mid-point velocity is taken at the mid
-        # TIME, t^{n+1/2}, by extrapolation from the two most recent
-        # velocity fields, 1.5 v^n - 0.5 v^{n-1}; with v^n alone the
-        # trace is only first order in an unsteady flow. On the first
-        # step (no previous velocity) v^n is used.
-        v_at_mid_pts = self._velocity_nd_at(
-            mid_pt_coords,
-            use_global=True,
+        # One RK2 segment from the true nodes, the start velocity taken at
+        # the centroid-nudged coordinates (node_coords_nd). Served from the
+        # shared trace: a second history on the same nodes, or an older slot
+        # of this one, reuses the departure points computed here.
+        return self.characteristics.departure_points(
+            (_basis_key_of(self.psi_star[i]), "nudged"),
+            np.asarray(self.psi_star[i].coords_nd),
+            (("first", 0, dt_for_calc),),
             evalf=evalf,
+            X_eval=node_coords_nd,
+            clamp_final=not oldframe_active,
             subtract_v_mesh=subtract_v_mesh,
-            expr=self._midtime_velocity_expr(),
+            v_mesh_var=getattr(self, "_v_mesh_var", None),
         )
-
-        # Upstream (departure) coordinates: current position - velocity * timestep
-        end_pt_coords = coords - v_at_mid_pts * dt_for_calc
-
-        if (self.mesh.return_coords_to_bounds is not None
-                and not oldframe_active):
-            end_pt_coords = self.mesh.return_coords_to_bounds(end_pt_coords)
-
-        return end_pt_coords
 
     def _sample_history_at_departure(
         self, i, end_pt_coords, evalf, monotone_mode, oldframe_active, oldframe_X
@@ -3193,6 +3368,13 @@ class SemiLagrangian(_DDtBase):
 
         if not self._history_initialised:
             self.initialise_history()
+
+        # A private trace delimits its own step; a shared one is delimited
+        # by the solver that owns it (begin before the first manager, finish
+        # after the last, so every history sees the same velocity).
+        trace = self.characteristics
+        if self._owns_characteristics:
+            trace.begin_step(dt)
 
         # Old-frame reach-back (mutually exclusive with the ALE pulse:
         # ``on_remesh`` stashes ``_oldframe_X`` INSTEAD of a v_mesh disp,
@@ -4189,8 +4371,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # velocity is extrapolated from v^n and v^{n-1}. Each level caches
         # V_fn evaluated at the nodes at that time, so V_fn may be any
         # expression (variables, ramping constants, swarm proxies).
-        self._n_v = max(order, 2)
-        self.v_levels = [self._make_velocity_level(f"n-{k}") for k in range(self._n_v)]
+        self._n_v = max(order, 2)          # velocity levels the segments read
         self._init_coefficient_expressions(order, self.theta, with_exp=False)
 
     def spatial_weights(self):
@@ -4299,29 +4480,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         else:
             vals = uw.function.evaluate(self.psi_fn[0], self._nudged_node_coords(ps))
             ps.data[:, 0] = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
-        self._copy_velocity_level(self.v_levels[0])
-
-    def _velocity_at(self, v_sym, coords, evalf):
-        v = uw.function.global_evaluate(v_sym, coords, evalf=evalf)
-        v = np.asarray(_to_nondim_ndarray(v, units=self._velocity_units()))
-        if v.ndim == 3:
-            v = v[:, 0, :]
-        return v.reshape(coords.shape[0], self.mesh.dim)
-
-    def _trace_segment(self, X, v_start_sym, v_mid_sym, dt, evalf):
-        r"""One RK2 (midpoint) segment of the characteristic, backwards:
-        ``x_mid = x - dt/2 v_start(x)``, ``x_dep = x - dt v_mid(x_mid)``,
-        with ``v_mid`` the velocity at the segment's mid TIME."""
-        clamp = self.mesh.return_coords_to_bounds
-        v0 = self._velocity_at(v_start_sym, X, evalf)
-        Xm = X - 0.5 * dt * v0
-        if clamp is not None:
-            Xm = clamp(Xm)
-        vm = self._velocity_at(v_mid_sym, Xm, evalf)
-        Xd = X - dt * vm
-        if clamp is not None:
-            Xd = clamp(Xd)
-        return Xd
 
     def _segment_dt(self, j, dt):
         """Length of segment ``j`` (0 = the current step)."""
@@ -4333,25 +4491,17 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     def _fill_slots(self, dt, evalf):
         """Trace back from the integration points and sample the snapshots."""
         X0 = np.asarray(self.psi_star[0].coords_nd)
-        X = X0.copy()
-        half = sympy.Rational(1, 2)
+        trace = self.characteristics
+        trace.ensure_levels(self._n_v)
+        key = (_basis_key_of(self.psi_star[0]), "true")
+        segments = []
         for k in range(self.order):
-            # Segment k extends the trace from slot k-1's feet, so the
-            # feet for slot k are those of slot k-1 traced one more step.
-            # Segment k runs from t^{n+1-k} back to t^{n-k}. Its mid-time
-            # velocity: for k=0 extrapolated, 1.5 v^n - 0.5 v^{n-1} (v^{n+1}
-            # is not known yet); for k>=1 both ends are known, so the
-            # average of v^{n+1-k} and v^{n-k}. The first stage, which
-            # only places the mid-point, uses the velocity at the
-            # segment's start time.
-            V = [lvl["expr"] for lvl in self.v_levels]
-            if k == 0:
-                v_start = V[0]
-                v_mid = V[0] * sympy.Rational(3, 2) - V[1] * half
-            else:
-                v_start = V[k - 1]
-                v_mid = (V[k - 1] + V[k]) * half
-            X = self._trace_segment(X, v_start, v_mid, self._segment_dt(k, dt), evalf)
+            # Slot k's feet are slot k-1's traced one more step back. The
+            # trace caches by prefix, so this extends the previous chain by
+            # one segment; the velocities per segment are described there.
+            segments.append(("first", 0, self._segment_dt(0, dt)) if k == 0
+                            else ("older", k, self._segment_dt(k, dt)))
+            X = trace.departure_points(key, X0, tuple(segments), evalf=evalf)
             vals = uw.function.global_evaluate(
                 self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
             )
@@ -4364,8 +4514,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self._record_current()
         for k in range(1, self.order):
             self.psi_snap[k].data[...] = self.psi_snap[0].data[...]
-        for k in range(1, self._n_v):
-            self._copy_velocity_level(self.v_levels[k], self.v_levels[0])
+        self.characteristics.initialise_levels(self._n_v)
         X = np.asarray(self.psi_star[0].coords_nd)
         vals = uw.function.evaluate(self.psi_snap[0].sym[0], X)
         vals = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
@@ -4381,10 +4530,13 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
         for k in range(self.order - 1, 0, -1):
             self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
-        for k in range(self._n_v - 1, 0, -1):
-            self._copy_velocity_level(self.v_levels[k], self.v_levels[k - 1])
+        trace = self.characteristics
+        if self._owns_characteristics:
+            trace.begin_step(dt)
         self._record_current()
         self._fill_slots(dt, evalf)
+        if self._owns_characteristics:
+            trace.finish_step()
 
     def update(self, dt, evalf=False, verbose=False, **kwargs):
         self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
