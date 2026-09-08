@@ -260,3 +260,39 @@ integration-point scheme loses 45 times less of it.
 The trace-back samples twelve points per cell rather than the P2 nodes, and
 the snapshot evaluation at the moving feet misses the locator cache every
 step, so the update costs about three times the nodal one.
+
+## Swarm proxy at the integration points
+
+A swarm variable normally reaches the weak form through a nodal proxy:
+the particle field is reconstructed at the proxy's nodes from the nearest
+particles and the assembler interpolates it to the integration points with
+the basis. With `proxy_location="integration_points"` the proxy is an
+integration-point variable, reconstructed from the nearest particles at
+every integration point and read there directly. That is the
+Ellipsis / Underworld PIC-LIP mapping: material properties are sampled
+from the particles around each integration point, not smoothed to the
+nodes and back.
+
+```python
+swarm = uw.swarm.Swarm(mesh)
+M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="integration_points")
+swarm.populate(fill_param=3)
+M.data[:, 0] = ...                                   # per particle
+stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0 * M.sym[0] + eta_1 * (1 - M.sym[0])
+```
+
+The reconstruction itself is unchanged (a linear-exact RBF over the nearest
+particles, `rbf_interpolate`); only its target moved. A particle-carried
+material step is reproduced at the integration points with less than half
+the L2 error of the nodal proxy, and is exactly 0 or 1 one cell away from
+the interface (`tests/test_0067_integration_point_proxy.py`).
+`proxy_degree` and `proxy_continuous` are ignored for this proxy; the proxy
+has no gradient, so a derivative of the swarm variable's symbol is refused.
+Vector and tensor swarm variables get a multi-component proxy.
+
+`Lagrangian_Swarm(..., proxy_location="integration_points")` applies the
+same to the fully Lagrangian history: the slots carried on the particles
+are reconstructed at the integration points and the weak form reads them
+there, with no nodal history field. This is the Lagrangian option for large
+particle swarms, where the particles carry the state and the mesh only
+integrates it.
