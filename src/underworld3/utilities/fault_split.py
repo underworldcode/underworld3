@@ -2104,27 +2104,28 @@ def split_fault(mesh, name, orientation=None, verbose=False,
     n_pass = 0
     while True:
         remaining = _unsplit_facets(dm_cur, name, value, plus_name, minus_name)
+        # REDUCE FIRST, THEN BRANCH: every rank reaches all three
+        # reductions whichever path it is on, so no rank waits in one its
+        # peers have left. ``across`` is a parameter, identical on every
+        # rank, but the facet counts are not.
+        comps = [] if across else [c for c in _facet_components(dm_cur, remaining)
+                                   if len(c) >= 2]
+        whole = (len(comps) <= 1
+                 and sum(len(c) for c in comps) == len(remaining))
+        n_max = comm.allreduce(len(comps), op=MPI.MAX)
+        all_whole = comm.allreduce(whole, op=MPI.LAND)
+        n_left = comm.allreduce(len(remaining), op=MPI.SUM)
+        # ONE break, on a rank-uniform predicate: n_max and n_left are
+        # reduction results and n_pass counts identically everywhere.
+        # Across the seam it is ONE collective pass over the global
+        # chain(s) — every piece on every rank at once, so a vertex on the
+        # seam is sided and duplicated by both ranks in the same pass.
+        done = (n_pass > 0 or n_left == 0) if across \
+            else (n_max == 0 and (n_pass > 0 or n_left == 0))
+        if done:
+            break
         if across:
-            # ONE collective pass over the global chain(s): every piece
-            # on every rank at once, so a vertex on the seam is sided and
-            # duplicated by both ranks in the same pass.
-            if n_pass > 0 or comm.allreduce(len(remaining), op=MPI.SUM) == 0:
-                break
             lname, lvalue = name, value
-            comps = []
-        else:
-            comps = [c for c in _facet_components(dm_cur, remaining)
-                     if len(c) >= 2]
-        if not across:
-            whole = (len(comps) <= 1
-                     and sum(len(c) for c in comps) == len(remaining))
-            n_max, all_whole = comm.allreduce(len(comps), op=MPI.MAX), \
-                comm.allreduce(whole, op=MPI.LAND)
-            n_left = comm.allreduce(len(remaining), op=MPI.SUM)
-            if n_max == 0 and (n_pass > 0 or n_left == 0):
-                break
-        if across:
-            pass
         elif n_pass == 0 and (all_whole or n_max == 0):
             lname, lvalue = name, value        # today's path, verbatim
         else:

@@ -129,7 +129,7 @@ def test_fac_split_classifies_band_and_declines_uniform():
     assert np.all(np.abs(xs - 0.5) < 0.3)
 
 
-def test_fac_smoother_is_asm_and_converges():
+def test_fac_smoother_is_the_composite_band_patch_and_converges():
     m0, coarse, fine = _band_hierarchy()
     s = _poisson(fine)
     custom_mg.set_custom_fmg(s, coarse, builder="barycentric")
@@ -137,13 +137,21 @@ def test_fac_smoother_is_asm_and_converges():
     assert s.snes.getConvergedReason() > 0
     pc = s.snes.getKSP().getPC()
     assert pc.getType() == "mg"
+    # The FAC patch is the COMPOSITE form (#670): the whole-level SOR
+    # first, then the band blocks on top of it, so the smoother's PC is a
+    # multiplicative composite whose second member is the ASM patch.
     spc = pc.getMGSmoother(2).getPC()
+    assert spc.getType() == "composite"
+    spc = spc.getCompositePC(1)
     assert spc.getType() == "asm"
     sub = spc.getASMSubKSP()
     n_sub = sub[0].getOperators()[0].getSize()[0]
     n_lev = pc.getMGSmoother(2).getOperators()[0].getSize()[0]
-    assert n_sub == len(s._custom_mg["hierarchy"].level_patch_rows[2][1])
-    assert n_sub < n_lev
+    # the subdomain is the patch PLUS the operator-sparsity overlap PCASM
+    # adds at setup (one layer by default, #670), so it is larger than the
+    # recorded patch rows and still a strict subset of the level
+    n_patch = len(s._custom_mg["hierarchy"].level_patch_rows[2][1])
+    assert n_patch <= n_sub < n_lev
     # the patch-smoothed answer is the same answer
     g = _poisson(_wrap(fine.dm, m0))
     g.preconditioner = "gamg"
