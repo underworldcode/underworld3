@@ -1178,7 +1178,7 @@ class Eulerian(_DDtBase):
 
     See Also
     --------
-    SemiLagrangian : For advection-dominated problems with nodal swarm.
+    SemiLagrangian : For advection-dominated problems (characteristics traced from the nodes).
     Lagrangian : For full Lagrangian tracking on swarms.
     Symbolic : For purely symbolic history (no mesh storage).
     """
@@ -1798,11 +1798,14 @@ class EulerianSUPG(Eulerian):
 
 class SemiLagrangian(_DDtBase):
     r"""
-    Semi-Lagrangian history manager using nodal swarm.
+    Semi-Lagrangian history manager.
 
     Manages the semi-Lagrangian update of a mesh variable :math:`\psi`
-    across timesteps. Uses a nodal swarm to track departure points and
-    interpolate values back to the mesh.
+    across timesteps. The characteristics are traced back from the history
+    variable's own nodes (an RK2 mid-point trace in the mesh's
+    non-dimensional coordinates) and the field is sampled at the departure
+    points with ``uw.function.global_evaluate``. No swarm is allocated or
+    used: the departure points are plain coordinate arrays.
 
     .. math::
 
