@@ -7,7 +7,7 @@ import sympy
 import underworld3 as uw
 
 
-pytestmark = pytest.mark.level_3
+pytestmark = [pytest.mark.level_3, pytest.mark.tier_b]
 
 
 def _transient_state(timestep, order):
@@ -29,21 +29,16 @@ def _transient_state(timestep, order):
     shape = sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y)
     diffusivity = 0.05
     advection_speed = 0.4
-    with mesh.access(temperature, velocity):
-        temperature.data[:, 0] = uw.function.evaluate(
-            shape, temperature.coords
-        ).reshape(-1)
-        velocity.data[:, 0] = advection_speed
-        velocity.data[:, 1] = 0.0
+    temperature.array[:, 0, 0] = uw.function.evaluate(
+        shape, temperature.coords
+    ).reshape(-1)
+    velocity.array[:, 0, 0] = advection_speed
+    velocity.array[:, 0, 1] = 0.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        order=order,
-        time_integrator="bdf",
-        tau=0.0,
+    thermal = uw.systems.AdvDiffusion(
+        mesh, temperature, velocity.sym, order=order, theta=1.0, peclet_weight=0.0
     )
+    thermal.DuDt.supg_weight = 0.0
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = diffusivity
     for boundary in ("Left", "Right", "Top", "Bottom"):
@@ -62,7 +57,7 @@ def _transient_state(timestep, order):
         )
         thermal.solve(timestep=timestep, zero_init_guess=False)
 
-    return temperature.data[:, 0].copy()
+    return temperature.array[:, 0, 0].copy()
 
 
 @pytest.mark.parametrize(
@@ -100,15 +95,13 @@ def _citcoms_decay_error(timestep):
     velocity = uw.discretisation.MeshVariable(
         f"U_citcoms_decay_{token}", mesh, mesh.dim, degree=1
     )
-    temperature.data[:, 0] = 1.0
+    temperature.array[:, 0, 0] = 1.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        time_integrator="citcoms",
-        tau=0.0,
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms", tau=0.0,
     )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.0
     thermal.f = -temperature.sym[0]
@@ -116,7 +109,7 @@ def _citcoms_decay_error(timestep):
     for _ in range(round(1.0 / timestep)):
         thermal.solve(timestep=timestep)
 
-    return abs(float(np.mean(temperature.data[:, 0])) - np.exp(-1.0))
+    return abs(float(np.mean(temperature.array[:, 0, 0])) - np.exp(-1.0))
 
 
 def test_citcoms_predictor_corrector_is_second_order_for_scalar_decay():
@@ -147,19 +140,17 @@ def _citcoms_rotation_return_error(cell_size):
     x, y = mesh.X
     initial = sympy.exp(-30.0 * (x**2 + (y - 0.75) ** 2))
 
-    with mesh.access(temperature, velocity):
-        temperature.data[:, 0] = uw.function.evaluate(
-            initial, temperature.coords
-        ).reshape(-1)
-        velocity.data[:, 0] = -2.0 * np.pi * velocity.coords[:, 1]
-        velocity.data[:, 1] = 2.0 * np.pi * velocity.coords[:, 0]
+    temperature.array[:, 0, 0] = uw.function.evaluate(
+        initial, temperature.coords
+    ).reshape(-1)
+    velocity.array[:, 0, 0] = -2.0 * np.pi * velocity.coords[:, 1]
+    velocity.array[:, 0, 1] = 2.0 * np.pi * velocity.coords[:, 0]
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        time_integrator="citcoms",
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms",
     )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.0
 

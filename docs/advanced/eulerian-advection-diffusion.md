@@ -1,7 +1,10 @@
-# Eulerian advection-diffusion (SUPG): a drop-in for SLCN
+# Advection-diffusion composed from a transport manager (Eulerian SUPG by default)
 
-`uw.systems.AdvDiffusionSUPG` solves the same scalar transport equation as the
-semi-Lagrangian solver `uw.systems.AdvDiffusionSLCN`,
+`uw.systems.AdvDiffusion` is the general scalar transport solver. It assembles the
+diffusive flux and the source itself and takes the transport from the history manager
+it holds (`DuDt`); with the default manager, `uw.systems.ddt.EulerianSUPG`, it is the
+Eulerian SUPG scheme this page describes, a drop-in for the semi-Lagrangian solver
+`uw.systems.AdvDiffusionSLCN`. Both solve
 
 $$
 \frac{\partial \phi}{\partial t} + \mathbf{u}\cdot\nabla\phi
@@ -13,7 +16,7 @@ but assembles every term on the mesh, implicit in time, with streamline-upwind
 classes share their interface, so switching is one line:
 
 ```python
-adv = uw.systems.AdvDiffusionSUPG(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
+adv = uw.systems.AdvDiffusion(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
 adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0e-3
 adv.add_dirichlet_bc(1.0, "Bottom")
@@ -34,6 +37,10 @@ that sizes its step in Courant numbers can still ask for
 `estimate_dt(basis="resolution")`.
 
 ## What carries over
+
+The comparisons and implicit timestep policies below describe the default
+`EulerianSUPG` manager. The optional `EulerianSUPGPC` manager has a different
+update and timestep policy; see [Predictor-corrector transport](#predictor-corrector-transport).
 
 | SLCN | SUPG | note |
 |---|---|---|
@@ -101,7 +108,12 @@ of the compiled kernels; nothing is recompiled.
   derivatives only. For linear elements the missing term is identically zero.
 - The stabilisation parameter uses the local cell size (`mesh.cell_size()`) and
   three weights that are runtime constants (`solver.tau_weights`);
-  `solver.supg_weight = 0` gives the plain Galerkin scheme for comparison.
+  `solver.supg_weight = 0` gives the plain Galerkin scheme for comparison. The term is
+  also weighted by the cell Péclet number, $Pe^2/(Pe^2 + Pe_c^2)$ with
+  $Pe = |\mathbf{u}| h / 2\kappa$ and $Pe_c$ the `peclet_weight` argument (default 4),
+  so the stabilisation is off where a cell is diffusion-dominated and full where advection
+  dominates (pure advection, $\kappa = 0$, is unaffected); `peclet_weight=0` gives the
+  uniform weight.
 - The linear system is nonsymmetric, so the solver uses GMRES with an
   additive-Schwarz ILU preconditioner, with the Krylov tolerance matched to the
   SNES tolerance so that a step is one Newton iteration. Measured, this is the
@@ -111,172 +123,171 @@ of the compiled kernels; nothing is recompiled.
   (`refinement >= 1`) for very large rank counts. Every option can be
   overridden through `solver.petsc_options`.
 
-## CitcomS Predictor-Corrector
+## The history manager is the transport plugin
 
-The same public solver also provides the continuous-P1, row-lumped
-predictor-corrector used by the Zhong mantle-convection benchmark:
+The solver does not assemble its transport itself. Its history manager (`solver.DuDt`)
+contributes three symbolic terms, and the solver composes its residual from them:
+the time derivative of the scheme, the advection, and the stabilisation flux of the
+strong residual. The default manager is `uw.systems.ddt.EulerianSUPG`, which owns the
+advecting velocity (`V_fn` is data on it), the time scheme (`order`, `theta`), and the
+stabilisation knobs (`supg_weight`, `tau_weights`, `tau_shape`, `peclet_weight`); the
+solver's properties of the same names pass through to it.
+
+Any history manager that follows the contract can be supplied instead. A semi-Lagrangian
+manager answers zero for the advection and the stabilisation, because its history is
+already traced back along the characteristics, so the same solver becomes a
+semi-Lagrangian scheme on the field history:
+
+```python
+history = uw.systems.ddt.SemiLagrangian(mesh, T.sym, v.sym, vtype=uw.VarType.SCALAR,
+                                        degree=T.degree, continuous=True, order=1)
+adv = uw.systems.AdvDiffusion(mesh, T, v.sym, DuDt=history)   # no assembled advection
+```
+
+On pure advection this reproduces `AdvDiffusionSLCN` to the solver tolerance; with
+diffusion the two differ in where the diffusive flux history comes from (the traced-back
+field here, the traced-back flux there). The manager works for a vector or tensor unknown
+as well (`vtype`), applying the advection component by component, which is how the
+Navier-Stokes solver and a transported stress use it.
+
+## Predictor-corrector transport
+
+For continuous-P1 scalar transport, select the predictor-corrector manager
+explicitly and pass it to the same `uw.systems.AdvDiffusion` solver:
 
 ```python
 Tdot = uw.discretisation.MeshVariable("Tdot", mesh, 1, degree=1)
-adv = uw.systems.AdvDiffusionSUPG(
+transport = uw.systems.ddt.EulerianSUPGPC(
     mesh, T, v.sym,
-    time_integrator="citcoms",
+    method="citcoms",
     temperature_rate_field=Tdot,
 )
+adv = uw.systems.AdvDiffusion(mesh, T, v.sym, DuDt=transport)
+adv.constitutive_model = uw.constitutive_models.DiffusionModel
 adv.constitutive_model.Parameters.diffusivity = 1.0
 adv.add_dirichlet_bc(0.0, "Upper")
 adv.add_dirichlet_bc(1.0, "Lower")
 adv.solve(timestep=adv.estimate_dt())
 ```
 
-This is an optional time integrator, not a second SUPG solver. The implicit
-and CitcomS paths share the source/advection/diffusion residual, boundary
-assembly, and runtime constants. Only the temporal update and its
-stabilisation/timestep policy differ.
+Here `T` must also be continuous P1. The manager owns the rate, startup state,
+correction controls and transport policy; the solver owns the constitutive
+model, source and boundary conditions. Select `method="citcoms"` for the
+fixed-correction benchmark method or `method="pc_converged"` for a
+residual-converged reference. These are manager methods, not solver time
+integrator arguments. CN and BDF remain on the default `EulerianSUPG` manager.
 
-CitcomS predicts temperature with `(1-gamma)*dt*Tdot`, resets the rate,
-then applies `delta_rate=-M_L^-1*F` to the rate and
-`gamma*dt*delta_rate` to temperature. Defaults are `adv_gamma=0.5` and
-two corrections. Boundary values are reinserted at each correction.
-Automatic geometry is restricted to 2-D triangles and 3-D tetrahedra.
+### Predictor and corrections
 
-### Finite-Correction Accuracy
+Writing the temperature rate as $q$, the predictor is
+$T^{(0)} = T^n + (1-\gamma)\Delta t\,q^n$, followed by resetting $q$ to zero.
+Each correction assembles the full finite-element residual $F(T,q)$ and applies
 
-The correction mass is lumped, but the time-derivative term in the residual
-uses the consistent finite-element mass. Therefore `adv_gamma=0.5` and two
-corrections do **not** guarantee second-order time convergence for a
-nonuniform temperature field at fixed mesh. In pure diffusion, with
-consistent mass $M$, stiffness $K$, and $D=\operatorname{diag}(M\mathbf{1})$,
-two corrections approach the operator
-$(2I-D^{-1}M)D^{-1}K$ as the timestep vanishes. This generally differs from
-both $M^{-1}K$ and $D^{-1}K$. The startup rate $-D^{-1}KT$ is also only an
-approximation to the consistent semidiscrete rate $-M^{-1}KT$.
+$$
+\delta q = -D^{-1}F(T,q), \qquad
+q \leftarrow q + \delta q, \qquad
+T \leftarrow T + \gamma\Delta t\,\delta q,
+$$
 
-`tests/test_1118_pc2_diffusion_time.py` isolates these effects on tiny
-triangular/tetrahedral meshes using independently integrated element
-matrices and exact discrete eigenmode/matrix-exponential solutions. It
-reproduces first-order timestep differences in serial and MPI. Uniform
-scalar decay is a special case where consistent and lumped mass agree;
-second order in that test does not establish PDE time accuracy.
+where $D$ is the positive row-lumped mass. Dirichlet values are reinserted at
+each correction. `method="citcoms"` defaults to `adv_gamma=0.5` and
+`corrector_steps=2`, with a single lumped correction to initialise the rate.
 
-The CitcomS-compatible mode retains its fixed-correction semantics. Do not
-silently replace its residual mass or increase the iteration count and
-still claim an unchanged paper-reproduction method. An accurately solved
-implicit Crank-Nicolson update with consistent initialization provides a
-separate second-order reference. The same test file also exercises actual
-UW3 CN (not only a matrix control): temporal order 2.00 on both geometries
-in serial and on eight ranks, with the nodal CN amplification map agreeing
-within 1.6e-14. Production-scale validation is separate from these small
-mathematical tests.
+Both PC methods use the steady directional simplex stabilisation
 
-For a predictor-corrector reference that retains the same SUPG residual and
-gamma update, select the residual-converged mode explicitly:
+$$
+\tau = \frac{h}{2|\mathbf{u}|}\max(0,1-1/Pe), \qquad
+Pe = \frac{|\mathbf{u}|h}{2\kappa}, \qquad
+h = \frac{2|\mathbf{u}|}{\sum_a |\mathbf{u}\cdot\nabla N_a|}.
+$$
 
-```python
-adv = uw.systems.AdvDiffusionSUPG(
-    mesh,
-    T,
-    v.sym,
-    time_integrator="pc_converged",
-    temperature_rate_field=Tdot,
-)
-```
+Zero velocity gives zero tau; zero diffusivity uses the advective limit.
+This is not the default manager's transient norm tau or cell-Peclet weighting.
+`tau=None` selects this automatic rule; a scalar symbolic expression or number
+overrides it. `supg_weight=1.0` is the PC default.
+Automatic geometry supports 2-D triangles and 3-D tetrahedra and currently
+requires a non-empty volume partition on every rank. Unsupported layouts
+are rejected collectively; use fewer ranks or a sufficiently resolved mesh.
 
-This mode uses the row-lumped mass only as an iterative preconditioner. It
-solves the consistent Petrov-Galerkin rate equation at startup and after each
-prediction until the full residual is no larger than the greater of
-`corrector_atol` and `corrector_rtol*initial_residual`. The defaults are
-`corrector_rtol=1e-10`, `corrector_atol=1e-12`, and
-`max_corrector_steps=100`; non-convergence raises `RuntimeError` rather than
-silently accepting an inaccurate step.
+After attachment to the solver, `transport.estimate_dt()` returns
+`0.9*min(dt_adv, dt_diff)`, using the directional advective rate and a row-sum
+bound on the lumped diffusion operator; `adv.estimate_dt()` delegates to it.
+The implicit field-change estimate described above is not a stability bound
+for this update. Fixed comparison timesteps must respect the PC bound;
+residual convergence does not make diagonal correction converge for arbitrary
+steps. SUPG does not guarantee a nodal maximum principle: check temperature
+bounds and heat balance.
 
-The exact discrete diffusion regression measures temporal order 2.00 in both
-2-D and 3-D, in serial and on eight ranks, and agrees with the trapezoidal
-amplification map to below 5.2e-14. With deliberately strict `1e-12` relative
-tolerance, its small meshes require 48-63 corrections per step in 2-D and
-63-81 in 3-D. The mode is therefore an accuracy reference, not a claim that
-repeated diagonal correction is the most efficient production-scale
-consistent-mass solve.
+Diffusion remains in the Galerkin flux but is absent from the strong SUPG
+residual. This omission is exact for affine P1 fields with elementwise
+constant diffusivity, not for arbitrary curved mappings, variable
+coefficients or P2 temperature.
 
-Its steady tau is `h/(2*speed) * max(0, 1-1/Pe)`, with
-`Pe=speed*h/(2*kappa)` and directional simplex
-`h=2*speed/sum_a(abs(u.grad(N_a)))`. Zero velocity gives zero tau;
-zero diffusivity uses the advective limit. It is not the generic transient
-norm tau.
+### Finite-correction accuracy
 
-The CitcomS timestep estimate is `0.9*min(dt_adv, dt_diff)`, using the
-directional advective rate and the row-sum bound on the lumped diffusion
-operator. The implicit field-change estimate is not a stability bound for
-this method. A fixed comparison timestep must respect the explicit bound.
-SUPG does not guarantee a nodal maximum principle; check temperature bounds
-and heat balance for every method.
+The correction mass is lumped, but the time derivative in the residual uses
+the consistent finite-element mass. Consequently `adv_gamma=0.5` and two
+corrections do **not** guarantee second-order temporal convergence for a
+nonuniform field at fixed mesh. For pure diffusion, let $M$ be the consistent
+mass, $K$ the stiffness and $D=\operatorname{diag}(M\mathbf{1})$. Two corrections
+approach the operator $(2I-D^{-1}M)D^{-1}K$ as $\Delta t$ vanishes, generally
+different from both $M^{-1}K$ and $D^{-1}K$. The startup rate $-D^{-1}KT$ is
+also only an approximation to the consistent rate $-M^{-1}KT$.
 
-Diffusion is absent only from the strong SUPG residual. Its omission is
-exact for affine P1 fields with elementwise constant diffusivity, not for
-arbitrary curved mappings, variable coefficients or P2 temperature.
+The regression in `tests/test_1118_pc2_diffusion_time.py` isolates these
+effects with independently integrated element
+matrices and exact discrete eigenmode/matrix-exponential solutions on tiny
+triangular and tetrahedral meshes. It records first-order timestep
+differences in serial and MPI. Uniform scalar decay, where the two masses
+agree, is not sufficient evidence of PDE time accuracy. The same reference
+records temporal order 2.00 for an actual UW3 consistent-mass CN update in
+both geometries, in serial and on eight ranks, with its nodal amplification
+map agreeing within 1.6e-14. The DDt-manager migration reproduced these
+results on 8 September 2026. These are isolated numerical checks, not
+production-scale validation.
 
-### Checkpoint State
+### Residual-converged reference
+
+Construct `EulerianSUPGPC` with `method="pc_converged"` to keep the same SUPG
+residual and gamma update while using the lumped mass only as an iterative
+preconditioner. At startup it converges the consistent Petrov-Galerkin rate
+equation with temperature held fixed; after prediction it converges the
+coupled rate/temperature correction. The full residual must be no larger
+than `max(corrector_atol, corrector_rtol*initial_residual)`. Defaults are
+`corrector_rtol=1e-10`, `corrector_atol=1e-12` and
+`max_corrector_steps=100`. Non-convergence raises `RuntimeError` instead of
+accepting the step. Inspect `transport.temperature_rate`,
+`transport.last_corrector_iterations`, `transport.last_corrector_residual`
+and `transport.corrector_target` on the manager.
+
+With `adv_gamma=0.5`, this supplies a separate second-order reference rather
+than changing the fixed-correction CitcomS method. The discrete diffusion
+regression records order 2.00 in 2-D and 3-D, in serial and on
+eight ranks, and agreement with the trapezoidal amplification map below
+5.2e-14. At relative tolerance `1e-12`, those small meshes needed 48-63
+corrections per step in 2-D and 63-81 in 3-D. This is an accuracy reference,
+not evidence that diagonal iteration is the most efficient production
+consistent-mass solve. Changing residual mass or correction count changes
+the fixed-correction method and must not be presented as unchanged paper
+reproduction.
+
+### Checkpoint state
 
 ```python
 orchestration_model = uw.get_default_model()
 orchestration_model.save_state(file="checkpoint.h5")
-# With the matching model, fields and integration method constructed:
+# Reconstruct the matching model, fields and manager before loading.
 orchestration_model.load_state("checkpoint.h5")
 ```
 
-The PETSc-backed snapshot captures T and the required history automatically:
-Tdot, startup status, and correction controls for both predictor-corrector
-modes; DDt fields, timestep history, theta, and the field-change estimator
-state for implicit integration. A T-only checkpoint is not an exact restart.
-Disk snapshots currently require the same model layout and MPI rank count.
-Old full-model snapshots with a different solver/history layout require
-migration; importing the old module name does not make those layouts
-equivalent.
+An exact PC restart needs temperature plus the manager's rate, startup state
+and correction controls. A temperature-only checkpoint is insufficient.
+Implicit integration instead needs its DDt fields, timestep history, theta
+and field-change estimator state. Disk snapshots require the same model
+layout and MPI rank count; snapshots with a different solver/manager layout
+require migration. The manager owns PC restart state, not a solver alias.
 
-A fresh interpreter can construct the matching mesh, variables, and solver,
-then load the snapshot without a dummy timestep. Generic SUPG registers its
-cell-size geometry dependency at construction so the saved auxiliary field
-is present before the first residual build. The independent process test
-`tests/test_1119_supg_process_restart.py` checks PC2, CN, and BDF2 with changing
-velocity and timesteps, including exact restored history and continuation.
-
-Implementation ownership is `systems/advection_diffusion_eulerian.py`.
-
-Automatic CitcomS simplex geometry currently requires a non-empty volume
-partition on every rank. If a very small test mesh leaves ranks empty, the
-solver rejects that layout collectively before mass assembly. Use fewer
-ranks or a sufficiently resolved test mesh; an empty partition is not
-silently interpreted as unsupported physics on only one rank.
-`systems/advdiff_supg.py` contains compatibility imports only.
-
-### Small Lifecycle Regressions
-
-`tests/test_1120_supg_memory.py` checks PC2, CN, and BDF2 workspace reuse over
-eight updates on tiny triangles and tetrahedra. This fast Level 2 test runs by
-default. The same file also provides an opt-in 200-update Level 3 soak test.
-The soak records current per-rank RSS after 40 warm-up steps, fits late slopes
-over steps 120-200, and checks stable solver/vector handles and PC2 workspace
-reuse. There are no Stokes solves, checkpoints, reaction diagnostics, or
-forced garbage collections in either loop. RSS measurements are platform
-sensitive and are not part of routine CI.
-
-Run the restart parent in serial; it starts independent worker interpreters
-and uses the existing MPI supervisor for bounded cleanup:
-
-```bash
-python -m pytest -x -s tests/test_1119_supg_process_restart.py
-UW_SUPG_TEST_RANKS=8 python -m pytest -x -s tests/test_1119_supg_process_restart.py
-python -m pytest -x -s tests/test_1120_supg_memory.py
-UW_RUN_SUPG_MEMORY_SOAK=1 python -m pytest -x -s \
-  tests/test_1120_supg_memory.py -k repeated_transport_memory
-UW_RUN_SUPG_MEMORY_SOAK=1 mpirun -np 8 python -m mpi4py -m pytest \
-  --with-mpi -x -s tests/test_1120_supg_memory.py -k repeated_transport_memory
-```
-
-Use the MPI launcher matching the active Python/PETSc environment. These
-small mathematical and lifecycle checks do not require a coupled A1 run.
-
-## Further Reading
+## Further reading
 
 - Design note and measurements: `docs/developer/design/eulerian-supg-transport.md`
 - The semi-Lagrangian schemes: {doc}`semi-lagrangian-time-integration`

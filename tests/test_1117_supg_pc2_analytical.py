@@ -94,9 +94,11 @@ def _problem(case, h, dim=2, speed=0.0, diffusivity=0.0):
     assert boundary_tail < 1e-10, boundary_tail
     temperature.array[:, 0, 0] = uw.function.evaluate(
         initial, temperature.coords).reshape(-1)
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, temperature, velocity.sym, time_integrator="citcoms",
-        adv_gamma=0.5, corrector_steps=2)
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms", adv_gamma=0.5, corrector_steps=2,
+    )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     thermal.constitutive_model.Parameters.diffusivity = diffusivity
     for boundary in boundaries:
         thermal.add_dirichlet_bc(0.0, boundary)
@@ -179,7 +181,7 @@ def _spatial_refinement(case, sizes, dim=2, speed=0.0, diffusivity=0.0):
                       for coordinate in mesh.X]
             metrics["phase_error_radians"] = math.atan2(centre[1], centre[0]) - metrics["end_time"]
         if speed != 0 or case == "rotation":
-            tau = uw.function.evaluate(thermal.tau, mesh._centroids)
+            tau = uw.function.evaluate(thermal.DuDt.tau(), mesh._centroids)
             assert uw.mpi.comm.allreduce(bool(np.any(tau > 0)), op=MPI.LOR)
         name = f"{case}_{mesh.dim}d_u{speed:g}_k{diffusivity:g}_h{h:g}"
         _save_result(name, metrics)
@@ -215,13 +217,13 @@ def test_pc2_spherical_diffusion_timestep_sensitivity():
     mesh, temperature, thermal = problem[:3]
     difference = uw.discretisation.MeshVariable("T_difference", mesh, 1, degree=1)
     initial_values = np.array(temperature.array)
-    initial_state = thermal.state
+    initial_state = thermal.DuDt.state
     base_steps = _step_count([problem])
     metrics, solutions = [], []
     for factor in (1, 2, 4):
         temperature.array[...] = initial_values
-        thermal.temperature_rate.array[...] = 0.0
-        thermal.state = initial_state
+        thermal.DuDt.temperature_rate.array[...] = 0.0
+        thermal.DuDt.state = initial_state
         metrics.append(_advance(problem, 0.125, base_steps * factor))
         solutions.append(np.array(temperature.array))
     norm_squared = _integral(mesh, problem[4]**2)

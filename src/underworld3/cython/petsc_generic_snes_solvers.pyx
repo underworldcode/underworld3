@@ -6512,6 +6512,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return _dtf(self, boundary, self._rotated_freeslip_info, field,
                     buoyancy_scale=buoyancy_scale, mass=mass)
 
+    def boundary_normal_traction_integral(self, boundary, fn, remove_mean=True):
+        r"""Return the boundary integral of ``sigma_nn * fn`` directly from the
+        rotated-free-slip constraint reaction.
+
+        With ``remove_mean=True`` (default), the constant normal-traction gauge
+        is removed before projection. Unlike pointwise
+        :meth:`boundary_normal_traction`, this weak projection does not recover
+        nodal traction values or gather a global boundary mesh. It is therefore
+        suitable for harmonic and integral diagnostics on curved P2 boundaries,
+        whose recovered vertex values converge slowly (issue #414).
+        """
+        if self._rotated_freeslip_info is None:
+            raise RuntimeError(
+                "boundary_normal_traction_integral requires a completed "
+                "rotated-free-slip solve.")
+        from underworld3.utilities.rotated_bc import boundary_normal_traction_integral as _bnti
+        return _bnti(self, boundary, self._rotated_freeslip_info, fn,
+                     remove_mean=remove_mean)
+
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=10.0, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
@@ -7855,41 +7874,51 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         L = self.Unknowns.L
         Nc = dim
 
-        # Normalise the F0 Jacobian source to a flat list of dim scalar
-        # entries — F0 arrives as (1, dim) or (dim, 1) depending on how the
-        # template/bodyforce was written (Array indexing is strict).
+        # Normalise the F0 Jacobian source to a flat (dim,) Array — F0 arrives
+        # as (1, dim) or (dim, 1) depending on how the template/bodyforce was
+        # written (Array indexing is strict).
         _f0_flat = sympy.Array(F0_jac).reshape(dim)
-        f0_jac_list = [_f0_flat[c] for c in range(dim)]
+
+        # Jacobian blocks are built with MATRIX-LEVEL diffs: one
+        # ``sympy.diff(<whole block matrix>, var)`` call per derivative
+        # variable instead of per-entry ``diff`` loops. Measured ~1.7x faster
+        # on large (monster-viscosity) fluxes — the batched elementwise diff
+        # reuses the derivative work across the block's shared subexpressions —
+        # and produces bit-identical entries (verified against the loop form).
+        # The flat PETSc [fc, gc, df, dg] layout is preserved by assigning each
+        # variable's matrix derivative into its slots below.
 
         # uu_G0[fc, gc]                  = dF0[fc] / dU[gc]
         G0 = sympy.zeros(Nc, Nc)
-        for fc in range(Nc):
-            for gc in range(Nc):
-                G0[fc, gc] = sympy.diff(f0_jac_list[fc], U_list[gc])
+        for gc in range(Nc):
+            dF0_dU = sympy.diff(_f0_flat, U_list[gc])
+            for fc in range(Nc):
+                G0[fc, gc] = dF0_dU[fc]
 
         # uu_G1[fc*Nc + gc, dg]          = dF0[fc] / dL[gc, dg]
         G1 = sympy.zeros(Nc * Nc, dim)
-        for fc in range(Nc):
-            for gc in range(Nc):
-                for dg in range(dim):
-                    G1[fc * Nc + gc, dg] = sympy.diff(f0_jac_list[fc], L[gc, dg])
+        for gc in range(Nc):
+            for dg in range(dim):
+                dF0_dL = sympy.diff(_f0_flat, L[gc, dg])
+                for fc in range(Nc):
+                    G1[fc * Nc + gc, dg] = dF0_dL[fc]
 
         # uu_G2[fc*Nc + gc, df]          = dF1[fc, df] / dU[gc]
         G2 = sympy.zeros(Nc * Nc, dim)
-        for fc in range(Nc):
-            for gc in range(Nc):
+        for gc in range(Nc):
+            dF1_dU = sympy.diff(F1_for_jac, U_list[gc])
+            for fc in range(Nc):
                 for df in range(dim):
-                    G2[fc * Nc + gc, df] = sympy.diff(F1_for_jac[fc, df], U_list[gc])
+                    G2[fc * Nc + gc, df] = dF1_dU[fc, df]
 
         # uu_G3[fc*Nc + gc, df*dim + dg] = dF1[fc, df] / dL[gc, dg]
         G3 = sympy.zeros(Nc * Nc, dim * dim)
-        for fc in range(Nc):
-            for gc in range(Nc):
-                for df in range(dim):
-                    for dg in range(dim):
-                        G3[fc * Nc + gc, df * dim + dg] = sympy.diff(
-                            F1_for_jac[fc, df], L[gc, dg]
-                        )
+        for gc in range(Nc):
+            for dg in range(dim):
+                dF1_dL = sympy.diff(F1_for_jac, L[gc, dg])
+                for fc in range(Nc):
+                    for df in range(dim):
+                        G3[fc * Nc + gc, df * dim + dg] = dF1_dL[fc, df]
 
         self._uu_G0 = sympy.ImmutableMatrix(G0)
         self._uu_G1 = sympy.ImmutableMatrix(G1)
@@ -7905,27 +7934,31 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # up_G0[fc, 0]                   = dF0[fc] / dp
         G0 = sympy.zeros(dim, 1)
+        dF0_dp = sympy.diff(_f0_flat, p_scalar)
         for fc in range(dim):
-            G0[fc, 0] = sympy.diff(f0_jac_list[fc], p_scalar)
+            G0[fc, 0] = dF0_dp[fc]
 
         # up_G1[fc, dg]                  = dF0[fc] / d(dp/dx_dg)
         G1 = sympy.zeros(dim, dim)
-        for fc in range(dim):
-            for dg in range(dim):
-                G1[fc, dg] = sympy.diff(f0_jac_list[fc], Gp[0, dg])
+        for dg in range(dim):
+            dF0_dGp = sympy.diff(_f0_flat, Gp[0, dg])
+            for fc in range(dim):
+                G1[fc, dg] = dF0_dGp[fc]
 
         # up_G2[fc, df]                  = dF1[fc, df] / dp
         G2 = sympy.zeros(dim, dim)
+        dF1_dp = sympy.diff(F1_for_jac, p_scalar)
         for fc in range(dim):
             for df in range(dim):
-                G2[fc, df] = sympy.diff(F1_for_jac[fc, df], p_scalar)
+                G2[fc, df] = dF1_dp[fc, df]
 
         # up_G3[fc*dim + df, dg]         = dF1[fc, df] / d(dp/dx_dg)
         G3 = sympy.zeros(dim * dim, dim)
-        for fc in range(dim):
-            for df in range(dim):
-                for dg in range(dim):
-                    G3[fc * dim + df, dg] = sympy.diff(F1_for_jac[fc, df], Gp[0, dg])
+        for dg in range(dim):
+            dF1_dGp = sympy.diff(F1_for_jac, Gp[0, dg])
+            for fc in range(dim):
+                for df in range(dim):
+                    G3[fc * dim + df, dg] = dF1_dGp[fc, df]
 
         self._up_G0 = sympy.ImmutableMatrix(G0)  # zero in stokes tests
         self._up_G1 = sympy.ImmutableMatrix(G1)  # zero in stokes tests
@@ -8123,8 +8156,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             # u-row residual:  fn_f = h·n  +  r(n·u − g)·n
             # The r-term is the augmented-Lagrangian penalty: it adds a uu
             # boundary stiffness r·(n⊗n) that conditions the Schur complement
-            # but does NOT bias the multiplier (the h-row stays the exact
-            # constraint, so h still converges to the true normal traction).
+            # but does not change what the constraint ENFORCES (the h-row stays
+            # the exact constraint). It does change what h IS: the traction is
+            # h + r(n.u - g), and only the sum is r-independent. Stokes_Constrained
+            # .traction() / .topography() return that sum; .multiplier() returns h.
             fn_f = sympy.Matrix(
                 [(hsym + r_sym * (u_dot_n - g_sym)) * n_row[i] for i in range(dim)]
             ).as_immutable()
@@ -8198,7 +8233,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             verbose=verbose,
             debug=debug,
             debug_name=debug_name,
-            cache=False,
+            # Disk cache + rank-0-only compile: under MPI only rank 0 invokes
+            # cc and publishes to the shared cache dir; the other ranks load
+            # the compiled module. Without this, every rank compiles its own
+            # copy of the (potentially enormous) pointwise module.
+            cache=True,
         )
         self.compiled_extensions = _getext_result.ptrobj
         self.ext_dict = _getext_result.fn_dicts

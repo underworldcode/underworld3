@@ -68,9 +68,11 @@ def diffusion(request):
     temperature = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
     velocity = uw.discretisation.MeshVariable("U", mesh, dim, degree=1)
     velocity.array[...] = 0.0
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, temperature, velocity.sym, time_integrator="citcoms",
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms",
     )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     thermal.constitutive_model.Parameters.diffusivity = 0.1
     # Natural homogeneous Neumann boundaries remove constrained-DOF effects.
     coords, mass, stiffness, cell_count, fingerprint = _p1_matrices(mesh)
@@ -98,15 +100,15 @@ def test_two_corrections_match_independent_diffusion_map(diffusion):
     final_time = 0.1
     exact = initial * np.exp(-eigenvalues[1] * final_time)
     effective = expm(-final_time * (2 * identity - H) @ J) @ initial
-    initial_state = thermal.state
+    initial_state = thermal.DuDt.state
     dt_limit = thermal.estimate_dt()
     solutions, effective_errors = [], []
     for steps in (16, 32, 64, 128):
         dt = final_time / steps
         assert dt < dt_limit
         temperature.array[:, 0, 0] = initial[ids]
-        thermal.temperature_rate.array[...] = 0.0
-        thermal.state = initial_state
+        thermal.DuDt.temperature_rate.array[...] = 0.0
+        thermal.DuDt.state = initial_state
         expected = initial.copy()
         rate = -J @ initial
         # Algebraically eliminate both corrections; do not call UW3 residuals.
@@ -119,7 +121,7 @@ def test_two_corrections_match_independent_diffusion_map(diffusion):
             thermal.solve(timestep=dt)
             discrepancy = np.maximum(discrepancy, [
                 np.max(np.abs(temperature.array[:, 0, 0] - expected[ids])),
-                np.max(np.abs(thermal.temperature_rate.array[:, 0, 0] - rate[ids])),
+                np.max(np.abs(thermal.DuDt.temperature_rate.array[:, 0, 0] - rate[ids])),
             ])
         discrepancy = np.max(uw.mpi.comm.allgather(discrepancy), axis=0)
         assert discrepancy[0] < 1e-11 and discrepancy[1] < 1e-10, discrepancy
@@ -187,8 +189,9 @@ def test_uw3_cn_is_second_order_for_discrete_diffusion(diffusion):
         temperature = uw.discretisation.MeshVariable(
             f"T_cn_{steps}", pc2.mesh, 1, degree=1)
         temperature.array[:, 0, 0] = initial[ids]
-        thermal = uw.systems.AdvDiffusionSUPG(
-            pc2.mesh, temperature, pc2.V_fn, order=1, theta=0.5)
+        thermal = uw.systems.AdvDiffusion(
+            pc2.mesh, temperature, pc2.V_fn, order=1, theta=0.5, peclet_weight=0.0
+        )
         thermal.constitutive_model.Parameters.diffusivity = 0.1
         # Time error on the finest dt is about 1e-8; solver error must be smaller.
         thermal.petsc_options["ksp_rtol"] = 1e-14
@@ -220,23 +223,22 @@ def test_converged_pc_is_second_order_for_discrete_diffusion(diffusion):
     pc2, _, ids, mass, _, initial, eigenvalues, _ = diffusion
     temperature = uw.discretisation.MeshVariable(
         "T_pc_converged", pc2.mesh, 1, degree=1)
-    thermal = uw.systems.AdvDiffusionSUPG(
-        pc2.mesh,
-        temperature,
-        pc2.V_fn,
-        time_integrator="pc_converged",
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        pc2.mesh, temperature, pc2.V_fn,
+        method="pc_converged",
         corrector_rtol=1.0e-12,
         corrector_atol=1.0e-14,
         max_corrector_steps=200,
     )
+    thermal = uw.systems.AdvDiffusion(pc2.mesh, temperature, pc2.V_fn, DuDt=manager)
     thermal.constitutive_model.Parameters.diffusivity = 0.1
-    initial_state = thermal.state
+    initial_state = thermal.DuDt.state
     exact = initial * np.exp(-0.1 * eigenvalues[1])
     errors = []
     for steps in (4, 8, 16):
         temperature.array[:, 0, 0] = initial[ids]
-        thermal.temperature_rate.array[...] = 0.0
-        thermal.state = initial_state
+        thermal.DuDt.temperature_rate.array[...] = 0.0
+        thermal.DuDt.state = initial_state
         dt = 0.1 / steps
         for _ in range(steps):
             thermal.solve(timestep=dt)
@@ -249,13 +251,13 @@ def test_converged_pc_is_second_order_for_discrete_diffusion(diffusion):
         map_error = _norm(actual - expected, mass) / _norm(expected, mass)
         errors.append(_norm(actual - exact, mass) / _norm(exact, mass))
         assert map_error < 1.0e-9, map_error
-        assert thermal.last_corrector_iterations <= thermal.max_corrector_steps
-        assert thermal.last_corrector_residual <= thermal.corrector_target
+        assert thermal.DuDt.last_corrector_iterations <= thermal.DuDt.max_corrector_steps
+        assert thermal.DuDt.last_corrector_residual <= thermal.DuDt.corrector_target
         uw.pprint(
             f"PC_CONVERGED_DIFFUSION dim={pc2.mesh.dim} steps={steps} "
             f"dt={dt:.12g} relative_error={errors[-1]:.12g} "
-            f"map_error={map_error:.12g} corrections={thermal.last_corrector_iterations} "
-            f"residual={thermal.last_corrector_residual:.12g}")
+            f"map_error={map_error:.12g} corrections={thermal.DuDt.last_corrector_iterations} "
+            f"residual={thermal.DuDt.last_corrector_residual:.12g}")
     rates = _orders(errors)
     assert np.all((1.9 < rates) & (rates < 2.2)), rates
     uw.pprint(f"PC_CONVERGED_TIME_ORDER dim={pc2.mesh.dim} rates={rates.tolist()}")

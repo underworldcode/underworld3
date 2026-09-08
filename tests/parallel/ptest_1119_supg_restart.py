@@ -24,12 +24,20 @@ velocity = uw.discretisation.MeshVariable("U", mesh, 3, degree=1)
 temperature.array[:, 0, 0] = np.prod(np.sin(np.pi * np.asarray(temperature.coords)), axis=1)
 velocity.array[...] = 0.0
 velocity.array[:, 0, 0] = 0.2
-settings = ({"time_integrator": "citcoms"} if params.uw_method == "pc2"
-            else {"time_integrator": "pc_converged"}
-            if params.uw_method == "pc_converged"
-            else {"order": 1, "theta": 0.5} if params.uw_method == "cn"
-            else {"order": 2})
-thermal = uw.systems.AdvDiffusionSUPG(mesh, temperature, velocity.sym, **settings)
+if params.uw_method in ("pc2", "pc_converged"):
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms" if params.uw_method == "pc2" else params.uw_method,
+    )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
+else:
+    thermal = uw.systems.AdvDiffusion(
+        mesh, temperature, velocity.sym,
+        order=1 if params.uw_method == "cn" else 2,
+        theta=0.5 if params.uw_method == "cn" else 1.0,
+        peclet_weight=0.0,
+    )
+    manager = thermal.DuDt
 thermal.constitutive_model.Parameters.diffusivity = 0.01
 for boundary in mesh.boundaries:
     if boundary.name not in ("All_Boundaries", "Null_Boundary"):
@@ -45,8 +53,8 @@ orchestration_model.tracker.time = 0.0
 def capture():
     """All evolving fields and numerical metadata, separately from PETSc files."""
     fields = [temperature, velocity]
-    if thermal.temperature_rate is not None:
-        fields.append(thermal.temperature_rate)
+    if isinstance(manager, uw.systems.ddt.EulerianSUPGPC):
+        fields.append(manager.temperature_rate)
     else:
         fields.extend(thermal.DuDt.psi_star)
     record = {field.clean_name: np.array(field.array) for field in fields}
@@ -56,10 +64,9 @@ def capture():
     record["estimate_dt"] = float(thermal.estimate_dt())
     for name, value in asdict(thermal.state).items():
         record["solver_" + name] = "None" if value is None else value
-    if thermal.DuDt is not None:
-        for name, value in asdict(thermal.DuDt.state).items():
-            if name != "psi_star_var_names":
-                record["history_" + name] = "None" if value is None else value
+    for name, value in asdict(manager.state).items():
+        if name != "psi_star_var_names":
+            record["history_" + name] = "None" if value is None else value
     return record
 
 

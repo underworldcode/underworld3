@@ -204,3 +204,78 @@ def test_ranks_agree_reports_the_split(monkeypatch):
     assert "took branch A" in message and "took branch B" in message
     # The table must name WHICH ranks, or it does not localise anything.
     assert "[0, 2]" in message and "[1]" in message
+
+
+def test_a_pre_existing_sigalrm_handler_is_put_back(report):
+    """The watchdog borrows process-wide signal state; it must give it back.
+
+    With ``abort`` it installs SIG_DFL underneath faulthandler so the dump can
+    chain to it and terminate. Without this, arming the watchdog anywhere in a
+    program would silently discard a handler the program had installed for its
+    own reasons, and only the next SIGALRM would reveal it.
+    """
+    import signal
+
+    def mine(signum, frame):
+        pass
+
+    stream, _read_back = report
+    signal.signal(signal.SIGALRM, mine)
+    try:
+        uw.mpi.watch(seconds=30, stream=stream, abort=True)
+        uw.mpi.unwatch()
+        assert signal.getsignal(signal.SIGALRM) is mine, (
+            "unwatch() left its own SIGALRM disposition behind"
+        )
+    finally:
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+
+
+def test_checkpoint_works_off_the_main_thread_with_abort(report):
+    """`checkpoint` is documented as safe to leave in production code.
+
+    ``signal.signal`` refuses to run anywhere but the main thread, so doing the
+    signal setup per checkpoint made a checkpoint from a worker thread raise
+    ValueError -- and only with ``abort`` on, which is CI's setting. The setup
+    belongs in one place, at arm time.
+    """
+    import threading
+
+    stream, _read_back = report
+    uw.mpi.watch(seconds=30, stream=stream, abort=True)
+    outcome = {}
+
+    def worker():
+        try:
+            uw.mpi.checkpoint("from a worker thread")
+            outcome["result"] = "ok"
+        except Exception as exc:                     # noqa: BLE001 - reported below
+            outcome["result"] = f"{type(exc).__name__}: {exc}"
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    uw.mpi.unwatch()
+
+    assert outcome["result"] == "ok", (
+        f"checkpoint() from a worker thread raised: {outcome['result']}"
+    )
+
+
+def test_taking_over_the_interval_timer_is_announced(report):
+    """There is one ITIMER_REAL per process and the watchdog needs it.
+
+    It cannot be shared, so the honest behaviour is to take it and say so
+    rather than cancel someone's timer in silence.
+    """
+    import signal
+
+    stream, _read_back = report
+    signal.setitimer(signal.ITIMER_REAL, 3600.0, 0.0)
+    try:
+        with pytest.warns(RuntimeWarning, match="ITIMER_REAL"):
+            uw.mpi.watch(seconds=30, stream=stream)
+        uw.mpi.unwatch()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)

@@ -26,17 +26,16 @@ def test_simplex_geometry_is_reused_between_automatic_operations():
     velocity = uw.discretisation.MeshVariable(
         "U_geometry_cache", mesh, mesh.dim, degree=1
     )
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        time_integrator="citcoms",
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms",
     )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 1.0
 
-    first = thermal._simplex_data()
-    second = thermal._simplex_data()
+    first = thermal.DuDt._simplex_data()
+    second = thermal.DuDt._simplex_data()
 
     assert all(a is b for a, b in zip(first, second))
 
@@ -49,10 +48,10 @@ def test_simplex_geometry_is_reused_between_automatic_operations():
     expected_rate = np.abs(
         np.einsum("cad,cd->ca", first[1], sample_velocity)
     ).sum(axis=1)
-    first_rate = thermal._streamline_directional_rate(
+    first_rate = thermal.DuDt._streamline_directional_rate(
         first[1], sample_velocity
     )
-    second_rate = thermal._streamline_directional_rate(
+    second_rate = thermal.DuDt._streamline_directional_rate(
         first[1], sample_velocity
     )
 
@@ -62,11 +61,11 @@ def test_simplex_geometry_is_reused_between_automatic_operations():
     deformed = mesh.X.coords.copy()
     deformed[:, 0] *= 1.1
     mesh.deform(deformed)
-    third = thermal._simplex_data()
+    third = thermal.DuDt._simplex_data()
 
     assert all(a is not b for a, b in zip(first, third))
     assert not np.isclose(first[2].sum(), third[2].sum())
-    assert thermal._streamline_directional_rate(
+    assert thermal.DuDt._streamline_directional_rate(
         third[1], sample_velocity
     ) is not first_rate
 
@@ -84,12 +83,11 @@ def test_tetrahedron_streamline_length_is_geometry_invariant():
     velocity_field = uw.discretisation.MeshVariable(
         "U_tet_streamline", mesh, mesh.dim, degree=1
     )
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity_field.sym,
-        time_integrator="citcoms",
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity_field.sym,
+        method="citcoms",
     )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity_field.sym, DuDt=manager)
 
     lengths = np.array((2.0, 1.0, 0.5))
     gradients = np.vstack((-1.0 / lengths, np.diag(1.0 / lengths)))[None, :, :]
@@ -97,14 +95,14 @@ def test_tetrahedron_streamline_length_is_geometry_invariant():
     speed = np.linalg.norm(velocity, axis=1)
     expected_length = speed / np.sum(velocity / lengths, axis=1)
 
-    directional_rate = thermal._streamline_directional_rate(
+    directional_rate = thermal.DuDt._streamline_directional_rate(
         gradients, velocity
     ).copy()
     streamline_length = 2.0 * speed / directional_rate
     np.testing.assert_allclose(streamline_length, expected_length)
 
     permutation = (2, 0, 3, 1)
-    permuted_rate = thermal._streamline_directional_rate(
+    permuted_rate = thermal.DuDt._streamline_directional_rate(
         gradients[:, permutation, :], velocity
     )
     np.testing.assert_allclose(permuted_rate, directional_rate)
@@ -118,7 +116,7 @@ def test_tetrahedron_streamline_length_is_geometry_invariant():
     )
     rotated_gradients = gradients @ rotation.T
     rotated_velocity = velocity @ rotation.T
-    rotated_rate = thermal._streamline_directional_rate(
+    rotated_rate = thermal.DuDt._streamline_directional_rate(
         rotated_gradients, rotated_velocity
     )
     np.testing.assert_allclose(rotated_rate, directional_rate)
@@ -137,18 +135,14 @@ def _high_peclet_solution(tau, name):
     velocity = uw.discretisation.MeshVariable(
         f"U_layer_{name}", mesh, mesh.dim, degree=1
     )
-    with mesh.access(temperature, velocity):
-        temperature.data[:, 0] = temperature.coords[:, 0]
-        velocity.data[:, 0] = 1.0
-        velocity.data[:, 1] = 0.0
+    temperature.array[:, 0, 0] = temperature.coords[:, 0]
+    velocity.array[:, 0, 0] = 1.0
+    velocity.array[:, 0, 1] = 0.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        tau=tau,
-        time_integrator="bdf",
+    thermal = uw.systems.AdvDiffusion(
+        mesh, temperature, velocity.sym, theta=1.0, peclet_weight=0.0
     )
+    thermal.DuDt.supg_weight = 0.0 if tau == 0.0 else 1.0
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.01
     thermal.add_dirichlet_bc(0.0, "Left")
@@ -157,8 +151,8 @@ def _high_peclet_solution(tau, name):
 
     x = temperature.coords[:, 0]
     exact = np.expm1(100.0 * x) / np.expm1(100.0)
-    rms_error = float(np.sqrt(np.mean((temperature.data[:, 0] - exact) ** 2)))
-    return temperature.data.copy(), rms_error
+    rms_error = float(np.sqrt(np.mean((temperature.array[:, 0, 0] - exact) ** 2)))
+    return np.array(temperature.array), rms_error
 
 
 def test_supg_reduces_high_peclet_oscillation_and_error():
@@ -192,15 +186,14 @@ def _manufactured_error(cell_size, degree):
     x, y = mesh.X
     exact = sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y)
     diffusivity = 0.1
-    with mesh.access(temperature, velocity):
-        temperature.data[:, 0] = uw.function.evaluate(
-            exact, temperature.coords
-        ).reshape(-1)
-        velocity.data[:, 0] = 1.0
-        velocity.data[:, 1] = 0.0
+    temperature.array[:, 0, 0] = uw.function.evaluate(
+        exact, temperature.coords
+    ).reshape(-1)
+    velocity.array[:, 0, 0] = 1.0
+    velocity.array[:, 0, 1] = 0.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, u_Field=temperature, V_fn=velocity.sym, time_integrator="bdf"
+    thermal = uw.systems.AdvDiffusion(
+        mesh, temperature, velocity.sym, theta=1.0, peclet_weight=0.0
     )
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = diffusivity
@@ -246,18 +239,15 @@ def _spherical_implicit_response():
     velocity = uw.discretisation.MeshVariable(
         "U_supg_spherical", mesh, mesh.dim, degree=1
     )
-    with mesh.access(temperature, velocity):
-        coords = temperature.coords
-        radii = np.linalg.norm(coords, axis=1)
-        temperature.data[:, 0] = (1.0 - radii) / 0.45 + 0.01 * coords[:, 0]
-        velocity.data[:, 0] = -0.02 * coords[:, 1]
-        velocity.data[:, 1] = 0.02 * coords[:, 0]
-        velocity.data[:, 2] = 0.0
+    coords = temperature.coords
+    radii = np.linalg.norm(coords, axis=1)
+    temperature.array[:, 0, 0] = (1.0 - radii) / 0.45 + 0.01 * coords[:, 0]
+    velocity.array[:, 0, 0] = -0.02 * coords[:, 1]
+    velocity.array[:, 0, 1] = 0.02 * coords[:, 0]
+    velocity.array[:, 0, 2] = 0.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
+    thermal = uw.systems.AdvDiffusion(
+        mesh, temperature, velocity.sym, theta=0.5, peclet_weight=0.0
     )
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.01
@@ -270,8 +260,8 @@ def _spherical_implicit_response():
     temperature_l2_squared = float(
         uw.maths.Integral(mesh, fn=temperature.sym[0] ** 2).evaluate()
     )
-    assert np.all(np.isfinite(temperature.data))
-    assert np.all(np.isfinite(uw.function.evaluate(thermal.tau, mesh._centroids)))
+    assert np.all(np.isfinite(temperature.array))
+    assert np.all(np.isfinite(uw.function.evaluate(thermal.DuDt.tau(), mesh._centroids)))
     return temperature_l2_squared, mesh
 
 
@@ -293,7 +283,7 @@ def test_spherical_shell_supg_is_parallel_safe():
 
 def test_bdf2_snapshot_restore_leaves_no_discarded_step_trace():
     uw.reset_default_model()
-    model = uw.get_default_model()
+    orchestration_model = uw.get_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
         maxCoords=(1.0, 1.0),
@@ -306,16 +296,12 @@ def test_bdf2_snapshot_restore_leaves_no_discarded_step_trace():
     velocity = uw.discretisation.MeshVariable(
         "U_supg_restart", mesh, mesh.dim, degree=1
     )
-    with mesh.access(temperature, velocity):
-        temperature.data[:, 0] = np.sin(np.pi * temperature.coords[:, 0])
-        velocity.data[:, 0] = 0.1
-        velocity.data[:, 1] = 0.0
+    temperature.array[:, 0, 0] = np.sin(np.pi * temperature.coords[:, 0])
+    velocity.array[:, 0, 0] = 0.1
+    velocity.array[:, 0, 1] = 0.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        order=2,
+    thermal = uw.systems.AdvDiffusion(
+        mesh, temperature, velocity.sym, order=2, theta=1.0, peclet_weight=0.0
     )
     thermal.petsc_options["ksp_rtol"] = 1e-14
     thermal.petsc_options["ksp_atol"] = 0.0
@@ -328,19 +314,19 @@ def test_bdf2_snapshot_restore_leaves_no_discarded_step_trace():
 
     for _ in range(3):
         thermal.solve(timestep=0.01, zero_init_guess=False)
-    snapshot = model.save_state()
+    snapshot = orchestration_model.save_state()
 
-    model.load_state(snapshot)
+    orchestration_model.load_state(snapshot)
     for _ in range(3):
         thermal.solve(timestep=0.01, zero_init_guess=False)
-    reference = temperature.data.copy()
+    reference = np.array(temperature.array)
 
-    model.load_state(snapshot)
+    orchestration_model.load_state(snapshot)
     thermal.solve(timestep=0.2, zero_init_guess=False)
-    model.load_state(snapshot)
+    orchestration_model.load_state(snapshot)
     for _ in range(3):
         thermal.solve(timestep=0.01, zero_init_guess=False)
-    resumed = temperature.data.copy()
+    resumed = np.array(temperature.array)
 
     np.testing.assert_allclose(resumed, reference, rtol=2e-14, atol=2e-14)
     uw.reset_default_model()
@@ -359,13 +345,12 @@ def test_repeated_solves_keep_histories_and_transient_state_bounded():
     velocity = uw.discretisation.MeshVariable(
         "U_supg_lifecycle", mesh, mesh.dim, degree=1
     )
-    with mesh.access(temperature, velocity):
-        temperature.data[:, 0] = temperature.coords[:, 0]
-        velocity.data[:, 0] = 0.1
-        velocity.data[:, 1] = 0.0
+    temperature.array[:, 0, 0] = temperature.coords[:, 0]
+    velocity.array[:, 0, 0] = 0.1
+    velocity.array[:, 0, 1] = 0.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, u_Field=temperature, V_fn=velocity.sym
+    thermal = uw.systems.AdvDiffusion(
+        mesh, temperature, velocity.sym, theta=0.5, peclet_weight=0.0
     )
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.05
@@ -376,7 +361,7 @@ def test_repeated_solves_keep_histories_and_transient_state_bounded():
         assert len(mesh._registered_swarms) == live_swarms
 
     assert len(thermal.solve_history) == 32
-    assert np.all(np.isfinite(temperature.data))
+    assert np.all(np.isfinite(temperature.array))
 
 
 def _spherical_citcoms_response():
@@ -392,20 +377,18 @@ def _spherical_citcoms_response():
     velocity = uw.discretisation.MeshVariable(
         "U_citcoms_spherical", mesh, mesh.dim, degree=1
     )
-    with mesh.access(temperature, velocity):
-        coords = temperature.coords
-        radii = np.linalg.norm(coords, axis=1)
-        temperature.data[:, 0] = (1.0 - radii) / 0.45 + 0.01 * coords[:, 0]
-        velocity.data[:, 0] = -0.02 * coords[:, 1]
-        velocity.data[:, 1] = 0.02 * coords[:, 0]
-        velocity.data[:, 2] = 0.0
+    coords = temperature.coords
+    radii = np.linalg.norm(coords, axis=1)
+    temperature.array[:, 0, 0] = (1.0 - radii) / 0.45 + 0.01 * coords[:, 0]
+    velocity.array[:, 0, 0] = -0.02 * coords[:, 1]
+    velocity.array[:, 0, 1] = 0.02 * coords[:, 0]
+    velocity.array[:, 0, 2] = 0.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        time_integrator="citcoms",
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms",
     )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.01
     thermal.add_dirichlet_bc(0.0, "Upper")
@@ -415,8 +398,8 @@ def _spherical_citcoms_response():
     temperature_l2_squared = float(
         uw.maths.Integral(mesh, fn=temperature.sym[0] ** 2).evaluate()
     )
-    assert thermal._lumped_mass.getSize() > 0
-    assert np.all(np.isfinite(temperature.data))
+    assert thermal.DuDt._lumped_mass.getSize() > 0
+    assert np.all(np.isfinite(temperature.array))
     return temperature_l2_squared, mesh
 
 
@@ -426,7 +409,7 @@ def test_citcoms_spherical_shell_is_parallel_safe():
 
 def test_citcoms_snapshot_restores_startup_state_exactly():
     uw.reset_default_model()
-    model = uw.get_default_model()
+    orchestration_model = uw.get_default_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0),
         maxCoords=(1.0, 1.0),
@@ -439,32 +422,29 @@ def test_citcoms_snapshot_restores_startup_state_exactly():
     velocity = uw.discretisation.MeshVariable(
         "U_citcoms_restart", mesh, mesh.dim, degree=1
     )
-    with mesh.access(temperature, velocity):
-        temperature.data[:, 0] = 1.0
+    temperature.array[:, 0, 0] = 1.0
 
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh,
-        u_Field=temperature,
-        V_fn=velocity.sym,
-        time_integrator="citcoms",
-        tau=0.0,
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms", tau=0.0,
     )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     thermal.constitutive_model = uw.constitutive_models.DiffusionModel
     thermal.constitutive_model.Parameters.diffusivity = 0.0
     thermal.f = -temperature.sym[0]
 
-    initial = model.save_state()
+    initial = orchestration_model.save_state()
     thermal.solve(timestep=0.05)
-    reference_temperature = temperature.data.copy()
-    reference_rate = thermal._temperature_rate.data.copy()
+    reference_temperature = np.array(temperature.array)
+    reference_rate = np.array(thermal.DuDt.temperature_rate.array)
 
-    model.load_state(initial)
-    assert not thermal._rate_initialised
+    orchestration_model.load_state(initial)
+    assert not thermal.DuDt._rate_initialised
     thermal.solve(timestep=0.05)
 
-    np.testing.assert_array_equal(temperature.data, reference_temperature)
+    np.testing.assert_array_equal(temperature.array, reference_temperature)
     np.testing.assert_array_equal(
-        thermal._temperature_rate.data, reference_rate
+        thermal.DuDt.temperature_rate.array, reference_rate
     )
     uw.reset_default_model()
 

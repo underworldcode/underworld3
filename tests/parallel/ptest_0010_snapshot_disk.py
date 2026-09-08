@@ -1,10 +1,7 @@
 """Parallel (MPI) test of the on-disk snapshot path (v1.1).
 
-Phase 6 of the snapshot toolkit: per-rank swarm sidecars. The mesh
-+ mesh-variable disk path is already parallel-correct via #146's
-PETSc-collective HDF5 viewer; the swarm sidecar layer needs its
-own per-rank file per swarm. This ptest exercises both together at
-multi-rank.
+Phase 6 of the snapshot toolkit: exact same-rank PETSc mesh-variable reload and
+per-rank swarm sidecars. This ptest exercises both layers together under MPI.
 
 Run (4 ranks exercises cross-rank distribution of swarm particles):
 
@@ -19,7 +16,10 @@ Asserts (collective, checked on rank 0):
      state (verified by per-rank attrs on the sidecar).
   3. Round-trip is exact: scribble all variables + swarm coords +
      swarm-var data, model.load_state(file=...), gathered (gid, x, y,
-     material) tables sorted by gid are np.array_equal.
+     material) tables sorted by gid are np.array_equal, and every restored
+     mesh-variable dof matches its coordinate-defined analytic value.
+  4. Loading the PETSc field onto a newly reconstructed checkpoint mesh is
+     also exact, so reload does not depend on the original global DOF order.
 """
 
 import os
@@ -66,8 +66,7 @@ def build():
 
 
 def global_sorted_state(T, swarm, gid, material):
-    """Gather (gid, x, y, material, T-value-by-coord-bin) across ranks
-    + sort by gid → order/rank-independent canonical view."""
+    """Return rank-independent swarm state and mesh-field error."""
     g = gid.data[:, 0].copy()
     coords = swarm._particle_coordinates.data.copy()
     m = material.data[:, 0].copy()
@@ -79,19 +78,12 @@ def global_sorted_state(T, swarm, gid, material):
     order = np.argsort(full[:, 0], kind="stable")
     swarm_state = full[order]
 
-    # T round-trip check: gather partition-invariant scalars
-    # (max, sum) rather than the full (coord, value) table — DOFs at
-    # partition boundaries are visible to multiple ranks and would
-    # appear duplicated/reordered in a gathered table, even though
-    # the underlying data is bit-exact.
     t_arr = np.asarray(T.array[...]).reshape(-1)
-    t_max = comm.allreduce(float(t_arr.max()) if t_arr.size else -np.inf,
-                           op=MPI.MAX)
-    t_min = comm.allreduce(float(t_arr.min()) if t_arr.size else np.inf,
-                           op=MPI.MIN)
-    # bit-exact float sum across ranks is non-deterministic in general
-    # (non-associative); use min/max as bit-exact invariants instead.
-    return swarm_state, (t_max, t_min)
+    t_coords = np.asarray(T.coords)
+    expected = t_coords[:, 0] - t_coords[:, 1]
+    local_error = float(np.max(np.abs(t_arr - expected))) if t_arr.size else 0.0
+    global_error = comm.allreduce(local_error, op=MPI.MAX)
+    return swarm_state, global_error
 
 
 def main():
@@ -112,10 +104,11 @@ def main():
     model.save_state(file=wrapper)
     comm.Barrier()
 
+    bulk = os.path.join(tmp, "parrun.snap.bulk")
+
     # Check files on rank 0
     files_ok = True
     if rank == 0:
-        bulk = os.path.join(tmp, "parrun.snap.bulk")
         files = sorted(os.listdir(bulk))
         per_rank = [f for f in files if ".swarm.rank" in f]
         # Expect one swarm sidecar per rank
@@ -146,12 +139,37 @@ def main():
     post_swarm, post_T = global_sorted_state(T, swarm, gid, material)
 
     swarm_ok = np.array_equal(pre_swarm, post_swarm)
-    # T is checked via partition-invariant min/max scalars (see note
-    # in global_sorted_state — gathered DOFs include partition-
-    # boundary duplicates that resist a global-table comparison).
-    T_ok = (pre_T == post_T)
+    T_ok = pre_T == 0.0 and post_T == 0.0
     count_ok = pre_count == post_count
     tracker_ok = (model.tracker.time == 1.5 and model.tracker.step == 7)
+
+    bulk_files = sorted(os.listdir(bulk))
+    mesh_file = os.path.join(
+        bulk,
+        next(name for name in bulk_files if name.endswith(".mesh.00000.h5")),
+    )
+    temperature_file = os.path.join(
+        bulk,
+        next(name for name in bulk_files if name.endswith(".T.00000.h5")),
+    )
+    reloaded_mesh = uw.discretisation.Mesh(mesh_file)
+    reloaded_temperature = uw.discretisation.MeshVariable(
+        "T_reloaded",
+        reloaded_mesh,
+        1,
+        degree=1,
+    )
+    reloaded_temperature.read_checkpoint(temperature_file, data_name="T")
+    reloaded_values = np.asarray(reloaded_temperature.array[...]).reshape(-1)
+    reloaded_coords = np.asarray(reloaded_temperature.coords)
+    reloaded_expected = reloaded_coords[:, 0] - reloaded_coords[:, 1]
+    local_reloaded_error = (
+        float(np.max(np.abs(reloaded_values - reloaded_expected)))
+        if reloaded_values.size
+        else 0.0
+    )
+    reloaded_error = comm.allreduce(local_reloaded_error, op=MPI.MAX)
+    reconstructed_mesh_ok = reloaded_error == 0.0
 
     if rank == 0:
         print(f"[ranks={size}] particles total = {pre_count}", flush=True)
@@ -161,9 +179,13 @@ def main():
               flush=True)
         print(f"  P3 swarm (coords + gid + material) exact:    {swarm_ok}",
               flush=True)
-        print(f"  P4 T (mesh-variable DOFs) exact:             {T_ok}",
+        print(f"  P4 T (mesh-variable DOFs) exact:             {T_ok} "
+              f"(max error={post_T:.3e})",
               flush=True)
         print(f"  P5 tracker state restored:                   {tracker_ok}",
+              flush=True)
+        print(f"  P6 reconstructed-mesh field exact:           "
+              f"{reconstructed_mesh_ok} (max error={reloaded_error:.3e})",
               flush=True)
 
         assert files_ok
@@ -171,6 +193,7 @@ def main():
         assert swarm_ok
         assert T_ok
         assert tracker_ok
+        assert reconstructed_mesh_ok
         print(f"[ranks={size}] PASS", flush=True)
 
 

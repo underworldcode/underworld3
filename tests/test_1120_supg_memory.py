@@ -21,12 +21,12 @@ def _workspace(thermal):
     """Record identities, not contents that should change during transport."""
     identity = [thermal.snes.handle, thermal.dm.handle,
                 tuple((name, field.vec.handle) for name, field in thermal.mesh.vars.items())]
-    if thermal.time_integrator in ("citcoms", "pc_converged"):
+    if isinstance(thermal.DuDt, uw.systems.ddt.EulerianSUPGPC):
         identity.extend([
-            thermal._lumped_mass.handle,
-            tuple(vector.handle for vector in thermal._citcoms_work_vectors),
-            tuple(id(array) for array in thermal._simplex_data_cache),
-            tuple(id(array) for array in thermal._directional_rate_work),
+            thermal.DuDt._lumped_mass.handle,
+            tuple(vector.handle for vector in thermal.DuDt._citcoms_work_vectors),
+            tuple(id(array) for array in thermal.DuDt._simplex_data_cache),
+            tuple(id(array) for array in thermal.DuDt._directional_rate_work),
         ])
     return identity
 
@@ -42,13 +42,19 @@ def _transport_problem(dim, method):
         np.sin(np.pi * np.asarray(temperature.coords)), axis=1)
     velocity.array[...] = 0.0
     velocity.array[:, 0, 0] = 0.2
-    settings = ({"time_integrator": "citcoms"} if method == "pc2"
-                else {"time_integrator": "pc_converged"}
-                if method == "pc_converged"
-                else {"order": 1, "theta": 0.5} if method == "cn"
-                else {"order": 2})
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, temperature, velocity.sym, **settings)
+    if method in ("pc2", "pc_converged"):
+        manager = uw.systems.ddt.EulerianSUPGPC(
+            mesh, temperature, velocity.sym,
+            method="citcoms" if method == "pc2" else method,
+        )
+        thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
+    else:
+        thermal = uw.systems.AdvDiffusion(
+            mesh, temperature, velocity.sym,
+            order=1 if method == "cn" else 2,
+            theta=0.5 if method == "cn" else 1.0,
+            peclet_weight=0.0,
+        )
     thermal.constitutive_model.Parameters.diffusivity = 0.01
     for boundary in mesh.boundaries:
         if boundary.name not in ("All_Boundaries", "Null_Boundary"):

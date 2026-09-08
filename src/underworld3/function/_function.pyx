@@ -347,6 +347,16 @@ def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, m
     return results.reshape(-1, *shape)
 
 
+def _global_fallback_indices(return_value, return_mask):
+    """Indices requiring the parallel best-claim fallback.
+
+    A point needs recovery when migration/location marks it extrapolated or
+    when interpolation returned a non-finite value despite a located flag.
+    """
+    nonfinite = ~np.isfinite(return_value).all(axis=(1, 2))
+    return np.where(return_mask[:, 0, 0] | nonfinite)[0]
+
+
 def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
@@ -589,7 +599,12 @@ def global_evaluate_nd(   expr,
         from mpi4py import MPI
 
         comm = uw.mpi.comm
-        ext_idx = np.where(return_mask[:, 0, 0])[0]
+        # A failed interpolation can occasionally return NaN while reporting
+        # the point as located. Treat that exactly like an extrapolated/lost
+        # point so a finite value from the globally nearest rank replaces it.
+        # This is required by SLCN midpoint tracing: one silent NaN here makes
+        # the departure point and then the transported history non-finite.
+        ext_idx = _global_fallback_indices(return_value, return_mask)
         ext_coords = np.ascontiguousarray(coords_array[ext_idx], dtype=np.float64)
 
         counts = np.array(comm.allgather(ext_coords.shape[0]), dtype=int)

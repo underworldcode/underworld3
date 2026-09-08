@@ -6,30 +6,50 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
-### Unified SUPG Time Integrators (September 2026)
+### Predictor-Corrector Transport Manager (September 2026, #689)
 
-The Eulerian SUPG solver now owns the CitcomS P1 predictor-corrector as an
-optional time integrator. CN, backward Euler, BDF2 and CitcomS use one public
-class and common residual assembly; the former SUPG module contains imports
-only. CitcomS retains its directional simplex stabilisation, positive lumped
-mass, two corrections, explicit timestep bound and cached workspaces. It no
-longer allocates unused implicit history fields.
+`uw.systems.ddt.EulerianSUPGPC`, supplied as `DuDt=` to
+`uw.systems.AdvDiffusion`, owns the P1 predictor-corrector update, rate state
+and restart controls. `method="citcoms"` retains fixed corrections and the
+explicit timestep bound; `method="pc_converged"` provides a residual-converged
+accuracy reference. The default `EulerianSUPG` CN/BDF transport is unchanged.
+The [transport guide](../advanced/eulerian-advection-diffusion.md) explains
+why two lumped corrections do not generally establish second-order time
+accuracy and records the separate consistent-mass reference measurements.
 
-Snapshot state includes the implicit field-change timestep estimator as well
-as CitcomS startup state. Focused tests compare the migrated implementation
-against frozen pre-migration source on triangles and tetrahedra and exercise
-in-memory and PETSc-backed snapshot/replay. The Gaussian MPI test now obtains
-its serial reference on the same host and mesh rather than comparing against
-a host-dependent stored value; its error threshold is unchanged. Production
-Gadi benchmark and memory acceptance remain separate validation gates.
+### The Multiplier Was Not the Whole Traction (August 2026)
 
-The first eight-rank gate exposed an inherited empty-partition limitation
-in the automatic simplex helper. Layout rejection is now collective, so
-unsupported local geometry cannot leave peers waiting in reductions. The
-old/new equivalence fixture has enough cells for eight ranks, and a separate
-test exercises collective rejection where the partition has empty ranks.
+**`Stokes_Constrained.topography()` now returns the traction the boundary is
+actually held with**, and a new `traction()` exposes it directly. The momentum
+row carries `λ + r(n·u − g)`, so the bare multiplier is short by the
+augmented-Lagrangian share — `r` times the discrete constraint residual. With the
+viscosity-weighted default `r = 1e4·μ(x)` that share is a few per cent of the
+surface traction on a uniform-viscosity annulus and most of it across a `1e6`
+viscosity step, where `λ` alone reads a tenth of the exact SolCx topography and
+is anti-correlated with it. `multiplier()` still returns `λ` and now says what it
+is not.
 
-See [the transport guide](../advanced/eulerian-advection-diffusion.md).
+The defect survived because the validation scored a **correlation** (0.9999)
+between the multiplier and the recovered normal stress. A correlation is
+scale-free and cannot see a systematic amplitude deficit, which is precisely what
+a missing share of the load is. The new guard,
+`tests/test_1063_constrained_traction.py`, scores a relative `l2` against the
+exact SolCx surface topography and carries the bare multiplier as its negative
+control.
+
+The corrected quantity is the consistent boundary flux: at convergence
+`M_Γ(λ + r(n·u − g))` balances the volume residual restricted to the boundary,
+which is the CBF nodal load (Zhong, Gurnis & Hulbert 1993). So the multiplier
+route and the rotated constraint's `boundary_normal_traction` are the same
+computation, and they agree to 3–5% — inside each route's own error against the
+exact answer.
+
+Documentation: `docs/advanced/curved-boundary-conditions.md` now writes the
+penalty free-slip recipe against `mesh.boundary_normal` rather than `mesh.Gamma`.
+A penalty against the per-facet normal over-constrains the shared nodes and does
+not converge — measured on an annulus at coefficient `1e6`, the velocity error
+stays at 0.60 and the surface-stress error grows from 0.21 to 0.26 as the mesh is
+refined, while the leak reads 1e-5 throughout. (underworld3#607, #608, #614)
 
 ### A Singular Recovery Mass, Mistaken for a Penalty Defect (August 2026)
 
@@ -373,6 +393,14 @@ component exactly — correct on curved, tilted, and deformed boundaries (#293).
   existing boundary traction onto an axisymmetric harmonic; the pure functions
   also accept coefficients recovered by other methods and an optional internal
   load.
+- Rotated free slip exposes
+  `Stokes.boundary_normal_traction_integral(boundary, fn)` for a distributed
+  weak contraction of the assembled normal reaction. Cylindrical-annulus
+  Stokes responses use this fitted integral and its matching finite-element
+  boundary norm instead of gathering pointwise samples for angular quadrature.
+- The spherical-shell geoid adapter accepts `projection="reaction"` to use
+  the same fitted integral without pointwise P2 recovery or a rank-zero
+  surface triangulation; `projection="centroid"` remains the default.
 - `uw.analytic.Zhong2008` implements the Hager--O'Connell propagator-matrix
   oracle used for the Zhong et al. spherical-shell response benchmark. It
   supports piecewise-constant radial viscosity and reproduces every analytical

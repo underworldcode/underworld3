@@ -1,4 +1,11 @@
-r"""Fully implicit Eulerian advection-diffusion with SUPG stabilisation.
+r"""Advection-diffusion composed from a DDt transport manager.
+
+The solver assembles the diffusive flux and the source on the mesh and takes
+its transport (time derivative, advection, stabilisation) from the history
+manager it holds. The default manager, :class:`~underworld3.systems.ddt.EulerianSUPG`,
+makes it the fully implicit Eulerian scheme with SUPG stabilisation described
+below; a :class:`~underworld3.systems.ddt.SemiLagrangian` manager makes it a
+semi-Lagrangian scheme on the field history.
 
 The scalar transport equation
 
@@ -26,11 +33,7 @@ this module keeps that formulation and its stabilisation parameter.
 """
 
 import warnings
-import math
 from dataclasses import dataclass
-
-from petsc4py import PETSc
-from underworld3.checkpoint.state import SnapshottableState
 
 import numpy as np
 import sympy
@@ -38,157 +41,205 @@ from typing import Callable, Optional, Union
 
 import underworld3 as uw
 import underworld3.timing as timing
+from underworld3.checkpoint.state import SnapshottableState
 from underworld3.systems import SNES_Scalar
 from underworld3.utilities._api_tools import Template
 from underworld3.function import expression as public_expression
+from underworld3.systems.ddt import _DDtBase, _as_row_vector
 from underworld3.systems.ddt import Eulerian as Eulerian_DDt
+from underworld3.systems.ddt import EulerianSUPG as EulerianSUPG_DDt
 from underworld3.systems.solvers import (
     _advective_diffusive_dt,
-    _centroid_velocities_nd,
     _dimensionalise_dt,
     _invalidate_solution_cache,
     _nondimensionalise_timestep,
 )
 
 
-def _as_row_vector(V_fn, dim):
-    """Coerce a velocity expression to a ``(1, dim)`` sympy row Matrix."""
-    if isinstance(V_fn, uw.discretisation.MeshVariable):
-        V_fn = V_fn.sym
-    if isinstance(V_fn, sympy.MatrixBase):
-        if V_fn.shape == (1, dim):
-            return V_fn
-        if V_fn.shape == (dim, 1):
-            return V_fn.T
-        raise ValueError(
-            f"V_fn has shape {V_fn.shape} but the mesh is {dim}-D; expected a "
-            f"(1, {dim}) row vector such as `v.sym` of a vector MeshVariable."
-        )
-    raise ValueError(
-        f"V_fn must be a (1, {dim}) sympy Matrix or a vector MeshVariable, "
-        f"not {type(V_fn).__name__}."
-    )
-
-
 @dataclass
-class AdvDiffusionSUPGState(SnapshottableState):
-    """Integrator metadata; fields and DDt history are captured separately."""
+class AdvDiffusionState(SnapshottableState):
+    """Solver timestep/estimator metadata; transport history belongs to DuDt."""
 
-    time_integrator: str = "implicit"
-    rate_initialised: bool = False
     last_timestep: Optional[float] = None
     last_change_rate: Optional[float] = None
     order: int = 1
     theta: float = 0.5
-    adv_gamma: float = 0.5
-    corrector_steps: int = 2
-    corrector_rtol: float = 1.0e-10
-    corrector_atol: float = 1.0e-12
-    max_corrector_steps: int = 100
 
 
-class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
-    r"""Scalar transport with shared SUPG assembly and selectable time integration.
+def _check_supplied_manager(DuDt, order, theta):
+    """A supplied history manager fixes the scheme: the arguments must agree with it."""
+    if DuDt.order != order:
+        raise ValueError(
+            f"DuDt supplied is order {DuDt.order} but order={order} was asked for: a "
+            "supplied manager fixes the scheme, pass the matching order.")
+    if theta is not None and hasattr(DuDt, "theta") and float(DuDt.theta) != float(theta):
+        raise ValueError(
+            f"DuDt supplied has theta={DuDt.theta} but theta={theta} was asked for.")
+
+
+class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
+    r"""Advection-diffusion solver composed from its DDt transport manager.
+
+    With the default manager (:class:`~underworld3.systems.ddt.EulerianSUPG`):
+    implicit in time, assembled on the mesh, SUPG in space.
 
     .. math::
-        \partial_t T + \mathbf{u}\cdot\nabla T
-        - \nabla\cdot(\kappa\nabla T) = f.
+        \frac{\partial \phi}{\partial t} + \mathbf{u}\cdot\nabla\phi
+            - \nabla\cdot(\kappa\nabla\phi) = f
 
-    Velocity and material coefficients are frozen during each update.
+    A drop-in replacement for :class:`~underworld3.systems.solvers.SNES_AdvectionDiffusion`
+    (``uw.systems.AdvDiffusionSLCN``): the constructor, ``order``, ``theta``,
+    ``f``, ``V_fn``, ``constitutive_model``, ``delta_t``, ``estimate_dt`` and
+    ``solve`` all keep the semi-Lagrangian solver's meaning, so a script changes
+    the class name and nothing else::
+
+        adv = uw.systems.AdvDiffusion(mesh, T, v.sym, order=1)   # was AdvDiffusionSLCN
+        adv.constitutive_model = uw.constitutive_models.DiffusionModel
+        adv.constitutive_model.Parameters.diffusivity = 1.0e-3
+        adv.add_dirichlet_bc(0.0, "Left")
+        adv.solve(timestep=dt)
+
+    The arguments that only make sense for a trace-back
+    (``restore_points_func``, ``monotone_mode``, ``old_frame_traceback``,
+    ``DFDt``) are accepted and ignored with a warning.
+
+    **Time schemes.** ``order`` and ``theta`` select the same schemes as for
+    the semi-Lagrangian solver:
+
+    ==========  =======  =====================================================
+    ``order``   ``theta``  scheme
+    ==========  =======  =====================================================
+    1           0.5      Crank-Nicolson (default; the SLCN convention)
+    1           1.0      backward Euler
+    2           1.0      BDF2, all spatial terms at :math:`n+1` (the SL-BDF2 convention)
+    3           1.0      BDF3
+    ==========  =======  =====================================================
+
+    ``order=2`` with ``theta=0.5`` is refused, as the semi-Lagrangian
+    documentation says: a BDF stencil pairs with terms at :math:`n+1`, not
+    with a centred flux. Every past time level is a mesh variable held by an
+    :class:`~underworld3.systems.ddt.Eulerian` history manager, so gradients
+    of past states are available in the kernels and both families come from
+    one code path:
+
+    backward differentiation (order :math:`N \ge 2`)
+
+    .. math::
+        \frac{1}{\Delta t}\sum_{k=0}^{N} c_k\,\phi^{n+1-k}
+            + \mathbf{u}\cdot\nabla\phi^{n+1}
+            - \nabla\cdot(\kappa\nabla\phi^{n+1}) = f
+
+    the :math:`\theta` rule (order 1; Adams-Moulton of one step)
+
+    .. math::
+        \frac{\phi^{n+1}-\phi^{n}}{\Delta t}
+            + \sum_{k=0}^{N} a_k\left[\mathbf{u}\cdot\nabla\phi^{n+1-k}
+            - \nabla\cdot(\kappa\nabla\phi^{n+1-k})\right] = f
+
+    The higher Adams-Moulton rules are assembled by the same code but are
+    not offered: their bounded stability region blows up on an advection
+    operator from about Courant 1 (see the design note). Both families ramp
+    from first order over the opening steps unless a history is planted with
+    ``solver.DuDt.set_initial_history``. A BDF3 request falls back to
+    variable-step BDF2 whenever consecutive timesteps differ by more than 5%.
+
+    **Which scheme.** Measured on a rotating Gaussian
+    (``docs/developer/design/eulerian-supg-transport.md``): Crank-Nicolson is
+    three to four times more accurate than BDF2 at the same timestep below
+    Courant 2 on the feature scale, and rings once the feature is
+    under-resolved in time; BDF2 is damped and stable at every Courant
+    number; BDF3 is the most accurate scheme below Courant 1 when diffusion
+    is present but grows slowly on pure advection; backward Euler carries 20
+    to 40% error at any practical timestep.
+
+    **Weak form.** With the strong residual of the chosen scheme
+    :math:`R(\phi)` (time derivative, advection, source) the residual
+    assembled through PETSc's pointwise interface is
+
+    .. math::
+        f_0 = R(\phi), \qquad
+        \mathbf{f}_1 = \sum_k w_k\,\kappa\nabla\phi^{n+1-k}
+            + \tau\,R(\phi)\,\mathbf{u},
+
+    where :math:`w_k` are the weights of the spatial operator (:math:`w_0 = 1`
+    for BDF, :math:`w_k = a_k` for Adams-Moulton). The SUPG contribution is
+    the Petrov-Galerkin test-function perturbation
+    :math:`\tau\,\mathbf{u}\cdot\nabla w` written as a flux against
+    :math:`\nabla w`, so PETSc needs no modified test space. The strong
+    residual carries no diffusion term because the pointwise kernels see
+    first derivatives only; for linear elements that term vanishes
+    identically, for higher orders it is the usual inconsistency of SUPG
+    without a Laplacian reconstruction.
+
+    **Stabilisation parameter.**
+
+    .. math::
+        \tau = \left[\left(\frac{2 c_0}{\Delta t}\right)^2
+            + \left(\frac{2|\mathbf{u}|}{h}\right)^2
+            + \left(\frac{4\kappa}{h^2}\right)^2\right]^{-1/2}
+
+    with :math:`h` the local cell size (``mesh.cell_size()``) and
+    :math:`c_0` the leading multistep coefficient. The three weights are
+    runtime constants (``tau_weights``) and ``supg_weight`` scales the whole
+    term, so a Galerkin baseline needs no rebuild.
+
+    **What limits the timestep.** Nothing, for stability: the implicit
+    scheme is stable at any cell Courant number, including on cells refined
+    for a Stokes problem that the scalar does not need. Accuracy is set by
+    how far the transported feature moves per step relative to its own
+    width, as :math:`(\mathbf{u}\Delta t)^2` for the second-order schemes.
+    :meth:`estimate_dt` therefore returns an accuracy-based step, the
+    allowed change of the field per step as a fraction of its range, and
+    only reports the cell-crossing time on request
+    (``basis="resolution"``). Against the semi-Lagrangian solver: the
+    semi-Lagrangian error is flat in the timestep but accumulates one
+    interpolation per step, and its limit is the arc a characteristic turns
+    per step; the Eulerian solve costs four to six times less per step in
+    serial and needs no departure points in parallel.
 
     Parameters
     ----------
     mesh : Mesh
-        Computational volume mesh.
     u_Field : MeshVariable
-        Continuous scalar field.
+        Continuous scalar field :math:`\phi`.
     V_fn : MeshVariable or sympy Matrix
-        Advecting velocity.
+        Advecting velocity, ``(1, dim)``.
     order : int, default 1
-        Implicit history order: 1, 2 or 3. Leave at 1 for either
-        predictor-corrector mode, which manages its own rate.
+        Time-integration order, 1 to 3 (see the table above).
     theta : float, optional
-        At order 1, 0.5 selects Crank-Nicolson (implicit default) and 1
-        backward Euler. Orders 2 and 3 require 1. Leave unset for either
-        predictor-corrector mode.
-    time_integrator : {"implicit", "citcoms", "pc_converged", "bdf"}, default "implicit"
-        "implicit" selects CN/BE/BDF2/BDF3 through order and theta.
-        "citcoms" selects the P1 lumped-mass predictor-corrector used by
-        CitcomS-style mantle-convection benchmarks. "pc_converged" uses the
-        same predictor-multicorrector residual but iterates its consistent
-        mass equation to tolerance. "bdf" retains the previous BDF selection,
-        including backward Euler at order 1.
-    temperature_rate_field : MeshVariable, optional
-        Separate continuous P1 field storing the predictor-corrector rate. A
-        stable name such as Tdot is useful for field checkpoints. Created
-        internally if omitted; not used by implicit integrators.
-    adv_gamma : float, default 0.5
-        CitcomS predictor/corrector weight, in (0, 1].
-    corrector_steps : int, default 2
-        Number of fixed CitcomS residual corrections.
-    corrector_rtol, corrector_atol : float
-        Relative and absolute residual tolerances for ``pc_converged``.
-    max_corrector_steps : int, default 100
-        Maximum residual corrections for ``pc_converged``. Failure to reach
-        the requested tolerance raises ``RuntimeError``.
-    tau : scalar expression, optional
-        Explicit stabilisation parameter; zero gives Galerkin transport.
-    tau_model : {"generic", "citcoms"}, optional
-        Defaults to the time integrator's model. Generic implicit transport
-        uses the transient norm of time, advection and diffusion scales.
-        CitcomS uses a clipped steady parameter on directional simplex
-        lengths. Its automatic operations require triangles or tetrahedra.
-    DuDt : Eulerian, optional
-        Pre-built implicit history manager with V_fn=None. Not used by either
-        predictor-corrector mode.
+        Crank-Nicolson blend at order 1: 0.5 (the default there) is
+        Crank-Nicolson, 1.0 is backward Euler. Above order 1 the only
+        consistent value is 1.0, which is taken when ``theta`` is not given
+        and refused when 0.5 is asked for explicitly.
     verbose : bool, default False
-        Solver verbosity.
+    DuDt : DDt history manager, optional
+        The transport plugin. By default an
+        :class:`~underworld3.systems.ddt.EulerianSUPG` built from ``V_fn``,
+        ``order`` and ``theta``. Any history manager that follows the DDt
+        transport contract (``time_derivative``, ``advection``,
+        ``stabilisation_flux``) can be supplied instead: a
+        :class:`~underworld3.systems.ddt.SemiLagrangian` history turns this
+        solver into a semi-Lagrangian scheme on the field history, with no
+        assembled advection and no stabilisation. A supplied manager fixes
+        ``order`` and ``theta``.
     restore_points_func, monotone_mode, old_frame_traceback, DFDt
-        SLCN-only compatibility arguments, ignored with a warning for
-        implicit transport. Predictor-corrector modes reject supplied history
-        operators.
+        Semi-Lagrangian arguments, accepted for drop-in compatibility and
+        ignored with a warning: there is no trace-back here.
 
     Notes
     -----
-    All methods share the same pointwise assembly:
-
-    .. math::
-        F_0 = R,\qquad
-        \mathbf{F}_1 = \kappa\nabla T + \tau R\mathbf{u}.
-
-    The implicit method's spatial history weights apply to diffusion and
-    advection. Diffusion is omitted only from the strong SUPG residual.
-    It vanishes identically for affine P1 elements with elementwise constant
-    diffusivity; curved mappings, variable diffusivity and higher-order fields
-    need separately validated flux-divergence recovery for full consistency.
-
-    CitcomS predicts with (1-gamma)*dt*Tdot, resets the rate, then applies
-    fixed corrections delta_rate=-M_L^-1*F to the rate and gamma*dt*delta_rate
-    to temperature. Boundary values are reinserted at every correction.
-    Its default timestep is 0.9*min(dt_adv, dt_diff), not the implicit
-    field-change accuracy estimate.
-
-    ``pc_converged`` uses gamma=0.5 and the same update relation, but treats
-    the lumped mass only as a correction preconditioner. It converges the full
-    Petrov-Galerkin residual during rate initialisation and every timestep,
-    recovering the consistent semidiscrete trapezoidal update.
-
-    Implicit transport defaults to GMRES/ASM-ILU. preconditioner="fmg"
-    selects geometric multigrid when a mesh hierarchy is available.
-    CN may ring for under-resolved features; BDF3 may amplify pure advection.
-    The field-change timestep estimate is an accuracy heuristic, not a
-    guarantee of bounded temperature.
-
-    The default Model's save_state() captures integrator metadata and all
-    registered fields. Pass file=... for a persistent PETSc-backed snapshot.
-    Restore into a matching model, mesh and integration method.
-
-    Examples
-    --------
-    >>> thermal = uw.systems.AdvDiffusionSUPG(mesh, T, U.sym,
-    ...     time_integrator="citcoms", temperature_rate_field=Tdot)
-    >>> thermal.constitutive_model.Parameters.diffusivity = 1.0
-    >>> thermal.solve(timestep=thermal.estimate_dt())
+    The diffusivity is set through the constitutive model, as for every
+    scalar solver; the solver starts with a
+    :class:`~underworld3.constitutive_models.DiffusionModel` at
+    :math:`\kappa = 0` (pure advection). The linear system is nonsymmetric,
+    so the solver uses GMRES with an additive-Schwarz ILU preconditioner, the
+    Krylov tolerance matched to the SNES tolerance so that a step is one
+    Newton iteration. ``preconditioner = "fmg"`` hands the linear solve to
+    geometric multigrid over the mesh's refinement hierarchy (a flexible GMRES
+    outer solver, Galerkin coarse operators); measured, the Schwarz solve is
+    cheaper at every Courant number to eight ranks, and multigrid is there for
+    the rank count where a one-level method runs out of coarse space. Every
+    option is overridable through ``petsc_options``.
     """
 
     @timing.routine_timer_decorator
@@ -199,100 +250,18 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         V_fn,
         order: int = 1,
         theta: Optional[float] = None,
+        peclet_weight: float = 4.0,
         verbose: bool = False,
         DuDt: Optional[Eulerian_DDt] = None,
         DFDt=None,
         restore_points_func: Optional[Callable] = None,
         monotone_mode: Optional[str] = None,
         old_frame_traceback: bool = False,
-        *,
-        time_integrator: str = "implicit",
-        temperature_rate_field: Optional[uw.discretisation.MeshVariable] = None,
-        adv_gamma: float = 0.5,
-        corrector_steps: int = 2,
-        corrector_rtol: float = 1.0e-10,
-        corrector_atol: float = 1.0e-12,
-        max_corrector_steps: int = 100,
-        tau=None,
-        tau_model: Optional[str] = None,
     ):
         if not u_Field.continuous:
             raise ValueError(
                 "u_Field must be a continuous MeshVariable: the SUPG weak form "
                 "is continuous Galerkin."
-            )
-        pc_integrators = ("citcoms", "pc_converged")
-        if time_integrator not in ("implicit", "bdf", *pc_integrators):
-            raise ValueError(
-                "time_integrator must be 'implicit', 'bdf', 'citcoms' or "
-                "'pc_converged'."
-            )
-        if u_Field.num_components != 1:
-            raise ValueError("u_Field must be scalar.")
-        if mesh.dim != mesh.cdim:
-            raise NotImplementedError("SUPG currently requires a volume mesh.")
-        if time_integrator in pc_integrators:
-            if u_Field.degree != 1:
-                raise ValueError("Predictor-corrector transport requires continuous P1 temperature.")
-            if order != 1 or (theta is not None and float(theta) != 1.0):
-                raise ValueError(
-                    "Predictor-corrector transport uses gamma, not order/theta; "
-                    "leave order=1 and theta unset."
-                )
-            if DuDt is not None or DFDt is not None:
-                raise ValueError(
-                    "Predictor-corrector transport manages its own derivative; "
-                    "do not supply DuDt or DFDt."
-                )
-            if not 0.0 < float(adv_gamma) <= 1.0:
-                raise ValueError("adv_gamma must be in (0, 1].")
-            if int(corrector_steps) != corrector_steps or corrector_steps < 1:
-                raise ValueError("corrector_steps must be a positive integer.")
-            if temperature_rate_field is not None and (
-                temperature_rate_field is u_Field
-                or temperature_rate_field.mesh is not mesh
-                or temperature_rate_field.degree != 1
-                or not temperature_rate_field.continuous
-                or temperature_rate_field.num_components != 1
-            ):
-                raise ValueError("temperature_rate_field must be a separate continuous scalar P1 variable on the solver mesh.")
-            if time_integrator == "pc_converged":
-                if float(adv_gamma) != 0.5:
-                    raise ValueError("pc_converged requires adv_gamma=0.5 for second-order time accuracy.")
-                if corrector_steps != 2:
-                    raise ValueError("corrector_steps configures fixed CitcomS corrections only.")
-                if not np.isfinite(float(corrector_rtol)) or float(corrector_rtol) <= 0.0:
-                    raise ValueError("corrector_rtol must be finite and positive.")
-                if not np.isfinite(float(corrector_atol)) or float(corrector_atol) < 0.0:
-                    raise ValueError("corrector_atol must be finite and non-negative.")
-                if (int(max_corrector_steps) != max_corrector_steps
-                        or max_corrector_steps < 1):
-                    raise ValueError("max_corrector_steps must be a positive integer.")
-            elif (corrector_rtol != 1.0e-10 or corrector_atol != 1.0e-12
-                  or max_corrector_steps != 100):
-                raise ValueError(
-                    "corrector_rtol, corrector_atol and max_corrector_steps "
-                    "configure pc_converged only."
-                )
-        elif (temperature_rate_field is not None or adv_gamma != 0.5
-              or corrector_steps != 2 or corrector_rtol != 1.0e-10
-              or corrector_atol != 1.0e-12 or max_corrector_steps != 100):
-            raise ValueError(
-                "temperature_rate_field and predictor-corrector controls require "
-                "time_integrator='citcoms' or 'pc_converged'."
-            )
-        if time_integrator in ("bdf", *pc_integrators):
-            if theta is not None and float(theta) != 1.0:
-                raise ValueError("The bdf and predictor-corrector modes require theta=1.0.")
-            theta = 1.0
-        if tau_model is None:
-            tau_model = "citcoms" if time_integrator in pc_integrators else "generic"
-        if tau_model not in ("generic", "citcoms"):
-            raise ValueError("tau_model must be 'generic' or 'citcoms'.")
-        if time_integrator in pc_integrators and tau_model != "citcoms":
-            raise ValueError(
-                "Predictor-corrector transport requires the CitcomS steady tau "
-                "model; supply tau for a custom value."
             )
         ignored = [name for name, value in (
             ("restore_points_func", restore_points_func),
@@ -302,10 +271,11 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         ) if value]
         if ignored:
             warnings.warn(
-                f"AdvDiffusionSUPG ignores {', '.join(ignored)}: these configure "
+                f"AdvDiffusion ignores {', '.join(ignored)}: these configure "
                 "the semi-Lagrangian trace-back and the Eulerian scheme has none.",
                 stacklevel=2,
             )
+        requested_theta = theta
         order = int(order)
         if order not in (1, 2, 3):
             raise ValueError(f"order must be 1, 2 or 3, not {order}.")
@@ -318,8 +288,6 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         # orders 2 and 3 is assembled by the same code but is not offered:
         # its bounded stability region blows up on an advection operator
         # from about Courant 1 (design note, integrator study).
-        integrator = (time_integrator if time_integrator in pc_integrators else
-                      "bdf" if time_integrator == "bdf" or order > 1 else "am")
         if theta != 1.0 and order != 1:
             raise ValueError(
                 "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
@@ -330,68 +298,36 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
         super().__init__(mesh, u_Field, u_Field.degree, verbose, DuDt=DuDt, DFDt=None)
 
-        self.time_integrator = time_integrator
-        self.tau_model = tau_model
-        self.adv_gamma = float(adv_gamma)
-        self.corrector_steps = int(corrector_steps)
-        self.corrector_rtol = float(corrector_rtol)
-        self.corrector_atol = float(corrector_atol)
-        self.max_corrector_steps = int(max_corrector_steps)
-        self.last_corrector_iterations = 0
-        self.last_corrector_residual = np.inf
-        self.corrector_target = np.inf
         self.f = sympy.Matrix.zeros(1, 1)
-        self._integrator = integrator
-        self._time_order = order
-        self._theta = theta
-        self._V_fn = _as_row_vector(V_fn, mesh.dim)
-
-        tag = self.instance_number
-        self._delta_t = public_expression(
-            rf"\Delta t_{{{tag}}}", 1.0, "Eulerian advection-diffusion timestep")
         self._last_timestep = None
         self._last_change_rate = None
 
-        # SUPG on/off and the three tau weights are runtime constants: the
-        # compiled kernels read them from PETSc's constants[] array.
-        self._supg_weight = public_expression(
-            rf"w^{{\mathrm{{SUPG}}}}_{{{tag}}}", 1.0, "SUPG term weight (0 = Galerkin)")
-        self._tau_weights = [
-            public_expression(rf"C^{{\tau}}_{{t,{tag}}}", 2.0, "tau transient weight"),
-            public_expression(rf"C^{{\tau}}_{{u,{tag}}}", 2.0, "tau advective weight"),
-            public_expression(rf"C^{{\tau}}_{{\kappa,{tag}}}", 4.0, "tau diffusive weight"),
-        ]
-
-        if time_integrator in pc_integrators:
-            self.Unknowns.DuDt = None
-        elif DuDt is None:
-            self.Unknowns.DuDt = Eulerian_DDt(
+        # The transport plugin: the history manager owns the time scheme, the
+        # advecting velocity, the assembled advection and the stabilisation.
+        if DuDt is None:
+            self.Unknowns.DuDt = EulerianSUPG_DDt(
                 self.mesh,
                 u_Field,
+                V_fn,
                 vtype=uw.VarType.SCALAR,
                 degree=u_Field.degree,
                 continuous=u_Field.continuous,
-                V_fn=None,
+                order=order,
                 theta=theta,
                 varsymbol=u_Field.symbol,
                 verbose=verbose,
                 bcs=self.essential_bcs,
-                order=order,
                 smoothing=0.0,
+                peclet_weight=peclet_weight,
             )
         else:
-            if not isinstance(DuDt, Eulerian_DDt):
-                raise TypeError("DuDt must be an Eulerian history manager.")
-            if DuDt.order < order:
-                raise ValueError(
-                    f"DuDt supplied is order {DuDt.order} but order {order} was requested."
-                )
-            if getattr(DuDt, "V_fn", None) is not None:
-                raise ValueError(
-                    "DuDt.V_fn must be None: advection is assembled "
-                    "implicitly by this solver, not as an explicit history correction."
-                )
+            if not isinstance(DuDt, _DDtBase):
+                raise TypeError(f"DuDt must be a DDt history manager, not {type(DuDt).__name__}.")
+            if sympy.Matrix(DuDt.psi_fn).shape != u_Field.sym.shape:
+                raise ValueError("DuDt tracks a different unknown from u_Field.")
+            _check_supplied_manager(DuDt, order, requested_theta)
             self.Unknowns.DuDt = DuDt
+        self._theta = float(getattr(self.DuDt, "theta", theta))
 
         # Diffusivity lives on the constitutive model, as for every scalar
         # solver; kappa = 0 until the user sets it.
@@ -408,36 +344,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self.petsc_options["snes_rtol"] = 1.0e-8
         self.petsc_options["ksp_rtol"] = 1.0e-9
         self.petsc_options["snes_max_it"] = 20
-
-        self._tau_override = None if tau is None else sympy.sympify(tau)
-        self._automatic_tau = tau is None and tau_model == "citcoms"
-        self._supg_h = None
-        self._supg_tau = None
-        self._temperature_rate = None
-        self._lumped_mass = None
-        self._lumped_mass_mesh_version = None
-        self._citcoms_work_vectors = None
-        self._citcoms_work_mesh_version = None
-        self._simplex_data_cache = None
-        self._simplex_data_mesh_version = None
-        self._directional_rate_work = None
-        self._directional_rate_mesh_version = None
-        self._diffusion_dt_cache = None
-        self._rate_initialised = False
-        if time_integrator in pc_integrators:
-            self._temperature_rate = temperature_rate_field
-            if self._temperature_rate is None:
-                self._temperature_rate = uw.discretisation.MeshVariable(
-                    f"_supg_dTdt_{tag}", mesh, 1, degree=1, continuous=True)
-        if self._automatic_tau:
-            self._supg_h = uw.discretisation.MeshVariable(
-                f"_supg_h_{tag}", mesh, 1, degree=0, continuous=False)
-            self._supg_tau = uw.discretisation.MeshVariable(
-                f"_supg_tau_{tag}", mesh, 1, degree=0, continuous=False)
-        elif self._tau_override is None:
-            # Generic tau needs this field on a fresh-process checkpoint restore,
-            # before the first residual build would otherwise create it lazily.
-            mesh.cell_size()
+        self._bind_transport_manager(self.DuDt)
         uw.get_default_model()._register_state_bearer(self)
 
     # ------------------------------------------------------------------
@@ -520,26 +427,47 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         super()._object_viewer()
         scheme = {("am", 1): f"Adams-Moulton order 1, theta = {self._theta}",
                   ("bdf", 1): "backward Euler"}.get(
-            (self._integrator, self._time_order),
-            f"{self._integrator.upper()} order {self._time_order}")
+            (self.integrator, self.order),
+            f"{self.integrator.upper()} order {self.order}")
         display(Latex(r"$\quad\mathrm{u} = $ " + self.u.sym._repr_latex_()))
-        display(Latex(r"$\quad\mathbf{v} = $ " + self._V_fn._repr_latex_()))
-        display(Latex(r"$\quad\Delta t = $ " + self._delta_t._repr_latex_()))
+        display(Latex(r"$\quad\mathbf{v} = $ " + self.V_fn._repr_latex_()))
+        display(Latex(r"$\quad\Delta t = $ " + self.delta_t._repr_latex_()))
         display(Latex(rf"$\quad$ time scheme: {scheme}"))
 
     # ------------------------------------------------------------------
     # Scheme description
     # ------------------------------------------------------------------
 
+    def _bind_transport_manager(self, manager):
+        bind_transport = getattr(manager, "_bind_transport_solver", None)
+        if bind_transport is not None:
+            bind_transport(self)
+
+    @property
+    def DuDt(self):
+        """Transport manager bound to this solver's unknown."""
+        return self.Unknowns.DuDt
+
+    @DuDt.setter
+    def DuDt(self, manager):
+        if not isinstance(manager, _DDtBase):
+            raise TypeError("DuDt must be a DDt transport manager.")
+        if sympy.Matrix(manager.psi_fn).shape != self.u.sym.shape:
+            raise ValueError("DuDt tracks a different unknown from u_Field.")
+        self._bind_transport_manager(manager)
+        self.Unknowns.DuDt = manager
+        self._theta = float(getattr(manager, "theta", self._theta))
+        self._last_timestep = manager._dt
+
     @property
     def integrator(self) -> str:
         """The multistep family in use: ``"am"`` (the theta rule) at order 1, ``"bdf"`` above."""
-        return self._integrator
+        return self.DuDt.integrator
 
     @property
     def order(self) -> int:
         """Requested order of the time integration."""
-        return self._time_order
+        return self.DuDt.order
 
     @property
     def theta(self) -> float:
@@ -554,16 +482,15 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     @theta.setter
     def theta(self, value):
         value = float(value)
-        if value != 1.0 and self._time_order != 1:
+        if value != 1.0 and self.order != 1:
             raise ValueError(
                 "theta applies at order 1 only (0.5 is Crank-Nicolson, 1.0 is "
                 "backward Euler); order 2 and 3 take theta=1.0."
             )
-        if self.time_integrator in ("citcoms", "pc_converged") and value != 1.0:
-            raise ValueError("Predictor-corrector transport uses adv_gamma, not theta.")
+        if not hasattr(self.DuDt, "theta"):
+            raise AttributeError(f"{type(self.DuDt).__name__} has no theta to set.")
+        self.DuDt.theta = value
         self._theta = value
-        if self.DuDt is not None:
-            self.DuDt.theta = value
 
     @property
     def delta_t(self):
@@ -574,7 +501,7 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         the semi-Lagrangian solver. A new value updates a runtime constant of
         the compiled kernels; nothing is recompiled.
         """
-        return self._delta_t
+        return self.DuDt.delta_t
 
     @delta_t.setter
     def delta_t(self, value):
@@ -582,17 +509,17 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError(f"timestep must be positive, not {dt}.")
         if dt != self._last_timestep:
-            self._delta_t.sym = dt
             self._last_timestep = dt
+        self.DuDt._dt = dt
 
     @property
     def V_fn(self):
-        """Advecting velocity, ``(1, dim)``."""
-        return self._V_fn
+        """Advecting velocity, ``(1, dim)`` (the history manager's)."""
+        return self.DuDt.V_fn
 
     @V_fn.setter
     def V_fn(self, value):
-        self._V_fn = _as_row_vector(value, self.mesh.dim)
+        self.DuDt.V_fn = _as_row_vector(value, self.mesh.dim)
         self.is_setup = False
 
     @property
@@ -605,79 +532,50 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._f = sympy.Matrix((value,))
         self._needs_function_rewire = True
 
+    # The stabilisation knobs live on the history manager; these pass through.
+
+    @property
+    def peclet_weight(self) -> float:
+        """The critical cell Péclet number of the weight (constructor choice; 0 = uniform)."""
+        return self.DuDt.peclet_weight
+
     @property
     def supg_weight(self) -> float:
         """Scale of the SUPG term: 1 (default) or 0 for plain Galerkin. No rebuild."""
-        return float(self._supg_weight.sym)
+        return self.DuDt.supg_weight
 
     @supg_weight.setter
     def supg_weight(self, value):
-        self._supg_weight.sym = float(value)
+        self.DuDt.supg_weight = value
 
     @property
     def tau_weights(self):
         r"""The weights :math:`(C_t, C_u, C_\kappa)` of the three terms in :math:`\tau`."""
-        return tuple(float(w.sym) for w in self._tau_weights)
+        return self.DuDt.tau_weights
 
     @tau_weights.setter
     def tau_weights(self, values):
-        ct, cu, ck = (float(v) for v in values)
-        self._tau_weights[0].sym = ct
-        self._tau_weights[1].sym = cu
-        self._tau_weights[2].sym = ck
+        self.DuDt.tau_weights = values
 
     # ------------------------------------------------------------------
-    # Residual pieces (raw field symbols only, so the Jacobian sees them)
+    # The residual, composed from the history manager's contributions
     # ------------------------------------------------------------------
-
-    def _states(self):
-        r"""``[phi^{n+1}, phi^{n}, phi^{n-1}, ...]`` as scalar field symbols."""
-        if self.time_integrator in ("citcoms", "pc_converged"):
-            return [self.u.sym[0]]
-        return [self.u.sym[0]] + [ps.sym[0] for ps in self.DuDt.psi_star]
-
-    def _spatial_weights(self):
-        """Weight of the spatial operator at each time level of ``_states``."""
-        if self.time_integrator in ("citcoms", "pc_converged"):
-            return [sympy.Integer(1)]
-        n = len(self.DuDt.psi_star)
-        if self._integrator == "bdf":
-            return [sympy.Integer(1)] + [sympy.Integer(0)] * n
-        return self.DuDt.am_coefficient_expressions[: n + 1]
-
-    def _time_derivative(self):
-        if self.time_integrator in ("citcoms", "pc_converged"):
-            return self._temperature_rate.sym[0]
-        if self._integrator == "bdf":
-            return self.DuDt.bdf()[0] / self._delta_t
-        phi_new, phi_old = self._states()[:2]
-        return (phi_new - phi_old) / self._delta_t
-
-    def _advection(self):
-        dim = self.mesh.dim
-        u = self._V_fn
-        total = sympy.Integer(0)
-        for w, phi in zip(self._spatial_weights(), self._states()):
-            if w == 0:
-                continue
-            grad = self.mesh.vector.gradient(phi)
-            total = total + w * sum(u[0, i] * grad[0, i] for i in range(dim))
-        return total
 
     def _diffusive_flux(self):
         r"""``(1, dim)`` flux :math:`\sum_k w_k\,\nabla\phi^{(k)}\cdot\kappa` from the constitutive tensor."""
         dim = self.mesh.dim
         c = self.constitutive_model.c
         total = sympy.zeros(1, dim)
-        for w, phi in zip(self._spatial_weights(), self._states()):
+        for w, phi in zip(self.DuDt.spatial_weights(), self.DuDt.states()):
             if w == 0:
                 continue
-            grad = self.mesh.vector.gradient(phi)
+            grad = self.mesh.vector.gradient(phi[0])
             total = total + w * (grad * c)
         return total
 
     def _strong_residual(self):
-        return self._time_derivative() + self._advection() - self._f[0]
+        """Time derivative, advection and source, as a ``(1, 1)`` matrix."""
+        return self.DuDt.time_derivative() + self.DuDt.advection() - self._f
 
     def _scalar_diffusivity(self):
         kappa = self.constitutive_model.Parameters.diffusivity
@@ -686,44 +584,21 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
                 "The SUPG parameter needs a scalar diffusivity; anisotropic "
                 "diffusion is not supported by this solver."
             )
-        value = sympy.sympify(uw.function.unwrap(kappa))
-        if value.is_number and (not np.isfinite(float(value)) or float(value) < 0.0):
-            raise ValueError("SUPG diffusivity must be finite and non-negative.")
         return kappa
 
-    @property
-    def tau(self):
-        """SUPG parameter used by the shared residual."""
-        return self._tau()
-
-    def _tau(self):
-        if self._tau_override is not None:
-            return self._supg_weight * self._tau_override
-        if self._automatic_tau:
-            return self._supg_weight * self._supg_tau.sym[0]
-        dim = self.mesh.dim
-        u = self._V_fn
-        u_mag2 = sum(u[0, i] ** 2 for i in range(dim))
-        h = self.mesh.cell_size()
-        kappa = self._scalar_diffusivity()
-        if self._integrator == "bdf":
-            c0 = self.DuDt.bdf_coefficient_expressions[0]
-        else:
-            c0 = sympy.Integer(1)
-        ct, cu, ck = self._tau_weights
-        transient = (ct * c0 / self._delta_t) ** 2
-        advective = (cu * sympy.sqrt(u_mag2) / h) ** 2
-        diffusive = (ck * kappa / h ** 2) ** 2
-        return self._supg_weight / sympy.sqrt(transient + advective + diffusive + 1.0e-30)
+    def _stabilisation_flux(self):
+        if hasattr(self.DuDt, "diffusivity"):
+            self.DuDt.diffusivity = self._scalar_diffusivity()
+        return self.DuDt.stabilisation_flux(self._strong_residual())
 
     F0 = Template(
         r"f_0(\phi)",
-        lambda self: sympy.Matrix([[self._strong_residual()]]),
+        lambda self: self._strong_residual(),
         "Strong residual of the time scheme: time derivative, advection and source.",
     )
     F1 = Template(
         r"\mathbf{F}_1(\phi)",
-        lambda self: self._diffusive_flux() + self._tau() * self._strong_residual() * self._V_fn,
+        lambda self: self._diffusive_flux() + self._stabilisation_flux(),
         "Diffusive flux of the time scheme plus the SUPG flux tau R u.",
     )
 
@@ -734,7 +609,10 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
     @timing.routine_timer_decorator
     def estimate_dt(self, fraction: float = 0.02, basis: Optional[str] = None,
                     direction_aware: bool = False, percentile: float = 0.0):
-        r"""A timestep for this scheme, chosen for accuracy.
+        r"""A timestep selected by the transport manager or implicit estimator.
+
+        A rate-based manager supplies its stability estimate. The default
+        implicit manager uses the accuracy estimate described below.
 
         The implicit scheme has no stability limit, so the cell-crossing time
         the semi-Lagrangian solver reports says nothing about how large a step
@@ -763,7 +641,9 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         ----------
         fraction : float, default 0.02
             Allowed change of the field per step as a fraction of its range.
-        basis : {"accuracy", "resolution"}
+        basis : {None, "accuracy", "resolution", "stability"}
+            None selects the manager default; "stability" applies to
+            rate-based transport only.
             ``"resolution"`` returns the cell-crossing / diffusion time the
             semi-Lagrangian solver's ``estimate_dt`` returns, for scripts that
             size the step in Courant numbers.
@@ -778,23 +658,16 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         """
         from mpi4py import MPI
 
-        if self.time_integrator in ("citcoms", "pc_converged"):
-            if basis not in (None, "stability"):
-                raise ValueError(
-                    "Predictor-corrector transport requires basis='stability', "
-                    "not an implicit accuracy estimate."
-                )
-            if fraction != 0.02 or direction_aware or percentile != 0.0:
-                raise ValueError(
-                    "Predictor-corrector transport uses its fixed 0.9 stability "
-                    "factor and directional simplex length."
-                )
-            return _dimensionalise_dt(self._estimate_citcoms_dt())
+        self._bind_transport_manager(self.DuDt)
+        estimate_transport = getattr(self.DuDt, "_estimate_transport_dt", None)
+        if estimate_transport is not None:
+            return estimate_transport(fraction=fraction, basis=basis,
+                                      direction_aware=direction_aware, percentile=percentile)
         if basis is None:
             basis = "accuracy"
         if basis == "resolution":
             dt_estimate, dt_adv, dt_diff = _advective_diffusive_dt(
-                self.constitutive_model.K, self._V_fn, self.mesh,
+                self.constitutive_model.K, self.V_fn, self.mesh,
                 direction_aware=direction_aware, percentile=percentile)
             self.dt_adv = dt_adv if not np.isinf(dt_adv) else 0.0
             self.dt_diff = dt_diff if not np.isinf(dt_diff) else 0.0
@@ -833,12 +706,54 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         n = coords.shape[0]
         if n:
             grad = np.asarray(compute_clement_gradient_at_nodes(self.u), dtype=float).reshape(n, -1)
-            vel = uw.function.evaluate(self._V_fn, coords)
+            vel = uw.function.evaluate(self.V_fn, coords)
             vel = np.asarray(getattr(vel, "magnitude", vel), dtype=float).reshape(n, -1)
             local = float(np.abs((vel[:, :grad.shape[1]] * grad).sum(axis=1)).max())
         else:
             local = 0.0
         return uw.mpi.comm.allreduce(local, op=MPI.MAX)
+
+    @property
+    def state(self):
+        """Snapshot the timestep and measured change used by estimate_dt."""
+        return AdvDiffusionState(
+            last_timestep=self._last_timestep,
+            last_change_rate=self._last_change_rate,
+            order=self.order, theta=self.theta,
+        )
+
+    @state.setter
+    def state(self, state):
+        if not isinstance(state, AdvDiffusionState):
+            raise TypeError("AdvDiffusion state has the wrong type.")
+        if state._schema_version != AdvDiffusionState._schema_version:
+            raise ValueError("AdvDiffusion state schema changed since snapshot.")
+        if state.order != self.order:
+            raise ValueError("AdvDiffusion order changed since snapshot.")
+        if hasattr(self.DuDt, "theta"):
+            self.theta = state.theta
+        self._last_timestep = None
+        if state.last_timestep is not None:
+            self.delta_t = state.last_timestep
+        self._last_change_rate = state.last_change_rate
+
+    def _prepare_transport_residual(self, verbose=False):
+        """Build the solver-owned PDE residual and constrained scalar DM."""
+        if not self.constitutive_model._solver_is_setup:
+            self._needs_function_rewire = True
+        self._build(verbose)
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+    def _compute_transport_residual(self, solution, residual):
+        """Assemble at the current unknown with refreshed auxiliary fields."""
+        solution.set(0.0)
+        self.dm.localToGlobal(self.u.vec, solution, addv=False)
+        residual.set(0.0)
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+        self.snes.computeFunction(solution, residual)
 
     def solve(
         self,
@@ -856,8 +771,11 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         between calls updates a runtime constant of the compiled kernels;
         nothing is recompiled.
         """
+        self._bind_transport_manager(self.DuDt)
         if timestep is not None:
             self.delta_t = timestep
+        elif self.DuDt._dt is not None:
+            self.delta_t = self.DuDt._dt
         elif self._last_timestep is None:
             raise ValueError(
                 "solve() needs a timestep: pass timestep=<dt> or set solver.delta_t first."
@@ -866,9 +784,11 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
 
         if _force_setup:
             self._needs_function_rewire = True
-        if self.time_integrator in ("citcoms", "pc_converged"):
-            return self._solve_predictor_corrector(dt, verbose=verbose)
-        self._update_automatic_tau()
+        solve_transport = getattr(self.DuDt, "_solve_transport", None)
+        if solve_transport is not None:
+            solve_transport(self, dt, zero_init_guess=zero_init_guess,
+                            verbose=verbose, divergence_retries=divergence_retries)
+            return
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
         # The base ``_build`` resolves the preconditioner choice against the
@@ -879,529 +799,17 @@ class SNES_AdvectionDiffusion_SUPG(SNES_Scalar):
         self._build(verbose)
 
         self.DuDt.update_pre_solve(dt, verbose=verbose)
+        before = np.array(self.u.data).reshape(-1)
         super().solve(zero_init_guess, _force_setup, divergence_retries=divergence_retries)
         _invalidate_solution_cache(self.u)
         # The realised rate of change of the field over this step feeds the
-        # accuracy-based estimate_dt; psi_star[0] still holds phi^n here.
+        # accuracy-based estimate_dt (from a copy of the unknown: the manager's
+        # history may live on a swarm or carry units).
         from mpi4py import MPI
-        change = np.abs(np.asarray(self.u.array).reshape(-1)
-                        - np.asarray(self.DuDt.psi_star[0].array).reshape(-1))
+        change = np.abs(np.asarray(self.u.data).reshape(-1) - before)
         local = float(change.max()) if change.size else 0.0
         self._last_change_rate = uw.mpi.comm.allreduce(local, op=MPI.MAX) / dt
         self.DuDt.update_post_solve(dt, verbose=verbose)
 
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
-
-    @property
-    def temperature_rate(self):
-        """Stored predictor-corrector derivative, or None for an implicit method."""
-        return self._temperature_rate
-
-    @property
-    def state(self):
-        """Integrator metadata for snapshots; fields are captured by their mesh."""
-        return AdvDiffusionSUPGState(
-            time_integrator=self.time_integrator,
-            rate_initialised=self._rate_initialised,
-            last_timestep=self._last_timestep,
-            last_change_rate=self._last_change_rate,
-            order=self.order, theta=self.theta,
-            adv_gamma=self.adv_gamma, corrector_steps=self.corrector_steps,
-            corrector_rtol=self.corrector_rtol,
-            corrector_atol=self.corrector_atol,
-            max_corrector_steps=self.max_corrector_steps,
-        )
-
-    @state.setter
-    def state(self, state):
-        if not isinstance(state, AdvDiffusionSUPGState):
-            raise TypeError("AdvDiffusionSUPG state has the wrong type.")
-        if (state.time_integrator != self.time_integrator
-                or state.order != self.order
-                or state.adv_gamma != self.adv_gamma
-                or state.corrector_steps != self.corrector_steps
-                or state.corrector_rtol != self.corrector_rtol
-                or state.corrector_atol != self.corrector_atol
-                or state.max_corrector_steps != self.max_corrector_steps):
-            raise ValueError("AdvDiffusionSUPG integration settings changed since snapshot.")
-        self.theta = state.theta
-        self._rate_initialised = bool(state.rate_initialised)
-        self._last_timestep = None
-        if state.last_timestep is not None:
-            self.delta_t = state.last_timestep
-        self._last_change_rate = state.last_change_rate
-
-    def _simplex_data(self):
-        """Return local simplex data; validate the layout collectively on rebuild."""
-        from underworld3.meshing.smoothing import _tet_cells, _tri_cells
-
-        mesh_version = getattr(self.mesh, "_mesh_version", 0)
-        if (
-            self._simplex_data_cache is not None
-            and self._simplex_data_mesh_version == mesh_version
-        ):
-            return self._simplex_data_cache
-
-        cells = (
-            _tri_cells(self.mesh.dm)
-            if self.mesh.dim == 2
-            else _tet_cells(self.mesh.dm) if self.mesh.dim == 3 else None
-        )
-        cell_start, cell_end = self.mesh.dm.getHeightStratum(0)
-        invalid = (
-            (uw.mpi.rank, cell_end - cell_start, self.mesh.dim, self.mesh.cdim)
-            if cells is None or self.mesh.dim != self.mesh.cdim else None
-        )
-        invalid_ranks = [item for item in uw.mpi.comm.allgather(invalid) if item is not None]
-        if invalid_ranks:
-            raise NotImplementedError(
-                "Automatic CitcomS operations require a non-empty 2-D or 3-D "
-                "volume simplex partition on every rank. Unsupported local "
-                f"layouts (rank, cells, dim, cdim): {invalid_ranks}."
-            )
-
-        coords = np.asarray(self.mesh.X.coords)
-        cell_coords = coords[cells]
-        edges = cell_coords[:, 1:, :] - cell_coords[:, :1, :]
-        try:
-            inverse_edges = np.linalg.inv(edges)
-        except np.linalg.LinAlgError as error:
-            raise RuntimeError("Cannot operate on a singular simplex.") from error
-
-        gradients = np.empty_like(cell_coords)
-        gradients[:, 1:, :] = np.transpose(inverse_edges, (0, 2, 1))
-        gradients[:, 0, :] = -gradients[:, 1:, :].sum(axis=1)
-        volumes = np.abs(np.linalg.det(edges)) / math.factorial(self.mesh.dim)
-        self._simplex_data_cache = (cells, gradients, volumes)
-        self._simplex_data_mesh_version = mesh_version
-        return self._simplex_data_cache
-
-    def _streamline_directional_rate(self, gradients, velocity):
-        """Return ``sum_a |u.grad(N_a)|`` using reusable cell work arrays."""
-        mesh_version = getattr(self.mesh, "_mesh_version", 0)
-        cell_count = velocity.shape[0]
-        if (
-            self._directional_rate_work is None
-            or self._directional_rate_mesh_version != mesh_version
-            or self._directional_rate_work[0].shape != (cell_count,)
-        ):
-            self._directional_rate_work = (
-                np.empty(cell_count, dtype=float),
-                np.empty(cell_count, dtype=float),
-            )
-            self._directional_rate_mesh_version = mesh_version
-
-        directional_rate, projection = self._directional_rate_work
-        directional_rate.fill(0.0)
-        for basis_index in range(gradients.shape[1]):
-            np.einsum(
-                "cd,cd->c",
-                gradients[:, basis_index, :],
-                velocity,
-                out=projection,
-            )
-            np.abs(projection, out=projection)
-            np.add(directional_rate, projection, out=directional_rate)
-        return directional_rate
-
-    def _cell_diffusivity(self, cell_count):
-        """Evaluate non-negative scalar diffusivity at cell centroids."""
-        diffusivity_expr = sympy.sympify(self.constitutive_model.K)
-        if isinstance(diffusivity_expr, sympy.MatrixBase):
-            raise NotImplementedError(
-                "Automatic SUPG operations require scalar isotropic "
-                "diffusivity; supply tau explicitly for tensor diffusivity."
-            )
-        diffusivity = uw.function.evaluate(diffusivity_expr, self.mesh._centroids)
-        if hasattr(diffusivity, "units") and diffusivity.units is not None:
-            diffusivity = uw.non_dimensionalise(diffusivity)
-        elif hasattr(diffusivity, "magnitude"):
-            diffusivity = diffusivity.magnitude
-        diffusivity = np.asarray(diffusivity, dtype=float).reshape(-1)
-        if diffusivity.size == 1:
-            diffusivity = np.full(cell_count, diffusivity.item())
-        if diffusivity.shape != (cell_count,):
-            raise ValueError("Diffusivity must evaluate to one scalar per cell.")
-        if np.any(diffusivity < 0.0):
-            raise ValueError("SUPG diffusivity must be non-negative.")
-        return diffusivity
-
-    def _update_automatic_tau(self):
-        """Update local simplex streamline lengths and automatic tau values."""
-        if not self._automatic_tau:
-            if self._tau_override is None:
-                self._scalar_diffusivity()
-            return
-        if self.constitutive_model is None:
-            raise RuntimeError(
-                "Set constitutive_model before solving AdvDiffusionSUPG."
-            )
-
-        _, gradients, _ = self._simplex_data()
-
-        velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
-        speed = np.linalg.norm(velocity, axis=1)
-        directional_rate = self._streamline_directional_rate(gradients, velocity)
-        h_stream = np.divide(
-            2.0 * speed,
-            directional_rate,
-            out=np.zeros_like(speed),
-            where=directional_rate > 0.0,
-        )
-
-        diffusivity = self._cell_diffusivity(speed.size)
-
-        tau_steady = np.zeros_like(speed)
-        moving = speed > np.finfo(float).eps
-        diffusive = moving & (diffusivity > 0.0)
-        nondiffusive = moving & ~diffusive
-
-        if np.any(diffusive):
-            pe = speed[diffusive] * h_stream[diffusive] / (2.0 * diffusivity[diffusive])
-            tau_steady[diffusive] = (
-                h_stream[diffusive]
-                * np.maximum(0.0, 1.0 - 1.0 / pe)
-                / (2.0 * speed[diffusive])
-            )
-        tau_steady[nondiffusive] = h_stream[nondiffusive] / (2.0 * speed[nondiffusive])
-
-        tau_values = tau_steady
-
-        if self._supg_h.array.shape[0] != h_stream.size:
-            raise RuntimeError("SUPG P0 field and local simplex counts do not match.")
-        self._supg_h.array[:, 0, 0] = h_stream
-        self._supg_tau.array[:, 0, 0] = tau_values
-
-    def _setup_citcoms_residual(self, verbose=False):
-        """Build the reusable residual assembler for predictor-corrector steps."""
-        if not self.constitutive_model._solver_is_setup:
-            self._needs_function_rewire = True
-        self._build(verbose)
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
-
-    def _assemble_lumped_mass(self):
-        """Assemble positive P1 simplex row-sum masses on free global DOFs."""
-        mesh_version = getattr(self.mesh, "_mesh_version", 0)
-        if (
-            self._lumped_mass is not None
-            and self._lumped_mass_mesh_version == mesh_version
-        ):
-            return self._lumped_mass
-        if self._lumped_mass is not None:
-            self._lumped_mass.destroy()
-            self._lumped_mass = None
-
-        from underworld3.meshing.smoothing import _owned_cell_mask
-
-        cells, _, volumes = self._simplex_data()
-        owned = _owned_cell_mask(self.mesh.dm)
-
-        local_mass = self.dm.createLocalVector()
-        global_mass = self.dm.createGlobalVector()
-        local_mass.set(0.0)
-        global_mass.set(0.0)
-        section = self.dm.getLocalSection()
-        vertex_start, _ = self.mesh.dm.getDepthStratum(0)
-
-        for cell_index in np.flatnonzero(owned):
-            contribution = volumes[cell_index] / (self.mesh.dim + 1)
-            for vertex_index in cells[cell_index]:
-                offset = section.getOffset(vertex_start + int(vertex_index))
-                if offset >= 0:
-                    local_mass.array[offset] += contribution
-
-        self.dm.localToGlobal(
-            local_mass,
-            global_mass,
-            addv=PETSc.InsertMode.ADD_VALUES,
-        )
-        local_mass.destroy()
-        if global_mass.getLocalSize() and np.any(global_mass.array <= 0.0):
-            global_mass.destroy()
-            raise RuntimeError("CitcomS P1 lumped mass contains non-positive rows.")
-
-        self._lumped_mass = global_mass
-        self._lumped_mass_mesh_version = mesh_version
-        return self._lumped_mass
-
-    def _citcoms_vectors(self):
-        """Return reusable global vectors for predictor-corrector updates."""
-        mesh_version = getattr(self.mesh, "_mesh_version", 0)
-        if (
-            self._citcoms_work_vectors is not None
-            and self._citcoms_work_mesh_version == mesh_version
-        ):
-            return self._citcoms_work_vectors
-
-        if self._citcoms_work_vectors is not None:
-            for vector in self._citcoms_work_vectors:
-                vector.destroy()
-
-        solution = self.dm.createGlobalVector()
-        residual = solution.duplicate()
-        delta_rate = solution.duplicate()
-        rate = solution.duplicate()
-        self._citcoms_work_vectors = (solution, residual, delta_rate, rate)
-        self._citcoms_work_mesh_version = mesh_version
-        return self._citcoms_work_vectors
-
-    @timing.routine_timer_decorator
-    def _estimate_citcoms_dt(self):
-        """Estimate a simplex advection-diffusion timestep.
-
-        The predictor-corrector modes use
-        ``0.9 * min(1/max(lambda_adv), 2/max(rowsum(abs(M_L^-1 K))))``.
-        Generic implicit transport retains its separate Eulerian estimator.
-        """
-        from mpi4py import MPI
-        from underworld3.meshing.smoothing import _owned_cell_mask
-
-        cells, gradients, volumes = self._simplex_data()
-        velocity = _centroid_velocities_nd(self.V_fn, self.mesh)
-        directional_rate = self._streamline_directional_rate(gradients, velocity)
-        local_adv_rate = (
-            float(np.max(directional_rate)) if directional_rate.size else 0.0
-        )
-        adv_rate = uw.mpi.comm.allreduce(local_adv_rate, op=MPI.MAX)
-        dt_adv = 1.0 / adv_rate if adv_rate > 0.0 else np.inf
-
-        diffusivity = self._cell_diffusivity(len(cells))
-        has_diffusivity = bool(
-            uw.mpi.comm.allreduce(
-                int(np.any(diffusivity > 0.0)),
-                op=MPI.MAX,
-            )
-        )
-        if not has_diffusivity:
-            dt_diff = np.inf
-        else:
-            self._setup_citcoms_residual()
-            mass = self._assemble_lumped_mass()
-            diffusion_signature = (
-                getattr(self.mesh, "_mesh_version", 0),
-                hash(diffusivity.tobytes()),
-            )
-            local_cache_valid = (
-                self._diffusion_dt_cache is not None
-                and self._diffusion_dt_cache[0] == diffusion_signature
-            )
-            cache_valid = bool(
-                uw.mpi.comm.allreduce(int(local_cache_valid), op=MPI.MIN)
-            )
-            if cache_valid:
-                dt_diff = self._diffusion_dt_cache[1]
-                self.dt_adv = dt_adv
-                self.dt_diff = dt_diff
-                return 0.9 * min(dt_adv, dt_diff)
-
-            stiffness = self.dm.createMatrix()
-            stiffness.setOption(PETSc.Mat.Option.NEW_NONZERO_LOCATION_ERR, False)
-            section = self.dm.getLocalSection()
-            vertex_start, _ = self.mesh.dm.getDepthStratum(0)
-            owned = _owned_cell_mask(self.mesh.dm)
-
-            for cell_index in np.flatnonzero(owned):
-                points = [vertex_start + int(index) for index in cells[cell_index]]
-                local_dofs = [section.getOffset(point) for point in points]
-                element_stiffness = (
-                    diffusivity[cell_index]
-                    * volumes[cell_index]
-                    * gradients[cell_index].dot(gradients[cell_index].T)
-                )
-                stiffness.setValuesLocal(
-                    local_dofs,
-                    local_dofs,
-                    element_stiffness,
-                    addv=PETSc.InsertMode.ADD_VALUES,
-                )
-            stiffness.assemble()
-
-            row_start, row_end = stiffness.getOwnershipRange()
-            local_diff_rate = 0.0
-            for row in range(row_start, row_end):
-                _, values = stiffness.getRow(row)
-                row_sum = float(np.sum(np.abs(values)))
-                local_diff_rate = max(
-                    local_diff_rate,
-                    row_sum / mass.array[row - row_start],
-                )
-            diff_rate = uw.mpi.comm.allreduce(local_diff_rate, op=MPI.MAX)
-            stiffness.destroy()
-            dt_diff = 2.0 / diff_rate if diff_rate > 0.0 else np.inf
-            self._diffusion_dt_cache = (diffusion_signature, dt_diff)
-
-        self.dt_adv = dt_adv
-        self.dt_diff = dt_diff
-        return 0.9 * min(dt_adv, dt_diff)
-
-    def _compute_citcoms_residual(self, solution=None, residual=None):
-        """Assemble the residual at the current temperature and rate."""
-        if solution is None:
-            solution = self.dm.createGlobalVector()
-        if residual is None:
-            residual = solution.duplicate()
-        solution.set(0.0)
-        self.dm.localToGlobal(self.u.vec, solution, addv=False)
-        residual.set(0.0)
-        self.mesh.update_lvec()
-        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
-        self._update_constants()
-        self.snes.computeFunction(solution, residual)
-        return solution, residual
-
-    def _apply_pc_correction(
-        self,
-        temperature_global,
-        residual,
-        delta_rate,
-        rate_global,
-        mass,
-        dt,
-        *,
-        advance_temperature,
-    ):
-        """Apply one lumped-preconditioned correction to rate and temperature."""
-        delta_rate.pointwiseDivide(residual, mass)
-        delta_rate.scale(-1.0)
-        rate_global.set(0.0)
-        self.dm.localToGlobal(self._temperature_rate.vec, rate_global, addv=False)
-        rate_global.axpy(1.0, delta_rate)
-        if advance_temperature:
-            temperature_global.axpy(self.adv_gamma * dt, delta_rate)
-
-        self._temperature_rate.vec.set(0.0)
-        self.dm.globalToLocal(rate_global, self._temperature_rate.vec)
-        if advance_temperature:
-            from underworld3.cython.petsc_discretisation import (
-                petsc_dm_insert_boundary_values,
-            )
-
-            self.u.vec.set(0.0)
-            self.dm.globalToLocal(temperature_global, self.u.vec)
-            petsc_dm_insert_boundary_values(self.dm, self.u.vec)
-        self.mesh._stale_lvec = True
-
-    def _converge_pc_residual(
-        self,
-        temperature_global,
-        residual,
-        delta_rate,
-        rate_global,
-        mass,
-        dt,
-        *,
-        advance_temperature,
-    ):
-        """Iterate the predictor-corrector residual to its configured tolerance."""
-        initial_norm = None
-        for corrections in range(self.max_corrector_steps + 1):
-            self._compute_citcoms_residual(temperature_global, residual)
-            residual_norm = float(residual.norm(PETSc.NormType.NORM_2))
-            if not np.isfinite(residual_norm):
-                raise RuntimeError("pc_converged produced a non-finite residual norm.")
-            if initial_norm is None:
-                initial_norm = residual_norm
-                self.corrector_target = max(
-                    self.corrector_atol,
-                    self.corrector_rtol * initial_norm,
-                )
-            self.last_corrector_iterations = corrections
-            self.last_corrector_residual = residual_norm
-            if residual_norm <= self.corrector_target:
-                return
-            if corrections == self.max_corrector_steps:
-                break
-            self._apply_pc_correction(
-                temperature_global,
-                residual,
-                delta_rate,
-                rate_global,
-                mass,
-                dt,
-                advance_temperature=advance_temperature,
-            )
-        raise RuntimeError(
-            "pc_converged did not reach its predictor-corrector residual "
-            f"tolerance after {self.max_corrector_steps} corrections: "
-            f"residual={self.last_corrector_residual:.6e}, "
-            f"target={self.corrector_target:.6e}."
-        )
-
-    def _solve_predictor_corrector(self, timestep, verbose=False):
-        """Advance one fixed or residual-converged predictor-corrector step."""
-        if timestep is None:
-            timestep = float(self.delta_t.data)
-        self.delta_t = timestep
-        dt = float(self.delta_t.data)
-        if dt <= 0.0:
-            raise ValueError("AdvDiffusionSUPG requires a positive timestep.")
-
-        self._update_automatic_tau()
-        self._setup_citcoms_residual(verbose)
-        mass = self._assemble_lumped_mass()
-        temperature_global, residual, delta_rate, rate_global = self._citcoms_vectors()
-
-        if not self._rate_initialised:
-            self._temperature_rate.array[:, 0, 0] = 0.0
-            if self.time_integrator == "pc_converged":
-                self.mesh._stale_lvec = True
-                self._converge_pc_residual(
-                    temperature_global,
-                    residual,
-                    delta_rate,
-                    rate_global,
-                    mass,
-                    dt,
-                    advance_temperature=False,
-                )
-            else:
-                self._compute_citcoms_residual(temperature_global, residual)
-                delta_rate.pointwiseDivide(residual, mass)
-                delta_rate.scale(-1.0)
-                self._temperature_rate.vec.set(0.0)
-                self.dm.globalToLocal(delta_rate, self._temperature_rate.vec)
-                self.mesh._stale_lvec = True
-            self._rate_initialised = True
-
-        self.u.array[:, 0, 0] += (
-            (1.0 - self.adv_gamma) * dt * self._temperature_rate.array[:, 0, 0]
-        )
-        self._temperature_rate.array[:, 0, 0] = 0.0
-        self.mesh._stale_lvec = True
-
-        if self.time_integrator == "pc_converged":
-            from underworld3.cython.petsc_discretisation import (
-                petsc_dm_insert_boundary_values,
-            )
-
-            petsc_dm_insert_boundary_values(self.dm, self.u.vec)
-            self.mesh._stale_lvec = True
-            self._converge_pc_residual(
-                temperature_global,
-                residual,
-                delta_rate,
-                rate_global,
-                mass,
-                dt,
-                advance_temperature=True,
-            )
-        else:
-            for _ in range(self.corrector_steps):
-                self._compute_citcoms_residual(temperature_global, residual)
-                self._apply_pc_correction(
-                    temperature_global,
-                    residual,
-                    delta_rate,
-                    rate_global,
-                    mass,
-                    dt,
-                    advance_temperature=True,
-                )
-
-        _invalidate_solution_cache(self.u)
-        _invalidate_solution_cache(self._temperature_rate)
-        self.is_setup = True
-        self.constitutive_model._solver_is_setup = True
-        return

@@ -1,7 +1,6 @@
 """Shared SUPG integration, restart, and pre-migration equivalence."""
 
 import importlib.util
-import inspect
 import os
 import sys
 
@@ -27,33 +26,36 @@ def _problem(dim, tag, cellsize=0.25):
 
 
 @pytest.mark.parametrize("dim", [2, 3])
-def test_citcoms_matches_pre_migration_implementation(dim):
-    """Optional release gate against the frozen source from commit 87b3711d.
+@pytest.mark.parametrize("method", ["citcoms", "pc_converged"])
+def test_pc_matches_pre_migration_implementation(dim, method):
+    """Optional release gate against the last PR689 head, commit f41bcd2f.
 
-    Both assemblers see the same mesh, fields, partition and time sequence.
+    Both assemblers see the same mesh, partition, source, changing velocity
+    and timestep sequence, with separate temperature and rate fields.
     The frozen source is an external test artifact, not another installed solver.
     """
     baseline = os.environ.get("UW_SUPG_BASELINE_FILE")
     if baseline is None:
-        pytest.skip("Set UW_SUPG_BASELINE_FILE to the frozen pre-migration module.")
+        pytest.skip("Set UW_SUPG_BASELINE_FILE to the frozen f41bcd2f module.")
     spec = importlib.util.spec_from_file_location("_supg_baseline", baseline)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
-    mesh, temperature, velocity = _problem(dim, f"migration_{dim}")
+    mesh, temperature, velocity = _problem(dim, f"migration_{method}_{dim}")
     reference = uw.discretisation.MeshVariable("T_reference", mesh, 1, degree=1)
     rate = uw.discretisation.MeshVariable("Tdot", mesh, 1, degree=1)
     reference_rate = uw.discretisation.MeshVariable("Tdot_reference", mesh, 1, degree=1)
     shape = sympy.prod(sympy.sin(sympy.pi * x) for x in mesh.X)
     temperature.array[:, 0, 0] = uw.function.evaluate(shape, temperature.coords).reshape(-1)
     reference.array[...] = temperature.array
-    current = uw.systems.AdvDiffusionSUPG(
-        mesh, temperature, velocity.sym, time_integrator="citcoms",
-        temperature_rate_field=rate,
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method=method, temperature_rate_field=rate,
     )
-    previous = module.SNES_AdvectionDiffusionSUPG(
-        mesh, reference, velocity.sym, time_integrator="citcoms",
+    current = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
+    previous = module.SNES_AdvectionDiffusion_SUPG(
+        mesh, reference, velocity.sym, time_integrator=method,
         temperature_rate_field=reference_rate,
     )
     for solver in (current, previous):
@@ -66,7 +68,7 @@ def test_citcoms_matches_pre_migration_implementation(dim):
 
     for step in range(6):
         velocity.array[:, 0, :] = 0.2 * (1.0 + step / 10.0)
-        dt = min(0.002, float(current.estimate_dt()))
+        dt = min((0.002, 0.003, 0.0015)[step % 3], float(current.estimate_dt()))
         np.testing.assert_allclose(
             current.estimate_dt(), previous.estimate_dt(), rtol=1e-12, atol=1e-14)
         current.solve(timestep=dt)
@@ -75,19 +77,26 @@ def test_citcoms_matches_pre_migration_implementation(dim):
         np.testing.assert_allclose(rate.array, reference_rate.array, rtol=1e-10, atol=1e-11)
 
 
-@pytest.mark.parametrize("settings", [
-    {"time_integrator": "citcoms"}, {"order": 1}, {"order": 2},
-])
+@pytest.mark.parametrize("method", ["citcoms", "pc_converged", "be", "cn", "bdf2"])
 @pytest.mark.parametrize("disk", [False, True])
-def test_snapshot_restores_fields_and_timestep_estimator(settings, disk, tmp_path):
+def test_snapshot_restores_fields_and_timestep_estimator(method, disk, tmp_path):
     uw.reset_default_model()
     orchestration_model = uw.get_default_model()
     mesh, temperature, velocity = _problem(2, "snapshot")
-    if (disk and uw.mpi.size > 1 and
-            "same_layout" not in inspect.signature(
-                temperature.read_checkpoint).parameters):
-        pytest.skip("MPI disk restore requires checkpoint fix #674.")
-    thermal = uw.systems.AdvDiffusionSUPG(mesh, temperature, velocity.sym, **settings)
+    is_pc = method in ("citcoms", "pc_converged")
+    if is_pc:
+        manager = uw.systems.ddt.EulerianSUPGPC(
+            mesh, temperature, velocity.sym, method=method
+        )
+        thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
+    else:
+        thermal = uw.systems.AdvDiffusion(
+            mesh, temperature, velocity.sym,
+            order=2 if method == "bdf2" else 1,
+            theta=0.5 if method == "cn" else 1.0,
+            peclet_weight=0.0,
+        )
+        manager = thermal.DuDt
     # Replay is compared near machine precision, independently of the default
     # stopping tolerance and the preconditioner rebuilt after a discarded step.
     thermal.petsc_options["ksp_rtol"] = 1e-14
@@ -109,7 +118,8 @@ def test_snapshot_restores_fields_and_timestep_estimator(settings, disk, tmp_pat
     thermal.solve(timestep=0.003)
     expected = np.array(temperature.array)
     expected_state = thermal.state
-    expected_rate = None if thermal.temperature_rate is None else np.array(thermal.temperature_rate.array)
+    expected_manager_state = manager.state
+    expected_rate = np.array(manager.temperature_rate.array) if is_pc else None
     orchestration_model.load_state(snapshot)
     np.testing.assert_array_equal(temperature.array, saved_temperature)
     assert thermal.estimate_dt() == pytest.approx(estimate, rel=1e-14)
@@ -119,29 +129,35 @@ def test_snapshot_restores_fields_and_timestep_estimator(settings, disk, tmp_pat
     # Rebuilding an implicit Krylov solve can change final rounding, but the
     # restored fields above must be exact and replay must agree near machine precision.
     np.testing.assert_allclose(temperature.array, expected, rtol=2e-14, atol=2e-14)
-    assert thermal.state.last_timestep == expected_state.last_timestep
+    actual_state = thermal.state
+    assert actual_state.last_timestep == expected_state.last_timestep
     if expected_state.last_change_rate is not None:
         # The estimator is max(|T_new - T_old|) / dt. Propagate the field
         # assertion's absolute-plus-relative bound through that division.
         field_bound = max(uw.mpi.comm.allgather(
             2e-14 * (1.0 + float(np.max(np.abs(expected), initial=0.0)))))
-        assert thermal.state.last_change_rate == pytest.approx(
+        assert actual_state.last_change_rate == pytest.approx(
             expected_state.last_change_rate, rel=0.0,
             abs=field_bound / expected_state.last_timestep)
     if expected_rate is not None:
-        np.testing.assert_array_equal(thermal.temperature_rate.array, expected_rate)
+        assert manager.state == expected_manager_state
+        np.testing.assert_array_equal(manager.temperature_rate.array, expected_rate)
     uw.reset_default_model()
 
 
 def test_citcoms_does_not_allocate_unused_multistep_history():
     mesh, temperature, velocity = _problem(2, "history")
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, temperature, velocity.sym, time_integrator="citcoms")
-    assert thermal.DuDt is None
-    assert thermal.temperature_rate is not None
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms",
+    )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
+    assert thermal.DuDt is manager
+    assert manager.psi_star == []
+    assert manager.temperature_rate is not None
     with pytest.raises(ValueError, match="stability"):
         thermal.estimate_dt(basis="accuracy")
-    with pytest.raises(ValueError, match="gamma"):
+    with pytest.raises(ValueError, match="theta"):
         thermal.theta = 0.5
 
 
@@ -151,7 +167,10 @@ def test_empty_partition_is_rejected_on_every_rank():
         mesh.dm.getHeightStratum(0)[1] - mesh.dm.getHeightStratum(0)[0])
     if min(counts) > 0:
         pytest.skip(f"This partition has no empty ranks: {counts}")
-    thermal = uw.systems.AdvDiffusionSUPG(
-        mesh, temperature, velocity.sym, time_integrator="citcoms")
+    manager = uw.systems.ddt.EulerianSUPGPC(
+        mesh, temperature, velocity.sym,
+        method="citcoms",
+    )
+    thermal = uw.systems.AdvDiffusion(mesh, temperature, velocity.sym, DuDt=manager)
     with pytest.raises(NotImplementedError, match="on every rank"):
         thermal.estimate_dt()
