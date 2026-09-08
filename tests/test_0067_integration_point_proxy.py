@@ -284,4 +284,4 @@ def test_lagrangian_swarm_flip_update_keeps_particle_values_for_a_resolved_field
     assert np.abs(after - before).max() > 1e-4     # PIC would have given `before` back
     with pytest.raises(ValueError, match="particle_update"):
         uw.systems.ddt.Lagrangian_Swarm(swarm=swarm, psi_fn=T.sym, vtype=uw.VarType.SCALAR,
-                                        degree=1, proxy_location="cells", particle_update="xx")
+                                        degree=1, continuous=False, proxy_location="cells", particle_update="xx")
