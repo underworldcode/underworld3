@@ -738,6 +738,56 @@ class _DDtBase(uw_object):
         """
         return [ps.sym for ps in self.psi_star]
 
+    # ----- velocity-expression snapshots (mid-time trace-back) -----
+    def _V_matrix(self):
+        """``V_fn`` as a sympy row matrix (a mesh variable contributes its symbol)."""
+        V = self.V_fn
+        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+            return sympy.Matrix(V.sym)
+        return sympy.Matrix(V)
+
+    def _velocity_degree(self):
+        """Degree of the nodal velocity cache: the highest degree among the
+        mesh variables in ``V_fn`` (2 for an analytic velocity)."""
+        _, varfns, _ = uw.function.expressions.mesh_vars_in_expression(self._V_matrix())
+        degs = [fn.meshvar().degree for fn in varfns]
+        return max(degs) if degs else 2
+
+    def _make_velocity_level(self, tag):
+        """A cached velocity level: ``V_fn`` EVALUATED at the true nodes of a
+        vector field (no nudge; the evaluator is exact at node coordinates on
+        simplex, quad and annulus meshes). Caching by evaluation, rather than
+        by substituting snapshots of the mesh variables into the expression,
+        is what captures everything ``V_fn`` depends on at that time: the
+        variables, constants that ramp, swarm proxies, the mesh geometry."""
+        snap = uw.discretisation.MeshVariable(
+            f"vcache_{tag}_{self.instance_number}", self.mesh, self.mesh.dim,
+            degree=self._velocity_degree(), continuous=True,
+            varsymbol=rf"{{ V^{{ ({tag}) }}_{{ [{self.instance_number}] }} }}",
+            units=self._velocity_units(),   # same frame as V_fn, so 1.5 v - 0.5 v_prev is consistent
+        )
+        snap.remesh_policy = RemeshPolicy.CARRY
+        snap._remesh_managed_by = self
+        return {"var": snap, "expr": snap.sym}
+
+    def _velocity_units(self):
+        """Units of ``V_fn`` under an active units model, else None."""
+        units = uw.get_units(self._V_matrix())
+        if units is not None and not uw.get_default_model().has_units():
+            units = None
+        return units
+
+    def _copy_velocity_level(self, dst, src=None):
+        """``dst`` <- ``src`` (another level) or, with ``src=None``, ``V_fn``
+        evaluated now at ``dst``'s nodes (reduced to the non-dimensional
+        frame ``.data`` stores, issue #267)."""
+        if src is None:
+            vals = uw.function.evaluate(self._V_matrix(), np.asarray(dst["var"].coords_nd))
+            vals = _to_nondim_ndarray(vals, units=self._velocity_units())
+            dst["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.dim)
+        else:
+            dst["var"].data[...] = src["var"].data[...]
+
     def bdf(self, order: Optional[int] = None):
         r"""Backward differentiation approximation of the time-derivative of :math:`\psi`.
 
@@ -1951,6 +2001,7 @@ class SemiLagrangian(_DDtBase):
         monotone_mode: Optional[str] = None,
         theta: float = 0.5,
         old_frame_traceback: bool = False,
+        midtime_velocity: bool = True,
     ):
         super().__init__()
 
@@ -1962,6 +2013,9 @@ class SemiLagrangian(_DDtBase):
         self._psi_fn = psi_fn
         self.V_fn = V_fn
         self.order = order
+        # Mid-point velocity of the RK2 trace at the mid TIME (1.5 v^n -
+        # 0.5 v^{n-1}); False reproduces the pre-2026-09 v^n-only trace.
+        self.midtime_velocity = bool(midtime_velocity)
         if preserve_moments:
             raise NotImplementedError(
                 "preserve_moments is not currently implemented"
@@ -2662,12 +2716,46 @@ class SemiLagrangian(_DDtBase):
         except Exception:
             return None
 
+    def _midtime_velocity_expr(self):
+        r"""Velocity at :math:`t^{n+1/2}` for the mid-point stage of the
+        trace-back: :math:`\tfrac32 v^n - \tfrac12 v^{n-1}` once a previous
+        velocity has been recorded, else :math:`v^n`. :math:`v^{n-1}` is
+        ``V_fn`` as evaluated at the previous step and cached at the nodes,
+        so any expression (``-v``, ``v/2``, ``c(t) v``, ``v - v_mesh``) is
+        carried as it was then."""
+        if not getattr(self, "midtime_velocity", True):
+            return None
+        level = getattr(self, "_v_prev_level", None)
+        if level is None or not getattr(self, "_v_prev_valid", False):
+            return None
+        return self._V_matrix() * sympy.Rational(3, 2) - level["expr"] * sympy.Rational(1, 2)
+
+    def _record_velocity_history(self):
+        """Cache ``V_fn`` evaluated at the true nodes as v^{n-1} for the
+        next step. Evaluating at NUDGED nodes left a 0.001 h |grad v| bias
+        that the extrapolation fed into every trace and moved the
+        Blankenbach 1a wall Nusselt number by 0.9 %."""
+        if getattr(self, "_v_prev_level", None) is None:
+            self._v_prev_level = self._make_velocity_level("n-1")
+            self._v_prev_valid = False
+        self._copy_velocity_level(self._v_prev_level)
+        self._v_prev_valid = True
+
+    def _centroid_shifted_var_coords(self, var):
+        """ND node coordinates of ``var`` nudged 0.1 % toward their cell
+        centroids (see :meth:`_centroid_shifted_node_coords`)."""
+        coords = np.asarray(var.coords_nd)
+        cellid = self.mesh.get_closest_cells(coords).reshape(-1)
+        cent = np.asarray(self.mesh._centroids)[cellid]
+        return 0.999 * coords + 0.001 * cent
+
     def _velocity_nd_at(
         self,
         coords,
         use_global: bool = False,
         evalf: bool = False,
         subtract_v_mesh: bool = False,
+        expr=None,
     ):
         r"""Evaluate the advecting velocity at ``coords``, reduced to ND space.
 
@@ -2699,15 +2787,16 @@ class SemiLagrangian(_DDtBase):
             (rather than symbolically as ``V_fn − v_mesh.sym``) so the
             subtraction inherits the same unit treatment as ``V_fn``.
         """
+        fn = self._V_matrix() if expr is None else expr
         if use_global:
-            v_result = uw.function.global_evaluate(self.V_fn, coords, evalf=evalf)
+            v_result = uw.function.global_evaluate(fn, coords, evalf=evalf)
             if subtract_v_mesh:
                 v_mesh = uw.function.global_evaluate(
                     self._v_mesh_var.sym, coords, evalf=evalf
                 )
                 v_result = v_result - v_mesh
         else:
-            v_result = uw.function.evaluate(self.V_fn, coords)
+            v_result = uw.function.evaluate(fn, coords)
             if subtract_v_mesh:
                 v_mesh = uw.function.evaluate(self._v_mesh_var.sym, coords)
                 v_result = v_result - v_mesh
@@ -2968,12 +3057,17 @@ class SemiLagrangian(_DDtBase):
 
         # Mid-point velocities may lie off-rank, so route through
         # global_evaluate (with evalf forwarded), unlike the on-node
-        # evaluation above.
+        # evaluation above. The mid-point velocity is taken at the mid
+        # TIME, t^{n+1/2}, by extrapolation from the two most recent
+        # velocity fields, 1.5 v^n - 0.5 v^{n-1}; with v^n alone the
+        # trace is only first order in an unsteady flow. On the first
+        # step (no previous velocity) v^n is used.
         v_at_mid_pts = self._velocity_nd_at(
             mid_pt_coords,
             use_global=True,
             evalf=evalf,
             subtract_v_mesh=subtract_v_mesh,
+            expr=self._midtime_velocity_expr(),
         )
 
         # Upstream (departure) coordinates: current position - velocity * timestep
@@ -3184,6 +3278,11 @@ class SemiLagrangian(_DDtBase):
                 i, end_pt_coords, evalf, monotone_mode,
                 _oldframe_active, _oldframe_X,
             )
+
+        # The velocity used this step becomes v^{n-1} for the next
+        # step's mid-time extrapolation.
+        if getattr(self, "midtime_velocity", True):
+            self._record_velocity_history()
 
         # Phase-2 ALE: consume the one-step v_mesh pulse. Subsequent
         # non-adapt steps will see no pending displacement and run a
@@ -3879,3 +3978,321 @@ class Lagrangian_Swarm(_DDtBase):
 
         return
 
+
+
+class IntegrationPointSemiLagrangian(_DDtBase):
+    r"""Semi-Lagrangian history stored at the mesh integration points.
+
+    The history slots ``psi_star[k]`` are
+    :class:`~underworld3.discretisation.IntegrationPointVariable` objects, so
+    the value the weak form sees at each integration point is the discrete
+    solution from ``k+1`` steps ago evaluated **exactly** at the departure
+    point of that integration point. There is no nodal history field and no
+    second interpolation: only the FE solution's own error remains in the
+    advected term. Compare :class:`SemiLagrangian`, which samples at the
+    nodes, stores a nodal ``psi_star`` and lets the assembler interpolate it
+    to the integration points.
+
+    Because a delta field cannot be sampled off its points, the chain
+    ``psi_star[k] <- psi_star[k-1]`` of :class:`SemiLagrangian` is replaced
+    by nodal **snapshots** of the solution and of the velocity at the last
+    ``order`` times. Slot ``k`` is filled by tracing ``k+1`` segments back
+    from every integration point (segment ``j`` with the velocity at time
+    ``n-j`` and that step's ``dt``) and evaluating the snapshot from time
+    ``n-k`` at the foot. Every slot carries one evaluation error rather than
+    one per generation.
+
+    What is not here (yet): vector/tensor histories, units-aware velocity
+    reduction, ALE / old-frame trace-back, forcing history, checkpoint state.
+    Use :class:`SemiLagrangian` for those.
+
+    Parameters
+    ----------
+    mesh, psi_fn, V_fn, degree, continuous, varsymbol, verbose, bcs, order, theta
+        As for :class:`SemiLagrangian`. ``psi_fn`` may be a scalar
+        ``MeshVariable`` (its nodal data is then copied into the snapshot
+        rather than re-evaluated) or a scalar expression.
+    ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
+    velocity history caches it by evaluation at each time level.
+    """
+
+    def __init__(
+        self,
+        mesh,
+        psi_fn,
+        V_fn,
+        vtype=VarType.SCALAR,
+        degree: int = 1,
+        continuous: bool = True,
+        varsymbol: Optional[str] = None,
+        verbose: bool = False,
+        bcs=None,
+        order: int = 1,
+        theta: float = 0.5,
+        monotone_mode: Optional[str] = None,
+        **_unsupported,
+    ):
+        super().__init__()
+        if vtype != VarType.SCALAR:
+            raise NotImplementedError(
+                "IntegrationPointSemiLagrangian: scalar histories only for now"
+            )
+        self.monotone_mode = monotone_mode
+        self.mesh = mesh
+        self.bcs = list(bcs) if bcs is not None else []   # per instance, never a shared default
+        self.verbose = verbose
+        self.degree = degree
+        self.continuous = continuous
+        self.order = order
+        self.theta = float(theta)
+        self.V_fn = V_fn
+
+        if hasattr(psi_fn, "sym") and not isinstance(psi_fn, sympy.Basic):
+            self._psi_meshVar = psi_fn
+            self._psi_fn = psi_fn.sym
+        else:
+            self._psi_meshVar = None
+            self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
+
+        self._init_history_tracking(order)
+        self._check_rule_oversampling(degree)
+
+        if varsymbol is None:
+            varsymbol = rf"u_{{ [{self.instance_number}] }}"
+        inst = self.instance_number
+
+        psi_units = uw.get_units(self._psi_fn)
+        if psi_units is not None and not uw.get_default_model().has_units():
+            psi_units = None
+        self._psi_units = psi_units
+
+        # History slots at the integration points (injected, never sampled).
+        self.psi_star = [
+            uw.discretisation.IntegrationPointVariable(
+                f"psi_star_ip_{inst}_{k}", mesh,
+                varsymbol=rf"{{ {varsymbol}^{{ {'*' * (k + 1)} }} }}",
+                units=psi_units,
+            )
+            for k in range(order)
+        ]
+        # Nodal snapshots of the solution and velocity at times n, n-1, ...
+        # (sampled at the departure points).
+        self.psi_snap = [
+            uw.discretisation.MeshVariable(
+                f"psi_snap_ip_{inst}_{k}", mesh, 1, degree=degree, continuous=continuous,
+                varsymbol=rf"{{ {varsymbol}^{{ (n-{k}) }} }}",
+                units=psi_units,
+            )
+            for k in range(order)
+        ]
+        # At least two velocity levels: the current interval's mid-time
+        # velocity is extrapolated from v^n and v^{n-1}. Each level caches
+        # V_fn evaluated at the nodes at that time, so V_fn may be any
+        # expression (variables, ramping constants, swarm proxies).
+        self._n_v = max(order, 2)
+        self.v_levels = [self._make_velocity_level(f"n-{k}") for k in range(self._n_v)]
+        self._init_coefficient_expressions(order, self.theta, with_exp=False)
+
+    def spatial_weights(self):
+        """As the base class, except that at ``theta = 1`` the old-level
+        weights, identically zero, are returned as literals. A runtime
+        constant with value zero would leave ``0 * grad(psi*)`` in the weak
+        form, and the slot has no gradient to differentiate (the JIT guard
+        would refuse a dead term). This is what makes the history usable in
+        the composed ``AdvDiffusion`` at ``order=1, theta=1``."""
+        w = super().spatial_weights()
+        if self.integrator == "am" and float(self.theta) == 1.0:
+            return [sympy.Integer(1)] + [sympy.Integer(0)] * (len(w) - 1)
+        return w
+
+    def _check_rule_oversampling(self, degree):
+        """Refuse a rule with no more points per cell than the history space
+        has local dofs.
+
+        The solve fits the sampled departure-point values to the continuous
+        space by weighted least squares on the rule (the mass matrix is exact
+        on the rule, so Galerkin with a sampled load *is* that fit). The fit
+        contracts in the sampled norm only, and the shifted field's sampled
+        norm can exceed its true norm (aliasing of the rule on grid-scale
+        modes), so the pure-advection map is never strictly contractive.
+        Measured one-step growth factors, P2 on triangles, Courant 0.25
+        (power iteration): 6 points 1.03-1.14 (blows up), 9 points 1.005,
+        12 points 1.0003; with physical diffusion at cell Peclet 100: 6
+        points 1.01 (still unstable), 9 and 12 points 0.996 (stable). Nodal
+        SLCN: 0.999. So: raise at <= 1x oversampling, warn below 2x.
+        """
+        PETSc.Options().setValue(f"ipsl_check_{self.instance_number}_petscspace_degree", degree)
+        fe = PETSc.FE().createDefault(
+            self.mesh.dim, 1, self.mesh.isSimplex, self.mesh.qdegree,
+            f"ipsl_check_{self.instance_number}_", PETSc.COMM_SELF,
+        )
+        local_dofs = fe.getDimension()
+        Nq = len(np.asarray(self.mesh.integration_rule.getData()[1]))
+        if Nq <= local_dofs:
+            need = self._qdegree_with_at_least(local_dofs + 1)
+            want = self._qdegree_with_at_least(2 * local_dofs)
+            raise RuntimeError(
+                f"IntegrationPointSemiLagrangian: the mesh rule has {Nq} points per cell "
+                f"but a degree-{degree} history has {local_dofs} local dofs; the "
+                "least-squares fit is not oversampled and is unstable at small Courant "
+                f"number. For this cell type and history degree the rule needs at least "
+                f"qdegree={need} (more points than dofs); 2x oversampling, the verified "
+                f"setting, is qdegree={want}."
+            )
+        if Nq < 2 * local_dofs:
+            warnings.warn(
+                f"IntegrationPointSemiLagrangian: {Nq} rule points per cell for "
+                f"{local_dofs} local dofs is under 2x oversampling: weakly unstable under pure "
+                "advection (growth ~1.005/step at 1.5x, Courant 0.25) and stable with physical "
+                "diffusion at cell Peclet <= 100. 2x (qdegree 3 for P2 on triangles) is neutral.",
+                stacklevel=3,
+            )
+
+    def _qdegree_with_at_least(self, npoints, qmax=12):
+        """The smallest quadrature degree whose default rule on this mesh's
+        cell type has at least ``npoints`` points per cell (None if none up
+        to ``qmax``). Point counts come from PETSc's own rules."""
+        for q in range(self.mesh.qdegree + 1, qmax + 1):
+            fe = PETSc.FE().createDefault(
+                self.mesh.dim, 1, self.mesh.isSimplex, q, f"ipsl_qscan_{q}_", PETSc.COMM_SELF,
+            )
+            if len(np.asarray(fe.getQuadrature().getData()[1])) >= npoints:
+                return q
+        return None
+
+    # ------------------------------------------------------------------
+    @property
+    def psi_fn(self):
+        r"""Current symbolic expression :math:`\psi` being tracked."""
+        return self._psi_fn
+
+    @psi_fn.setter
+    def psi_fn(self, new_fn):
+        self._psi_meshVar = None
+        self._psi_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+
+    def _object_viewer(self):
+        from IPython.display import Latex, Markdown, display
+        super()._object_viewer()
+        display(Latex(r"$\quad\psi = $ " + self.psi_fn._repr_latex_()))
+        display(Latex(r"$\quad\mathbf{v} = $ " + sympy.Matrix(self.V_fn)._repr_latex_()))
+        display(Latex(rf"$\quad$History steps = {self.order} (at the integration points)"))
+
+    # ------------------------------------------------------------------
+    def _nudged_node_coords(self, var):
+        """ND node coordinates of ``var`` moved 0.1 % toward their cell
+        centroids so boundary nodes locate unambiguously (see
+        :meth:`SemiLagrangian._centroid_shifted_node_coords`)."""
+        coords = np.asarray(var.coords_nd)
+        cellid = self.mesh.get_closest_cells(coords).reshape(-1)
+        cent = np.asarray(self.mesh._centroids)[cellid]
+        return 0.999 * coords + 0.001 * cent
+
+    def _record_current(self):
+        """Snapshot slot 0 <- the current solution and velocity."""
+        ps = self.psi_snap[0]
+        if self._psi_meshVar is not None and (
+            self._psi_meshVar.degree == ps.degree
+            and self._psi_meshVar.continuous == ps.continuous
+        ):
+            ps.data[...] = self._psi_meshVar.data[...]
+        else:
+            vals = uw.function.evaluate(self.psi_fn[0], self._nudged_node_coords(ps))
+            ps.data[:, 0] = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+        self._copy_velocity_level(self.v_levels[0])
+
+    def _velocity_at(self, v_sym, coords, evalf):
+        v = uw.function.global_evaluate(v_sym, coords, evalf=evalf)
+        v = np.asarray(_to_nondim_ndarray(v, units=self._velocity_units()))
+        if v.ndim == 3:
+            v = v[:, 0, :]
+        return v.reshape(coords.shape[0], self.mesh.dim)
+
+    def _trace_segment(self, X, v_start_sym, v_mid_sym, dt, evalf):
+        r"""One RK2 (midpoint) segment of the characteristic, backwards:
+        ``x_mid = x - dt/2 v_start(x)``, ``x_dep = x - dt v_mid(x_mid)``,
+        with ``v_mid`` the velocity at the segment's mid TIME."""
+        clamp = self.mesh.return_coords_to_bounds
+        v0 = self._velocity_at(v_start_sym, X, evalf)
+        Xm = X - 0.5 * dt * v0
+        if clamp is not None:
+            Xm = clamp(Xm)
+        vm = self._velocity_at(v_mid_sym, Xm, evalf)
+        Xd = X - dt * vm
+        if clamp is not None:
+            Xd = clamp(Xd)
+        return Xd
+
+    def _segment_dt(self, j, dt):
+        """Length of segment ``j`` (0 = the current step)."""
+        if j == 0:
+            return dt
+        h = self._dt_history[j - 1]
+        return dt if h is None else h
+
+    def _fill_slots(self, dt, evalf):
+        """Trace back from the integration points and sample the snapshots."""
+        X0 = np.asarray(self.psi_star[0].coords_nd)
+        X = X0.copy()
+        half = sympy.Rational(1, 2)
+        for k in range(self.order):
+            # Segment k extends the trace from slot k-1's feet, so the
+            # feet for slot k are those of slot k-1 traced one more step.
+            # Segment k runs from t^{n+1-k} back to t^{n-k}. Its mid-time
+            # velocity: for k=0 extrapolated, 1.5 v^n - 0.5 v^{n-1} (v^{n+1}
+            # is not known yet); for k>=1 both ends are known, so the
+            # average of v^{n+1-k} and v^{n-k}. The first stage, which
+            # only places the mid-point, uses the velocity at the
+            # segment's start time.
+            V = [lvl["expr"] for lvl in self.v_levels]
+            if k == 0:
+                v_start = V[0]
+                v_mid = V[0] * sympy.Rational(3, 2) - V[1] * half
+            else:
+                v_start = V[k - 1]
+                v_mid = (V[k - 1] + V[k]) * half
+            X = self._trace_segment(X, v_start, v_mid, self._segment_dt(k, dt), evalf)
+            vals = uw.function.global_evaluate(
+                self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
+            )
+            self.psi_star[k].data[:, 0] = np.asarray(
+                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+
+    def initialise_history(self):
+        """Start every snapshot and slot from the current field, so
+        ``bdf()`` is zero on the first step."""
+        self._record_current()
+        for k in range(1, self.order):
+            self.psi_snap[k].data[...] = self.psi_snap[0].data[...]
+        for k in range(1, self._n_v):
+            self._copy_velocity_level(self.v_levels[k], self.v_levels[0])
+        X = np.asarray(self.psi_star[0].coords_nd)
+        vals = uw.function.evaluate(self.psi_snap[0].sym[0], X)
+        vals = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+        for k in range(self.order):
+            self.psi_star[k].data[:, 0] = vals
+        self._history_initialised = True
+
+    def update_pre_solve(self, dt, evalf=False, verbose=False, **_ignored):
+        self._dt = dt
+        if not self._history_initialised:
+            self.initialise_history()
+        _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
+        _update_am_values(self._am_coeffs, self.effective_order, self.theta)
+        for k in range(self.order - 1, 0, -1):
+            self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
+        for k in range(self._n_v - 1, 0, -1):
+            self._copy_velocity_level(self.v_levels[k], self.v_levels[k - 1])
+        self._record_current()
+        self._fill_slots(dt, evalf)
+
+    def update(self, dt, evalf=False, verbose=False, **kwargs):
+        self.update_pre_solve(dt, evalf=evalf, verbose=verbose, **kwargs)
+
+    def update_post_solve(self, dt, evalf=False, verbose=False, **_ignored):
+        self._dt = dt
+        for i in range(self.order - 1, 0, -1):
+            self._dt_history[i] = self._dt_history[i - 1]
+        self._dt_history[0] = dt
+        if self._n_solves_completed < self.order:
+            self._n_solves_completed += 1

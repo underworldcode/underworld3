@@ -5484,14 +5484,51 @@ class Mesh(Stateful, uw_object):
         provided variable. If the array does not already exist,
         it is first created and then returned.
         """
-        key = (self.isSimplex, var.degree, var.continuous)
+        key = var._basis_key
 
         # if array already created, return.
         if key in self._coord_array:
             return self._coord_array[key]
+        if getattr(var, "is_integration_point", False):
+            # Cell-major, point-minor: the layout of the variable's own vector.
+            self._coord_array[key] = var.integration_points.reshape(-1, self.cdim).copy()
         else:
             self._coord_array[key] = self._get_coords_for_basis(var.degree, var.continuous)
-            return self._coord_array[key]
+        return self._coord_array[key]
+
+    @property
+    def integration_rule(self):
+        """The cell quadrature rule every field on this mesh is integrated on.
+
+        Fixed by ``qdegree`` (PETSc's ``PetscDSSetUp`` forces one rule per
+        discrete system), so it is a property of the mesh, not of any field.
+        Integration-point variables are built on it.
+        """
+        if getattr(self, "_integration_rule", None) is None:
+            fe = PETSc.FE().createDefault(
+                self.dim, 1, self.isSimplex, self.qdegree, "integration_rule_", PETSc.COMM_SELF,
+            )
+            self._integration_rule = fe.getQuadrature()
+            self._integration_rule_fe = fe   # keeps the rule alive
+        return self._integration_rule
+
+    def _verify_integration_rule(self, fe):
+        """Raise unless ``fe`` integrates on this mesh's rule.
+
+        An integration-point variable reads as zeros on any other rule, which
+        would silently drop the term it carries, so a solver that attaches the
+        mesh's auxiliary vector checks its own element here.
+        """
+        if fe is None or not any(getattr(v, "is_integration_point", False) for v in self.vars.values()):
+            return
+        q_mesh = numpy.asarray(self.integration_rule.getData()[0]).reshape(-1, self.dim)
+        q_fe = numpy.asarray(fe.getQuadrature().getData()[0]).reshape(-1, self.dim)
+        if q_mesh.shape != q_fe.shape or not numpy.allclose(q_mesh, q_fe, atol=1e-12):
+            raise RuntimeError(
+                f"Solver quadrature ({q_fe.shape[0]} points) differs from the mesh integration "
+                f"rule ({q_mesh.shape[0]} points, qdegree={self.qdegree}); integration-point "
+                "variables on this mesh would read as zero. Build the solver on mesh.qdegree."
+            )
 
     def _basis_coordinate_dm(self, degree, continuous):
         """Coordinate DM carrying a degree-``degree`` Lagrange field.

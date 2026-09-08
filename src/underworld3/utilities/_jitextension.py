@@ -903,7 +903,21 @@ def generate_c_source(
         u_i = 0  # variable increment
         u_x_i = 0  # variable gradient increment
         lambdafunc = lambda self, printer: self._ccodestr
+
+        def _no_derivative(self, printer):
+            # An integration-point variable has no gradient (its tabulated
+            # derivative is identically zero), so a derivative of its symbol
+            # in a weak form would be a silent zero. Refuse at code generation.
+            raise RuntimeError(
+                f"{self.__class__.__name__}: derivative of an integration-point "
+                "variable has no meaning (the field is defined only at the "
+                "quadrature points). Remove the derivative or project the "
+                "variable onto a nodal MeshVariable first."
+            )
+
         for var in varlist:
+            is_ip = getattr(var, "is_integration_point", False)
+            dfunc = _no_derivative if is_ip else lambdafunc
             if component_offsets is not None:
                 u_i = component_offsets[var.field_id]
                 u_x_i = u_i * mesh.cdim
@@ -922,7 +936,7 @@ def generate_c_source(
                 for ind in range(mesh.cdim):
                     # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                     var.fn._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                    var.fn._diff[ind]._ccode = lambdafunc
+                    var.fn._diff[ind]._ccode = dfunc
                     u_x_i += 1
             elif (
                 var.vtype == VarType.VECTOR
@@ -941,7 +955,7 @@ def generate_c_source(
                     for ind in range(mesh.cdim):
                         # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                         comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                        comp._diff[ind]._ccode = lambdafunc
+                        comp._diff[ind]._ccode = dfunc
                         u_x_i += 1
             else:
                 raise RuntimeError(
