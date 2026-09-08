@@ -3806,28 +3806,6 @@ class Lagrangian(_DDtBase):
 
         return
 
-    def _proxy_values_at_particles(self, slot, coords, evalf):
-        """The slot's proxy evaluated at the particles, shaped like ``slot.data``.
-
-        A ``"cells"`` proxy is read through its own fitted polynomials (exact,
-        no locator round trip); any other proxy through ``evaluate`` of the
-        proxy mesh variable's symbol.
-        """
-        projector = getattr(slot, "_cell_projector", None)
-        if projector is not None and getattr(slot, "_proxy_location", None) == "cells":
-            slot._update_proxy_if_stale()
-            vals = projector.interpolate(np.asarray(slot._meshVar.data), coords)
-            return np.nan_to_num(vals)
-        mv = slot._meshVar
-        out = np.empty((coords.shape[0], slot.data.shape[1]))
-        for i in range(slot.shape[0]):
-            for j in range(slot.shape[1]):
-                ij = slot._data_layout(i, j)
-                out[:, ij] = np.asarray(
-                    uw.function.evaluate(mv.sym[i, j], coords, evalf=evalf)
-                ).reshape(-1)
-        return out
-
     def update_post_solve(
         self,
         dt: float,
@@ -3981,7 +3959,7 @@ class Lagrangian_Swarm(_DDtBase):
         continuous: bool,
         varsymbol: Optional[str] = r"u",
         verbose: Optional[bool] = False,
-        bcs=[],
+        bcs=None,
         order=1,
         smoothing=0.0,
         step_averaging=2,
@@ -4159,9 +4137,12 @@ class Lagrangian_Swarm(_DDtBase):
         no locator round trip); any other proxy through ``evaluate`` of the
         proxy mesh variable's symbol.
         """
+        # The proxy refreshes lazily on access through the SWARM variable's
+        # symbol; reading its mesh variable directly bypasses that, so refresh
+        # first on every path, else the residual is taken against a stale fit.
+        slot._update_proxy_if_stale()
         projector = getattr(slot, "_cell_projector", None)
         if projector is not None and getattr(slot, "_proxy_location", None) == "cells":
-            slot._update_proxy_if_stale()
             vals = projector.interpolate(np.asarray(slot._meshVar.data), coords)
             return np.nan_to_num(vals)
         mv = slot._meshVar

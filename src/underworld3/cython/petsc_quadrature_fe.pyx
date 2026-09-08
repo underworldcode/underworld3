@@ -113,7 +113,8 @@ def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe", int num
     Returns
     -------
     petsc4py.PETSc.FE
-        Element of dimension ``Nq`` (points in the rule), one component,
+        Element of ``Nq * num_components`` basis functions (``Nq`` points in
+        the rule, ``num_components`` interleaved components, one by default),
         with ``quad`` as its cell quadrature and no face quadrature.
     """
     cdef PetscInt qdim = 0, qNc = 0, Nq = 0, i, d
