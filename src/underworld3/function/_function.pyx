@@ -361,7 +361,7 @@ def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 evalf=False,
                 rbf=False,
@@ -919,7 +919,7 @@ def evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 evalf=False,
                 rbf=False,
@@ -1116,7 +1116,7 @@ def petsc_interpolate(   expr,
                 coord_sys=None,
                 mesh=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 cell_hints=None, ):
     """
@@ -1519,7 +1519,7 @@ def rbf_evaluate(  expr,
             mesh=None,
             other_arguments=None,
             verbose=False,
-            simplify=True,):
+            simplify=False,):
     """
     Evaluate a given expression at a list of coordinates.
 
