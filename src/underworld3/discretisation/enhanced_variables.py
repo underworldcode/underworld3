@@ -66,6 +66,7 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
     # The storage class this wrapper delegates to; IntegrationPointVariable
     # swaps in the quadrature-point element.
     _base_variable_class = _BaseMeshVariable
+    is_integration_point = False
 
     def __new__(cls, varname, mesh, *args, **kwargs):
         """Custom __new__ to ensure proper initialization and registration."""
@@ -947,7 +948,8 @@ class IntegrationPointVariable(EnhancedMeshVariable):
     nearest-integration-point partition of each cell; ``uw.function.evaluate``
     returns that, so a query agrees with what the assembler used at the same
     point. Derivatives of the symbol are refused by the JIT (the gradient is
-    identically zero). Scalar components only for now.
+    identically zero). Vector and tensor variables are supported (one dof
+    per component per point).
 
     Examples
     --------

@@ -100,3 +100,52 @@ def test_rule_is_the_mesh_rule():
         fe = PETSc.FE().createDefault(2, 1, True, 2, f"p{degree}_", PETSc.COMM_SELF)
         pts = np.array(fe.getQuadrature().getData()[0]).reshape(-1, 2)
         assert len(pts) == 6
+
+
+@pytest.mark.parametrize("dim,simplex", CELLS, ids=IDS)
+def test_vector_element_is_the_identity_point_major(dim, simplex):
+    """Two components: basis (p, c) is the delta at point p times e_c, ordered
+    point-major, component-minor, so a cell's dofs reshape to (Nq, Nc)."""
+    _, quad, pts = _rule(dim, simplex, 2)
+    _, polytope = _box(dim, simplex)
+    Nc = 2
+    fe = create_delta_fe(quad, polytope, num_components=Nc)
+    Nq = len(pts)
+    assert fe.getDimension() == Nq * Nc
+    assert fe.getNumComponents() == Nc
+    B = tabulate(fe, pts)                      # (Np, Nb, Nc)
+    expected = np.zeros((Nq, Nq * Nc, Nc))
+    for p in range(Nq):
+        for c in range(Nc):
+            expected[p, p * Nc + c, c] = 1.0
+    assert np.array_equal(B, expected)
+    assert np.all(tabulate(fe, pts[:2] + 0.05) == 0.0)
+
+
+def test_cell_affine_maps_and_derivative_tabulation():
+    """The affine map returns the reference frame the tabulation expects, and
+    the derivative tabulation differentiates a discontinuous P1 field exactly."""
+    import numpy as np
+    import underworld3 as uw
+    from underworld3.cython.petsc_quadrature_fe import (
+        cell_affine_maps, tabulate, tabulate_with_derivatives,
+    )
+
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25, qdegree=2)
+    var = uw.discretisation.MeshVariable("dg1", mesh, 1, degree=1, continuous=False)
+    fe = mesh.dm.getField(var.field_id)[0]
+    v0, invJ, detJ = cell_affine_maps(mesh.dm)
+    ncells = detJ.shape[0]
+    X = np.asarray(var.coords_nd)
+    cells = np.repeat(np.arange(ncells), 3)
+    xi = np.einsum("cij,cj->ci", invJ[cells], X - v0[cells]) - 1.0
+    B, D = tabulate_with_derivatives(fe, xi)
+    assert np.allclose(B[:, :, 0].reshape(ncells, 3, 3), np.eye(3)[None], atol=1e-10)
+    assert np.allclose(tabulate(fe, xi), B)
+    # d/dx of the nodal interpolant of (2x + 3y): physical gradient = invJ^T D
+    vals = (2.0 * X[:, 0] + 3.0 * X[:, 1]).reshape(ncells, 3)
+    grad_ref = np.einsum("cnbd,cb->cnd", D[:, :, 0, :].reshape(ncells, 3, 3, 2), vals)
+    grad = np.einsum("cji,cnj->cni", invJ, grad_ref)
+    assert np.allclose(grad, [2.0, 3.0], atol=1e-10)
+    # cell volumes from detJ: the reference triangle has area 2
+    assert np.isclose(2.0 * detJ.sum(), 1.0, atol=1e-12) or uw.mpi.size > 1

@@ -4278,7 +4278,27 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             self.u.remesh_policy = RemeshPolicy.CARRY
             self.u._remesh_managed_by = self.Unknowns.DuDt
 
+        # The value and flux histories follow the same velocity from the
+        # same nodes: one characteristic trace serves both (each term keeps
+        # its own mathematics; only the departure points and the cached
+        # velocity levels are shared). The solver delimits the steps.
+        self._characteristics = uw.systems.ddt.share_characteristics(
+            self.Unknowns.DuDt, self.Unknowns.DFDt
+        )
+
         return
+
+    def _flux_history_is_read(self):
+        """Whether the weak form reads the old-level flux this step: only the
+        theta rule with theta < 1 does (BDF orders and theta = 1 weight the
+        old levels by zero). An unread flux history is a derived quantity
+        (the flux of the value history) and is not traced or sampled; when
+        theta later drops below 1 it initialises from the field then."""
+        d = self.Unknowns.DFDt
+        if getattr(d, "integrator", "am") == "bdf":
+            return False
+        theta = getattr(d, "theta", 0.5)
+        return theta is None or float(theta) < 1.0
 
     @property
     def F0(self):
@@ -4515,8 +4535,14 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
         # Update History / Flux History terms
         # SemiLagrange and Lagrange may have different sequencing.
 
+        trace = getattr(self, "_characteristics", None)
+        if trace is not None:
+            trace.begin_step(timestep)
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        if self._flux_history_is_read():
+            self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        if trace is not None:
+            trace.finish_step()
 
         super().solve(zero_init_guess, _force_setup,
                       divergence_retries=divergence_retries)
@@ -5250,9 +5276,18 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if uw.mpi.rank == 0 and verbose:
             print(f"NS solver - pre-solve DuDt update", flush=True)
 
-        # Update SemiLagrange Flux terms
+        # Update SemiLagrange Flux terms. The velocity and stress histories
+        # follow the same velocity: one characteristic trace (velocity
+        # levels shared; departure points too where the node sets match).
+        if not hasattr(self, "_characteristics"):
+            self._characteristics = uw.systems.ddt.share_characteristics(self.DuDt, self.DFDt)
+        trace = self._characteristics
+        if trace is not None:
+            trace.begin_step(timestep)
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        if trace is not None:
+            trace.finish_step()
 
         # Override AM coefficients if flux_order is explicitly set
         if self._flux_order is not None:

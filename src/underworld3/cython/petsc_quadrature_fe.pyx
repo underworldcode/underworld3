@@ -30,7 +30,7 @@ from petsc4py import PETSc
 from petsc4py.PETSc cimport FE, PetscFE, Quad, PetscQuadrature, DM, PetscDM
 from petsc4py.PETSc cimport PetscSpace, PetscDualSpace, PetscObject, MPI_Comm
 from petsc4py.PETSc cimport CHKERR as CHKERRQ
-from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscErrorCode
+from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscErrorCode, PetscBool
 
 import numpy as np
 
@@ -62,6 +62,8 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscQuadratureDestroy(PetscQuadrature*)
 
     PetscErrorCode PetscFECreateFromSpaces(PetscSpace, PetscDualSpace, PetscQuadrature, PetscQuadrature, PetscFE*)
+    PetscErrorCode PetscFECreateVector(PetscFE, PetscInt, PetscBool, PetscBool, PetscFE*)
+    PetscErrorCode PetscFEDestroy(PetscFE*)
     PetscErrorCode PetscObjectReference(PetscObject)
     PetscErrorCode PetscObjectSetName(PetscObject, const char*)
     PetscErrorCode PetscMalloc(size_t, void**)
@@ -90,8 +92,12 @@ cdef extern from "uw_delta_space.h" nogil:
 CHKERRQ(UWDeltaSpaceRegister())
 
 
-def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
-    r"""Build the scalar quadrature-point element on ``quad``.
+def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe", int num_components=1):
+    r"""Build the quadrature-point element on ``quad``.
+
+    ``num_components > 1`` wraps the scalar element with ``PetscFECreateVector``
+    (interleaved basis and components): the dofs of a cell are point-major,
+    component-minor, so a local vector reshapes to ``(ncells * Nq, Nc)``.
 
     Parameters
     ----------
@@ -107,7 +113,8 @@ def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
     Returns
     -------
     petsc4py.PETSc.FE
-        Element of dimension ``Nq`` (points in the rule), one component,
+        Element of ``Nq * num_components`` basis functions (``Nq`` points in
+        the rule, ``num_components`` interleaved components, one by default),
         with ``quad`` as its cell quadrature and no face quadrature.
     """
     cdef PetscInt qdim = 0, qNc = 0, Nq = 0, i, d
@@ -120,7 +127,10 @@ def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
     cdef PetscDualSpace Q = NULL
     cdef PetscDM refcell = NULL
     cdef PetscFE cfe = NULL
+    cdef PetscFE vfe = NULL
     cdef FE pyfe
+    if num_components < 1:
+        raise ValueError("num_components must be >= 1")
 
     CHKERRQ(PetscQuadratureGetData(quad.quad, &qdim, &qNc, &Nq, &points, &weights))
     if qNc != 1:
@@ -161,6 +171,10 @@ def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
     # caller's Quad alive by taking a reference first. No face quadrature.
     CHKERRQ(PetscObjectReference(<PetscObject>quad.quad))
     CHKERRQ(PetscFECreateFromSpaces(P, Q, quad.quad, NULL, &cfe))
+    if num_components > 1:
+        CHKERRQ(PetscFECreateVector(cfe, num_components, <PetscBool>1, <PetscBool>1, &vfe))
+        CHKERRQ(PetscFEDestroy(&cfe))      # the vector element holds its own reference
+        cfe = vfe
     CHKERRQ(PetscObjectSetName(<PetscObject>cfe, name.encode()))
 
     pyfe = FE()
@@ -231,3 +245,79 @@ def cell_quadrature_points(DM dm, Quad quad):
             for d in range(cdim):
                 ov[c - cStart, q, d] = v[q * cdim + d]
     return out
+
+
+def tabulate_with_derivatives(FE fe, points):
+    r"""Tabulate ``fe``'s basis and its reference gradient at ``points``.
+
+    Returns ``(B, D)`` shaped ``(Np, Nb, Nc)`` and ``(Np, Nb, Nc, dim)``;
+    ``D`` is the gradient with respect to the reference coordinates, so a
+    physical gradient is ``invJ^T D``.
+    """
+    cdef PetscTabulation T = NULL
+    cdef PetscInt Np, Nb, Nc, cdim, p, b, c, d
+    pts = np.ascontiguousarray(points, dtype=np.float64)
+    if pts.ndim != 2:
+        raise ValueError("points must be (Np, dim)")
+    cdef double[:, ::1] pv = pts
+    Np = pts.shape[0]
+    CHKERRQ(PetscFECreateTabulation(fe.fe, 1, Np, &pv[0, 0], 1, &T))
+    Nb = T.Nb
+    Nc = T.Nc
+    cdim = T.cdim
+    B = np.empty((Np, Nb, Nc), dtype=np.float64)
+    D = np.empty((Np, Nb, Nc, cdim), dtype=np.float64)
+    cdef double[:, :, ::1] bv = B
+    cdef double[:, :, :, ::1] dv = D
+    for p in range(Np):
+        for b in range(Nb):
+            for c in range(Nc):
+                bv[p, b, c] = T.T[0][(p * Nb + b) * Nc + c]
+                for d in range(cdim):
+                    dv[p, b, c, d] = T.T[1][((p * Nb + b) * Nc + c) * cdim + d]
+    CHKERRQ(PetscTabulationDestroy(&T))
+    return B, D
+
+
+def cell_affine_maps(DM dm):
+    r"""Affine reference map of every local cell.
+
+    Returns ``(v0, invJ, detJ)`` shaped ``(ncells, cdim)``, ``(ncells, cdim,
+    cdim)`` and ``(ncells,)`` in local cell order, from
+    ``DMPlexComputeCellGeometryFEM`` with no rule (the affine map). The
+    reference coordinate of a physical point ``x`` in cell ``c`` is
+    ``invJ[c] @ (x - v0[c]) - 1`` in PETSc's ``[-1, 1]`` reference frame
+    (``v0`` is the image of the reference corner ``(-1, ..., -1)``), which is
+    the frame :func:`tabulate` expects.
+    """
+    cdef PetscInt cStart = 0, cEnd = 0, cdim = 0, c, d, e
+    cdef PetscReal *v = NULL
+    cdef PetscReal *J = NULL
+    cdef PetscReal *invJ = NULL
+    cdef PetscReal detJ = 0.0
+    CHKERRQ(DMPlexGetHeightStratum(dm.dm, 0, &cStart, &cEnd))
+    CHKERRQ(DMGetCoordinateDim(dm.dm, &cdim))
+    ncells = cEnd - cStart
+    v0 = np.empty((ncells, cdim), dtype=np.float64)
+    iJ = np.empty((ncells, cdim, cdim), dtype=np.float64)
+    dJ = np.empty((ncells,), dtype=np.float64)
+    cdef double[:, ::1] v0v = v0
+    cdef double[:, :, ::1] iJv = iJ
+    cdef double[::1] dJv = dJ
+    vbuf = np.empty(cdim, dtype=np.float64)
+    Jbuf = np.empty(cdim * cdim, dtype=np.float64)
+    iJbuf = np.empty(cdim * cdim, dtype=np.float64)
+    cdef double[::1] vv = vbuf
+    cdef double[::1] Jv = Jbuf
+    cdef double[::1] iJvb = iJbuf
+    if ncells == 0:
+        return v0, iJ, dJ
+    v = &vv[0]; J = &Jv[0]; invJ = &iJvb[0]
+    for c in range(cStart, cEnd):
+        CHKERRQ(DMPlexComputeCellGeometryFEM(dm.dm, c, NULL, v, J, invJ, &detJ))
+        dJv[c - cStart] = detJ
+        for d in range(cdim):
+            v0v[c - cStart, d] = v[d]
+            for e in range(cdim):
+                iJv[c - cStart, d, e] = invJ[d * cdim + e]
+    return v0, iJ, dJ

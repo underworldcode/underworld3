@@ -143,6 +143,27 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         If None, inferred from ``size``.
     dtype : type, default=float
         Data type for storage (float or int).
+    proxy_location : {"nodes", "integration_points", "cells"}, default="nodes"
+        Where the proxy lives. ``"nodes"``: a nodal mesh variable of
+        ``proxy_degree`` / ``proxy_continuous``, reconstructed from the
+        particles at its nodes and interpolated by the basis wherever the
+        weak form reads it. ``"integration_points"``: an
+        :class:`~underworld3.discretisation.IntegrationPointVariable`
+        reconstructed from the nearest particles at every integration point
+        and read there directly, with no second interpolation (the
+        Ellipsis / Underworld PIC-LIP mapping); a material interface keeps
+        its sub-cell position, and the proxy has no gradient (a derivative
+        of its symbol is refused). ``proxy_degree`` / ``proxy_continuous``
+        are ignored in that case. ``"cells"``: a discontinuous mesh variable
+        of ``proxy_degree`` holding, in every cell, the least-squares
+        polynomial through the particles that cell holds (a thin cell takes
+        a linear fit to the particles nearest its centroid, an empty cell
+        keeps its previous value). Exact for
+        polynomial particle fields up to ``proxy_degree``, integrated exactly
+        by the default rule, sharp at cell edges, with a gradient, and no
+        neighbour search across ranks; see
+        :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`.
+        ``proxy_continuous`` is ignored (the proxy is discontinuous).
     proxy_degree : int, default=1
         Polynomial degree for the mesh proxy variable.
     proxy_continuous : bool, default=True
@@ -192,6 +213,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         dtype=float,
         proxy_degree=1,
         proxy_continuous=True,
+        proxy_location="nodes",
         _register=True,
         _proxy=True,
         varsymbol=None,
@@ -376,6 +398,13 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._vtype = vtype
         self._proxy_degree = proxy_degree
         self._proxy_continuous = proxy_continuous
+        if proxy_location not in ("nodes", "integration_points", "cells"):
+            raise ValueError(
+                "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+                f"not {proxy_location!r}"
+            )
+        self._cell_projector = None
+        self._proxy_location = proxy_location
         self._create_proxy_variable()
 
         # Inert: kept for backward compatibility with the removed
@@ -1078,22 +1107,50 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # var stale via _mark_reinit_stale; we wire that callback
             # below to set ``self._proxy_stale = True`` so the next
             # access re-projects.
-            self._meshVar = uw.discretisation.MeshVariable(
-                "proxy_" + self.clean_name,
-                self.swarm.mesh,
-                self.shape,
-                self._vtype,
-                degree=self._proxy_degree,
-                continuous=self._proxy_continuous,
-                varsymbol=r"\left<" + self.symbol + r"\right>",
-                remesh_policy="reinit",
-                # The proxy is what `var.sym` resolves to, so it advertises
-                # the same units as the variable it stands for. Without this,
-                # evaluating a proxied symbol returned the NON-DIMENSIONAL
-                # number with no units attached, as though it were the answer
-                # (issue #439). Stored data stays non-dimensional either way.
-                units=self._units,
-            )
+            if getattr(self, "_proxy_location", "nodes") == "integration_points":
+                # Particles -> integration points directly: the assembler reads
+                # the stored values at the rule with no basis interpolation.
+                self._meshVar = uw.discretisation.IntegrationPointVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    varsymbol=r"\left<" + self.symbol + r"\right>_q",
+                    remesh_policy="reinit",
+                    units=self._units,
+                )
+            elif getattr(self, "_proxy_location", "nodes") == "cells":
+                # Particles -> a polynomial per cell (least squares); read by
+                # the assembler through the ordinary discontinuous basis.
+                self._meshVar = uw.discretisation.MeshVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    degree=self._proxy_degree,
+                    continuous=False,
+                    varsymbol=r"\left<" + self.symbol + r"\right>_c",
+                    remesh_policy="reinit",
+                    units=self._units,
+                )
+                self._cell_projector = None
+            else:
+                self._meshVar = uw.discretisation.MeshVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    degree=self._proxy_degree,
+                    continuous=self._proxy_continuous,
+                    varsymbol=r"\left<" + self.symbol + r"\right>",
+                    remesh_policy="reinit",
+                    # The proxy is what `var.sym` resolves to, so it advertises
+                    # the same units as the variable it stands for. Without this,
+                    # evaluating a proxied symbol returned the NON-DIMENSIONAL
+                    # number with no units attached, as though it were the answer
+                    # (issue #439). Stored data stays non-dimensional either way.
+                    units=self._units,
+                )
             # The remesh helper calls this on REINIT vars after an
             # adapt. Bound here so the closure captures ``self`` (the
             # SwarmVariable) rather than the proxy MeshVariable.
@@ -1158,11 +1215,64 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         try:
             self._updating_proxy = True
-            self._rbf_to_meshVar(self._meshVar)
+            if getattr(self, "_proxy_location", "nodes") == "cells":
+                self._cells_to_meshVar(self._meshVar)
+            else:
+                self._rbf_to_meshVar(self._meshVar)
             self._proxy_stale = False  # Mark as fresh
         finally:
             self._updating_proxy = False
 
+        return
+
+    def _cells_to_meshVar(self, meshVar):
+        """Refresh a ``proxy_location="cells"`` proxy: a least-squares polynomial
+        per cell through the particles it holds (see
+        :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`).
+
+        Rank-local: each rank fits the cells it holds from the particles it
+        holds; the proxy's own ghost synchronisation delivers owned values
+        to the neighbours. The starved-rank guard and the collective
+        read-then-write sequence mirror :meth:`_rbf_to_meshVar`.
+        """
+        from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+        if meshVar.mesh != self.swarm.mesh:
+            if hasattr(self, "_meshVar") and meshVar is self._meshVar:
+                self._create_proxy_variable()
+                meshVar = self._meshVar
+            else:
+                raise RuntimeError("Cannot map a swarm to a different mesh")
+
+        current_values = np.array(meshVar.data[...], copy=True)
+
+        if self.swarm.local_size <= 1:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"Swarm proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; proxy variable "
+                    f"'{getattr(meshVar, 'clean_name', meshVar.name)}' left "
+                    "unchanged on this rank.",
+                    stacklevel=2,
+                )
+            Values = current_values
+        else:
+            projector = self._cell_projector
+            if (
+                projector is None
+                or projector.var is not meshVar
+                or projector.mesh_version != self.swarm.mesh._mesh_version
+            ):
+                projector = CellPolynomialProjector(meshVar)
+                self._cell_projector = projector
+            raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
+            Values = projector.fit(
+                self.swarm._particle_coordinates.data, raw_data, old=current_values
+            )
+
+        meshVar.data[...] = Values[...]
         return
 
     # Maybe rbf_interpolate for this one and meshVar is a special case
@@ -1473,6 +1583,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
   > symbol:  ${self.symbol}$\n
   > shape:   ${self.shape}$\n
   > proxy:   ${self._proxy}$\n
+  > proxy_location:  `{self._proxy_location}`\n
   > proxy_degree:  ${self._proxy_degree}$\n
   > proxy_continuous:  `{self._proxy_continuous}`\n
   > type:    `{self.vtype.name}`"""
@@ -2880,6 +2991,10 @@ class Swarm(Stateful, uw_object):
         )
 
         self._X0_uninitialised = True
+        # Callables run at the top of advection(), before any particle moves:
+        # a Lagrangian history registers its first sampling here so it sees
+        # the field at the launch positions, not at the landing ones.
+        self._pre_advection_hooks = []
         self._index = None
         # Particle -> proxy-node transfer operators, keyed by geometry and
         # stencil and shared by every proxied variable of this swarm. Entries
@@ -4916,6 +5031,9 @@ class Swarm(Stateful, uw_object):
 
         if uw.mpi.rank == 0 and self.verbose:
             print(f"Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} ")
+
+        for hook in list(getattr(self, "_pre_advection_hooks", ())):
+            hook()
 
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
