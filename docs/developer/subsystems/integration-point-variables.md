@@ -296,3 +296,71 @@ are reconstructed at the integration points and the weak form reads them
 there, with no nodal history field. This is the Lagrangian option for large
 particle swarms, where the particles carry the state and the mesh only
 integrates it.
+
+## Swarm proxy as a polynomial per cell
+
+`proxy_location="cells"` is the third target. The proxy is a discontinuous
+mesh variable of `proxy_degree`, and every cell holds the least-squares
+polynomial through the particles that cell holds
+(`utilities/cell_polynomial_projection.py`). The assembler reads it at the
+integration points through the ordinary basis, so:
+
+- a polynomial particle field up to `proxy_degree` is reproduced exactly;
+- the value at the rule is a polynomial on the mesh cell, so the default
+  rule integrates it exactly and the oversampling guard of the
+  integration-point history does not apply;
+- a material step on a cell edge is exactly 0 or 1 on either side, with no
+  overshoot (the RBF reconstruction overshoots a step by up to 14%);
+- the proxy has a gradient, so Crank-Nicolson and the Adams-Moulton flux
+  of the history work;
+- each rank fits its own cells from its own particles: no neighbour search
+  across ranks, no halo particles.
+
+A cell with fewer particles than the basis size plus two is fitted instead
+to the particles nearest its centroid, which is the RBF's neighbourhood.
+That cell is consistent but no longer a cell-local fit, and a light swarm
+degrades the same way the RBF proxy does. The threshold and patch size are
+`nmin` and `patch_nnn` on `CellPolynomialProjector.fit`.
+
+```python
+M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2)
+```
+
+### Why a least-squares fit and not a conservative transfer
+
+The conservative particle-to-mesh transfer solves the rule mass matrix
+against the particle moments, `M u = sum_p V_p phi(x_p) psi_p` (PETSc's
+`DMSwarmProjectFields` on a Plex does exactly this, with unit weights). It
+hands the mesh the particle sums exactly, but its nodal values carry the
+error of the particle "quadrature", which scales with the field value over
+the square root of the particle count, not with the field's variation over
+the cell. Measured on `UnstructuredSimplexBox(cellSize=0.05)` with the
+`populate()` lattice jittered by 30% of the particle spacing, L2 error at
+the integration points (`~/+Simulations/integration_point_proxy`,
+2026-09-08):
+
+| field, fill (particles per cell) | RBF at the points | conservative P1 | conservative P2 | least squares P1 | least squares P2 |
+|---|---|---|---|---|---|
+| linear, 3 | 7e-16 | 3.5 | 5.8 | 2e-10 | 6e-10 |
+| linear, 21 | 6e-16 | 0.89 | 2.6 | 9e-16 | 1e-15 |
+| Gaussian (width 0.1), 3 | 1.1e-3 | 1.6e-1 | 2.7e-1 | 2.8e-3 | 4.4e-4 |
+| Gaussian, 10 | 3.7e-4 | 6.8e-2 | 1.5e-1 | 1.7e-3 | 1.2e-4 |
+| Gaussian, 21 | 1.2e-4 | 3.8e-2 | 1.3e-1 | 1.6e-3 | 5.5e-5 |
+| Gaussian, 1 per cell on average (34% of cells empty) | 3.9e-3 | 2.5e-1 | 3.8e-1 | 8.9e-3 | 3.1e-3 |
+
+Moment-matched particle weights (chosen so constants transfer exactly)
+repair the conservative transfer's constant mode and cut the linear error
+fifty-fold, but go negative on thin cells and still trail the fit by two
+orders of magnitude on the Gaussian. Conservation and light sampling are in
+tension: what makes a light swarm usable is polynomial reproduction with a
+support that widens when the cell is thin, and the fit degree has to reach
+the mesh degree to profit from particle density (the P1 fit is limited by
+cell size and is worse than the RBF; the P2 fit beats the RBF three times
+over at ten particles per cell and at every density tested). The cell-mean
+of the fit matches the particle mean of the cell exactly; the integral of
+the fitted field differs from the particle sum by the particle-quadrature
+error, 1e-4 relative at ten particles per cell.
+
+The refresh costs about the same as the RBF path: at ten particles per
+cell on 944 cells, 8 ms (locate 6 ms, fit 2 ms) against 22 ms for the RBF
+proxy with its kd-tree rebuilt.

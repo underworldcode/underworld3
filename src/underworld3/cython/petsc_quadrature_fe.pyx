@@ -244,3 +244,79 @@ def cell_quadrature_points(DM dm, Quad quad):
             for d in range(cdim):
                 ov[c - cStart, q, d] = v[q * cdim + d]
     return out
+
+
+def tabulate_with_derivatives(FE fe, points):
+    r"""Tabulate ``fe``'s basis and its reference gradient at ``points``.
+
+    Returns ``(B, D)`` shaped ``(Np, Nb, Nc)`` and ``(Np, Nb, Nc, dim)``;
+    ``D`` is the gradient with respect to the reference coordinates, so a
+    physical gradient is ``invJ^T D``.
+    """
+    cdef PetscTabulation T = NULL
+    cdef PetscInt Np, Nb, Nc, cdim, p, b, c, d
+    pts = np.ascontiguousarray(points, dtype=np.float64)
+    if pts.ndim != 2:
+        raise ValueError("points must be (Np, dim)")
+    cdef double[:, ::1] pv = pts
+    Np = pts.shape[0]
+    CHKERRQ(PetscFECreateTabulation(fe.fe, 1, Np, &pv[0, 0], 1, &T))
+    Nb = T.Nb
+    Nc = T.Nc
+    cdim = T.cdim
+    B = np.empty((Np, Nb, Nc), dtype=np.float64)
+    D = np.empty((Np, Nb, Nc, cdim), dtype=np.float64)
+    cdef double[:, :, ::1] bv = B
+    cdef double[:, :, :, ::1] dv = D
+    for p in range(Np):
+        for b in range(Nb):
+            for c in range(Nc):
+                bv[p, b, c] = T.T[0][(p * Nb + b) * Nc + c]
+                for d in range(cdim):
+                    dv[p, b, c, d] = T.T[1][((p * Nb + b) * Nc + c) * cdim + d]
+    CHKERRQ(PetscTabulationDestroy(&T))
+    return B, D
+
+
+def cell_affine_maps(DM dm):
+    r"""Affine reference map of every local cell.
+
+    Returns ``(v0, invJ, detJ)`` shaped ``(ncells, cdim)``, ``(ncells, cdim,
+    cdim)`` and ``(ncells,)`` in local cell order, from
+    ``DMPlexComputeCellGeometryFEM`` with no rule (the affine map). The
+    reference coordinate of a physical point ``x`` in cell ``c`` is
+    ``invJ[c] @ (x - v0[c]) - 1`` in PETSc's ``[-1, 1]`` reference frame
+    (``v0`` is the image of the reference corner ``(-1, ..., -1)``), which is
+    the frame :func:`tabulate` expects.
+    """
+    cdef PetscInt cStart = 0, cEnd = 0, cdim = 0, c, d, e
+    cdef PetscReal *v = NULL
+    cdef PetscReal *J = NULL
+    cdef PetscReal *invJ = NULL
+    cdef PetscReal detJ = 0.0
+    CHKERRQ(DMPlexGetHeightStratum(dm.dm, 0, &cStart, &cEnd))
+    CHKERRQ(DMGetCoordinateDim(dm.dm, &cdim))
+    ncells = cEnd - cStart
+    v0 = np.empty((ncells, cdim), dtype=np.float64)
+    iJ = np.empty((ncells, cdim, cdim), dtype=np.float64)
+    dJ = np.empty((ncells,), dtype=np.float64)
+    cdef double[:, ::1] v0v = v0
+    cdef double[:, :, ::1] iJv = iJ
+    cdef double[::1] dJv = dJ
+    vbuf = np.empty(cdim, dtype=np.float64)
+    Jbuf = np.empty(cdim * cdim, dtype=np.float64)
+    iJbuf = np.empty(cdim * cdim, dtype=np.float64)
+    cdef double[::1] vv = vbuf
+    cdef double[::1] Jv = Jbuf
+    cdef double[::1] iJvb = iJbuf
+    if ncells == 0:
+        return v0, iJ, dJ
+    v = &vv[0]; J = &Jv[0]; invJ = &iJvb[0]
+    for c in range(cStart, cEnd):
+        CHKERRQ(DMPlexComputeCellGeometryFEM(dm.dm, c, NULL, v, J, invJ, &detJ))
+        dJv[c - cStart] = detJ
+        for d in range(cdim):
+            v0v[c - cStart, d] = v[d]
+            for e in range(cdim):
+                iJv[c - cStart, d, e] = invJ[d * cdim + e]
+    return v0, iJ, dJ

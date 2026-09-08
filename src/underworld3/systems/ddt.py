@@ -3743,11 +3743,14 @@ class Lagrangian_Swarm(_DDtBase):
         Order of time integration (1-3) (default ``1``).
     smoothing : float, optional
         Smoothing parameter (default ``0.0``).
-    proxy_location : {"nodes", "integration_points"}, optional
+    proxy_location : {"nodes", "integration_points", "cells"}, optional
         Where each history slot's proxy lives; ``"integration_points"``
         reconstructs the particle history at the integration points and the
         weak form reads it there directly, with no nodal proxy and no basis
-        interpolation (the Ellipsis / Underworld PIC-LIP mapping).
+        interpolation (the Ellipsis / Underworld PIC-LIP mapping);
+        ``"cells"`` fits a least-squares polynomial of degree ``degree`` per
+        cell, exact for polynomial histories and integrated exactly by the
+        default rule.
     step_averaging : int, optional
         Number of steps for history averaging (default ``2``).
 
@@ -3816,6 +3819,9 @@ class Lagrangian_Swarm(_DDtBase):
         # "integration_points": each slot's proxy is an IntegrationPointVariable
         # reconstructed from the particles at the rule and read there directly
         # (the Ellipsis / Underworld PIC-LIP mapping); no nodal proxy.
+        # "cells": each slot's proxy is a least-squares polynomial per cell
+        # (discontinuous, degree `degree`), exact for polynomial histories
+        # and integrated exactly by the default rule.
         self.proxy_location = proxy_location
 
         self._init_history_tracking(order)

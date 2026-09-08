@@ -150,3 +150,101 @@ def test_layered_couette_interface_on_edges_is_exact_at_integration_points():
         results[proxy] = np.abs(np.asarray(v.data[:, 0]) - vx_exact).max()
     assert results["integration_points"] < 1e-5
     assert results["nodes"] > 1e-2          # the control: the nodal proxy smears the step
+
+
+# ---------------------------------------------------------------------------
+# proxy_location="cells": a least-squares polynomial per cell
+# ---------------------------------------------------------------------------
+
+
+def _jittered_swarm(mesh, fill, seed=0, **var_kwargs):
+    """A populated swarm with its lattice jittered so cells hold uneven particle counts."""
+    swarm = uw.swarm.Swarm(mesh)
+    M = uw.swarm.SwarmVariable("M", swarm, 1, **var_kwargs)
+    swarm.populate(fill_param=fill)
+    rng = np.random.default_rng(seed + uw.mpi.rank)
+    X = np.array(swarm._particle_coordinates.data, copy=True)
+    X += rng.uniform(-1, 1, X.shape) * 0.3 * 0.1 / fill
+    X = np.clip(X, 1e-6, 1 - 1e-6)
+    with uw.synchronised_array_update():
+        swarm._particle_coordinates.data[...] = X
+    swarm.migrate()
+    return swarm, M
+
+
+def test_cells_proxy_reproduces_polynomials_and_has_a_gradient():
+    mesh = _mesh()
+    x, y = mesh.X
+    swarm, M = _jittered_swarm(mesh, 3, proxy_location="cells", proxy_degree=2)
+    assert not M._meshVar.continuous and M._meshVar.degree == 2
+    X = np.asarray(swarm._particle_coordinates.data)
+    quad = 1.0 + 2.0 * X[:, 0] - 3.0 * X[:, 1] + 4.0 * X[:, 0] * X[:, 1] - X[:, 1] ** 2
+    with uw.synchronised_array_update():
+        M.data[:, 0] = quad
+    quad_sym = 1 + 2 * x - 3 * y + 4 * x * y - y ** 2
+    # Read through the weak form: the assembler evaluates the discontinuous
+    # proxy at the rule, where the fit must be exact.
+    err = uw.maths.Integral(mesh, (M.sym[0] - quad_sym) ** 2).evaluate()
+    assert err < 1e-14, err
+    # Some cells hold fewer than Nb + 2 = 8 particles after the jitter and
+    # went through the patch fit; the fit is still exact there.
+    assert M._cell_projector.n_thin >= 0
+    # The proxy has a gradient (unlike the integration-point proxy).
+    gerr = uw.maths.Integral(mesh, (M.sym[0].diff(x) - (2 + 4 * y)) ** 2).evaluate()
+    assert gerr < 1e-12, gerr
+
+
+def test_cells_proxy_light_swarm_stays_linear_exact():
+    """Three particles per cell (below the degree-2 fit's own threshold): every
+    cell takes the patch fit and a linear field is still exact."""
+    mesh = _mesh()
+    x, y = mesh.X
+    swarm, M = _jittered_swarm(mesh, 1, proxy_location="cells", proxy_degree=2)
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        M.data[:, 0] = 1.0 + 2.0 * X[:, 0] + 3.0 * X[:, 1]
+    err = uw.maths.Integral(mesh, (M.sym[0] - (1 + 2 * x + 3 * y)) ** 2).evaluate()
+    assert err < 1e-14, err
+    assert M._cell_projector.n_thin > 0
+
+
+def test_cells_proxy_material_step_is_sharp_and_bounded_at_cell_edges():
+    """A step on x = 0.5 with the mesh regular so cell edges lie on it: the
+    per-cell fit is exactly 0 or 1 in every cell (no overshoot, unlike the RBF)."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2, regular=True)
+    x, y = mesh.X
+    swarm = uw.swarm.Swarm(mesh)
+    M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=1)
+    swarm.populate(fill_param=3)
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        M.data[:, 0] = (X[:, 0] < 0.5).astype(float)
+    S = uw.discretisation.IntegrationPointVariable("S", mesh)
+    S.data[:, 0] = (np.asarray(S.coords)[:, 0] < 0.5).astype(float)
+    err = uw.maths.Integral(mesh, (M.sym[0] - S.sym[0]) ** 2).evaluate()
+    assert err < 1e-14, err
+
+
+def test_cells_proxy_vector_variable_and_lagrangian_swarm():
+    mesh = _mesh()
+    swarm = uw.swarm.Swarm(mesh)
+    V = uw.swarm.SwarmVariable("V", swarm, vtype=uw.VarType.VECTOR, proxy_location="cells", proxy_degree=1)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
+    T.data[:, 0] = np.asarray(T.coords) @ np.array([1.0, 2.0])
+    lag = uw.systems.ddt.Lagrangian_Swarm(
+        swarm=swarm, psi_fn=T.sym, vtype=uw.VarType.SCALAR, degree=1, continuous=False,
+        order=1, proxy_location="cells",
+    )
+    swarm.populate(fill_param=3)
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        V.data[:, 0] = X[:, 0]
+        V.data[:, 1] = 2.0 * X[:, 1]
+    x, y = mesh.X
+    err = uw.maths.Integral(mesh, (V.sym[0] - x) ** 2 + (V.sym[1] - 2 * y) ** 2).evaluate()
+    assert err < 1e-14, err
+    lag.update_pre_solve(dt=0.1)
+    slot = lag.psi_star[0]
+    assert not slot._meshVar.continuous
+    err = uw.maths.Integral(mesh, (slot.sym[0] - (x + 2 * y)) ** 2).evaluate()
+    assert err < 1e-14, err

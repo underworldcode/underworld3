@@ -143,7 +143,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         If None, inferred from ``size``.
     dtype : type, default=float
         Data type for storage (float or int).
-    proxy_location : {"nodes", "integration_points"}, default="nodes"
+    proxy_location : {"nodes", "integration_points", "cells"}, default="nodes"
         Where the proxy lives. ``"nodes"``: a nodal mesh variable of
         ``proxy_degree`` / ``proxy_continuous``, reconstructed from the
         particles at its nodes and interpolated by the basis wherever the
@@ -154,7 +154,15 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         Ellipsis / Underworld PIC-LIP mapping); a material interface keeps
         its sub-cell position, and the proxy has no gradient (a derivative
         of its symbol is refused). ``proxy_degree`` / ``proxy_continuous``
-        are ignored in that case.
+        are ignored in that case. ``"cells"``: a discontinuous mesh variable
+        of ``proxy_degree`` holding, in every cell, the least-squares
+        polynomial through the particles that cell holds (a thin cell is
+        fitted to the particles nearest its centroid instead). Exact for
+        polynomial particle fields up to ``proxy_degree``, integrated exactly
+        by the default rule, sharp at cell edges, with a gradient, and no
+        neighbour search across ranks; see
+        :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`.
+        ``proxy_continuous`` is ignored (the proxy is discontinuous).
     proxy_degree : int, default=1
         Polynomial degree for the mesh proxy variable.
     proxy_continuous : bool, default=True
@@ -389,10 +397,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._vtype = vtype
         self._proxy_degree = proxy_degree
         self._proxy_continuous = proxy_continuous
-        if proxy_location not in ("nodes", "integration_points"):
+        if proxy_location not in ("nodes", "integration_points", "cells"):
             raise ValueError(
-                f"proxy_location must be 'nodes' or 'integration_points', not {proxy_location!r}"
+                "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+                f"not {proxy_location!r}"
             )
+        self._cell_projector = None
         self._proxy_location = proxy_location
         self._create_proxy_variable()
 
@@ -1108,6 +1118,21 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     remesh_policy="reinit",
                     units=self._units,
                 )
+            elif getattr(self, "_proxy_location", "nodes") == "cells":
+                # Particles -> a polynomial per cell (least squares); read by
+                # the assembler through the ordinary discontinuous basis.
+                self._meshVar = uw.discretisation.MeshVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    degree=self._proxy_degree,
+                    continuous=False,
+                    varsymbol=r"\left<" + self.symbol + r"\right>_c",
+                    remesh_policy="reinit",
+                    units=self._units,
+                )
+                self._cell_projector = None
             else:
                 self._meshVar = uw.discretisation.MeshVariable(
                     "proxy_" + self.clean_name,
@@ -1189,11 +1214,62 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         try:
             self._updating_proxy = True
-            self._rbf_to_meshVar(self._meshVar)
+            if getattr(self, "_proxy_location", "nodes") == "cells":
+                self._cells_to_meshVar(self._meshVar)
+            else:
+                self._rbf_to_meshVar(self._meshVar)
             self._proxy_stale = False  # Mark as fresh
         finally:
             self._updating_proxy = False
 
+        return
+
+    def _cells_to_meshVar(self, meshVar):
+        """Refresh a ``proxy_location="cells"`` proxy: a least-squares polynomial
+        per cell through the particles it holds (see
+        :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`).
+
+        Rank-local: each rank fits the cells it holds from the particles it
+        holds; the proxy's own ghost synchronisation delivers owned values
+        to the neighbours. The starved-rank guard and the collective
+        read-then-write sequence mirror :meth:`_rbf_to_meshVar`.
+        """
+        from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+        if meshVar.mesh != self.swarm.mesh:
+            if hasattr(self, "_meshVar") and meshVar is self._meshVar:
+                self._create_proxy_variable()
+                meshVar = self._meshVar
+            else:
+                raise RuntimeError("Cannot map a swarm to a different mesh")
+
+        current_values = np.array(meshVar.data[...], copy=True)
+
+        if self.swarm.local_size <= 1:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"Swarm proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; proxy variable "
+                    f"'{getattr(meshVar, 'clean_name', meshVar.name)}' left "
+                    "unchanged on this rank.",
+                    stacklevel=2,
+                )
+            Values = current_values
+        else:
+            projector = self._cell_projector
+            if (
+                projector is None
+                or projector.var is not meshVar
+                or projector.mesh_version != self.swarm.mesh._mesh_version
+            ):
+                projector = CellPolynomialProjector(meshVar)
+                self._cell_projector = projector
+            raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
+            Values = projector.fit(self.swarm._particle_coordinates.data, raw_data)
+
+        meshVar.data[...] = Values[...]
         return
 
     # Maybe rbf_interpolate for this one and meshVar is a special case
