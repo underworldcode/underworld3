@@ -4026,7 +4026,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         continuous: bool = True,
         varsymbol: Optional[str] = None,
         verbose: bool = False,
-        bcs=[],
+        bcs=None,
         order: int = 1,
         theta: float = 0.5,
         monotone_mode: Optional[str] = None,
@@ -4039,7 +4039,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             )
         self.monotone_mode = monotone_mode
         self.mesh = mesh
-        self.bcs = bcs
+        self.bcs = list(bcs) if bcs is not None else []   # per instance, never a shared default
         self.verbose = verbose
         self.degree = degree
         self.continuous = continuous
@@ -4129,11 +4129,15 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         local_dofs = fe.getDimension()
         Nq = len(np.asarray(self.mesh.integration_rule.getData()[1]))
         if Nq <= local_dofs:
+            need = self._qdegree_with_at_least(local_dofs + 1)
+            want = self._qdegree_with_at_least(2 * local_dofs)
             raise RuntimeError(
                 f"IntegrationPointSemiLagrangian: the mesh rule has {Nq} points per cell "
                 f"but a degree-{degree} history has {local_dofs} local dofs; the "
                 "least-squares fit is not oversampled and is unstable at small Courant "
-                f"number. Build the mesh with qdegree >= {self.mesh.qdegree + 1}."
+                f"number. For this cell type and history degree the rule needs at least "
+                f"qdegree={need} (more points than dofs); 2x oversampling, the verified "
+                f"setting, is qdegree={want}."
             )
         if Nq < 2 * local_dofs:
             warnings.warn(
@@ -4143,6 +4147,18 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 "diffusion at cell Peclet <= 100. 2x (qdegree 3 for P2 on triangles) is neutral.",
                 stacklevel=3,
             )
+
+    def _qdegree_with_at_least(self, npoints, qmax=12):
+        """The smallest quadrature degree whose default rule on this mesh's
+        cell type has at least ``npoints`` points per cell (None if none up
+        to ``qmax``). Point counts come from PETSc's own rules."""
+        for q in range(self.mesh.qdegree + 1, qmax + 1):
+            fe = PETSc.FE().createDefault(
+                self.mesh.dim, 1, self.mesh.isSimplex, q, f"ipsl_qscan_{q}_", PETSc.COMM_SELF,
+            )
+            if len(np.asarray(fe.getQuadrature().getData()[1])) >= npoints:
+                return q
+        return None
 
     # ------------------------------------------------------------------
     @property
