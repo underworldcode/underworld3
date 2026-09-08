@@ -1228,7 +1228,7 @@ class Eulerian(_DDtBase):
 
     See Also
     --------
-    SemiLagrangian : For advection-dominated problems with nodal swarm.
+    SemiLagrangian : For advection-dominated problems (characteristics traced from the nodes).
     Lagrangian : For full Lagrangian tracking on swarms.
     Symbolic : For purely symbolic history (no mesh storage).
     """
@@ -1848,11 +1848,14 @@ class EulerianSUPG(Eulerian):
 
 class SemiLagrangian(_DDtBase):
     r"""
-    Semi-Lagrangian history manager using nodal swarm.
+    Semi-Lagrangian history manager.
 
     Manages the semi-Lagrangian update of a mesh variable :math:`\psi`
-    across timesteps. Uses a nodal swarm to track departure points and
-    interpolate values back to the mesh.
+    across timesteps. The characteristics are traced back from the history
+    variable's own nodes (an RK2 mid-point trace in the mesh's
+    non-dimensional coordinates) and the field is sampled at the departure
+    points with ``uw.function.global_evaluate``. No swarm is allocated or
+    used: the departure points are plain coordinate arrays.
 
     .. math::
 
@@ -1878,10 +1881,12 @@ class SemiLagrangian(_DDtBase):
         Polynomial degree for mesh variable storage.
     continuous : bool
         Whether variables are continuous across element boundaries.
-    swarm_degree : int, optional
-        Polynomial degree for swarm interpolation. Defaults to ``degree``.
-    swarm_continuous : bool, optional
-        Continuity for swarm variables. Defaults to ``continuous``.
+    The departure points are the history variable's own nodes, i.e. the
+    tracked field's ``degree`` and ``continuous``; there is no separate
+    sampling discretisation (the former ``swarm_degree`` /
+    ``swarm_continuous`` were never read, issue #704). Denser sampling at
+    the integration points is a separate history manager
+    (``IntegrationPointSemiLagrangian``, PR #703).
     varsymbol : str, optional
         LaTeX symbol for display.
     verbose : bool, default=False
@@ -1989,8 +1994,6 @@ class SemiLagrangian(_DDtBase):
         vtype: uw.VarType,
         degree: int,
         continuous: bool,
-        swarm_degree: Optional[int] = None,
-        swarm_continuous: Optional[bool] = None,
         varsymbol: Optional[str] = None,
         verbose: Optional[bool] = False,
         bcs=[],
@@ -2102,15 +2105,6 @@ class SemiLagrangian(_DDtBase):
         self._psi_snapshot_enabled = False
         self._psi_snapshot = None
 
-        if swarm_degree is None:
-            self.swarm_degree = degree
-        else:
-            self.swarm_degree = swarm_degree
-
-        if swarm_continuous is None:
-            self.swarm_continuous = continuous
-        else:
-            self.swarm_continuous = swarm_continuous
 
         if varsymbol is None:
             varsymbol = rf"u_{{ [{self.instance_number}] }}"
@@ -2183,23 +2177,6 @@ class SemiLagrangian(_DDtBase):
 
         self._init_coefficient_expressions(order, self.theta, with_exp=True)
 
-        # Working variable that has a potentially different discretisation
-        # from psi_star (swarm_degree / swarm_continuous rather than
-        # degree / continuous): we project from this to psi_star, and it
-        # defines the advection sample points. Kept per-instance, hence
-        # the instance-number suffix. (The name previously carried a
-        # trailing loop index leaked from the psi_star loop — accidental,
-        # not meaningful.)
-        self._workVar = uw.discretisation.MeshVariable(
-            f"psi_work_sl_{self.instance_number}",
-            self.mesh,
-            vtype=vtype,
-            degree=self.swarm_degree,
-            continuous=self.swarm_continuous,
-            varsymbol=rf"{{ {varsymbol}^\nabla }}",
-            units=psi_units,  # Inherit units from psi_fn
-        )
-
         # Phase-2 remesh redesign: mark every DDt-owned mesh variable as
         # CARRY + operator-managed so the generic per-variable REMAP pass
         # in remesh_with_field_transfer SKIPS them — the on_remesh hook
@@ -2210,8 +2187,6 @@ class SemiLagrangian(_DDtBase):
         for _v in self.psi_star:
             _v.remesh_policy = RemeshPolicy.CARRY
             _v._remesh_managed_by = self
-        self._workVar.remesh_policy = RemeshPolicy.CARRY
-        self._workVar._remesh_managed_by = self
 
         # Historically this allocated a NodalPointSwarm cache here, but
         # the actual trace-back path uses ``uw.function.global_evaluate``
@@ -2291,11 +2266,11 @@ class SemiLagrangian(_DDtBase):
 
         if getattr(self, '_psi_star_use_multicomponent', False):
             indep = self._psi_star_indep_indices
-            fn = self._workVar.sym
+            fn = sympy.Matrix(self.psi_fn)
             row = sympy.Matrix([[fn[i, j] for (i, j) in indep]])
             self._psi_star_projection_solver.uw_function = row
         else:
-            self._psi_star_projection_solver.uw_function = self._workVar.sym
+            self._psi_star_projection_solver.uw_function = self.psi_fn
         self._psi_star_projection_solver.bcs = bcs
         self._psi_star_projection_solver.smoothing = smoothing
 
@@ -2331,7 +2306,7 @@ class SemiLagrangian(_DDtBase):
         Two branches:
 
         * **Standard ALE (smooth adapt).** The SL-owned vars
-          (``psi_star[i]``, ``forcing_star``, ``_workVar``, the
+          (``psi_star[i]``, ``forcing_star``, the
           flattening view ``_psi_star_flat_var``) are CARRY +
           operator-managed — the generic per-variable pass already
           skipped them, and we leave their ``.data`` untouched here.
