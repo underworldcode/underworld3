@@ -8950,7 +8950,11 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     # belong to no trace). A band cell belongs to the trace whose USER
     # polyline is nearest, within the band's reach of it and not past
     # its ends by more than half a rung (_footprints_by_user_polyline).
-    band = np.zeros_like(band_all)
+    # sized on the CURRENT mesh, not on band_all: a cut adds cells where
+    # the trace does not already lie on mesh edges, so after add_fault the
+    # chart is longer than the one band_all was built for (measured: 2582
+    # against 2562 on the coarse rig with a short junction ligament)
+    band = np.zeros(int(mesh.dm.getHeightStratum(0)[1]), dtype=bool)
     for k in range(len(spines)):
         band |= mesh.cells_labelled(band_label, band_value + k)
     S_all = np.vstack(extended)
