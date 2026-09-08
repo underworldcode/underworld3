@@ -514,7 +514,10 @@ def global_evaluate_nd(   expr,
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
     local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.cdim)
-    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
+    # Forward `simplify`: without it the local evaluator's default (True) ran
+    # sympy.simplify on every call for any expression holding a mesh variable
+    # (14 of 25 s in a semi-Lagrangian step with a tanh velocity, 2026-09-08).
+    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify,)
 
     if local_coords.shape[0] > 0:
         data_container.array[...] = values[...]
@@ -618,7 +621,7 @@ def global_evaluate_nd(   expr,
             # This rank's local rbf extrapolation of the global set. NON-collective
             # value path — see DEADLOCK SAFETY above (must be rbf=True, never FE).
             ext_vals, ext_flag = evaluate_nd(
-                expr, all_ext, rbf=True, evalf=False, verbose=False,
+                expr, all_ext, rbf=True, evalf=False, verbose=False, simplify=simplify,
                 check_extrapolated=True,)
             ext_vals = np.ascontiguousarray(
                 np.asarray(ext_vals, dtype=np.float64).reshape((n_ext_total,) + expr_shape))

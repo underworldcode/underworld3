@@ -316,11 +316,16 @@ integration points through the ordinary basis, so:
 - each rank fits its own cells from its own particles: no neighbour search
   across ranks, no halo particles.
 
-A cell with fewer particles than the basis size plus two is fitted instead
-to the particles nearest its centroid, which is the RBF's neighbourhood.
-That cell is consistent but no longer a cell-local fit, and a light swarm
-degrades the same way the RBF proxy does. The threshold and patch size are
-`nmin` and `patch_nnn` on `CellPolynomialProjector.fit`.
+A cell with fewer particles than the basis size plus two takes a linear
+fit to the particles nearest its centroid, which is the RBF's
+neighbourhood; linear, because a higher-degree polynomial extrapolated
+from a distant neighbourhood is unbounded (a P2 extrapolation into the
+emptied corner cells of a rotating box reached twice the field maximum).
+That cell is consistent to first order but no longer a cell-local fit, and
+a light swarm degrades the same way the RBF proxy does. A cell with no
+particles keeps its previous proxy value: no particles is no information,
+and that holds until the swarm is repopulated. The threshold and patch
+size are `nmin` and `patch_nnn` on `CellPolynomialProjector.fit`.
 
 ```python
 M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2)

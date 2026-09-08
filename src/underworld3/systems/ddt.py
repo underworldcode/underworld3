@@ -3649,6 +3649,28 @@ class Lagrangian(_DDtBase):
 
         return
 
+    def _proxy_values_at_particles(self, slot, coords, evalf):
+        """The slot's proxy evaluated at the particles, shaped like ``slot.data``.
+
+        A ``"cells"`` proxy is read through its own fitted polynomials (exact,
+        no locator round trip); any other proxy through ``evaluate`` of the
+        proxy mesh variable's symbol.
+        """
+        projector = getattr(slot, "_cell_projector", None)
+        if projector is not None and getattr(slot, "_proxy_location", None) == "cells":
+            slot._update_proxy_if_stale()
+            vals = projector.interpolate(np.asarray(slot._meshVar.data), coords)
+            return np.nan_to_num(vals)
+        mv = slot._meshVar
+        out = np.empty((coords.shape[0], slot.data.shape[1]))
+        for i in range(slot.shape[0]):
+            for j in range(slot.shape[1]):
+                ij = slot._data_layout(i, j)
+                out[:, ij] = np.asarray(
+                    uw.function.evaluate(mv.sym[i, j], coords, evalf=evalf)
+                ).reshape(-1)
+        return out
+
     def update_post_solve(
         self,
         dt: float,
@@ -3807,6 +3829,8 @@ class Lagrangian_Swarm(_DDtBase):
         smoothing=0.0,
         step_averaging=2,
         proxy_location="nodes",
+        particle_update="pic",
+        residual_retention=1.0,
     ):
         super().__init__()
 
@@ -3816,6 +3840,17 @@ class Lagrangian_Swarm(_DDtBase):
         self.verbose = verbose
         self.order = order
         self.step_averaging = step_averaging
+        if particle_update not in ("pic", "flip"):
+            raise ValueError(f"particle_update must be 'pic' or 'flip', not {particle_update!r}")
+        # "pic": after a solve every particle takes the mesh solution at its
+        # position (blended over step_averaging steps), so sub-cell particle
+        # detail is re-projected away each step. "flip": the particle keeps
+        # its own value and adds the mesh INCREMENT, solution minus the proxy
+        # the mesh saw, evaluated at the particle; the sub-cell residual
+        # survives, scaled by residual_retention (1 = FLIP, 0 = PIC; set it
+        # to exp(-kappa dt pi^2 / l^2) to let a diffusing residual decay).
+        self.particle_update = particle_update
+        self.residual_retention = residual_retention
         # "integration_points": each slot's proxy is an IntegrationPointVariable
         # reconstructed from the particles at the rule and read there directly
         # (the Ellipsis / Underworld PIC-LIP mapping); no nodal proxy.
@@ -3942,6 +3977,28 @@ class Lagrangian_Swarm(_DDtBase):
 
         return
 
+    def _proxy_values_at_particles(self, slot, coords, evalf):
+        """The slot's proxy evaluated at the particles, shaped like ``slot.data``.
+
+        A ``"cells"`` proxy is read through its own fitted polynomials (exact,
+        no locator round trip); any other proxy through ``evaluate`` of the
+        proxy mesh variable's symbol.
+        """
+        projector = getattr(slot, "_cell_projector", None)
+        if projector is not None and getattr(slot, "_proxy_location", None) == "cells":
+            slot._update_proxy_if_stale()
+            vals = projector.interpolate(np.asarray(slot._meshVar.data), coords)
+            return np.nan_to_num(vals)
+        mv = slot._meshVar
+        out = np.empty((coords.shape[0], slot.data.shape[1]))
+        for i in range(slot.shape[0]):
+            for j in range(slot.shape[1]):
+                ij = slot._data_layout(i, j)
+                out[:, ij] = np.asarray(
+                    uw.function.evaluate(mv.sym[i, j], coords, evalf=evalf)
+                ).reshape(-1)
+        return out
+
     def update_post_solve(
         self,
         dt: float,
@@ -3973,9 +4030,13 @@ class Lagrangian_Swarm(_DDtBase):
         phi = 1 / self.step_averaging
 
         psi_star_0 = self.psi_star[0]
+        coords = np.asarray(self.swarm._particle_coordinates.data)
+        if self.particle_update == "flip":
+            # The proxy the mesh saw during this solve, at the particles: the
+            # residual psi_p - proxy(x_p) is what the mesh never resolved.
+            proxy_at_p = self._proxy_values_at_particles(psi_star_0, coords, evalf)
         # Blend the freshly-evaluated psi into slot 0 component-by-component
         # through the canonical (N, components) storage (audit SWARM-06).
-        coords = np.asarray(self.swarm._particle_coordinates.data)
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
                 ij = psi_star_0._data_layout(i, j)
@@ -3986,9 +4047,13 @@ class Lagrangian_Swarm(_DDtBase):
                         evalf=evalf,
                     )
                 ).reshape(-1)
-                psi_star_0.data[:, ij] = (
-                    phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
-                )
+                if self.particle_update == "flip":
+                    residual = np.asarray(psi_star_0.data[:, ij]) - proxy_at_p[:, ij]
+                    psi_star_0.data[:, ij] = updated_psi + self.residual_retention * residual
+                else:
+                    psi_star_0.data[:, ij] = (
+                        phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
+                    )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1

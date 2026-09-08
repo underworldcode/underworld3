@@ -175,7 +175,7 @@ def _jittered_swarm(mesh, fill, seed=0, **var_kwargs):
 def test_cells_proxy_reproduces_polynomials_and_has_a_gradient():
     mesh = _mesh()
     x, y = mesh.X
-    swarm, M = _jittered_swarm(mesh, 3, proxy_location="cells", proxy_degree=2)
+    swarm, M = _jittered_swarm(mesh, 4, proxy_location="cells", proxy_degree=2)
     assert not M._meshVar.continuous and M._meshVar.degree == 2
     X = np.asarray(swarm._particle_coordinates.data)
     quad = 1.0 + 2.0 * X[:, 0] - 3.0 * X[:, 1] + 4.0 * X[:, 0] * X[:, 1] - X[:, 1] ** 2
@@ -186,9 +186,9 @@ def test_cells_proxy_reproduces_polynomials_and_has_a_gradient():
     # proxy at the rule, where the fit must be exact.
     err = uw.maths.Integral(mesh, (M.sym[0] - quad_sym) ** 2).evaluate()
     assert err < 1e-14, err
-    # Some cells hold fewer than Nb + 2 = 8 particles after the jitter and
-    # went through the patch fit; the fit is still exact there.
-    assert M._cell_projector.n_thin >= 0
+    # Fifteen particles per cell: no cell dropped below Nb + 2 = 8 after the
+    # jitter, so every cell took its own P2 fit.
+    assert M._cell_projector.n_thin == 0
     # The proxy has a gradient (unlike the integration-point proxy).
     gerr = uw.maths.Integral(mesh, (M.sym[0].diff(x) - (2 + 4 * y)) ** 2).evaluate()
     assert gerr < 1e-12, gerr
@@ -196,7 +196,7 @@ def test_cells_proxy_reproduces_polynomials_and_has_a_gradient():
 
 def test_cells_proxy_light_swarm_stays_linear_exact():
     """Three particles per cell (below the degree-2 fit's own threshold): every
-    cell takes the patch fit and a linear field is still exact."""
+    cell takes the linear patch fit and a linear field is still exact."""
     mesh = _mesh()
     x, y = mesh.X
     swarm, M = _jittered_swarm(mesh, 1, proxy_location="cells", proxy_degree=2)
@@ -248,3 +248,40 @@ def test_cells_proxy_vector_variable_and_lagrangian_swarm():
     assert not slot._meshVar.continuous
     err = uw.maths.Integral(mesh, (slot.sym[0] - (x + 2 * y)) ** 2).evaluate()
     assert err < 1e-14, err
+
+
+def test_lagrangian_swarm_flip_update_keeps_particle_values_for_a_resolved_field():
+    """FLIP read-back: the particle takes the mesh INCREMENT (solution minus
+    the proxy the mesh saw). For a field the proxy resolves exactly the
+    increment is zero, so the particle values are untouched by a solve that
+    reproduces the field; PIC would re-sample them."""
+    mesh = _mesh()
+    x, y = mesh.X
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+    T.data[:, 0] = np.asarray(T.coords) @ np.array([1.0, 2.0]) + 0.5
+    swarm = uw.swarm.Swarm(mesh)
+    lag = uw.systems.ddt.Lagrangian_Swarm(
+        swarm=swarm, psi_fn=T.sym, vtype=uw.VarType.SCALAR, degree=2, continuous=False,
+        order=1, step_averaging=1, proxy_location="cells", particle_update="flip",
+    )
+    swarm.populate(fill_param=3)
+    lag.update_pre_solve(dt=0.1)
+    Xp = np.asarray(swarm._particle_coordinates.data)
+    before = np.array(lag.psi_star[0].data[:, 0], copy=True)
+    assert np.allclose(before, Xp @ np.array([1.0, 2.0]) + 0.5, atol=1e-10)
+    # Perturb the particle values by a sub-cell "residual" the P2 proxy cannot
+    # hold, then run the post-solve update with the mesh field unchanged.
+    rng = np.random.default_rng(1)
+    noise = 1e-3 * rng.standard_normal(before.shape[0])
+    with uw.synchronised_array_update():
+        lag.psi_star[0].data[:, 0] = before + noise
+    lag.update_pre_solve(dt=0.1)          # proxy refits from the noisy particles
+    lag.update_post_solve(dt=0.1)
+    after = np.asarray(lag.psi_star[0].data[:, 0])
+    # solution (T, exact linear) - proxy (linear + fit of the noise): the
+    # residual survives up to the part of the noise the fit absorbed.
+    assert np.abs(after - (before + noise)).max() < 5e-3
+    assert np.abs(after - before).max() > 1e-4     # PIC would have given `before` back
+    with pytest.raises(ValueError, match="particle_update"):
+        uw.systems.ddt.Lagrangian_Swarm(swarm=swarm, psi_fn=T.sym, vtype=uw.VarType.SCALAR,
+                                        degree=1, proxy_location="cells", particle_update="xx")

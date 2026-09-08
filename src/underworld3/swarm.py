@@ -156,8 +156,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         of its symbol is refused). ``proxy_degree`` / ``proxy_continuous``
         are ignored in that case. ``"cells"``: a discontinuous mesh variable
         of ``proxy_degree`` holding, in every cell, the least-squares
-        polynomial through the particles that cell holds (a thin cell is
-        fitted to the particles nearest its centroid instead). Exact for
+        polynomial through the particles that cell holds (a thin cell takes
+        a linear fit to the particles nearest its centroid, an empty cell
+        keeps its previous value). Exact for
         polynomial particle fields up to ``proxy_degree``, integrated exactly
         by the default rule, sharp at cell edges, with a gradient, and no
         neighbour search across ranks; see
@@ -1267,7 +1268,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 projector = CellPolynomialProjector(meshVar)
                 self._cell_projector = projector
             raw_data = self.unpack_raw_data_from_petsc(squeeze=False)
-            Values = projector.fit(self.swarm._particle_coordinates.data, raw_data)
+            Values = projector.fit(
+                self.swarm._particle_coordinates.data, raw_data, old=current_values
+            )
 
         meshVar.data[...] = Values[...]
         return
