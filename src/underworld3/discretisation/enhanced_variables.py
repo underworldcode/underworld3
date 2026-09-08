@@ -947,7 +947,8 @@ class IntegrationPointVariable(EnhancedMeshVariable):
     nearest-integration-point partition of each cell; ``uw.function.evaluate``
     returns that, so a query agrees with what the assembler used at the same
     point. Derivatives of the symbol are refused by the JIT (the gradient is
-    identically zero). Scalar components only for now.
+    identically zero). Vector and tensor variables are supported (one dof
+    per component per point).
 
     Examples
     --------

@@ -3525,7 +3525,9 @@ class _BaseIntegrationPointVariable(_BaseMeshVariable):
     ``coords`` are the physical integration points in the same order.
 
     Derivatives of the symbol are meaningless (the tabulated gradient is zero)
-    and the JIT refuses them. Scalar components only for now.
+    and the JIT refuses them. Any number of components: the element is the
+    scalar delta element wrapped as a vector element, dofs point-major and
+    component-minor within a cell.
     """
 
     is_integration_point = True
@@ -3551,15 +3553,11 @@ class _BaseIntegrationPointVariable(_BaseMeshVariable):
 
     def _create_petsc_fe(self, dim, prefix):
         from underworld3.cython.petsc_quadrature_fe import create_delta_fe
-        if self.num_components != 1:
-            raise NotImplementedError(
-                "IntegrationPointVariable: scalar components only for now - "
-                "use one variable per component"
-            )
         cStart, _ = self.mesh.dm.getHeightStratum(0)
-        fe = create_delta_fe(self.mesh.integration_rule, self.mesh.dm.getCellType(cStart),
-                             name=f"{prefix}integration_point_fe")
-        return fe
+        return create_delta_fe(
+            self.mesh.integration_rule, self.mesh.dm.getCellType(cStart),
+            name=f"{prefix}integration_point_fe", num_components=self.num_components,
+        )
 
     # -- geometry ---------------------------------------------------------------
 

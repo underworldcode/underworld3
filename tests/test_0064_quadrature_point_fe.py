@@ -100,3 +100,23 @@ def test_rule_is_the_mesh_rule():
         fe = PETSc.FE().createDefault(2, 1, True, 2, f"p{degree}_", PETSc.COMM_SELF)
         pts = np.array(fe.getQuadrature().getData()[0]).reshape(-1, 2)
         assert len(pts) == 6
+
+
+@pytest.mark.parametrize("dim,simplex", CELLS, ids=IDS)
+def test_vector_element_is_the_identity_point_major(dim, simplex):
+    """Two components: basis (p, c) is the delta at point p times e_c, ordered
+    point-major, component-minor, so a cell's dofs reshape to (Nq, Nc)."""
+    _, quad, pts = _rule(dim, simplex, 2)
+    _, polytope = _box(dim, simplex)
+    Nc = 2
+    fe = create_delta_fe(quad, polytope, num_components=Nc)
+    Nq = len(pts)
+    assert fe.getDimension() == Nq * Nc
+    assert fe.getNumComponents() == Nc
+    B = tabulate(fe, pts)                      # (Np, Nb, Nc)
+    expected = np.zeros((Nq, Nq * Nc, Nc))
+    for p in range(Nq):
+        for c in range(Nc):
+            expected[p, p * Nc + c, c] = 1.0
+    assert np.array_equal(B, expected)
+    assert np.all(tabulate(fe, pts[:2] + 0.05) == 0.0)

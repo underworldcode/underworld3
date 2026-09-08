@@ -158,7 +158,33 @@ def test_other_rule_is_refused():
         mesh._verify_integration_rule(other)
 
 
-def test_vector_components_not_yet_supported():
+def test_vector_variable_layout_projection_and_evaluate():
+    """A two-component integration-point variable: (ncells*Nq, 2) layout,
+    each component reproduced exactly by a P2 projection of P2 point data,
+    and evaluate exact at its own points."""
     mesh = _mesh("triangle")
-    with pytest.raises(NotImplementedError):
-        uw.discretisation.IntegrationPointVariable("v", mesh, num_components=2)
+    x, y = mesh.X
+    v = uw.discretisation.IntegrationPointVariable("v", mesh, num_components=2)
+    Nq = len(np.asarray(mesh.integration_rule.getData()[1]))
+    n = _ncells(mesh)
+    assert v.data.shape == (n * Nq, 2)
+    assert v.cell_data.shape == (n, Nq, 2)
+    X = np.asarray(v.coords)
+    f0 = lambda X: 1.0 + 2.0 * X[:, 0] - 3.0 * X[:, 1] + 0.5 * X[:, 0] ** 2
+    f1 = lambda X: -2.0 + X[:, 0] * X[:, 1] + X[:, 1] ** 2
+    v.data[:, 0] = f0(X)
+    v.data[:, 1] = f1(X)
+
+    own = np.asarray(uw.function.evaluate(v.sym, X)).reshape(-1, 2)
+    assert np.allclose(own, np.asarray(v.data), rtol=0, atol=1e-14)
+
+    T = uw.discretisation.MeshVariable("Tv", mesh, 2, degree=2)
+    proj = uw.systems.solvers.SNES_Vector_Projection(mesh, T)
+    proj.uw_function = v.sym
+    proj.smoothing = 0.0
+    proj.petsc_options["ksp_rtol"] = 1e-13
+    proj.petsc_options["snes_rtol"] = 1e-13
+    proj.solve()
+    Xt = np.asarray(T.coords)
+    assert np.abs(T.data[:, 0] - f0(Xt)).max() < 1e-9
+    assert np.abs(T.data[:, 1] - f1(Xt)).max() < 1e-9

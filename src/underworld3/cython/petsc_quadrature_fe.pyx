@@ -30,7 +30,7 @@ from petsc4py import PETSc
 from petsc4py.PETSc cimport FE, PetscFE, Quad, PetscQuadrature, DM, PetscDM
 from petsc4py.PETSc cimport PetscSpace, PetscDualSpace, PetscObject, MPI_Comm
 from petsc4py.PETSc cimport CHKERR as CHKERRQ
-from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscErrorCode
+from underworld3.cython.petsc_types cimport PetscInt, PetscReal, PetscErrorCode, PetscBool
 
 import numpy as np
 
@@ -62,6 +62,8 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscQuadratureDestroy(PetscQuadrature*)
 
     PetscErrorCode PetscFECreateFromSpaces(PetscSpace, PetscDualSpace, PetscQuadrature, PetscQuadrature, PetscFE*)
+    PetscErrorCode PetscFECreateVector(PetscFE, PetscInt, PetscBool, PetscBool, PetscFE*)
+    PetscErrorCode PetscFEDestroy(PetscFE*)
     PetscErrorCode PetscObjectReference(PetscObject)
     PetscErrorCode PetscObjectSetName(PetscObject, const char*)
     PetscErrorCode PetscMalloc(size_t, void**)
@@ -90,8 +92,12 @@ cdef extern from "uw_delta_space.h" nogil:
 CHKERRQ(UWDeltaSpaceRegister())
 
 
-def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
-    r"""Build the scalar quadrature-point element on ``quad``.
+def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe", int num_components=1):
+    r"""Build the quadrature-point element on ``quad``.
+
+    ``num_components > 1`` wraps the scalar element with ``PetscFECreateVector``
+    (interleaved basis and components): the dofs of a cell are point-major,
+    component-minor, so a local vector reshapes to ``(ncells * Nq, Nc)``.
 
     Parameters
     ----------
@@ -120,7 +126,10 @@ def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
     cdef PetscDualSpace Q = NULL
     cdef PetscDM refcell = NULL
     cdef PetscFE cfe = NULL
+    cdef PetscFE vfe = NULL
     cdef FE pyfe
+    if num_components < 1:
+        raise ValueError("num_components must be >= 1")
 
     CHKERRQ(PetscQuadratureGetData(quad.quad, &qdim, &qNc, &Nq, &points, &weights))
     if qNc != 1:
@@ -161,6 +170,10 @@ def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe"):
     # caller's Quad alive by taking a reference first. No face quadrature.
     CHKERRQ(PetscObjectReference(<PetscObject>quad.quad))
     CHKERRQ(PetscFECreateFromSpaces(P, Q, quad.quad, NULL, &cfe))
+    if num_components > 1:
+        CHKERRQ(PetscFECreateVector(cfe, num_components, <PetscBool>1, <PetscBool>1, &vfe))
+        CHKERRQ(PetscFEDestroy(&cfe))      # the vector element holds its own reference
+        cfe = vfe
     CHKERRQ(PetscObjectSetName(<PetscObject>cfe, name.encode()))
 
     pyfe = FE()
