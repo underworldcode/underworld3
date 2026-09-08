@@ -772,3 +772,58 @@ garbage-collected variable leaves its PETSc field in the DM, and both
 the DM fields line up by position. Every later variable was then packed into, and
 read from, the wrong slots. Fixed in the same branch (pack by field name, offsets
 from the DM's field list) with `tests/test_1058_dropped_meshvariable_aux_layout.py`.
+
+## Predictor-corrector manager (#689)
+
+`uw.systems.ddt.EulerianSUPGPC(mesh, T, V_fn, method="citcoms", ...)` is a
+scalar continuous-P1 transport manager supplied as `DuDt=` to
+`uw.systems.AdvDiffusion`. `method="pc_converged"` selects a separate
+residual-converged reference. The existing `EulerianSUPG` manager retains
+CN/BDF, its transient tau and field-change timestep policy; the measurements
+above describe that implicit path, not the PC update.
+
+The ownership follows the transport contract: the manager supplies the
+rate time derivative, advection, stabilisation and current spatial state;
+the solver assembles the constitutive diffusion flux, source and boundary
+terms. A generic stepping hook lets the manager execute corrections using
+the solver's assembled residual and boundary handling. PC-specific rate,
+startup state, correction controls, geometry and reusable workspaces belong
+to the manager, without solver-side method aliases or unused BDF history.
+
+For rate $q$, predict $T^{(0)}=T^n+(1-\gamma)\Delta t q^n$, reset $q=0$,
+then apply $\delta q=-D^{-1}F(T,q)$, $q\leftarrow q+\delta q$ and
+$T\leftarrow T+\gamma\Delta t\delta q$, reinserting Dirichlet values.
+Here $D$ is positive row-lumped mass but $F$ retains the consistent
+Petrov-Galerkin time derivative. `citcoms` defaults to `adv_gamma=0.5` and
+`corrector_steps=2`, with one lumped startup correction. `pc_converged`
+converges the rate equation at fixed temperature at startup and the coupled
+correction after prediction, using $D$ only as a preconditioner. It stops at
+`max(corrector_atol, corrector_rtol*initial_residual)` (defaults `1e-12`,
+`1e-10`) or raises `RuntimeError` after `max_corrector_steps` (default 100).
+
+Both PC methods retain the steady directional simplex tau and the
+`0.9*min(dt_adv, dt_diff)` timestep estimate. Automatic geometry is limited
+to triangles/tetrahedra with non-empty volume partitions on every rank;
+unsupported layouts must be rejected collectively. The missing strong
+diffusion term is exact only for affine P1 with elementwise constant
+diffusivity. Neither SUPG nor residual convergence guarantees a nodal
+maximum principle or unrestricted diagonal-iteration timesteps.
+
+Finite corrections are not a consistent-mass solve: for pure diffusion,
+two corrections approach $(2I-D^{-1}M)D^{-1}K$, not generally $M^{-1}K$,
+as $\Delta t\to0$. A lumped startup rate adds another discrepancy. The
+[user guide](../../advanced/eulerian-advection-diffusion.md#finite-correction-accuracy)
+records the mathematical regression results: first-order timestep
+differences for fixed corrections, and order 2.00 for consistent CN and
+`pc_converged` at gamma 0.5 on tiny triangles/tetrahedra in serial and on
+eight ranks. The DDt-manager migration reproduced these isolated results
+on 8 September 2026; they are not coupled production acceptance.
+
+Restart registration must capture the manager's rate, startup flag and
+correction controls as well as temperature. Derived PETSc workspaces can be
+rebuilt; rate history cannot be replaced with zero on continuation. A
+matching model/manager layout and MPI rank count are required for disk
+replay. Migration checks should cover frozen numerical equivalence, exact
+discrete time-order references, snapshot continuation in a fresh process,
+and workspace reuse in serial and MPI, separately from coupled production
+benchmarks.

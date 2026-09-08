@@ -33,6 +33,7 @@ this module keeps that formulation and its stabilisation parameter.
 """
 
 import warnings
+from dataclasses import dataclass
 
 import numpy as np
 import sympy
@@ -40,6 +41,7 @@ from typing import Callable, Optional, Union
 
 import underworld3 as uw
 import underworld3.timing as timing
+from underworld3.checkpoint.state import SnapshottableState
 from underworld3.systems import SNES_Scalar
 from underworld3.utilities._api_tools import Template
 from underworld3.function import expression as public_expression
@@ -52,6 +54,16 @@ from underworld3.systems.solvers import (
     _invalidate_solution_cache,
     _nondimensionalise_timestep,
 )
+
+
+@dataclass
+class AdvDiffusionState(SnapshottableState):
+    """Solver timestep/estimator metadata; transport history belongs to DuDt."""
+
+    last_timestep: Optional[float] = None
+    last_change_rate: Optional[float] = None
+    order: int = 1
+    theta: float = 0.5
 
 
 def _check_supplied_manager(DuDt, order, theta):
@@ -263,6 +275,7 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
                 "the semi-Lagrangian trace-back and the Eulerian scheme has none.",
                 stacklevel=2,
             )
+        requested_theta = theta
         order = int(order)
         if order not in (1, 2, 3):
             raise ValueError(f"order must be 1, 2 or 3, not {order}.")
@@ -312,7 +325,7 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
                 raise TypeError(f"DuDt must be a DDt history manager, not {type(DuDt).__name__}.")
             if sympy.Matrix(DuDt.psi_fn).shape != u_Field.sym.shape:
                 raise ValueError("DuDt tracks a different unknown from u_Field.")
-            _check_supplied_manager(DuDt, order, theta)
+            _check_supplied_manager(DuDt, order, requested_theta)
             self.Unknowns.DuDt = DuDt
         self._theta = float(getattr(self.DuDt, "theta", theta))
 
@@ -331,6 +344,8 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         self.petsc_options["snes_rtol"] = 1.0e-8
         self.petsc_options["ksp_rtol"] = 1.0e-9
         self.petsc_options["snes_max_it"] = 20
+        self._bind_transport_manager(self.DuDt)
+        uw.get_default_model()._register_state_bearer(self)
 
     # ------------------------------------------------------------------
     # Linear solver
@@ -423,6 +438,27 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     # Scheme description
     # ------------------------------------------------------------------
 
+    def _bind_transport_manager(self, manager):
+        bind_transport = getattr(manager, "_bind_transport_solver", None)
+        if bind_transport is not None:
+            bind_transport(self)
+
+    @property
+    def DuDt(self):
+        """Transport manager bound to this solver's unknown."""
+        return self.Unknowns.DuDt
+
+    @DuDt.setter
+    def DuDt(self, manager):
+        if not isinstance(manager, _DDtBase):
+            raise TypeError("DuDt must be a DDt transport manager.")
+        if sympy.Matrix(manager.psi_fn).shape != self.u.sym.shape:
+            raise ValueError("DuDt tracks a different unknown from u_Field.")
+        self._bind_transport_manager(manager)
+        self.Unknowns.DuDt = manager
+        self._theta = float(getattr(manager, "theta", self._theta))
+        self._last_timestep = manager._dt
+
     @property
     def integrator(self) -> str:
         """The multistep family in use: ``"am"`` (the theta rule) at order 1, ``"bdf"`` above."""
@@ -453,8 +489,8 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             )
         if not hasattr(self.DuDt, "theta"):
             raise AttributeError(f"{type(self.DuDt).__name__} has no theta to set.")
-        self._theta = value
         self.DuDt.theta = value
+        self._theta = value
 
     @property
     def delta_t(self):
@@ -470,11 +506,11 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     @delta_t.setter
     def delta_t(self, value):
         dt = float(_nondimensionalise_timestep(value))
-        if dt <= 0.0:
+        if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError(f"timestep must be positive, not {dt}.")
         if dt != self._last_timestep:
-            self.DuDt.delta_t.sym = dt
             self._last_timestep = dt
+        self.DuDt._dt = dt
 
     @property
     def V_fn(self):
@@ -571,9 +607,12 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
     # ------------------------------------------------------------------
 
     @timing.routine_timer_decorator
-    def estimate_dt(self, fraction: float = 0.02, basis: str = "accuracy",
+    def estimate_dt(self, fraction: float = 0.02, basis: Optional[str] = None,
                     direction_aware: bool = False, percentile: float = 0.0):
-        r"""A timestep for this scheme, chosen for accuracy.
+        r"""A timestep selected by the transport manager or implicit estimator.
+
+        A rate-based manager supplies its stability estimate. The default
+        implicit manager uses the accuracy estimate described below.
 
         The implicit scheme has no stability limit, so the cell-crossing time
         the semi-Lagrangian solver reports says nothing about how large a step
@@ -602,7 +641,9 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         ----------
         fraction : float, default 0.02
             Allowed change of the field per step as a fraction of its range.
-        basis : {"accuracy", "resolution"}
+        basis : {None, "accuracy", "resolution", "stability"}
+            None selects the manager default; "stability" applies to
+            rate-based transport only.
             ``"resolution"`` returns the cell-crossing / diffusion time the
             semi-Lagrangian solver's ``estimate_dt`` returns, for scripts that
             size the step in Courant numbers.
@@ -617,6 +658,13 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         """
         from mpi4py import MPI
 
+        self._bind_transport_manager(self.DuDt)
+        estimate_transport = getattr(self.DuDt, "_estimate_transport_dt", None)
+        if estimate_transport is not None:
+            return estimate_transport(fraction=fraction, basis=basis,
+                                      direction_aware=direction_aware, percentile=percentile)
+        if basis is None:
+            basis = "accuracy"
         if basis == "resolution":
             dt_estimate, dt_adv, dt_diff = _advective_diffusive_dt(
                 self.constitutive_model.K, self.V_fn, self.mesh,
@@ -665,6 +713,48 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
             local = 0.0
         return uw.mpi.comm.allreduce(local, op=MPI.MAX)
 
+    @property
+    def state(self):
+        """Snapshot the timestep and measured change used by estimate_dt."""
+        return AdvDiffusionState(
+            last_timestep=self._last_timestep,
+            last_change_rate=self._last_change_rate,
+            order=self.order, theta=self.theta,
+        )
+
+    @state.setter
+    def state(self, state):
+        if not isinstance(state, AdvDiffusionState):
+            raise TypeError("AdvDiffusion state has the wrong type.")
+        if state._schema_version != AdvDiffusionState._schema_version:
+            raise ValueError("AdvDiffusion state schema changed since snapshot.")
+        if state.order != self.order:
+            raise ValueError("AdvDiffusion order changed since snapshot.")
+        if hasattr(self.DuDt, "theta"):
+            self.theta = state.theta
+        self._last_timestep = None
+        if state.last_timestep is not None:
+            self.delta_t = state.last_timestep
+        self._last_change_rate = state.last_change_rate
+
+    def _prepare_transport_residual(self, verbose=False):
+        """Build the solver-owned PDE residual and constrained scalar DM."""
+        if not self.constitutive_model._solver_is_setup:
+            self._needs_function_rewire = True
+        self._build(verbose)
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
+    def _compute_transport_residual(self, solution, residual):
+        """Assemble at the current unknown with refreshed auxiliary fields."""
+        solution.set(0.0)
+        self.dm.localToGlobal(self.u.vec, solution, addv=False)
+        residual.set(0.0)
+        self.mesh.update_lvec()
+        self.dm.setAuxiliaryVec(self.mesh.lvec, None)
+        self._update_constants()
+        self.snes.computeFunction(solution, residual)
+
     def solve(
         self,
         zero_init_guess: Optional[bool] = None,
@@ -681,8 +771,11 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
         between calls updates a runtime constant of the compiled kernels;
         nothing is recompiled.
         """
+        self._bind_transport_manager(self.DuDt)
         if timestep is not None:
             self.delta_t = timestep
+        elif self.DuDt._dt is not None:
+            self.delta_t = self.DuDt._dt
         elif self._last_timestep is None:
             raise ValueError(
                 "solve() needs a timestep: pass timestep=<dt> or set solver.delta_t first."
@@ -691,6 +784,11 @@ class SNES_AdvectionDiffusion_Composed(SNES_Scalar):
 
         if _force_setup:
             self._needs_function_rewire = True
+        solve_transport = getattr(self.DuDt, "_solve_transport", None)
+        if solve_transport is not None:
+            solve_transport(self, dt, zero_init_guess=zero_init_guess,
+                            verbose=verbose, divergence_retries=divergence_retries)
+            return
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
         # The base ``_build`` resolves the preconditioner choice against the

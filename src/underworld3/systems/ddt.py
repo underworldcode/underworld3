@@ -67,6 +67,7 @@ import underworld3.timing as timing
 from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities.unit_aware_array import UnitAwareArray
 from underworld3.checkpoint.state import SnapshottableState
+from underworld3.systems.ddt_pc import _EulerianSUPGPCMethods
 from underworld3.discretisation.remesh import RemeshPolicy, remap_var_set
 
 from petsc4py import PETSc
@@ -1673,6 +1674,8 @@ class EulerianSUPG(Eulerian):
         ]
         self.supg_weight = supg_weight
         self.tau_weights = tau_weights
+        # Snapshots restore fields before the first residual is built.
+        self.mesh.cell_size()
 
     # ----- data -----
 
@@ -1794,6 +1797,45 @@ class EulerianSUPG(Eulerian):
         super()._object_viewer()
         display(Latex(r"$\quad\mathbf{a} = $ " + self.V_fn._repr_latex_()))
         display(Latex(rf"$\quad$ integrator: {self.integrator}, tau shape: {self.tau_shape}"))
+
+
+class EulerianSUPGPC(_EulerianSUPGPCMethods, _DDtBase):
+    r"""Scalar P1 Eulerian SUPG with persistent rate history.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        A two- or three-dimensional volume simplex mesh.
+    psi_fn : MeshVariable
+        Continuous scalar P1 temperature, identical to the solver unknown.
+    V_fn : MeshVariable or sympy Matrix
+        Advecting velocity at the current step.
+    method : {"citcoms", "pc_converged"}, default "citcoms"
+        Fixed residual corrections, or corrections to a residual tolerance.
+    temperature_rate_field : MeshVariable, optional
+        Separate continuous scalar P1 derivative field on the same mesh.
+    adv_gamma : float, default 0.5
+        Predictor/corrector weight; pc_converged requires 0.5.
+    corrector_steps : int, default 2
+        Number of fixed CitcomS corrections, not a temporal accuracy order.
+    corrector_rtol, corrector_atol : float
+        Converged-mode residual tolerances, default 1e-10 and 1e-12.
+    max_corrector_steps : int, default 100
+        Maximum corrections for pc_converged; failure raises RuntimeError.
+    tau : scalar expression, optional
+        Override the automatic steady CitcomS directional-simplex tau.
+    supg_weight : float, default 1.0
+        Runtime stabilization multiplier; zero gives the Galerkin residual.
+
+    Notes
+    -----
+    Attach with ``AdvDiffusion(mesh, T, V_fn, DuDt=transport)``. This manager
+    owns the derivative, corrector diagnostics, stability estimate and restart
+    metadata. The solver supplies its PDE residual and constrained scalar DM.
+    No implicit history fields are allocated. Snapshot after completed steps;
+    rebuild the same object graph before a fresh-process ``load_state``.
+    Fixed two-correction CitcomS is not guaranteed second-order in time.
+    """
 
 
 class SemiLagrangian(_DDtBase):
@@ -3878,4 +3920,3 @@ class Lagrangian_Swarm(_DDtBase):
             self._n_solves_completed += 1
 
         return
-

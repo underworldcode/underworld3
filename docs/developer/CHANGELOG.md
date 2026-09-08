@@ -6,6 +6,17 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q3 (July – September)
 
+### Predictor-Corrector Transport Manager (September 2026, #689)
+
+`uw.systems.ddt.EulerianSUPGPC`, supplied as `DuDt=` to
+`uw.systems.AdvDiffusion`, owns the P1 predictor-corrector update, rate state
+and restart controls. `method="citcoms"` retains fixed corrections and the
+explicit timestep bound; `method="pc_converged"` provides a residual-converged
+accuracy reference. The default `EulerianSUPG` CN/BDF transport is unchanged.
+The [transport guide](../advanced/eulerian-advection-diffusion.md) explains
+why two lumped corrections do not generally establish second-order time
+accuracy and records the separate consistent-mass reference measurements.
+
 ### The Multiplier Was Not the Whole Traction (August 2026)
 
 **`Stokes_Constrained.topography()` now returns the traction the boundary is
