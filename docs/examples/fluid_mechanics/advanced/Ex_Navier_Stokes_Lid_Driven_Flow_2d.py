@@ -41,7 +41,7 @@ import numpy as np
 import sympy
 
 import underworld3 as uw
-from underworld3.systems import NavierStokes
+from underworld3.systems import NavierStokesSLCN
 
 # Ghia et al. (1982) reference data: u-velocity along vertical centreline
 GHIA_Y = np.array([0.0000, 0.0547, 0.0625, 0.0703, 0.1016, 0.1719,
@@ -68,7 +68,7 @@ def run_cavity(order):
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=True,
                                         vtype=uw.VarType.SCALAR)
 
-    ns = NavierStokes(mesh, velocityField=v, pressureField=p, rho=1.0, order=order)
+    ns = NavierStokesSLCN(mesh, velocityField=v, pressureField=p, rho=1.0, order=order)
     ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
     ns.constitutive_model.Parameters.viscosity = 1.0 / RE
     ns.saddle_preconditioner = 1.0

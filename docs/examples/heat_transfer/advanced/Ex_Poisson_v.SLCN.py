@@ -118,7 +118,7 @@ phi.data[...] = uw.function.evaluate(init_value, phi.coords).reshape(-1, 1)
 poisson1 = uw.systems.Poisson(mesh, 
                              u_Field=phi)
 
-poisson2 = uw.systems.AdvDiffusion(mesh, 
+poisson2 = uw.systems.AdvDiffusionSLCN(mesh, 
                                    u_Field=phi, 
                                    V_fn = V.sym,
                                    order = 1)

@@ -166,6 +166,7 @@ design/TURBULENCE_MODEL_DESIGN
 design/declined-coord-units-proposal
 design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
+design/eulerian-supg-transport
 ```
 
 ```{toctree}

@@ -18,9 +18,14 @@ VE_Stokes : class
 Projection : class
     L2 projection of fields onto mesh variables.
 AdvDiffusion : class
-    Advection-diffusion with semi-Lagrangian transport.
+    Advection-diffusion composed from a DDt transport manager (the default
+    manager, EulerianSUPG, assembles implicit advection with SUPG).
+AdvDiffusionSLCN : class
+    Advection-diffusion with semi-Lagrangian transport (flux history).
 NavierStokes : class
-    Navier-Stokes equations with inertia.
+    Navier-Stokes composed from a DDt transport manager (EulerianSUPG default).
+NavierStokesSLCN : class
+    Navier-Stokes with semi-Lagrangian transport and a stress history.
 Diffusion : class
     Pure diffusion (no advection).
 TransientDarcy : class
@@ -30,8 +35,9 @@ Richards : class
 
 Time Derivative Schemes
 -----------------------
-Lagrangian_DDt, SemiLagragian_DDt, Eulerian_DDt
-    Time derivative approximations for transient problems.
+Lagrangian_DDt, SemiLagragian_DDt, Eulerian_DDt, EulerianSUPG_DDt
+    Time derivative approximations for transient problems; EulerianSUPG_DDt
+    is the transport plugin of the Eulerian solvers (assembled advection, SUPG).
 
 See Also
 --------
@@ -63,7 +69,10 @@ from .solvers import SNES_MultiComponent_Projection as MultiComponent_Projection
 
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_AdvectionDiffusion as AdvDiffusionSLCN
-from .solvers import SNES_AdvectionDiffusion as AdvDiffusion
+# The generic names are the composing solvers: the transport (assembled SUPG
+# advection, or a semi-Lagrangian history) is the DDt manager they hold.
+from .advection_diffusion_eulerian import SNES_AdvectionDiffusion_Composed as AdvDiffusion
+from .navier_stokes_eulerian import SNES_NavierStokes_Composed as NavierStokes
 
 # import diffusion-only solver
 from .solvers import SNES_Diffusion as Diffusion
@@ -75,7 +84,6 @@ from .solvers import SNES_Richards as Richards
 # These are now implemented the same way using the ddt module
 from .solvers import SNES_NavierStokes as NavierStokesSwarm
 from .solvers import SNES_NavierStokes as NavierStokesSLCN
-from .solvers import SNES_NavierStokes as NavierStokes
 
 from .free_surface import FreeSurface
 
@@ -87,6 +95,7 @@ from .ddt import Lagrangian as Lagrangian_DDt
 from .ddt import SemiLagrangian as SemiLagragian_DDt
 from .ddt import Lagrangian_Swarm as Lagrangian_Swarm_DDt
 from .ddt import Eulerian as Eulerian_DDt
+from .ddt import EulerianSUPG as EulerianSUPG_DDt
 
 # δ-continuation driver for hard viscoplastic (Drucker–Prager) yield
 from .yield_continuation import yield_continuation, YieldHomotopyControl

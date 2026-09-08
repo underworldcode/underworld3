@@ -1,5 +1,6 @@
 from typing import Union
 import sympy
+import numpy as np
 
 import underworld3
 import underworld3.timing as timing
@@ -13,6 +14,31 @@ cdef extern from "petsc.h" nogil:
     PetscErrorCode PetscDSSetObjective( PetscDS, PetscInt, PetscDSResidualFn )
     PetscErrorCode DMPlexComputeIntegralFEM( PetscDM, PetscVec, PetscScalar*, void* )
     PetscErrorCode DMPlexComputeCellwiseIntegralFEM( PetscDM, PetscVec, PetscVec, void* )
+
+
+def _pack_manifest(manifest):
+    """The current values of the JIT constants manifest as a contiguous array."""
+    from underworld3.utilities._jitextension import _pack_constants
+    if not manifest:
+        return None
+    return np.ascontiguousarray(_pack_constants(manifest), dtype=np.float64)
+
+
+cdef _set_ds_constants(PetscDS ds, manifest):
+    """Hand the current UWexpression values to the DS the integral kernel reads.
+
+    The JIT routes every ``uw.function.expression`` in the integrand to PETSc's
+    constants array (the same mechanism the solvers use, so a changed value does
+    not recompile). A DS that never receives the values hands the kernel zeros:
+    a viscosity, a time or any other expression in an integrand silently
+    integrated to nothing (found on the cylinder drag, 2026-09-05).
+    """
+    cdef double[::1] vals
+    values = _pack_manifest(manifest)
+    if values is None or len(values) == 0:
+        return
+    vals = values
+    CHKERRQ(PetscDSSetConstants(ds, len(values), <const PetscScalar*>&vals[0]))
 
 
 def dm_force_coordinate_field(dm):
@@ -122,8 +148,9 @@ class Integral:
         cdef DS ds = self.dm.getDS()
         cdef PetscScalar val_array[256]
 
-        # Now set callback...
+        # Now set callback (and the current constant values the kernel reads)...
         ierr = PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]); CHKERRQ(ierr)
+        _set_ds_constants(ds.ds, _getext_result.constants_manifest)
         ierr = DMPlexComputeIntegralFEM(dm.dm, cgvec.vec, &(val_array[0]), NULL); CHKERRQ(ierr)
 
         self.dm.restoreGlobalVec(a_global)
@@ -290,8 +317,9 @@ class CellWiseIntegral:
         elif isinstance(self.fn, sympy.vector.Dyadic):
             raise RuntimeError("Integral evaluation for Dyadic integrands not supported.")
 
-        cdef PtrContainer ext = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
-                                       self.mesh.vars.values()).ptrobj
+        _getext_result = getext(self.mesh, JITCallbackSet(residual=(self.fn,)),
+                                self.mesh.vars.values())
+        cdef PtrContainer ext = _getext_result.ptrobj
 
         # Pull out vec for variables, and go ahead with the integral
         self.mesh.update_lvec()
@@ -316,6 +344,7 @@ class CellWiseIntegral:
         cdef DM dm = self.mesh.dm
         cdef DS ds = self.mesh.dm.getDS()
         CHKERRQ( PetscDSSetObjective(ds.ds, 0, ext.fns_residual[0]) )
+        _set_ds_constants(ds.ds, _getext_result.constants_manifest)
 
         # DMPlexComputeCellwiseIntegralFEM writes Nf scalars per cell into a
         # flat [cell*Nf + field] layout when the output vector carries no
@@ -460,6 +489,11 @@ class BdIntegral:
 
         cdef PetscDMLabel sandbox_label = NULL
         CHKERRQ(DMGetLabel(sandbox_dm, boundary_bytes, &sandbox_label))
+
+        # The sandbox has its own DS (DMCreateDS): the constants go there.
+        cdef PetscDS sandbox_ds = NULL
+        CHKERRQ(DMGetDS(sandbox_dm, &sandbox_ds))
+        _set_ds_constants(sandbox_ds, _getext_result.constants_manifest)
 
         # Output value
         cdef PetscScalar result = 0.0

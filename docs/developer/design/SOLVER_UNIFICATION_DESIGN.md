@@ -23,7 +23,7 @@ creates it lazily.
 |--------|-----------------|-------------------|-------------------|
 | `Stokes` | — | — | Viscous, VP |
 | `VE_Stokes` | — | SemiLagrangian (stress history) | VEP |
-| `NavierStokes` | SemiLagrangian (velocity) | SemiLagrangian (AM flux) | Viscous, VP |
+| `NavierStokesSLCN` (was `NavierStokes`; the generic name is now the composing Eulerian solver, 2026-09) | SemiLagrangian (velocity) | SemiLagrangian (AM flux) | Viscous, VP |
 | `VE_NavierStokes` | does not exist | — | — |
 
 Problem: user must choose the correct solver class based on the constitutive model.

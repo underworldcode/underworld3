@@ -173,7 +173,7 @@ stokes.petsc_options.setValue("fieldsplit_pressure_pc_mg_cycle_type", "v")
 """
 
 # %%
-adv_diff = uw.systems.AdvDiffusion(
+adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
     V_fn=v_soln,
