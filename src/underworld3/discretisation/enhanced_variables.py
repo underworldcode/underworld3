@@ -66,6 +66,7 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
     # The storage class this wrapper delegates to; IntegrationPointVariable
     # swaps in the quadrature-point element.
     _base_variable_class = _BaseMeshVariable
+    is_integration_point = False
 
     def __new__(cls, varname, mesh, *args, **kwargs):
         """Custom __new__ to ensure proper initialization and registration."""

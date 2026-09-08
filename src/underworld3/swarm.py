@@ -143,6 +143,18 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         If None, inferred from ``size``.
     dtype : type, default=float
         Data type for storage (float or int).
+    proxy_location : {"nodes", "integration_points"}, default="nodes"
+        Where the proxy lives. ``"nodes"``: a nodal mesh variable of
+        ``proxy_degree`` / ``proxy_continuous``, reconstructed from the
+        particles at its nodes and interpolated by the basis wherever the
+        weak form reads it. ``"integration_points"``: an
+        :class:`~underworld3.discretisation.IntegrationPointVariable`
+        reconstructed from the nearest particles at every integration point
+        and read there directly, with no second interpolation (the
+        Ellipsis / Underworld PIC-LIP mapping); a material interface keeps
+        its sub-cell position, and the proxy has no gradient (a derivative
+        of its symbol is refused). ``proxy_degree`` / ``proxy_continuous``
+        are ignored in that case.
     proxy_degree : int, default=1
         Polynomial degree for the mesh proxy variable.
     proxy_continuous : bool, default=True
@@ -192,6 +204,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         dtype=float,
         proxy_degree=1,
         proxy_continuous=True,
+        proxy_location="nodes",
         _register=True,
         _proxy=True,
         varsymbol=None,
@@ -376,6 +389,11 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._vtype = vtype
         self._proxy_degree = proxy_degree
         self._proxy_continuous = proxy_continuous
+        if proxy_location not in ("nodes", "integration_points"):
+            raise ValueError(
+                f"proxy_location must be 'nodes' or 'integration_points', not {proxy_location!r}"
+            )
+        self._proxy_location = proxy_location
         self._create_proxy_variable()
 
         # Inert: kept for backward compatibility with the removed
@@ -1078,22 +1096,35 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             # var stale via _mark_reinit_stale; we wire that callback
             # below to set ``self._proxy_stale = True`` so the next
             # access re-projects.
-            self._meshVar = uw.discretisation.MeshVariable(
-                "proxy_" + self.clean_name,
-                self.swarm.mesh,
-                self.shape,
-                self._vtype,
-                degree=self._proxy_degree,
-                continuous=self._proxy_continuous,
-                varsymbol=r"\left<" + self.symbol + r"\right>",
-                remesh_policy="reinit",
-                # The proxy is what `var.sym` resolves to, so it advertises
-                # the same units as the variable it stands for. Without this,
-                # evaluating a proxied symbol returned the NON-DIMENSIONAL
-                # number with no units attached, as though it were the answer
-                # (issue #439). Stored data stays non-dimensional either way.
-                units=self._units,
-            )
+            if getattr(self, "_proxy_location", "nodes") == "integration_points":
+                # Particles -> integration points directly: the assembler reads
+                # the stored values at the rule with no basis interpolation.
+                self._meshVar = uw.discretisation.IntegrationPointVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    varsymbol=r"\left<" + self.symbol + r"\right>_q",
+                    remesh_policy="reinit",
+                    units=self._units,
+                )
+            else:
+                self._meshVar = uw.discretisation.MeshVariable(
+                    "proxy_" + self.clean_name,
+                    self.swarm.mesh,
+                    self.shape,
+                    self._vtype,
+                    degree=self._proxy_degree,
+                    continuous=self._proxy_continuous,
+                    varsymbol=r"\left<" + self.symbol + r"\right>",
+                    remesh_policy="reinit",
+                    # The proxy is what `var.sym` resolves to, so it advertises
+                    # the same units as the variable it stands for. Without this,
+                    # evaluating a proxied symbol returned the NON-DIMENSIONAL
+                    # number with no units attached, as though it were the answer
+                    # (issue #439). Stored data stays non-dimensional either way.
+                    units=self._units,
+                )
             # The remesh helper calls this on REINIT vars after an
             # adapt. Bound here so the closure captures ``self`` (the
             # SwarmVariable) rather than the proxy MeshVariable.
@@ -1473,6 +1504,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
   > symbol:  ${self.symbol}$\n
   > shape:   ${self.shape}$\n
   > proxy:   ${self._proxy}$\n
+  > proxy_location:  `{self._proxy_location}`\n
   > proxy_degree:  ${self._proxy_degree}$\n
   > proxy_continuous:  `{self._proxy_continuous}`\n
   > type:    `{self.vtype.name}`"""
