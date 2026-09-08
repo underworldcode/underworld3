@@ -135,6 +135,13 @@ The diffusive flux history (`DFDt`) keeps its nodal projection, since it
 carries derivatives. Scalar histories only; no ALE or old-frame trace-back,
 no checkpoint state yet.
 
+Use it with `AdvDiffusionSLCN`. The composed `uw.systems.AdvDiffusion`
+(#688) applies its theta-rule diffusive flux to the history level as well as
+the new one, which differentiates the history slot; the JIT guard refuses
+that, correctly, because a delta field has no gradient. The SLCN solver
+carries the diffusive history in a separate nodal `DFDt`, which is the
+structure this history needs.
+
 ### The mid-point velocity is taken at the mid time
 
 The RK2 trace, `x_mid = x - dt/2 v(x)`, `x_dep = x - dt v(x_mid)`, is second
