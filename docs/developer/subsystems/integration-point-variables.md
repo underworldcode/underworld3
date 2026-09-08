@@ -135,12 +135,14 @@ The diffusive flux history (`DFDt`) keeps its nodal projection, since it
 carries derivatives. Scalar histories only; no ALE or old-frame trace-back,
 no checkpoint state yet.
 
-Use it with `AdvDiffusionSLCN`. The composed `uw.systems.AdvDiffusion`
-(#688) applies its theta-rule diffusive flux to the history level as well as
-the new one, which differentiates the history slot; the JIT guard refuses
-that, correctly, because a delta field has no gradient. The SLCN solver
-carries the diffusive history in a separate nodal `DFDt`, which is the
-structure this history needs.
+It is the transport manager of either advection-diffusion solver. In the
+composed `uw.systems.AdvDiffusion` (#688) it runs at `order=2` (BDF2) and
+at `order=1, theta=1`, where no spatial term sits on the old level; on a
+rotating Gaussian the field matches the SLCN solver's to 3e-3. With the
+Crank-Nicolson flux (`theta=0.5`) the composed solver differentiates the
+old level, which a delta field cannot supply, and the JIT guard refuses
+with a clear message; for that scheme use `AdvDiffusionSLCN`, whose
+diffusive history is a separate nodal `DFDt`.
 
 ### The mid-point velocity is taken at the mid time
 

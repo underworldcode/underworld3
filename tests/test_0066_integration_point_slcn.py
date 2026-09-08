@@ -173,3 +173,44 @@ def test_midtime_velocity_makes_the_trace_second_order(kind, vform):
     # Negative control: the foot from v^n alone is b dt^2/2 away, which for
     # this quadratic field is a visible difference.
     assert err_naive > 1e-3
+
+
+@pytest.mark.parametrize("config", ["order2", "theta1", "cn"])
+def test_composed_advdiffusion_reachability(config):
+    """The composed uw.systems.AdvDiffusion (#688) takes the history as its
+    transport manager. With no spatial term on the old level (BDF2, or
+    theta = 1) the integration-point history runs there and matches the SLCN
+    solver; with the Crank-Nicolson flux (theta = 0.5) the old level is
+    differentiated, which a delta field cannot supply, and the JIT guard
+    refuses with a clear message."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.1, qdegree=3
+    )
+    x, y = mesh.X
+    V = sympy.Matrix([[-y, x]])
+    gauss = lambda X: np.exp(-((X[:, 0] - 0.5) ** 2 + X[:, 1] ** 2) / (2 * 0.12 ** 2))
+    order, theta = {"order2": (2, 1.0), "theta1": (1, 1.0), "cn": (1, 0.5)}[config]
+
+    def run(solver_cls, kwargs):
+        T = uw.discretisation.MeshVariable(f"T_{config}_{solver_cls.__name__}", mesh, 1, degree=2)
+        T.data[:, 0] = gauss(np.asarray(T.coords))
+        D = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V, degree=2, order=order, theta=theta)
+        adv = solver_cls(mesh, u_Field=T, V_fn=V, DuDt=D, order=order, **kwargs)
+        adv.constitutive_model = uw.constitutive_models.DiffusionModel
+        adv.constitutive_model.Parameters.diffusivity = 1e-9
+        for b in ("Left", "Right", "Top", "Bottom"):
+            adv.add_dirichlet_bc(0.0, b)
+        for _ in range(8):
+            adv.solve(timestep=0.1)
+        return np.asarray(T.data[:, 0]).copy()
+
+    if config == "cn":
+        with pytest.raises(RuntimeError, match="integration-point"):
+            run(uw.systems.AdvDiffusion, {})
+        return
+    kw = {"theta": theta} if order == 1 else {}
+    T_composed = run(uw.systems.AdvDiffusion, kw)
+    T_slcn = run(uw.systems.AdvDiffusionSLCN, {})
+    # Same history, same time derivative; the solvers differ only in how the
+    # (negligible) diffusion is applied, so the fields agree closely.
+    assert np.abs(T_composed - T_slcn).max() < 5e-3

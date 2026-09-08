@@ -4093,6 +4093,18 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         self.v_levels = [self._make_velocity_level(f"n-{k}") for k in range(self._n_v)]
         self._init_coefficient_expressions(order, self.theta, with_exp=False)
 
+    def spatial_weights(self):
+        """As the base class, except that at ``theta = 1`` the old-level
+        weights, identically zero, are returned as literals. A runtime
+        constant with value zero would leave ``0 * grad(psi*)`` in the weak
+        form, and the slot has no gradient to differentiate (the JIT guard
+        would refuse a dead term). This is what makes the history usable in
+        the composed ``AdvDiffusion`` at ``order=1, theta=1``."""
+        w = super().spatial_weights()
+        if self.integrator == "am" and float(self.theta) == 1.0:
+            return [sympy.Integer(1)] + [sympy.Integer(0)] * (len(w) - 1)
+        return w
+
     def _check_rule_oversampling(self, degree):
         """Refuse a rule with no more points per cell than the history space
         has local dofs.
