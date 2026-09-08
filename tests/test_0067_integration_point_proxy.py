@@ -285,3 +285,27 @@ def test_lagrangian_swarm_flip_update_keeps_particle_values_for_a_resolved_field
     with pytest.raises(ValueError, match="particle_update"):
         uw.systems.ddt.Lagrangian_Swarm(swarm=swarm, psi_fn=T.sym, vtype=uw.VarType.SCALAR,
                                         degree=1, continuous=False, proxy_location="cells", particle_update="xx")
+
+
+def test_lagrangian_swarm_history_is_sampled_before_the_first_move():
+    """The first advection samples the history at the launch positions. Left
+    to the first solve, the sampling would see the landed positions and the
+    first step would transport nothing (a one-step lag)."""
+    mesh = _mesh()
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+    T.data[:, 0] = np.asarray(T.coords)[:, 0]                  # psi = x
+    swarm = uw.swarm.Swarm(mesh)
+    lag = uw.systems.ddt.Lagrangian_Swarm(
+        swarm=swarm, psi_fn=T.sym, vtype=uw.VarType.SCALAR, degree=2, continuous=False,
+        order=1, proxy_location="cells",
+    )
+    swarm.populate(fill_param=2)
+    assert not lag._history_initialised
+    X_before = np.array(swarm._particle_coordinates.data, copy=True)
+    swarm.advection(sympy.Matrix([[0.1, 0.0]]), 0.5, order=2)   # every particle moves +0.05 in x
+    X_after = np.asarray(swarm._particle_coordinates.data)
+    assert lag._history_initialised
+    kept = np.abs(X_after[:, 0] - X_before[:, 0] - 0.05) < 1e-12  # particles not returned to bounds
+    vals = np.asarray(lag.psi_star[0].data[:, 0])
+    assert np.allclose(vals[kept], X_before[kept, 0], atol=1e-10)   # launch positions ...
+    assert not np.allclose(vals[kept], X_after[kept, 0], atol=1e-3) # ... not landing positions

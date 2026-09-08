@@ -3861,6 +3861,24 @@ class Lagrangian_Swarm(_DDtBase):
 
         self._init_history_tracking(order)
 
+        # Sample the history before the particles first move. Left to the
+        # first update_pre_solve, the sampling happens AFTER the user's
+        # swarm.advection() and the first step transports nothing (a
+        # one-step lag, measured as 0.05 of displacement on the rotating
+        # Gaussian, 2026-09-08). Weak reference: the swarm must not own us.
+        import weakref
+
+        _self = weakref.ref(self)
+
+        def _initialise_before_first_move():
+            mgr = _self()
+            if mgr is not None and not mgr._history_initialised:
+                mgr.initialise_history()
+
+        hooks = getattr(swarm, "_pre_advection_hooks", None)
+        if hooks is not None:
+            hooks.append(_initialise_before_first_move)
+
         psi_star = []
         self.psi_star = psi_star
 

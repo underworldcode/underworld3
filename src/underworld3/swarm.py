@@ -2991,6 +2991,10 @@ class Swarm(Stateful, uw_object):
         )
 
         self._X0_uninitialised = True
+        # Callables run at the top of advection(), before any particle moves:
+        # a Lagrangian history registers its first sampling here so it sees
+        # the field at the launch positions, not at the landing ones.
+        self._pre_advection_hooks = []
         self._index = None
         # Particle -> proxy-node transfer operators, keyed by geometry and
         # stencil and shared by every proxied variable of this swarm. Entries
@@ -5027,6 +5031,9 @@ class Swarm(Stateful, uw_object):
 
         if uw.mpi.rank == 0 and self.verbose:
             print(f"Substepping {substeps} / {abs(delta_t) / dt_limit}, {delta_t} ")
+
+        for hook in list(getattr(self, "_pre_advection_hooks", ())):
+            hook()
 
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc

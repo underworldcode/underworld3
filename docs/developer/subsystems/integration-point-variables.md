@@ -369,3 +369,33 @@ error, 1e-4 relative at ten particles per cell.
 The refresh costs about the same as the RBF path: at ten particles per
 cell on 944 cells, 8 ms (locate 6 ms, fit 2 ms) against 22 ms for the RBF
 proxy with its kd-tree rebuilt.
+
+### As the transport term of an advection-diffusion solve
+
+`Lagrangian_Swarm(..., proxy_location="cells")` composed into
+`uw.systems.AdvDiffusion` gives a particle-in-cell transport scheme: the
+particles are advected (`swarm.advection`), each history slot is fitted
+to the cells, the mesh solves the diffusion against that history, and the
+particles re-read the solution (`particle_update="pic"`, the default;
+`"flip"` adds the mesh increment instead and is kept for the MPM line of
+work, it accumulates the projection increments). The history is sampled
+at the particles the first time the swarm moves, through the swarm's
+pre-advection hook; sampled at the first solve instead, it would see the
+landed positions and lose a step.
+
+Rotating Gaussian (sigma 0.1 at radius 0.4, one revolution, h = 0.1, P2,
+C = 0.25, `~/+Simulations/integration_point_proxy/scripts/transport_gaussian.py`),
+L2 error of the mesh field against the exact solution:
+
+| Pe_h | nodal SLCN | integration-point SLCN | PIC, cells P2, 10 particles per cell | PIC, 21 per cell |
+|---|---|---|---|---|
+| infinite | 5.1e-2 (peak 0.69) | 9.1e-3 (peak 0.99) | 1.6e-2 (peak 0.86) | 5.2e-3 (peak 0.995) |
+| 400 | 4.3e-2 | 6.8e-3 | 1.3e-2 | 4.1e-3 |
+| 100 | 2.7e-2 | 3.4e-3 | 8.2e-3 | 2.4e-3 |
+| ms per step | 510 | 1250 | 140 to 170 | 180 to 250 |
+
+The particle scheme's error is the per-step re-projection (fit, then
+Galerkin projection, then read-back) and falls with particle density; at
+21 particles per cell it is below the integration-point history at a
+fifth of the cost. At C = 2 all three schemes are limited by the midpoint
+RK2 trajectory (half a radian per step, 4% phase lead), not by transport.
