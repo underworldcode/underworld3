@@ -110,3 +110,43 @@ def test_tensor_swarm_variable_gets_a_multicomponent_proxy():
     Xq = np.asarray(S._meshVar.coords)
     vals = np.asarray(uw.function.evaluate(S.sym, Xq)).reshape(len(Xq), 2, 2)
     assert np.allclose(vals, [[1.0, 3.0], [3.0, 2.0]])
+
+
+@pytest.mark.level_2
+def test_layered_couette_interface_on_edges_is_exact_at_integration_points():
+    """Two viscosity layers (1 and 1e3) carried by particles, interface on mesh
+    edges, top-driven layer flow. The exact velocity is piecewise linear and
+    lies in the P2 space, so the only error is the proxy's representation of
+    the step: the integration-point proxy is exact to solver tolerance, the
+    nodal proxy (a node on the interface averages both materials) is not."""
+    h, eta_top = 0.5, 1.0e3
+    results = {}
+    for proxy in ("nodes", "integration_points"):
+        mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2, regular=True)
+        v = uw.discretisation.MeshVariable(f"v_{proxy}", mesh, mesh.dim, degree=2)
+        p = uw.discretisation.MeshVariable(f"p_{proxy}", mesh, 1, degree=1)
+        swarm = uw.swarm.Swarm(mesh)
+        if proxy == "nodes":
+            M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_degree=1)
+        else:
+            M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="integration_points")
+        swarm.populate(fill_param=3)
+        X = np.asarray(swarm._particle_coordinates.data)
+        with uw.synchronised_array_update():
+            M.data[:, 0] = (X[:, 1] > h).astype(float)
+        eta = 1.0 + (eta_top - 1.0) * sympy.Max(0, sympy.Min(1, M.sym[0]))
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+        stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+        stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+        stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+        stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+        stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+        stokes.tolerance = 1e-8
+        stokes.solve()
+        A = 1.0 / (h + (1.0 - h) / eta_top)
+        Xv = np.asarray(v.coords)
+        vx_exact = np.where(Xv[:, 1] < h, A * Xv[:, 1], A * h + A / eta_top * (Xv[:, 1] - h))
+        results[proxy] = np.abs(np.asarray(v.data[:, 0]) - vx_exact).max()
+    assert results["integration_points"] < 1e-5
+    assert results["nodes"] > 1e-2          # the control: the nodal proxy smears the step
