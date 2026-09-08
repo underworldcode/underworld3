@@ -483,7 +483,13 @@ class AnalyticSolution(uw_object):
                 else sympy.S.Zero
             )
             magnitude = uw.maths.L2_norm(zero, exact, self.mesh)
-            return float(uw.maths.L2_norm(meshvar.sym, exact, self.mesh) / magnitude)
+            computed = meshvar.sym
+            if (isinstance(computed, sympy.MatrixBase) and computed.shape == (1, 1)
+                    and not isinstance(exact, sympy.MatrixBase)):
+                # A scalar variable's symbol is a 1x1 Matrix; the exact
+                # scalar is not. Compare like with like.
+                computed = computed[0]
+            return float(uw.maths.L2_norm(computed, exact, self.mesh) / magnitude)
 
         if norm != "l2":
             raise ValueError(f"norm must be 'l2' or 'integral'; got {norm!r}")

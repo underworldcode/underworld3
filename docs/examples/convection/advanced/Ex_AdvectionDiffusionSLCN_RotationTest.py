@@ -139,7 +139,7 @@ k = params.uw_diffusivity
 r_i = params.uw_radius_inner
 r_o = params.uw_radius_outer
 
-adv_diff = uw.systems.AdvDiffusion(
+adv_diff = uw.systems.AdvDiffusionSLCN(
     meshball,
     u_Field=t_soln,
     V_fn=v_soln,

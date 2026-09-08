@@ -1165,23 +1165,29 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
     @property
     def is_positive(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_positive'):
-            return self._sym.is_positive
+        """Unknown, always: a UWexpression is a runtime constant whose value can
+        change after construction, so sympy must not fold on its current sign or
+        on it being zero (#696: ``exp(c)`` with ``c`` created at 0 became 1 at
+        construction, freezing a time ramp). The value is read when the
+        expression is unwrapped for compilation, not here."""
         return None
 
     @property
     def is_negative(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_negative'):
-            return self._sym.is_negative
+        """Unknown, always: a UWexpression is a runtime constant whose value can
+        change after construction, so sympy must not fold on its current sign or
+        on it being zero (#696: ``exp(c)`` with ``c`` created at 0 became 1 at
+        construction, freezing a time ramp). The value is read when the
+        expression is unwrapped for compilation, not here."""
         return None
 
     @property
     def is_zero(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_zero'):
-            return self._sym.is_zero
+        """Unknown, always: a UWexpression is a runtime constant whose value can
+        change after construction, so sympy must not fold on its current sign or
+        on it being zero (#696: ``exp(c)`` with ``c`` created at 0 became 1 at
+        construction, freezing a time ramp). The value is read when the
+        expression is unwrapped for compilation, not here."""
         return None
 
     @property

@@ -1783,8 +1783,13 @@ def build_transfers(solver, field_id=None):
         # `return` here is what turned the gate into a TypeError at the call site
         # when this hunk migrated from auto_inject_custom_mg (which returns nothing)
         # during the #488 x #471 merge.
+        # A solver with no managed option block (`_pc_option_prefix is None`)
+        # owns its PC outright, so the pickup would install a PCMG hierarchy
+        # on a PC of another type (measured: SEGV in _configure_pcmg with an
+        # additive-Schwarz PC on an adapt child).
         if (getattr(solver, "_preconditioner", "auto") == "gamg"
-                or getattr(solver, "_pc_user_override", False)):
+                or getattr(solver, "_pc_user_override", False)
+                or getattr(solver, "_pc_option_prefix", "") is None):
             return None, None
         level_tail = list(coarse)
         builder = getattr(solver.mesh, "_custom_mg_builder", "barycentric")

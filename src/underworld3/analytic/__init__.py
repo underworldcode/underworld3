@@ -37,7 +37,7 @@ from .barr_houseman_96 import FaultedMedium
 from .inclusion import EllipticalInclusion
 from .kramer import CylindricalStokes
 from .richards import GardnerSteady, GardnerTransient
-from .transport import AdvectedFront, ErfcDiffusion, Poisson1D, TwoLayerDarcy
+from .transport import AdvectedFront, ErfcDiffusion, Poisson1D, RotatingGaussian, TwoLayerDarcy
 from .velic import (
     SolA,
     SolB,
@@ -67,6 +67,7 @@ __all__ = [
     "GardnerSteady",
     "GardnerTransient",
     "Poisson1D",
+    "RotatingGaussian",
     "SolA",
     "SolB",
     "SolC",
@@ -100,6 +101,7 @@ _SOLUTIONS = {
     "GardnerSteady": GardnerSteady,
     "GardnerTransient": GardnerTransient,
     "Poisson1D": Poisson1D,
+    "RotatingGaussian": RotatingGaussian,
     "SolA": SolA,
     "SolB": SolB,
     "SolC": SolC,

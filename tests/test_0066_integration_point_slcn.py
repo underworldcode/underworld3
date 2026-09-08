@@ -65,9 +65,9 @@ def _rotating_gaussian(mesh, kind, dt, nsteps):
     T.data[:, 0] = gauss(np.asarray(T.coords), x0, 0.0)
     if kind == "ip":
         DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V, degree=2, order=1)
-        adv = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=V, DuDt=DuDt, order=1)
+        adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V, DuDt=DuDt, order=1)
     else:
-        adv = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=V, order=1)
+        adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V, order=1)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
     adv.constitutive_model.Parameters.diffusivity = 1e-9
     for b in ("Left", "Right", "Top", "Bottom"):

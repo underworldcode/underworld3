@@ -128,7 +128,7 @@ evaluation error rather than one per generation.
 
 ```python
 DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(mesh, T, V_fn, degree=2, order=1)
-adv = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=V_fn, DuDt=DuDt, order=1)
+adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V_fn, DuDt=DuDt, order=1)
 ```
 
 The diffusive flux history (`DFDt`) keeps its nodal projection, since it

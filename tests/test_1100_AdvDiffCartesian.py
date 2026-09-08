@@ -128,7 +128,7 @@ def test_advDiff_boxmesh(mesh_type):
 
     # #### Create the advDiff solver
 
-    adv_diff = uw.systems.AdvDiffusion(
+    adv_diff = uw.systems.AdvDiffusionSLCN(
         mesh,
         u_Field=T,
         V_fn=v,

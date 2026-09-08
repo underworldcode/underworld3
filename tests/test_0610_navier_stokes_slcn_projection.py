@@ -33,7 +33,7 @@ def test_navier_stokes_slcn_solve_does_not_raise_shape_error():
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, continuous=True)
 
-    ns = uw.systems.NavierStokes(
+    ns = uw.systems.NavierStokesSLCN(
         mesh,
         velocityField=v,
         pressureField=p,
