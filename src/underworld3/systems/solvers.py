@@ -4847,6 +4847,11 @@ class SNES_Diffusion(SNES_Scalar):
             # self._flux =  self.constitutive_model.flux.T
             # self._flux_star =  self._flux.copy()
 
+        # Symbolic slots are embedded in F1 at compilation, unlike nodal
+        # histories. Populate them before building, not in the later hook.
+        if isinstance(self.DFDt, Symbolic_DDt) and not self.DFDt._history_initialised:
+            self.DFDt.initialise_history()
+
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
             self._setup_discretisation(verbose)
