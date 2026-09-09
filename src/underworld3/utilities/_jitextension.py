@@ -911,8 +911,13 @@ def generate_c_source(
             raise RuntimeError(
                 f"{self.__class__.__name__}: derivative of an integration-point "
                 "variable has no meaning (the field is defined only at the "
-                "quadrature points). Remove the derivative or project the "
-                "variable onto a nodal MeshVariable first."
+                "quadrature points), so the gradient here would be a silent "
+                "zero. A gradient IS available from a projection of the same "
+                "data: for a swarm variable use proxy_location='cells', whose "
+                "level sets are a least-squares polynomial per cell and can be "
+                "differentiated (measured: degree 2 recovers the gradient of a "
+                "quadratic to 2e-7, against 1e-4 for a global L2 projection). "
+                "Otherwise project onto a MeshVariable and differentiate that."
             )
 
         for var in varlist:

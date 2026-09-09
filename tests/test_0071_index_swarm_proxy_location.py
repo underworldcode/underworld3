@@ -231,3 +231,36 @@ def test_the_symbol_participates_in_expressions(location):
             grad.evaluate()
     else:
         assert grad.evaluate() > 0
+
+
+def test_the_gradient_is_available_from_the_cell_fit():
+    """The integration-point form has no gradient, but the same particle data
+    fitted per cell does, and it is the most accurate of the routes: the fit is
+    local and exact for polynomials up to its degree."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2)
+    x, y = mesh.X
+    pts = np.array([[0.31, 0.42], [0.62, 0.25], [0.5, 0.5]])
+    exact = 2 * pts[:, 0]                       # d/dx of x^2 + 2y
+
+    def gradient_error(tag, location, degree):
+        swarm = uw.swarm.Swarm(mesh)
+        var = uw.swarm.SwarmVariable(tag, swarm, 1, proxy_location=location,
+                                     proxy_degree=degree)
+        swarm.populate(fill_param=3)
+        X = np.asarray(swarm._particle_coordinates.data)
+        with uw.synchronised_array_update():
+            var.data[:, 0] = X[:, 0] ** 2 + 2 * X[:, 1]
+        got = np.asarray(uw.function.evaluate(var.sym[0].diff(x), pts)).reshape(-1)
+        return np.abs(got - exact).max()
+
+    cells2 = gradient_error("Gc2", "cells", 2)
+    nodes2 = gradient_error("Gn2", "nodes", 2)
+    assert cells2 < 1e-5, cells2                # exact for a quadratic
+    assert cells2 < nodes2 / 10, (cells2, nodes2)
+
+    # the integration-point form refuses, and says where the gradient lives
+    swarm = uw.swarm.Swarm(mesh)
+    ip = uw.swarm.SwarmVariable("Gq", swarm, 1, proxy_location="integration_points")
+    swarm.populate(fill_param=3)
+    with pytest.raises(RuntimeError, match="proxy_location='cells'"):
+        uw.function.evaluate(ip.sym[0].diff(x), pts)

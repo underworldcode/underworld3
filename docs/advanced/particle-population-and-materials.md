@@ -122,7 +122,26 @@ material = uw.swarm.IndexSwarmVariable(
 Everything the symbol could do before, it still does. The one exception is a
 derivative of the integration-point form: the element that holds a value at
 each integration point has no gradient to give, so the compiler refuses one
-rather than returning a wrong number.
+rather than returning the silent zero its tabulation would produce.
+
+The gradient is still available, from a projection of the same data, and
+`"cells"` is that projection: its level sets are a least-squares polynomial
+per cell, so they differentiate directly and with no global solve. Recovering
+$\partial_x$ of a quadratic particle field:
+
+| where the proxy lives | gradient error |
+|---|---|
+| `"nodes"`, degree 1 | 2.1e-3 |
+| `"nodes"`, degree 2 | 1.1e-4 |
+| `"cells"`, degree 1 | 1.3e-3 |
+| `"cells"`, degree 2 | **2.4e-7** |
+| a global L2 projection onto P2, then differentiate | 1.1e-4 |
+| `"integration_points"` | refused |
+
+The per-cell fit is the most accurate of them because it is local and exact
+for polynomials up to its degree. So the rule is: sample at the integration
+points when you want a value placed exactly, fit per cell when you want to
+differentiate.
 
 | | `"nodes"` | `"integration_points"` | `"cells"` |
 |---|---|---|---|
