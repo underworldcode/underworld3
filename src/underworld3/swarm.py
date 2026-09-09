@@ -2367,6 +2367,16 @@ class IndexSwarmVariable(SwarmVariable):
         Polynomial degree for mesh projection (default 1).
     proxy_continuous : bool
         Whether mesh proxy is continuous (default True).
+    proxy_location : {"nodes", "integration_points", "cells"}, default="nodes"
+        Where the level sets live. ``"nodes"``: a continuous field per
+        material, so a node on an interface averages both materials.
+        ``"integration_points"``: every integration point takes the material
+        of its NEAREST PARTICLE, so each level set is exactly 0 or 1 and the
+        interface keeps its sub-cell position (the Ellipsis / Underworld
+        particle-in-cell material mapping). ``"cells"``: a polynomial material
+        fraction per cell, clamped to [0, 1] and renormalised, sharp at cell
+        edges and differentiable inside a cell. ``proxy_continuous`` applies
+        only to ``"nodes"``.
 
     Examples
     --------
@@ -2388,6 +2398,7 @@ class IndexSwarmVariable(SwarmVariable):
         indices=1,
         proxy_degree=1,
         proxy_continuous=True,
+        proxy_location="nodes",
         update_type=0,
         npoints=5,
         radius=0.5,
@@ -2396,6 +2407,13 @@ class IndexSwarmVariable(SwarmVariable):
         varsymbol=None,
     ):
         self.indices = indices
+        if proxy_location not in ("nodes", "integration_points", "cells"):
+            raise ValueError(
+                "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+                f"not {proxy_location!r}"
+            )
+        self._proxy_location = proxy_location
+        self._cell_projector = None
         self.nnn = npoints
         self.radius_s = radius  # **2 # changed to radius
         self.update_type = update_type
@@ -2415,16 +2433,6 @@ class IndexSwarmVariable(SwarmVariable):
             _proxy=False,
             varsymbol=varsymbol,
         )
-        """
-        vtype = (None,)
-        dtype = (float,)
-        proxy_degree = (1,)
-        proxy_continuous = (True,)
-        _register = (True,)
-        _proxy = (True,)
-        varsymbol = (None,)
-        rebuild_on_cycle = (True,)
-        """
         # The indices variable defines how many "level set" maps we create as components in the proxy variable
 
         import sympy
@@ -2433,13 +2441,21 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
-                name + R"^{[" + str(i) + R"]}",
-                self.swarm.mesh,
-                num_components=1,
-                degree=proxy_degree,
-                continuous=proxy_continuous,
-            )
+            lname = name + R"^{[" + str(i) + R"]}"
+            if proxy_location == "integration_points":
+                self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
+                    lname, self.swarm.mesh,
+                )
+            elif proxy_location == "cells":
+                self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
+                    lname, self.swarm.mesh, num_components=1,
+                    degree=proxy_degree, continuous=False,
+                )
+            else:
+                self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
+                    lname, self.swarm.mesh, num_components=1,
+                    degree=proxy_degree, continuous=proxy_continuous,
+                )
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
         # Initialize lazy evaluation state
@@ -2651,6 +2667,69 @@ class IndexSwarmVariable(SwarmVariable):
         uw.pprint(f"IndexSwarmVariable {self}")
         uw.pprint(f"Numer of indices {self.indices}")
 
+    def _update_index_proxies_from_particles(self):
+        r"""Fill the level sets directly from the particles, with no nodal step.
+
+        ``proxy_location="integration_points"``: every integration point takes
+        the material of its NEAREST PARTICLE, so each level set is exactly 0 or
+        1 there and the masks sum to 1 by construction. That is the Ellipsis /
+        Underworld particle-in-cell material mapping: the interface keeps its
+        sub-cell position, no node averages two materials, and no
+        reconstruction can overshoot into a negative viscosity.
+
+        ``proxy_location="cells"``: each level set is the least-squares
+        polynomial through the cell's own particle indicators
+        (:class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`),
+        clamped to :math:`[0, 1]` and renormalised so the masks still sum to 1.
+        A material fraction per cell, with a gradient, sharp at cell edges.
+        """
+        from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+        # Collective read/write sequence: every rank walks the same variables
+        # (only the values differ), as in the nodal path's starved-rank guard.
+        starved = self.swarm.local_size <= 1
+        if starved:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"IndexSwarmVariable proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; level-set "
+                    f"variables for '{self.clean_name}' left unchanged on this rank.",
+                    stacklevel=2,
+                )
+            for var in self._meshLevelSetVars:
+                var.data[:, 0] = var.data[:, 0]          # keep, but write collectively
+            return
+
+        Xp = np.asarray(self.swarm._particle_coordinates.data)
+        idx = np.asarray(self.data).reshape(-1).astype(int)
+        indicator = (idx[:, None] == np.arange(self.indices)[None, :]).astype(float)
+
+        if self._proxy_location == "integration_points":
+            tree = uw.kdtree.KDTree(Xp)
+            for ii, var in enumerate(self._meshLevelSetVars):
+                _, nearest = tree.query(np.asarray(var.coords_nd), k=1, sqr_dists=False)
+                var.data[:, 0] = indicator[np.asarray(nearest).reshape(-1), ii]
+            return
+
+        # "cells": one fit for every index at once (the level sets share a basis)
+        projector = self._cell_projector
+        if (projector is None or projector.var is not self._meshLevelSetVars[0]
+                or projector.mesh_version != self.swarm.mesh._mesh_version):
+            projector = CellPolynomialProjector(self._meshLevelSetVars[0])
+            self._cell_projector = projector
+        old = np.column_stack([np.asarray(v.data[:, 0]) for v in self._meshLevelSetVars])
+        U = projector.fit(Xp, indicator, old=old)
+        # A fitted indicator can leave [0, 1]; clamp, then renormalise so the
+        # masks remain a partition of unity (createMask stays a weighted mean).
+        U = np.clip(U, 0.0, 1.0)
+        total = U.sum(axis=1)
+        good = total > 1.0e-12
+        U[good] /= total[good, None]
+        for ii, var in enumerate(self._meshLevelSetVars):
+            var.data[:, 0] = U[:, ii]
+
     def _update_proxy_variables(self):
         """
         This method updates the proxy mesh (vector) variable for the index variable on the current swarm locations
@@ -2669,7 +2748,12 @@ class IndexSwarmVariable(SwarmVariable):
         update_type 0: assign the particles to the nearest mesh_levelset nodes, and calculate the value on nodes from them.
         update_type 1: calculate the material property value on mesh_levelset nodes from the nearest N particles directly.
 
+        ``proxy_location`` other than ``"nodes"`` takes neither route: see
+        :meth:`_update_index_proxies_from_particles`.
         """
+        if self._proxy_location != "nodes":
+            self._update_index_proxies_from_particles()
+            return
         # Starved-rank guard (SWARM-07): with <= 1 local particles the
         # nearest-neighbour machinery cannot run — KDTree construction on an
         # empty coordinate array raises IndexError, aborting/hanging the
@@ -4965,6 +5049,7 @@ class Swarm(Stateful, uw_object):
         values=None,
         nnn=None,
         order=0,
+        nearest=None,
         verbose=False,
     ):
         """Add particles to cells that hold too few, remove from cells that hold
@@ -5002,6 +5087,12 @@ class Swarm(Stateful, uw_object):
         order : {0, 1}, optional
             RBF reconstruction order for new particles: 0 bounded (default),
             1 linear-exact.
+        nearest : list, optional
+            Variables (or names) a new particle takes whole from its nearest
+            existing neighbour instead of by reconstruction. INTEGER-valued
+            variables are always in this set: a material index is a label, and
+            the average of two labels is not a label. Use it for any other
+            field that must stay one of its own values.
 
         Returns
         -------
@@ -5082,9 +5173,16 @@ class Swarm(Stateful, uw_object):
             nnn = min(nnn, max(n_old, 1))
             rbf_order = order if nnn >= dim + 2 else 0
             operator = None
+            nearest_row = None
             if n_old > 0:
-                operator = uw.kdtree.KDTree(X).interpolation_matrix(
+                tree = uw.kdtree.KDTree(X)
+                operator = tree.interpolation_matrix(
                     np.asarray(new_coords), nnn=nnn, p=2, order=rbf_order)
+                _, nearest_row = tree.query(np.asarray(new_coords), k=1)
+                nearest_row = np.asarray(nearest_row).reshape(-1)
+            nearest_set = set()
+            for item in (nearest or ()):
+                nearest_set.add(item if isinstance(item, str) else getattr(item, "clean_name", item))
             # raw values of every variable at the old particles, BEFORE the add
             raw_old = {}
             for name, var in self._vars.items():
@@ -5117,15 +5215,24 @@ class Swarm(Stateful, uw_object):
                     continue
                 spec = values.get(var, values.get(name, values.get(var.clean_name)))
                 ncomp = raw_old[name].shape[1] if n_old > 0 else var.num_components
+                # A label cannot be averaged: integer variables (a material
+                # index) take their nearest neighbour's value whole.
+                take_nearest = (
+                    name in nearest_set
+                    or var.clean_name in nearest_set
+                    or np.issubdtype(np.dtype(getattr(var, "_petsc_dtype", float)), np.integer)
+                )
                 if spec is not None:
                     vals = spec(np.asarray(new_coords)) if callable(spec) else spec
                     vals = np.broadcast_to(np.asarray(vals, dtype=float).reshape(n_new, -1) if np.ndim(vals) > 0 else vals, (n_new, ncomp))
+                elif take_nearest and nearest_row is not None:
+                    vals = raw_old[name][nearest_row]
                 elif operator is not None:
                     vals = operator @ raw_old[name]
                 else:
                     vals = np.zeros((n_new, ncomp))
                 f = self.dm.getField(var.clean_name).reshape((-1, ncomp))
-                f[n_old:, :] = np.asarray(vals).reshape(n_new, ncomp)
+                f[n_old:, :] = np.asarray(vals).reshape(n_new, ncomp).astype(f.dtype, copy=False)
                 self.dm.restoreField(var.clean_name)
             added = n_new
             self._invalidate_canonical_data()
