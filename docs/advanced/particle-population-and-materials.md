@@ -55,7 +55,7 @@ costs accuracy.
 
 ### Demonstration
 
-`docs/examples/utilities/Ex_Swarm_Population_Control.py`. Pure-shear extension
+`docs/examples/utilities/intermediate/Ex_Swarm_Population_Control.py`. Pure-shear extension
 $\mathbf{v} = (x, -y)$ on a fixed mesh, so the side walls are outflow and the
 top and bottom are inflow, with a marker layer through the middle. Particles
 that leave are deleted (`mesh.return_coords_to_bounds = None`), which is what
@@ -110,7 +110,7 @@ material = uw.swarm.IndexSwarmVariable(
 
 ### Demonstration
 
-`docs/examples/utilities/Ex_Swarm_Material_Index.py`. Two viscosity layers,
+`docs/examples/utilities/intermediate/Ex_Swarm_Material_Index.py`. Two viscosity layers,
 1 and 1000, carried as a material index and driven from the top. With the
 interface on mesh edges the exact velocity is piecewise linear and lies in the
 P2 velocity space, so the only error in the solve is how the material is
@@ -120,26 +120,44 @@ represented.
 :alt: The material mask across the interface and the resulting velocity error
 
 Left: the upper-material mask along a line crossing the interface, as the weak
-form sees it. The nodal level set ramps linearly across a whole cell. At the
-integration points it is a step in the right place. Right: the resulting error
-in the velocity against the exact layered flow.
+form sees it. The nodal level set ramps linearly across a whole cell; the other
+two are a step in the right place and lie on top of each other. Right: the
+resulting error in the velocity against the exact layered flow.
 ```
 
 | `proxy_location` | assembled $\int \eta$ (exact 500.5) | velocity $L_2$ error |
 |---|---|---|
 | `"nodes"` | 500.5000 | 8.0e-2 |
 | `"integration_points"` | 500.5000 | **1.8e-7** |
-| `"cells"` | 500.5000 | 4.9e-2 |
+| `"cells"` | 500.5000 | **1.8e-7** |
 
 All three integrate the viscosity correctly in the mean, which is why the
-error does not show up in a bulk diagnostic. Only the integration-point
-mapping puts the viscosity contrast in the right place, and it solves the
-layered problem to solver tolerance.
+error does not show up in a bulk diagnostic. Only the placement differs, and
+the placement is what the solve feels. Every particle in a cell is on the same
+side of an edge-aligned interface, so the per-cell fit is constant and the
+`"cells"` mapping is exact here too.
 
-The `"cells"` option is the one to reach for when the material property needs
-a gradient (the level sets are polynomials, and can be differentiated) or when
-the field is a fraction rather than a label. For a pure material index at an
-interface, `"integration_points"` is the sharper of the two.
+### When the interface cuts through a cell
+
+Move the interface to $y = 0.53$ on an irregular mesh and no scheme can be
+exact: the P2 velocity cannot hold a kink inside a cell. What separates them
+is whether adding particles helps.
+
+| `proxy_location` | $L_2$ error, 10 particles per cell | 55 per cell |
+|---|---|---|
+| `"nodes"` | 8.4e-2 | 7.7e-2 |
+| `"integration_points"` | 3.5e-2 | **1.9e-2** |
+| `"cells"` | 4.1e-2 | 4.1e-2 |
+
+The integration-point mapping resolves the interface within the cell, so it
+improves as the particles do. The other two are limited by what a cell-scale
+representation can express, and adding particles does not move them.
+
+Use `"cells"` when the material property needs a gradient (the level sets are
+polynomials and can be differentiated) or when the field is genuinely a
+fraction rather than a label; note that a fitted fraction can leave $[0, 1]$
+between cells even though its own degrees of freedom are clamped. For a
+material index at an interface, `"integration_points"` is the one to use.
 
 ## What this rests on
 

@@ -67,8 +67,9 @@ with uw.synchronised_array_update():
     M.data[:, 0] = (np.abs(X0[:, 1]) < 0.2).astype(int)   # a central layer
 
 if POPCTL:
-    # Refill starved cells. Material of a new particle: its nearest neighbour's
-    # (an index is not an average), which is what `nearest=` selects.
+    # Refill starved cells. A new particle takes the material of its nearest
+    # neighbour: repopulate() does that for any INTEGER variable without being
+    # asked, because the average of two material labels is not a label.
     swarm.population_control = dict(min_per_cell=6)
 
 c0, c1 = mesh.dm.getHeightStratum(0)

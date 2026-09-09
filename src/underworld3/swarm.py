@@ -2412,7 +2412,6 @@ class IndexSwarmVariable(SwarmVariable):
                 "proxy_location must be 'nodes', 'integration_points' or 'cells', "
                 f"not {proxy_location!r}"
             )
-        self._proxy_location = proxy_location
         self._cell_projector = None
         self.nnn = npoints
         self.radius_s = radius  # **2 # changed to radius
@@ -2433,6 +2432,11 @@ class IndexSwarmVariable(SwarmVariable):
             _proxy=False,
             varsymbol=varsymbol,
         )
+        # AFTER super().__init__, which sets _proxy_location from its own
+        # default (this class does not forward the argument, since the base
+        # single-proxy _meshVar is not built here at all).
+        self._proxy_location = proxy_location
+
         # The indices variable defines how many "level set" maps we create as components in the proxy variable
 
         import sympy
@@ -2687,7 +2691,11 @@ class IndexSwarmVariable(SwarmVariable):
 
         # Collective read/write sequence: every rank walks the same variables
         # (only the values differ), as in the nodal path's starved-rank guard.
-        starved = self.swarm.local_size <= 1
+        # One particle is enough here, unlike the nodal path's weighted
+        # average: the nearest-particle answer is well defined from a single
+        # particle, and the cell fit falls back to its patch. Only a rank with
+        # NO particles has nothing to say.
+        starved = self.swarm.local_size < 1
         if starved:
             if self.swarm._population_generation > 0:
                 import warnings
@@ -5087,7 +5095,7 @@ class Swarm(Stateful, uw_object):
         order : {0, 1}, optional
             RBF reconstruction order for new particles: 0 bounded (default),
             1 linear-exact.
-        nearest : list, optional
+        nearest : variable, name, or list of them, optional
             Variables (or names) a new particle takes whole from its nearest
             existing neighbour instead of by reconstruction. INTEGER-valued
             variables are always in this set: a material index is a label, and
@@ -5180,8 +5188,11 @@ class Swarm(Stateful, uw_object):
                     np.asarray(new_coords), nnn=nnn, p=2, order=rbf_order)
                 _, nearest_row = tree.query(np.asarray(new_coords), k=1)
                 nearest_row = np.asarray(nearest_row).reshape(-1)
+            nearest_spec = nearest or ()
+            if isinstance(nearest_spec, str) or not hasattr(nearest_spec, "__iter__"):
+                nearest_spec = (nearest_spec,)          # a bare name or variable
             nearest_set = set()
-            for item in (nearest or ()):
+            for item in nearest_spec:
                 nearest_set.add(item if isinstance(item, str) else getattr(item, "clean_name", item))
             # raw values of every variable at the old particles, BEFORE the add
             raw_old = {}

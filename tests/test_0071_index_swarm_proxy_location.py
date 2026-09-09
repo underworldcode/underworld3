@@ -135,3 +135,41 @@ def test_population_control_keeps_an_extending_box_sampled():
     from mpi4py import MPI
     assert uw.mpi.comm.allreduce(counts[True], op=MPI.SUM) == 0, counts
     assert uw.mpi.comm.allreduce(counts[False], op=MPI.SUM) > 0, counts
+
+
+def test_nearest_accepts_a_bare_name_and_a_single_particle_rank_is_not_starved():
+    """`nearest="F"` names one variable, not five characters; and one particle
+    is enough for the nearest-particle mapping (only a rank with none is)."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.2, qdegree=2)
+    swarm = uw.swarm.Swarm(mesh)
+    flag = uw.swarm.SwarmVariable("Flag", swarm, 1)
+    swarm.populate(fill_param=3)
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        flag.data[:, 0] = (X[:, 0] > 0.5).astype(float)
+    for i in np.sort(np.nonzero(X[:, 0] < 0.4)[0])[::-1]:
+        swarm.dm.removePointAtIndex(int(i))
+    swarm._invalidate_canonical_data()
+    swarm.repopulate(nearest="Flag")
+    vals = np.asarray(flag.data[:, 0])
+    if vals.shape[0] > 0:                        # a float field, kept as a label
+        assert set(np.unique(vals).tolist()) <= {0.0, 1.0}, np.unique(vals)
+
+    # one particle: the nearest-particle mapping is still well defined
+    mesh2 = uw.meshing.UnstructuredSimplexBox(cellSize=0.35, qdegree=2)
+    swarm2 = uw.swarm.Swarm(mesh2)
+    mat = uw.swarm.IndexSwarmVariable("One", swarm2, indices=2,
+                                      proxy_location="integration_points")
+    swarm2.populate(fill_param=2)
+    keep = 1 if swarm2.local_size > 0 else 0
+    for i in range(swarm2.local_size - 1, keep - 1, -1):
+        swarm2.dm.removePointAtIndex(int(i))
+    swarm2._invalidate_canonical_data()
+    if swarm2.local_size == 1:
+        with uw.synchronised_array_update():
+            mat.data[:, 0] = 1
+    mat._proxy_stale = True
+    mat._update_proxy_if_stale()
+    d = np.asarray(mat._meshLevelSetVars[1].data[:, 0])
+    if swarm2.local_size == 1:
+        assert np.allclose(d, 1.0), d[:5]        # every point takes that particle
