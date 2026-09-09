@@ -2266,6 +2266,14 @@ class SolverBaseClass(uw_object):
         Called before each solve() to ensure constants are current without
         requiring JIT recompilation.
         """
+        # Refresh mesh.t from the model clock first, so a time-dependent
+        # expression is repacked with the rest of the constants rather than
+        # needing its own hook (or a recompile) per timestep.
+        try:
+            self.mesh._sync_time_from_model()
+        except AttributeError:
+            pass
+
         if not self.constants_manifest or self.dm is None:
             return
 

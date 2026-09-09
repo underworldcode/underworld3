@@ -513,17 +513,22 @@ of model state, so two independent runs of the same problem on the same solver
 objects diverge at the 1e-13 level from the first step. If you need to look at a
 step twice, restore it rather than re-run it.
 
-### Known gap: `mesh.t` is not this clock
+### Time-dependent expressions
 
-`mesh.t` is a separate, symbolic time atom bound to PETSc's `petsc_t`. The
-high-level `solve()` wrappers never set it, so **an expression containing
-`mesh.t` evaluates to zero inside a solve**, silently. A time-dependent
-boundary condition written as `sympy.sin(omega * mesh.t)` is identically zero
-and nothing warns. `solve(time=...)` is accepted and ignored.
+`mesh.t` is the model clock as a symbol. It is repacked from
+`model.tracker.time` before every solve, so a time-dependent source or
+boundary condition follows the loop above with no recompilation per step:
 
-Until `mesh.t` is wired to the model clock, build time dependence from a
-`uw.function.expression` you update yourself each step, and drive it from
-`model.tracker.time`.
+```python
+omega = 2 * sympy.pi / period
+stokes.add_dirichlet_bc((V0 * sympy.sin(omega * mesh.t), 0.0), "Top")
+```
+
+Two things to know. A script that never advances `model.tracker.time` leaves
+`mesh.t` at zero, so the clock and the pattern above are the same subject. And
+`mesh.t` should appear inside an expression rather than be handed bare to a
+scalar setter — `poisson.f = mesh.t` stores a value, `poisson.f = 1.0 * mesh.t`
+keeps the symbol.
 
 ---
 
@@ -812,7 +817,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - [ ] Declare the model and its reference quantities BEFORE creating the mesh
 - [ ] Keep `time`, `step` and `dt` on `model.tracker`, not in local variables
 - [ ] Take snapshots BEFORE the operator you might want to undo
-- [ ] Do not use `mesh.t` for time dependence — it is not the model clock
+- [ ] Use `mesh.t` inside an expression for time dependence, never bare
 
 ### Creating a Swarm
 
@@ -851,6 +856,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
   - Start from the model and its reference quantities, not from the mesh
   - Clock on `model.tracker`, not loose variables (snapshot consistency)
   - Disk snapshots now carry dimensional values (magnitude + units)
+  - `mesh.t` now resolves to the model clock (#410)
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version
