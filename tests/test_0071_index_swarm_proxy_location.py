@@ -173,3 +173,61 @@ def test_nearest_accepts_a_bare_name_and_a_single_particle_rank_is_not_starved()
     d = np.asarray(mat._meshLevelSetVars[1].data[:, 0])
     if swarm2.local_size == 1:
         assert np.allclose(d, 1.0), d[:5]        # every point takes that particle
+
+
+@pytest.mark.parametrize("location", ["nodes", "integration_points", "cells"])
+def test_the_symbol_participates_in_expressions(location):
+    """First class means the symbol goes where a mesh variable's symbol goes:
+    arithmetic, integrals, evaluation, projection, a solver term. Only a
+    gradient of the integration-point form is refused, because the element
+    that holds a value at each integration point has no gradient."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.2, qdegree=2)
+    x, y = mesh.X
+    tag = location[:4]
+    T = uw.discretisation.MeshVariable(f"T{tag}", mesh, 1, degree=2)
+    T.data[:, 0] = np.asarray(T.coords)[:, 0]
+    swarm = uw.swarm.Swarm(mesh)
+    mat = uw.swarm.IndexSwarmVariable(f"E{tag}", swarm, indices=2, proxy_location=location)
+    fld = uw.swarm.SwarmVariable(f"F{tag}", swarm, 1, proxy_location=location)
+    swarm.populate(fill_param=3)
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        mat.data[:, 0] = (X[:, 1] > 0.5).astype(int)
+        fld.data[:, 0] = X[:, 0] ** 2
+
+    # arithmetic with a mesh variable and with sympy, under an integral
+    assert np.isfinite(uw.maths.Integral(
+        mesh, mat.sym[1] * T.sym[0] + sympy.sin(x) * fld.sym[0]).evaluate())
+    # evaluation at arbitrary points
+    got = uw.function.evaluate(mat.sym[1] + fld.sym[0], np.array([[0.31, 0.42], [0.7, 0.8]]))
+    assert np.isfinite(np.asarray(got)).all()
+    # projection of a material-weighted property
+    P = uw.discretisation.MeshVariable(f"P{tag}", mesh, 1, degree=1)
+    proj = uw.systems.solvers.SNES_Projection(mesh, P)
+    proj.uw_function = mat.createMask([1.0, 5.0])
+    proj.solve()
+    # both material values are recovered; a continuous projection of a sharp
+    # mask overshoots at the interface, which is the projection's business
+    Pv = np.asarray(P.data)
+    assert Pv.max() > 4.5 and Pv.min() < 1.5, (Pv.min(), Pv.max())
+    # a solver term: viscosity and body force at once
+    v = uw.discretisation.MeshVariable(f"v{tag}", mesh, mesh.dim, degree=2)
+    q = uw.discretisation.MeshVariable(f"q{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=q)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = mat.createMask([1.0, 10.0])
+    stokes.bodyforce = sympy.Matrix([[0, -mat.sym[1] * (1 + T.sym[0])]])
+    for b in ("Top", "Bottom"):
+        stokes.add_dirichlet_bc((0.0, 0.0), b)
+    for b in ("Left", "Right"):
+        stokes.add_dirichlet_bc((sympy.oo, 0.0), b)
+    stokes.solve()
+    assert np.abs(np.asarray(v.data)).max() > 0
+
+    # the gradient: available except at the integration points
+    grad = uw.maths.Integral(mesh, fld.sym[0].diff(x) ** 2)
+    if location == "integration_points":
+        with pytest.raises(RuntimeError, match="integration-point"):
+            grad.evaluate()
+    else:
+        assert grad.evaluate() > 0

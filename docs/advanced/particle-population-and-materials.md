@@ -12,7 +12,9 @@ integrating, however hard the flow deforms the swarm.
 **A material index read where the assembler actually looks** keeps a material
 interface where the particles put it, instead of smearing it over a cell.
 
-Both are demonstrated below with runnable scripts.
+Both are demonstrated below with runnable scripts. Neither changes how you
+write anything: a particle field reaches the mathematics through a proxy, and
+what the proxy changes is where the sampling happens, not what you can say.
 
 ## Population control
 
@@ -80,16 +82,25 @@ inflow side, where the flow brings nothing.
 
 ## A material index at the integration points
 
+A particle field is a first-class citizen of the symbolic algebra: it carries
+a symbol, and that symbol goes wherever a mesh variable's symbol goes.
 `IndexSwarmVariable` carries a material label per particle and presents the
-mesh with one level set per material, so that `createMask` can build a
-material-weighted property:
+mesh with one level set per material, so that `createMask` builds a
+material-weighted property that you then use like any other expression:
 
 ```python
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_degree=1)
 viscosity = material.createMask([1.0, 1000.0])
+
+stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
+stokes.bodyforce = sympy.Matrix([[0, -material.sym[1] * (1 + T.sym[0])]])
+heat = uw.maths.Integral(mesh, material.sym[1] * T.sym[0]).evaluate()
 ```
 
-Where those level sets live is now a choice:
+That works through a proxy: the particle values are reconstructed onto a mesh
+object the assembler can read, and the symbol you write is the proxy's. Where
+that proxy lives is now a choice, and it changes only where the reconstruction
+lands:
 
 | `proxy_location` | the level sets are | at an interface |
 |---|---|---|
@@ -107,6 +118,20 @@ the masks sum to one by construction.
 material = uw.swarm.IndexSwarmVariable(
     "M", swarm, indices=2, proxy_location="integration_points")
 ```
+
+Everything the symbol could do before, it still does. The one exception is a
+derivative of the integration-point form: the element that holds a value at
+each integration point has no gradient to give, so the compiler refuses one
+rather than returning a wrong number.
+
+| | `"nodes"` | `"integration_points"` | `"cells"` |
+|---|---|---|---|
+| arithmetic with mesh variables and `sympy` | yes | yes | yes |
+| `uw.maths.Integral` | yes | yes | yes |
+| `uw.function.evaluate` anywhere | yes | yes | yes |
+| projection onto a mesh variable | yes | yes | yes |
+| viscosity, body force, any solver term | yes | yes | yes |
+| a **gradient** of the expression | yes | refused | yes |
 
 ### Demonstration
 
