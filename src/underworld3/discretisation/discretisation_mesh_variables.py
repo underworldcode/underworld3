@@ -1704,6 +1704,27 @@ class _BaseMeshVariable(Stateful, uw_object):
             else:
                 return i + j * self.shape[0]
 
+    # Discretisation hooks. Subclasses with a different element (the
+    # integration-point variable) override these three; everything else in
+    # the class works from the PETSc field they produce.
+    is_integration_point = False
+
+    @property
+    def _basis_key(self):
+        """Key for the mesh's per-basis coordinate cache."""
+        return (self.mesh.isSimplex, self.degree, self.continuous)
+
+    def _create_petsc_fe(self, dim, prefix):
+        """The PetscFE this variable's field is built on (Lagrange by default)."""
+        return PETSc.FE().createDefault(
+            dim,
+            self.num_components,
+            self.mesh.isSimplex,
+            self.mesh.qdegree,
+            prefix,
+            PETSc.COMM_SELF,
+        )
+
     def _setup_ds(self):
         options = PETSc.Options()
         name0 = "VAR"  # self.clean_name ## Filling up the options database
@@ -1714,14 +1735,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         )  # only active if discontinuous
 
         dim = self.mesh.dm.getDimension()
-        petsc_fe = PETSc.FE().createDefault(
-            dim,
-            self.num_components,
-            self.mesh.isSimplex,
-            self.mesh.qdegree,
-            name0 + "_",
-            PETSc.COMM_SELF,
-        )
+        petsc_fe = self._create_petsc_fe(dim, name0 + "_")
 
         # Check if this is the first field or if we need to rebuild the DM
         # (needed to ensure Section is properly synchronized with field list)
@@ -3488,3 +3502,117 @@ class _BaseMeshVariable(Stateful, uw_object):
 
 
 # Note: EnhancedMeshVariable is imported as MeshVariable in __init__.py to avoid circular imports
+
+
+class _BaseIntegrationPointVariable(_BaseMeshVariable):
+    r"""A field stored at the mesh integration points (quadrature rule).
+
+    One degree of freedom per quadrature point per cell, on the element built by
+    :func:`underworld3.cython.petsc_quadrature_fe.create_delta_fe`: the basis is
+    the identity on the mesh rule, so the pointwise functions read the stored
+    value at each integration point with no interpolation. Values are
+    *injected* here (a semi-Lagrangian history, a material property
+    reconstructed from a swarm); the field is a peer of mesh and swarm
+    variables, not a degree-0 mesh variable.
+
+    Between its points the field is defined as piecewise constant on the
+    nearest-integration-point partition of each cell. That is what
+    ``evaluate()`` returns, and it is the only extension under which a query
+    agrees with what the assembler used at that point.
+
+    Layout: ``data`` is ``(ncells * Nq, num_components)`` in local cell order,
+    point-minor; ``cell_data`` views it as ``(ncells, Nq, num_components)`` and
+    ``coords`` are the physical integration points in the same order.
+
+    Derivatives of the symbol are meaningless (the tabulated gradient is zero)
+    and the JIT refuses them. Any number of components: the element is the
+    scalar delta element wrapped as a vector element, dofs point-major and
+    component-minor within a cell.
+    """
+
+    is_integration_point = True
+
+    def __init__(self, varname=None, mesh=None, num_components=None, vtype=None,
+                 varsymbol=None, _register=True, units=None, units_backend=None,
+                 remesh_policy=None, **kwargs):
+        # degree/continuous are not meaningful here; 0/False keeps the base
+        # class's bookkeeping consistent with a cell-interior field.
+        kwargs.pop("degree", None)
+        kwargs.pop("continuous", None)
+        self._ip_coords_cache = None
+        super().__init__(varname=varname, mesh=mesh, num_components=num_components,
+                         vtype=vtype, degree=0, continuous=False, varsymbol=varsymbol,
+                         _register=_register, units=units, units_backend=units_backend,
+                         remesh_policy=remesh_policy, **kwargs)
+
+    # -- discretisation hooks -------------------------------------------------
+
+    @property
+    def _basis_key(self):
+        return ("integration", self.mesh.isSimplex, self.mesh.qdegree)
+
+    def _create_petsc_fe(self, dim, prefix):
+        from underworld3.cython.petsc_quadrature_fe import create_delta_fe
+        cStart, _ = self.mesh.dm.getHeightStratum(0)
+        return create_delta_fe(
+            self.mesh.integration_rule, self.mesh.dm.getCellType(cStart),
+            name=f"{prefix}integration_point_fe", num_components=self.num_components,
+        )
+
+    # -- geometry ---------------------------------------------------------------
+
+    @property
+    def integration_points(self):
+        """Physical integration points, ``(ncells, Nq, cdim)``, local cell order."""
+        if self._ip_coords_cache is None or self._ip_coords_cache[0] != self.mesh._topology_version:
+            from underworld3.cython.petsc_quadrature_fe import cell_quadrature_points
+            pts = cell_quadrature_points(self.mesh.dm, self.mesh.integration_rule)
+            self._ip_coords_cache = (self.mesh._topology_version, pts)
+        return self._ip_coords_cache[1]
+
+    @property
+    def num_points_per_cell(self):
+        return self.integration_points.shape[1]
+
+    @property
+    def cell_data(self):
+        """``data`` viewed as ``(ncells, Nq, num_components)``."""
+        Nq = self.num_points_per_cell
+        return self.data.reshape(-1, Nq, self.num_components)
+
+    # -- evaluation ---------------------------------------------------------------
+
+    def _nearest_point_values(self, coords_nd, cells):
+        """Values at ``coords_nd`` by the nearest integration point of the
+        owning cell ``cells`` (local index; -1 or None means unowned -> the
+        nearest point anywhere on this rank)."""
+        coords_nd = numpy.asarray(coords_nd, dtype=float).reshape(-1, self.mesh.cdim)
+        n = coords_nd.shape[0]
+        vals = numpy.empty((n, self.num_components), dtype=float)
+        if n == 0:
+            return vals
+        ipc = self.integration_points
+        cdat = numpy.asarray(self.data).reshape(ipc.shape[0], ipc.shape[1], self.num_components)
+        cells = None if cells is None else numpy.asarray(cells).reshape(-1)
+        owned = numpy.ones(n, dtype=bool) if cells is None else (cells >= 0)
+        if cells is None:
+            owned[:] = False
+        if owned.any():
+            cc = cells[owned]
+            d2 = ((ipc[cc] - coords_nd[owned][:, None, :]) ** 2).sum(axis=-1)
+            j = d2.argmin(axis=1)
+            vals[owned] = cdat[cc, j]
+        if (~owned).any():
+            vals[~owned] = self.rbf_interpolate(coords_nd[~owned])
+        return vals
+
+    def rbf_interpolate(self, new_coords, nnn=None, p=1, verbose=False, **kwargs):
+        """Nearest integration point on this rank (the exterior / unowned-point rule)."""
+        new_coords = numpy.asarray(new_coords, dtype=float).reshape(-1, self.mesh.cdim)
+        ipc = self.integration_points.reshape(-1, self.mesh.cdim)
+        if ipc.shape[0] == 0:
+            return numpy.full((new_coords.shape[0], self.num_components), numpy.nan)
+        import underworld3 as uw
+        tree = uw.kdtree.KDTree(ipc)
+        _, idx = tree.query(new_coords, k=1)
+        return numpy.asarray(self.data).reshape(-1, self.num_components)[numpy.asarray(idx).reshape(-1)]

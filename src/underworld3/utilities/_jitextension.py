@@ -798,6 +798,24 @@ def getext(
 
 
 @timing.routine_timer_decorator
+def _aux_component_offsets(mesh):
+    """Component offset of every field of the mesh DM, keyed by field id.
+
+    Read from the DM itself, not from ``mesh.vars``: a MeshVariable that
+    was dropped and collected leaves its PETSc field in the DM (a DMPlex
+    cannot shed a field), and PETSc lays the auxiliary arrays out over
+    ALL fields in field order. The offsets therefore have to count the
+    orphaned fields too.
+    """
+    offsets = {}
+    total = 0
+    for field_id in range(mesh.dm.getNumFields()):
+        fe, _label = mesh.dm.getField(field_id)
+        offsets[field_id] = total
+        total += fe.getNumComponents()
+    return offsets
+
+
 def generate_c_source(
     name,
     mesh: underworld3.discretisation.Mesh,
@@ -847,7 +865,7 @@ def generate_c_source(
         count_bd_residual_sig, count_bd_jacobian_sig = callbacks.counts
 
     # `_ccode` patching
-    def ccode_patch_fns(varlist, prefix_str):
+    def ccode_patch_fns(varlist, prefix_str, component_offsets=None):
         """
         This function patches uw functions with the necessary ccode
         routines for the code printing.
@@ -873,11 +891,36 @@ def generate_c_source(
             ordered according to their `field_id`.
         prefix_str: str
             The string prefix to write.
+        component_offsets: dict, optional
+            Component offset of every field in the DM, by ``field_id``
+            (see ``_aux_component_offsets``). When given, each variable
+            is patched from ITS OWN field's offset instead of a running
+            count over ``varlist``: a field whose Python variable has
+            been dropped stays in the DM and still occupies its slots,
+            so a running count would shift every later variable onto
+            the wrong data.
         """
         u_i = 0  # variable increment
         u_x_i = 0  # variable gradient increment
         lambdafunc = lambda self, printer: self._ccodestr
+
+        def _no_derivative(self, printer):
+            # An integration-point variable has no gradient (its tabulated
+            # derivative is identically zero), so a derivative of its symbol
+            # in a weak form would be a silent zero. Refuse at code generation.
+            raise RuntimeError(
+                f"{self.__class__.__name__}: derivative of an integration-point "
+                "variable has no meaning (the field is defined only at the "
+                "quadrature points). Remove the derivative or project the "
+                "variable onto a nodal MeshVariable first."
+            )
+
         for var in varlist:
+            is_ip = getattr(var, "is_integration_point", False)
+            dfunc = _no_derivative if is_ip else lambdafunc
+            if component_offsets is not None:
+                u_i = component_offsets[var.field_id]
+                u_x_i = u_i * mesh.cdim
             if var.vtype == VarType.SCALAR:
                 # monkey patch this guy into the function
                 type(var.fn)._ccodestr = f"{prefix_str}[{u_i}]"
@@ -893,7 +936,7 @@ def generate_c_source(
                 for ind in range(mesh.cdim):
                     # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                     var.fn._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                    var.fn._diff[ind]._ccode = lambdafunc
+                    var.fn._diff[ind]._ccode = dfunc
                     u_x_i += 1
             elif (
                 var.vtype == VarType.VECTOR
@@ -912,7 +955,7 @@ def generate_c_source(
                     for ind in range(mesh.cdim):
                         # Note that var.fn._diff[ind] returns the class, so we don't need type(var.fn._diff[ind])
                         comp._diff[ind]._ccodestr = f"{prefix_str}_x[{u_x_i}]"
-                        comp._diff[ind]._ccode = lambdafunc
+                        comp._diff[ind]._ccode = dfunc
                         u_x_i += 1
             else:
                 raise RuntimeError(
@@ -923,7 +966,8 @@ def generate_c_source(
     # is important, as the secondary call will overwrite
     # those patched in the first call.
 
-    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a")
+    ccode_patch_fns(_stable_sorted(mesh.vars.values()), "petsc_a",
+                    component_offsets=_aux_component_offsets(mesh))
     ccode_patch_fns(primary_field_list, "petsc_u")
 
     # Also patch `BaseScalar` types. Nothing fancy - patch the overall type,

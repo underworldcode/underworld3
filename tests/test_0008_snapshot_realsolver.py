@@ -78,7 +78,7 @@ def _build():
     v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
     T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
 
-    adv_diff = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=v)
+    adv_diff = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=v)
     adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
     adv_diff.constitutive_model.Parameters.diffusivity = 1.0
     adv_diff.add_dirichlet_bc(0.0, "Left")

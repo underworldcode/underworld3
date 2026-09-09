@@ -166,6 +166,7 @@ design/TURBULENCE_MODEL_DESIGN
 design/declined-coord-units-proposal
 design/nonlinear-solver-homotopy-warmstart
 design/fault-zone-hybrid-architecture
+design/eulerian-supg-transport
 ```
 
 ```{toctree}
@@ -189,6 +190,7 @@ subsystems/meshing
 subsystems/mesh-shape-relaxation
 subsystems/conforming-surfaces-and-fault-zones
 subsystems/discretisation
+subsystems/integration-point-variables
 subsystems/solvers
 subsystems/boundary-stress-and-projection-postprocessing
 subsystems/rotated-freeslip

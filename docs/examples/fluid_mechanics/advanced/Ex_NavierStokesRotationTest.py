@@ -148,7 +148,7 @@ vorticity = uw.discretisation.MeshVariable(
 """
 
 # %%
-navier_stokes = uw.systems.NavierStokes(
+navier_stokes = uw.systems.NavierStokesSLCN(
     meshball,
     velocityField=v_soln,
     pressureField=p_soln,

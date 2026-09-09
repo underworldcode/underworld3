@@ -361,7 +361,7 @@ def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 evalf=False,
                 rbf=False,
@@ -514,7 +514,10 @@ def global_evaluate_nd(   expr,
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
     local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.cdim)
-    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True,)
+    # Forward `simplify`: without it the local evaluator's default (True) ran
+    # sympy.simplify on every call for any expression holding a mesh variable
+    # (14 of 25 s in a semi-Lagrangian step with a tanh velocity, 2026-09-08).
+    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify,)
 
     if local_coords.shape[0] > 0:
         data_container.array[...] = values[...]
@@ -618,7 +621,7 @@ def global_evaluate_nd(   expr,
             # This rank's local rbf extrapolation of the global set. NON-collective
             # value path — see DEADLOCK SAFETY above (must be rbf=True, never FE).
             ext_vals, ext_flag = evaluate_nd(
-                expr, all_ext, rbf=True, evalf=False, verbose=False,
+                expr, all_ext, rbf=True, evalf=False, verbose=False, simplify=simplify,
                 check_extrapolated=True,)
             ext_vals = np.ascontiguousarray(
                 np.asarray(ext_vals, dtype=np.float64).reshape((n_ext_total,) + expr_shape))
@@ -916,7 +919,7 @@ def evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 evalf=False,
                 rbf=False,
@@ -1113,7 +1116,7 @@ def petsc_interpolate(   expr,
                 coord_sys=None,
                 mesh=None,
                 other_arguments=None,
-                simplify=True,
+                simplify=False,
                 verbose=False,
                 cell_hints=None, ):
     """
@@ -1449,6 +1452,23 @@ def petsc_interpolate(   expr,
                 rbf_vals = np.asarray(var.rbf_interpolate(fallback_coords))
                 rbf_vals = rbf_vals.reshape(len(fallback_coords), var.num_components)
                 outarray[unlocated, var_start:var_start + var.num_components] = rbf_vals
+
+        # Integration-point variables: the FE interpolation above tabulates
+        # their delta basis at the query points, which is zero anywhere but
+        # on the rule. Their defined extension is the nearest integration
+        # point of the owning cell; overwrite their columns with it.
+        ip_vars = [v for v in vars if getattr(v, "is_integration_point", False)]
+        if ip_vars:
+            ip_cells = getattr(cached_info, "cells", None)
+            if ip_cells is None:
+                ip_cells = mesh._robust_owning_cells(coords)
+            ip_cells = np.asarray(ip_cells).reshape(-1).copy()
+            if unlocated is not None:
+                ip_cells[np.asarray(unlocated, dtype=bool)] = -1
+            for var in ip_vars:
+                var_start = var_start_index[var]
+                outarray[:, var_start:var_start + var.num_components] = \
+                    var._nearest_point_values(coords, ip_cells)
         # === END CACHING ===
 
         # Create map between array slices and variable functions
@@ -1499,7 +1519,7 @@ def rbf_evaluate(  expr,
             mesh=None,
             other_arguments=None,
             verbose=False,
-            simplify=True,):
+            simplify=False,):
     """
     Evaluate a given expression at a list of coordinates.
 

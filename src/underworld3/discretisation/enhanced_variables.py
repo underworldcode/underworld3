@@ -28,7 +28,7 @@ import weakref
 from typing import Optional, Union
 import numpy as np
 
-from .discretisation_mesh_variables import _BaseMeshVariable
+from .discretisation_mesh_variables import _BaseMeshVariable, _BaseIntegrationPointVariable
 from ..utilities import MathematicalMixin
 from ..utilities.dimensionality_mixin import DimensionalityMixin
 
@@ -62,6 +62,11 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         persistent_var = EnhancedMeshVariable("pressure", mesh, 1, persistent=True)
         success = persistent_var.transfer_data_from(old_pressure)
     """
+
+    # The storage class this wrapper delegates to; IntegrationPointVariable
+    # swaps in the quadrature-point element.
+    _base_variable_class = _BaseMeshVariable
+    is_integration_point = False
 
     def __new__(cls, varname, mesh, *args, **kwargs):
         """Custom __new__ to ensure proper initialization and registration."""
@@ -127,7 +132,7 @@ class EnhancedMeshVariable(DimensionalityMixin, MathematicalMixin):
         self._mesh_ref = weakref.ref(mesh)  # Weak reference to avoid circular deps
 
         # Create base variable without registration (we handle registration ourselves)
-        self._base_var = _BaseMeshVariable(
+        self._base_var = self._base_variable_class(
             varname=varname,
             mesh=mesh,
             num_components=num_components,
@@ -926,3 +931,70 @@ def demonstrate_enhanced_variables():
 # Note: The demonstration function above references EnhancedSwarmVariable
 # which doesn't exist - SwarmVariable is already enhanced (see swarm.py).
 # Update this demo to use uw.swarm.SwarmVariable directly if needed.
+
+
+class IntegrationPointVariable(EnhancedMeshVariable):
+    r"""A field stored at the mesh integration points.
+
+    A peer of :class:`MeshVariable` and of swarm variables: one value per
+    quadrature point per cell, on an element whose basis is the identity on the
+    mesh rule (``mesh.integration_rule``). The pointwise functions read the
+    stored values directly, with no interpolation, so it is the carrier for
+    values that are *injected* at the integration points - a semi-Lagrangian
+    history sampled at the departure points of the quadrature points, or a
+    material property reconstructed from a swarm with sub-cell resolution.
+
+    Between its points the field is piecewise constant on the
+    nearest-integration-point partition of each cell; ``uw.function.evaluate``
+    returns that, so a query agrees with what the assembler used at the same
+    point. Derivatives of the symbol are refused by the JIT (the gradient is
+    identically zero). Vector and tensor variables are supported (one dof
+    per component per point).
+
+    Examples
+    --------
+    >>> eta_q = uw.discretisation.IntegrationPointVariable("eta_q", mesh)
+    >>> eta_q.cell_data[...] = 1.0          # (ncells, Nq, 1)
+    >>> eta_q.coords                         # the physical integration points
+    >>> stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_q.sym
+    """
+
+    _base_variable_class = _BaseIntegrationPointVariable
+
+    def __init__(
+        self,
+        varname,
+        mesh,
+        num_components=1,
+        vtype=None,
+        varsymbol=None,
+        persistent=False,
+        units=None,
+        units_backend=None,
+        **kwargs,
+    ):
+        kwargs.pop("degree", None)
+        kwargs.pop("continuous", None)
+        super().__init__(
+            varname, mesh, num_components=num_components, vtype=vtype,
+            degree=0, continuous=False, varsymbol=varsymbol, persistent=persistent,
+            units=units, units_backend=units_backend, **kwargs,
+        )
+
+    # Explicit passthroughs (the wrapper delegates unknown attributes to the
+    # sympy matrix, not to the storage object).
+    is_integration_point = True
+
+    @property
+    def integration_points(self):
+        """Physical integration points, ``(ncells, Nq, cdim)``, local cell order."""
+        return self._base_var.integration_points
+
+    @property
+    def num_points_per_cell(self):
+        return self._base_var.num_points_per_cell
+
+    @property
+    def cell_data(self):
+        """``data`` viewed as ``(ncells, Nq, num_components)``."""
+        return self._base_var.cell_data

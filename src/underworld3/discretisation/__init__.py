@@ -19,6 +19,7 @@ underworld3.swarm : Particle-based discretisation.
 """
 from .discretisation_mesh import Mesh
 from .enhanced_variables import EnhancedMeshVariable as MeshVariable
+from .enhanced_variables import IntegrationPointVariable
 from .discretisation_mesh import checkpoint_xdmf
 from .discretisation_mesh import meshVariable_lookup_by_symbol
 from .discretisation_mesh import petsc_dm_find_labeled_points_local
