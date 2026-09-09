@@ -5143,6 +5143,8 @@ class Swarm(Stateful, uw_object):
         restore_points_to_domain_func=None,
         evalf=False,
         step_limit=False,
+        midtime_velocity=False,
+        characteristics=None,
     ):
         r"""Advect the particle swarm through one timestep of a velocity field.
 
@@ -5184,6 +5186,17 @@ class Swarm(Stateful, uw_object):
             Historical flag selecting RBF (``evalf``) velocity
             sampling; currently inert — velocity is always sampled with
             ``uw.function.global_evaluate``. Default ``False``.
+        midtime_velocity : bool, optional
+            Take the mid-point velocity of the RK2 step at the mid TIME,
+            :math:`\tfrac32 v^n - \tfrac12 v^{n-1}`, from a
+            :class:`~underworld3.systems.ddt.CharacteristicTrace` the swarm
+            owns (the previous velocity is cached by evaluation at the nodes
+            at the end of each call). Second order in an unsteady flow; a
+            steady flow is unchanged. Off by default. Ignored when the step
+            is substepped.
+        characteristics : CharacteristicTrace, optional
+            A solver's shared trace to take the mid-time velocity from
+            instead of a swarm-owned one (its levels are the solver's).
         step_limit : bool, optional
             If ``True``, split ``delta_t`` into substeps no larger than
             :meth:`estimate_dt` (roughly one element crossing per
@@ -5269,6 +5282,19 @@ class Swarm(Stateful, uw_object):
         # Mesh.update_lvec(), and a migrate() firing there would reorder
         # particle rows between the coordinate array and the velocity array
         # captured from it. advection() performs its own migrate() at the end.
+        # Mid-time velocity for the RK2 mid-point stage: from the solver's
+        # shared trace when given, else a swarm-owned one (levels recorded at
+        # the end of each call). The levels, not the step cache, feed the
+        # expression, so a shared trace needs no step delimiting here.
+        trace = characteristics
+        owns_trace = False
+        if trace is None and midtime_velocity:
+            trace = self._characteristics_for(V_fn)
+            owns_trace = True
+        v_mid_matrix = V_fn_matrix
+        if trace is not None and substeps == 1:
+            v_mid_matrix = trace.midtime_expr()
+
         self._deferred_migration_suspended = True
 
         # Wrap this whole thing in sub-stepping loop
@@ -5279,7 +5305,8 @@ class Swarm(Stateful, uw_object):
             # Mid point algorithm (2nd order)
 
             if order == 2:
-                print(f"Advection (2nd): {self.local_size} - swarm points", flush=True)
+                if self.verbose:
+                    print(f"Advection (2nd): {self.local_size} - swarm points", flush=True)
 
                 # Use internal model-unit coordinates directly (no conversion needed)
                 v_at_Vpts = np.zeros_like(self._particle_coordinates.data[...])
@@ -5309,7 +5336,7 @@ class Swarm(Stateful, uw_object):
                 # (since the mid-points might have moved off-proc)
                 #
 
-                v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, mid_pt_coords)[:, 0, :]
+                v_at_Vpts[...] = uw.function.global_evaluate(v_mid_matrix, mid_pt_coords)[:, 0, :]
 
                 new_coords = X0.array[:, 0, :] + delta_t_model * v_at_Vpts / substeps
 
@@ -5325,25 +5352,19 @@ class Swarm(Stateful, uw_object):
             # forward Euler (1st order)
             else:
                 coords = self._particle_coordinates.data
-                print(
-                    f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
-                    flush=True,
-                )
+                if self.verbose:
+                    print(f"1. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 v_at_Vpts = np.zeros_like(coords)
                 v_at_Vpts[...] = uw.function.global_evaluate(V_fn_matrix, coords[...])[:, 0, :]
 
-                print(
-                    f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
-                    flush=True,
-                )
+                if self.verbose:
+                    print(f"2. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 new_coords = coords[...] + delta_t_model * v_at_Vpts / substeps
 
-                print(
-                    f"3. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape",
-                    flush=True,
-                )
+                if self.verbose:
+                    print(f"3. Advection (1st): {coords.shape} v {self.local_size} - swarm point shape", flush=True)
 
                 if self.mesh.return_coords_to_bounds is not None:
                     new_coords = self.mesh.return_coords_to_bounds(new_coords)
@@ -5352,6 +5373,8 @@ class Swarm(Stateful, uw_object):
 
         ## End of substepping loop
         self._deferred_migration_suspended = False
+        if owns_trace:
+            trace.finish_step()          # the velocity used this step becomes v^{n-1}
 
         # Re-route particles to their owning ranks and remove any that
         # have genuinely left the domain. Use the default max_its so that
@@ -5367,6 +5390,17 @@ class Swarm(Stateful, uw_object):
             self.repopulate(**self.population_control)
 
         return
+
+    def _characteristics_for(self, V_fn):
+        """The swarm-owned :class:`CharacteristicTrace` for ``V_fn`` (rebuilt
+        when the velocity expression changes)."""
+        from underworld3.systems.ddt import CharacteristicTrace, _matrix_of
+
+        tr = getattr(self, "_characteristics", None)
+        if tr is None or not (tr.V_fn is V_fn or sympy.Matrix(_matrix_of(tr.V_fn)) == sympy.Matrix(_matrix_of(V_fn))):
+            tr = CharacteristicTrace(self.mesh, V_fn, midtime_velocity=True)
+            self._characteristics = tr
+        return tr
 
     @timing.routine_timer_decorator
     def estimate_dt(self, V_fn):

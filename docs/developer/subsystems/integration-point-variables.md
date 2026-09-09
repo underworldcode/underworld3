@@ -331,6 +331,18 @@ size are `nmin` and `patch_nnn` on `CellPolynomialProjector.fit`.
 M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2)
 ```
 
+### The swarm step at the mid time
+
+`swarm.advection(V_fn, dt, order=2, midtime_velocity=True)` evaluates the
+RK2 mid-point velocity at the mid time, $\tfrac32 v^n - \tfrac12 v^{n-1}$,
+from a `CharacteristicTrace` the swarm owns (the previous velocity is cached
+by evaluation at the nodes at the end of each call), or from a solver's
+shared trace passed as `characteristics=`. On a rotation whose rate ramps
+linearly, ten steps of the frozen-velocity step miss 0.05 rad and the
+mid-time step under 0.008 (`tests/test_0069_swarm_midtime_velocity.py`). A
+steady flow is unchanged; the option is off by default and ignored when the
+step is substepped.
+
 ### Repopulation: keeping every cell fit-able
 
 A flow that empties cells starves the fit, and the two particle read-back
