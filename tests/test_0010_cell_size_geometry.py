@@ -7,8 +7,8 @@ cell volume, scaled by the determinant of the affine map when the mesh is
 deformed.
 
 Partition independence is NOT tested here -- it cannot be, at one rank count.
-``tests/parallel/test_1077`` compares the field cell by cell against its own
-serial answer, and ``test_1078`` does the same for the three radius accessors.
+``tests/parallel/test_1079`` compares the field cell by cell against its own
+serial answer, and ``test_1080`` does the same for the three radius accessors.
 """
 
 import numpy as np

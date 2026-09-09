@@ -1,6 +1,6 @@
 """The radius ACCESSORS must not depend on how the mesh was partitioned.
 
-``test_1077`` covers the per-cell field cell by cell. This file covers
+``test_1079`` covers the per-cell field cell by cell. This file covers
 ``get_min_radius()``, ``get_max_radius()`` and ``get_mean_radius()``, which
 reduce that field and advertise a global mesh length -- and which were the half
 left partition-dependent when only ``cell_size()`` was fixed: ``get_max_radius()``
