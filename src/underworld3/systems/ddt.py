@@ -813,6 +813,47 @@ class _DDtBase(uw_object):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
 
+    def commit_flux_to_history(self, flux, verbose=False):
+        r"""Project ``flux`` into ``psi_star[0]`` and shift the history levels.
+
+        What a solver does after solving with a flux history (a viscoelastic
+        stress, say): the flux the constitutive model has just formed becomes
+        the new level 0, and the level that was 0 -- already carried to the new
+        configuration by ``update_pre_solve``, whether by a trace-back or by an
+        assembled transport -- becomes level 1. The shift is the history
+        manager's business, so every flavour does it the same way and a solver
+        does not need to know which one it holds.
+
+        ``flux`` is the expression to project (the constitutive model's flux).
+        It is ignored on the multi-component path, where the projection's source
+        was compiled once and is refreshed through the snapshot machinery (see
+        :meth:`enable_source_snapshot`).
+        """
+        if not hasattr(self, "_psi_star_projection_solver"):
+            self._setup_projections()
+
+        transported = np.copy(self.psi_star[0].array[...])
+
+        if getattr(self, "_psi_star_use_multicomponent", False):
+            # The snapshot machinery has frozen the projection's input, so this
+            # is a one-shot Galerkin projection and not a fixed-point iteration
+            # (which at a yield kink admits the wrong branch).
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve(verbose=verbose)
+            for k, (i, j) in enumerate(self._psi_star_indep_indices):
+                values = self._psi_star_flat_var.array[:, 0, k]
+                self.psi_star[0].array[:, i, j] = values
+                if i != j:
+                    self.psi_star[0].array[:, j, i] = values
+        else:
+            self._psi_star_projection_solver.uw_function = flux
+            self._psi_star_projection_solver.smoothing = 0.0
+            self._psi_star_projection_solver.solve(verbose=verbose)
+
+        for level in range(self.order - 1, 0, -1):
+            self.psi_star[level].array[...] = (
+                transported if level == 1 else self.psi_star[level - 1].array[...])
+
     # ----- The transport contract -----
     #
     # A solver that owns an unknown composes its residual from these terms

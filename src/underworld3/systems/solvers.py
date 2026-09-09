@@ -1727,37 +1727,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             if uw.mpi.rank == 0 and verbose:
                 print(f"Stokes solver - store stress and shift history", flush=True)
 
-            _advected_sigma_star = np.copy(self.DFDt.psi_star[0].array[...])
-
-            if getattr(self.DFDt, '_psi_star_use_multicomponent', False):
-                # Multi-component projection of flux → psi_star[0].
-                #
-                # The DFDt's source-snapshot machinery (enabled once in
-                # _create_stress_history_ddt) intercepts psi_fn assignment
-                # to substitute psi_star[0] symbols with a frozen
-                # psi_snapshot variable, refreshed each step in
-                # update_pre_solve. So the projection's compiled source
-                # reads from psi_snapshot (not psi_star[0] itself) and is a
-                # true one-shot Galerkin projection — no implicit
-                # fixed-point iteration.
-                self.DFDt._psi_star_projection_solver.smoothing = 0.0
-                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
-                # Fan flat result back to psi_star[0] tensor variable
-                for k, (i, j) in enumerate(self.DFDt._psi_star_indep_indices):
-                    vals = self.DFDt._psi_star_flat_var.array[:, 0, k]
-                    self.DFDt.psi_star[0].array[:, i, j] = vals
-                    if i != j:
-                        self.DFDt.psi_star[0].array[:, j, i] = vals
-            else:
-                self.DFDt._psi_star_projection_solver.uw_function = self.constitutive_model.flux
-                self.DFDt._psi_star_projection_solver.smoothing = 0.0
-                self.DFDt._psi_star_projection_solver.solve(verbose=verbose)
-
-            for i in range(self.DFDt.order - 1, 0, -1):
-                if i == 1:
-                    self.DFDt.psi_star[i].array[...] = _advected_sigma_star
-                else:
-                    self.DFDt.psi_star[i].array[...] = self.DFDt.psi_star[i - 1].array[...]
+            # The history manager projects the new stress into level 0 and
+            # shifts the levels: the same step whichever flavour it is.
+            self.DFDt.commit_flux_to_history(
+                self.constitutive_model.flux, verbose=verbose)
 
             self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 
