@@ -2840,12 +2840,10 @@ class Mesh(Stateful, uw_object):
                 flush=True,
             )
 
-        (
-            self._min_size,
-            self._radii,
-            self._centroids,
-            self._search_lengths,
-        ) = self._get_mesh_sizes()
+        # `_min_size` and `_search_lengths` used to be unpacked here and were
+        # never read anywhere in src/ or tests/ -- the kd-tree loop computed
+        # three distance statistics per cell and two were discarded.
+        self._cell_radii, self._centroids = self._get_cell_radii()
 
         # Skip self-copy when hierarchy is trivial (issue #96 investigation)
         if self.dm is not self.dm_hierarchy[-1]:
@@ -3234,8 +3232,8 @@ class Mesh(Stateful, uw_object):
 
         Returns the ``.sym`` of a cell-constant (degree-0, discontinuous)
         scalar MeshVariable holding each cell's characteristic length (the
-        RMS distance of its vertices from their own centroid). This is a
-        purely cell-local quantity, independent of the MPI partition. Unlike
+        ``volume**(1/dim)`` equivalent radius, i.e. ``self._cell_radii``,
+        which comes from PETSc and is independent of the MPI partition). Unlike
         the single *global* scalar from :meth:`get_min_radius` (the smallest
         cell anywhere), this varies cell to cell, so a stabilisation that
         scales as :math:`1/h` — e.g. the Nitsche free-slip penalty
@@ -3301,27 +3299,45 @@ class Mesh(Stateful, uw_object):
     def _assemble_cell_size(self, var):
         """Fill ``var`` (degree-0 scalar) with each cell's characteristic size.
 
-        Uses the cell-geometry characteristic lengths ``self._cell_radii`` computed by
-        :meth:`_get_mesh_sizes` on the *current* geometry. A degree-0
+        Uses the per-cell characteristic lengths ``self._cell_radii`` computed
+        by :meth:`_get_cell_radii` on the *current* geometry. A degree-0
         discontinuous variable's local DOFs and ``self._cell_radii`` are BOTH
         indexed by this rank's cell-stratum order, so a direct assignment is
         correct on every rank.
 
-        This is deliberately a purely RANK-LOCAL operation (no ``var.coords``
-        access, no collective): mixing a rank-local fast path with a
-        collective fallback would diverge across ranks and deadlock, because
-        ``var.coords`` triggers the collective ``_get_coords_for_basis``."""
-        # Own-cell radii fix #687 without changing the legacy kd-tree radii
-        # used by global timestep estimates, adaptivity, and mesh relaxation.
+        This routine has TWO collectives in it and therefore no early return,
+        which is the opposite of what its previous docstring claimed (#698):
+
+        * the first ``var.data`` access lazily reaches ``MeshVariable._set_vec``,
+          which calls ``dm.createSubDM`` and ``createGlobalVector``;
+        * assigning into ``var.data`` fires the array's write-back callback,
+          ``pack_raw_data_to_petsc``.
+
+        A rank owning no cells used to short-circuit on ``radii.size == 0`` and
+        return before either, while its populated peers made both. Measured on a
+        region submesh at np=8 with cells per rank ``[12, 11, 0, 19, 0, 0, 0, 0]``:
+        the populated ranks sat in ``pack_raw_data_to_petsc`` and the job never
+        finished. A starved rank now walks the same path writing a zero-length
+        slice.
+
+        ``var.coords`` is still deliberately not read: it triggers the collective
+        ``_get_coords_for_basis``, and reading it only on some ranks would put a
+        third conditional collective back in."""
+        # `_cell_radii` is PETSc's volume**(1/dim), a property of each cell, so
+        # the values here do not depend on the partition -- and neither does the
+        # Nitsche penalty gamma*mu/h that consumes them under the default
+        # local_h=True. It was a kd-tree distance to the nearest centroid among
+        # THIS RANK's centroids, which near a seam could simply be absent (#694).
+        # There is NO early return here, and that is the point. Both steps below
+        # are collective, so a rank owning no cells has to walk through them
+        # writing nothing rather than skipping them (#698).
+        data = var.data                                   # allocates: createSubDM + createGlobalVector
         radii = numpy.asarray(self._cell_radii).reshape(-1)
-        # Empty partition (no local cells): nothing to fill on this rank.
-        if radii.size == 0 or var.data.shape[0] == 0:
-            return
-        # Assign over the common length. In practice these match exactly (same
-        # local cell set / ordering); the slice only guards a stray off-by-ghost
-        # mismatch without ever taking a collective path on a subset of ranks.
-        n = min(var.data.shape[0], radii.shape[0])
-        var.data[:n, 0] = radii[:n]
+
+        # `n` is 0 on a starved rank. The assignment still fires the array's
+        # write-back callback, which is the second collective.
+        n = min(data.shape[0], radii.shape[0])
+        data[:n, 0] = radii[:n]
 
     @property
     def Gamma_P1(self):
@@ -6934,56 +6950,44 @@ class Mesh(Stateful, uw_object):
         """
         return (uw.mpi.size > 1) and (self._location_capability() != "none")
 
-    def _get_mesh_sizes(self, verbose=False):
-        """
-        Cache own-cell radii for cell_size and return legacy kd-tree radii.
+    def _get_cell_radii(self):
+        """Each cell's characteristic length, and the cell centroids.
 
-        Own-cell sizes use current DM vertices, so neither partition-local
-        neighbours nor stale coordinate views affect stabilization (#687).
-        Legacy radii remain unchanged for their other consumers.
-        """
+        The length is PETSc's ``volume**(1/dim)`` from
+        ``DMPlexComputeGeometryFVM``. A cell's volume is a property of that
+        cell, so this cannot depend on how the mesh was partitioned — which is
+        the point.
 
+        It replaces a kd-tree of THIS RANK's centroids queried with each cell's
+        vertices. Near a partition boundary the true nearest centroid can belong
+        to a cell owned by another rank and be absent from the tree, so the
+        answer moved with the rank count: per-cell by 3.3e-03 at np=2 and
+        4.1e-03 at np=4, `get_max_radius()` by 4.9% at np=8, `get_mean_radius()`
+        at every rank count, and `mesh.cell_size()` with them -- which scales
+        the Nitsche penalty under the DEFAULT ``local_h=True`` (#569, #687,
+        #694).
+
+        The FVM routine had been abandoned with a note that it "does not
+        compute all cells". That does not reproduce: measured on 2-D simplex,
+        2-D quad, 3-D tetrahedra, 3-D hexahedra and a deformed mesh, it returns
+        one finite positive value per local cell and is bit-identical across
+        rank counts in every case. (The note also named ``DMPlexGetMinRadius``,
+        which is a different call and is not used here.)
+        """
+        from underworld3.cython import petsc_discretisation
+
+        radii, _fvm_centroids = petsc_discretisation.petsc_fvm_get_local_cell_sizes(self)
+
+        # The FVM centroids are discarded: `_get_coords_for_basis(0, False)` is
+        # the degree-0 coordinate array the rest of the mesh indexes by cell,
+        # and mixing the two orderings would misalign every per-cell lookup.
         centroids = self._get_coords_for_basis(0, False)
-        centroids_kd_tree = uw.kdtree.KDTree(centroids)
 
-        import numpy as np
-
-        cStart, cEnd = self.dm.getHeightStratum(0)
-        pStart, pEnd = self.dm.getDepthStratum(0)
-        cell_length = np.empty(centroids.shape[0])
-        cell_min_r = np.empty(centroids.shape[0])
-        cell_r = np.empty(centroids.shape[0])
-        cell_radii = np.empty(centroids.shape[0])
-        coordinate_section = self.dm.getCoordinateDM().getLocalSection()
-        vertex_coordinates = self.dm.getCoordinatesLocal().array
-
-        for cell in range(cEnd - cStart):
-            cell_num_points = self.dm.getConeSize(cell)
-            cell_points = self.dm.getTransitiveClosure(cell)[0][-cell_num_points:]
-            # Use raw internal array for internal mesh operations (avoid unit-aware wrapping)
-            cell_coords = self._coords[cell_points - pStart]
-
-            distsq, _ = centroids_kd_tree.query(cell_coords, k=1, sqr_dists=True)
-
-            cell_length[cell] = np.sqrt(distsq.max())
-            cell_r[cell] = np.sqrt(distsq.mean())
-            cell_min_r[cell] = np.sqrt(distsq.min())
-
-            # A hex has six faces but eight vertices: select the vertex
-            # stratum, not a cone-sized suffix of its transitive closure.
-            closure = self.dm.getTransitiveClosure(cStart + cell)[0]
-            vertices = closure[(closure >= pStart) & (closure < pEnd)]
-            offsets = np.array([coordinate_section.getOffset(int(v)) for v in vertices])
-            own_coords = vertex_coordinates[offsets[:, None] + np.arange(self.cdim)]
-            delta = own_coords - own_coords.mean(axis=0)
-            cell_radii[cell] = np.sqrt(np.mean(np.sum(delta ** 2, axis=1)))
-
-        self._cell_radii = cell_radii
-        return cell_min_r, cell_r, centroids, cell_length
+        return radii, centroids
 
     # ==========
 
-    # Deprecated in favour of _get_mesh_sizes (above)
+    # Deprecated in favour of _get_cell_radii (above)
     def _get_mesh_centroids(self):
         """
         Obtain and cache the (local) mesh centroids using underworld swarm technology.
@@ -7073,7 +7077,7 @@ class Mesh(Stateful, uw_object):
         import numpy as np
         from mpi4py import MPI
 
-        radii = np.asarray(self._radii).reshape(-1)
+        radii = np.asarray(self._cell_radii).reshape(-1)
         local_min = float(radii.min()) if radii.size else float("inf")
         if uw.mpi.size > 1:
             local_min = uw.mpi.comm.allreduce(local_min, op=MPI.MIN)
@@ -7095,7 +7099,7 @@ class Mesh(Stateful, uw_object):
         import numpy as np
         from mpi4py import MPI
 
-        radii = np.asarray(self._radii).reshape(-1)
+        radii = np.asarray(self._cell_radii).reshape(-1)
         local_max = float(radii.max()) if radii.size else float("-inf")
         if uw.mpi.size > 1:
             local_max = uw.mpi.comm.allreduce(local_max, op=MPI.MAX)
@@ -7114,15 +7118,22 @@ class Mesh(Stateful, uw_object):
         this is the canonical "mesh length" API. Use this anywhere you
         need a representative h0 (smoothing-length defaults, diffusion-
         stability heuristics, problem-scale normalisation) rather than
-        reaching for the rank-local ``self._radii`` array, which gives
-        different answers on different MPI ranks and leaks downstream
-        (e.g. into JIT C source via per-rank pointwise-function inputs).
+        reducing a per-rank array by hand, which gives different answers on
+        different MPI ranks and leaks downstream (e.g. into JIT C source via
+        per-rank pointwise-function inputs).
+
+        The value is the same at every RANK COUNT as well as on every rank:
+        ``self._cell_radii`` is PETSc's ``volume**(1/dim)``, a property of each
+        cell rather than of the partition. That was not true while these
+        reduced over a kd-tree of this rank's centroids -- an allreduce made
+        the answer agree across ranks without making it agree across rank
+        counts, and ``get_max_radius()`` moved 4.9% at np=8 (#694).
         """
 
         import numpy as np
         from mpi4py import MPI
 
-        radii = np.asarray(self._radii)
+        radii = np.asarray(self._cell_radii)
         local_sum = float(radii.sum())
         local_n = int(radii.size)
         if uw.mpi.size > 1:

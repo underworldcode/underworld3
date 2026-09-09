@@ -5200,7 +5200,7 @@ class Swarm(Stateful, uw_object):
         vel = uw.function.evaluate(V_fn, self._particle_coordinates.data, evalf=True)
 
         # If vel is unit-aware (UnitAwareArray), nondimensionalise it to get
-        # consistent nondimensional values that match mesh._radii
+        # consistent nondimensional values that match mesh._cell_radii
         # Note: .magnitude returns physical units, which would be wrong here
         if hasattr(vel, "units") and vel.units is not None:
             vel = uw.non_dimensionalise(vel)

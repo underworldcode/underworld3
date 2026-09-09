@@ -67,8 +67,8 @@ def _solve_freeslip_box(method, res=8):
         stokes.add_natural_bc(1e4 * Gamma.dot(v.sym) * Gamma, "Top")
         stokes.add_natural_bc(1e4 * Gamma.dot(v.sym) * Gamma, "Bottom")
     elif method == "nitsche":
-        stokes.add_nitsche_bc(0.0, "Top", gamma=10.0)
-        stokes.add_nitsche_bc(0.0, "Bottom", gamma=10.0)
+        stokes.add_nitsche_bc(0.0, "Top")
+        stokes.add_nitsche_bc(0.0, "Bottom")
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -147,4 +147,4 @@ class TestNitscheFreeslip:
         max_vn_pen = np.max(np.abs(v_pen[top_pen, 1])) if np.any(top_pen) else 0
 
         print(f"Normal velocity on top: Nitsche={max_vn_nit:.4e}, Penalty={max_vn_pen:.4e}")
-        # Nitsche at gamma=10 should be comparable or better than penalty at 1e4
+        # Nitsche at the default gamma should be comparable or better than penalty at 1e4

@@ -1,7 +1,14 @@
-"""Issue #687: cell_size is an own-cell geometric quantity, including after deform.
+"""``mesh.cell_size()`` is each cell's ``volume**(1/dim)``, and it tracks deformation.
 
-The independent oracle reads vertex coordinates through the coordinate section;
-it does not use the mesh's cached radii or centroid kd-tree. Run serial and MPI.
+The oracle here is computed from the vertex coordinates, not from PETSc, so this
+is a check and not a restatement of the implementation. For simplices that is
+the determinant volume of the cell; for the structured boxes it is the analytic
+cell volume, scaled by the determinant of the affine map when the mesh is
+deformed.
+
+Partition independence is NOT tested here -- it cannot be, at one rank count.
+``tests/parallel/test_1079`` compares the field cell by cell against its own
+serial answer, and ``test_1080`` does the same for the three radius accessors.
 """
 
 import numpy as np
@@ -9,58 +16,87 @@ import pytest
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+
+# The deformation applied below, and its Jacobian determinant. Volumes scale by
+# |det|, so lengths scale by |det|**(1/dim).
+AFFINE = np.array([[1.7, 0.2], [0.0, 1.0]])
+AFFINE_DET = 1.7
 
 
-def _vertex_rms(mesh):
-    dm = mesh.dm
-    section = dm.getCoordinateDM().getLocalSection()
-    coordinates = dm.getCoordinatesLocal().array
-    start, end = dm.getHeightStratum(0)
-    first_vertex, last_vertex = dm.getDepthStratum(0)
-    radii = []
-    for cell in range(start, end):
-        vertices = [int(point) for point in dm.getTransitiveClosure(cell)[0]
-                    if first_vertex <= point < last_vertex]
-        points = np.array([coordinates[section.getOffset(v):section.getOffset(v) + mesh.cdim]
-                           for v in vertices])
-        radii.append(np.sqrt(np.mean(np.sum((points - points.mean(axis=0)) ** 2, axis=1))))
-    return np.asarray(radii)
+def _simplex_volume_from_vertices(mesh):
+    """Each simplex's volume from its own vertex coordinates.
+
+    Triangle: ``|det[v1-v0, v2-v0]| / 2``. Tetrahedron: ``|det[...]| / 6``.
+    """
+    dim = mesh.dim
+    cell_start, cell_end = mesh.dm.getHeightStratum(0)
+    point_start, _point_end = mesh.dm.getDepthStratum(0)
+
+    volumes = np.empty(cell_end - cell_start)
+    factorial = 2.0 if dim == 2 else 6.0
+    for cell in range(cell_end - cell_start):
+        corners = mesh.dm.getTransitiveClosure(cell)[0][-(dim + 1):]
+        coords = mesh._coords[corners - point_start]
+        edges = coords[1:] - coords[0]
+        volumes[cell] = abs(np.linalg.det(edges)) / factorial
+    return volumes
 
 
 @pytest.mark.parametrize("dim", [2, 3])
-@pytest.mark.parametrize("simplex", [True, False], ids=["simplex", "tensor"])
-def test_cell_size_matches_own_vertices_and_tracks_deform(dim, simplex):
-    geometry = dict(minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim, qdegree=3)
-    mesh = (uw.meshing.UnstructuredSimplexBox(**geometry, cellSize=0.25, regular=False)
-            if simplex else uw.meshing.StructuredQuadBox(**geometry, elementRes=(4,) * dim))
+def test_simplex_cell_size_is_the_cube_root_of_its_own_volume(dim):
+    """Against a determinant volume computed from the cell's vertices."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim, qdegree=3,
+        cellSize=0.25, regular=False)
+    mesh.cell_size()
+    actual = np.asarray(mesh._cell_size_variable.array[:, 0, 0])
+    expected = _simplex_volume_from_vertices(mesh) ** (1.0 / dim)
+
+    error = float(np.abs(actual - expected).max(initial=0.0))
+    uw.pprint(f"CELL_SIZE_GEOMETRY simplex dim={dim} max_error={error:.12g}")
+    assert error < 1.0e-12, error
+
+
+@pytest.mark.parametrize("dim", [2, 3])
+def test_structured_cell_size_is_the_analytic_value_and_tracks_deformation(dim):
+    """A regular box has an exact answer, and an affine deform scales it.
+
+    ``elementRes=4`` on the unit box gives cells of side 0.25, so
+    ``volume**(1/dim)`` is 0.25 whatever the dimension. Applying a linear map
+    multiplies every cell volume by ``|det|``, hence every length by
+    ``|det|**(1/dim)`` -- which the field must follow after ``deform``.
+    """
+    mesh = uw.meshing.StructuredQuadBox(
+        minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim, qdegree=3,
+        elementRes=(4,) * dim)
     mesh.cell_size()
     field = mesh._cell_size_variable
-    errors = []
-    for phase in ("initial", "deformed"):
-        if phase == "deformed":
-            coordinates = np.array(mesh.X.coords)
-            coordinates[:, 0] = 1.7 * coordinates[:, 0] + 0.2 * coordinates[:, 1]
-            mesh.deform(coordinates)
-        expected = _vertex_rms(mesh)
-        actual = np.asarray(field.array[:, 0, 0])
-        shapes_match = actual.shape == expected.shape
-        assert all(uw.mpi.comm.allgather(shapes_match)), (actual.shape, expected.shape)
-        local_error = float(np.abs(actual - expected).max(initial=0.0))
-        error = max(uw.mpi.comm.allgather(local_error))
-        errors.append(error)
-        uw.pprint(f"CELL_SIZE_GEOMETRY dim={dim} simplex={simplex} phase={phase} "
-                  f"ranks={uw.mpi.size} max_error={error:.12g}")
-    assert max(errors) < 1e-12, errors
+
+    actual = np.asarray(field.array[:, 0, 0])
+    error = float(np.abs(actual - 0.25).max(initial=0.0))
+    assert max(uw.mpi.comm.allgather(error)) < 1.0e-12, error
+
+    coordinates = np.array(mesh.X.coords)
+    coordinates[:, 0] = AFFINE[0, 0] * coordinates[:, 0] + AFFINE[0, 1] * coordinates[:, 1]
+    mesh.deform(coordinates)
+
+    expected = 0.25 * AFFINE_DET ** (1.0 / dim)
+    actual = np.asarray(field.array[:, 0, 0])
+    error = float(np.abs(actual - expected).max(initial=0.0))
+    uw.pprint(f"CELL_SIZE_GEOMETRY tensor dim={dim} deformed max_error={error:.12g}")
+    assert max(uw.mpi.comm.allgather(error)) < 1.0e-12, (error, expected)
 
 
-def test_regular_square_cell_size_keeps_global_radius():
+def test_the_global_minimum_agrees_with_the_field():
+    """``get_min_radius()`` reduces the same field ``cell_size()`` exposes.
+
+    On a regular box every cell is the same size, so the global minimum is that
+    size -- which also pins the reduction to the analytic value rather than to
+    whatever the field happens to hold.
+    """
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4), qdegree=2)
-    legacy = np.array(mesh._radii)
-    global_radius = mesh.get_min_radius()
     mesh.cell_size()
-    expected = np.sqrt(2.0) / 8.0
-    error = float(np.abs(np.asarray(mesh._cell_size_variable.array) - expected).max(initial=0.0))
-    assert max(uw.mpi.comm.allgather(error)) < 1e-12
-    assert global_radius == pytest.approx(expected, rel=1e-12)
-    assert all(uw.mpi.comm.allgather(np.array_equal(mesh._radii, legacy)))
+    assert mesh.get_min_radius() == pytest.approx(0.25, rel=1.0e-12)
+    assert float(np.asarray(mesh._cell_size_variable.array).max()) == pytest.approx(
+        0.25, rel=1.0e-12)

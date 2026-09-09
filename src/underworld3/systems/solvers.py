@@ -256,7 +256,7 @@ def _global_max_diffusivity(constitutive_K, mesh):
         diffusivity = K
 
     # If unit-aware (UnitAwareArray), nondimensionalise so the value is
-    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # consistent with mesh._cell_radii. Note: .magnitude alone would keep the
     # physical-units number, which would be wrong here.
     if hasattr(diffusivity, "units") and diffusivity.units is not None:
         diffusivity = uw.non_dimensionalise(diffusivity)
@@ -276,7 +276,7 @@ def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
 
     Shared by the ``estimate_dt`` implementations: the advective CFL limit
     needs per-element centroid velocities in the same (nondimensional)
-    scale as ``mesh._radii``.
+    scale as ``mesh._cell_radii``.
 
     Parameters
     ----------
@@ -303,7 +303,7 @@ def _centroid_velocities_nd(V_fn, mesh, basis=None, ensure_2d=True):
         vel = uw.function.evaluate(V_fn, mesh._centroids)
 
     # If unit-aware (UnitAwareArray), nondimensionalise so the values are
-    # consistent with mesh._radii. Note: .magnitude alone would keep the
+    # consistent with mesh._cell_radii. Note: .magnitude alone would keep the
     # physical-units numbers, which would be wrong here.
     if hasattr(vel, "units") and vel.units is not None:
         vel = uw.non_dimensionalise(vel)
@@ -361,7 +361,7 @@ def _advective_diffusive_dt(constitutive_K, V_fn, mesh, direction_aware=False,
     diffusivity_glob = _global_max_diffusivity(constitutive_K, mesh)
     vel = _centroid_velocities_nd(V_fn, mesh)
     vel_magnitudes = np.linalg.norm(vel, axis=1)
-    element_radii = mesh._radii
+    element_radii = mesh._cell_radii
 
     def _reduce_dt(per_elem):
         fin = per_elem[np.isfinite(per_elem)] if len(per_elem) else per_elem
@@ -2417,7 +2417,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         vel_magnitudes = np.linalg.norm(vel, axis=1)
 
         # Get per-element radii (characteristic element size)
-        element_radii = self.mesh._radii
+        element_radii = self.mesh._cell_radii
 
         # Compute per-element advective timestep: dt_i = h_i / |v_i|
         # Avoid division by zero for elements with zero velocity
@@ -4454,7 +4454,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
             centroid) · v̂` over the cell vertices. This is the
             distance material actually traverses through the cell
             per unit ``|v|``, and is **always ≥ the isotropic
-            mesh._radii estimate**, by 1.5–3× for equant cells
+            mesh._cell_radii estimate**, by 1.5–3× for equant cells
             (geometric factor) and up to ~10× for cells that the
             mover has stretched along the flow direction. On
             adapted meshes the gain is substantial; on uniform

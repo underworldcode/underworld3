@@ -4317,7 +4317,7 @@ class SNES_Vector(SolverBaseClass):
 
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None,
-                       normal=None, gamma=10.0, theta=1, mask=None,
+                       normal=None, gamma=12.5, theta=1, mask=None,
                        local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
@@ -4339,8 +4339,13 @@ class SNES_Vector(SolverBaseClass):
             terms — the same geometric-normal override as on the Stokes
             variant. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
-            Dimensionless stabilisation parameter.
+        gamma : float, default=12.5
+            Dimensionless stabilisation parameter. The penalty is
+            ``gamma*mu/h``, so this is calibrated against the definition of
+            ``h``. It was 10.0 while ``h`` came from a kd-tree of neighbouring
+            centroids; ``mesh.cell_size()`` is now PETSc's ``volume**(1/dim)``,
+            about 19% larger in the mean, and 12.5 restores the enforcement
+            that gamma=10 gave against the old h (#694).
         theta : {-1, 0, 1}, default=1
             Symmetry parameter (1=symmetric, -1=skew-symmetric).
         mask : sympy expression, optional
@@ -6534,7 +6539,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                      remove_mean=remove_mean)
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
-                       gamma=10.0, theta=1, mask=None, local_h=True, g=None):
+                       gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
 
         Nitsche's method provides a variationally consistent alternative to
@@ -6571,9 +6576,13 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             Boundary unit normal used in the Nitsche consistency, symmetry,
             and pressure-coupling terms. Default ``None`` uses the per-boundary,
             deformation-tracking ``mesh.boundary_normal(boundary)``.
-        gamma : float, default=10.0
+        gamma : float, default=12.5
             Dimensionless stabilisation parameter. Typical values 5--20
-            for P2 elements.
+            for P2 elements. The penalty is ``gamma*mu/h``, so this is
+            calibrated against the definition of ``h``: it was 10.0 while
+            ``h`` came from a kd-tree of neighbouring centroids, and moved
+            with ``mesh.cell_size()`` becoming PETSc's ``volume**(1/dim)``
+            (#694).
         theta : {-1, 0, 1}, default=1
             Symmetry parameter:
              1: symmetric (default — optimal convergence and solver efficiency)
