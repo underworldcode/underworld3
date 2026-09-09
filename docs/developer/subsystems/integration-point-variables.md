@@ -331,6 +331,117 @@ size are `nmin` and `patch_nnn` on `CellPolynomialProjector.fit`.
 M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2)
 ```
 
+### The swarm step at the mid time
+
+`swarm.advection(V_fn, dt, order=2, midtime_velocity=True)` evaluates the
+RK2 mid-point velocity at the mid time, $\tfrac32 v^n - \tfrac12 v^{n-1}$,
+from a `CharacteristicTrace` the swarm owns (the previous velocity is cached
+by evaluation at the nodes at the end of each call), or from a solver's
+shared trace passed as `characteristics=`. On a rotation whose rate ramps
+linearly, ten steps of the frozen-velocity step miss 0.05 rad and the
+mid-time step under 0.008 (`tests/test_0069_swarm_midtime_velocity.py`). A
+steady flow is unchanged; the option is off by default and ignored when the
+step is substepped.
+
+### Repopulation: keeping every cell fit-able
+
+A flow that empties cells starves the fit, and the two particle read-back
+schemes both diverged on emptied corner cells before repopulation existed.
+`Swarm.repopulate()` takes the per-cell census (owning cells from the strict
+locator) and refills a starved cell from its own lattice, the points
+`populate` uses, choosing the lattice points farthest from the particles
+present. A new particle takes, for every swarm variable, the bounded Shepard
+reconstruction from its nearest neighbours (`order=1` for the linear-exact
+reconstruction; a starved cell is where neighbours are far, and the linear
+tail extrapolated to values of 100 on a field bounded by 1), or a supplied
+value (`values={var: constant or callable}`, an inflow datum for instance).
+`swarm.population_control = dict(...)` makes every `advection()` end with a
+repopulation, which is what the cells proxy wants: the refill runs before
+the next fit.
+
+```python
+swarm.population_control = dict()             # refill to the populate() density
+swarm.population_control = dict(min_per_cell=8, values={T: 0.0})
+```
+
+Count is not the whole criterion. Particles the advection clamps back onto a
+wall (`mesh.return_coords_to_bounds`) slide along it as a line, and the P2
+fit of a collinear set is singular whatever its count (measured: condition
+number 1e300 at 92 particles in a wall cell, garbage that grew by 1e12 in
+ten steps through the read-back). The fit therefore routes a cell whose Gram
+matrix has condition number above `cond_max` (1e6) to the patch fit, and a
+patch that is itself flat keeps only its mean. With that guard and
+population control the untapered rotating box, where every wall has an
+inflow and an outflow segment, runs to the same answer whether exiting
+particles are clamped or deleted (`mesh.return_coords_to_bounds = None`,
+the right setting for a true outflow, which also keeps the particle count
+from growing).
+
+Measured on the rotating Gaussian (h = 0.1, C = 0.25, 10 particles per cell,
+PIC, one revolution): population control takes the L2 error from 1.6e-2 to
+8.8e-3, level with the integration-point history at 9.1e-3, because no cell
+is ever left to the linear patch fit. A cap (`max_per_cell`) thins over-full
+cells by removing the particles closest to a neighbour; measured it costs
+accuracy (6.8e-2) and is off by default.
+
+### Viscoelastic stress history on particles
+
+The stress history of a viscoelastic Stokes solve is state: the stress at
+the old time cannot be rebuilt from the present velocity gradient and the
+rheology, and Crank-Nicolson keeps the elastic response undamped. Carried on
+particles it is the Ellipsis / Underworld PIC-LIP arrangement: the particles
+carry the stress along the flow, the mesh reads it at the integration points
+through the cells proxy, and after each solve the new stress is evaluated at
+the particles. That last step is a local ODE (the Maxwell update), so there
+is no projection back to the mesh and no null space; the particle scheme's
+one weakness, the re-projection of a diffused field, does not arise.
+
+```python
+swarm = uw.swarm.Swarm(mesh)
+DFDt = uw.systems.ddt.Lagrangian_Swarm(
+    swarm=swarm, psi_fn=sympy.Matrix.zeros(2, 2), vtype=uw.VarType.SYM_TENSOR,
+    degree=1, continuous=False, order=2, step_averaging=1, proxy_location="cells")
+swarm.populate(fill_param=3)
+swarm.population_control = dict()
+stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, DFDt=DFDt)
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=2)
+...
+swarm.advection(v.sym, dt, order=2)     # then
+stokes.solve(timestep=dt)
+```
+
+The constitutive model reads the history through `psi_star[i].sym` and the
+order bookkeeping only, so the swarm history slots in symbolically; the
+solver assigns the stress expression to it, takes the viscoelastic order
+from a supplied history, and leaves the nodal projection and shift to the
+nodal history. The swarm manager evaluates every component of the new
+stress at the particles before it shifts its chain, because the stress
+expression reads the history it is about to overwrite. `step_averaging=1`
+is required (the default 2 half-relaxes the stored stress). The ETD
+integrator is not available on the swarm history.
+
+Maxwell shear box (`tests/test_0070_ve_stress_history_on_particles.py`):
+order 1 within 5% of the analytic curve after 20 steps at dt = 0.1 t_r,
+order 2 within 1%, and the particle and nodal histories agree to 0.2% of
+the final stress. Uniform shear has a uniform stress, so this validates the
+plumbing and the time integration.
+
+**Open (2026-09-09): a localised stress patch under shear.** With a
+Gaussian patch in sigma_xy on the same shear box
+(`~/+Simulations/integration_point_proxy/scripts/ve_stress_patch.py`), the
+nodal and the particle histories each converge cleanly in h (4x per
+doubling at the finest step) and in dt (first order, the same rate), but
+to answers 1.2e-2 apart in L2 (peak 0.738 against 0.715), independent of
+resolution, time step, particle density, proxy degree, read-back (PIC,
+FLIP, an explicit P1 projection), mid-time velocity, and box width. Every
+component agrees in isolation: with the particles held fixed the two
+answers coincide (1.2e-3); transport alone against the exact sheared patch
+puts the particles at 2e-5 and a P2 nodal history at 4e-5 (the P1 nodal
+history is first order, 4e-3 at h/32), yet the coupled nodal answer does
+not move when its history goes from P1 to P2; the particle proxy is
+continuous across cells to 1e-8. Which limit is right is undecided and
+needs a manufactured solution or an equation-level audit of both paths.
+
 ### Why a least-squares fit and not a conservative transfer
 
 The conservative particle-to-mesh transfer solves the rule mass matrix

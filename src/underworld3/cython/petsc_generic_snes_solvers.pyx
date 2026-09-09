@@ -2745,6 +2745,11 @@ class SolverBaseClass(uw_object):
     @constitutive_model.setter
     def constitutive_model(self, model_or_class):
 
+        # A stress history supplied by the user fixes the viscoelastic order
+        # (the solver's own _order is set only when it builds the history).
+        if self.Unknowns.DFDt is not None and self._order == 0:
+            self._order = getattr(self.Unknowns.DFDt, "order", 0) or 0
+
         ### checking if it's an instance - it will need to be reset
         if isinstance(model_or_class, uw.constitutive_models.Constitutive_Model):
             self._constitutive_model = model_or_class
