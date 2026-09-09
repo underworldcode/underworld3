@@ -424,8 +424,23 @@ Maxwell shear box (`tests/test_0070_ve_stress_history_on_particles.py`):
 order 1 within 5% of the analytic curve after 20 steps at dt = 0.1 t_r,
 order 2 within 1%, and the particle and nodal histories agree to 0.2% of
 the final stress. Uniform shear has a uniform stress, so this validates the
-plumbing and the time integration; a transport-sensitive stress benchmark
-is the next measurement.
+plumbing and the time integration.
+
+**Open (2026-09-09): a localised stress patch under shear.** With a
+Gaussian patch in sigma_xy on the same shear box
+(`~/+Simulations/integration_point_proxy/scripts/ve_stress_patch.py`), the
+nodal and the particle histories each converge cleanly in h (4x per
+doubling at the finest step) and in dt (first order, the same rate), but
+to answers 1.2e-2 apart in L2 (peak 0.738 against 0.715), independent of
+resolution, time step, particle density, proxy degree, read-back (PIC,
+FLIP, an explicit P1 projection), mid-time velocity, and box width. Every
+component agrees in isolation: with the particles held fixed the two
+answers coincide (1.2e-3); transport alone against the exact sheared patch
+puts the particles at 2e-5 and a P2 nodal history at 4e-5 (the P1 nodal
+history is first order, 4e-3 at h/32), yet the coupled nodal answer does
+not move when its history goes from P1 to P2; the particle proxy is
+continuous across cells to 1e-8. Which limit is right is undecided and
+needs a manufactured solution or an equation-level audit of both paths.
 
 ### Why a least-squares fit and not a conservative transfer
 
