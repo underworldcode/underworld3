@@ -219,21 +219,13 @@ def test_mesh_t_resolves_to_the_model_clock():
     assert np.abs(np.asarray(T.array)).max() > 0.1 * control
 
 
-@pytest.mark.xfail(
-    reason="A pint Quantity on the tracker falls through disk_snapshot's "
-    "'unserialisable type' branch: it is recorded as <name>__skipped and is "
-    "ABSENT after load_state, with no warning at save time. A Quantity is "
-    "(magnitude, units) and is trivially serialisable. Remove this xfail when "
-    "the disk snapshot carries units.",
-    strict=False,
-)
 def test_a_dimensional_clock_survives_a_disk_snapshot(tmp_path):
     """The pattern asks scripts to define units, which makes the clock
-    dimensional. That clock must survive a restart, and today it does not.
+    dimensional. That clock must survive a restart.
 
     The plain-float control is what makes this specific: it shows the disk
-    path works for ordinary values, so a dropped quantity is about units and
-    not about the tracker or the file.
+    path works for ordinary values, so a dropped quantity would be about
+    units and not about the tracker or the file.
     """
     uw, model = _fresh_model()
 
@@ -261,3 +253,28 @@ def test_a_dimensional_clock_survives_a_disk_snapshot(tmp_path):
     )
     assert model.tracker.time.magnitude == pytest.approx(4.5)
     assert str(model.tracker.time.units) == "megayear"
+
+
+def test_a_dimensional_array_survives_a_disk_snapshot(tmp_path):
+    """The magnitude may be an array, which is stored as a dataset rather
+    than an attribute — the other half of the quantity round-trip."""
+    uw, model = _fresh_model()
+
+    model.set_reference_quantities(
+        domain_depth=uw.quantity(500, "km"),
+        material_density=uw.quantity(3300, "kg/m**3"),
+        material_viscosity=uw.quantity(1e21, "Pa*s"),
+    )
+    uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+
+    model.tracker.depths = uw.quantity(np.array([10.0, 20.0, 30.0]), "km")
+
+    path = str(tmp_path / "arr.snap.h5")
+    model.save_state(file=path)
+    model.tracker.depths = uw.quantity(np.array([0.0]), "km")
+    model.load_state(path)
+
+    assert np.allclose(model.tracker.depths.magnitude, [10.0, 20.0, 30.0])
+    assert str(model.tracker.depths.units) == "kilometer"

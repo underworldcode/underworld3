@@ -513,23 +513,6 @@ of model state, so two independent runs of the same problem on the same solver
 objects diverge at the 1e-13 level from the first step. If you need to look at a
 step twice, restore it rather than re-run it.
 
-### Known gap: a dimensional clock does not survive a restart
-
-An in-memory snapshot round-trips a units-carrying tracker entry correctly. The
-**on-disk** snapshot does not: a `pint` quantity falls through to the
-"unserialisable type" branch, is recorded in the file as
-`<name>__skipped` and is simply **absent** after `load_state`, so reading
-`model.tracker.time` afterwards raises. Nothing warns at save time. Plain
-floats, ints and numpy arrays are unaffected.
-
-Until that is fixed, a script that needs to restart from disk should keep the
-clock non-dimensional, or re-establish it explicitly after loading:
-
-```python
-model.load_state(path)
-model.tracker.time = uw.quantity(model.tracker.time_Myr, "Myr")   # stored as a float
-```
-
 ### Known gap: `mesh.t` is not this clock
 
 `mesh.t` is a separate, symbolic time atom bound to PETSc's `petsc_t`. The
@@ -867,7 +850,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - **2026-09-09**: The timestepping pattern
   - Start from the model and its reference quantities, not from the mesh
   - Clock on `model.tracker`, not loose variables (snapshot consistency)
-  - A dimensional clock is dropped by the on-disk snapshot
+  - Disk snapshots now carry dimensional values (magnitude + units)
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version
