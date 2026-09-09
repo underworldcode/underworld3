@@ -34,10 +34,11 @@ pytestmark = [
     pytest.mark.tier_a,
 ]
 
-# Cell is 1.0 wide x 0.5 tall; the characteristic length UW3 reports is the
-# centroid-to-corner half-diagonal. Analytic, so this is a real oracle rather
-# than a recorded number.
-SERIAL_RADIUS = math.sqrt(0.5 ** 2 + 0.25 ** 2)
+# Cell is 1.0 wide x 0.5 tall, so its area is 0.5 and the characteristic
+# length UW3 reports is area**(1/2). Analytic, so this is a real oracle rather
+# than a recorded number. (It was the centroid-to-corner half-diagonal before
+# the cell size came from PETSc's DMPlexComputeGeometryFVM, issue #694.)
+SERIAL_RADIUS = (1.0 * 0.5) ** (1.0 / 2.0)
 
 
 def _starved_box():
