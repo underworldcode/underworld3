@@ -111,9 +111,12 @@ different manager rather than something to correct. The measurements are in
 `docs/developer/subsystems/integration-point-variables.md`.
 
 **Lagrangian on a swarm** (`uw.systems.ddt.Lagrangian_Swarm`) transports the
-field on particles. It is worth using when the model already carries a swarm for
-material tracking, so the transport rides on particles it is advecting anyway.
-We would not introduce particles in order to use it.
+field on particles, and is **in development**: it is being measured as part of
+the particle-in-cell work and its accuracy and cost are not yet settled, so
+treat what follows as the intended role rather than a recommendation. It is
+aimed at models that already carry a swarm for material tracking, where the
+transport rides on particles the model is advecting anyway. We would not expect
+to introduce particles in order to use it.
 
 **Semi-Lagrangian at the nodes** (`uw.systems.ddt.SemiLagrangian`) remains the
 historical default of `AdvDiffusionSLCN`. It re-interpolates once per step, which
