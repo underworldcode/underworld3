@@ -1714,6 +1714,7 @@ class EulerianSUPG(Eulerian):
         tau_shape: str = "inverse_sum",
         peclet_weight: float = 4.0,
         num_components=None,
+        transport_on_update: bool = False,
     ):
         order = int(order)
         if order not in (1, 2, 3):
@@ -1738,6 +1739,13 @@ class EulerianSUPG(Eulerian):
         )
         self._advection_mode = "assembled"
         self._integrator = "am" if order == 1 else "bdf"
+        # When the unknown is not the solver's own (a stress carried by a Stokes
+        # solve, say) the manager transports its history itself, on the grid,
+        # in place of a semi-Lagrangian trace-back. See _transport_history.
+        self.transport_on_update = bool(transport_on_update)
+        self._transport_flat = None
+        self._transport_old = None
+        self._transport_solver = None
         self.V_fn = V_fn
         self.V_fn_history = None
         self.diffusivity = diffusivity
@@ -1870,6 +1878,107 @@ class EulerianSUPG(Eulerian):
         R = _as_matrix(R)
         column = R.reshape(len(R), 1)
         return self.tau() * (column * self.advecting_velocity(0))
+
+    # ----- transporting the history on the grid -----
+
+    def _transport_components(self):
+        """Independent components of the history variable as ``(i, j)`` pairs.
+
+        A symmetric tensor contributes its upper triangle; every other shape
+        contributes every entry.
+        """
+        rows, cols = self.psi_star[0].shape
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            return [(i, j) for i in range(rows) for j in range(i, cols)]
+        return [(i, j) for i in range(rows) for j in range(cols)]
+
+    def _transport_residual(self, solver):
+        r"""Strong residual of one transport step, one entry per component."""
+        dim = self.mesh.dim
+        S, S_old = solver.u.sym, self._transport_old.sym
+        gradient = self.mesh.vector.gradient
+        a = self.advecting_velocity(0)
+        entries = []
+        for k in range(S.shape[1]):
+            grad_k = gradient(S[0, k])
+            convective = sum(a[0, i] * grad_k[0, i] for i in range(dim))
+            entries.append((S[0, k] - S_old[0, k]) / self._delta_t + convective)
+        return sympy.Matrix([entries])
+
+    def _transport_flux(self, solver):
+        """The SUPG flux of the transport step, one row per component."""
+        return self.stabilisation_flux(self._transport_residual(solver))
+
+    def _build_transport_solver(self):
+        """The implicit SUPG solve that carries one history level over a step.
+
+        The history's independent components are flattened onto one matrix
+        variable and marched together: backward Euler in time (the step is a
+        transport within a step, not the scheme's own time discretisation),
+        the manager's advecting velocity and its stabilisation parameter. No
+        boundary condition is imposed: the transported quantity is not the
+        solver's unknown and what enters at an inflow is the caller's to say.
+        """
+        from underworld3.utilities._api_tools import Template
+
+        components = len(self._transport_components())
+        tag = self.instance_number
+        self._transport_flat = uw.discretisation.MeshVariable(
+            f"psi_transport_{tag}", self.mesh, (1, components),
+            vtype=uw.VarType.MATRIX, degree=self.degree,
+            continuous=self.continuous, varsymbol=rf"{{\psi^{{T}}_{{{tag}}}}}")
+        self._transport_old = uw.discretisation.MeshVariable(
+            f"psi_transport_old_{tag}", self.mesh, (1, components),
+            vtype=uw.VarType.MATRIX, degree=self.degree,
+            continuous=self.continuous, varsymbol=rf"{{\psi^{{T-}}_{{{tag}}}}}")
+
+        class _HistoryTransport(uw.systems.SNES_MultiComponent):
+            F0 = Template(r"f_0", lambda solver: solver._manager._transport_residual(solver),
+                          "Transport of a history level: time derivative and advection.")
+            F1 = Template(r"\mathbf{F}_1", lambda solver: solver._manager._transport_flux(solver),
+                          "The SUPG flux of the transported history level.")
+
+        solver = _HistoryTransport(self.mesh, u_Field=self._transport_flat, verbose=self.verbose)
+        solver._manager = self
+        solver.constitutive_model = uw.constitutive_models.Constitutive_Model
+        solver.petsc_options["snes_rtol"] = 1.0e-8
+        solver.petsc_options["ksp_rtol"] = 1.0e-9
+        solver.petsc_options["ksp_type"] = "gmres"
+        solver.petsc_options["pc_type"] = "asm"
+        solver.petsc_options["sub_pc_type"] = "ilu"
+        self._transport_solver = solver
+        return solver
+
+    def _transport_history(self, dt, verbose=False):
+        """Carry every stored level forward by one step of the flow.
+
+        Each level is transported once per step, so the level that is two
+        steps old has been carried twice: the grid counterpart of sampling
+        the semi-Lagrangian trace-back at two departure points.
+        """
+        if self._transport_solver is None:
+            self._build_transport_solver()
+        indices = self._transport_components()
+        flat, previous = self._transport_flat, self._transport_old
+
+        for level in range(self.order):
+            history = self.psi_star[level]
+            for k, (i, j) in enumerate(indices):
+                flat.array[:, 0, k] = history.array[:, i, j]
+            previous.array[...] = flat.array[...]
+            self._transport_solver.solve(verbose=verbose)
+            for k, (i, j) in enumerate(indices):
+                values = flat.array[:, 0, k]
+                history.array[:, i, j] = values
+                if i != j:
+                    history.array[:, j, i] = values
+
+    def update_pre_solve(self, dt, evalf=False, verbose=False):
+        """Refresh the scheme's coefficients and, when this manager owns the
+        transport of its history, carry every level forward by one step."""
+        super().update_pre_solve(dt, evalf=evalf, verbose=verbose)
+        if self.transport_on_update and self.V_fn is not None and dt:
+            self._transport_history(dt, verbose=verbose)
 
     def _object_viewer(self):
         from IPython.display import Latex, display
