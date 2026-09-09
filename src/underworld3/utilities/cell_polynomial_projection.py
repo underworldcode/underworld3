@@ -118,7 +118,7 @@ class CellPolynomialProjector:
 
     # -- the fit ------------------------------------------------------------
 
-    def fit(self, coords, values, nmin=None, patch_nnn=None, old=None):
+    def fit(self, coords, values, nmin=None, patch_nnn=None, old=None, cond_max=1.0e6):
         """Fit every cell; returns nodal values shaped like ``meshVar.data``.
 
         Parameters
@@ -131,6 +131,12 @@ class CellPolynomialProjector:
         old : current proxy values, shaped like ``meshVar.data``; after the
             first fit a cell with no particles keeps them (on the first fit,
             or without ``old``, it takes the linear patch fit).
+        cond_max : a cell whose Gram matrix has a condition number above this
+            is treated as thin (patch fit) however many particles it holds.
+            Count is not enough: particles clamped onto a wall by the
+            advection lie on a line, and the P2 fit of a line is singular
+            (measured: condition 1e300 at 92 particles, garbage that grew
+            by 1e12 in ten steps through the read-back).
         """
         coords = np.asarray(coords, dtype=np.float64).reshape(-1, self.dim)
         values = np.asarray(values, dtype=np.float64).reshape(coords.shape[0], -1)
@@ -149,6 +155,15 @@ class CellPolynomialProjector:
         U = np.zeros((self.ncells, self.Nb, nc))
         nmin = nmin or self.Nb + 2
         dense = npc >= nmin
+        self.n_ill_conditioned = 0
+        if dense.any():
+            ev = np.linalg.eigvalsh(G[dense])
+            cond = ev[:, -1] / np.maximum(ev[:, 0], 1e-300)
+            ill = cond > cond_max
+            if ill.any():
+                self.n_ill_conditioned = int(ill.sum())
+                idx = np.nonzero(dense)[0][ill]
+                dense[idx] = False
         if dense.any():
             ridge = 1e-10 * np.trace(G[dense], axis1=1, axis2=2)[:, None, None] / self.Nb
             U[dense] = np.linalg.solve(G[dense] + ridge * np.eye(self.Nb)[None], R[dense])
@@ -175,6 +190,13 @@ class CellPolynomialProjector:
             Rt = np.einsum("cpa,cpk->cak", A, psi[idx])
             ridge = 1e-10 * np.trace(Gt, axis1=1, axis2=2)[:, None, None] / (self.dim + 1) + 1e-30
             coef = np.linalg.solve(Gt + ridge * np.eye(self.dim + 1)[None], Rt)      # (nthin, dim+1, nc)
+            # A patch whose particles are themselves (nearly) collinear cannot
+            # carry a gradient: keep only the constant term (the patch mean).
+            evt = np.linalg.eigvalsh(Gt)
+            flat = evt[:, -1] / np.maximum(evt[:, 0], 1e-300) > cond_max
+            if flat.any():
+                coef[flat, 1:, :] = 0.0
+                coef[flat, 0, :] = psi[idx[flat]].mean(axis=1)
             Adof = np.concatenate([np.ones((self.Nb, 1)), self.xi_dof], axis=1)       # (Nb, dim+1)
             U[thin] = np.einsum("ba,cak->cbk", Adof, coef)
 

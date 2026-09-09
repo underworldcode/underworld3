@@ -331,6 +331,47 @@ size are `nmin` and `patch_nnn` on `CellPolynomialProjector.fit`.
 M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="cells", proxy_degree=2)
 ```
 
+### Repopulation: keeping every cell fit-able
+
+A flow that empties cells starves the fit, and the two particle read-back
+schemes both diverged on emptied corner cells before repopulation existed.
+`Swarm.repopulate()` takes the per-cell census (owning cells from the strict
+locator) and refills a starved cell from its own lattice, the points
+`populate` uses, choosing the lattice points farthest from the particles
+present. A new particle takes, for every swarm variable, the bounded Shepard
+reconstruction from its nearest neighbours (`order=1` for the linear-exact
+reconstruction; a starved cell is where neighbours are far, and the linear
+tail extrapolated to values of 100 on a field bounded by 1), or a supplied
+value (`values={var: constant or callable}`, an inflow datum for instance).
+`swarm.population_control = dict(...)` makes every `advection()` end with a
+repopulation, which is what the cells proxy wants: the refill runs before
+the next fit.
+
+```python
+swarm.population_control = dict()             # refill to the populate() density
+swarm.population_control = dict(min_per_cell=8, values={T: 0.0})
+```
+
+Count is not the whole criterion. Particles the advection clamps back onto a
+wall (`mesh.return_coords_to_bounds`) slide along it as a line, and the P2
+fit of a collinear set is singular whatever its count (measured: condition
+number 1e300 at 92 particles in a wall cell, garbage that grew by 1e12 in
+ten steps through the read-back). The fit therefore routes a cell whose Gram
+matrix has condition number above `cond_max` (1e6) to the patch fit, and a
+patch that is itself flat keeps only its mean. With that guard and
+population control the untapered rotating box, where every wall has an
+inflow and an outflow segment, runs to the same answer whether exiting
+particles are clamped or deleted (`mesh.return_coords_to_bounds = None`,
+the right setting for a true outflow, which also keeps the particle count
+from growing).
+
+Measured on the rotating Gaussian (h = 0.1, C = 0.25, 10 particles per cell,
+PIC, one revolution): population control takes the L2 error from 1.6e-2 to
+8.8e-3, level with the integration-point history at 9.1e-3, because no cell
+is ever left to the linear patch fit. A cap (`max_per_cell`) thins over-full
+cells by removing the particles closest to a neighbour; measured it costs
+accuracy (6.8e-2) and is off by default.
+
 ### Why a least-squares fit and not a conservative transfer
 
 The conservative particle-to-mesh transfer solves the rule mass matrix

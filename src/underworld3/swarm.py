@@ -2995,6 +2995,10 @@ class Swarm(Stateful, uw_object):
         # a Lagrangian history registers its first sampling here so it sees
         # the field at the launch positions, not at the landing ones.
         self._pre_advection_hooks = []
+        # Population control: a dict of repopulate() keyword arguments (or
+        # None). When set, advection() ends with repopulate(**population_control)
+        # so no cell is left starved before the next fit of a cells proxy.
+        self.population_control = None
         self._index = None
         # Particle -> proxy-node transfer operators, keyed by geometry and
         # stencil and shared by every proxied variable of this swarm. Entries
@@ -4953,6 +4957,183 @@ class Swarm(Stateful, uw_object):
             return i + j * self.shape[0]
 
     @timing.routine_timer_decorator
+    @uw.collective_operation
+    def repopulate(
+        self,
+        min_per_cell=None,
+        max_per_cell=None,
+        values=None,
+        nnn=None,
+        order=0,
+        verbose=False,
+    ):
+        """Add particles to cells that hold too few, remove from cells that hold
+        too many, so every cell can support a well-posed fit of its particles.
+
+        The trigger is the per-cell census (owning cells from the strict
+        locator). A starved cell is filled from its own lattice, the points
+        ``populate`` uses (degree ``fill_param``, cell interior), choosing the
+        lattice points farthest from the particles already present. A new
+        particle takes, for every variable, the RBF reconstruction from the
+        nearest existing particles at its position: bounded Shepard weights by
+        default (``order=0``), since a starved cell is where the neighbours
+        are far and a linear-exact tail extrapolates (measured: values of 100
+        on a field bounded by 1 in the emptied corners of a rotating box);
+        ``order=1`` gives the linear-exact reconstruction. ``values`` overrides
+        a variable with a callable ``f(coords) -> (n, components)`` or a
+        constant, an inflow datum for instance. A cell above
+        ``max_per_cell`` loses its most redundant particles, those closest to
+        a neighbour in the same cell.
+
+        Rank-local placement (a cell is filled by the rank that owns it), but
+        collective: every rank must call it, the domain test reduces.
+
+        Parameters
+        ----------
+        min_per_cell : int, optional
+            Particles a cell must hold; default the lattice count of
+            ``fill_param`` (the density ``populate`` gave).
+        max_per_cell : int, optional
+            Cap above which particles are removed; default no removal.
+        values : dict, optional
+            ``{variable or name: callable or constant}`` for new particles.
+        nnn : int, optional
+            Neighbours in the RBF reconstruction (default ``2 (dim + 1)``).
+        order : {0, 1}, optional
+            RBF reconstruction order for new particles: 0 bounded (default),
+            1 linear-exact.
+
+        Returns
+        -------
+        (added, removed) : the counts on this rank.
+        """
+        mesh = self.mesh
+        dim = self.cdim
+        fill = getattr(self, "fill_param", None) or 1
+        lattice = np.asarray(mesh._get_coords_for_basis(fill, continuous=False))
+        c0, c1 = mesh.dm.getHeightStratum(0)
+        ncells = c1 - c0
+        n_lat = lattice.shape[0] // max(ncells, 1)
+        if min_per_cell is None:
+            min_per_cell = n_lat
+        if max_per_cell is not None:
+            min_per_cell = min(min_per_cell, max_per_cell)   # a cap below the lattice count wins
+
+        # Every rank must reach the (collective) domain test before any
+        # rank-local branch; the census itself is rank-local.
+        lat_owned = np.asarray(mesh.points_in_domain(lattice, strict_validation=True), dtype=bool)
+        self._flush_pending_petsc_sync()
+        X = np.array(self._particle_coordinates.data, copy=True) if self.local_size > 0 \
+            else np.zeros((0, dim))
+        cells = np.asarray(mesh._robust_owning_cells(X), dtype=np.int64) if X.shape[0] else np.zeros(0, np.int64)
+        npc = np.bincount(cells[cells >= 0], minlength=ncells)
+        lat_cells = np.asarray(mesh._robust_owning_cells(lattice), dtype=np.int64)
+        owned = np.zeros(ncells, dtype=bool)
+        owned[lat_cells[lat_owned & (lat_cells >= 0)]] = True
+
+        added = removed = 0
+
+        # ---- removal: the most redundant particles of over-full cells ----------
+        if max_per_cell is not None and X.shape[0] > 0:
+            drop = []
+            for c in np.nonzero(owned & (npc > max_per_cell))[0]:
+                idx = np.nonzero(cells == c)[0]
+                P = X[idx]
+                d = np.linalg.norm(P[:, None, :] - P[None, :, :], axis=2)
+                np.fill_diagonal(d, np.inf)
+                nearest = d.min(axis=1)
+                surplus = int(npc[c] - max_per_cell)
+                drop.extend(idx[np.argsort(nearest)[:surplus]].tolist())
+            if drop:
+                for index in sorted(drop, reverse=True):
+                    self.dm.removePointAtIndex(int(index))
+                removed = len(drop)
+                keep = np.ones(X.shape[0], dtype=bool)
+                keep[drop] = False
+                X, cells = X[keep], cells[keep]
+                npc = np.bincount(cells[cells >= 0], minlength=ncells)
+                self._invalidate_canonical_data()
+
+        # ---- addition: starved cells, lattice points farthest from particles -
+        need = np.where(owned, np.maximum(min_per_cell - npc, 0), 0)
+        new_coords = []
+        if need.sum() > 0:
+            cand_ok = lat_owned & (lat_cells >= 0) & (need[np.maximum(lat_cells, 0)] > 0)
+            cand = lattice[cand_ok]
+            cand_cells = lat_cells[cand_ok]
+            if X.shape[0] > 0:
+                dist, _ = uw.kdtree.KDTree(X).query(cand, k=1, sqr_dists=False)
+                dist = np.asarray(dist).reshape(-1)
+            else:
+                dist = np.zeros(cand.shape[0])
+            sort_idx = np.lexsort((-dist, cand_cells))       # by cell, farthest first
+            cand, cand_cells, dist = cand[sort_idx], cand_cells[sort_idx], dist[sort_idx]
+            # rank within cell
+            start = np.searchsorted(cand_cells, np.arange(ncells), side="left")
+            rank_in_cell = np.arange(cand.shape[0]) - start[cand_cells]
+            take = rank_in_cell < need[cand_cells]
+            new_coords = cand[take]
+
+        n_new = int(len(new_coords))
+        if n_new > 0:
+            n_old = max(self.dm.getLocalSize(), 0)
+            nnn = nnn or 2 * (dim + 1)
+            nnn = min(nnn, max(n_old, 1))
+            rbf_order = order if nnn >= dim + 2 else 0
+            operator = None
+            if n_old > 0:
+                operator = uw.kdtree.KDTree(X).interpolation_matrix(
+                    np.asarray(new_coords), nnn=nnn, p=2, order=rbf_order)
+            # raw values of every variable at the old particles, BEFORE the add
+            raw_old = {}
+            for name, var in self._vars.items():
+                if var is self._particle_coordinates or var.clean_name in (
+                        "DMSwarmPIC_coor", "DMSwarm_rank", "DMSwarm_X0"):
+                    continue
+                raw_old[name] = np.asarray(var.unpack_raw_data_from_petsc(squeeze=False)).reshape(n_old, -1)
+
+            self.dm.finalizeFieldRegister()
+            self.dm.addNPoints(n_new)
+            coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, dim))
+            coords[n_old:, :] = np.asarray(new_coords)
+            self.dm.restoreField("DMSwarmPIC_coor")
+            ranks = self.dm.getField("DMSwarm_rank")
+            ranks.reshape(-1)[n_old:] = uw.mpi.rank
+            self.dm.restoreField("DMSwarm_rank")
+            x0 = getattr(self, "_X0", None)
+            if x0 is not None:
+                f = self.dm.getField(x0.clean_name).reshape((-1, dim))
+                f[n_old:, :] = np.asarray(new_coords)
+                self.dm.restoreField(x0.clean_name)
+
+            values = values or {}
+            for name, var in self._vars.items():
+                if name not in raw_old:
+                    continue
+                spec = values.get(var, values.get(name, values.get(var.clean_name)))
+                ncomp = raw_old[name].shape[1] if n_old > 0 else var.num_components
+                if spec is not None:
+                    vals = spec(np.asarray(new_coords)) if callable(spec) else spec
+                    vals = np.broadcast_to(np.asarray(vals, dtype=float).reshape(n_new, -1) if np.ndim(vals) > 0 else vals, (n_new, ncomp))
+                elif operator is not None:
+                    vals = operator @ raw_old[name]
+                else:
+                    vals = np.zeros((n_new, ncomp))
+                f = self.dm.getField(var.clean_name).reshape((-1, ncomp))
+                f[n_old:, :] = np.asarray(vals).reshape(n_new, ncomp)
+                self.dm.restoreField(var.clean_name)
+            added = n_new
+            self._invalidate_canonical_data()
+
+        if added or removed:
+            self._population_generation += 1
+        if verbose:
+            print(f"repopulate: rank {uw.mpi.rank} added {added}, removed {removed} "
+                  f"(cells starved {int((need > 0).sum())})", flush=True)
+        return added, removed
+
+
+    @timing.routine_timer_decorator
     def advection(
         self,
         V_fn,
@@ -5181,6 +5362,9 @@ class Swarm(Stateful, uw_object):
         self.migrate(
             delete_lost_points=True,
         )
+
+        if self.population_control is not None:
+            self.repopulate(**self.population_control)
 
         return
 
