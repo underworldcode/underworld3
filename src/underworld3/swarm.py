@@ -5034,16 +5034,17 @@ class Swarm(Stateful, uw_object):
         added = removed = 0
 
         # ---- removal: the most redundant particles of over-full cells ----------
-        if max_per_cell is not None and X.shape[0] > 0:
+        if max_per_cell is not None and X.shape[0] > 1:
             drop = []
-            for c in np.nonzero(owned & (npc > max_per_cell))[0]:
+            over = np.nonzero(owned & (npc > max_per_cell))[0]
+            if over.shape[0] > 0:
+                # nearest-neighbour distance of every particle, one kd-tree query
+                d2, _ = uw.kdtree.KDTree(X).query(X, k=2)
+                nearest_all = np.sqrt(np.asarray(d2).reshape(X.shape[0], -1)[:, 1])
+            for c in over:
                 idx = np.nonzero(cells == c)[0]
-                P = X[idx]
-                d = np.linalg.norm(P[:, None, :] - P[None, :, :], axis=2)
-                np.fill_diagonal(d, np.inf)
-                nearest = d.min(axis=1)
                 surplus = int(npc[c] - max_per_cell)
-                drop.extend(idx[np.argsort(nearest)[:surplus]].tolist())
+                drop.extend(idx[np.argsort(nearest_all[idx])[:surplus]].tolist())
             if drop:
                 for index in sorted(drop, reverse=True):
                     self.dm.removePointAtIndex(int(index))
@@ -5093,7 +5094,11 @@ class Swarm(Stateful, uw_object):
                 raw_old[name] = np.asarray(var.unpack_raw_data_from_petsc(squeeze=False)).reshape(n_old, -1)
 
             self.dm.finalizeFieldRegister()
-            self.dm.addNPoints(n_new)
+            # PETSc < 3.24 under-allocates by one on the first add to an empty
+            # swarm (the workaround populate() carries).
+            from petsc4py import PETSc
+            n_alloc = n_new + (1 if (n_old == 0 and PETSc.Sys.getVersion() < (3, 24, 0)) else 0)
+            self.dm.addNPoints(n_alloc)
             coords = self.dm.getField("DMSwarmPIC_coor").reshape((-1, dim))
             coords[n_old:, :] = np.asarray(new_coords)
             self.dm.restoreField("DMSwarmPIC_coor")
