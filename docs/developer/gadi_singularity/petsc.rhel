@@ -36,8 +36,10 @@ ARG BASE_IMAGE="quay.io/rockylinux/rockylinux:8.10"
 FROM ${BASE_IMAGE} as runtime
 LABEL maintainer="https://github.com/underworldcode/"
 
-# need to repeat ARGS after every FROM 
-ARG PYTHON_VERSION
+# Repeat the DEFAULT, not just the name: bare `ARG PYTHON_VERSION` relies on
+# inheriting the pre-FROM default, which some buildah/podman versions don't —
+# PYVER expands empty and yum then looks for a package called "python-pip".
+ARG PYTHON_VERSION="3.12"
 
 #### Containerfile ENV vars - for all image stages
 ENV LANG=C.UTF-8
@@ -85,8 +87,13 @@ RUN python${PYVER} -m pip install wheel \
 # 2. Define the builder layer
 FROM runtime as builder
 
-ARG PETSC_VERSION
-ARG PYTHON_VERSION
+# defaults repeated deliberately — see the note in the runtime stage
+ARG PETSC_VERSION="3.25.0"
+ARG PYTHON_VERSION="3.12"
+# Parallelism for PETSc's own build. 2 is safe inside a memory-constrained podman
+# machine (compiling PETSc.c is memory-heavy and OOMs at higher values); CI on a
+# native runner passes 4.
+ARG PETSC_MAKE_NP="2"
 
 RUN yum install -y      \
         ca-certificates \
@@ -108,7 +115,10 @@ RUN yum install -y      \
 &&  rm -rf /var/cache/yum
 # NOTE flex and bison are needed to build
 
-RUN python${PYVER} -m pip install "cython>=3.1" \
+# Upper bound is load-bearing: petsc4py 3.25.0 declares only "cython >= 3" but
+# PC.pyx:1256 fails to cythonize under 3.3.0 ("Invalid index type 'int'").
+# Bisected against the 3.25.0 source: 3.2.9 is the last version that builds.
+RUN python${PYVER} -m pip install "cython>=3.1,<3.3" \
                     "setuptools>=75"            \
                     "meson"                     \
                     "meson-python"              \
@@ -165,7 +175,7 @@ RUN python${PYVER} ./configure \
         --download-zlib=1 \
         --download-ctetgen=1 \
         --download-triangle=1 \
-        --with-make-np=2
+        --with-make-np=${PETSC_MAKE_NP}
 RUN make PETSC_DIR=`pwd` PETSC_ARCH=arch-linux-c-opt all
 RUN make PETSC_DIR=`pwd` PETSC_ARCH=arch-linux-c-opt install \
     || (echo "=== petsc4py build log ===" && \
