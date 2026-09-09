@@ -54,6 +54,40 @@ class ModelState(Enum):
     ERROR = "error"
 
 
+class ModelStep:
+    """What one timestep did — the journal entry for a ``model.step`` block.
+
+    Ordered, so ``[e.name for e in step.events]`` is the sequence of operators
+    the step actually applied. That sequence is what makes a step auditable
+    (did this run do what the write-up says?) and what a replay or an adjoint
+    needs in order to walk the run backwards.
+    """
+
+    __slots__ = ("index", "t0", "dt", "label", "events", "completed")
+
+    def __init__(self, index, t0, dt, label=None):
+        self.index = index
+        self.t0 = t0
+        self.dt = dt
+        self.label = label
+        self.events = []
+        self.completed = False
+
+    @property
+    def t1(self):
+        """The end of the interval this step covers."""
+        return self.t0 + self.dt
+
+    def _record(self, kind, name, **detail):
+        self.events.append({"kind": kind, "name": name, **detail})
+
+    def __repr__(self):
+        state = "" if self.completed else " ABANDONED"
+        seq = " -> ".join(f"{e['kind']}:{e['name']}" for e in self.events) or "(nothing)"
+        tag = f" {self.label!r}" if self.label else ""
+        return f"<step {self.index}{tag} dt={self.dt} {seq}{state}>"
+
+
 class Model(PintNativeModelMixin, BaseModel):
     """
     Central orchestrator for Underworld3 simulations.
@@ -140,6 +174,14 @@ class Model(PintNativeModelMixin, BaseModel):
     # restore manage it automatically. See
     # src/underworld3/checkpoint/tracker.py.
     _tracker: Any = PrivateAttr(default=None)
+
+    # The step journal: an ordered record of what each timestep actually did.
+    # ``_open_step`` is the ModelStep currently in progress (None outside a
+    # ``with model.step(dt):`` block); ``_journal`` is the bounded history of
+    # completed steps. See :meth:`step`.
+    _open_step: Any = PrivateAttr(default=None)
+    _journal: Any = PrivateAttr(default_factory=list)
+    _journal_limit: Any = PrivateAttr(default=512)
 
     def __init__(self, name: Optional[str] = None, **kwargs):
         """
@@ -603,6 +645,129 @@ class Model(PintNativeModelMixin, BaseModel):
         Solvers do not depend on it; using it is optional.
         """
         return self._tracker
+
+    # ------------------------------------------------------------------
+    # The step journal
+    # ------------------------------------------------------------------
+
+    @property
+    def journal(self) -> List[Any]:
+        """Completed :class:`ModelStep` records, oldest first.
+
+        An ordered account of what each timestep did — which solvers ran, in
+        what order, over which time interval. Answers "is this model doing the
+        thing I said it does" without instrumenting the script, and is the
+        record an adjoint or a replay needs.
+
+        Bounded by ``model.journal_limit`` (default 512 steps); set it to
+        ``None`` to keep everything.
+        """
+        return list(self._journal)
+
+    @property
+    def journal_limit(self):
+        """How many completed steps to retain (None keeps all)."""
+        return self._journal_limit
+
+    @journal_limit.setter
+    def journal_limit(self, value):
+        self._journal_limit = value
+        self._trim_journal()
+
+    @property
+    def open_step(self):
+        """The step in progress, or None outside a ``model.step`` block."""
+        return self._open_step
+
+    def _trim_journal(self):
+        limit = self._journal_limit
+        if limit is not None and len(self._journal) > limit:
+            del self._journal[: len(self._journal) - limit]
+
+    def _record_step_event(self, kind: str, name: str, **detail) -> None:
+        """Note that something happened inside the step in progress.
+
+        Called by the machinery (solvers, history managers), not by users.
+        A no-op outside a ``model.step`` block, so nothing is required of a
+        script that does not use one.
+        """
+        step = self._open_step
+        if step is not None:
+            step._record(kind, name, **detail)
+
+    def step(self, dt, label: Optional[str] = None):
+        """One timestep, as a transaction.
+
+        ::
+
+            with model.step(dt):
+                adv_diff.solve(timestep=dt)
+                stokes.solve(zero_init_guess=False)
+
+        The block owns a time INTERVAL. Three things follow:
+
+        **The clock reads as the end of the interval for the whole block.**
+        An implicit scheme centres its residual at the new time, so a
+        time-dependent coefficient — a driven boundary above all — belongs at
+        ``t + dt``. Advancing only on exit would evaluate every implicit
+        coefficient one step late.
+
+        **The advance commits on clean exit, and only then.** An exception, or
+        a step abandoned because the Courant number came out too large, leaves
+        ``model.tracker`` exactly as it was. Backstepping no longer has to
+        remember to unwind a counter.
+
+        **Everything the block did is recorded** in :attr:`journal`, in order,
+        with the interval it ran over.
+
+        Nothing is compulsory: a script that never opens a step behaves as
+        before, and the machinery's recording calls become no-ops.
+
+        Parameters
+        ----------
+        dt : float or dimensional quantity
+            The interval this step covers.
+        label : str, optional
+            A name for the step, carried into the journal.
+        """
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _step_context():
+            if self._open_step is not None:
+                raise RuntimeError(
+                    "a model step is already open "
+                    f"(step {self._open_step.index}, label {self._open_step.label!r}). "
+                    "Steps do not nest — close the outer one first."
+                )
+
+            t0 = self.tracker.time if "time" in self.tracker else 0.0
+            index = self.tracker.step if "step" in self.tracker else 0
+            record = ModelStep(index=index, t0=t0, dt=dt, label=label)
+            self._open_step = record
+
+            # Position the clock at the END of the interval for the duration of
+            # the block, so implicit coefficients (mesh.t) are evaluated there.
+            self.tracker.time = record.t1
+            try:
+                yield record
+            except BaseException:
+                # Abandon: put the clock back and do not commit.
+                self.tracker.time = t0
+                record.completed = False
+                self._open_step = None
+                raise
+
+            # Commit.
+            self.tracker.time = record.t1
+            self.tracker.step = index + 1
+            self.tracker.dt = dt
+            record.completed = True
+            self._open_step = None
+            self._journal.append(record)
+            self._trim_journal()
+
+        return _step_context()
 
     def _register_state_bearer(self, obj) -> None:
         """Register a Snapshottable object with this model.

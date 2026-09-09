@@ -483,6 +483,41 @@ else you assign to it (`model.tracker.rms_velocity = ...`) is captured and
 restored the same way, so a diagnostic you want to survive a backstep belongs
 there too.
 
+### Wrap the step
+
+`model.step(dt)` makes the loop a transaction:
+
+```python
+while model.tracker.time < end_time:
+    dt = adv_diff.estimate_dt()
+
+    with model.step(dt):
+        adv_diff.solve(timestep=dt)
+        stokes.solve(zero_init_guess=False)
+```
+
+Three things follow, and none of them requires anything else in the script to
+change. The clock reads the END of the interval for the whole block, which is
+where an implicit scheme centres its residual, so a time-dependent coefficient
+is evaluated at the right time. The advance commits only on clean exit, so a
+step that raises — or one abandoned because the Courant number came out too
+large — leaves the clock exactly as it was. And everything the block did is
+recorded:
+
+```python
+>>> for entry in model.journal[-3:]:
+...     print(entry)
+<step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+<step 1 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+<step 2 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+```
+
+That record is worth having on its own. It answers what a run actually did,
+in order, without the script being instrumented for it — which is the question
+you want to ask of someone else's model, or your own six months later.
+
+Opening a step is optional. A script that never does behaves exactly as before.
+
 ### Backstepping
 
 The pattern above is what makes speculative stepping safe:
@@ -490,17 +525,17 @@ The pattern above is what makes speculative stepping safe:
 ```python
 snap = model.save_state()          # before the step, not after
 
-dt = big_dt
-adv_diff.solve(timestep=dt)
-stokes.solve(zero_init_guess=False)
-
-if courant_number() > courant_limit:
-    model.load_state(snap)         # fields AND clock go back together
-    for _ in range(n_substeps):
-        ...                        # replay with smaller steps
-else:
-    model.tracker.time += dt
-    model.tracker.step += 1
+try:
+    with model.step(big_dt):
+        adv_diff.solve(timestep=big_dt)
+        stokes.solve(zero_init_guess=False)
+        if courant_number() > courant_limit:
+            raise StepRejected            # abandons the step; the clock stays put
+except StepRejected:
+    model.load_state(snap)                # fields go back; the clock never moved
+    for sub_dt in substeps(big_dt):
+        with model.step(sub_dt):
+            ...
 ```
 
 Take the snapshot **before** the operator, not after. A `DDt` history plugin
@@ -816,6 +851,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 
 - [ ] Declare the model and its reference quantities BEFORE creating the mesh
 - [ ] Keep `time`, `step` and `dt` on `model.tracker`, not in local variables
+- [ ] Wrap each step in `with model.step(dt):`
 - [ ] Take snapshots BEFORE the operator you might want to undo
 - [ ] Use `mesh.t` inside an expression for time dependence, never bare
 
@@ -857,6 +893,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
   - Clock on `model.tracker`, not loose variables (snapshot consistency)
   - Disk snapshots now carry dimensional values (magnitude + units)
   - `mesh.t` now resolves to the model clock (#410)
+  - `model.step(dt)` — the step as a transaction, and the step journal
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version
