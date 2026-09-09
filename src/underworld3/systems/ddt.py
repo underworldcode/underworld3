@@ -1743,6 +1743,9 @@ class EulerianSUPG(Eulerian):
         # solve, say) the manager transports its history itself, on the grid,
         # in place of a semi-Lagrangian trace-back. See _transport_history.
         self.transport_on_update = bool(transport_on_update)
+        # The blend of the transport step itself (0.5 Crank-Nicolson, 1 backward
+        # Euler); distinct from `theta`, which weights the SCHEME's spatial terms.
+        self._transport_theta = 0.5
         self._transport_flat = None
         self._transport_old = None
         self._transport_solver = None
@@ -1893,16 +1896,24 @@ class EulerianSUPG(Eulerian):
         return [(i, j) for i in range(rows) for j in range(cols)]
 
     def _transport_residual(self, solver):
-        r"""Strong residual of one transport step, one entry per component."""
+        r"""Strong residual of one transport step, one entry per component.
+
+        The theta rule of the manager, so the transport is second order at
+        Crank-Nicolson rather than the first order of a backward-Euler step:
+        measured on uniform translation, that is the difference between a
+        transport far worse than the trace-back and one that matches it.
+        """
         dim = self.mesh.dim
         S, S_old = solver.u.sym, self._transport_old.sym
         gradient = self.mesh.vector.gradient
         a = self.advecting_velocity(0)
+        theta = self._transport_theta
         entries = []
         for k in range(S.shape[1]):
-            grad_k = gradient(S[0, k])
-            convective = sum(a[0, i] * grad_k[0, i] for i in range(dim))
-            entries.append((S[0, k] - S_old[0, k]) / self._delta_t + convective)
+            new = sum(a[0, i] * gradient(S[0, k])[0, i] for i in range(dim))
+            old = sum(a[0, i] * gradient(S_old[0, k])[0, i] for i in range(dim))
+            entries.append((S[0, k] - S_old[0, k]) / self._delta_t
+                           + theta * new + (1 - theta) * old)
         return sympy.Matrix([entries])
 
     def _transport_flux(self, solver):

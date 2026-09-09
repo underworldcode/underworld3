@@ -46,17 +46,37 @@ def _error(var, expression):
     return np.sqrt(numerator / denominator)
 
 
-def _managers(mesh, tag, velocity, order=1):
-    """One Eulerian-SUPG and one semi-Lagrangian history of the same stress."""
+def _grid_manager(mesh, tag, velocity, order=1):
+    """A stress variable and the Eulerian-SUPG history that transports it."""
     stress = uw.discretisation.MeshVariable(
         f"S_{tag}", mesh, vtype=uw.VarType.SYM_TENSOR, degree=2)
-    eulerian = uw.systems.ddt.EulerianSUPG(
+    return stress, uw.systems.ddt.EulerianSUPG(
         mesh, stress, velocity, vtype=uw.VarType.SYM_TENSOR, degree=2,
         continuous=True, order=order, transport_on_update=True)
-    lagrangian = uw.systems.ddt.SemiLagrangian(
+
+
+def _traced_manager(mesh, tag, velocity, order=1):
+    """The same, with the semi-Lagrangian trace-back carrying the stress.
+
+    Each manager needs its OWN stress variable: they read the field back on
+    every step, so sharing one couples the two transports.
+    """
+    stress = uw.discretisation.MeshVariable(
+        f"S_{tag}", mesh, vtype=uw.VarType.SYM_TENSOR, degree=2)
+    return stress, uw.systems.ddt.SemiLagrangian(
         mesh, stress.sym, velocity, vtype=uw.VarType.SYM_TENSOR, degree=2,
         continuous=True, order=order, varsymbol=rf"S^{{{tag}}}")
-    return stress, eulerian, lagrangian
+
+
+def _march(stress, manager, dt, steps):
+    """The step a solver takes: carry the history, then commit the new value.
+
+    With no constitutive update the commit is the identity, which is what
+    makes this a pure transport comparison.
+    """
+    for _ in range(steps):
+        manager.update_pre_solve(dt)
+        stress.array[...] = manager.psi_star[0].array[...]
 
 
 def test_a_stress_blob_is_carried_by_a_uniform_flow():
@@ -66,29 +86,23 @@ def test_a_stress_blob_is_carried_by_a_uniform_flow():
         minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=1 / 24, qdegree=3)
     x, y = mesh.X
     speed, dt, steps, start = 0.5, 0.05, 8, -0.5
-    stress, eulerian, lagrangian = _managers(
-        mesh, "uniform", sympy.Matrix([[speed, 0.0]]))
-
-    _plant(stress, _blob(x, y, start))
-    eulerian.initialise_history()
-    lagrangian.initialise_history()
+    velocity = sympy.Matrix([[speed, 0.0]])
+    grid_stress, eulerian = _grid_manager(mesh, "uniform_g", velocity)
+    traced_stress, lagrangian = _traced_manager(mesh, "uniform_s", velocity)
     assert eulerian.transport_on_update and eulerian._advection_mode == "assembled"
 
-    # The step a solver takes: the manager carries the history forward, then the
-    # new stress is committed. With no constitutive update the commit is the
-    # identity, which is what makes this a pure transport comparison.
-    for _ in range(steps):
-        for manager in (eulerian, lagrangian):
-            manager.update_pre_solve(dt)
-            stress.array[...] = manager.psi_star[0].array[...]
+    for stress, manager in ((grid_stress, eulerian), (traced_stress, lagrangian)):
+        _plant(stress, _blob(x, y, start))
+        manager.initialise_history()
+        _march(stress, manager, dt, steps)
 
     exact = _blob(x, y, start + speed * dt * steps)
     grid = _error(eulerian.psi_star[0], exact)
     traced = _error(lagrangian.psi_star[0], exact)
-    assert grid < 0.1, grid
-    assert traced < 0.2, traced
-    # the grid transport is at least as accurate as the trace-back here
-    assert grid <= traced, (grid, traced)
+    # Uniform translation is the trace-back's best case (the departure point is
+    # exact), so it sets the bar; the grid transport must be of the same order.
+    assert traced < 0.02, traced
+    assert grid < 0.05, grid
     # negative control: the field really moved
     assert _error(eulerian.psi_star[0], _blob(x, y, start)) > 0.5
     # symmetry is preserved component by component
@@ -103,17 +117,15 @@ def test_the_components_ride_round_a_rigid_rotation_unchanged():
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=1 / 24, qdegree=3)
     x, y = mesh.X
-    stress, eulerian, _sl = _managers(mesh, "rot", sympy.Matrix([[-y, x]]))
+    stress, eulerian = _grid_manager(mesh, "rot", sympy.Matrix([[-y, x]]))
 
     radius, dt, steps = 0.5, np.pi / 2 / 40, 40      # a quarter turn
     _plant(stress, _blob(x, y, radius))
     eulerian.initialise_history()
-    for _ in range(steps):
-        eulerian.update_pre_solve(dt)
-        stress.array[...] = eulerian.psi_star[0].array[...]
+    _march(stress, eulerian, dt, steps)
 
     turned = _blob(x, y, 0.0, radius)                 # a quarter turn from (r, 0)
-    assert _error(eulerian.psi_star[0], turned) < 0.3
+    assert _error(eulerian.psi_star[0], turned) < 0.2
     peak = float(np.abs(np.asarray(eulerian.psi_star[0].array[:, 0, 0])).max())
     assert 0.6 < peak < 1.05, peak                    # amplitude carried, not created
 
