@@ -1510,12 +1510,40 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         if F1_source is not None and linesearch is not None:
             self.petsc_options["snes_linesearch_type"] = linesearch
 
+    @property
+    def stress_transport(self) -> str:
+        """How a viscoelastic stress history is carried: ``"semi_lagrangian"``
+        (default) or ``"eulerian"``.
+
+        The semi-Lagrangian history traces the stress back along characteristics;
+        the Eulerian one transports it on the grid with the same streamline-upwind
+        stabilisation the Eulerian solvers use. Measured on a stress blob carried
+        round a rigid rotation (design note, "Transporting a stress history"), the
+        trace-back is the more accurate per step and the grid transport gives the
+        same answer on any partition. Set before the constitutive model is
+        assigned, or before calling :meth:`_create_stress_history_ddt`.
+        """
+        return getattr(self, "_stress_transport", "semi_lagrangian")
+
+    @stress_transport.setter
+    def stress_transport(self, value):
+        value = str(value)
+        if value not in ("semi_lagrangian", "eulerian"):
+            raise ValueError(
+                f"stress_transport must be 'semi_lagrangian' or 'eulerian', not {value!r}.")
+        if self.Unknowns.DFDt is not None:
+            raise RuntimeError(
+                "the stress history already exists: set stress_transport before the "
+                "constitutive model that asks for one.")
+        self._stress_transport = value
+
     def _create_stress_history_ddt(self, order=2):
         """Create DFDt for stress history tracking (VE/VEP models).
 
         Called automatically when a constitutive model with
         ``requires_stress_history = True`` is assigned. Can also be called
         explicitly to pre-create the DFDt with a specific order.
+        :attr:`stress_transport` chooses which flavour carries it.
 
         Constitutive models can inject extra SemiLagrangian kwargs via the
         ``stress_history_ddt_kwargs`` property — used e.g. by
@@ -1532,10 +1560,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         if cm is not None:
             ddt_kwargs = dict(getattr(cm, "stress_history_ddt_kwargs", {}))
 
-        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
-            self.mesh,
-            sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
-            self.u.sym,
+        common = dict(
             vtype=uw.VarType.SYM_TENSOR,
             degree=self.u.degree - 1,
             continuous=True,
@@ -1544,8 +1569,28 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             bcs=None,
             order=order,
             smoothing=0.0001,
-            **ddt_kwargs,
         )
+        if self.stress_transport == "eulerian":
+            if ddt_kwargs:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(ddt_kwargs)}, which only the semi-Lagrangian flavour "
+                    "provides; use stress_transport='semi_lagrangian' for it.")
+            self.Unknowns.DFDt = uw.systems.ddt.EulerianSUPG(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                transport_on_update=True,
+                **common,
+            )
+        else:
+            self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                **ddt_kwargs,
+                **common,
+            )
         # Stress flux = 2·viscosity·E_eff references psi_star[0] in E_eff's
         # history term — without snapshot substitution the projection of
         # flux→psi_star[0] becomes implicit in psi_star[0] and Min-mode at

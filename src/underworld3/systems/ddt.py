@@ -559,6 +559,14 @@ class _DDtBase(uw_object):
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
         self._n_solves_completed = 0
+        # Snapshot substitution in the projection's source (see
+        # enable_source_snapshot): every flavour that projects a flux into its
+        # own history needs it, not only the semi-Lagrangian one.
+        self._psi_snapshot_enabled = False
+        self._psi_snapshot = None
+        # Set by commit_flux_to_history: the levels are already placed for this
+        # step, so a post-solve must not shift or re-record them again.
+        self._history_committed = False
         self._dt = None  # current timestep (set by solver or update_pre_solve)
         self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
 
@@ -813,6 +821,98 @@ class _DDtBase(uw_object):
         """Deprecated: use ``initialise_history`` instead."""
         self.initialise_history()
 
+    def _build_projection_source(self, source_fn):
+        """Construct the row matrix used as the projection's ``uw_function``.
+
+        Applies snapshot substitution (psi_star[0] → snap) when enabled.
+        Used by both ``psi_fn.setter`` and the ``initialise_history``
+        fallback path so substitution semantics are consistent.
+        """
+        if getattr(self, '_psi_star_use_multicomponent', False):
+            indep = self._psi_star_indep_indices
+            row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
+            if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+                ps0 = self.psi_star[0]
+                psi_snapshot = self._psi_snapshot
+                substitutions = {
+                    ps0.sym[i, j]: psi_snapshot.sym[i, j]
+                    for i in range(self.mesh.dim)
+                    for j in range(self.mesh.dim)
+                }
+                row = row.subs(substitutions)
+            return row
+        else:
+            # Scalar / vector path: psi_star[0] is a scalar/vector field. If
+            # snapshot is needed for these vtypes, extend here similarly.
+            return source_fn
+
+    def enable_source_snapshot(self):
+        """Enable snapshot substitution in the projection's source field.
+
+        Call this once when the source expression (``psi_fn``) references
+        ``psi_star[0]`` itself — without it the projection's residual
+        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
+        because target and source share the same data field. With Min-mode
+        plasticity at the yield kink, the implicit projection admits two
+        fixed points (elastic and yield branches); under timestep change the
+        iteration drifts to the elastic-branch fixed point and σ violates
+        the yield surface.
+
+        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
+        shape/vtype/degree. Each call to ``update_pre_solve`` copies
+        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
+        input for the upcoming projection. Substitution makes the
+        projection's compiled C code read from ``psi_snapshot.array``
+        instead of ``psi_star[0].array`` — there's no recompile per step,
+        just a memcpy.
+
+        Idempotent: safe to call more than once.
+        """
+        if not getattr(self, '_psi_star_use_multicomponent', False):
+            # Currently only wired for tensor projections (the case that
+            # exposed the bug).  Scalar/vector extension is straightforward
+            # if needed later.
+            return
+
+        if self._psi_snapshot is None:
+            ps0 = self.psi_star[0]
+            # NOTE: this currently registers a persistent MeshVariable in the
+            # mesh DM, which is overkill for a transient buffer that's only
+            # read by this DDt's projection.  A future improvement would be
+            # a transient/scratch-variable mechanism (likely backed by
+            # PETSc's auxiliary Vec machinery — already used elsewhere in
+            # the codebase via DMSetAuxiliaryVec_UW) so the snapshot doesn't
+            # accumulate in the DM across DDt creations.  See:
+            # docs/developer/ai-notes/historical-notes.md for the
+            # variable-deletion limitation context.
+            self._psi_snapshot = uw.discretisation.MeshVariable(
+                f"psi_snapshot_{self.instance_number}",
+                self.mesh,
+                ps0.shape,
+                vtype=ps0.vtype,
+                degree=ps0.degree,
+                continuous=ps0.continuous,
+            )
+            # Initialise psi_snapshot's data to current psi_star[0]'s data
+            # so the source evaluates consistently before the first refresh.
+            self._psi_snapshot.data[...] = ps0.data[...]
+
+        self._psi_snapshot_enabled = True
+
+        # Re-run the psi_fn setter so the substitution is applied to the
+        # currently-installed projection source.
+        self.psi_fn = self._psi_fn
+
+    def _refresh_source_snapshot(self):
+        """Freeze the projection's input for this step (a memcpy, no recompile).
+
+        Routes through ``.data`` rather than ``.array`` to skip unit conversion
+        (both variables are non-dimensional) while keeping the callback sync
+        that pushes values into the underlying PETSc local vector.
+        """
+        if self._psi_snapshot_enabled and self._psi_snapshot is not None:
+            self._psi_snapshot.data[...] = self.psi_star[0].data[...]
+
     def commit_flux_to_history(self, flux, verbose=False):
         r"""Project ``flux`` into ``psi_star[0]`` and shift the history levels.
 
@@ -853,6 +953,8 @@ class _DDtBase(uw_object):
         for level in range(self.order - 1, 0, -1):
             self.psi_star[level].array[...] = (
                 transported if level == 1 else self.psi_star[level - 1].array[...])
+
+        self._history_committed = True
 
     # ----- The transport contract -----
     #
@@ -1370,10 +1472,10 @@ class Eulerian(_DDtBase):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
-        """Set the tracked expression."""
+        """Set the tracked expression, and the source of any live projection."""
         self._psi_fn = new_fn
-        # self._psi_star_projection_solver.uw_function = self.psi_fn
-        return
+        if getattr(self, "_psi_star_projection_solver", None) is not None:
+            self._psi_star_projection_solver.uw_function = self._build_projection_source(new_fn)
 
     def _object_viewer(self):
         # Local import: IPython is an optional, notebook-only dependency.
@@ -1385,7 +1487,9 @@ class Eulerian(_DDtBase):
         display(Latex(rf"$\quad$History steps = {self.order}"))
 
     def _setup_projections(self):
-        """Initialize projection solvers for history updates."""
+        """Initialize projection solvers for history updates (once)."""
+        if getattr(self, "_psi_star_projection_solver", None) is not None:
+            return
         ### using this to store terms that can't be evaluated (e.g. derivatives)
         # The projection operator for mapping derivative values to the mesh - needs to be different for each variable type, unfortunately ...
         if self.vtype == uw.VarType.SCALAR:
@@ -1439,13 +1543,8 @@ class Eulerian(_DDtBase):
             )
             self._psi_star_use_multicomponent = True
 
-        if getattr(self, '_psi_star_use_multicomponent', False):
-            # Flatten tensor to (1, Nc) row for multicomponent solver
-            indep = self._psi_star_indep_indices
-            row = sympy.Matrix([[self.psi_fn[i, j] for (i, j) in indep]])
-            self._psi_star_projection_solver.uw_function = row
-        else:
-            self._psi_star_projection_solver.uw_function = self.psi_fn
+        self._psi_star_projection_solver.uw_function = self._build_projection_source(
+            self.psi_fn)
         self._psi_star_projection_solver.bcs = self.bcs
         self._psi_star_projection_solver.smoothing = self.smoothing
 
@@ -1554,8 +1653,13 @@ class Eulerian(_DDtBase):
         dt,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        store_result: Optional[bool] = True,
     ):
         """Pre-solve: auto-initialise history and apply advection correction.
+
+        ``store_result`` is accepted for interface parity with the
+        semi-Lagrangian flavour (which can sample without storing) and is not
+        used here: this flavour has nothing to sample.
 
         On the first call, automatically initialises history from the
         current field values. If V_fn is set, also applies an explicit
@@ -1568,6 +1672,8 @@ class Eulerian(_DDtBase):
             self.initialise_history()
 
         # Update coefficient values for current effective_order and dt
+        self._refresh_source_snapshot()
+
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
 
@@ -1607,7 +1713,14 @@ class Eulerian(_DDtBase):
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
     ):
-        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`."""
+        r"""Shift history chain after solve: :math:`\psi^{*n} \leftarrow \psi^{*(n-1)}`.
+
+        A history committed this step (a flux projected into level 0 and the
+        levels shifted by :meth:`commit_flux_to_history`) is already placed:
+        shifting again pushes the new value straight into level 1 and loses the
+        level it should hold. Invisible at order 1, a 150-fold error at order 2
+        on the analytic Maxwell shear box.
+        """
         self._dt = dt
 
         if verbose and uw.mpi.rank == 0:
@@ -1618,12 +1731,15 @@ class Eulerian(_DDtBase):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
 
-        ### copy values down the chain
-        for i in range(self.order - 1, 0, -1):
-            self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
+        if self._history_committed:
+            self._history_committed = False
+        else:
+            ### copy values down the chain
+            for i in range(self.order - 1, 0, -1):
+                self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
-        ### update the history fn
-        self.update_history_fn()
+            ### update the history fn
+            self.update_history_fn()
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
@@ -2000,10 +2116,11 @@ class EulerianSUPG(Eulerian):
                 if i != j:
                     history.array[:, j, i] = values
 
-    def update_pre_solve(self, dt, evalf=False, verbose=False):
+    def update_pre_solve(self, dt, evalf=False, verbose=False, store_result=True):
         """Refresh the scheme's coefficients and, when this manager owns the
         transport of its history, carry every level forward by one step."""
-        super().update_pre_solve(dt, evalf=evalf, verbose=verbose)
+        super().update_pre_solve(dt, evalf=evalf, verbose=verbose,
+                                 store_result=store_result)
         if self.transport_on_update and self.V_fn is not None and dt:
             self._transport_history(dt, verbose=verbose)
 
@@ -2512,8 +2629,6 @@ class SemiLagrangian(_DDtBase):
         # substituted with a frozen snapshot variable that's refreshed each
         # step from psi_star[0]'s data array. The projection becomes a true
         # one-shot Galerkin projection.
-        self._psi_snapshot_enabled = False
-        self._psi_snapshot = None
 
 
         if varsymbol is None:
@@ -2832,87 +2947,6 @@ class SemiLagrangian(_DDtBase):
         self._psi_star_projection_solver.uw_function = self._build_projection_source(new_fn)
         return
 
-    def _build_projection_source(self, source_fn):
-        """Construct the row matrix used as the projection's ``uw_function``.
-
-        Applies snapshot substitution (psi_star[0] → snap) when enabled.
-        Used by both ``psi_fn.setter`` and the ``initialise_history``
-        fallback path so substitution semantics are consistent.
-        """
-        if getattr(self, '_psi_star_use_multicomponent', False):
-            indep = self._psi_star_indep_indices
-            row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
-            if self._psi_snapshot_enabled and self._psi_snapshot is not None:
-                ps0 = self.psi_star[0]
-                psi_snapshot = self._psi_snapshot
-                substitutions = {
-                    ps0.sym[i, j]: psi_snapshot.sym[i, j]
-                    for i in range(self.mesh.dim)
-                    for j in range(self.mesh.dim)
-                }
-                row = row.subs(substitutions)
-            return row
-        else:
-            # Scalar / vector path: psi_star[0] is a scalar/vector field. If
-            # snapshot is needed for these vtypes, extend here similarly.
-            return source_fn
-
-    def enable_source_snapshot(self):
-        """Enable snapshot substitution in the projection's source field.
-
-        Call this once when the source expression (``psi_fn``) references
-        ``psi_star[0]`` itself — without it the projection's residual
-        ``(target − flux(psi_star[0]))·weight`` is implicit in the target
-        because target and source share the same data field. With Min-mode
-        plasticity at the yield kink, the implicit projection admits two
-        fixed points (elastic and yield branches); under timestep change the
-        iteration drifts to the elastic-branch fixed point and σ violates
-        the yield surface.
-
-        The snapshot is a separate mesh variable matching ``psi_star[0]``'s
-        shape/vtype/degree. Each call to ``update_pre_solve`` copies
-        ``psi_star[0].array → psi_snapshot.array``, freezing the source's
-        input for the upcoming projection. Substitution makes the
-        projection's compiled C code read from ``psi_snapshot.array``
-        instead of ``psi_star[0].array`` — there's no recompile per step,
-        just a memcpy.
-
-        Idempotent: safe to call more than once.
-        """
-        if not getattr(self, '_psi_star_use_multicomponent', False):
-            # Currently only wired for tensor projections (the case that
-            # exposed the bug).  Scalar/vector extension is straightforward
-            # if needed later.
-            return
-
-        if self._psi_snapshot is None:
-            ps0 = self.psi_star[0]
-            # NOTE: this currently registers a persistent MeshVariable in the
-            # mesh DM, which is overkill for a transient buffer that's only
-            # read by this DDt's projection.  A future improvement would be
-            # a transient/scratch-variable mechanism (likely backed by
-            # PETSc's auxiliary Vec machinery — already used elsewhere in
-            # the codebase via DMSetAuxiliaryVec_UW) so the snapshot doesn't
-            # accumulate in the DM across DDt creations.  See:
-            # docs/developer/ai-notes/historical-notes.md for the
-            # variable-deletion limitation context.
-            self._psi_snapshot = uw.discretisation.MeshVariable(
-                f"psi_snapshot_{self.instance_number}",
-                self.mesh,
-                ps0.shape,
-                vtype=ps0.vtype,
-                degree=ps0.degree,
-                continuous=ps0.continuous,
-            )
-            # Initialise psi_snapshot's data to current psi_star[0]'s data
-            # so the source evaluates consistently before the first refresh.
-            self._psi_snapshot.data[...] = ps0.data[...]
-
-        self._psi_snapshot_enabled = True
-
-        # Re-run the psi_fn setter so the substitution is applied to the
-        # currently-installed projection source.
-        self.psi_fn = self._psi_fn
 
     def _object_viewer(self):
         # Local import: IPython is an optional, notebook-only dependency.
@@ -3549,8 +3583,7 @@ class SemiLagrangian(_DDtBase):
         # variables already live in non-dimensional space) while keeping
         # the callback sync that pushes values into the underlying PETSc
         # local Vec.
-        if self._psi_snapshot_enabled and self._psi_snapshot is not None:
-            self._psi_snapshot.data[...] = self.psi_star[0].data[...]
+        self._refresh_source_snapshot()
 
         # Update coefficient values for current effective_order and dt
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)

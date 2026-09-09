@@ -147,3 +147,73 @@ def test_transport_is_off_unless_asked_for():
     assert manager.transport_on_update is False
     assert np.array_equal(np.asarray(manager.psi_star[0].array), before)
     assert manager._transport_solver is None
+
+
+def _maxwell_shear(transport, order, steps=20, dt=0.1):
+    """The analytic Maxwell shear box, with the stress history of one's choosing.
+
+    Simple shear of a Maxwell material: sigma_xy = eta gammadot (1 - exp(-t/t_r)).
+    The stress is spatially uniform, so its transport is a no-op and the two
+    flavours must agree exactly. That is what makes this the correctness check
+    on the plumbing rather than on the transport.
+    """
+    eta = shear_modulus = 1.0
+    speed, height, width = 0.5, 1.0, 2.0
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(16, 8), minCoords=(-width / 2, -height / 2),
+        maxCoords=(width / 2, height / 2))
+    v = uw.discretisation.MeshVariable(f"U_{transport}{order}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"P_{transport}{order}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
+    stokes.stress_transport = transport
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=order)
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+    stokes.constitutive_model.Parameters.shear_modulus = shear_modulus
+    stokes.constitutive_model.Parameters.dt_elastic = dt
+    stokes.add_dirichlet_bc((speed, 0.0), "Top")
+    stokes.add_dirichlet_bc((-speed, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1.0e-6
+    stokes.petsc_options["snes_type"] = "newtonls"
+    stokes.petsc_options["ksp_type"] = "fgmres"
+
+    for _ in range(steps):
+        stokes.solve(timestep=dt, zero_init_guess=False, evalf=False)
+
+    stress = float(np.asarray(uw.function.evaluate(
+        stokes.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
+    rate = 2.0 * speed / height
+    exact = eta * rate * (1.0 - np.exp(-steps * dt * shear_modulus / eta))
+    return type(stokes.DFDt).__name__, stress, exact
+
+
+@pytest.mark.parametrize("order, tolerance", [(1, 0.02), (2, 0.002)])
+def test_either_stress_history_solves_the_maxwell_shear_box(order, tolerance):
+    """A Stokes solve carries its viscoelastic stress with the history its
+    `stress_transport` names, and on a uniform stress the two agree exactly."""
+    traced_kind, traced, exact = _maxwell_shear("semi_lagrangian", order)
+    grid_kind, grid, _ = _maxwell_shear("eulerian", order)
+    assert traced_kind == "SemiLagrangian" and grid_kind == "EulerianSUPG"
+    assert abs(traced - exact) / exact < tolerance, (traced, exact)
+    assert abs(grid - exact) / exact < tolerance, (grid, exact)
+    # transport is a no-op on a uniform field: the plumbing must not add anything
+    assert abs(grid - traced) < 1e-6 * abs(exact), (grid, traced)
+
+
+def test_stress_transport_is_validated_and_fixed_once_the_history_exists():
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("U_val", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("P_val", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    with pytest.raises(ValueError, match="stress_transport must be"):
+        stokes.stress_transport = "lagrangian"
+    stokes.stress_transport = "eulerian"
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1)
+    stokes.constitutive_model.Parameters.shear_modulus = 1.0
+    stokes.constitutive_model.Parameters.dt_elastic = 0.1
+    assert type(stokes.DFDt).__name__ == "EulerianSUPG"
+    with pytest.raises(RuntimeError, match="already exists"):
+        stokes.stress_transport = "semi_lagrangian"
