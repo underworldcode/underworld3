@@ -80,6 +80,47 @@ is resolved in time (a fraction of a feature width per step), the Eulerian solve
 is cheaper and more accurate; if the step is deliberately long relative to the
 transported features, the semi-Lagrangian solver is the one that survives it.
 
+## The three transport managers
+
+`DuDt` selects the transport, and three managers are worth considering for a
+scalar field. The choice turns on the Courant number the model runs at and on
+whether the model is carrying particles for another reason.
+
+**Eulerian SUPG** (`uw.systems.ddt.EulerianSUPG`, the default) is the general
+choice. Its error falls as $\Delta t^2$, it puts no lower limit on the Courant
+number, and it conserves the integral of the transported field to solver
+tolerance. On the LeVeque deformation test at its standard period it matches the
+integration-point history's accuracy at a third of the cost, and holds the
+enclosed volume to 4e-5 against that scheme's 5e-3. Use it unless something
+below applies.
+
+**Semi-Lagrangian on the integration points**
+(`uw.systems.ddt.IntegrationPointSemiLagrangian`) is the accurate choice at
+larger Courant numbers. Its error is flat between Courant 0.5 and 2, so a model
+that takes long steps keeps its accuracy where the Eulerian scheme loses it, and
+it loses 45 times less of the second moment than the nodal scheme does. It
+carries a history at the integration points rather than at nodes, which is the
+reason to prefer it for tensor transport, where the extra sub-cell resolution
+has more to represent. It has a low Courant number limit: the fit it performs is
+not contractive under pure advection, and below about Courant 0.5 a mode grows.
+The growth is suppressed by physical diffusion and is unreachable when the
+timestep comes from the Courant condition, but it is a real limit for
+advection-dominated flow with sharp interfaces. Adding diffusivity to damp it
+makes the answer worse at every strength, so the limit is a reason to choose a
+different manager rather than something to correct. The measurements are in
+`docs/developer/subsystems/integration-point-variables.md`.
+
+**Lagrangian on a swarm** (`uw.systems.ddt.Lagrangian_Swarm`) transports the
+field on particles. It is worth using when the model already carries a swarm for
+material tracking, so the transport rides on particles it is advecting anyway.
+We would not introduce particles in order to use it.
+
+**Semi-Lagrangian at the nodes** (`uw.systems.ddt.SemiLagrangian`) remains the
+historical default of `AdvDiffusionSLCN`. It re-interpolates once per step, which
+costs it accuracy at small Courant numbers, and on a deforming flow with a sharp
+interface it diverges below a Courant number that depends on the problem. Prefer
+one of the three above.
+
 ## Choosing the time scheme
 
 Measured on a rotating Gaussian, one revolution, relative $L_2$ error; the full
