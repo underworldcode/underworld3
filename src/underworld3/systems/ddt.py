@@ -4117,8 +4117,12 @@ class Lagrangian_Swarm(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
-        """Pre-solve: auto-initialise history on first call."""
+        """Pre-solve: auto-initialise history on first call. Extra keyword
+        arguments (the nodal manager's ``store_result``, ``dt_physical``,
+        ``monotone_mode``) are accepted and ignored so a solver written for
+        the nodal history can drive this one."""
         self._dt = dt
 
         if not self._history_initialised:
@@ -4160,9 +4164,37 @@ class Lagrangian_Swarm(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
-        r"""Shift history chain and evaluate current :math:`\psi` on swarm."""
+        r"""Evaluate the current :math:`\psi` at the particles, then shift the
+        history chain and store it in slot 0.
+
+        The evaluation comes FIRST, every component of it: ``psi_fn`` may
+        read the history itself (a viscoelastic stress is
+        :math:`2\eta_{\rm eff}E_{\rm eff}(\sigma^*, \sigma^{**})`), and
+        writing a component of slot 0 marks its proxy stale, so an
+        evaluation after a partial write would read a history that is half
+        new (audit SWARM-06); a shift before the evaluation would hand the
+        stress expression the wrong levels.
+        """
         self._dt = dt
+
+        phi = 1 / self.step_averaging
+        psi_star_0 = self.psi_star[0]
+        coords = np.asarray(self.swarm._particle_coordinates.data)
+        if self.particle_update == "flip":
+            # The proxy the mesh saw during this solve, at the particles: the
+            # residual psi_p - proxy(x_p) is what the mesh never resolved.
+            proxy_at_p = self._proxy_values_at_particles(psi_star_0, coords, evalf)
+        updated = {}
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                ij = psi_star_0._data_layout(i, j)
+                if ij in updated:
+                    continue                       # symmetric storage: one evaluation per slot
+                updated[ij] = np.asarray(
+                    uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
+                ).reshape(-1)
 
         # Record timestep history for variable-dt BDF
         for i in range(self.order - 1, 0, -1):
@@ -4171,45 +4203,20 @@ class Lagrangian_Swarm(_DDtBase):
 
         for h in range(self.order - 1):
             i = self.order - (h + 1)
-
-            # copy the information down the chain
             if verbose:
-                print(f"Lagrange swarm order = {self.order}", flush=True)
-                print(
-                    f"Mesh interpolant order = {self.psi_star[0]._meshVar.degree}",
-                    flush=True,
-                )
-                print(f"Lagrange swarm copying {i-1} to {i}", flush=True)
-
+                print(f"Lagrange swarm order = {self.order}: copying slot {i-1} to {i}", flush=True)
             self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
-        phi = 1 / self.step_averaging
-
-        psi_star_0 = self.psi_star[0]
-        coords = np.asarray(self.swarm._particle_coordinates.data)
-        if self.particle_update == "flip":
-            # The proxy the mesh saw during this solve, at the particles: the
-            # residual psi_p - proxy(x_p) is what the mesh never resolved.
-            proxy_at_p = self._proxy_values_at_particles(psi_star_0, coords, evalf)
-        # Blend the freshly-evaluated psi into slot 0 component-by-component
-        # through the canonical (N, components) storage (audit SWARM-06).
-        for i in range(psi_star_0.shape[0]):
-            for j in range(psi_star_0.shape[1]):
-                ij = psi_star_0._data_layout(i, j)
-                updated_psi = np.asarray(
-                    uw.function.evaluate(
-                        self.psi_fn[i, j],
-                        coords,
-                        evalf=evalf,
-                    )
-                ).reshape(-1)
-                if self.particle_update == "flip":
-                    residual = np.asarray(psi_star_0.data[:, ij]) - proxy_at_p[:, ij]
-                    psi_star_0.data[:, ij] = updated_psi + self.residual_retention * residual
-                else:
-                    psi_star_0.data[:, ij] = (
-                        phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
-                    )
+        # Store slot 0 component-by-component through the canonical
+        # (N, components) storage (audit SWARM-06).
+        for ij, updated_psi in updated.items():
+            if self.particle_update == "flip":
+                residual = np.asarray(psi_star_0.data[:, ij]) - proxy_at_p[:, ij]
+                psi_star_0.data[:, ij] = updated_psi + self.residual_retention * residual
+            else:
+                psi_star_0.data[:, ij] = (
+                    phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
+                )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1

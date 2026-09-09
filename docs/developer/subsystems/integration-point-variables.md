@@ -384,6 +384,49 @@ is ever left to the linear patch fit. A cap (`max_per_cell`) thins over-full
 cells by removing the particles closest to a neighbour; measured it costs
 accuracy (6.8e-2) and is off by default.
 
+### Viscoelastic stress history on particles
+
+The stress history of a viscoelastic Stokes solve is state: the stress at
+the old time cannot be rebuilt from the present velocity gradient and the
+rheology, and Crank-Nicolson keeps the elastic response undamped. Carried on
+particles it is the Ellipsis / Underworld PIC-LIP arrangement: the particles
+carry the stress along the flow, the mesh reads it at the integration points
+through the cells proxy, and after each solve the new stress is evaluated at
+the particles. That last step is a local ODE (the Maxwell update), so there
+is no projection back to the mesh and no null space; the particle scheme's
+one weakness, the re-projection of a diffused field, does not arise.
+
+```python
+swarm = uw.swarm.Swarm(mesh)
+DFDt = uw.systems.ddt.Lagrangian_Swarm(
+    swarm=swarm, psi_fn=sympy.Matrix.zeros(2, 2), vtype=uw.VarType.SYM_TENSOR,
+    degree=1, continuous=False, order=2, step_averaging=1, proxy_location="cells")
+swarm.populate(fill_param=3)
+swarm.population_control = dict()
+stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, DFDt=DFDt)
+stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(stokes.Unknowns, order=2)
+...
+swarm.advection(v.sym, dt, order=2)     # then
+stokes.solve(timestep=dt)
+```
+
+The constitutive model reads the history through `psi_star[i].sym` and the
+order bookkeeping only, so the swarm history slots in symbolically; the
+solver assigns the stress expression to it, takes the viscoelastic order
+from a supplied history, and leaves the nodal projection and shift to the
+nodal history. The swarm manager evaluates every component of the new
+stress at the particles before it shifts its chain, because the stress
+expression reads the history it is about to overwrite. `step_averaging=1`
+is required (the default 2 half-relaxes the stored stress). The ETD
+integrator is not available on the swarm history.
+
+Maxwell shear box (`tests/test_0070_ve_stress_history_on_particles.py`):
+order 1 within 5% of the analytic curve after 20 steps at dt = 0.1 t_r,
+order 2 within 1%, and the particle and nodal histories agree to 0.2% of
+the final stress. Uniform shear has a uniform stress, so this validates the
+plumbing and the time integration; a transport-sensitive stress benchmark
+is the next measurement.
+
 ### Why a least-squares fit and not a conservative transfer
 
 The conservative particle-to-mesh transfer solves the rule mass matrix
