@@ -175,3 +175,45 @@ def test_tracker_continuation_with_solver_loop():
         do_step(0.05)
     assert model.tracker.step == s_snap + 2
     assert abs(model.tracker.time - (t_snap + 0.10)) < 1e-12
+
+
+@pytest.mark.xfail(
+    reason="mesh.t is a symbolic atom bound to PETSc's petsc_t, which the "
+    "high-level solve() wrappers never set, so an expression containing it is "
+    "silently ZERO inside a solve and solve(time=...) is accepted and ignored. "
+    "Remove this xfail when mesh.t resolves to the model clock (#410 ruling: "
+    "time is model-owned, mesh.t becomes a back-compat accessor onto it).",
+    strict=False,
+)
+def test_mesh_t_resolves_to_the_model_clock():
+    """The other clock. `mesh.t` is what users reach for in a time-dependent
+    boundary condition, and it is NOT `model.tracker.time` — so a source term
+    proportional to it should scale with the clock, and today does not.
+
+    The constant-source control is what makes the assertion meaningful: it
+    proves the Poisson problem produces a non-trivial solution at all, so a
+    zero answer with `mesh.t` is the clock's fault and not the setup's.
+    """
+    uw, model = _fresh_model()
+    import sympy
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+    T = uw.discretisation.MeshVariable("T_clock", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    for boundary in ("Top", "Bottom", "Left", "Right"):
+        poisson.add_dirichlet_bc(0.0, boundary)
+    poisson.petsc_options.delValue("ksp_monitor")
+
+    poisson.f = sympy.sympify(1.0)
+    poisson.solve()
+    control = np.abs(np.asarray(T.array)).max()
+    assert control > 1.0e-3, "control failed: the Poisson setup itself is trivial"
+
+    poisson.f = mesh.t
+    model.tracker.time = 5.0
+    poisson.solve()
+    assert np.abs(np.asarray(T.array)).max() > 0.1 * control
