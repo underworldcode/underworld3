@@ -1743,8 +1743,6 @@ class EulerianSUPG(Eulerian):
         # solve, say) the manager transports its history itself, on the grid,
         # in place of a semi-Lagrangian trace-back. See _transport_history.
         self.transport_on_update = bool(transport_on_update)
-        # The blend of the transport step itself (0.5 Crank-Nicolson, 1 backward
-        # Euler); distinct from `theta`, which weights the SCHEME's spatial terms.
         self._transport_theta = 0.5
         self._transport_flat = None
         self._transport_old = None
@@ -1895,13 +1893,31 @@ class EulerianSUPG(Eulerian):
             return [(i, j) for i in range(rows) for j in range(i, cols)]
         return [(i, j) for i in range(rows) for j in range(cols)]
 
+    @property
+    def transport_theta(self) -> float:
+        r"""Blend of the transport step: 0.5 Crank-Nicolson (default), 1 backward Euler.
+
+        Distinct from :attr:`theta`, which weights the SCHEME's spatial terms at
+        each stored level. The transport of a history level is a time
+        discretisation of the same physical step as the scheme around it, so it
+        must be of the same order: backward Euler here is first order and costs
+        a factor of eight on uniform translation (0.0139 against 0.109 at
+        Courant 0.6). There is no reason to lower it; the setter exists to make
+        that measurable rather than to recommend it.
+        """
+        return self._transport_theta
+
+    @transport_theta.setter
+    def transport_theta(self, value):
+        value = float(value)
+        if not 0.0 < value <= 1.0:
+            raise ValueError(f"transport_theta must be in (0, 1], not {value}.")
+        self._transport_theta = value
+
     def _transport_residual(self, solver):
         r"""Strong residual of one transport step, one entry per component.
 
-        The theta rule of the manager, so the transport is second order at
-        Crank-Nicolson rather than the first order of a backward-Euler step:
-        measured on uniform translation, that is the difference between a
-        transport far worse than the trace-back and one that matches it.
+        The theta rule at :attr:`transport_theta`, Crank-Nicolson by default.
         """
         dim = self.mesh.dim
         S, S_old = solver.u.sym, self._transport_old.sym
