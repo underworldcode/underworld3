@@ -152,13 +152,19 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         reconstructed from the nearest particles at every integration point
         and read there directly, with no second interpolation (the
         Ellipsis / Underworld PIC-LIP mapping); a material interface keeps
-        its sub-cell position, and the proxy has no gradient (a derivative
-        of its symbol is refused). ``proxy_degree`` / ``proxy_continuous``
-        are ignored in that case. ``"cells"``: a discontinuous mesh variable
+        its sub-cell position, and the proxy has no gradient of its own: a
+        derivative of its symbol in a WEAK FORM is refused (see ``"cells"``
+        below for the remedy), while ``uw.function.evaluate`` of the same
+        derivative answers by fitting the values per cell first.
+        ``proxy_degree`` / ``proxy_continuous`` are ignored in that case. ``"cells"``: a discontinuous mesh variable
         of ``proxy_degree`` holding, in every cell, the least-squares
         polynomial through the particles that cell holds (a thin cell takes
         a linear fit to the particles nearest its centroid, an empty cell
-        keeps its previous value). Exact for
+        keeps its previous value). THIS is the target to choose when a solve
+        needs a gradient: the level sets are polynomials, so they
+        differentiate directly in a weak form, with no projection solve
+        (degree 2 recovers the gradient of a quadratic particle field to
+        2e-7). Exact for
         polynomial particle fields up to ``proxy_degree``, integrated exactly
         by the default rule, sharp at cell edges, with a gradient, and no
         neighbour search across ranks; see
@@ -2373,10 +2379,12 @@ class IndexSwarmVariable(SwarmVariable):
         ``"integration_points"``: every integration point takes the material
         of its NEAREST PARTICLE, so each level set is exactly 0 or 1 and the
         interface keeps its sub-cell position (the Ellipsis / Underworld
-        particle-in-cell material mapping). ``"cells"``: a polynomial material
-        fraction per cell, clamped to [0, 1] and renormalised, sharp at cell
-        edges and differentiable inside a cell. ``proxy_continuous`` applies
-        only to ``"nodes"``.
+        particle-in-cell material mapping); these level sets have no gradient,
+        so a derivative of the mask in a weak form is refused. ``"cells"``: a
+        polynomial material fraction per cell, clamped to [0, 1] and
+        renormalised, sharp at cell edges and DIFFERENTIABLE, which is the one
+        to choose when a solve needs the gradient of a material property.
+        ``proxy_continuous`` applies only to ``"nodes"``.
 
     Examples
     --------

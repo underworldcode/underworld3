@@ -239,7 +239,11 @@ def test_the_gradient_is_available_from_the_cell_fit():
     local and exact for polynomials up to its degree."""
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2)
     x, y = mesh.X
-    pts = np.array([[0.31, 0.42], [0.62, 0.25], [0.5, 0.5]])
+    all_pts = np.array([[0.31, 0.42], [0.62, 0.25], [0.5, 0.5]])
+    # uw.function.evaluate is rank-local: only ask for points this rank owns.
+    pts = all_pts[np.asarray(mesh._robust_owning_cells(all_pts)) >= 0]
+    if pts.shape[0] == 0:
+        pytest.skip("no sample point on this rank")
     exact = 2 * pts[:, 0]                       # d/dx of x^2 + 2y
 
     def gradient_error(tag, location, degree):
@@ -258,9 +262,17 @@ def test_the_gradient_is_available_from_the_cell_fit():
     assert cells2 < 1e-5, cells2                # exact for a quadratic
     assert cells2 < nodes2 / 10, (cells2, nodes2)
 
-    # the integration-point form refuses, and says where the gradient lives
+    # The integration-point form: refused in a WEAK FORM, recovered by
+    # evaluate (which fits the values per cell for the one call).
     swarm = uw.swarm.Swarm(mesh)
     ip = uw.swarm.SwarmVariable("Gq", swarm, 1, proxy_location="integration_points")
     swarm.populate(fill_param=3)
+    Xp = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        ip.data[:, 0] = Xp[:, 0] ** 2 + 2 * Xp[:, 1]
     with pytest.raises(RuntimeError, match="proxy_location='cells'"):
-        uw.function.evaluate(ip.sym[0].diff(x), pts)
+        uw.maths.Integral(mesh, ip.sym[0].diff(x)).evaluate()      # the weak form
+    recovered = np.asarray(uw.function.evaluate(ip.sym[0].diff(x), pts)).reshape(-1)
+    assert np.abs(recovered - exact).max() < 5e-3, recovered       # the query answers
+    # and the direct route is the sharper of the two
+    assert cells2 < np.abs(recovered - exact).max()

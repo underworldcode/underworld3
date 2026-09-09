@@ -69,6 +69,32 @@ symbol onto a `MeshVariable` explicitly with `SNES_Projection`; the
 projection of the field is an ordinary weak form and is exact for data that
 the target space can represent.
 
+
+### The derivative: refused in a weak form, recovered by `evaluate`
+
+An integration-point variable's tabulated gradient is identically zero, so a
+derivative of its symbol would be a silent zero. The two paths are handled
+differently on purpose:
+
+- **Code generation for a weak form** (`utilities/_jitextension.py`,
+  `_no_derivative`) raises. A hidden reconstruction inside a residual would be
+  a per-assembly cost and would decide a discretisation on the user's behalf.
+  The message names the remedy: `proxy_location="cells"`, whose level sets are
+  per-cell polynomials and differentiate directly.
+- **`uw.function.evaluate`** (`function/_function.pyx`,
+  `_integration_point_sources_to_cell_fit`) substitutes any integration-point
+  source appearing under a derivative by a per-cell least-squares fit of its
+  own values, then lets the ordinary derivative machinery run. The fit is
+  allowed to be exactly determined (`nmin = Nb`) because the rule is unisolvent
+  for that degree; the default `Nb + 2` would send every cell to the linear
+  patch and leave the recovered gradient first order.
+
+Measured on `x^2 + 2y` carried at the integration points, the recovered
+gradient converges: 2.4e-3, 6.1e-4, 2.6e-4 at cell sizes 1/5, 1/10, 1/20. The
+direct `"cells"` route (degree 2, fitted from particles) gives 2.4e-7 on the
+same field, because it is exact for a quadratic and nothing is projected
+afterwards.
+
 ## Guards
 
 The field has no gradient (its tabulated derivative is identically zero), so

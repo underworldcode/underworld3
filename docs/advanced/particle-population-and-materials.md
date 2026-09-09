@@ -139,9 +139,27 @@ $\partial_x$ of a quadratic particle field:
 | `"integration_points"` | refused |
 
 The per-cell fit is the most accurate of them because it is local and exact
-for polynomials up to its degree. So the rule is: sample at the integration
-points when you want a value placed exactly, fit per cell when you want to
-differentiate.
+for polynomials up to its degree, and no further projection follows it.
+
+**Two paths, and the difference is deliberate.** A weak form and a query are
+not the same thing:
+
+- **In a weak form**, a derivative of an integration-point field is *refused*.
+  Answering would mean either the silent zero its own tabulation gives, or a
+  reconstruction chosen behind your back and paid for at every assembly.
+  Which discretisation the gradient comes from is a modelling decision, so it
+  stays yours: build the variable with `proxy_location="cells"` and the level
+  sets are already polynomials.
+- **`uw.function.evaluate`** is a query, and it *answers*. It fits the
+  integration-point values cell by cell and differentiates that, once, for
+  this call. The result converges (2.4e-3, 6.1e-4, 2.6e-4 for a quadratic
+  field as the cell size halves from 1/5 to 1/20) but it is a *recovered*
+  gradient, so treat it as a diagnostic rather than as the field's own
+  derivative. The `"cells"` route reaches 2.4e-7 on the same field.
+
+So the rule is: sample at the integration points when you want a value placed
+exactly, fit per cell when you want to differentiate, and expect `evaluate` to
+help you look at a gradient either way.
 
 | | `"nodes"` | `"integration_points"` | `"cells"` |
 |---|---|---|---|

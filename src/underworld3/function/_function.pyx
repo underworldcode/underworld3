@@ -787,6 +787,88 @@ def _project_to_work_variable(expr, mesh, smoothing=1e-6):
     return work_var
 
 
+def _integration_point_sources_to_cell_fit(expr, mesh, derivfns):
+    """Replace integration-point variables that appear under a derivative by a
+    per-cell least-squares fit of their own values, which does have a gradient.
+
+    An integration-point variable holds a value at each integration point and
+    nothing between them: its tabulated gradient is identically zero, so both
+    the residual and an L2 projection of the derivative would return a silent
+    zero. The values themselves are good data, though, and fitting them cell by
+    cell (the reconstruction of
+    :class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`,
+    the same one behind ``SwarmVariable(proxy_location="cells")``) gives a
+    polynomial per cell that differentiates directly, with no projection solve.
+
+    **Two paths, deliberately different.** ``uw.function.evaluate`` is a query:
+    it answers, by way of this recovery, and the answer converges (measured on
+    a quadratic particle field: 2.4e-3, 6.1e-4, 2.6e-4 as the cell size halves
+    from 1/5 to 1/20). Assembly of a weak form still REFUSES, because there a
+    hidden reconstruction would be a per-assembly cost and would quietly decide
+    a discretisation the user should choose. If a solve needs the gradient,
+    build the variable with ``proxy_location="cells"``, whose level sets are
+    already polynomials: that is both cheaper and sharper (2.4e-7 on the same
+    field, exact for a quadratic, because no further projection follows).
+
+    Returns ``(expr, derivfns)`` with the substitutions applied.
+    """
+    from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+    ip_sources = [v for v in derivfns
+                  if getattr(v, "is_integration_point", False)]
+    if not ip_sources:
+        return expr, derivfns
+
+    subs = {}
+    for source_var in ip_sources:
+        # Degree: enough to carry a gradient, and no more than the rule can
+        # support (the fit falls back per cell when a cell is short of points).
+        degree = max(1, min(2, mesh.qdegree))
+        # Cached on the mesh, like the other evaluate work variables: adding a
+        # field rebuilds the mesh DM, so one per (source, degree) and no more.
+        cache_key = f"_eval_ipgrad_{source_var.clean_name}_{degree}"
+        work = getattr(mesh, cache_key, None)
+        if work is None:
+            work = uw.discretisation.MeshVariable(
+                cache_key, mesh, source_var.shape, source_var.vtype,
+                degree=degree, continuous=False,
+                varsymbol=rf"{{ \widehat{{{source_var.symbol}}} }}",
+            )
+            setattr(mesh, cache_key, work)
+            setattr(mesh, cache_key + "_projector", CellPolynomialProjector(work))
+        projector = getattr(mesh, cache_key + "_projector")
+        if projector.mesh_version != mesh._mesh_version:
+            projector = CellPolynomialProjector(work)
+            setattr(mesh, cache_key + "_projector", projector)
+        # The rule has exactly as many points per cell as a fit of this degree
+        # has coefficients (that is what "the rule is unisolvent for P_k"
+        # means), so allow an exactly-determined fit: nmin = Nb rather than the
+        # default Nb + 2, which would send every cell to the linear patch and
+        # leave the gradient first order. The projector's own conditioning
+        # guard still catches a degenerate cell.
+        fitted = projector.fit(
+            np.asarray(source_var.coords_nd),
+            np.asarray(source_var.data).reshape(-1, source_var.num_components),
+            nmin=projector.Nb,
+        )
+        work.data[...] = fitted.reshape(work.data.shape)
+
+        src_flat, work_flat = source_var.sym_1d, work.sym_1d
+        for k in range(source_var.num_components):
+            subs[src_flat[k]] = work_flat[k]
+        for deriv_expr, diffindex in derivfns[source_var]:
+            subs[deriv_expr] = work_flat[deriv_expr.component].diff(mesh.X[diffindex])
+
+    expr = expr.subs(subs) if hasattr(expr, "subs") else expr
+    derivfns = {v: d for v, d in derivfns.items() if v not in ip_sources}
+    # the substituted derivatives are now derivatives of ordinary mesh
+    # variables; let the caller re-extract them
+    _, _, new_derivs = uw.function.fn_mesh_vars_in_expression(expr)
+    for v, d in new_derivs.items():
+        derivfns.setdefault(v, d)
+    return expr, derivfns
+
+
 def _clement_to_work_variable(expr, mesh, derivfns):
     """
     Evaluate expression at nodes using Clement gradient recovery (no solve).
@@ -979,6 +1061,12 @@ def evaluate_nd(   expr,
     # Two modes:
     # - Quick (rbf=True, force_l2=False): Clement gradient at nodes, no solve
     # - Accurate (force_l2=True or rbf=False): L2 projection, requires solve
+    if derivfns and mesh is not None:
+        # An integration-point source has no gradient of its own: fit its
+        # values per cell first, then the ordinary derivative machinery below
+        # differentiates a polynomial (see the helper).
+        expr, derivfns = _integration_point_sources_to_cell_fit(expr, mesh, derivfns)
+
     if derivfns and mesh is not None:
         if evalf:
             raise RuntimeError(
