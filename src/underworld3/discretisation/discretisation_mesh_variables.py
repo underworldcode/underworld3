@@ -1154,6 +1154,130 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         return
 
+    def _live_coincident_count(self):
+        """Coordinates carrying more than one DOF, summed over ranks.
+
+        A fallback measure only. It undercounts badly in parallel: the
+        partitioner routinely puts the two sides of a cut node on
+        DIFFERENT ranks, and neither rank then sees a duplicate (measured
+        at np=2: 15 coincident groups in serial, 0 seen rank-locally).
+        The authoritative test is on the saved cloud — see
+        :meth:`_saved_cloud_stats`.
+        """
+        import numpy as np
+
+        coords = np.asarray(self.coords_nd)
+        if coords.shape[0]:
+            _, counts = np.unique(coords, axis=0, return_counts=True)
+            local = int((counts > 1).sum())
+        else:
+            local = 0
+        return uw.mpi.comm.allreduce(local)
+
+    @staticmethod
+    def _saved_cloud_stats(data_file, dim):
+        """``(rows, duplicated_coordinates)`` of the file's saved cloud.
+
+        This is the question that actually decides whether a
+        nearest-neighbour remap is well posed: the file is a global
+        object, so one rank-0 read answers it for every rank, whatever
+        the live partition did with the two sides of a cut.
+        """
+        import h5py
+        import numpy as np
+
+        stats = (0, 0)
+        if uw.mpi.rank == 0:
+            try:
+                with h5py.File(data_file, "r") as h5f:
+                    saved = h5f["fields"]["coordinates"][()].reshape(-1, dim)
+                _, counts = np.unique(saved, axis=0, return_counts=True)
+                stats = (int(saved.shape[0]), int((counts > 1).sum()))
+            except (OSError, KeyError):
+                stats = (0, 0)
+        return uw.mpi.comm.bcast(stats, root=0)
+
+    @staticmethod
+    def _petsc_payload_name(data_file, data_name):
+        """The DM group in ``data_file`` holding ``data_name``'s section.
+
+        ``None`` when the file was written without ``petsc_reload=True``.
+        """
+        import h5py
+
+        found = None
+        if uw.mpi.rank == 0:
+            try:
+                with h5py.File(data_file, "r") as h5f:
+                    topologies = h5f.get("topologies")
+                    for topology in (topologies or {}):
+                        dms = topologies[topology].get("dms")
+                        if dms is not None and data_name in dms:
+                            found = data_name
+                            break
+            except (OSError, KeyError):
+                found = None
+        return uw.mpi.comm.bcast(found, root=0)
+
+    def _guard_coincident_dofs(self, data_file, data_name, is_v1_1,
+                               verbose=False):
+        """Refuse a coordinate remap that cannot resolve a cut (#640)."""
+        if is_v1_1:
+            saved_rows, self._n_coincident = 0, self._live_coincident_count()
+        else:
+            saved_rows, self._n_coincident = self._saved_cloud_stats(
+                data_file, self.mesh.dim)
+        if self._n_coincident == 0:
+            return
+
+        if self._lvec is None:
+            self._set_vec(available=True)
+        live_rows = self._gvec.getSize() // self.num_components
+        payload = None if is_v1_1 else self._petsc_payload_name(
+            data_file, data_name)
+
+        if payload is not None and saved_rows == live_rows:
+            return  # `_read_native_payload` will take it
+
+        raise RuntimeError(
+            f"read_timestep: the saved field '{data_name}' holds "
+            f"{self._n_coincident} coordinates carrying more than one DOF "
+            "(a split fault duplicates a node on each side of the cut), "
+            "and this file cannot resolve which side is which — a "
+            "nearest-neighbour remap would hand both sides the same "
+            "value and smear the slip discontinuity into the first "
+            "element ring (#640).\n"
+            + (
+                "The file carries no PETSc-native payload: re-write it "
+                "with Mesh.write_timestep(..., petsc_reload=True)."
+                if payload is None else
+                f"The saved field has {saved_rows} DOFs and this "
+                f"variable has {live_rows}, so the native payload does "
+                "not apply — a cross-mesh remap cannot disambiguate a "
+                "cut, and the source and target splits must match."
+            )
+            + "\nPass allow_ambiguous_duplicates=True to force the old "
+            "behaviour: valid for far-field quantities only, never for "
+            "anything sampled near a fault."
+        )
+
+    def _read_native_payload(self, data_file, data_name, verbose=False):
+        """Load through the section when the coordinates cannot decide.
+
+        Returns ``True`` when the read was served here.
+        """
+        if getattr(self, "_n_coincident", 0) == 0:
+            return False
+        if verbose and uw.mpi.rank == 0:
+            print(
+                f"read_timestep: {self._n_coincident} coincident DOF "
+                "coordinates (a cut mesh) — reading through the PETSc "
+                "section instead of the coordinate remap",
+                flush=True,
+            )
+        self.read_checkpoint(data_file, data_name=data_name)
+        return True
+
     @timing.routine_timer_decorator
     def read_timestep(
         self,
@@ -1162,6 +1286,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         index,
         outputPath="",
         verbose=False,
+        allow_ambiguous_duplicates=False,
     ):
         """
         Read a mesh variable from ``Mesh.write_timestep()`` output using the
@@ -1190,6 +1315,21 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         Per-rank memory is bounded by ``file_size / n_ranks`` rather than
         ``file_size`` per rank.
+
+        **Split (``add_fault``) meshes.** A cut duplicates nodes at exactly
+        the same coordinate, one copy per side, so nearest-neighbour
+        matching cannot tell the two sides apart and would hand both the
+        same saved value — smearing the slip discontinuity into the first
+        element ring (#640). When coincident DOFs are present this method
+        therefore uses the PETSc-native payload instead, which carries the
+        section and restores the sides exactly; write it with
+        ``Mesh.write_timestep(..., petsc_reload=True)``. If the file has no
+        such payload, or the saved and live DOF counts differ (a genuine
+        cross-mesh remap, which no coordinate can disambiguate at a cut),
+        the read raises rather than return a quietly wrong field. Pass
+        ``allow_ambiguous_duplicates=True`` to force the old
+        nearest-neighbour behaviour anyway — valid only for far-field
+        quantities, never for anything sampled near a fault.
         """
 
         # Format dispatch: ``data_filename`` may be either the
@@ -1224,6 +1364,22 @@ class _BaseMeshVariable(Stateful, uw_object):
                 raise RuntimeError(
                     f"{os.path.abspath(data_file)} does not exist"
                 )
+
+        # ---- #640: a cut makes the coordinate remap ambiguous ----
+        # A split mesh carries duplicated nodes at exactly the same
+        # coordinate, one per side of the fault. ``nnn=1`` cannot choose
+        # between them, so BOTH sides receive whichever saved point the
+        # tree returned first and part of the slip jump is smeared into
+        # the first element ring (measured on a 2-D fault box: every
+        # coincident group collapsed onto one value; near-fault stress
+        # came back ~200x the in-memory answer). The PETSc-native payload
+        # stores the section, so it restores the two sides exactly.
+        if not allow_ambiguous_duplicates:
+            self._guard_coincident_dofs(data_file, data_name, is_v1_1,
+                                        verbose=verbose)
+            if self._read_native_payload(data_file, data_name,
+                                         verbose=verbose):
+                return
 
         # ``self.num_components`` is correct for SCALAR (1), VECTOR (dim),
         # TENSOR (dim**2) and SYM_TENSOR (dim*(dim+1)/2). ``self.shape[1]``
