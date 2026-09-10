@@ -829,9 +829,21 @@ def _serialise_field(h5group, name: str, value: Any) -> None:
                 f"unserialisable list (len={len(value)}, "
                 f"first-type={type(value[0]).__name__ if value else 'empty'})"
             )
+            warnings.warn(
+                f"Snapshot skipped state field {h5group.name}/{name}: "
+                f"{h5group.attrs[name + '__skipped']}. "
+                "Disk restart may not reproduce continuation.",
+                RuntimeWarning, stacklevel=2,
+            )
             return
     h5group.attrs[name + "__skipped"] = (
         f"unserialisable type {type(value).__name__}"
+    )
+    warnings.warn(
+        f"Snapshot skipped state field {h5group.name}/{name}: "
+        f"{h5group.attrs[name + '__skipped']}. "
+        "Disk restart may not reproduce continuation.",
+        RuntimeWarning, stacklevel=2,
     )
 
 

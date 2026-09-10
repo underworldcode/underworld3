@@ -18,6 +18,17 @@ corrects affected uninterrupted legacy Diffusion trajectories; it does not
 change the composed `AdvDiffusion` or SLCN implementation. Small serial/MPI
 tests cover startup and established histories, orders 1-3 and varying steps.
 
+The general hazard is a symbolic slot compiled while it holds zero:
+simplification can remove it permanently from the kernel (for example,
+`x**0` folds to one), so later ramping cannot recover the omitted term.
+
+PR #708 review follow-up adds a fresh-process disk regression. Disk snapshots
+still skip live symbolic matrices; their replay limitation is tracked as a
+strict expected failure, not claimed fixed by the in-memory correction.
+Saving any unsupported state field now emits a warning naming the field.
+Symbolic snapshot docstrings explicitly document shared live atom references
+and their lack of isolation from subsequent mutation or disk portability.
+
 ### The Multiplier Was Not the Whole Traction (August 2026)
 
 **`Stokes_Constrained.topography()` now returns the traction the boundary is

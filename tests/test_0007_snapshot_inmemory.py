@@ -436,8 +436,7 @@ def test_symbolic_flux_history_remains_valid_after_solver_restore():
     temperature = uw.discretisation.MeshVariable(
         "T_symbolic_restore", mesh, 1, degree=1
     )
-    with mesh.access(temperature):
-        temperature.data[:, 0] = temperature.coords[:, 0]
+    temperature.array[:, 0, 0] = temperature.coords[:, 0]
 
     diffusion = uw.systems.Diffusion(
         mesh, u_Field=temperature, order=2, theta=1.0
@@ -451,7 +450,7 @@ def test_symbolic_flux_history_remains_valid_after_solver_restore():
     model.load_state(snapshot)
     diffusion.solve(timestep=0.01, zero_init_guess=False)
 
-    assert np.all(np.isfinite(temperature.data))
+    assert np.all(np.isfinite(temperature.array))
 
 
 

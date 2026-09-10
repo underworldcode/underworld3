@@ -111,7 +111,12 @@ class DDtSymbolicState(_DDtCoreState):
     """Snapshot of a :class:`Symbolic` DDt instance's evolution state.
 
     ``Symbolic`` is the pure-symbolic flavor — ``psi_star`` history
-    slots hold sympy expressions (immutable), captured by value.
+    slots hold symbolic matrices whose containers are copied, but whose live
+    UWexpression atoms are retained by reference. This supports in-memory
+    backstepping, not isolation from subsequent changes to those atoms.
+    These references cannot be transported through disk snapshots; symbolic
+    history is currently skipped there. Reconstructing symbolic forms from
+    the solver would be needed for a general disk-restart guarantee.
     """
 
     psi_star: list = field(default_factory=list)
