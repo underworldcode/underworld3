@@ -334,15 +334,43 @@ class _JITConstant(sympy.Symbol):
     Used by the JIT compiler to route constant UWexpressions through
     PETSc's PetscDSSetConstants() mechanism instead of baking values
     as C literals.
+
+    Identity is the ``constants[]`` INDEX, not the name. Two constants may
+    legitimately share a display name — every ``ViscousFlowModel`` calls its
+    viscosity :math:`\eta`, so a two-material model has two of them — and each
+    needs its own slot. This follows the same mechanism ``UWexpression`` uses
+    to keep same-named symbols on different meshes apart (see
+    ``docs/developer/design/SYMBOL_DISAMBIGUATION_2025-12.md``): construct via
+    ``Symbol.__xnew__`` to bypass SymPy's name-keyed instance cache, and add
+    the discriminator to ``_hashable_content``.
+
+    Without both halves, ``sympy.Symbol.__new__`` returns the *cached instance
+    for that name*: the second placeholder was literally the first object, and
+    assigning its ``_ccodestr`` overwrote the first one's. Every occurrence
+    then rendered as one ``constants[]`` slot, so a layered viscosity
+    assembled as ``(phi_0 + phi_1) * constants[k]`` — a single uniform
+    viscosity — while the manifest and the symbolic expression both looked
+    correct.
     """
+
+    __slots__ = ("_const_index", "_ccodestr")
 
     def __new__(cls, index, name=None):
         if name is None:
             name = f"_jit_const_{index}"
-        obj = super().__new__(cls, name)
+        # __xnew__, not __new__: the latter is cached by (name, assumptions),
+        # which knows nothing about _const_index.
+        obj = sympy.Symbol.__xnew__(cls, name)
         obj._const_index = index
         obj._ccodestr = f"constants[{index}]"
         return obj
+
+    def _hashable_content(self):
+        """Two placeholders differ if their constants[] slot differs."""
+        return sympy.Symbol._hashable_content(self) + (self._const_index,)
+
+    def __getnewargs_ex__(self):
+        return ((self._const_index, self.name), {})
 
     def _ccode(self, printer):
         return self._ccodestr
@@ -394,13 +422,25 @@ def _extract_constants(all_fns, mesh):
     # Sort by the user-given symbol name, not ``str(expr)`` — ``__str__`` on a
     # UWexpression returns the current *value*, which shuffles the index
     # assignment whenever a value changes. ``.name`` is stable.
-    sorted_constants = sorted(constant_exprs, key=lambda e: (e.name, _stable_sort_key(e)))
+    #
+    # Two constants can legitimately SHARE a name: every ViscousFlowModel calls
+    # its viscosity \eta, so a model with two of them has two \eta constants.
+    # ``instance_number`` (creation order, identical on every rank running the
+    # same script) breaks that tie without reintroducing the value into the key.
+    sorted_constants = sorted(
+        constant_exprs,
+        key=lambda e: (e.name, getattr(e, "instance_number", -1), _stable_sort_key(e)),
+    )
 
     manifest = []
     subs_map = {}
     for i, expr in enumerate(sorted_constants):
         # Use ``expr.name`` (stable) instead of ``str(expr)`` (= current value)
         # so the placeholder symbol's identity is independent of parameter value.
+        #
+        # Same-named constants stay apart through _JITConstant's own
+        # disambiguation (its _hashable_content carries the slot index), not
+        # through a unique name — see the class docstring.
         jit_const = _JITConstant(i, name=f"_jit_const_{expr.name}")
         manifest.append((i, expr))
         subs_map[expr] = jit_const
