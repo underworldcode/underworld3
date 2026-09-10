@@ -217,3 +217,57 @@ def test_stress_transport_is_validated_and_fixed_once_the_history_exists():
     assert type(stokes.DFDt).__name__ == "EulerianSUPG"
     with pytest.raises(RuntimeError, match="already exists"):
         stokes.stress_transport = "semi_lagrangian"
+
+
+def _sheared_varying_modulus(transport, order, steps=10, dt=0.1, res=6):
+    """Simple shear of a Maxwell material whose shear modulus varies in x.
+
+    The stress is then non-uniform and the shear carries it, so the transport
+    term is genuinely active: the case the uniform benchmarks cannot provide.
+    There is no closed form, so the schemes are judged against each other and
+    against their own behaviour under refinement.
+    """
+    eta, modulus, speed, height, width = 1.0, 1.0, 0.5, 1.0, 2.0
+    mesh = uw.meshing.StructuredQuadBox(
+        elementRes=(2 * res, res), minCoords=(-width / 2, -height / 2),
+        maxCoords=(width / 2, height / 2))
+    x, _y = mesh.X
+    tag = f"{transport[0]}{order}{steps}"
+    v = uw.discretisation.MeshVariable(f"Uv_{tag}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"Pv_{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
+    stokes.stress_transport = transport
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=order)
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+    stokes.constitutive_model.Parameters.shear_modulus = (
+        modulus * (1 + 0.5 * sympy.sin(2 * sympy.pi * x / width)))
+    stokes.constitutive_model.Parameters.dt_elastic = dt
+    stokes.add_dirichlet_bc((speed, 0.0), "Top")
+    stokes.add_dirichlet_bc((-speed, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1.0e-6
+    stokes.petsc_options["snes_type"] = "newtonls"
+    stokes.petsc_options["ksp_type"] = "fgmres"
+    for _ in range(steps):
+        stokes.solve(timestep=dt, zero_init_guess=False, evalf=False)
+
+    shear = stokes.DFDt.psi_star[0].sym[0, 1]
+    norm = float(np.sqrt(uw.maths.Integral(mesh, shear ** 2).evaluate()))
+    slope = float(np.sqrt(uw.maths.Integral(mesh, shear.diff(x) ** 2).evaluate()))
+    return norm, slope
+
+
+def test_the_two_stress_histories_agree_when_the_stress_moves_and_evolves():
+    """With a stress that is carried as well as relaxed the schemes must agree
+    to within their own time-discretisation error, and more tightly at order 2."""
+    traced, traced_slope = _sheared_varying_modulus("semi_lagrangian", 2)
+    grid, grid_slope = _sheared_varying_modulus("eulerian", 2)
+    assert traced_slope > 0.1 and grid_slope > 0.1, "the stress must not be uniform"
+    assert abs(grid - traced) / traced < 5.0e-3, (grid, traced)
+
+    # halving the step moves each scheme by no more than they differ from
+    # each other: the gap between them is discretisation, not a defect
+    refined, _ = _sheared_varying_modulus("eulerian", 2, steps=20, dt=0.05)
+    assert abs(refined - grid) / grid < 5.0e-3, (refined, grid)
