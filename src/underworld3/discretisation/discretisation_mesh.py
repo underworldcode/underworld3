@@ -5241,7 +5241,12 @@ class Mesh(Stateful, uw_object):
 
         - ``name``: stable string identifier for the mesh.
         - ``mesh_version``: current ``_mesh_version`` integer.
-        - ``coords``: deformed mesh coordinates (numpy array).
+        - ``coords``: deformed mesh coordinates, in MODEL UNITS — the
+          representation :meth:`_deform_mesh` writes back. ``mesh.X.coords``
+          is the unit-aware view and returns metres when a model declares a
+          length scale; capturing that and restoring it through
+          ``_deform_mesh`` would multiply the mesh by the length scale on
+          every restore, silently and without changing any array's shape.
         - ``vars``: ``{var.clean_name: gvec_array.copy()}`` for every
           mesh variable on this mesh.
 
@@ -5249,7 +5254,7 @@ class Mesh(Stateful, uw_object):
         section / DM-topology data sufficient to rebuild the DM on
         restore.
         """
-        coords = numpy.asarray(self.X.coords).copy()
+        coords = numpy.asarray(self._coords).copy()
         var_arrays: dict[str, numpy.ndarray] = {}
         for var in self.vars.values():
             var._sync_lvec_to_gvec()
@@ -5294,7 +5299,7 @@ class Mesh(Stateful, uw_object):
             )
 
         coords = numpy.asarray(payload["coords"])
-        expected_shape = numpy.asarray(self.X.coords).shape
+        expected_shape = numpy.asarray(self._coords).shape
         if coords.shape != expected_shape:
             raise SnapshotInvalidatedError(
                 f"mesh {self.name!r}: coordinate shape changed "

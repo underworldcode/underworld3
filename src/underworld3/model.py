@@ -724,6 +724,26 @@ class Model(PintNativeModelMixin, BaseModel):
         """The step in progress, or None outside a ``model.step`` block."""
         return self._open_step
 
+    def clear_journal(self):
+        """Start a new run's journal, discarding the records and snapshots in it.
+
+        A driver that runs the same model many times — an inversion, a
+        parameter sweep, a restart from a saved state — needs each run to have
+        its own account. Without this the journal is a concatenation of every
+        run the process has done, and ``rewind()`` will happily walk back into
+        the previous one.
+
+        Does not touch the clock: reset ``model.tracker.time`` / ``step``
+        yourself if the new run starts from zero.
+        """
+        if self._open_step is not None:
+            raise RuntimeError(
+                "cannot clear the journal from inside a model.step block "
+                f"(step {self._open_step.index} is open)."
+            )
+        self._journal.clear()
+        self._record_warned = False
+
     def _trim_journal(self):
         limit = self._journal_limit
         if limit is not None and len(self._journal) > limit:

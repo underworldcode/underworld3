@@ -548,6 +548,18 @@ Snapshots cost roughly 13 bytes per primary degree of freedom per step. Older
 steps lose their snapshot and keep their journal record, so the account of what
 happened outlives the state it happened to.
 
+A driver that runs the same model more than once — an inversion, a parameter
+sweep, a restart — should start each run with a clean account:
+
+```python
+model.clear_journal()
+model.tracker.time = uw.quantity(0.0, "Myr")
+model.tracker.step = 0
+```
+
+Without it the journal is the concatenation of every run the process has done,
+and `rewind()` will walk back into the previous one.
+
 On a mesh that deforms or adapts the snapshot cannot be taken yet; the run
 warns once, keeps journalling, and `rewind()` will not reach those steps.
 
