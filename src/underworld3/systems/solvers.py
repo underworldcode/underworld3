@@ -409,14 +409,24 @@ def _advective_diffusive_dt(constitutive_K, V_fn, mesh, direction_aware=False,
 
 def _dimensionalise_dt(dt_estimate):
     """Return a timestep estimate with physical time units when a model with
-    reference scales is active, otherwise as a plain nondimensional scalar."""
+    reference scales is active, otherwise as a plain nondimensional scalar.
+
+    ``_as_scalar`` is applied BEFORE dimensionalising, not only in the
+    no-units fallback. ``np.squeeze`` promotes a Python float to a 0-d array,
+    and ``uw.dimensionalise`` maps an array to a ``UnitAwareArray`` — which
+    follows the transparent-container principle and drops its units under
+    arithmetic. A timestep is a scalar quantity, not a field, so the estimate
+    must come back as a ``UWQuantity``: the pattern's own idiom
+    ``dt = fraction * solver.estimate_dt()`` silently loses the units
+    otherwise, and the loss only surfaces later, wherever the bare number
+    meets the dimensional clock.
+    """
+    scalar = _as_scalar(np.squeeze(dt_estimate))
     try:
-        return uw.dimensionalise(np.squeeze(dt_estimate), {'[time]': 1})
+        return uw.dimensionalise(scalar, {'[time]': 1})
     except Exception:
-        # Sanctioned fallback: no active scaling model. _as_scalar because
-        # np.squeeze promotes a Python float to a 0-d array, which is not a
-        # number any caller expects (see _apply_unit_aware_scaling).
-        return _as_scalar(np.squeeze(dt_estimate))
+        # Sanctioned fallback: no active scaling model.
+        return scalar
 
 
 def _invalidate_solution_cache(u):

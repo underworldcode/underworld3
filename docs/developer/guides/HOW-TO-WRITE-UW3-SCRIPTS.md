@@ -610,6 +610,26 @@ of model state, so two independent runs of the same problem on the same solver
 objects diverge at the 1e-13 level from the first step. If you need to look at a
 step twice, restore it rather than re-run it.
 
+### Two worked cases
+
+**`docs/examples/convection/intermediate/Ex_Convection_Annulus_Recorded.py`** —
+Boussinesq convection in an annulus. Four reference quantities, a body force
+written as a force (Ra falls out of the nondimensionalisation rather than being
+typed in), rotated free-slip on the curved boundaries, and a varying
+`estimate_dt()`. It then demonstrates the four things the record buys, in
+order: the journal, a rejected step, a bit-exact replay, and the invariant
+catching a step that was taken twice. Compare
+`../advanced/Ex_Convection_Cylinder.py`, which solves the same physics with a
+bare `for step in range(n)` loop and no clock at all.
+
+**An adjoint driven from the journal.** The backward pass of a discrete adjoint
+needs exactly what the record holds: the state at each step and the order the
+operators were applied in. Walking `model.journal` backwards —
+`load_state(entry.snapshot)`, replay, transpose-solve — replaces the
+hand-written checkpoint dictionary that an adjoint normally carries, and
+removes its dependence on knowing in advance which arrays the backward pass
+will want.
+
 ### Time-dependent expressions
 
 `mesh.t` is the model clock as a symbol. It is repacked from
