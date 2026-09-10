@@ -330,3 +330,82 @@ def test_a_jsonl_log_round_trips_into_a_figure(tmp_path):
     xml.dom.minidom.parseString(text)
     assert "1 backtrack(s)" in text
     assert "stroke-dasharray" in text, "the backtrack should be drawn"
+
+
+# ---------------------------------------------------------------------------
+# Backtracks read as the path the run took
+# ---------------------------------------------------------------------------
+
+
+def test_a_backtrack_draws_the_undo_and_the_repeat(tmp_path):
+    """Back out of the abandoned step, then down to the row that redoes it."""
+    # The shape a real run leaves: ... 2 ok, 3 abandoned, back to 2, 2 again.
+    steps = [_step(i) for i in range(3)]
+    steps.append(_step(3, dt=9.0, completed=False, label="too big"))
+    steps.append(_step(2, label="replay"))
+    notes = [{"kind": "rewind", "after_position": 3, "to_position": 2,
+              "short": "rewind 1", "steps_undone": 1}]
+
+    text = _svg(tmp_path, _run(steps, notes))
+    assert "rewind 1" in text
+    assert "again" in text, (
+        "the row that repeats the step should be joined to the one it repeats"
+    )
+    # Two arrowheads: one back (up), one forward (down).
+    assert text.count("<path") >= 2
+
+
+def test_no_repeat_arrow_when_the_run_moves_on(tmp_path):
+    """A backtrack followed by a DIFFERENT step is not a repeat."""
+    steps = [_step(i) for i in range(3)] + [_step(7, label="elsewhere")]
+    notes = [{"kind": "rewind", "after_position": 2, "to_position": 1,
+              "short": "rewind 1"}]
+
+    text = _svg(tmp_path, _run(steps, notes))
+    assert "rewind 1" in text
+    assert "again" not in text
+
+
+def test_notes_that_make_the_same_jump_share_one_arrow(tmp_path):
+    """A load_state then a rewind to the same place is one backtrack."""
+    steps = [_step(i) for i in range(4)] + [_step(2, label="replay")]
+    notes = [
+        {"kind": "restore", "after_position": 3, "to_position": 2,
+         "short": "restore"},
+        {"kind": "rewind", "after_position": 3, "to_position": 2,
+         "short": "rewind 1"},
+    ]
+
+    text = _svg(tmp_path, _run(steps, notes))
+    assert "rewind 1 (+1)" in text, "the group should be labelled once"
+    assert "restore" not in text.split("Operator sequences")[0], (
+        "the two labels must not both print in the gutter"
+    )
+
+
+def test_gutter_labels_stay_on_the_page(tmp_path):
+    import re
+
+    steps = [_step(i) for i in range(4)] + [_step(1)]
+    notes = [{"kind": "rewind", "after_position": 3, "to_position": 1,
+              "short": "rewind 2 (+1)"}]
+    text = _svg(tmp_path, _run(steps, notes))
+    for x, anchor, content in re.findall(
+            r'<text x="([-\d.]+)"[^>]*text-anchor="(\w+)"[^>]*>([^<]*)<', text):
+        if anchor == "end":
+            assert float(x) - len(content) * 0.53 * 7.0 >= -1.0, content
+
+
+def test_pdf_has_no_replacement_characters(tmp_path):
+    """Arrows and ellipses must be mapped, not turned into '?'."""
+    import zlib
+    import re
+
+    steps = [_step(i) for i in range(4)] + [_step(2)]
+    notes = [{"kind": "rewind", "after_position": 3, "to_position": 2,
+              "short": "rewind 1 (+1)"}]
+    data = _pdf(tmp_path, _run(steps, notes))
+    streams = re.findall(rb"stream\r?\n(.*?)\r?\nendstream", data, re.S)
+    body = b"".join(zlib.decompress(s) for s in streams).decode("latin-1")
+    for drawn in re.findall(r"\((.*?)\) Tj", body):
+        assert "?" not in drawn, drawn

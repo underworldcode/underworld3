@@ -663,8 +663,15 @@ uw.journal_flowchart(model)                          # Mermaid, for docs
 `journal_diagram` puts **time down the page**: one row per step, A4 portrait,
 paginated, so it drops into a document column and opens anywhere. Each row
 carries the step index, the clock, `dt` as a number and as a bar, a wall-clock
-tick, and one letter. Backtracks are drawn in the left gutter as an arrow from
-the step that ended back up to the step it returned to.
+tick, and one letter.
+
+Backtracks are drawn in the left gutter as the path the run took: a dashed
+arrow **up** from the step it bailed out of to the step whose state it returned
+to, then a solid arrow **down** from there to the row that takes that step
+again. The pair is what makes a repeated step index read as a repeat rather
+than a typo. Two calls that make the same jump — a `load_state` and then a
+`rewind` to the same place — are one backtrack in the run's story and one arrow
+on the page.
 
 The PDF and the SVG are both written directly — no plotting library, no
 rasterisation, nothing fetched at render time, and a print-safe palette that
@@ -694,6 +701,13 @@ A column of `A` with a single `B` in it says at a glance that one step did
 something different. A hundred spelled-out sequences say nothing and hide the
 one that matters.
 
+The two columns are independent, which is worth reading carefully: **`seq` is
+what the step ran; `ok` / `abandoned` is whether it was kept.** In the figure
+above the abandoned step ran the ordinary sequence `A` and was then rejected by
+a check in the script — nothing failed. `B` is the same three operators run
+twice inside one step block, which is why that row also carries the invariant's
+`!`.
+
 `journal_flowchart` renders one step's operator flow as Mermaid. When a run has
 more than one distinct sequence, each becomes its own subgraph labelled with
 the steps that took it, so an anomalous step is visible rather than averaged
@@ -717,8 +731,19 @@ coupled system, a retry — and its history advances twice, so the physical step
 is taken twice. The solve counter and the timestep history look identical to a
 single step, so nothing else in the library can see it. The step warns.
 
-If a solver genuinely is called more than once within a step, only the last
-call should carry the timestep.
+A history advances on **every** solve, whether or not that call passed a
+timestep — omitting it reuses the last value. So a corrector or a Picard
+iteration on a coupled system has to put the history back between passes:
+
+```python
+saved = copy.deepcopy(adv_diff.Unknowns.DuDt.state)
+adv_diff.solve(timestep=dt)          # the extra pass
+adv_diff.Unknowns.DuDt.state = saved
+```
+
+There is no "solve without advancing the history" switch today. The invariant
+is telling you that a coupled iteration inside one step is not something the
+library supports directly yet.
 
 ### Backstepping
 

@@ -332,3 +332,74 @@ def test_the_invariant_is_recorded_against_the_step(tmp_path):
     assert len(flags) == 1
     assert "more than once" in flags[0]["name"]
     assert "EulerianSUPG(T) x2" in flags[0]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Where a backtrack landed
+# ---------------------------------------------------------------------------
+
+
+def test_a_repeated_step_index_resolves_to_the_most_recent(tmp_path):
+    """After a rewind the same index appears twice; a later backtrack means
+    the second one, not the first."""
+    uw, model, path = _model(tmp_path, name="run.jsonl")
+    model.record_every = 1
+    model.tracker.time = 0.0
+    model.tracker.step = 0
+
+    for _ in range(3):                      # steps 0, 1, 2
+        with model.step(0.1, label="convect"):
+            pass
+    model.rewind()                          # back to the start of step 2
+    for _ in range(2):                      # step 2 again, then 3
+        with model.step(0.1, label="redo"):
+            pass
+    model.rewind()                          # back to the start of step 3
+
+    runs = uw.read_journal(path)
+    steps, notes = runs[-1]["steps"], runs[-1]["notes"]
+    assert [s["index"] for s in steps] == [0, 1, 2, 2, 3]
+
+    first, second = notes
+    assert first["to_position"] == 2
+    # The second rewind targets step 3, which is the LAST row, not an earlier
+    # one that happens to share an index.
+    assert second["to_step"] == 3
+    assert second["to_position"] == 4
+
+
+def test_a_bare_restore_is_located_by_its_clock(tmp_path):
+    """load_state names no step, so the note's recorded time places it."""
+    uw, model, path = _model(tmp_path, units=True, name="run.jsonl")
+    dt = uw.quantity(0.5, "Myr")
+
+    with model.step(dt, label="a"):
+        pass
+    snap = model.save_state()
+    with model.step(dt, label="b"):
+        pass
+    model.load_state(snap)
+
+    run = uw.read_journal(path)[-1]
+    note = run["notes"][0]
+    assert note["kind"] == "restore"
+    assert note["after_position"] == 1
+    assert note["to_position"] == 0, (
+        "the restore put the clock back to the end of step 0"
+    )
+
+
+def test_a_backtrack_with_nothing_to_point_at_says_so(tmp_path):
+    """A restore to a state no recorded step ended at leaves no target."""
+    uw, model, path = _model(tmp_path, name="run.jsonl")
+
+    snap = model.save_state()               # before any step: t = 0
+    with model.step(0.1, label="a"):
+        pass
+    with model.step(0.1, label="b"):
+        pass
+    model.load_state(snap)
+
+    note = uw.read_journal(path)[-1]["notes"][0]
+    assert note["after_position"] == 1
+    assert note["to_position"] is None

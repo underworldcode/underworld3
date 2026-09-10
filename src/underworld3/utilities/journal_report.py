@@ -214,8 +214,12 @@ def _text_width(content, size, mono):
 # Layout — time runs down the page
 # ---------------------------------------------------------------------------
 
-_MARGIN = 46.0
+_MARGIN = 40.0
 _ROW = 14.0
+# The left gutter carries the backtrack arrows and their labels. Wide enough
+# for "restore + rewind 1" at 7pt, because a label that runs off the page is
+# worse than no label.
+_GUTTER = 58.0
 
 
 def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
@@ -257,7 +261,7 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
         counts[_signature(step)] = counts.get(_signature(step), 0) + 1
 
     # --- columns -----------------------------------------------------------
-    x_gutter = _MARGIN + 14.0          # backtrack arrows live to the left
+    x_gutter = _MARGIN + _GUTTER       # backtrack arrows live to the left
     x_index = x_gutter + 26.0          # step number, right aligned
     x_time = x_index + 54.0            # t, right aligned
     x_dt = x_time + 52.0               # dt, right aligned
@@ -380,22 +384,50 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
     y += 6
 
     # --- backtracks, in the left gutter ------------------------------------
-    # Backtracks go in the left gutter, each on its own track so two that land
-    # on adjacent rows do not draw over one another. They are drawn last but
-    # must land on the PAGE THEIR ROWS ARE ON, not on whichever page the
-    # cursor happens to have reached.
-    for track, note in enumerate(notes):
-        after = note.get("after_position")
-        target = note.get("to_position")
+    # Backtracks go in the left gutter, and they are drawn as the path the run
+    # actually took: BACK from the step it bailed out of, to the step whose
+    # state it returned to, and then DOWN from that step to the row that redoes
+    # it. Two arrows rather than one, because they are two different things —
+    # an undo, and the repeat that follows it — and the pair is what makes the
+    # repeated step index in the table read as a repeat rather than a typo.
+    # They are drawn last but must land on the PAGE THEIR ROWS ARE ON, not on
+    # whichever page the cursor happens to have reached.
+    # Two calls that make the same jump — a load_state followed by a rewind to
+    # the same place — are one backtrack in the run's story and one arrow on
+    # the page. Grouping them also stops their labels printing over each other.
+    grouped = []
+    for note in notes:
+        key = (note.get("after_position"), note.get("to_position"))
+        if grouped and grouped[-1][0] == key:
+            grouped[-1][1].append(note)
+        else:
+            grouped.append((key, [note]))
+
+    resumed = set()
+    for track, ((after, target), members) in enumerate(grouped):
+        note = members[0]
+        note = dict(note)
+        # Label the group by the LAST note in it: that is the call that set
+        # where the run ended up, and it is the more specific one (a rewind
+        # names how many steps it undid). The others are in the log; a gutter
+        # label has room for the net effect, not the sequence of calls.
+        note["short"] = members[-1].get("short", members[-1].get("kind", "back"))
+        if len(members) > 1:
+            note["short"] += f" (+{len(members) - 1})"
         if after is None or after not in row_y:
             continue
-        if target is None or target not in row_y:
-            target = after
         page = row_page[after]
         ops = canvas.pages[page]
-        x = _MARGIN + 10 - 4.0 * (track % 3)
+        x = x_gutter - 6.0 - 4.0 * (track % 3)
         y_from = row_y[after] + _ROW - 3
         label = note.get("short", "back")
+
+        if target is None or target not in row_y:
+            # Nothing recorded to point at: mark where it happened.
+            ops.append(("line", x, y_from, x + 4, y_from, _ABANDONED, 0.8, None))
+            ops.append(("text", x - 6, y_from, label, 7, _ABANDONED,
+                        "end", False, False))
+            continue
 
         if row_page[target] != page:
             # It reached back past a page break; say so where it happened
@@ -404,20 +436,34 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
             ops.append(("line", x, y_from, x, y_from - _ROW * 0.8, _ABANDONED,
                         0.8, (2.0, 1.5)))
             ops.append(("tri", x, y_from - _ROW * 0.8, 2.5, _ABANDONED))
-            ops.append(("text", _MARGIN - 2, y_from, f"{label} \u2191", 7,
+            ops.append(("text", x - 6, y_from, f"{label} \u2191", 7,
                         _ABANDONED, "end", False, False))
             continue
 
-        y_to = row_y[target] + 2
-        if y_to > y_from:
-            continue
-        ops.append(("line", x, y_from, x, y_to, _ABANDONED, 0.8, (2.0, 1.5)))
-        ops.append(("line", x, y_from, x + 4, y_from, _ABANDONED, 0.8, None))
-        ops.append(("tri", x, y_to, 2.5, _ABANDONED))
-        # Only label a backtrack that spans enough rows to hold the word.
-        if y_from - y_to >= _ROW * 1.5:
-            ops.append(("text", _MARGIN - 2, (y_from + y_to) / 2 + 3, label, 7,
-                        _ABANDONED, "end", False, False))
+        y_to = row_y[target] + 3
+        if y_to <= y_from:
+            ops.append(("line", x, y_from, x, y_to, _ABANDONED, 0.8, (2.0, 1.5)))
+            ops.append(("line", x, y_from, x + 4, y_from, _ABANDONED, 0.8, None))
+            ops.append(("tri", x, y_to, 2.5, _ABANDONED))
+            ops.append(("text", x - 6,
+                        (y_from + y_to) / 2 + 3 if y_from - y_to >= _ROW * 2.0
+                        else y_from + 1, label, 7, _ABANDONED, "end", False,
+                        False))
+
+        # ... and the repeat. The row that follows the backtrack is the run
+        # picking the step up again; joining the two says so.
+        redo = after + 1
+        if (redo in row_y and row_page[redo] == page and target not in resumed
+                and steps[redo].get("index") == steps[target].get("index")):
+            resumed.add(target)
+            xr = x - 6.0
+            y_top = row_y[target] + _ROW - 3
+            y_bottom = row_y[redo] + _ROW / 2
+            ops.append(("line", xr, y_top, xr, y_bottom, _ACCEPTED, 0.8, None))
+            ops.append(("line", xr, y_top, xr + 3, y_top, _ACCEPTED, 0.8, None))
+            ops.append(("tri_down", xr, y_bottom, 2.5, _ACCEPTED))
+            ops.append(("text", xr - 4, y_bottom + 3, "again", 7,
+                        _ACCEPTED, "end", False, False))
 
     # --- the legend: what each letter means --------------------------------
     if page_height is not None and y + 30 + 14 * len(order) > page_height - _MARGIN:
@@ -425,7 +471,8 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
         y = _MARGIN
 
     y += 10
-    canvas.text(_MARGIN, y + 8, "Operator sequences", size=9.5, bold=True)
+    canvas.text(_MARGIN, y + 8, "Operator sequences  —  what the seq letter "
+                "on each row stands for", size=9.5, bold=True)
     y += 18
     budget = int((right - _MARGIN - 34) / (_COUR_EM * 8.0))
     for signature in order:
@@ -490,9 +537,10 @@ def _svg_ops(ops, width, height):
             if dash:
                 attrs += f' stroke-dasharray="{dash[0]} {dash[1]}"'
             out.append(f"<line {attrs}/>")
-        elif kind == "tri":
+        elif kind in ("tri", "tri_down"):
             _, x, y, r, colour = op
-            out.append(f'<path d="M {x:.1f} {y:.1f} l {-r:.1f} {r * 1.6:.1f} '
+            dy = r * 1.6 if kind == "tri" else -r * 1.6
+            out.append(f'<path d="M {x:.1f} {y:.1f} l {-r:.1f} {dy:.1f} '
                        f'l {r * 2:.1f} 0 z" fill="{_hex(colour)}"/>')
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
@@ -517,6 +565,7 @@ def _svg_ops(ops, width, height):
 
 _PDF_SUBSTITUTIONS = {
     "→": "->", "·": "-", "⚠": "!", "—": "-", "–": "-",
+    "…": "...", "↑": "^", "↓": "v", "×": "x",
     "'": "'", "'": "'", """: '"', """: '"', "≥": ">=", "≤": "<=",
 }
 
@@ -559,11 +608,12 @@ def _pdf_page_stream(ops, width, height):
             out.append(f"{stroke[0]:.3f} {stroke[1]:.3f} {stroke[2]:.3f} RG {lw} w")
             out.append(f"{x1:.2f} {fy(y1):.2f} m {x2:.2f} {fy(y2):.2f} l S")
             out.append("Q")
-        elif kind == "tri":
+        elif kind in ("tri", "tri_down"):
             _, x, y, r, colour = op
+            dy = r * 1.6 if kind == "tri" else -r * 1.6
             out.append(f"q {colour[0]:.3f} {colour[1]:.3f} {colour[2]:.3f} rg")
-            out.append(f"{x:.2f} {fy(y):.2f} m {x - r:.2f} {fy(y + r * 1.6):.2f} l "
-                       f"{x + r:.2f} {fy(y + r * 1.6):.2f} l f Q")
+            out.append(f"{x:.2f} {fy(y):.2f} m {x - r:.2f} {fy(y + dy):.2f} l "
+                       f"{x + r:.2f} {fy(y + dy):.2f} l f Q")
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
             font = "/F3" if mono else ("/F2" if bold else "/F1")

@@ -125,9 +125,16 @@ class ModelStep:
             warnings.warn(
                 f"step {self.index}: history advanced more than once ({detail}). "
                 f"The step has been taken more than once, so the field is "
-                f"further ahead than dt says. If a solver is called twice "
-                f"within one step deliberately — a corrector or a Picard "
-                f"iteration — only the last call should carry the timestep.",
+                f"further ahead than dt says while the clock, the step counter "
+                f"and the timestep history all read as one step. "
+                f"A history advances on every solve, whether or not that call "
+                f"passed a timestep — omitting it reuses the last value — so "
+                f"a corrector or a Picard iteration on a coupled system has to "
+                f"put the history back between passes:\n"
+                f"    saved = copy.deepcopy(solver.Unknowns.DuDt.state)\n"
+                f"    ... the extra solve ...\n"
+                f"    solver.Unknowns.DuDt.state = saved\n"
+                f"There is no 'solve without advancing' switch today.",
                 RuntimeWarning,
                 stacklevel=3,
             )
@@ -5398,6 +5405,45 @@ class Model(PintNativeModelMixin, BaseModel):
 _default_model = None
 
 
+def _backtrack_target(steps, here, note):
+    """Which recorded step a backtrack landed on, or None.
+
+    Searched BACKWARDS from where the note fired, because a step index can
+    appear more than once in a run: after a rewind the same step is taken
+    again, and the note refers to the most recent one, not the first.
+
+    A rewind names its step. A bare restore does not, so it is matched on the
+    clock the note recorded — the value it put the run's time back to.
+    """
+    if note.get("kind") == "rewind" and note.get("to_step") is not None:
+        target = note["to_step"]
+        for i in range(here, -1, -1):
+            if steps[i].get("index") == target:
+                return i
+        return None
+
+    clock = note.get("t")
+    if isinstance(clock, dict):
+        magnitude, units = clock.get("magnitude"), clock.get("units")
+        for i in range(here, -1, -1):
+            t1 = steps[i].get("t1")
+            if (isinstance(t1, dict) and t1.get("units") == units
+                    and magnitude is not None
+                    and abs(t1.get("magnitude", 0.0) - magnitude)
+                    <= 1e-9 * max(1.0, abs(magnitude))):
+                return i
+    elif clock is not None:
+        for i in range(here, -1, -1):
+            t1 = steps[i].get("t1")
+            if not isinstance(t1, dict) and t1 is not None:
+                try:
+                    if abs(float(t1) - float(clock)) <= 1e-9 * max(1.0, abs(float(clock))):
+                        return i
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
 def read_journal(path):
     """Read a journal file back as a list of runs.
 
@@ -5454,16 +5500,14 @@ def read_journal(path):
                 # in the sequence it happened — a rewind means nothing without
                 # the step it interrupted and the step it went back to.
                 entry = dict(entry)
-                entry["after_position"] = len(runs[-1]["steps"]) - 1
-                if kind == "rewind" and entry.get("to_step") is not None:
-                    target = entry["to_step"]
-                    entry["to_position"] = next(
-                        (i for i, step in enumerate(runs[-1]["steps"])
-                         if step.get("index") == target), None)
-                    entry.setdefault("short", f"rewind {entry.get('steps_undone', 1)}")
-                else:
-                    entry["to_position"] = entry["after_position"]
-                    entry.setdefault("short", kind)
+                here = len(runs[-1]["steps"]) - 1
+                entry["after_position"] = here
+                entry["to_position"] = _backtrack_target(
+                    runs[-1]["steps"], here, entry)
+                entry.setdefault(
+                    "short",
+                    f"rewind {entry.get('steps_undone', 1)}"
+                    if kind == "rewind" else kind)
                 runs[-1]["notes"].append(entry)
     return runs
 
