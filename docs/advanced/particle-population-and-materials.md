@@ -80,54 +80,334 @@ not fighting the outflow, which is physical and correct; it is refilling the
 inflow side, where the flow brings nothing.
 ```
 
-## A material index at the integration points
+## Materials
 
-A particle field is a first-class citizen of the symbolic algebra: it carries
-a symbol, and that symbol goes wherever a mesh variable's symbol goes.
-`IndexSwarmVariable` carries a material label per particle and presents the
-mesh with one level set per material, so that `createMask` builds a
-material-weighted property that you then use like any other expression:
+Name the materials, say where they are, and stop.
 
 ```python
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_degree=1)
-viscosity = material.createMask([1.0, 1000.0])
+materials = uw.swarm.MaterialSwarm(mesh, fill_param=3)
 
-stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
-stokes.bodyforce = sympy.Matrix([[0, -material.sym[1] * (1 + T.sym[0])]])
-heat = uw.maths.Integral(mesh, material.sym[1] * T.sym[0]).evaluate()
+materials.add("mantle", shear_viscosity_0=1.0,   density=3300)
+materials.add("slab",   shear_viscosity_0=1.0e3, density=3400)
+
+materials["slab"] = mesh.X[1] > 0.53
+
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes.materials = materials
+stokes.bodyforce = -materials.density * mesh.CoordinateSystem.unit_e_1
 ```
 
-That works through a proxy: the particle values are reconstructed onto a mesh
-object the assembler can read, and the symbol you write is the proxy's. Where
-that proxy lives is now a choice, and it changes only where the reconstruction
-lands:
+That is the whole interface. `stokes.materials = materials` sets every
+constitutive-model parameter the materials declare *and* the model recognises,
+by name — here `shear_viscosity_0`. A property the model does not own,
+`density`, is not pushed anywhere; it is available as a blended symbol for the
+model script to use where it belongs. Properties can be changed and regions
+repainted afterwards: the blend is symbolic and the push repeats.
+
+A `MaterialSwarm` **is** a `Swarm`, so everything on the previous page still
+applies to it:
+
+```python
+materials.population_control = dict(min_per_cell=8)
+materials.advection(v.sym, dt)
+
+strain = uw.swarm.SwarmVariable("eps", materials, 1,          # per-particle state
+                                proxy_location="integration_points",
+                                proxy_sampling="share")
+```
+
+Regions can be a symbolic condition on the mesh coordinates (and `&`, `|`, `~`
+combinations of them), a boolean array over the particles, or a callable of the
+coordinate array. Painting is ordered and cumulative — a later region
+overwrites an earlier one where they overlap. `materials.add(..., where=...)`
+is the same thing said in one line.
+
+### What a material is, and where it is
+
+Those are two questions, and Underworld3 keeps them apart.
+
+**What** is a `uw.MaterialRegistry` entry: a name and a table of properties,
+with optional description and reference. A registry knows nothing about
+geometry, so it can be written before there is a mesh, shared between models,
+and exported and read back as plain data.
+
+```python
+rocks = uw.MaterialRegistry()
+rocks.add("mantle", shear_viscosity_0=1.0,   density=3300,
+          description="upper mantle", reference="Turcotte & Schubert (2014)")
+rocks.add("slab",   shear_viscosity_0=1.0e3, density=3400)
+```
+
+**Where** is a *distribution*, and there are two. `MaterialSwarm` carries the
+materials on particles, so they advect with the flow. `MaterialRegions` ties
+them to the mesh:
+
+```python
+materials = uw.MaterialRegions(mesh, registry=rocks)
+materials["slab"] = "Slab"                  # a gmsh physical group
+materials["slab"] = mesh.X[1] > 0.53        # or a geometric condition
+
+stokes.materials = materials
+```
+
+Both take the same registry, declare materials the same way, and hand the same
+thing to the solver. `materials.add(...)` on either is shorthand that writes
+into its registry, so a two-material script never has to mention one.
+
+| | `MaterialSwarm` | `MaterialRegions` |
+|---|---|---|
+| the material moves | yes | no |
+| level sets are | sampled from the particles | exact, 0 or 1 |
+| needs population control | yes | no |
+| interface position | sub-cell, to the particle density | sub-cell, to the rule |
+| cost per step | a proxy fill | nothing; built once |
+
+Use regions when the geometry is fixed — a layered model, an inclusion, a
+basin. It is exact and free. Use the swarm when the material is carried by
+the flow, or when it has to carry per-particle history as well.
+
+### A property can be a law, not just a number
+
+This is the whole reason for the machinery underneath:
+
+```python
+materials.add("crust", shear_viscosity_0=eta_0 * sympy.exp(-T.sym[0]))
+```
+
+There is no number to store at an integration point for that material, so it
+cannot be handled by sampling a viscosity field. It is carried symbolically and
+combined with the other materials' laws by the level sets described below.
+
+### There is no route that puts the property on the particles
+
+Carrying the viscosity itself on the particles and sampling it looks simpler
+and is the wrong shape. PETSc calls the compiled pointwise functions with
+values tabulated at the rule points, so a solver handed a sampled *answer*
+cannot reach the parts of the constitutive law it needs — the tangent, the
+yield surface, the history update. Keeping the law symbolic and letting the
+materials weight it is what makes a material model composable. (The mechanical
+symptom is easy to see too: the linear-exact reconstruction a smooth field
+wants overshoots a factor-1000 viscosity jump to −219, and a negative viscosity
+is not a viscosity. Asking for nearest-particle sampling on a plain
+`SwarmVariable` raises, and the error says so.)
+
+### What is underneath
+
+A `MaterialSwarm` carries one integer label per particle and presents the mesh
+with one *level set* per material — a partition of unity — so that a property
+is `Σ φᵢ · valueᵢ`. Where the masks are 0 or 1 that sum is a select, and if
+every property were a number a single stored coefficient field would do the
+same job; the sum earns its place the moment a property is a law, because there
+is then no other way to combine N expressions into one symbol the assembler can
+compile.
+
+That machinery is `uw.swarm.IndexSwarmVariable` and its `createMask`. Models
+written before `MaterialSwarm` use it directly and still work; new models
+should not need to see it. The two things worth knowing about it are the two
+arguments `MaterialSwarm` passes through, below.
+
+#### `proxy_location` — where the level sets live
+
+Where the level sets are stored is what the assembler actually reads:
+
+```python
+materials = uw.swarm.MaterialSwarm(mesh, proxy_location="cells")
+```
 
 | `proxy_location` | the level sets are | at an interface |
 |---|---|---|
-| `"nodes"` (default) | a continuous field per material | a node on the interface averages both materials, so the cells either side see a viscosity that is neither |
-| `"integration_points"` | the material of the nearest particle at every integration point | exactly 0 or 1, and the interface keeps its sub-cell position |
+| `"integration_points"` **(default)** | a value at each point of the quadrature rule | exactly 0 or 1, and the interface keeps its sub-cell position |
 | `"cells"` | a polynomial material fraction per cell | a sharp step at cell edges, with a gradient inside the cell |
+| `"nodes"` | a continuous field per material | a node on the interface averages both, so the cells either side see a viscosity that is neither |
 
-The integration-point option is the classic particle-in-cell material mapping
-of Ellipsis and Underworld: the assembler reads each material property at the
-point where it evaluates the weak form, from the particle nearest that point.
-Nothing is averaged, so nothing can overshoot into a negative viscosity, and
-the masks sum to one by construction.
+The default is the integration points: it is the classic particle-in-cell
+material mapping of Ellipsis and Underworld, and it is measurably the best of
+the three. The nodal option is kept for continuity with existing models, but
+its smear is about one cell wide *however many particles you add* — that is a
+property of the basis, not of the swarm — and the current distance-weighted
+fill actually *widens* the band as the swarm is refined.
 
-```python
-material = uw.swarm.IndexSwarmVariable(
-    "M", swarm, indices=2, proxy_location="integration_points")
+#### `proxy_sampling` — what each point reads
+
+How the particles in a cell become the value at each of its integration
+points. Applies only to `proxy_location="integration_points"`.
+
+| `proxy_sampling` | each point takes | masks |
+|---|---|---|
+| `"nearest"` **(default)** | the material of its nearest particle | exactly 0 or 1 |
+| `"share"` | the material fractions of the particles it speaks for — those whose nearest integration point *within their own cell* is this one | fractional where a cell is crossed |
+
+`"nearest"` is sharp and assumption-free: nothing is mixed, so no mixing rule
+is implied. It sub-samples, though — at ten particles per cell and six rule
+points, most particles never reach the assembly.
+
+`"share"` is the cell-restricted Voronoi share, and it is the closest thing to
+the true Voronoi integration that a fixed quadrature rule allows: the rule
+points partition their own cell between them, every particle lands in exactly
+one part, and nothing crosses a cell boundary. For an *identity* that buys
+fractional masks in the crossed cells, and then the answer depends on how you
+blend — see the trap below.
+
+#### What the choice is worth
+
+Interface at $y = 0.53$ on an irregular mesh, so no scheme can be exact (the
+P2 velocity cannot hold a kink inside a cell), viscosity contrast 1000,
+against the exact layered Couette profile:
+
+| particles per cell | `"nearest"` | `"share"` + `createMask` | `"share"`, blended harmonically |
+|---|---|---|---|
+| 3 (2 420) | 3.48e-2 | 3.53e-2 | 1.83e-2 |
+| 8 (10 890) | **1.85e-2** | 3.53e-2 | 1.27e-2 |
+| 15 (32 912) | 1.85e-2 | 3.61e-2 | **1.24e-2** |
+
+```{figure} figures/material_share.png
+:alt: Identity error against particle density, and the history overshoot
+
+Left: only `"nearest"` and the harmonically-blended share improve as particles
+are added; the arithmetic (Voigt) blend of fractional masks is flat. Right: the
+share is bounded by the particle values because it is an average of them, while
+the reconstruction's overshoot grows with the swarm.
 ```
 
-Everything the symbol could do before, it still does. The one exception is a
-derivative of the integration-point form: the element that holds a value at
-each integration point has no gradient to give, so the compiler refuses one
-rather than returning the silent zero its tabulation would produce.
+Three things to read off it.
 
-The gradient is still available, from a projection of the same data, and
-`"cells"` is that projection: its level sets are a least-squares polynomial
-per cell, so they differentiate directly and with no global solve. Recovering
-$\partial_x$ of a quadratic particle field:
+**`"nearest"` converges to a floor and then stops.** By about eight particles
+per cell the error stops moving: what limits it is the quadrature rule and the
+velocity space, not the swarm. Past that point, refine the mesh — more
+particles buy nothing.
+
+**Fractional masks need a mixing rule you have chosen.** `createMask` blends
+*arithmetically*, which for a flux at a common strain rate is a Voigt average,
+and on a sharp contrast a Voigt average does not converge with particle
+density at all — the middle column is flat. The same masks blended
+harmonically (Reuss, `1.0 / material.createMask([1/η₀, 1/η₁])`) converge, and
+past the `"nearest"` floor. So fractions are worth having when the material
+genuinely *is* a sub-cell mixture and you have picked the rule on physical
+grounds; for an interface, `"nearest"` says the true thing (nothing is mixed)
+without you having to.
+
+**Cost is not the discriminator.** Filling the level sets took 1.0 / 1.7 /
+3.7 ms for `"nearest"` and 0.7 / 1.3 / 3.9 ms for `"share"` at the three
+densities.
+
+With the interface on mesh edges instead, the exact velocity lies in the P2
+space and the only error left is the material representation:
+
+| `proxy_location` | assembled $\int \eta$ (exact 500.5) | velocity $L_2$ error |
+|---|---|---|
+| `"nodes"` | 500.5000 | 8.0e-2 |
+| `"integration_points"` | 500.5000 | **1.8e-7** |
+| `"cells"` | 500.5000 | **1.8e-7** |
+
+All three integrate the viscosity correctly *in the mean*, which is exactly
+why a bulk diagnostic cannot see the difference. Only the placement differs,
+and the placement is what the solve feels.
+
+```{figure} figures/material_index.png
+:alt: The material mask across the interface and the resulting velocity error
+
+Left: the upper-material mask along a line crossing the interface, as the weak
+form sees it. The nodal level set ramps linearly across a whole cell; the other
+two are a step in the right place and lie on top of each other. Right: the
+resulting error in the velocity against the exact layered flow.
+```
+
+`docs/examples/utilities/intermediate/Ex_Swarm_Material_Index.py` runs it.
+
+### Mixing, when the masks are fractional
+
+`materials.mixing(shear_viscosity_0="harmonic")` chooses how a property is
+blended. With the default sampling exactly one mask is 1 at every integration
+point, so every rule gives the same answer and there is nothing to choose. With
+`proxy_sampling="share"` there is, and the table above is the reason to choose
+it on physical grounds rather than by trying both.
+
+## Material state and history
+
+Identity is not the only thing particles carry. A viscoelastic stress, an
+accumulated strain, a damage variable — these are *state*, earned by being
+advected, and every particle's is different. They ride on ordinary
+`SwarmVariable`s, and they get the same choice of where the assembler reads
+them and how:
+
+```python
+stress = uw.swarm.SwarmVariable(
+    "tau", materials, (2, 2),      # the MaterialSwarm is the swarm
+    proxy_location="integration_points",
+    proxy_sampling="share")        # every particle's history contributes
+```
+
+`Lagrangian_Swarm` takes the same argument, so a viscoelastic stress history
+carried on the particles is read the same way:
+
+```python
+DFDt = uw.systems.ddt.Lagrangian_Swarm(
+    swarm=materials, psi_fn=sympy.Matrix.zeros(2, 2),
+    vtype=uw.VarType.SYM_TENSOR, degree=1, continuous=False,
+    order=2, step_averaging=1,
+    proxy_location="integration_points", proxy_sampling="share")
+```
+
+Build it before anything reads the materials: it adds swarm variables, and a
+swarm cannot gain variables once it holds particles.
+
+For state, `"share"` is the one to reach for, and for a different reason than
+it was rejected for identity:
+
+- **It uses the whole swarm.** Each point averages the particles it represents
+  rather than adopting one of them, so a history that varies within a cell is
+  represented by all of it. This is the "more PIC than not" part: the
+  quadrature rule is fixed, but what it reads can still be a weighted account
+  of every particle.
+- **It cannot cross a material boundary.** The default `"reconstruct"` gathers
+  from the nearest particles by distance, and that stencil ignores cell walls;
+  across a jump it both smears and overshoots. Measured on a discontinuous
+  particle field read at the integration points (interface at $y = 0.53$,
+  $h = 0.1$):
+
+  | particles per cell | `"reconstruct"` range | `"share"` range |
+  |---|---|---|
+  | 3 | −0.051 … +1.137 | 0.000 … 1.000 |
+  | 8 | −0.068 … +1.108 | 0.000 … 1.000 |
+  | 15 | −0.109 … +1.097 | 0.000 … 1.000 |
+
+  The share is bounded by the particle values by construction — it is an
+  average of them — so it cannot invent a stress the swarm never held. The
+  reconstruction's overshoot *grows* as particles are added.
+
+Keep `"reconstruct"` (the default) for a field that really is smooth: it is
+exact for linear fields, where the share carries a small averaging error.
+
+**Cost.** The share needs to know each particle's cell, and locating particles
+is the expensive half: 18.8 ms for 32 912 particles against 3.2 ms for the
+share itself, on a mesh of 242 cells. That location is cached on the swarm
+until the particles move and is reused by every share variable and by
+`repopulate`, so a model with several history fields and population control
+pays it once per step. For comparison, the `"reconstruct"` path costs 8.1 ms
+per step on the same swarm (its cached operator is geometry-only, so it is
+rebuilt whenever the particles move).
+
+## What can be said about a particle field
+
+A particle field is a first-class citizen of the symbolic algebra: it carries a
+symbol, and that symbol goes wherever a mesh variable's symbol goes. The one
+exception is a derivative of the integration-point form.
+
+| | `"nodes"` | `"integration_points"` | `"cells"` |
+|---|---|---|---|
+| arithmetic with mesh variables and `sympy` | yes | yes | yes |
+| `uw.maths.Integral` | yes | yes | yes |
+| `uw.function.evaluate` anywhere | yes | yes | yes |
+| projection onto a mesh variable | yes | yes | yes |
+| viscosity, body force, any solver term | yes | yes | yes |
+| a **gradient** of the expression | yes | refused | yes |
+
+The element that holds a value at each integration point has no gradient to
+give, so the compiler refuses one rather than returning the silent zero its
+tabulation would produce. The gradient is still available from a projection of
+the same data, and `"cells"` is that projection: its level sets are a
+least-squares polynomial per cell, so they differentiate directly and with no
+global solve. Recovering $\partial_x$ of a quadratic particle field:
 
 | where the proxy lives | gradient error |
 |---|---|
@@ -138,8 +418,8 @@ $\partial_x$ of a quadratic particle field:
 | a global L2 projection onto P2, then differentiate | 1.1e-4 |
 | `"integration_points"` | refused |
 
-The per-cell fit is the most accurate of them because it is local and exact
-for polynomials up to its degree, and no further projection follows it.
+The per-cell fit is the most accurate of them because it is local and exact for
+polynomials up to its degree, and no further projection follows it.
 
 **Two paths, and the difference is deliberate.** A weak form and a query are
 not the same thing:
@@ -161,70 +441,10 @@ So the rule is: sample at the integration points when you want a value placed
 exactly, fit per cell when you want to differentiate, and expect `evaluate` to
 help you look at a gradient either way.
 
-| | `"nodes"` | `"integration_points"` | `"cells"` |
-|---|---|---|---|
-| arithmetic with mesh variables and `sympy` | yes | yes | yes |
-| `uw.maths.Integral` | yes | yes | yes |
-| `uw.function.evaluate` anywhere | yes | yes | yes |
-| projection onto a mesh variable | yes | yes | yes |
-| viscosity, body force, any solver term | yes | yes | yes |
-| a **gradient** of the expression | yes | refused | yes |
-
-### Demonstration
-
-`docs/examples/utilities/intermediate/Ex_Swarm_Material_Index.py`. Two viscosity layers,
-1 and 1000, carried as a material index and driven from the top. With the
-interface on mesh edges the exact velocity is piecewise linear and lies in the
-P2 velocity space, so the only error in the solve is how the material is
-represented.
-
-```{figure} figures/material_index.png
-:alt: The material mask across the interface and the resulting velocity error
-
-Left: the upper-material mask along a line crossing the interface, as the weak
-form sees it. The nodal level set ramps linearly across a whole cell; the other
-two are a step in the right place and lie on top of each other. Right: the
-resulting error in the velocity against the exact layered flow.
-```
-
-| `proxy_location` | assembled $\int \eta$ (exact 500.5) | velocity $L_2$ error |
-|---|---|---|
-| `"nodes"` | 500.5000 | 8.0e-2 |
-| `"integration_points"` | 500.5000 | **1.8e-7** |
-| `"cells"` | 500.5000 | **1.8e-7** |
-
-All three integrate the viscosity correctly in the mean, which is why the
-error does not show up in a bulk diagnostic. Only the placement differs, and
-the placement is what the solve feels. Every particle in a cell is on the same
-side of an edge-aligned interface, so the per-cell fit is constant and the
-`"cells"` mapping is exact here too.
-
-### When the interface cuts through a cell
-
-Move the interface to $y = 0.53$ on an irregular mesh and no scheme can be
-exact: the P2 velocity cannot hold a kink inside a cell. What separates them
-is whether adding particles helps.
-
-| `proxy_location` | $L_2$ error, 10 particles per cell | 55 per cell |
-|---|---|---|
-| `"nodes"` | 8.4e-2 | 7.7e-2 |
-| `"integration_points"` | 3.5e-2 | **1.9e-2** |
-| `"cells"` | 4.1e-2 | 4.1e-2 |
-
-The integration-point mapping resolves the interface within the cell, so it
-improves as the particles do. The other two are limited by what a cell-scale
-representation can express, and adding particles does not move them.
-
-Use `"cells"` when the material property needs a gradient (the level sets are
-polynomials and can be differentiated) or when the field is genuinely a
-fraction rather than a label; note that a fitted fraction can leave $[0, 1]$
-between cells even though its own degrees of freedom are clamped. For a
-material index at an interface, `"integration_points"` is the one to use.
-
 ## What this rests on
 
 The reconstruction behind `"cells"`, the delta element behind
-`"integration_points"`, and the guards that keep both well posed are described
-in {doc}`../developer/subsystems/integration-point-variables`. The same
-machinery carries semi-Lagrangian and fully Lagrangian histories, including
-the viscoelastic stress history.
+`"integration_points"`, the share, and the guards that keep them well posed
+are described in {doc}`../developer/subsystems/integration-point-variables`.
+The same machinery carries semi-Lagrangian and fully Lagrangian histories,
+including the viscoelastic stress history.

@@ -6048,3 +6048,9 @@ class NodalPointSwarm(Swarm):
 ##  - PIC layouts of particles are not directly available / must be done by hand
 ##  - No automatic migration - must compute ranks for the particle swarms
 ##  - No automatic definition of coordinate fields (need to add by hand)
+
+
+# Materials live in their own module (this one is long enough) but belong to
+# the swarm namespace: a MaterialSwarm IS a Swarm. Imported at the end so the
+# submodule can import Swarm and IndexSwarmVariable from here.
+from underworld3.swarm_materials import MaterialSwarm  # noqa: E402,F401

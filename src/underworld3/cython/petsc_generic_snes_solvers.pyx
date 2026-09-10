@@ -160,6 +160,7 @@ class SolverBaseClass(uw_object):
 
         self._order = 0
         self._constitutive_model = None
+        self._materials = None
         self._rebuild_after_mesh_update = self._build
 
         self.name = "Solver_{}_".format(self.instance_number)
@@ -2076,6 +2077,8 @@ class SolverBaseClass(uw_object):
                     ):
 
         self._check_expression_meshes()
+        if self._materials is not None:
+            self._materials.check()
 
         if self.is_setup:
             return
@@ -2728,6 +2731,47 @@ class SolverBaseClass(uw_object):
 
 
     @property
+    def materials(self):
+        """The materials this solver's coefficients come from.
+
+        Assigning a :class:`~underworld3.swarm.MaterialSwarm` sets every
+        constitutive-model parameter the materials declare *and* the model
+        recognises, by name — so a model script names its materials and their
+        properties, and never writes a level set or a mask::
+
+            materials = uw.swarm.MaterialSwarm(mesh, fill_param=3)
+            materials.add("mantle", shear_viscosity_0=1.0)
+            materials.add("slab",   shear_viscosity_0=1.0e3, density=3400)
+            materials["slab"] = mesh.X[1] > 0.53
+
+            stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+            stokes.materials = materials          # sets shear_viscosity_0
+
+        A declared property the model does not recognise (``density`` here) is
+        not pushed anywhere; it is available as a blended symbol,
+        ``materials.density``, for the model script to use where it belongs.
+        One that is neither recognised nor read is reported at solve time,
+        because a misspelled viscosity is silently the default one.
+
+        Properties may be changed, and materials repainted, after assignment:
+        the blend is symbolic and the push repeats on every change.
+        """
+        return self._materials
+
+    @materials.setter
+    def materials(self, material_swarm):
+        if material_swarm is None:
+            self._materials = None
+            return
+        if not hasattr(material_swarm, "_attach"):
+            raise TypeError(
+                "solver.materials expects a MaterialSwarm (uw.swarm.MaterialSwarm), "
+                f"not {type(material_swarm).__name__}"
+            )
+        self._materials = material_swarm
+        material_swarm._attach(self)
+
+    @property
     def constitutive_model(self):
         """
         Constitutive model defining the material behavior.
@@ -2784,6 +2828,11 @@ class SolverBaseClass(uw_object):
         # Stokes and VE_Stokes — the solver adapts to the constitutive model.
         if self._constitutive_model.requires_stress_history and self.Unknowns.DFDt is None:
             self._create_stress_history_ddt(order=self._constitutive_model.order)
+
+        # Materials assigned before the constitutive model still have to
+        # reach it: the push is a no-op while there is no model to push to.
+        if getattr(self, "_materials", None) is not None:
+            self._materials._push_to(self)
 
         # May not work due to flux being incomplete
         if self.Unknowns.DFDt is not None:
