@@ -89,3 +89,81 @@ def test_ramped_solution_matches_rebuilt_solution():
 
     assert np.isclose(ramped, rebuilt, rtol=1e-10), (
         f"ramped {ramped} != rebuilt {rebuilt}")
+
+
+def test_two_constants_with_the_same_name_do_not_collapse():
+    """Two constants may legitimately share a symbol name — every
+    ViscousFlowModel calls its viscosity \\eta — and they must reach the
+    compiled kernel as two different ``constants[]`` slots.
+
+    The JIT placeholder is a plain ``sympy.Symbol`` subclass, so a placeholder
+    named for the expression alone made the two the SAME symbol whatever their
+    index. A two-material Stokes solve then assembled
+    ``(phi_0 + phi_1) * constants[k]`` — one uniform viscosity — and returned
+    exactly the linear-shear answer while the manifest and the symbolic
+    expression both looked correct.
+
+    NB the two constants have to be built the way a solver builds them (through
+    ``Parameters``, which tags each one). Two BARE expressions of the same name
+    are the same symbol to sympy by design — ``2*a + 3*b`` is ``5*\\eta`` — so
+    they never reach the JIT as two things in the first place.
+    """
+    import sympy
+    from underworld3.utilities._jitextension import _extract_constants
+
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.5, qdegree=2)
+    v = uw.discretisation.MeshVariable("vjc", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("pjc", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+
+    lower = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns, material_name="lo")
+    lower.Parameters.shear_viscosity_0 = 1.0
+    upper = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns, material_name="up")
+    upper.Parameters.shear_viscosity_0 = 1000.0
+    a = lower.Parameters.shear_viscosity_0
+    b = upper.Parameters.shear_viscosity_0
+    assert a != b, "the Parameters route no longer distinguishes same-named constants"
+
+    phi0, phi1, xs = sympy.symbols("phi0 phi1 xs")
+    manifest, subs_map = _extract_constants((a * phi0 * xs + b * phi1 * xs,), mesh)
+
+    assert len(manifest) == 2, manifest
+    placeholders = {subs_map[a], subs_map[b]}
+    assert len(placeholders) == 2, "the two placeholders are the same symbol"
+
+    lowered = sympy.expand((a * phi0 * xs + b * phi1 * xs).xreplace(subs_map))
+    assert len(lowered.free_symbols & placeholders) == 2, lowered
+
+
+def test_two_materials_solve_the_layered_problem_not_the_uniform_one():
+    """The end-to-end form of the same defect: a layered viscosity built from
+    two ViscousFlowModels must give the layered answer, not linear shear."""
+    import sympy
+
+    eta_top, h = 1.0e3, 0.5
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2, regular=True)
+    v = uw.discretisation.MeshVariable("vmc", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("pmc", mesh, 1, degree=1)
+
+    materials = uw.swarm.MaterialSwarm(mesh, fill_param=3, name="Mmc")
+    materials.add("lower", shear_viscosity_0=1.0)
+    materials.add("upper", shear_viscosity_0=eta_top)
+    materials["upper"] = mesh.X[1] > h
+
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.materials = materials
+    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1e-8
+    stokes.solve()
+
+    A = 1.0 / (h + (1.0 - h) / eta_top)
+    X = np.asarray(v.coords)
+    layered = np.where(X[:, 1] < h, A * X[:, 1], A * h + A / eta_top * (X[:, 1] - h))
+    got = np.asarray(v.data[:, 0])
+
+    assert np.sqrt(np.mean((got - layered) ** 2)) < 1e-5
+    assert np.sqrt(np.mean((got - X[:, 1]) ** 2)) > 1e-2      # NOT linear shear
