@@ -4225,7 +4225,18 @@ class Lagrangian_Swarm(_DDtBase):
 
 
 
-def _storage_components(vtype, shape, dim):
+def _psi_shape_for(vtype, cdim):
+    """The symbolic shape a history of ``vtype`` must have."""
+    if vtype == uw.VarType.SCALAR:
+        return (1, 1)
+    if vtype == uw.VarType.VECTOR:
+        return (1, cdim)
+    if vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR):
+        return (cdim, cdim)
+    return None                     # MATRIX and friends: shape is the caller's
+
+
+def _storage_components(vtype, shape):
     """(i, j) of the symbolic matrix that each stored column holds.
 
     A vector or tensor field stores one dof per INDEPENDENT component, which
@@ -4236,12 +4247,18 @@ def _storage_components(vtype, shape, dim):
     ``test_0068_integration_point_slcn_tensor.py`` asserts that round trip, so
     a change of convention fails there rather than silently transposing a
     stress.
+
+    The tensor dimension is read off ``shape``, not off ``mesh.dim``: on a
+    manifold the two differ (a spherical surface is dim 2, cdim 3) and the
+    variable sizes its storage by the embedding dimension, which is what
+    ``.sym`` is shaped by.
     """
     if vtype == uw.VarType.SCALAR or shape == (1, 1):
         return [(0, 0)]
     if shape[0] == 1:                                    # VECTOR
         return [(0, j) for j in range(shape[1])]
     if vtype == uw.VarType.SYM_TENSOR:
+        dim = shape[0]
         return ([(i, i) for i in range(dim)]
                 + [(i, j) for i in range(dim) for j in range(i + 1, dim)])
     return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
@@ -4327,6 +4344,15 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             self._psi_meshVar = None
             self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
 
+        expected = _psi_shape_for(vtype, mesh.cdim)
+        if expected is not None and tuple(self._psi_fn.shape) != expected:
+            raise ValueError(
+                f"IntegrationPointSemiLagrangian: psi_fn has shape "
+                f"{tuple(self._psi_fn.shape)} but vtype={vtype} on a cdim="
+                f"{mesh.cdim} mesh needs {expected}. Pass the vtype that "
+                "matches the field, or reshape psi_fn."
+            )
+
         self._init_history_tracking(order)
         self._check_rule_oversampling(degree)
 
@@ -4368,7 +4394,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         ]
         self.num_components = int(self.psi_star[0].num_components)
         self._components = _storage_components(
-            vtype, tuple(self.psi_star[0].sym.shape), mesh.dim
+            vtype, tuple(self.psi_star[0].sym.shape)
         )
         if len(self._components) != self.num_components:
             raise RuntimeError(

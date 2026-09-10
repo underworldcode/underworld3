@@ -82,7 +82,7 @@ def test_the_storage_order_is_what_the_symbol_reconstructs(vtype, dim, expected)
         )
     var = uw.discretisation.MeshVariable(f"sv{vtype.value}{dim}", mesh,
                                          vtype=vtype, degree=1)
-    columns = _storage_components(vtype, tuple(var.sym.shape), mesh.dim)
+    columns = _storage_components(vtype, tuple(var.sym.shape))
     assert columns == expected
     assert len(columns) == var.num_components
 
@@ -131,7 +131,7 @@ def test_a_symmetric_tensor_history_transports_every_component():
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=3)
     S = uw.discretisation.MeshVariable("St", mesh, vtype=uw.VarType.SYM_TENSOR,
                                        degree=2)
-    columns = _storage_components(uw.VarType.SYM_TENSOR, (2, 2), 2)
+    columns = _storage_components(uw.VarType.SYM_TENSOR, (2, 2))
     with uw.synchronised_array_update():
         S.data[...] = _pack(_tensor_entries(np.asarray(S.coords)), columns)
 
@@ -191,7 +191,7 @@ def test_the_history_symbol_participates_in_expressions(vtype):
     mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.2, qdegree=3)
     var = uw.discretisation.MeshVariable(f"Pe{vtype.value}", mesh, vtype=vtype,
                                          degree=2)
-    columns = _storage_components(vtype, tuple(var.sym.shape), mesh.dim)
+    columns = _storage_components(vtype, tuple(var.sym.shape))
     with uw.synchronised_array_update():
         var.data[...] = 2.0
     ddt = uw.systems.ddt.IntegrationPointSemiLagrangian(
@@ -217,3 +217,33 @@ def test_the_refusal_is_gone_but_the_rule_check_is_not():
     with pytest.raises(RuntimeError, match="qdegree|rule|oversample"):
         uw.systems.ddt.IntegrationPointSemiLagrangian(
             mesh, U, _velocity(), vtype=uw.VarType.VECTOR, degree=2, order=1)
+
+
+def test_the_storage_map_follows_the_shape_not_the_mesh_dimension():
+    """On a manifold the topological and embedding dimensions differ — a
+    spherical surface is dim 2, cdim 3 — and the variable sizes its storage by
+    the embedding one, which is what ``.sym`` is shaped by. The map therefore
+    reads the tensor dimension off the shape and never touches the mesh.
+    """
+    assert len(_storage_components(uw.VarType.SYM_TENSOR, (2, 2))) == 3
+    assert len(_storage_components(uw.VarType.SYM_TENSOR, (3, 3))) == 6
+    assert _storage_components(uw.VarType.VECTOR, (1, 3)) == [(0, 0), (0, 1), (0, 2)]
+
+
+def test_a_vtype_that_does_not_match_psi_fn_is_refused():
+    """And refused BEFORE any variable is allocated: a mesh variable created
+    and then abandoned leaves its field on the DM (#1058)."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25, qdegree=3)
+    before = len(mesh.vars)
+
+    with pytest.raises(ValueError, match="psi_fn has shape"):
+        uw.systems.ddt.IntegrationPointSemiLagrangian(
+            mesh, sympy.Matrix([[1.0]]), _velocity(),
+            vtype=uw.VarType.VECTOR, degree=2, order=1)
+
+    with pytest.raises(ValueError, match="psi_fn has shape"):
+        uw.systems.ddt.IntegrationPointSemiLagrangian(
+            mesh, sympy.Matrix([[1.0, 2.0]]), _velocity(),
+            vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
+
+    assert len(mesh.vars) == before, "a refused history left variables behind"
