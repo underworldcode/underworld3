@@ -427,10 +427,16 @@ def _extract_constants(all_fns, mesh):
     # its viscosity \eta, so a model with two of them has two \eta constants.
     # ``instance_number`` (creation order, identical on every rank running the
     # same script) breaks that tie without reintroducing the value into the key.
-    sorted_constants = sorted(
-        constant_exprs,
-        key=lambda e: (e.name, getattr(e, "instance_number", -1), _stable_sort_key(e)),
-    )
+    def _order_key(e):
+        # instance_number is an int for every UWexpression built today
+        # (uw_object.__init__ assigns it), but ``_uw_id = None`` is a state the
+        # class deliberately supports — _hashable_content branches on it — so
+        # normalise rather than let a mixed set raise TypeError mid-sort.
+        instance = getattr(e, "instance_number", None)
+        return (e.name, -1 if instance is None else int(instance),
+                _stable_sort_key(e))
+
+    sorted_constants = sorted(constant_exprs, key=_order_key)
 
     manifest = []
     subs_map = {}

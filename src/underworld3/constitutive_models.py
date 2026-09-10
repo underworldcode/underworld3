@@ -4518,15 +4518,10 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             Set to True if IndexSwarmVariable does not maintain partition of unity.
             Default: False (assumes IndexSwarmVariable maintains partition of unity)
         """
-        # NB (2026-09-09): this class used to return the UNIFORM-viscosity
-        # answer (layered Couette L2 2.8e-1; identical to plain linear shear to
-        # 1.5e-10) while its composed flux and the constants manifest both
-        # looked correct. The cause was in the JIT, not here: every constituent
-        # names its viscosity \eta, and the constants[] placeholder was named
-        # for the expression alone, so sympy treated two slots as one symbol
-        # and the blend collapsed to a single viscosity. Fixed in
-        # utilities/_jitextension.py::_extract_constants; regression in
-        # tests/test_0103_jit_rampable_constants.py.
+        # Constituents that share a parameter name (every ViscousFlowModel
+        # calls its viscosity \eta) rely on _JITConstant keeping its
+        # constants[] slots distinct; see utilities/_jitextension.py and the
+        # regression in tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
 
