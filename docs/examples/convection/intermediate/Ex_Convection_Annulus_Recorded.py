@@ -37,6 +37,8 @@ that account is worth four things this script demonstrates in turn:
 5. **a log on disk** — the same account in aligned columns, flushed as each
    step closes, so a run that dies keeps its history and a run in progress can
    be watched with `tail -f`
+6. **a figure** — the same account as a publication-ready SVG, and the step's
+   operator flow as Mermaid
 
 ## Key concepts
 
@@ -456,6 +458,36 @@ if params.uw_demos:
     with open(model.journal_file, encoding="utf-8") as handle:
         for line in handle.read().splitlines():
             say("  " + line)
+
+# %% [markdown]
+"""
+## 6. The same account, as a figure
+
+A terminal is not where a run belongs in a paper. `uw.journal_diagram` renders
+the record as a standalone SVG — no plotting library, no rasterisation, no
+theme to fight with — and `uw.journal_flowchart` renders one step's operator
+flow as Mermaid, for dropping into documentation.
+
+The layout decision worth knowing about: the operator sequence is stated
+**once** when every step shares it, and only the steps that differ are called
+out. A hundred identical rows tell you nothing; a hundred identical rows and
+one that differs tell you everything, but only if the identical ones are not in
+the way. The doubled step below is found that way rather than by reading.
+
+Both take a live model, which matters here because the text log is a report and
+cannot be read back — pass a `.jsonl` log or the model itself.
+"""
+
+# %%
+if params.uw_demos:
+    say("")
+    say("--- 6. the figure " + "-" * 56)
+
+    figure = model.journal_file.rsplit(".", 1)[0] + ".svg"
+    say(f"  {uw.journal_diagram(model, out=figure, title='Annulus convection — run log')}")
+    say("")
+    for line in uw.journal_flowchart(model).splitlines():
+        say("  " + line)
 
 # %%
 say("")

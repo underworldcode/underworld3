@@ -650,6 +650,34 @@ tracker and the interval from `estimate_dt()`.
 
 Rank 0 writes; the other ranks record in memory as usual.
 
+### The same account, as a figure
+
+A terminal is not where a run belongs in a paper.
+
+```python
+uw.journal_diagram(model, out="figures/run.svg")     # or a .jsonl log
+uw.journal_flowchart(model)                          # Mermaid, for docs
+```
+
+`journal_diagram` writes a standalone SVG — no plotting library, no
+rasterisation, nothing fetched at render time — showing `dt` per step in the
+order things happened, backtracks as arcs over them, a wall-clock strip, and
+abandoned steps marked. The palette is print-safe and separates in greyscale.
+
+The layout decision worth knowing about: **the operator sequence is stated once
+when every step shares it, and only the steps that differ are called out.** A
+hundred identical rows tell you nothing; a hundred identical rows and one that
+differs tell you everything, but only if the identical ones are not in the way.
+
+`journal_flowchart` renders one step's operator flow as Mermaid, for dropping
+into documentation. When a run has more than one distinct sequence, each
+becomes its own subgraph labelled with the steps that took it, so an anomalous
+step is visible rather than averaged away.
+
+Both accept a live model, a `.jsonl` log, or the list `read_journal` returns.
+Not a text log: that one is a report, and reading it back is refused with the
+one line that fixes it.
+
 ### What the record checks
 
 A step also checks that it can be what it claims to be. One invariant so far:

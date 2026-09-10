@@ -1035,9 +1035,16 @@ class Model(PintNativeModelMixin, BaseModel):
             outcome = "ok" if payload.get("completed") else "ABANDONED"
             label = payload.get("label")
             tag = f"[{label}] " if label else ""
+            # An invariant is a flag on the step, not an operator it applied —
+            # it belongs beside the outcome, not in the sequence.
+            flagged = any(e.get("kind") == "invariant"
+                          for e in payload.get("events", []))
             operators = " > ".join(
                 f"{e['kind']}:{e['name']}" for e in payload.get("events", [])
+                if e.get("kind") != "invariant"
             ) or "(nothing)"
+            if flagged:
+                outcome = f"{outcome} !"
             return (
                 f"{prefix}"
                 f"  {payload['index']:>5d}  {t1:>14.6g}  {dt:>14.6g}  "
@@ -5412,23 +5419,52 @@ def read_journal(path):
     list of dict
     """
     runs = []
+    first = True
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
+            if first:
+                first = False
+                if line.startswith("#"):
+                    raise ValueError(
+                        f"{path} is the TEXT journal format, which is a report "
+                        f"rather than a record — it converts the time column to "
+                        f"one unit and drops each event's detail, so it cannot "
+                        f"be read back. Write JSON lines instead: give the path "
+                        f"a .jsonl suffix, or set model.journal_format = 'jsonl'."
+                    )
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 # A run killed mid-write leaves a partial last line. Everything
                 # before it is intact, which is the point of one object per line.
                 break
-            if entry.get("kind") == "run":
-                runs.append({"run": entry, "steps": []})
-            elif entry.get("kind") == "step":
-                if not runs:
-                    runs.append({"run": None, "steps": []})
+            kind = entry.get("kind")
+            if kind == "run":
+                runs.append({"run": entry, "steps": [], "notes": []})
+                continue
+            if not runs:
+                runs.append({"run": None, "steps": [], "notes": []})
+            if kind == "step":
                 runs[-1]["steps"].append(entry)
+            else:
+                # A backtrack, or anything else that is not a step. Record WHERE
+                # in the sequence it happened — a rewind means nothing without
+                # the step it interrupted and the step it went back to.
+                entry = dict(entry)
+                entry["after_position"] = len(runs[-1]["steps"]) - 1
+                if kind == "rewind" and entry.get("to_step") is not None:
+                    target = entry["to_step"]
+                    entry["to_position"] = next(
+                        (i for i, step in enumerate(runs[-1]["steps"])
+                         if step.get("index") == target), None)
+                    entry.setdefault("short", f"rewind {entry.get('steps_undone', 1)}")
+                else:
+                    entry["to_position"] = entry["after_position"]
+                    entry.setdefault("short", kind)
+                runs[-1]["notes"].append(entry)
     return runs
 
 
