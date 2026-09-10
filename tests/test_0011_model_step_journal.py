@@ -239,3 +239,68 @@ def test_rewind_without_a_record_says_what_to_do():
         pass
     with pytest.raises(RuntimeError, match="record_every"):
         model.rewind()
+
+
+# ---------------------------------------------------------------------------
+# Invariants: a step that cannot be what it claims to be
+# ---------------------------------------------------------------------------
+
+
+def test_a_history_that_advances_twice_in_one_step_is_reported():
+    """Two solves inside one step take the physical step twice. The solve
+    counter and the timestep history look identical to a single step, so
+    without this the mistake is invisible."""
+    uw, model = _fresh_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
+    )
+    solver, T = _advdiff(uw, mesh)
+    model.tracker.time, model.tracker.step = 0.0, 0
+
+    with pytest.warns(RuntimeWarning, match="advanced more than once"):
+        with model.step(0.02):
+            solver.solve(timestep=0.02)
+            solver.solve(timestep=0.02)   # the same step, taken twice
+
+    entry = model.journal[0]
+    shifts = [e for e in entry.events if e["kind"] == "history_shift"]
+    assert len(shifts) == 2
+
+
+def test_one_solve_per_step_is_quiet():
+    """The negative control: the ordinary loop must not warn."""
+    uw, model = _fresh_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
+    )
+    solver, T = _advdiff(uw, mesh)
+    model.tracker.time, model.tracker.step = 0.0, 0
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        for _ in range(3):
+            with model.step(0.02):
+                solver.solve(timestep=0.02)
+
+    assert len(model.journal) == 3
+
+
+def test_the_journal_shows_the_history_that_moved():
+    """The record names which history advanced, not just that a solve ran."""
+    uw, model = _fresh_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
+    )
+    solver, T = _advdiff(uw, mesh)
+    model.tracker.time, model.tracker.step = 0.0, 0
+
+    with model.step(0.02):
+        solver.solve(timestep=0.02)
+
+    kinds = [e["kind"] for e in model.journal[0].events]
+    assert "solve" in kinds and "history_shift" in kinds
+    shift = next(e for e in model.journal[0].events if e["kind"] == "history_shift")
+    assert shift["dt"] == pytest.approx(0.02)
+    assert "T_record" in shift["name"], shift["name"]

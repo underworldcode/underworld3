@@ -91,6 +91,35 @@ class ModelStep:
     def _record(self, kind, name, **detail):
         self.events.append({"kind": kind, "name": name, **detail})
 
+    def _check_invariants(self):
+        """Complain about a step that cannot be what it claims to be.
+
+        One invariant so far, and it catches a mistake that is otherwise
+        invisible: a history manager must advance EXACTLY ONCE per step. Twice
+        means the step was taken twice — a corrector, a Picard iteration or a
+        retry that called the solver again — and the field advances twice while
+        the solve counter and the timestep history look identical to a single
+        step.
+        """
+        import warnings
+        from collections import Counter
+
+        shifts = Counter(
+            e["name"] for e in self.events if e["kind"] == "history_shift"
+        )
+        repeated = {name: n for name, n in shifts.items() if n > 1}
+        if repeated:
+            detail = ", ".join(f"{name} x{n}" for name, n in sorted(repeated.items()))
+            warnings.warn(
+                f"step {self.index}: history advanced more than once ({detail}). "
+                f"The step has been taken more than once, so the field is "
+                f"further ahead than dt says. If a solver is called twice "
+                f"within one step deliberately — a corrector or a Picard "
+                f"iteration — only the last call should carry the timestep.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+
     def __repr__(self):
         state = "" if self.completed else " ABANDONED"
         seq = " -> ".join(f"{e['kind']}:{e['name']}" for e in self.events) or "(nothing)"
@@ -867,6 +896,8 @@ class Model(PintNativeModelMixin, BaseModel):
                 record.completed = False
                 self._open_step = None
                 raise
+
+            record._check_invariants()
 
             # Commit.
             self.tracker.time = record.t1

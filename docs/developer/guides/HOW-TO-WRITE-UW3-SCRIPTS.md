@@ -551,6 +551,23 @@ happened outlives the state it happened to.
 On a mesh that deforms or adapts the snapshot cannot be taken yet; the run
 warns once, keeps journalling, and `rewind()` will not reach those steps.
 
+### What the record checks
+
+A step also checks that it can be what it claims to be. One invariant so far:
+a history manager must advance exactly once per step.
+
+```
+<step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> history_shift:EulerianSUPG(T) -> solve:SNES_Stokes(V)>
+```
+
+Call a solver twice inside one step — a corrector, a Picard iteration on a
+coupled system, a retry — and its history advances twice, so the physical step
+is taken twice. The solve counter and the timestep history look identical to a
+single step, so nothing else in the library can see it. The step warns.
+
+If a solver genuinely is called more than once within a step, only the last
+call should carry the timestep.
+
 ### Backstepping
 
 The pattern above is what makes speculative stepping safe:
@@ -952,6 +969,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
   - `mesh.t` now resolves to the model clock (#410)
   - `model.step(dt)` — the step as a transaction, and the step journal
   - `model.record_every` / `model.rewind()` — the journal as a restorable record
+  - A step warns when a history advances more than once
   - Set `.sym` to change a value; rebinding the name changes nothing
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve

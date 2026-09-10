@@ -619,6 +619,51 @@ class _DDtBase(uw_object):
         if with_exp:
             _update_exp_values(self._exp_coeffs, None, None)
 
+    def _note_history_shift(self, dt):
+        """Tell the model's open step that this history advanced.
+
+        A history manager should shift EXACTLY ONCE per model step. Shifting
+        twice means the step was taken twice — a Picard iteration, a corrector
+        or a retry that called the solver again — and the field advances twice
+        while ``n_solves_completed`` (capped at ``order``) and ``dt_history``
+        look identical. Recording the shift lets ``model.step`` say so; without
+        it the mistake is invisible.
+
+        A no-op outside a ``model.step`` block.
+        """
+        try:
+            import underworld3 as uw
+
+            uw.get_default_model()._record_step_event(
+                "history_shift", self._history_label(), dt=float(dt)
+            )
+        except Exception:
+            pass
+
+    def _history_label(self):
+        """Name this history by the field it TRACKS, for the step record.
+
+        Not by its ``psi_star`` slot, whose name is generated from the instance
+        number and tells a reader nothing.
+        """
+        tracked = None
+        try:
+            psi = self.psi_fn
+            tracked = getattr(psi, "name", None)
+            if tracked is None:
+                # a MeshVariable's .sym prints as "{name}(N.x, N.y)", possibly
+                # wrapped in a Matrix for a vector or tensor unknown
+                import re
+
+                match = re.search(r"\{([^{}]+)\}", str(psi))
+                if match:
+                    tracked = match.group(1)
+        except Exception:
+            pass
+        if tracked is None:
+            tracked = getattr(self, "instance_number", "?")
+        return f"{type(self).__name__}({tracked})"
+
     def _register_with_default_model(self):
         """Register with the active default model as a snapshot state-bearer.
 
@@ -1133,6 +1178,7 @@ class Symbolic(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         # Shift history: copy each element down the chain.
         for i in range(self.order - 1, 0, -1):
@@ -1576,6 +1622,7 @@ class Eulerian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         ### copy values down the chain
         for i in range(self.order - 1, 0, -1):
@@ -3020,6 +3067,7 @@ class SemiLagrangian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
@@ -3819,6 +3867,7 @@ class Lagrangian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         for h in range(self.order - 1):
             i = self.order - (h + 1)
@@ -4168,6 +4217,7 @@ class Lagrangian_Swarm(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
 
         for h in range(self.order - 1):
             i = self.order - (h + 1)
@@ -4502,5 +4552,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
+        self._note_history_shift(dt)
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
