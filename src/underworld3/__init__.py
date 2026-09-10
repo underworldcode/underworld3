@@ -218,6 +218,7 @@ from .model import (
     create_model,
     get_default_model,
     reset_default_model,
+    read_journal,
     ThermalConvectionConfig,
     create_thermal_convection_model,
 )

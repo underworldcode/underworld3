@@ -63,7 +63,8 @@ class ModelStep:
     needs in order to walk the run backwards.
     """
 
-    __slots__ = ("index", "t0", "dt", "label", "events", "completed", "snapshot")
+    __slots__ = ("index", "t0", "dt", "label", "events", "completed", "snapshot",
+                 "wall")
 
     def __init__(self, index, t0, dt, label=None):
         self.index = index
@@ -72,6 +73,10 @@ class ModelStep:
         self.label = label
         self.events = []
         self.completed = False
+        # Seconds of wall clock the block took. Not physics, but the number you
+        # want when watching a run: a step that suddenly takes ten times as
+        # long is the first sign of a solver in trouble.
+        self.wall = None
         # The state this step STARTED from, when the recording policy kept one.
         # Taken before the operators ran, which is the only correct point: a
         # DDt shifts its history in its post-solve hook, so a snapshot taken
@@ -110,6 +115,13 @@ class ModelStep:
         repeated = {name: n for name, n in shifts.items() if n > 1}
         if repeated:
             detail = ", ".join(f"{name} x{n}" for name, n in sorted(repeated.items()))
+            # Also record it against the step, so the log and the journal carry
+            # the complaint and not just the terminal the run happened to have.
+            self.events.append({
+                "kind": "invariant",
+                "name": "history advanced more than once",
+                "detail": detail,
+            })
             warnings.warn(
                 f"step {self.index}: history advanced more than once ({detail}). "
                 f"The step has been taken more than once, so the field is "
@@ -120,11 +132,138 @@ class ModelStep:
                 stacklevel=3,
             )
 
+    def as_dict(self):
+        """This step as plain JSON-able data — the on-disk log's line format.
+
+        Dimensional values become ``{"magnitude": ..., "units": ...}``, the
+        same split the on-disk snapshot uses, so a log written by a run with
+        units is readable without a live model to interpret it.
+
+        ``snapshot`` is deliberately absent: it is megabytes of field data and
+        does not survive the process. ``restorable`` records whether one was
+        held, which is what a reader of the log can act on.
+
+        Each value keeps the units the run actually held it in, which is why
+        ``t0`` may read in Myr beside a ``dt`` in seconds: the clock came from
+        the tracker and the interval from ``estimate_dt()``. The log is a
+        record of the run, not a tidied report of it — convert on the way out.
+        """
+        return {
+            "kind": "step",
+            "index": self.index,
+            "label": self.label,
+            "t0": _jsonable_quantity(self.t0),
+            "t1": _jsonable_quantity(self.t1),
+            "dt": _jsonable_quantity(self.dt),
+            "completed": bool(self.completed),
+            "restorable": bool(self.restorable),
+            "wall": None if self.wall is None else float(self.wall),
+            "events": [dict(e) for e in self.events],
+        }
+
     def __repr__(self):
         state = "" if self.completed else " ABANDONED"
         seq = " -> ".join(f"{e['kind']}:{e['name']}" for e in self.events) or "(nothing)"
         tag = f" {self.label!r}" if self.label else ""
         return f"<step {self.index}{tag} dt={self.dt} {seq}{state}>"
+
+
+def _quantity_parts(value):
+    """``(magnitude, unit string or None)`` for a value that may be dimensional."""
+    if hasattr(value, "magnitude") and hasattr(value, "units"):
+        try:
+            return float(value.magnitude), str(value.units)
+        except (TypeError, ValueError):
+            return None, str(value.units)
+    try:
+        return float(value), None
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _abbreviate_unit(unit):
+    """A short unit name for a column header. Falls back to the full name."""
+    if unit is None:
+        return ""
+    return {
+        "second": "s", "minute": "min", "hour": "hr", "day": "d",
+        "year": "yr", "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
+        "meter": "m", "kilometer": "km", "kelvin": "K", "kilogram": "kg",
+    }.get(str(unit), str(unit))
+
+
+def _in_units_of(value, unit):
+    """``value`` as a bare number in ``unit``, or its own magnitude if it cannot
+    be converted. A text log is a report: one time column, one unit."""
+    if unit is None:
+        magnitude, _ = _quantity_parts(value)
+        return magnitude
+    try:
+        return float(value.to(unit).magnitude)
+    except Exception:
+        magnitude, _ = _quantity_parts(value)
+        return magnitude
+
+
+def _bare(value, unit):
+    """A serialised value as a bare number, converted to ``unit`` if it can be.
+
+    ``value`` is what :meth:`ModelStep.as_dict` produced: a float, or a
+    ``{"magnitude", "units"}`` pair. The text log shows one time column in one
+    unit, so a ``dt`` in seconds beside a clock in Myr is converted rather than
+    printed as it stands.
+    """
+    if not isinstance(value, dict):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
+    magnitude = value.get("magnitude")
+    units = value.get("units")
+    if unit is None or units is None or str(units) == str(unit):
+        try:
+            return float(magnitude)
+        except (TypeError, ValueError):
+            return float("nan")
+    try:
+        import underworld3 as uw
+
+        return float(uw.quantity(float(magnitude), str(units)).to(unit).magnitude)
+    except Exception:
+        try:
+            return float(magnitude)
+        except (TypeError, ValueError):
+            return float("nan")
+
+
+def _pretty_time(value):
+    """A compact, readable rendering of a clock value for a log note."""
+    magnitude, unit = _quantity_parts(value)
+    if magnitude is None:
+        return str(value)
+    if unit is None:
+        return f"{magnitude:.6g}"
+    return f"{magnitude:.6g} {_abbreviate_unit(unit)}"
+
+
+def _jsonable_quantity(value):
+    """A number, or a dimensional value split into magnitude and units.
+
+    Duck-typed, because ``uw.quantity`` returns a ``UWQuantity``, which is not
+    a ``pint.Quantity`` subclass — an isinstance test against either would
+    miss one of them. Both carry ``magnitude`` and ``units``.
+    """
+    if hasattr(value, "magnitude") and hasattr(value, "units"):
+        magnitude = value.magnitude
+        try:
+            magnitude = float(magnitude)
+        except (TypeError, ValueError):
+            magnitude = str(magnitude)
+        return {"magnitude": magnitude, "units": str(value.units)}
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 class Model(PintNativeModelMixin, BaseModel):
@@ -221,6 +360,16 @@ class Model(PintNativeModelMixin, BaseModel):
     _open_step: Any = PrivateAttr(default=None)
     _journal: Any = PrivateAttr(default_factory=list)
     _journal_limit: Any = PrivateAttr(default=512)
+
+    # Optional on-disk log of the journal: one JSON object per line, appended
+    # and flushed as each step closes. See :attr:`journal_file`.
+    _journal_path: Any = PrivateAttr(default=None)
+    _journal_fh: Any = PrivateAttr(default=None)
+    _journal_format: Any = PrivateAttr(default=None)
+    _journal_columns: Any = PrivateAttr(default=None)
+    # Set while rewind() is doing its own restore, so load_state does not log a
+    # second, less informative note for the same backtrack.
+    _restoring: Any = PrivateAttr(default=False)
 
     # Recording policy: how often a step keeps a restorable snapshot of the
     # state it started from, and how many of those to retain. See :meth:`step`.
@@ -743,6 +892,203 @@ class Model(PintNativeModelMixin, BaseModel):
             )
         self._journal.clear()
         self._record_warned = False
+        # A new run gets a new section in the log rather than a new file, so
+        # one file holds the whole process — thirteen forward runs of an
+        # inversion, say — delimited by their headers.
+        self._write_journal_line(self._run_header())
+
+    @property
+    def journal_file(self):
+        """Path of the on-disk step log, or None (the default: memory only).
+
+        Assign a path and every step that closes — completed OR abandoned —
+        is appended as one JSON object on its own line, and flushed. A run
+        that crashes keeps the log up to the crash, which is when it is worth
+        most.
+
+        ::
+
+            model.journal_file = "output/run.journal.jsonl"
+
+        The file records what the run DID; ``model.journal`` is what it can
+        still UNDO. They differ in two ways, both deliberate: an abandoned step
+        appears in the file and not in memory, and a step trimmed by
+        ``journal_limit`` leaves memory but stays in the file.
+
+        Read one back with :func:`underworld3.read_journal`. Rank 0 writes;
+        other ranks record in memory as usual.
+        """
+        return self._journal_path
+
+    @journal_file.setter
+    def journal_file(self, path):
+        if self._journal_fh is not None:
+            self._journal_fh.close()
+            self._journal_fh = None
+        self._journal_path = None if path is None else str(path)
+        self._journal_columns = None
+        if self._journal_path is None:
+            return
+        import underworld3 as uw
+
+        if uw.mpi.rank != 0:
+            return
+        directory = os.path.dirname(self._journal_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        self._journal_fh = open(self._journal_path, "w", encoding="utf-8")
+        self._write_journal_line(self._run_header())
+
+    @property
+    def journal_format(self):
+        """``"text"`` (default) or ``"jsonl"``.
+
+        Text is for reading — aligned columns, one line per step, designed to
+        be watched with ``tail -f`` while a run is going. It is a report: the
+        time column is converted to a single unit named in the header.
+
+        ``"jsonl"`` is for parsing — one JSON object per line, every value in
+        the units the run actually held it in. Chosen automatically when the
+        path ends ``.jsonl``, ``.ndjson`` or ``.json``; set this explicitly to
+        override.
+        """
+        if self._journal_format is not None:
+            return self._journal_format
+        if self._journal_path and self._journal_path.lower().endswith(
+                (".jsonl", ".ndjson", ".json")):
+            return "jsonl"
+        return "text"
+
+    @journal_format.setter
+    def journal_format(self, value):
+        if value not in (None, "text", "jsonl"):
+            raise ValueError(
+                f"journal_format must be 'text', 'jsonl' or None, not {value!r}")
+        self._journal_format = value
+
+    def _run_header(self):
+        """The record that opens a run in the log, so the file is self-describing."""
+        from datetime import datetime, timezone
+
+        scales = {}
+        try:
+            for name, scale in (self.get_fundamental_scales() or {}).items():
+                scales[str(name)] = _jsonable_quantity(scale)
+        except Exception:
+            scales = {}
+        return {
+            "kind": "run",
+            "model": getattr(self, "name", None),
+            "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "scales": scales,
+        }
+
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _render_journal_text(self, payload):
+        """One record as human-readable text. Returns a string, possibly
+        several lines, or None for a record this format does not show."""
+        kind = payload.get("kind")
+
+        if kind == "run":
+            scales = payload.get("scales") or {}
+            summary = " | ".join(
+                f"{name} {value['magnitude']:.4g} {_abbreviate_unit(value['units'])}"
+                for name, value in scales.items()
+                if isinstance(value, dict)
+            )
+            lines = [
+                "",
+                f"# underworld3 step log · model {payload.get('model')!r} "
+                f"· started {payload.get('started')}",
+            ]
+            if summary:
+                lines.append(f"# scales: {summary}")
+            else:
+                lines.append("# scales: none declared (nondimensional run)")
+            # Column names are written lazily, with the first step, because the
+            # time unit is not known until a step carries one.
+            self._journal_columns = None
+            return "\n".join(lines)
+
+        if kind == "step":
+            prefix = ""
+            unit = (payload["t1"] or {}).get("units") if isinstance(
+                payload.get("t1"), dict) else None
+            short = _abbreviate_unit(unit)
+            if self._journal_columns is None:
+                self._journal_columns = short
+                t_col = f"t/{short}" if short else "t"
+                dt_col = f"dt/{short}" if short else "dt"
+                prefix = (
+                    f"#{'step':>5s}  {t_col:>14s}  {dt_col:>14s}  {'wall/s':>8s}  "
+                    f"{'outcome':<9s}  operators, in order\n"
+                )
+
+            t1 = _bare(payload["t1"], unit)
+            dt = _bare(payload["dt"], unit)
+
+            wall = payload.get("wall")
+            wall_text = "-" if wall is None else f"{wall:.2f}"
+            outcome = "ok" if payload.get("completed") else "ABANDONED"
+            label = payload.get("label")
+            tag = f"[{label}] " if label else ""
+            operators = " > ".join(
+                f"{e['kind']}:{e['name']}" for e in payload.get("events", [])
+            ) or "(nothing)"
+            return (
+                f"{prefix}"
+                f"  {payload['index']:>5d}  {t1:>14.6g}  {dt:>14.6g}  "
+                f"{wall_text:>8s}  {outcome:<9s}  {tag}{operators}"
+            )
+
+        # Everything else — rewind, restore — is a note about the run rather
+        # than a row of the table, so it breaks the columns deliberately.
+        return f"  -- {payload.get('message', kind)}"
+
+    def _write_journal_line(self, payload):
+        """Append one record and flush, so a killed run keeps its log."""
+        if self._journal_fh is None:
+            return
+        import json
+
+        try:
+            if self.journal_format == "jsonl":
+                text = json.dumps(payload, default=str)
+            else:
+                text = self._render_journal_text(payload)
+                if text is None:
+                    return
+            self._journal_fh.write(text + "\n")
+            self._journal_fh.flush()
+        except Exception:
+            # A log is a convenience: never take a run down for it. Drop the
+            # handle so the failure is reported once rather than per step.
+            try:
+                self._journal_fh.close()
+            except Exception:
+                pass
+            self._journal_fh = None
+            import warnings
+
+            warnings.warn(
+                f"could not append to the journal file {self._journal_path!r}; "
+                f"logging is off for the rest of this run. The in-memory "
+                f"model.journal is unaffected.",
+                RuntimeWarning,
+            )
+
+    def _write_journal_note(self, kind, message, **fields):
+        """Log something that happened to the run but is not a step.
+
+        A backtrack above all: a log that shows step 7, then step 7 again, with
+        nothing in between, is not a log of what happened.
+        """
+        payload = {"kind": kind, "message": message}
+        payload.update(fields)
+        self._write_journal_line(payload)
 
     def _trim_journal(self):
         limit = self._journal_limit
@@ -814,9 +1160,25 @@ class Model(PintNativeModelMixin, BaseModel):
                 f"step(s) are retained (see model.record_limit)."
             )
         target = restorable[-steps]
-        self.load_state(target.snapshot)
+        self._restoring = True
+        try:
+            self.load_state(target.snapshot)
+        finally:
+            self._restoring = False
         cut = self._journal.index(target)
+        dropped = len(self._journal) - cut
         del self._journal[cut:]
+
+        # A log that shows step 7, then step 7 again with nothing in between is
+        # not a log of what happened. Say where the run went back to.
+        self._write_journal_note(
+            "rewind",
+            f"rewind to the start of step {target.index} "
+            f"(t = {_pretty_time(self.tracker.time)}); {dropped} step(s) undone",
+            to_step=int(target.index),
+            steps_undone=int(dropped),
+            t=_jsonable_quantity(self.tracker.time),
+        )
         return target
 
     def _record_step_event(self, kind: str, name: str, **detail) -> None:
@@ -908,15 +1270,31 @@ class Model(PintNativeModelMixin, BaseModel):
             # Position the clock at the END of the interval for the duration of
             # the block, so implicit coefficients (mesh.t) are evaluated there.
             self.tracker.time = record.t1
+            import time as _time
+
+            wall0 = _time.monotonic()
             try:
                 yield record
             except BaseException:
+                record.wall = _time.monotonic() - wall0
                 # Abandon: put the clock back and do not commit.
                 self.tracker.time = t0
                 record.completed = False
                 self._open_step = None
+                # The abandoned record never joins the journal, so the state it
+                # captured is unreachable — drop it rather than hold a field-
+                # sized object until the exception's traceback is collected.
+                # The idiom for going back is the caller's own save_state()
+                # taken before the block.
+                record.snapshot = None
+                # The log keeps the record itself. A rejected step is the part
+                # of a run's history that is otherwise invisible, and it is
+                # usually the part you want when asking why a run went the way
+                # it did.
+                self._write_journal_line(record.as_dict())
                 raise
 
+            record.wall = _time.monotonic() - wall0
             record._check_invariants()
 
             # Commit.
@@ -926,6 +1304,7 @@ class Model(PintNativeModelMixin, BaseModel):
             record.completed = True
             self._open_step = None
             self._journal.append(record)
+            self._write_journal_line(record.as_dict())
             self._trim_journal()
             self._trim_records()
 
@@ -1007,13 +1386,29 @@ class Model(PintNativeModelMixin, BaseModel):
         from underworld3.checkpoint import read_snapshot as _read_snapshot
 
         if isinstance(source, Snapshot):
-            return _restore(self, source)
-        if isinstance(source, (str, os.PathLike)):
-            return _read_snapshot(self, str(source))
-        raise TypeError(
-            f"load_state expects a Snapshot token or a path string, "
-            f"got {type(source).__name__}"
-        )
+            result = _restore(self, source)
+        elif isinstance(source, (str, os.PathLike)):
+            result = _read_snapshot(self, str(source))
+        else:
+            raise TypeError(
+                f"load_state expects a Snapshot token or a path string, "
+                f"got {type(source).__name__}"
+            )
+
+        # A restore moves the run backwards. It belongs in the log for the same
+        # reason a rewind does: without it the log shows a step, then an
+        # earlier step, with nothing to say why. ``rewind`` writes its own,
+        # more specific, note and suppresses this one.
+        if not self._restoring:
+            where = "a file" if isinstance(source, (str, os.PathLike)) else "a snapshot"
+            self._write_journal_note(
+                "restore",
+                f"restore from {where}; the clock now reads "
+                f"{_pretty_time(self.tracker.time)}",
+                source=str(source) if isinstance(source, (str, os.PathLike)) else "memory",
+                t=_jsonable_quantity(self.tracker.time),
+            )
+        return result
 
     def define_parameter(self, name: str, ptype=None, **kwargs):
         """
@@ -4994,6 +5389,47 @@ class Model(PintNativeModelMixin, BaseModel):
 
 # Global default model for automatic registration
 _default_model = None
+
+
+def read_journal(path):
+    """Read a journal file back as a list of runs.
+
+    Each entry is ``{"run": <header>, "steps": [<step>, ...]}``, in the order
+    the process produced them — an inversion driver that ran the forward model
+    thirteen times leaves thirteen runs in one file.
+
+    The file is JSON lines, so it is also readable with ``jq`` and survives a
+    run that was killed part way: a truncated final line is dropped and
+    everything before it is returned.
+
+    Parameters
+    ----------
+    path : str
+        A file written by a model with :attr:`Model.journal_file` set.
+
+    Returns
+    -------
+    list of dict
+    """
+    runs = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                # A run killed mid-write leaves a partial last line. Everything
+                # before it is intact, which is the point of one object per line.
+                break
+            if entry.get("kind") == "run":
+                runs.append({"run": entry, "steps": []})
+            elif entry.get("kind") == "step":
+                if not runs:
+                    runs.append({"run": None, "steps": []})
+                runs[-1]["steps"].append(entry)
+    return runs
 
 
 def get_default_model():

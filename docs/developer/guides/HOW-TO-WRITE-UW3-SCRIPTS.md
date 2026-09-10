@@ -563,6 +563,93 @@ and `rewind()` will walk back into the previous one.
 On a mesh that deforms or adapts the snapshot cannot be taken yet; the run
 warns once, keeps journalling, and `rewind()` will not reach those steps.
 
+### Writing the record down
+
+`model.journal` is what the run can still undo. It lives in memory, it is
+bounded, and it dies with the process. `model.journal_file` is what the run
+*did*:
+
+```python
+model.journal_file = "output/run.log"
+```
+
+One aligned line per step, appended and flushed as it closes, so `tail -f`
+follows a running job:
+
+```
+# underworld3 step log · model 'default' · started 2026-09-10T21:22:40+00:00
+# scales: length 2.2e+06 m | time 4.84e+18 s | mass 1.065e+47 kg | temperature 2500 K
+# step           t/Myr          dt/Myr    wall/s  outcome    operators, in order
+      0        0.175907        0.175907      0.44  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      1        0.501546        0.325639      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      2        0.990939        0.489393      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      3         1.51459        0.523655      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      4         30.5663         29.0517      0.09  ABANDONED  [too big] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+  -- restore from a snapshot; the clock now reads 1.51459 Myr
+  -- rewind to the start of step 3 (t = 0.990939 Myr); 1 step(s) undone
+      3         1.51459        0.523655      0.42  ok         [replay] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+```
+
+`wall/s` is how long the block took. It is not physics, but it is the number
+you want when watching: a step that suddenly takes ten times as long is the
+first sign of a solver in trouble.
+
+**A true log records the backtracks.** `rewind()` and a bare `load_state()`
+each write their own line, because a log that shows step 3, then step 3 again
+with nothing in between, is not a log of what happened. `rewind` writes the
+more specific note and suppresses the generic one.
+
+Four other things go in the file that are not in `model.journal`, all
+deliberate:
+
+- **An abandoned step.** A rejected step is the part of a run's history that is
+  otherwise invisible, and it is usually what you want when asking why a run
+  went the way it did.
+- **A step aged out by `journal_limit`.** The account of what happened outlives
+  both the state and the bounded in-memory list.
+- **An invariant complaint**, as an `invariant` event on the step, so it
+  survives the terminal the run happened to have.
+- **Everything up to a kill.** The file is flushed per step.
+
+### For parsing: JSON lines
+
+A path ending `.jsonl`, `.ndjson` or `.json` — or `model.journal_format =
+"jsonl"` — writes the same record as one JSON object per line:
+
+```json
+{"kind": "run",  "model": "default", "started": "2026-09-10T21:22:40+00:00", "scales": {"length": {"magnitude": 2200000.0, "units": "meter"}, ...}}
+{"kind": "step", "index": 0, "label": "convect",
+ "t0": {"magnitude": 0.0, "units": "megayear"},
+ "t1": {"magnitude": 0.1759, "units": "megayear"},
+ "dt": {"magnitude": 5551210433127.7, "units": "second"},
+ "completed": true, "restorable": true, "wall": 0.44,
+ "events": [{"kind": "solve", "name": "SNES_AdvectionDiffusion_Composed(T)"},
+            {"kind": "history_shift", "name": "EulerianSUPG(T)", "dt": 1.1469e-06},
+            {"kind": "solve", "name": "SNES_Stokes(v)"}]}
+{"kind": "rewind", "message": "...", "to_step": 3, "steps_undone": 1, "t": {"magnitude": 0.9909, "units": "megayear"}}
+```
+
+Read it back with `uw.read_journal(path)`, which returns one entry per run — an
+inversion driver that ran the forward model thirteen times leaves thirteen runs
+in one file, delimited by the header `clear_journal()` writes.
+
+**Why JSON lines and not YAML.** One self-contained record per line is the
+whole point. A killed run leaves a truncated final line that *fails* to parse,
+so `read_journal` drops it and keeps everything before; a half-written YAML
+mapping frequently still parses, as a real record with its last key missing.
+Line-oriented also means `grep`, `wc -l` and `jq -c` work without a parser, and
+`json` is stdlib with predictable float round-tripping. YAML is the right
+format for a whole document written once and edited by hand — which is what
+`Model.to_yaml` uses it for — but a log is a stream.
+
+The two formats differ in one more way. The text log is a **report**: the time
+column is converted into one unit, named in the header. The JSON log is a
+**record**: every value keeps the units the run actually held it in, which is
+why `t0` may read in Myr beside a `dt` in seconds — the clock came from the
+tracker and the interval from `estimate_dt()`.
+
+Rank 0 writes; the other ranks record in memory as usual.
+
 ### What the record checks
 
 A step also checks that it can be what it claims to be. One invariant so far:

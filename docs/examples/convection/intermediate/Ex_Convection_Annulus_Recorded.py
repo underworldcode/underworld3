@@ -34,6 +34,9 @@ that account is worth four things this script demonstrates in turn:
 2. **a rejected step** — the clock does not move when a step is abandoned
 3. **playback** — a recorded step replays bit-for-bit, where a re-run does not
 4. **an invariant** — a step that took the physical step twice says so
+5. **a log on disk** — the same account in aligned columns, flushed as each
+   step closes, so a run that dies keeps its history and a run in progress can
+   be watched with `tail -f`
 
 ## Key concepts
 
@@ -77,7 +80,8 @@ params = uw.Params(
     uw_cell_size=0.1,          # mesh resolution, as a fraction of the outer radius
     uw_n_steps=8,              # timesteps in the recorded run
     uw_dt_fraction=0.5,        # accuracy factor on estimate_dt()
-    uw_demos=1,                # run the four journal demonstrations after the loop
+    uw_demos=1,                # run the journal demonstrations after the loop
+    uw_journal_file="output/annulus_convection.log",
 )
 
 # %% [markdown]
@@ -269,6 +273,14 @@ model.tracker.v_rms = v_rms()
 model.record_every = 1
 model.record_limit = params.uw_n_steps
 
+# The in-memory journal is what the run can still UNDO; it is bounded and it
+# dies with the process. The log is what the run DID: one aligned line per step,
+# appended and flushed as each step closes, including the steps that were
+# abandoned and the backtracks. Setting it is optional and costs a line per
+# step. A `.jsonl` suffix (or `model.journal_format = "jsonl"`) writes the same
+# record as JSON objects instead, for parsing rather than reading.
+model.journal_file = str(params.uw_journal_file)
+
 for _ in range(int(params.uw_n_steps)):
     dt = params.uw_dt_fraction * adv.estimate_dt()
 
@@ -419,6 +431,31 @@ if params.uw_demos:
         if issubclass(w.category, RuntimeWarning):
             say("      " + " ".join(str(w.message).split())[:200])
     say(f"  the step as recorded: {model.journal[-1]}")
+
+# %% [markdown]
+"""
+## 5. The log on disk
+
+`model.journal_file` writes the same account to a file, one line per step,
+flushed as it closes — so `tail -f` on it follows a running job, and a run that
+is killed keeps everything up to the moment it died.
+
+Three differences from `model.journal`, all deliberate. An **abandoned** step
+appears in the file and not in memory. A step aged out by `journal_limit`
+leaves memory but stays in the file. And a **backtrack** — `rewind()` or a
+bare `load_state()` — writes its own line, because a log that shows step 7 and
+then step 7 again, with nothing in between, is not a log of what happened.
+"""
+
+# %%
+if params.uw_demos:
+    say("")
+    say("--- 5. the log on disk " + "-" * 51)
+    say(f"  {model.journal_file}")
+
+    with open(model.journal_file, encoding="utf-8") as handle:
+        for line in handle.read().splitlines():
+            say("  " + line)
 
 # %%
 say("")
