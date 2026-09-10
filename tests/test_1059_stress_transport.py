@@ -307,19 +307,58 @@ def test_navier_stokes_carries_a_viscoelastic_stress_either_way():
     assert traced > 0.1 and abs(grid - traced) / traced < 1.0e-3, (grid, traced)
 
 
-def test_a_viscoelastic_navier_stokes_step_refuses_the_theta_rule():
-    """At order 1 the theta rule weights the viscous flux at the stored velocity
-    levels, which rebuilds them blind to elasticity."""
+def test_the_theta_rule_takes_its_stored_flux_from_the_stress_history():
+    """Crank-Nicolson weights the momentum flux across time levels. For a
+    viscous fluid the stored level is rebuilt from the stored velocity; for a
+    viscoelastic one that rebuild is wrong, and the stress history already holds
+    exactly what the theta rule is asking for. Check the flux reads it."""
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-    v = uw.discretisation.MeshVariable("Uo", mesh, mesh.dim, degree=2)
-    p = uw.discretisation.MeshVariable("Po", mesh, 1, degree=1)
+    v = uw.discretisation.MeshVariable("Uf", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Pf", mesh, 1, degree=1)
     ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1)
-    ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        ns.Unknowns, order=1)
-    ns.constitutive_model.Parameters.shear_modulus = 1.0
-    ns.constitutive_model.Parameters.dt_elastic = 0.1
-    ns.bodyforce = sympy.Matrix([[0.0, 0.0]])
-    for boundary in ("Top", "Bottom", "Left", "Right"):
-        ns.add_dirichlet_bc((0.0, 0.0), boundary)
-    with pytest.raises(ValueError, match="needs order=2"):
-        ns.solve(timestep=0.1)
+    ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    viscous_flux = ns._viscous_flux()
+
+    ve = uw.systems.NavierStokes(
+        mesh, uw.discretisation.MeshVariable("Ug", mesh, mesh.dim, degree=2),
+        uw.discretisation.MeshVariable("Pg", mesh, 1, degree=1), rho=1.0, order=1)
+    ve.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        ve.Unknowns, order=1)
+    ve.constitutive_model.Parameters.shear_modulus = 1.0
+    ve.constitutive_model.Parameters.dt_elastic = 0.1
+    assert ve.integrator == "am", "order 1 is the theta rule"
+    stored = set(sympy.Matrix(ve.DFDt.psi_star[0].sym).atoms(sympy.Function))
+    assert stored & set(ve._viscous_flux().atoms(sympy.Function)), \
+        "the theta rule must read the stress history at the stored level"
+    assert not (stored & set(viscous_flux.atoms(sympy.Function))), \
+        "a viscous fluid has no stress history to read"
+
+
+def test_crank_nicolson_carries_a_viscoelastic_stress_either_way():
+    """The scheme the Navier-Stokes benchmarks use, order 1, with a stress
+    history: both transports must agree."""
+    def run(transport):
+        mesh = uw.meshing.StructuredQuadBox(
+            elementRes=(16, 8), minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5))
+        v = uw.discretisation.MeshVariable(f"Uc_{transport[0]}", mesh, mesh.dim, degree=2)
+        p = uw.discretisation.MeshVariable(f"Pc_{transport[0]}", mesh, 1, degree=1)
+        ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1)
+        ns.stress_transport = transport
+        ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            ns.Unknowns, order=1)
+        ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        ns.constitutive_model.Parameters.shear_modulus = 1.0
+        ns.constitutive_model.Parameters.dt_elastic = 0.1
+        ns.add_dirichlet_bc((0.5, 0.0), "Top")
+        ns.add_dirichlet_bc((-0.5, 0.0), "Bottom")
+        ns.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+        ns.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+        ns.bodyforce = sympy.Matrix([[0.0, 0.0]])
+        for _ in range(10):
+            ns.solve(timestep=0.1)
+        return float(np.asarray(uw.function.evaluate(
+            ns.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
+
+    traced, grid = run("semi_lagrangian"), run("eulerian")
+    assert traced > 0.1 and abs(grid - traced) / traced < 1.0e-3, (grid, traced)

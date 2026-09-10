@@ -405,13 +405,34 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         return 2 * eta * sympy.Matrix(self.mesh.vector.strain_tensor(u_row))
 
     def _viscous_flux(self):
+        r"""The flux of the time scheme: the new stress, blended with the stored levels.
+
+        The theta rule weights the flux across time levels, so it needs the stress
+        at the stored levels as well as the new one. For a viscous fluid that is
+        rebuilt from the stored velocity, :math:`2\eta\dot\varepsilon(\mathbf{u}^{n})`.
+        For a viscoelastic one that rebuild is wrong -- the stress there is not a
+        viscous stress -- and the right object is already held by the stress
+        history, which is the same quantity the theta rule is asking for. So the
+        two histories meet here: the flux history of the time scheme IS the
+        elastic stress history. BDF puts every spatial term at the new level and
+        the question does not arise.
+        """
         states = self.DuDt.states()
         weights = self.DuDt.spatial_weights()
         total = weights[0] * self.stress_deviator
-        for w, u_k in zip(weights[1:], states[1:]):
+        stress_history = self.Unknowns.DFDt
+        for level, (w, u_k) in enumerate(zip(weights[1:], states[1:])):
             if w == 0:
                 continue
-            total = total + w * self._viscous_stress(u_k)
+            if stress_history is None:
+                total = total + w * self._viscous_stress(u_k)
+            elif level < len(stress_history.psi_star):
+                total = total + w * sympy.Matrix(stress_history.psi_star[level].sym)
+            else:
+                raise ValueError(
+                    f"the time scheme weights the flux at level {level + 1}, but the "
+                    f"stress history holds {len(stress_history.psi_star)} level(s): "
+                    "give the constitutive model a higher order, or the solver a lower one.")
         return total
 
     def _stabilisation_flux(self):
@@ -523,12 +544,6 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
 
         carries_stress = self.Unknowns.DFDt is not None
         if carries_stress:
-            if self.order != 2:
-                raise ValueError(
-                    "a viscoelastic stress history needs order=2 on this solver: at "
-                    "order 1 the theta rule weights the viscous flux at the stored "
-                    "velocity levels, which rebuilds them blind to elasticity. BDF2 "
-                    "puts every spatial term at the new level.")
             # Once per step, around the passes -- not once per pass.
             self._stress_history_pre_solve(dt, verbose=verbose, evalf=False)
 
