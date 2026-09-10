@@ -518,13 +518,14 @@ you want to ask of someone else's model, or your own six months later.
 
 Opening a step is optional. A script that never does behaves exactly as before.
 
-### Taping a run
+### Recording a run
 
-Ask the step to keep the state it started from and the journal becomes a tape:
+Ask the step to keep the state it started from and the journal becomes a
+restorable record:
 
 ```python
-model.tape_every = 1        # keep every step; None (default) keeps none
-model.tape_limit = 8        # how many snapshots to retain
+model.record_every = 1      # keep every step; None (default) keeps none
+model.record_limit = 8      # how many snapshots to retain
 
 while model.tracker.time < end_time:
     with model.step(dt):
@@ -950,7 +951,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
   - Disk snapshots now carry dimensional values (magnitude + units)
   - `mesh.t` now resolves to the model clock (#410)
   - `model.step(dt)` — the step as a transaction, and the step journal
-  - `model.tape_every` / `model.rewind()` — the journal as a tape
+  - `model.record_every` / `model.rewind()` — the journal as a restorable record
   - Set `.sym` to change a value; rebinding the name changes nothing
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve

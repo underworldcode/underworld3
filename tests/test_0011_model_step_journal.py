@@ -128,15 +128,15 @@ def test_the_journal_is_bounded():
 
 
 # ---------------------------------------------------------------------------
-# The tape: a step keeps the state it started from, so the run can be replayed
+# Recording: a step keeps the state it started from, so the run can be replayed
 # ---------------------------------------------------------------------------
 
 
 def _advdiff(uw, mesh):
     import sympy
 
-    T = uw.discretisation.MeshVariable("T_tape", mesh, 1, degree=2)
-    V = uw.discretisation.MeshVariable("V_tape", mesh, 2, degree=2)
+    T = uw.discretisation.MeshVariable("T_record", mesh, 1, degree=2)
+    V = uw.discretisation.MeshVariable("V_record", mesh, 2, degree=2)
     x, y = mesh.X
     V.array[:, 0, :] = np.asarray(
         uw.function.evaluate(sympy.Matrix([[-(y - 0.5), (x - 0.5)]]), V.coords)
@@ -151,13 +151,13 @@ def _advdiff(uw, mesh):
     return solver, T
 
 
-def test_taping_is_off_by_default():
+def test_recording_is_off_by_default():
     uw, model = _fresh_model()
     model.tracker.time, model.tracker.step = 0.0, 0
     with model.step(0.1):
         pass
     assert model.journal[0].restorable is False
-    assert model.tape == []
+    assert model.restore_points == []
 
 
 def test_rewind_undoes_a_step_exactly():
@@ -168,7 +168,7 @@ def test_rewind_undoes_a_step_exactly():
     )
     solver, T = _advdiff(uw, mesh)
     model.tracker.time, model.tracker.step = 0.0, 0
-    model.tape_every = 1
+    model.record_every = 1
 
     for _ in range(2):
         with model.step(0.02):
@@ -200,7 +200,7 @@ def test_replaying_a_rewound_step_reproduces_it():
     )
     solver, T = _advdiff(uw, mesh)
     model.tracker.time, model.tracker.step = 0.0, 0
-    model.tape_every = 1
+    model.record_every = 1
 
     with model.step(0.02):
         solver.solve(timestep=0.02)
@@ -216,26 +216,26 @@ def test_replaying_a_rewound_step_reproduces_it():
     )
 
 
-def test_the_tape_is_bounded_but_the_journal_survives():
+def test_the_record_is_bounded_but_the_journal_survives():
     """Old steps lose their snapshot and keep their record, so the account of
     what happened outlives the state."""
     uw, model = _fresh_model()
     model.tracker.time, model.tracker.step = 0.0, 0
-    model.tape_every = 1
-    model.tape_limit = 2
+    model.record_every = 1
+    model.record_limit = 2
 
     for _ in range(5):
         with model.step(0.1):
             pass
 
     assert len(model.journal) == 5
-    assert [e.index for e in model.tape] == [3, 4]
+    assert [e.index for e in model.restore_points] == [3, 4]
 
 
-def test_rewind_without_a_tape_says_what_to_do():
+def test_rewind_without_a_record_says_what_to_do():
     uw, model = _fresh_model()
     model.tracker.time, model.tracker.step = 0.0, 0
     with model.step(0.1):
         pass
-    with pytest.raises(RuntimeError, match="tape_every"):
+    with pytest.raises(RuntimeError, match="record_every"):
         model.rewind()
