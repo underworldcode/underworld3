@@ -2761,7 +2761,10 @@ class SolverBaseClass(uw_object):
     @materials.setter
     def materials(self, material_swarm):
         if material_swarm is None:
+            previous = self._materials
             self._materials = None
+            if previous is not None:
+                previous._detach(self)     # or it keeps pushing to this solver
             return
         if not hasattr(material_swarm, "_attach"):
             raise TypeError(

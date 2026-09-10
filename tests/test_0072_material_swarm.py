@@ -161,12 +161,23 @@ def test_a_property_nothing_uses_is_reported():
 
 
 def test_a_property_missing_from_one_material_is_an_error():
+    """Two surfaces, two exception types on purpose. ``blend`` raises KeyError
+    naming the materials that are missing the property; attribute access
+    converts that to AttributeError, because hasattr() swallows AttributeError
+    and nothing else -- a KeyError escaping __getattr__ breaks hasattr() and
+    getattr(o, n, default) for every caller."""
     mesh = _box(cell_size=0.25)
     materials = uw.swarm.MaterialSwarm(mesh, fill_param=2, name="Mm")
     materials.add("a", shear_viscosity_0=1.0, density=3300)
     materials.add("b", shear_viscosity_0=2.0)               # no density
+
     with pytest.raises(KeyError, match="density"):
+        materials.blend("density")
+
+    with pytest.raises(AttributeError, match="density"):
         materials.density
+
+    assert hasattr(materials, "density") is False
 
 
 def test_materials_must_be_declared_before_the_swarm_is_populated():

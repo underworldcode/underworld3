@@ -104,12 +104,21 @@ def _property_name(prop):
 
 
 def _as_symbolic(value, name, material):
-    """Coerce a declared property value into something sympy can carry."""
+    """Coerce a declared property value into something sympy can carry.
+
+    A dimensional quantity is non-dimensionalised HERE, so this is called when
+    the value is *read*, not when it is declared: the scaling is a property of
+    the model, and a registry is meant to be writable before the model exists.
+    Resolving at declaration time made the same declaration mean different
+    numbers depending on whether the reference quantities had been set yet.
+    """
     if isinstance(value, sympy.Basic):
         return value
     try:
         return sympy.sympify(value)
     except (TypeError, ValueError, AttributeError):
+        # Not a plain number or expression. Fall through to the quantity path
+        # below, which raises with the offending value if that fails too.
         pass
     try:                                    # a dimensional quantity
         return sympy.sympify(uw.scaling.non_dimensionalise(value))
@@ -151,12 +160,25 @@ class MaterialDefinition:
             self.set(**properties)
 
     def set(self, **properties):
-        """Set or replace properties, and re-push them to attached solvers."""
+        """Set or replace properties, and re-push them to attached solvers.
+
+        The value is stored AS DECLARED. A dimensional quantity is
+        non-dimensionalised when it is read (see :meth:`resolved`), because
+        the scaling belongs to the model and a registry may be written before
+        there is one.
+        """
         for key, value in properties.items():
             key = _property_name(key)
-            self.properties[key] = _as_symbolic(value, key, self.name)
+            _as_symbolic(value, key, self.name)      # validate now, resolve later
+            self.properties[key] = value
         self._registry._changed()
         return self
+
+    def resolved(self, prop):
+        """The property as sympy, non-dimensionalised against the model's
+        current scaling."""
+        name = _property_name(prop)
+        return _as_symbolic(self.properties[name], name, self.name)
 
     # -- the pre-2026 spelling, kept working ------------------------------
     def set_property(self, prop, value):
@@ -195,6 +217,7 @@ class MaterialRegistry:
         self._materials: Dict[str, MaterialDefinition] = {}
         self._order: List[str] = []
         self._callbacks = []
+        self._built = []          # distributions that have built their level sets
         self._version = 0
         if materials:
             for name, properties in dict(materials).items():
@@ -219,6 +242,7 @@ class MaterialRegistry:
         -------
         MaterialDefinition
         """
+        self._refuse_if_built(f"declare material {name!r}")
         if name in self._materials:
             raise ValueError(f"material {name!r} has already been declared")
         material = MaterialDefinition(
@@ -247,8 +271,11 @@ class MaterialRegistry:
         index of a material IS which level set is its, so removing one
         renumbers the others.
         """
+        self._refuse_if_built(f"delete material {name!r}")
         if name not in self._materials:
-            return
+            raise KeyError(
+                f"no material {name!r}; declared: {self.list_materials()}"
+            )
         del self._materials[name]
         self._order.remove(name)
         for i, key in enumerate(self._order):
@@ -290,6 +317,24 @@ class MaterialRegistry:
         return f"MaterialRegistry({self.list_materials()})"
 
     # -- change notification ----------------------------------------------
+
+    def _refuse_if_built(self, what):
+        """A material's index IS which level set is its, so the set of
+        materials cannot change once a distribution has allocated them.
+
+        Without this, ``registry.add`` after a build produced a material with
+        no level set (an ``IndexError`` from ``blend``, swallowed into a
+        warning by the change callback, leaving the solver holding a stale
+        blend), and ``delete_material`` silently re-pointed every later
+        material at its neighbour's level set.
+        """
+        if self._built:
+            names = ", ".join(sorted(type(d).__name__ for d in self._built))
+            raise RuntimeError(
+                f"cannot {what}: this registry is already in use by {names}, "
+                "whose level sets are allocated one per material. Declare "
+                "every material before the first read."
+            )
 
     def add_callback(self, callback):
         """Register ``callback()`` to run whenever a definition changes."""
@@ -402,6 +447,29 @@ class MaterialDistribution:
     #: mesh do not collide over their level-set variable names.
     _default_name_count = 0
 
+    def _check_level_sets_are_new(self, mesh, before, count):
+        """Refuse a name whose level sets already existed on this mesh.
+
+        Two distributions sharing a name silently shared their level sets:
+        creating the second one's variables printed "Variable ... already
+        exists - Skipping" to stdout and handed back the FIRST distribution's
+        variables, so painting the second changed the first one's answers with
+        no error anywhere. The default names are counter-suffixed to avoid
+        this; an explicit ``name=`` was unguarded.
+
+        Checked by counting what the mesh actually gained rather than by
+        predicting the sanitised variable names, which are not the strings
+        passed in — ``"M^{[0]}"`` becomes ``"M0"``.
+        """
+        gained = len(mesh.vars) - before
+        if gained != count:
+            raise ValueError(
+                f"name={self._distribution_name!r} is already in use on this "
+                f"mesh: {count} level sets were requested and {gained} were "
+                "created, so this distribution would share another's storage. "
+                "Give it a different name."
+            )
+
     def _init_distribution(self, registry=None, name=None):
         self._registry = registry if registry is not None else MaterialRegistry()
         if name is None:
@@ -412,6 +480,7 @@ class MaterialDistribution:
         self._solvers = []
         self._mixing_rules = {}
         self._read_properties = set()
+        self._reported = set()           # check() speaks once per finding
         self._registry.add_callback(self._push_all)
 
     # -- declaring (shorthand onto the registry) --------------------------
@@ -426,6 +495,27 @@ class MaterialDistribution:
         """The declared materials, in order, bound to this distribution."""
         return tuple(BoundMaterial(self, m) for m in self._registry.materials)
 
+    def _warn_on_shadowed_properties(self, properties):
+        """A property whose name is also an attribute of this object is
+        unreachable as ``materials.<name>`` — normal lookup wins and returns
+        the attribute, silently, with no blend in sight. The two
+        distributions have different attributes, so a name that works on one
+        can be shadowed on the other."""
+        # NB not hasattr(self, n): that goes through __getattr__, which
+        # resolves a property by BUILDING the level sets, mid-add().
+        own = set(vars(self))
+        for klass in type(self).__mro__:
+            own |= set(vars(klass))
+        shadowed = sorted(n for n in properties if n in own)
+        if shadowed:
+            warnings.warn(
+                f"material properties {shadowed} share a name with an "
+                f"attribute of {type(self).__name__}, so materials.<name> will "
+                "return the attribute, not the blend. Read them with "
+                "materials.blend(name) instead, or rename them.",
+                stacklevel=3,
+            )
+
     def add(self, name, where=None, description="", reference="", **properties):
         """Declare a material here — shorthand for ``registry.add(...)``.
 
@@ -434,6 +524,7 @@ class MaterialDistribution:
         as assigning a region afterwards.
         """
         self._check_can_declare(name)
+        self._warn_on_shadowed_properties(properties)
         self._registry.add(name, description=description, reference=reference,
                            **properties)
         bound = self[name]
@@ -451,6 +542,20 @@ class MaterialDistribution:
         return len(self._registry)
 
     # -- level sets (subclass) --------------------------------------------
+
+    def build(self):
+        """Allocate the level sets now, rather than on first read.
+
+        **Collective**: it creates mesh variables, so every rank must call it
+        together. That is also true of the first *read* of any material
+        property — ``materials.density``, ``materials["x"].mask``,
+        ``materials.index``, or ``solver.materials = ...`` — because the read
+        builds them. Putting such a read inside a rank-local branch
+        (``if rank == 0: ...``) deadlocks. Call this at a point where every
+        rank is together if the ordering is ever in doubt.
+        """
+        self._ensure_built()
+        return self
 
     def _ensure_built(self):
         raise NotImplementedError
@@ -477,12 +582,18 @@ class MaterialDistribution:
         converge with sampling density. ``"harmonic"`` is the Reuss average,
         which does. Pick on physical grounds.
         """
+        declared = self._registry.declared_properties()
         for name, rule in rules.items():
             name = _property_name(name)
             if rule not in _MIXING_RULES:
                 raise ValueError(
                     f"mixing rule for {name!r} must be one of {_MIXING_RULES}, "
                     f"not {rule!r}"
+                )
+            if name not in declared:
+                raise KeyError(
+                    f"no material declares {name!r}, so a mixing rule for it "
+                    f"would have no effect; declared: {sorted(declared)}"
                 )
             self._mixing_rules[name] = rule
         self._push_all()
@@ -506,12 +617,30 @@ class MaterialDistribution:
 
         self._ensure_built()
         self._read_properties.add(name)
-        values = [m.properties[name] for m in self._registry.materials]
+        values = [m.resolved(name) for m in self._registry.materials]
         masks = self._level_sets()
         rule = mixing or self._mixing_rules.get(name, "arithmetic")
 
         if rule == "arithmetic":
             return sum(masks[i].sym[0] * value for i, value in enumerate(values))
+
+        # A harmonic blend is 1 / sum(phi_i / v_i), so a material whose value
+        # is zero poisons the symbol at declaration time: sympy folds 1/0 to
+        # ComplexInfinity and the JIT then dies with a bare C-printer
+        # traceback naming neither the material nor the property. A value that
+        # can VANISH (a law in T, say) is the same defect deferred to run
+        # time, where it surfaces as Integral = nan behind a RuntimeWarning.
+        zeros = [
+            m.name for m, value in zip(self._registry.materials, values)
+            if value.is_zero
+        ]
+        if zeros:
+            raise ValueError(
+                f"harmonic mixing of {name!r} divides by its value in "
+                f"{zeros}, which is zero. A material with no {name} cannot be "
+                "blended harmonically; use arithmetic mixing, or give it a "
+                "small non-zero value."
+            )
         return 1 / sum(masks[i].sym[0] / value for i, value in enumerate(values))
 
     def __getattr__(self, name):
@@ -528,7 +657,13 @@ class MaterialDistribution:
                 f"{type(self).__name__!r} object has no attribute {name!r}, and "
                 "no material declares a property of that name"
             )
-        return self.blend(name)
+        try:
+            return self.blend(name)
+        except KeyError as exc:
+            # hasattr() swallows AttributeError and nothing else, so a KeyError
+            # escaping here breaks hasattr / getattr(o, n, default) for every
+            # caller. Keep the diagnosis, honour the contract.
+            raise AttributeError(str(exc.args[0] if exc.args else exc)) from None
 
     # -- the handoff to a solver ------------------------------------------
 
@@ -537,6 +672,10 @@ class MaterialDistribution:
         if not any(s is solver for s in self._solvers):
             self._solvers.append(solver)
         self._push_to(solver)
+
+    def _detach(self, solver):
+        """Stop pushing to a solver that no longer wants these materials."""
+        self._solvers = [s for s in self._solvers if s is not solver]
 
     def _push_all(self):
         for solver in self._solvers:
@@ -598,11 +737,20 @@ class MaterialDistribution:
             if close:
                 suspicious.append((name, close[0]))
         for name, suggestion in suspicious:
+            if (name, suggestion) in self._reported:
+                continue                  # a nonlinear solve rebuilds repeatedly
+            self._reported.add((name, suggestion))
+            declared = self._registry.declared_properties()
+            fate = (
+                f"{suggestion!r} is set from the materials that DO declare it"
+                if suggestion in declared
+                else f"{suggestion!r} keeps its default value"
+            )
             warnings.warn(
-                f"material property {name!r} is declared but unused, and the "
-                f"constitutive model has a parameter {suggestion!r} — did you "
-                f"mean that? As it stands {suggestion!r} keeps its default "
-                f"value and nothing reads {name!r}.",
+                f"material property {name!r} is declared but nothing reads it, "
+                f"and the constitutive model has a similarly-named parameter "
+                f"{suggestion!r} — did you mean that? As it stands {fate}, and "
+                f"nothing reads {name!r}.",
                 stacklevel=3,
             )
         return suspicious
@@ -677,12 +825,16 @@ class MaterialRegions(MaterialDistribution):
                 "no materials have been declared — call add() before reading "
                 "a material property"
             )
+        _vars_before = len(self.mesh.vars)
         self._level_set_vars = [
             uw.discretisation.IntegrationPointVariable(
                 f"{self._distribution_name}^{{[{i}]}}", self.mesh,
             )
             for i in range(len(self._registry))
         ]
+        self._check_level_sets_are_new(
+            self.mesh, _vars_before, len(self._registry))
+        self._registry._built.append(self)
         # material 0 owns everything not claimed by anyone else
         self._level_set_vars[0].data[...] = 1.0
         for i in range(1, len(self._level_set_vars)):
@@ -719,10 +871,22 @@ class MaterialRegions(MaterialDistribution):
             self._paint(definition, region)
 
     def _paint(self, definition, region):
+        """Give ``definition`` exactly ``region``, and nothing else.
+
+        Assignment replaces: ``materials["x"] = A`` then ``materials["x"] = B``
+        leaves the material at B, not at A union B. Anything this material
+        held outside the new region reverts to material 0, which is what
+        ``x[k] = v`` means in Python and what a user correcting a region in a
+        notebook cell expects.
+        """
         selected = self._region_mask(region)
+        held = np.asarray(self._level_set_vars[definition.index].data).reshape(-1) > 0.5
+        released = held & ~selected
         for i, var in enumerate(self._level_set_vars):
             values = np.asarray(var.data).reshape(-1).copy()
             values[selected] = 1.0 if i == definition.index else 0.0
+            if released.any():                      # back to the default material
+                values[released] = 1.0 if i == 0 else 0.0
             var.data[:, 0] = values
 
     def _integration_points(self):
@@ -761,7 +925,24 @@ class MaterialRegions(MaterialDistribution):
         )
 
     def _label_mask(self, label_name, label_value, ncells, nq):
-        """Integration points of the cells carried by a mesh label."""
+        """Integration points of the cells carried by a mesh label.
+
+        Two PETSc hazards govern the shape of this method.
+
+        ``getStratumIS(v)`` for a value that is not in the label's live value
+        set **hard-aborts** the process — no exception, no traceback, every
+        rank gone (the repo warns about this twice; cf. the "Centre"
+        pseudo-label). And on a rank where the stratum is empty, petsc4py
+        returns a live ``IS`` wrapping a NULL handle rather than ``None``, so
+        ``getIndices()`` on it segfaults too. Both are probed for below.
+
+        The value set is also **rank-local**: a label live on one rank can be
+        absent on another, and a label with two values can look single-valued
+        to each rank separately. Resolving the value from the local set would
+        raise on some ranks and not others (a hang), or silently paint the
+        union of two regions. The set is therefore reduced across ranks
+        before anything branches on it.
+        """
         dm = self.mesh.dm
         if not dm.hasLabel(label_name):
             available = [dm.getLabelName(i) for i in range(dm.getNumLabels())]
@@ -772,25 +953,55 @@ class MaterialRegions(MaterialDistribution):
                 f"the mesh has no label {label_name!r}. Available: "
                 f"{sorted(set(available))}"
             )
+
+        label = dm.getLabel(label_name)
+        values_is = label.getValueIS()
+        local_values = (
+            {int(v) for v in values_is.getIndices()} if values_is is not None else set()
+        )
+
+        # Reduce first, then branch: every rank must resolve the same value
+        # and raise the same errors.
+        global_values = set()
+        for rank_values in uw.mpi.comm.allgather(local_values):
+            global_values |= rank_values
+
         if label_value is None:
             regions = getattr(self.mesh, "regions", None)
             if regions is not None and label_name in regions.__members__:
-                label_value = regions[label_name].value
+                label_value = int(regions[label_name].value)
+            elif len(global_values) == 1:
+                label_value = int(next(iter(global_values)))
             else:
-                values = dm.getLabelIdIS(label_name).getIndices()
-                if len(values) != 1:
-                    raise ValueError(
-                        f"label {label_name!r} carries values {list(values)}; "
-                        "say which with materials[name] = (label, value)"
-                    )
-                label_value = int(values[0])
+                raise ValueError(
+                    f"label {label_name!r} carries values "
+                    f"{sorted(global_values)}; say which with "
+                    f"materials[name] = ({label_name!r}, value)"
+                )
 
-        c_start, c_end = dm.getHeightStratum(0)
-        stratum = dm.getStratumIS(label_name, label_value)
-        cells = np.asarray(stratum.getIndices()) if stratum is not None else np.zeros(0, int)
-        cells = cells[(cells >= c_start) & (cells < c_end)] - c_start
+        label_value = int(label_value)
+        if label_value not in global_values:
+            raise ValueError(
+                f"label {label_name!r} has no stratum with value {label_value} "
+                f"anywhere on the mesh (live values: {sorted(global_values)}). "
+                "Asking PETSc for it would abort the run."
+            )
 
         selected = np.zeros((ncells, nq), dtype=bool)
+        if label_value not in local_values:
+            return selected.reshape(-1)      # live elsewhere, no cells here
+
+        stratum = label.getStratumIS(label_value)
+        try:
+            if stratum is None or stratum.getSize() == 0:
+                return selected.reshape(-1)
+            cells = np.asarray(stratum.getIndices())
+        finally:
+            if stratum is not None:
+                stratum.destroy()
+
+        c_start, c_end = dm.getHeightStratum(0)
+        cells = cells[(cells >= c_start) & (cells < c_end)] - c_start
         selected[cells] = True
         return selected.reshape(-1)
 

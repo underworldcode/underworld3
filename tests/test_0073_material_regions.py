@@ -174,3 +174,139 @@ def test_a_property_can_be_a_law_for_regions_too():
     exact = 0.5 + 10.0 * (np.exp(-0.5) - np.exp(-1.0))
     got = float(uw.maths.Integral(mesh, materials.shear_viscosity_0).evaluate())
     assert abs(got - exact) < 2e-3, got
+
+
+# ---------------------------------------------------------------------------
+# Adversarial review, 2026-09-10. Every test below reproduces a defect that
+# was confirmed against the previous revision.
+# ---------------------------------------------------------------------------
+
+
+def test_a_label_value_that_does_not_exist_is_refused_not_dereferenced():
+    """PETSc HARD-ABORTS on getStratumIS() for a value outside a label's live
+    set -- no exception, no traceback, every rank gone. The API's own error
+    message steered users straight into it ("say which with (label, value)"),
+    and on a UW3 box the only valid value is 99999, so every guess crashed."""
+    mesh = _box(cell_size=0.25)
+    materials = uw.MaterialRegions(mesh, name="Lv")
+    materials.add("a", shear_viscosity_0=1.0)
+    materials.add("b", shear_viscosity_0=2.0)
+    materials["b"] = ("Elements", 1)                 # not the live value
+
+    with pytest.raises(ValueError, match="no stratum with value"):
+        materials.build()
+
+    # the real value still selects the cells
+    good = uw.MaterialRegions(mesh, name="Lv2")
+    good.add("a", shear_viscosity_0=1.0)
+    good.add("b", shear_viscosity_0=2.0)
+    live = int(mesh.dm.getLabelIdIS("Elements").getIndices()[0])
+    good["b"] = ("Elements", live)
+    assert abs(float(uw.maths.Integral(mesh, good.shear_viscosity_0).evaluate())
+               - 2.0) < 1e-9
+
+
+def test_assigning_a_region_replaces_the_previous_one():
+    """``m["x"] = A`` then ``m["x"] = B`` used to leave the material at
+    A union B -- not what ``=`` means, and a trap for anyone correcting a
+    region in a notebook cell."""
+    mesh = _box(cell_size=0.2)
+    materials = uw.MaterialRegions(mesh, name="Rp2")
+    materials.add("bg", rho=1.0)
+    materials.add("x", rho=2.0)
+
+    materials["x"] = mesh.X[1] > 0.3
+    materials["x"] = mesh.X[1] > 0.6
+    got = float(uw.maths.Integral(mesh, materials.rho).evaluate())
+    assert abs(got - 1.4) < 0.05, f"{got} looks like the union (1.7)"
+
+
+def test_hasattr_does_not_raise_and_does_not_build():
+    """``blend`` raises KeyError for a partly-declared property, and
+    ``__getattr__`` used to let it out -- breaking hasattr() for every caller.
+    hasattr must also not trigger the (collective) level-set build."""
+    mesh = _box(cell_size=0.25)
+    materials = uw.MaterialRegions(mesh, name="Ha")
+    materials.add("a", rho=1.0)
+    materials.add("b", rho=2.0, sigma=3.0)           # only b declares sigma
+
+    assert hasattr(materials, "sigma") is False
+    assert hasattr(materials, "not_a_property") is False
+    assert materials._level_set_vars is None, "hasattr built the level sets"
+
+
+def test_two_distributions_cannot_share_a_name():
+    """They shared their level sets silently: the second one's variables were
+    skipped, it was handed the first one's, and painting it changed the FIRST
+    one's answers. The only diagnostic was a print to stdout."""
+    mesh = _box(cell_size=0.25)
+    first = uw.MaterialRegions(mesh, name="Same")
+    first.add("a", rho=1.0)
+    first.add("b", rho=2.0)
+    first["b"] = mesh.X[1] > 0.5
+    first.build()
+
+    second = uw.MaterialRegions(mesh, name="Same")
+    second.add("a", rho=1.0)
+    second.add("b", rho=2.0)
+    with pytest.raises(ValueError, match="already in use"):
+        second.build()
+
+
+def test_the_registry_is_frozen_once_a_distribution_is_built():
+    """A material's index IS which level set is its, so adding or deleting one
+    after allocation re-points the blend. ``registry.add`` bypassed the
+    distribution's own guard entirely, and the resulting IndexError was
+    swallowed into a warning while the solver kept a stale blend."""
+    mesh = _box(cell_size=0.25)
+    materials = uw.MaterialRegions(mesh, name="Fz")
+    materials.add("a", rho=1.0)
+    materials.add("b", rho=2.0)
+    materials["b"] = mesh.X[1] > 0.5
+    materials.build()
+
+    with pytest.raises(RuntimeError, match="already in use"):
+        materials.registry.add("late", rho=9.0)
+    with pytest.raises(RuntimeError, match="already in use"):
+        materials.registry.delete_material("a")
+
+
+def test_harmonic_mixing_will_not_divide_by_a_material_with_no_value():
+    """1 / sum(phi_i / v_i) with v_i == 0 folds to ComplexInfinity at
+    declaration time and the JIT then dies with a bare C-printer traceback
+    naming neither the material nor the property. An air layer with
+    density=0 is the obvious way in."""
+    mesh = _box(cell_size=0.25)
+    materials = uw.MaterialRegions(mesh, name="Hz")
+    materials.add("air", eta=0.0)
+    materials.add("rock", eta=1.0)
+    materials["rock"] = mesh.X[1] < 0.5
+    materials.mixing(eta="harmonic")
+
+    with pytest.raises(ValueError, match="divides by its value"):
+        materials.eta
+
+    # a mixing rule for a property nobody declares is a typo, not a no-op
+    with pytest.raises(KeyError, match="no material declares"):
+        materials.mixing(viscocity="harmonic")
+
+
+def test_a_quantity_means_the_same_whenever_it_was_declared():
+    """Units were non-dimensionalised at add() time, so the same declaration
+    gave different numbers depending on whether the model's reference
+    quantities had been set yet -- 28 orders of magnitude apart, no warning.
+    A registry is meant to be writable before the model exists."""
+    rocks = uw.MaterialRegistry()
+    rocks.add("early", shear_viscosity_0=uw.quantity(1.0e21, "Pa*s"))
+
+    model = uw.get_default_model()
+    model.set_reference_quantities(
+        length=uw.quantity(1.0e6, "m"),
+        viscosity=uw.quantity(1.0e21, "Pa*s"),
+        time=uw.quantity(1.0e15, "s"),
+    )
+    rocks.add("late", shear_viscosity_0=uw.quantity(1.0e21, "Pa*s"))
+
+    early = float(rocks["early"].resolved("shear_viscosity_0"))
+    late = float(rocks["late"].resolved("shear_viscosity_0"))
+    assert early == late, (early, late)

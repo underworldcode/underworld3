@@ -105,22 +105,59 @@ model script to use where it belongs. Properties can be changed and regions
 repainted afterwards: the blend is symbolic and the push repeats.
 
 A `MaterialSwarm` **is** a `Swarm`, so everything on the previous page still
-applies to it:
+applies to it. Declare any extra per-particle state **before** the materials
+are first read, though — the first read allocates the particles, and a swarm
+cannot gain variables once it holds them:
 
 ```python
-materials.population_control = dict(min_per_cell=8)
-materials.advection(v.sym, dt)
+materials = uw.swarm.MaterialSwarm(mesh, fill_param=3)
+materials.add("mantle", shear_viscosity_0=1.0)
+materials.add("slab",   shear_viscosity_0=1.0e3)
 
 strain = uw.swarm.SwarmVariable("eps", materials, 1,          # per-particle state
                                 proxy_location="integration_points",
                                 proxy_sampling="share")
+
+materials["slab"] = mesh.X[1] > 0.53      # reads nothing yet
+stokes.materials = materials              # this allocates
+
+materials.population_control = dict(min_per_cell=8)
+materials.advection(v.sym, dt)
+```
+
+```{warning}
+Allocating the level sets is **collective**: every rank must reach it
+together. It happens on the first *read* of any material property —
+`materials.density`, `materials["x"].mask`, `materials.index`, or
+`stokes.materials = ...` — so a read inside a rank-local branch
+(`if rank == 0: ...`) deadlocks. Call `materials.build()` at a point where
+every rank is together if the ordering is ever in doubt.
 ```
 
 Regions can be a symbolic condition on the mesh coordinates (and `&`, `|`, `~`
 combinations of them), a boolean array over the particles, or a callable of the
-coordinate array. Painting is ordered and cumulative — a later region
-overwrites an earlier one where they overlap. `materials.add(..., where=...)`
-is the same thing said in one line.
+coordinate array. `materials.add(..., where=...)` is the same thing said in one
+line.
+
+Assignment **replaces**: `materials["slab"] = A` followed by
+`materials["slab"] = B` leaves the material at B, and anything it held outside
+B reverts to the first material declared. Across *different* materials the
+later assignment wins where they overlap.
+
+A few things are refused rather than half-done, because each of them used to
+produce a plausible-looking wrong answer:
+
+| | |
+|---|---|
+| adding or deleting a material after the first read | the index of a material *is* which level set is its |
+| two distributions sharing an explicit `name` on one mesh | they would share level sets, silently |
+| `mixing(...)` naming a property no material declares | it would have no effect |
+| harmonic mixing of a property some material sets to zero | `1/Σ(φᵢ/vᵢ)` divides by it |
+| a mesh label value that does not exist | asking PETSc for it aborts the run |
+
+Dimensional values are non-dimensionalised when they are **read**, not when
+they are declared, so a registry written before the model's reference
+quantities are set means the same thing as one written after.
 
 ### What a material is, and where it is
 

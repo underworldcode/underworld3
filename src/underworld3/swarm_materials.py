@@ -167,6 +167,7 @@ class MaterialSwarm(MaterialDistribution, Swarm):
                 "a material property"
             )
 
+        _vars_before = len(self.mesh.vars)
         self._index_var = IndexSwarmVariable(
             self._distribution_name,
             self,
@@ -181,6 +182,10 @@ class MaterialSwarm(MaterialDistribution, Swarm):
         # local_size is -1, not 0, on a swarm that has never been populated.
         if self.local_size <= 0:
             Swarm.populate(self, fill_param=self._material_fill_param)
+
+        self._check_level_sets_are_new(
+            self.mesh, _vars_before, len(self._registry))
+        self._registry._built.append(self)
 
         pending, self._material_pending = self._material_pending, []
         for definition, region in pending:
@@ -209,9 +214,15 @@ class MaterialSwarm(MaterialDistribution, Swarm):
             self._paint(definition, region)
 
     def _paint(self, definition, region):
+        """Give ``definition`` exactly ``region``, and nothing else — see
+        ``MaterialRegions._paint``; assignment replaces rather than unions."""
         selected = self._region_mask(region)
+        labels = np.asarray(self._index_var.data).reshape(-1)
+        released = (labels == definition.index) & ~selected
         with uw.synchronised_array_update():
             self._index_var.data[selected, 0] = definition.index
+            if released.any():
+                self._index_var.data[released, 0] = 0
 
     def _region_mask(self, region):
         """A boolean array over the particles."""
