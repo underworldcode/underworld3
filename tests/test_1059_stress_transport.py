@@ -271,3 +271,55 @@ def test_the_two_stress_histories_agree_when_the_stress_moves_and_evolves():
     # each other: the gap between them is discretisation, not a defect
     refined, _ = _sheared_varying_modulus("eulerian", 2, steps=20, dt=0.05)
     assert abs(refined - grid) / grid < 5.0e-3, (refined, grid)
+
+
+def test_navier_stokes_carries_a_viscoelastic_stress_either_way():
+    """With inertia the momentum solve takes several passes over a step, so the
+    stress history must advance once per step, not once per pass. Both flavours
+    must give the same answer; the shear box with inertia has no closed form
+    (the velocity is far from steady simple shear at this effective viscosity),
+    so they are judged against each other."""
+    def run(transport):
+        mesh = uw.meshing.StructuredQuadBox(
+            elementRes=(16, 8), minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5))
+        v = uw.discretisation.MeshVariable(f"Un_{transport[0]}", mesh, mesh.dim, degree=2)
+        p = uw.discretisation.MeshVariable(f"Pn_{transport[0]}", mesh, 1, degree=1)
+        ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=2)
+        ns.stress_transport = transport
+        ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+            ns.Unknowns, order=2)
+        ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        ns.constitutive_model.Parameters.shear_modulus = 1.0
+        ns.constitutive_model.Parameters.dt_elastic = 0.1
+        ns.add_dirichlet_bc((0.5, 0.0), "Top")
+        ns.add_dirichlet_bc((-0.5, 0.0), "Bottom")
+        ns.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+        ns.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+        ns.bodyforce = sympy.Matrix([[0.0, 0.0]])
+        for _ in range(10):
+            ns.solve(timestep=0.1)
+        return type(ns.DFDt).__name__, float(np.asarray(uw.function.evaluate(
+            ns.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
+
+    traced_kind, traced = run("semi_lagrangian")
+    grid_kind, grid = run("eulerian")
+    assert traced_kind == "SemiLagrangian" and grid_kind == "EulerianSUPG"
+    assert traced > 0.1 and abs(grid - traced) / traced < 1.0e-3, (grid, traced)
+
+
+def test_a_viscoelastic_navier_stokes_step_refuses_the_theta_rule():
+    """At order 1 the theta rule weights the viscous flux at the stored velocity
+    levels, which rebuilds them blind to elasticity."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    v = uw.discretisation.MeshVariable("Uo", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Po", mesh, 1, degree=1)
+    ns = uw.systems.NavierStokes(mesh, v, p, rho=1.0, order=1)
+    ns.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        ns.Unknowns, order=1)
+    ns.constitutive_model.Parameters.shear_modulus = 1.0
+    ns.constitutive_model.Parameters.dt_elastic = 0.1
+    ns.bodyforce = sympy.Matrix([[0.0, 0.0]])
+    for boundary in ("Top", "Bottom", "Left", "Right"):
+        ns.add_dirichlet_bc((0.0, 0.0), boundary)
+    with pytest.raises(ValueError, match="needs order=2"):
+        ns.solve(timestep=0.1)

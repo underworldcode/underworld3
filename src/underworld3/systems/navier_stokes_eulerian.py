@@ -171,9 +171,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
     ):
         if DFDt is not None:
             raise ValueError(
-                "AdvDiffusion-style Navier-Stokes carries no stress history: "
-                "the viscous stress at earlier levels is rebuilt from the stored "
-                "velocity. Do not pass DFDt."
+                "Do not pass DFDt: a stress history is created by assigning a "
+                "constitutive model that asks for one (a viscoelastic model), and "
+                "`stress_transport` chooses the flavour that carries it."
             )
         if restore_points_func is not None:
             warnings.warn(
@@ -521,6 +521,17 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # directly here (they mark the solver set up first, #683).
         self._build(verbose)
 
+        carries_stress = self.Unknowns.DFDt is not None
+        if carries_stress:
+            if self.order != 2:
+                raise ValueError(
+                    "a viscoelastic stress history needs order=2 on this solver: at "
+                    "order 1 the theta rule weights the viscous flux at the stored "
+                    "velocity levels, which rebuilds them blind to elasticity. BDF2 "
+                    "puts every spatial term at the new level.")
+            # Once per step, around the passes -- not once per pass.
+            self._stress_history_pre_solve(dt, verbose=verbose, evalf=False)
+
         self._prime_history()
         u_n = np.array(self.u.array[...])
         if self._advection_mode == "extrapolated":
@@ -542,6 +553,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
                 self, zero_init_guess if k == 0 else False,
                 _force_setup=_force_setup if k == 0 else False,
                 verbose=verbose, picard=0, divergence_retries=divergence_retries,
+                _skip_stress_history=True,
             )
             # The reductions run on every pass, outside any branch: a rank must
             # never skip a collective its peers take (tests/test_0052).
@@ -559,6 +571,9 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             (np.asarray(self.u.array[...]) - u_n).reshape(-1, self.mesh.dim), axis=1)
         local = float(change.max()) if change.size else 0.0
         self._last_change_rate = comm.allreduce(local, op=MPI.MAX) / dt
+
+        if carries_stress:
+            self._stress_history_post_solve(dt, verbose=verbose, evalf=False)
 
         # Shift the extrapolation level, then the history.
         self._u_prev.array[...] = self.DuDt.psi_star[0].array[...]

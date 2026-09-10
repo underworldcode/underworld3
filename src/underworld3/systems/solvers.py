@@ -1537,6 +1537,77 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 "constitutive model that asks for one.")
         self._stress_transport = value
 
+    def _stress_history_pre_solve(self, timestep, verbose=False, evalf=False,
+                                  _force_setup=False):
+        """Prepare the viscoelastic step: carry the stress history to where the
+        momentum solve will read it, and refresh the model's coefficients.
+
+        Separated from :meth:`solve` so that a solver which takes several passes
+        over the momentum equation (the Navier-Stokes one, with its Picard
+        corrections) advances the stress history once per step rather than once
+        per pass.
+        """
+        if timestep is None:
+            raise ValueError(
+                "timestep is required for viscoelastic solve. "
+                "Call stokes.solve(timestep=dt)"
+            )
+
+        # dt_elastic must always equal the solve timestep. The constitutive
+        # model's VE formulas (eta_eff, stress history terms) all reference
+        # Parameters.dt_elastic. If it differs from the actual timestep,
+        # the stress computation is inconsistent with the time integration.
+        self.constitutive_model.Parameters.dt_elastic = timestep
+
+        if _force_setup:
+            self._needs_function_rewire = True
+
+        # Re-setup when effective_order changes (DDt history ramp-up)
+        _current_eff_order = self.constitutive_model.effective_order
+        if _current_eff_order != self._prev_effective_order:
+            self._needs_function_rewire = True
+            self.constitutive_model._solver_is_setup = False
+        self._prev_effective_order = _current_eff_order
+
+        if not self.constitutive_model._solver_is_setup:
+            self._needs_function_rewire = True
+            self.DFDt.psi_fn = self.constitutive_model.flux.T
+
+        if not self.is_setup:
+            self._setup_pointwise_functions(verbose)
+            self._setup_discretisation(verbose)
+            self._setup_solver(verbose)
+            self._check_velocity_preconditioner()
+
+        if uw.mpi.rank == 0 and verbose:
+            print("Stokes solver - carry the stress history", flush=True)
+
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
+                                   store_result=False)
+        # Uniform pre-solve coefficient hook: VEP delegates to
+        # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
+        # α, φ on the DDt via _update_exp_coefficients(). No isinstance
+        # checks at the solver layer.
+        self.constitutive_model._update_history_coefficients()
+
+    def _stress_history_post_solve(self, timestep, verbose=False, evalf=False):
+        """Commit the stress the solve produced and shift the history levels."""
+        # The history manager projects the new stress into level 0 and
+        # shifts the levels: the same step whichever flavour it is.
+        self.DFDt.commit_flux_to_history(
+            self.constitutive_model.flux, verbose=verbose)
+
+        self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+
+        # Uniform post-solve hook for any extra integrator-state storage.
+        # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
+        # forcing_star with current ε̇^{n+1} so the next step's history
+        # term has access to ε̇ⁿ.
+        self.constitutive_model._update_history_post_solve()
+
+        self.is_setup = True
+        self.constitutive_model._solver_is_setup = True
+
     def _create_stress_history_ddt(self, order=2):
         """Create DFDt for stress history tracking (VE/VEP models).
 
@@ -1612,6 +1683,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         order=None,
         picard: int = 0,
         divergence_retries: int = 0,
+        _skip_stress_history: bool = False,
         homotopy: bool = False,
         homotopy_options: dict = None,
     ):
@@ -1705,7 +1777,9 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         # bet is confirmed after setup, on either path.
         self._apply_automatic_penalty()
 
-        has_stress_history = self.Unknowns.DFDt is not None
+        # A solver that takes several passes over the momentum equation drives
+        # the stress history itself, once per step, and asks to be left alone.
+        has_stress_history = self.Unknowns.DFDt is not None and not _skip_stress_history
 
         if has_stress_history:
             if timestep is None:
@@ -1714,46 +1788,11 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                     "Call stokes.solve(timestep=dt)"
                 )
 
-            # dt_elastic must always equal the solve timestep. The constitutive
-            # model's VE formulas (eta_eff, stress history terms) all reference
-            # Parameters.dt_elastic. If it differs from the actual timestep,
-            # the stress computation is inconsistent with the time integration.
-            self.constitutive_model.Parameters.dt_elastic = timestep
+            self._stress_history_pre_solve(
+                timestep, verbose=verbose, evalf=evalf, _force_setup=_force_setup)
 
             if order is None or order > self._order:
                 order = self._order
-
-            if _force_setup:
-                self._needs_function_rewire = True
-
-            # Re-setup when effective_order changes (DDt history ramp-up)
-            _current_eff_order = self.constitutive_model.effective_order
-            if _current_eff_order != self._prev_effective_order:
-                self._needs_function_rewire = True
-                self.constitutive_model._solver_is_setup = False
-            self._prev_effective_order = _current_eff_order
-
-            if not self.constitutive_model._solver_is_setup:
-                self._needs_function_rewire = True
-                self.DFDt.psi_fn = self.constitutive_model.flux.T
-
-            if not self.is_setup:
-                self._setup_pointwise_functions(verbose)
-                self._setup_discretisation(verbose)
-                self._setup_solver(verbose)
-                self._check_velocity_preconditioner()
-
-            # 1. ADVECT stress history along characteristics
-            if uw.mpi.rank == 0 and verbose:
-                print(f"Stokes solver - advect stress history", flush=True)
-
-            self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=evalf,
-                                       store_result=False)
-            # Uniform pre-solve coefficient hook: VEP delegates to
-            # _update_bdf_coefficients(); MaxwellExponentialFlowModel updates
-            # α, φ on the DDt via _update_exp_coefficients(). No isinstance
-            # checks at the solver layer.
-            self.constitutive_model._update_history_coefficients()
 
             # 2. SOLVE
             if uw.mpi.rank == 0 and verbose:
@@ -1772,21 +1811,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             if uw.mpi.rank == 0 and verbose:
                 print(f"Stokes solver - store stress and shift history", flush=True)
 
-            # The history manager projects the new stress into level 0 and
-            # shifts the levels: the same step whichever flavour it is.
-            self.DFDt.commit_flux_to_history(
-                self.constitutive_model.flux, verbose=verbose)
-
-            self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
-
-            # Uniform post-solve hook for any extra integrator-state storage.
-            # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
-            # forcing_star with current ε̇^{n+1} so the next step's history
-            # term has access to ε̇ⁿ.
-            self.constitutive_model._update_history_post_solve()
-
-            self.is_setup = True
-            self.constitutive_model._solver_is_setup = True
+            self._stress_history_post_solve(timestep, verbose=verbose, evalf=evalf)
 
         else:
             # Plain Stokes — no stress history
