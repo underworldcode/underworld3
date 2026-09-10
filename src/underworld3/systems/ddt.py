@@ -2079,6 +2079,13 @@ def _matrix_of(V):
     return V
 
 
+# TODO(BUG): a non-symmetric psi_fn under vtype=SYM_TENSOR is silently
+# reduced here, and this class keeps the LOWER entry where
+# IntegrationPointSemiLagrangian keeps the UPPER one. Measured 2026-09-10 on
+# [[1+x, 2+y], [100.0, 3+x*y]]: nodal psi_star -> [[1.45, 100.0], [100.0, 3.21]],
+# integration-point -> [[1.46, 2.47], [2.47, 3.21]]. Neither averages and
+# neither warns. The integration-point path now warns; this one should too,
+# and the two should agree on which triangle wins.
 class SemiLagrangian(_DDtBase):
     r"""
     Semi-Lagrangian history manager.
@@ -4244,7 +4251,7 @@ def _storage_components(vtype, shape):
     2x2 symbolic form and three stored columns. The order is the one the
     variable's own ``.sym`` reconstructs from — diagonal first, then the
     off-diagonals in row-major upper-triangular order — and
-    ``test_0068_integration_point_slcn_tensor.py`` asserts that round trip, so
+    ``test_0066_integration_point_slcn.py`` asserts that round trip, so
     a change of convention fails there rather than silently transposing a
     stress.
 
@@ -4344,14 +4351,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             self._psi_meshVar = None
             self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
 
-        expected = _psi_shape_for(vtype, mesh.cdim)
-        if expected is not None and tuple(self._psi_fn.shape) != expected:
-            raise ValueError(
-                f"IntegrationPointSemiLagrangian: psi_fn has shape "
-                f"{tuple(self._psi_fn.shape)} but vtype={vtype} on a cdim="
-                f"{mesh.cdim} mesh needs {expected}. Pass the vtype that "
-                "matches the field, or reshape psi_fn."
-            )
+        self._check_psi_shape(self._psi_fn)
 
         self._init_history_tracking(order)
         self._check_rule_oversampling(degree)
@@ -4484,8 +4484,70 @@ class IntegrationPointSemiLagrangian(_DDtBase):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        # Re-checked on every assignment, not only at construction: a solver
+        # reassigns this on each setup (``DFDt.psi_fn = flux.T``), so the
+        # constructor's guard would be bypassed on the one path that is
+        # actually driven. A wrong shape here silently truncates -- the
+        # component writer reads psi_fn[i, j] for the slots it already has.
+        new_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        self._check_psi_shape(new_fn)
         self._psi_meshVar = None
-        self._psi_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        self._psi_fn = new_fn
+
+    def _check_psi_shape(self, psi_fn):
+        """Refuse a psi_fn whose shape does not match this history's vtype."""
+        expected = _psi_shape_for(self.vtype, self.mesh.cdim)
+        if expected is not None and tuple(psi_fn.shape) != expected:
+            raise ValueError(
+                f"IntegrationPointSemiLagrangian: psi_fn has shape "
+                f"{tuple(psi_fn.shape)} but vtype={self.vtype} on a cdim="
+                f"{self.mesh.cdim} mesh needs {expected}. Pass the vtype that "
+                "matches the field, or reshape psi_fn."
+            )
+        # SYM_TENSOR and TENSOR have the SAME symbolic shape and different
+        # storage widths (3 and 4 in 2-D), so shape alone cannot tell them
+        # apart. When psi_fn is a variable, it knows its own width; without
+        # this a full tensor handed to a symmetric history passes the check
+        # above and dies later in the component writer with a bare broadcast
+        # error that names neither vtype.
+        supplied_var = getattr(self, "_psi_meshVar", None)
+        wanted = len(_storage_components(self.vtype, tuple(psi_fn.shape)))
+        if supplied_var is not None and expected is not None:
+            if int(supplied_var.num_components) != wanted:
+                raise ValueError(
+                    f"IntegrationPointSemiLagrangian: psi_fn stores "
+                    f"{supplied_var.num_components} components but vtype="
+                    f"{self.vtype} stores {wanted}. A full tensor and a "
+                    "symmetric tensor share a shape; pass the vtype the field "
+                    "was built with."
+                )
+        components = getattr(self, "num_components", None)
+        if components is not None and expected is not None and wanted != components:
+            raise ValueError(
+                f"IntegrationPointSemiLagrangian: psi_fn needs {wanted} stored "
+                f"components but this history has {components}; vtype="
+                f"{self.vtype} is probably not the vtype of the field."
+            )
+
+        # A symmetric history stores the upper triangle, so an asymmetric
+        # psi_fn loses its lower entries without trace. Say so rather than
+        # quietly transporting half the field the user wrote.
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            dropped = [
+                (i, j) for i in range(psi_fn.shape[0])
+                for j in range(i + 1, psi_fn.shape[1])
+                if psi_fn[i, j] != psi_fn[j, i]
+            ]
+            if dropped:
+                import warnings
+
+                warnings.warn(
+                    f"IntegrationPointSemiLagrangian: psi_fn is not symmetric at "
+                    f"{dropped} but vtype=SYM_TENSOR stores only the upper "
+                    "triangle, so the lower entries are discarded (not averaged). "
+                    "Symmetrise psi_fn explicitly, or use VarType.TENSOR.",
+                    stacklevel=3,
+                )
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display

@@ -94,7 +94,12 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
   $PYTEST tests/test_00[0-4]*py || status=1
   $PYTEST tests/test_0050*py || status=1
-  $PYTEST tests/test_005[1-9]*py tests/test_006[0-1]*py || status=1
+  # test_006[2-9] and test_0070 matched NO batch glob and so never ran in
+  # CI: the whole integration-point suite (0064-0067), swarm repopulation,
+  # mid-time velocity and the VE stress history. They are not covered by the
+  # disabled test_06*py line below either - that one is 0600-0699. Verified
+  # passing (83 tests) before wiring in.
+  $PYTEST tests/test_005[1-9]*py tests/test_006*py tests/test_0070*py || status=1
   $PYTEST tests/test_01*py || status=1
   $PYTEST tests/test_02*py || status=1
 

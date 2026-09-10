@@ -90,7 +90,7 @@ Vector and tensor variables are supported: one dof per **independent**
 component per point, so a symmetric tensor in 2-D is `2x2` symbolically and
 three columns in storage. The column order is the diagonal first, then the
 off-diagonals in row-major upper-triangular order — `(0,0), (1,1), (0,1)` in
-2-D — and `tests/test_0068_integration_point_slcn_tensor.py` pins it against
+2-D — and `tests/test_0066_integration_point_slcn.py` pins it against
 what the variable's own `.sym` reconstructs.
 
 ## Implementation
@@ -193,7 +193,16 @@ For the same history carried on **particles** rather than at the rule, use
 viscoelastic stress history (see below). The choice between them is where the
 state lives, not what shape it can take.
 
-Tests: `tests/test_0068_integration_point_slcn_tensor.py`.
+A symmetric history stores the **upper** triangle, so an asymmetric `psi_fn`
+loses its lower entries — the manager warns rather than transporting half the
+field silently. Note the nodal `SemiLagrangian` keeps the *other* triangle in
+the same situation and does not warn; that divergence is marked with a
+`TODO(BUG)` on that class.
+
+`psi_fn` is re-checked on every assignment, not only at construction, because
+a solver reassigns it (`DFDt.psi_fn = flux.T`) on each setup.
+
+Tests: `tests/test_0066_integration_point_slcn.py`.
 
 ### The mid-point velocity is taken at the mid time
 
