@@ -23,34 +23,35 @@
 ## Description
 
 Two viscosity layers, 1 and 1000, carried by particles and driven from the
-top. The model names its materials and says where they are; it never
-writes a level set, a mask, or a blend.
+top. The model names its materials and says where they are; it never writes
+a level set, a mask, or a blend.
 
 With the interface on mesh edges the exact velocity is piecewise linear and
 lies in the P2 velocity space, so the only error in the solve is how the
-material is represented. Read at the integration points (the default),
-where each point takes the material of its nearest particle, the problem
-solves to 2e-7. Run with `PROXY=nodes` to see the nodal level set smear the
-interface across a cell and leave an L2 velocity error of 8e-2.
+material is represented. Read at the integration points (the default), where
+each point takes the material of its nearest particle, the problem solves to
+2e-7. Run with `-uw_proxy_location nodes` to watch the nodal level set smear
+the interface across a cell and leave an L2 error of 8e-2.
 """
 
 # %%
-import os
-
 import numpy as np
 import sympy
 
 import underworld3 as uw
 
-PROXY = os.environ.get("PROXY", "integration_points")
-SAMPLING = os.environ.get("SAMPLING", "nearest")
-CELL = float(os.environ.get("CELL", "0.1"))
-ETA_TOP = float(os.environ.get("ETA_TOP", "1000"))
-H = float(os.environ.get("H", "0.5"))
-FILL = int(os.environ.get("FILL", "3"))
-OUT = os.environ.get("OUT", "runs")
+params = uw.Params(
+    uw_proxy_location="integration_points",   # or "nodes", or "cells"
+    uw_proxy_sampling="nearest",              # or "share"
+    uw_cell_size=0.1,
+    uw_eta_top=1000.0,
+    uw_interface=0.5,
+    uw_fill_param=3,
+)
 
-mesh = uw.meshing.UnstructuredSimplexBox(cellSize=CELL, qdegree=2, regular=True)
+mesh = uw.meshing.UnstructuredSimplexBox(
+    cellSize=params.uw_cell_size, qdegree=2, regular=True
+)
 v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
 
@@ -59,21 +60,27 @@ p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1)
 ## The materials
 
 `MaterialSwarm` is a `Swarm` that carries materials. Declare them with the
-property names the constitutive model knows, then paint the regions: a
+property names the constitutive model knows, then say where each one is: a
 symbolic condition on the mesh coordinates, a boolean array over the
-particles, or a callable. The swarm is populated the first time anything
-reads it, so every `add` can come first.
+particles, or a callable. Every `add` must come before the first read, which
+is what allocates the particles and the level sets.
 """
 
 # %%
 materials = uw.swarm.MaterialSwarm(
-    mesh, fill_param=FILL, proxy_location=PROXY,
-    proxy_sampling=SAMPLING if PROXY == "integration_points" else None,
+    mesh,
+    fill_param=params.uw_fill_param,
+    proxy_location=params.uw_proxy_location,
+    proxy_sampling=(
+        params.uw_proxy_sampling
+        if params.uw_proxy_location == "integration_points"
+        else None
+    ),
 )
 materials.add("lower", shear_viscosity_0=1.0, density=3300)
-materials.add("upper", shear_viscosity_0=ETA_TOP, density=3400)
+materials.add("upper", shear_viscosity_0=params.uw_eta_top, density=3400)
 
-materials["upper"] = mesh.X[1] > H
+materials["upper"] = mesh.X[1] > params.uw_interface
 
 # %% [markdown]
 """
@@ -100,30 +107,43 @@ stokes.solve()
 # %% [markdown]
 """
 ## Against the exact layered Couette profile
+
+The error is a global integral rather than a nodal norm, so the number is the
+same however the mesh is partitioned.
 """
 
 # %%
-A = 1.0 / (H + (1.0 - H) / ETA_TOP)
-Xv = np.asarray(v.coords)
-vx_exact = np.where(Xv[:, 1] < H, A * Xv[:, 1],
-                    A * H + A / ETA_TOP * (Xv[:, 1] - H))
-err = np.abs(np.asarray(v.data[:, 0]) - vx_exact)
+h, eta_top = params.uw_interface, params.uw_eta_top
+gradient = 1.0 / (h + (1.0 - h) / eta_top)
+y = mesh.X[1]
+exact = sympy.Piecewise(
+    (gradient * y, y < h),
+    (gradient * h + gradient / eta_top * (y - h), True),
+)
 
-viscosity = materials.shear_viscosity_0
-assembled = float(uw.maths.Integral(mesh, viscosity).evaluate())
-exact_int = 1.0 * H + ETA_TOP * (1.0 - H)
+error = uw.maths.Integral(mesh, (v.sym[0] - exact) ** 2).evaluate() ** 0.5
+viscosity = uw.maths.Integral(mesh, materials.shear_viscosity_0).evaluate()
+exact_viscosity = 1.0 * h + eta_top * (1.0 - h)
 
-# the material as the weak form sees it, across the interface
-ys = np.linspace(max(0.0, H - 0.25), min(1.0, H + 0.25), 201)
-line = np.c_[np.full_like(ys, 0.5), ys]
+uw.pprint(
+    f"proxy_location={params.uw_proxy_location} "
+    f"sampling={params.uw_proxy_sampling} fill={params.uw_fill_param}: "
+    f"assembled int(eta) {viscosity:.4f} (exact {exact_viscosity:.4f}) | "
+    f"velocity L2 {error:.3e}"
+)
+
+# %% [markdown]
+"""
+## What the weak form sees
+
+The upper-material mask along a line crossing the interface. At the
+integration points it is a step in the right place; the nodal level set ramps
+across a whole cell.
+"""
+
+# %%
+line = np.column_stack(
+    [np.full(201, 0.5), np.linspace(max(0.0, h - 0.25), min(1.0, h + 0.25), 201)]
+)
 upper = np.asarray(uw.function.evaluate(materials["upper"].mask, line)).reshape(-1)
-
-os.makedirs(OUT, exist_ok=True)
-np.savez(f"{OUT}/matindex_{PROXY}.npz", ys=ys, upper=upper, vy=Xv[:, 1],
-         vx=np.asarray(v.data[:, 0]), vx_exact=vx_exact,
-         l2=np.sqrt(np.mean(err ** 2)), linf=err.max(), assembled=assembled)
-
-print(f"RESULT proxy={PROXY} sampling={SAMPLING} fill={FILL}: "
-      f"assembled int(eta) {assembled:.4f} (exact {exact_int:.4f}) | "
-      f"vx L2 {np.sqrt(np.mean(err**2)):.3e} Linf {err.max():.3e} | "
-      f"mask range {upper.min():+.4f}..{upper.max():+.4f}", flush=True)
+uw.pprint(f"mask along the line: {upper.min():+.4f} .. {upper.max():+.4f}")

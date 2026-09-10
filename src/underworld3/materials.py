@@ -683,12 +683,12 @@ class MaterialDistribution:
 
     def _push_to(self, solver):
         """Set every property the solver's constitutive model recognises."""
-        model = getattr(solver, "_constitutive_model", None)
-        if model is None:
-            return                       # pushed again when the model is set
+        constitutive_model = getattr(solver, "_constitutive_model", None)
+        if constitutive_model is None:
+            return                # pushed again when the constitutive model is set
         if len(self._registry) == 0:
             return
-        parameters = model.Parameters
+        parameters = constitutive_model.Parameters
         recognised = set(type(parameters)._list_valid_parameters(type(parameters)))
         for name in sorted(self._registry.declared_properties() & recognised):
             setattr(parameters, name, self.blend(name))
@@ -696,10 +696,10 @@ class MaterialDistribution:
     def _recognised(self):
         names = set()
         for solver in self._solvers:
-            model = getattr(solver, "_constitutive_model", None)
-            if model is None:
+            constitutive_model = getattr(solver, "_constitutive_model", None)
+            if constitutive_model is None:
                 continue
-            parameters = model.Parameters
+            parameters = constitutive_model.Parameters
             names |= set(
                 type(parameters)._list_valid_parameters(type(parameters))
             )
@@ -836,9 +836,9 @@ class MaterialRegions(MaterialDistribution):
             self.mesh, _vars_before, len(self._registry))
         self._registry._built.append(self)
         # material 0 owns everything not claimed by anyone else
-        self._level_set_vars[0].data[...] = 1.0
+        self._level_set_vars[0].array[...] = 1.0
         for i in range(1, len(self._level_set_vars)):
-            self._level_set_vars[i].data[...] = 0.0
+            self._level_set_vars[i].array[...] = 0.0
 
         pending, self._pending = self._pending, []
         for definition, region in pending:
@@ -880,14 +880,14 @@ class MaterialRegions(MaterialDistribution):
         notebook cell expects.
         """
         selected = self._region_mask(region)
-        held = np.asarray(self._level_set_vars[definition.index].data).reshape(-1) > 0.5
+        held = np.asarray(self._level_set_vars[definition.index].array).reshape(-1) > 0.5
         released = held & ~selected
         for i, var in enumerate(self._level_set_vars):
-            values = np.asarray(var.data).reshape(-1).copy()
+            values = np.asarray(var.array).reshape(-1).copy()
             values[selected] = 1.0 if i == definition.index else 0.0
             if released.any():                      # back to the default material
                 values[released] = 1.0 if i == 0 else 0.0
-            var.data[:, 0] = values
+            var.array[:, 0, 0] = values
 
     def _integration_points(self):
         self._ensure_built()

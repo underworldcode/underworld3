@@ -14,94 +14,128 @@
 
 # %% [markdown]
 """
-# Swarm population control in an extending box
+# Population control in an extending box
 
-**PHYSICS:** utilities
+**PHYSICS:** fluid_mechanics
 **DIFFICULTY:** intermediate
 **PURPOSE:** demonstration
 
 ## Description
 
-Pure-shear extension `v = (x, -y)` on a fixed mesh: the side walls are
-outflow and the top and bottom are inflow. Nothing enters through an
-inflow boundary unless we put it there, so the cells along the top and
-bottom starve and the marker layer they carry breaks up.
+Pure-shear extension $\\mathbf{v} = (x, -y)$ on a fixed mesh. The side walls
+are outflow and the top and bottom are inflow, and nothing arrives through an
+inflow boundary unless you put it there — so the cells along the top and
+bottom starve.
 
-Setting `swarm.population_control` refills the starved cells at the end
-of every `advection()`. Run it with `POPCTL=0` and `POPCTL=1` and
-compare: without control the box drains to 13% of its particles and
-most cells are empty; with control no cell is ever empty.
+What that costs depends on how the material is read. This example measures it
+on the area of a marker layer, a global integral of the layer's own material
+mask, so the number is the same however the mesh is partitioned.
 
-The velocity is prescribed, so what this measures is the swarm
-machinery alone, with no solve in the way.
+Incompressible pure shear thins the layer by $e^{-t}$, so after $t = 2$ the
+area should be $e^{-2} = 13.5\\%$ of where it started. Anything else is the
+material representation failing, not physics.
+
+Run with `-uw_population_control 0` to switch the refilling off, and with
+`-uw_proxy_location integration_points` to see how much the choice of
+mapping matters.
 """
 
 # %%
-import os
+import math
 
-import numpy as np
 import sympy
 
 import underworld3 as uw
 
-POPCTL = os.environ.get("POPCTL", "1") == "1"
-CELL = float(os.environ.get("CELL", "0.08"))
-STEPS = int(os.environ.get("STEPS", "40"))
-DT = float(os.environ.get("DT", "0.05"))
-FILL = int(os.environ.get("FILL", "3"))
-OUT = os.environ.get("OUT", "runs")
+params = uw.Params(
+    uw_population_control=1,
+    uw_proxy_location="cells",       # or "integration_points"
+    uw_cell_size=0.08,
+    uw_steps=40,
+    uw_dt=0.05,
+    uw_fill_param=3,
+    uw_min_per_cell=6,
+)
 
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5), cellSize=CELL, qdegree=2
+    minCoords=(-1.0, -0.5), maxCoords=(1.0, 0.5),
+    cellSize=params.uw_cell_size, qdegree=2,
 )
 x, y = mesh.X
-V = sympy.Matrix([[x, -y]])                      # incompressible pure shear
-mesh.return_coords_to_bounds = None              # a true outflow: particles leave
+velocity = sympy.Matrix([[x, -y]])          # incompressible pure shear
 
-swarm = uw.swarm.Swarm(mesh)
-M = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_degree=1,
-                                proxy_location="integration_points")
-swarm.populate(fill_param=FILL)
-X0 = np.asarray(swarm._particle_coordinates.data)
-with uw.synchronised_array_update():
-    M.data[:, 0] = (np.abs(X0[:, 1]) < 0.2).astype(int)   # a central layer
+# A true outflow: particles that leave the box are deleted rather than
+# clamped onto the wall.
+mesh.return_coords_to_bounds = None
 
-if POPCTL:
-    # Refill starved cells. A new particle takes the material of its nearest
-    # neighbour: repopulate() does that for any INTEGER variable without being
-    # asked, because the average of two material labels is not a label.
-    swarm.population_control = dict(min_per_cell=6)
+# %% [markdown]
+"""
+## A marker layer on a material swarm
 
-c0, c1 = mesh.dm.getHeightStratum(0)
-ncells = c1 - c0
+`proxy_location="cells"` fits a polynomial to the particles **of each cell**,
+so a cell that runs out of particles has nothing to fit. That is the mapping
+population control exists for.
+"""
 
+# %%
+materials = uw.swarm.MaterialSwarm(
+    mesh, fill_param=params.uw_fill_param,
+    proxy_location=params.uw_proxy_location,
+)
+materials.add("matrix", density=1.0)
+materials.add("layer", density=1.0)
+materials["layer"] = sympy.Abs(y) < 0.2
 
-def census():
-    P = np.asarray(swarm._particle_coordinates.data)
-    cells = np.asarray(mesh._robust_owning_cells(P))
-    return np.bincount(cells[cells >= 0], minlength=ncells)
+if params.uw_population_control:
+    # Refill starved cells at the end of every advection. A new particle takes
+    # the material of its nearest neighbour: repopulate() does that for any
+    # INTEGER variable without being asked, because the average of two
+    # material labels is not a label.
+    materials.population_control = dict(min_per_cell=params.uw_min_per_cell)
 
+layer_area = uw.maths.Integral(mesh, materials["layer"].mask)
 
-hist = []
-frames = {}
-for step in range(STEPS + 1):
-    n = census()
-    hist.append((step * DT, swarm.local_size, int((n == 0).sum()), int((n < 6).sum()), int(n.min())))
-    if step in (0, STEPS // 2, STEPS):
-        P = np.asarray(swarm._particle_coordinates.data)
-        frames[step] = dict(P=P.copy(), M=np.asarray(M.data[:, 0]).copy(), n=n.copy())
-    if step < STEPS:
-        swarm.advection(V, DT, order=2)
+# %% [markdown]
+"""
+## Extend the box
+"""
 
-os.makedirs(OUT, exist_ok=True)
-tag = "popctl" if POPCTL else "nopopctl"
-np.savez(f"{OUT}/repop_{tag}.npz", hist=np.array(hist),
-         **{f"P{k}": v["P"] for k, v in frames.items()},
-         **{f"M{k}": v["M"] for k, v in frames.items()},
-         **{f"n{k}": v["n"] for k, v in frames.items()},
-         steps=np.array(sorted(frames)), cell=CELL, dt=DT)
+# %%
+initial_area = layer_area.evaluate()
 
-h = np.array(hist)
-print(f"RESULT {tag}: cells {ncells}, start {int(h[0,1])} particles "
-      f"-> end {int(h[-1,1])} | empty cells {int(h[0,2])} -> {int(h[-1,2])} | "
-      f"cells below 6 {int(h[0,3])} -> {int(h[-1,3])} | min per cell {int(h[-1,4])}", flush=True)
+for _ in range(params.uw_steps):
+    materials.advection(velocity, params.uw_dt, order=2)
+
+elapsed = params.uw_steps * params.uw_dt
+final_area = layer_area.evaluate()
+expected = initial_area * math.exp(-elapsed)
+
+uw.pprint(
+    f"proxy_location={params.uw_proxy_location} "
+    f"population_control={bool(params.uw_population_control)}: "
+    f"layer area {initial_area:.4f} -> {final_area:.4f} at t={elapsed:g} "
+    f"(exact thinning gives {expected:.4f}, "
+    f"so this is {final_area / expected:.2f}x the right answer)"
+)
+
+# %% [markdown]
+"""
+## What the numbers say
+
+Measured on this rig, `cellSize=0.08`, 40 steps:
+
+| `proxy_location` | population control | layer area | vs exact |
+|---|---|---|---|
+| `"cells"` | on | 0.1125 | 1.03x |
+| `"cells"` | off | 0.5505 | **5.03x** |
+| `"integration_points"` | on | 0.1169 | 1.06x |
+| `"integration_points"` | off | 0.1175 | 1.07x |
+
+Starvation wrecks the per-cell fit, which needs particles *in that cell*. The
+nearest-particle mapping degrades gracefully by comparison — an empty cell
+still finds a plausible particle nearby — so with `"integration_points"` the
+field-level answer barely moves and the cost of losing particles shows up
+only in the swarm's own bookkeeping.
+
+Population control is cheap and always safe; this is where it is *necessary*.
+"""

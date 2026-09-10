@@ -80,6 +80,27 @@ not fighting the outflow, which is physical and correct; it is refilling the
 inflow side, where the flow brings nothing.
 ```
 
+### What it is worth, in a number
+
+The figures above are particle scatters. The field-level cost depends on how
+the material is read, and it is worth knowing which case needs the refilling.
+Pure shear thins a marker layer by $e^{-t}$, so after $t = 2$ its area should
+be 13.5% of where it started; anything else is the representation failing:
+
+| `proxy_location` | population control | layer area vs exact |
+|---|---|---|
+| `"cells"` | on | 1.03x |
+| `"cells"` | off | **5.03x** |
+| `"integration_points"` | on | 1.06x |
+| `"integration_points"` | off | 1.07x |
+
+Starvation wrecks the per-cell fit, which needs particles *in that cell*. The
+nearest-particle mapping degrades gracefully — an empty cell still finds a
+plausible particle nearby — so with the default mapping the field-level answer
+barely moves, and losing particles shows up only in the swarm's own
+bookkeeping. Population control is cheap and always safe; `"cells"` is where
+it is *necessary*.
+
 ## Materials
 
 Name the materials, say where they are, and stop.

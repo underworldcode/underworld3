@@ -217,12 +217,12 @@ class MaterialSwarm(MaterialDistribution, Swarm):
         """Give ``definition`` exactly ``region``, and nothing else — see
         ``MaterialRegions._paint``; assignment replaces rather than unions."""
         selected = self._region_mask(region)
-        labels = np.asarray(self._index_var.data).reshape(-1)
+        labels = np.asarray(self._index_var.array).reshape(-1)
         released = (labels == definition.index) & ~selected
         with uw.synchronised_array_update():
-            self._index_var.data[selected, 0] = definition.index
+            self._index_var.array[selected, 0, 0] = definition.index
             if released.any():
-                self._index_var.data[released, 0] = 0
+                self._index_var.array[released, 0, 0] = 0
 
     def _region_mask(self, region):
         """A boolean array over the particles."""
