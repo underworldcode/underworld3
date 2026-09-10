@@ -276,3 +276,122 @@ def test_the_gradient_is_available_from_the_cell_fit():
     assert np.abs(recovered - exact).max() < 5e-3, recovered       # the query answers
     # and the direct route is the sharper of the two
     assert cells2 < np.abs(recovered - exact).max()
+
+
+def _layered_solve(tag, viscosity, swarm_setup, eta_top=1.0e3, h=0.5):
+    """The layered Couette solve, given a viscosity expression."""
+    mesh, swarm, viscosity = swarm_setup
+    v = uw.discretisation.MeshVariable(f"v{tag}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"p{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
+    stokes.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1e-8
+    stokes.solve()
+    A = 1.0 / (h + (1.0 - h) / eta_top)
+    Xv = np.asarray(v.coords)
+    exact = np.where(Xv[:, 1] < h, A * Xv[:, 1], A * h + A / eta_top * (Xv[:, 1] - h))
+    return np.sqrt(np.mean((np.asarray(v.data[:, 0]) - exact) ** 2))
+
+
+def test_a_property_on_particles_is_not_a_material():
+    """The hand-rolled material: carry the viscosity itself on the particles
+    and sample it. It is refused, and the refusal names the thing to use
+    instead — because the only reconstruction on offer overshoots a jump into
+    a NEGATIVE viscosity, and because a solver needs the constitutive law, not
+    a sampled answer to it."""
+    eta_top, h = 1.0e3, 0.5
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.1, qdegree=2, regular=True)
+    swarm = uw.swarm.Swarm(mesh)
+
+    with pytest.raises(ValueError, match="IndexSwarmVariable"):
+        uw.swarm.SwarmVariable("etaN", swarm, 1,
+                               proxy_location="integration_points",
+                               proxy_sampling="nearest")
+
+    # why: the reconstruction that IS on offer cannot hold a jump
+    eta = uw.swarm.SwarmVariable("etaR", swarm, 1, proxy_location="integration_points")
+    swarm.populate(fill_param=3)
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        eta.data[:, 0] = np.where(X[:, 1] > h, eta_top, 1.0)
+    eta._update_proxy_if_stale()
+    assert np.asarray(eta._meshVar.data[:, 0]).min() < 0.0     # a negative viscosity
+
+    # the supported route is exact on the same problem
+    mesh, swarm, mat = _layered("Mok", "integration_points", h=h)
+    err = _layered_solve("ok", None, (mesh, swarm, mat.createMask([1.0, eta_top])),
+                         eta_top, h)
+    assert err < 1e-5, err
+
+
+def test_the_share_uses_every_particle_and_is_linear_exact():
+    """proxy_sampling="share" assigns every particle to one integration point
+    of its OWN cell, and each point reads the mean of its share. Nothing is
+    discarded (unlike a nearest-particle read) and nothing crosses a cell
+    boundary."""
+    from underworld3.utilities.particle_share import share_assignment
+
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.2, qdegree=2, regular=True)
+    swarm = uw.swarm.Swarm(mesh)
+    f = uw.swarm.SwarmVariable("fsh", swarm, 1, proxy_location="integration_points",
+                               proxy_sampling="share")
+    swarm.populate(fill_param=4)
+    X = np.asarray(swarm._particle_coordinates.data)
+    with uw.synchronised_array_update():
+        f.data[:, 0] = 2.0 * X[:, 0] - 3.0 * X[:, 1] + 1.0
+    f._update_proxy_if_stale()
+
+    ipc = np.asarray(f._meshVar.integration_points)
+    flat = share_assignment(ipc, X, swarm._owning_cells())
+    assert (flat >= 0).sum() == X.shape[0]                     # every particle used
+    cells = swarm._owning_cells()
+    assert np.array_equal(flat // ipc.shape[1], cells)         # and only in its own cell
+
+    # the share mean of a linear field is close to its value at the point
+    pts = ipc.reshape(-1, mesh.dim)
+    exact = 2.0 * pts[:, 0] - 3.0 * pts[:, 1] + 1.0
+    got = np.asarray(f._meshVar.data[:, 0])
+    assert np.sqrt(np.mean((got - exact) ** 2)) < 0.1 * mesh.get_min_radius()
+
+
+def test_share_level_sets_are_fractional_but_still_a_partition():
+    """The index share gives material FRACTIONS where a cell is crossed, which
+    nearest sampling never does — and the masks still sum to one, so
+    createMask stays a weighted mean."""
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.15, qdegree=2, regular=False)
+    fractional = {}
+    for tag, sampling in (("Snear", "nearest"), ("Sshar", "share")):
+        swarm = uw.swarm.Swarm(mesh)
+        mat = uw.swarm.IndexSwarmVariable(tag, swarm, indices=2,
+                                          proxy_location="integration_points",
+                                          proxy_sampling=sampling)
+        swarm.populate(fill_param=4)
+        X = np.asarray(swarm._particle_coordinates.data)
+        with uw.synchronised_array_update():
+            mat.data[:, 0] = (X[:, 1] > 0.53).astype(int)      # cuts through cells
+        U = np.column_stack([np.asarray(v.data[:, 0]) for v in mat._meshLevelSetVars])
+        assert np.allclose(U.sum(axis=1), 1.0, atol=1e-12), U.sum(axis=1)
+        assert U.min() >= -1e-12 and U.max() <= 1 + 1e-12
+        fractional[sampling] = int(((U > 1e-9) & (U < 1 - 1e-9)).any(axis=1).sum())
+
+    assert fractional["nearest"] == 0, fractional
+    assert fractional["share"] > 0, fractional
+
+
+def test_an_unavailable_sampling_combination_raises():
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.25, qdegree=2, regular=True)
+    swarm = uw.swarm.Swarm(mesh)
+    with pytest.raises(ValueError, match="integration_points"):
+        uw.swarm.SwarmVariable("bad1", swarm, 1, proxy_location="nodes",
+                               proxy_sampling="share")
+    with pytest.raises(ValueError, match="integration_points"):
+        uw.swarm.SwarmVariable("bad2", swarm, 1, proxy_location="cells",
+                               proxy_sampling="share")
+    with pytest.raises(ValueError, match="integration_points"):
+        uw.swarm.IndexSwarmVariable("bad3", swarm, indices=2,
+                                    proxy_location="nodes", proxy_sampling="share")

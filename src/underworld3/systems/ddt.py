@@ -3908,6 +3908,15 @@ class Lagrangian_Swarm(_DDtBase):
         ``"cells"`` fits a least-squares polynomial of degree ``degree`` per
         cell, exact for polynomial histories and integrated exactly by the
         default rule.
+    proxy_sampling : {"reconstruct", "share"}, optional
+        How each slot's proxy reads the particles (default ``"reconstruct"``).
+        ``"share"`` requires ``proxy_location="integration_points"`` and gives
+        every integration point the mean of the particles it speaks for — the
+        cell-restricted Voronoi share. For a HISTORY that is usually what is
+        wanted: every particle's state contributes, the average is bounded by
+        the particle values so it cannot invent a stress the swarm never held,
+        and the stencil cannot reach across a cell wall into another material.
+        See :doc:`../../advanced/particle-population-and-materials`.
     step_averaging : int, optional
         Number of steps for history averaging (default ``2``).
 
@@ -3964,6 +3973,7 @@ class Lagrangian_Swarm(_DDtBase):
         smoothing=0.0,
         step_averaging=2,
         proxy_location="nodes",
+        proxy_sampling="reconstruct",
         particle_update="pic",
         residual_retention=1.0,
     ):
@@ -3993,6 +4003,11 @@ class Lagrangian_Swarm(_DDtBase):
         # (discontinuous, degree `degree`), exact for polynomial histories
         # and integrated exactly by the default rule.
         self.proxy_location = proxy_location
+        # "share": each integration point averages the particles whose nearest
+        # point within their own cell it is, so every particle's history
+        # reaches the assembly and the average stays inside the range the
+        # particles hold.
+        self.proxy_sampling = proxy_sampling
 
         self._init_history_tracking(order)
 
@@ -4026,6 +4041,7 @@ class Lagrangian_Swarm(_DDtBase):
                     proxy_degree=degree,
                     proxy_continuous=continuous,
                     proxy_location=proxy_location,
+                    proxy_sampling=proxy_sampling,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
                 )
             )

@@ -301,11 +301,19 @@ nodes and back.
 
 ```python
 swarm = uw.swarm.Swarm(mesh)
-M = uw.swarm.SwarmVariable("M", swarm, 1, proxy_location="integration_points")
+tau = uw.swarm.SwarmVariable("tau", swarm, (2, 2),
+                             proxy_location="integration_points")
 swarm.populate(fill_param=3)
-M.data[:, 0] = ...                                   # per particle
-stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0 * M.sym[0] + eta_1 * (1 - M.sym[0])
+tau.data[...] = ...                                  # per particle
 ```
+
+For a **material**, this is not the entry point: use `uw.swarm.MaterialSwarm`,
+which owns an `IndexSwarmVariable` whose level sets live at the integration
+points by default and blends the declared properties by the resulting
+partition of unity. See
+{doc}`../../advanced/particle-population-and-materials` for why the direct
+route is not offered — sampling a property field hands the solver an answer
+where it needs a constitutive law.
 
 The reconstruction itself is unchanged (a linear-exact RBF over the nearest
 particles, `rbf_interpolate`); only its target moved. A particle-carried
@@ -315,6 +323,41 @@ the interface (`tests/test_0067_integration_point_proxy.py`).
 `proxy_degree` and `proxy_continuous` are ignored for this proxy; the proxy
 has no gradient, so a derivative of the swarm variable's symbol is refused.
 Vector and tensor swarm variables get a multi-component proxy.
+
+### `proxy_sampling`: what each point reads
+
+`proxy_location` is where; `proxy_sampling` is what.
+
+| | `"reconstruct"` (default) | `"share"` |
+|---|---|---|
+| gathers from | the `nnn` nearest particles, by distance | the particles whose nearest integration point *in their own cell* is this one |
+| respects cell walls | no | yes |
+| linear fields | exact | small averaging error |
+| bounded by the particle values | no (overshoots a jump) | yes, it is a mean of them |
+| particles used | the stencil's | all of them, each exactly once |
+
+`"share"` is the cell-restricted Voronoi share
+(`underworld3/utilities/particle_share.py`): `share_assignment` maps each
+particle to one flat index in the cell-major `(ncells, Nq)` layout,
+`share_average` reduces by `np.bincount`. A rule point whose share is empty
+falls back to the nearest particle anywhere on the rank, and the count of
+those is left on `var._share_empty` — persistently non-zero means the swarm is
+too thin for the rule, and `Swarm.repopulate` is the fix.
+
+The assignment needs each particle's owning cell. UW3 swarms are
+`DMSWARM_BASIC`, so PETSc holds no cell id and the locator has to run;
+`Swarm._owning_cells()` caches the result and drops it wherever `_kdtree` is
+dropped, so the share proxies, the population census and anything else
+cell-local pay for one location per step between them. On 32 912 particles /
+242 cells the location is 18.8 ms and the share itself 3.2 ms, against 8.1 ms
+for the `"reconstruct"` path (whose cached operator is geometry-only, so it is
+rebuilt every time the particles move).
+
+There is no `"nearest"` here. Sampling one particle's value whole is the
+material mapping, and materials go through `MaterialSwarm` / its
+`IndexSwarmVariable` (`proxy_sampling="nearest"` there, or `"share"` for
+fractional masks); asking for it on a plain `SwarmVariable` raises and names
+the alternative.
 
 `Lagrangian_Swarm(..., proxy_location="integration_points")` applies the
 same to the fully Lagrangian history: the slots carried on the particles
