@@ -655,24 +655,49 @@ Rank 0 writes; the other ranks record in memory as usual.
 A terminal is not where a run belongs in a paper.
 
 ```python
-uw.journal_diagram(model, out="figures/run.svg")     # or a .jsonl log
+uw.journal_diagram(model, out="figures/run.pdf")     # or a .jsonl log
+uw.journal_diagram(model, out="figures/run.svg")     # same figure, SVG
 uw.journal_flowchart(model)                          # Mermaid, for docs
 ```
 
-`journal_diagram` writes a standalone SVG — no plotting library, no
-rasterisation, nothing fetched at render time — showing `dt` per step in the
-order things happened, backtracks as arcs over them, a wall-clock strip, and
-abandoned steps marked. The palette is print-safe and separates in greyscale.
+`journal_diagram` puts **time down the page**: one row per step, A4 portrait,
+paginated, so it drops into a document column and opens anywhere. Each row
+carries the step index, the clock, `dt` as a number and as a bar, a wall-clock
+tick, and one letter. Backtracks are drawn in the left gutter as an arrow from
+the step that ended back up to the step it returned to.
 
-The layout decision worth knowing about: **the operator sequence is stated once
-when every step shares it, and only the steps that differ are called out.** A
-hundred identical rows tell you nothing; a hundred identical rows and one that
-differs tell you everything, but only if the identical ones are not in the way.
+The PDF and the SVG are both written directly — no plotting library, no
+rasterisation, nothing fetched at render time, and a print-safe palette that
+separates in greyscale. The `dt` axis goes logarithmic when the range exceeds
+20x and says so: a rejected step is often tens of times the accepted ones,
+which is *why* it was rejected, and on a linear axis it flattens everything
+else to nothing.
 
-`journal_flowchart` renders one step's operator flow as Mermaid, for dropping
-into documentation. When a run has more than one distinct sequence, each
-becomes its own subgraph labelled with the steps that took it, so an anomalous
-step is visible rather than averaged away.
+**The letter is the layout.** Each distinct operator sequence gets one, defined
+once at the foot of the figure:
+
+```
+step   t/Myr   dt/Myr   seq   dt
+   9   6.472    1.176    A    ▇▇▇▇▇▇▇▇▇▇▇▇
+  10   7.936    1.464    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  11   9.856    1.920    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  12     145    135.2    A    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄  abandoned
+  11   9.856    1.920    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  12   12.56    2.704    B !  ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+
+A   AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)        14 steps
+B   AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)  >
+    AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)         1 step
+```
+
+A column of `A` with a single `B` in it says at a glance that one step did
+something different. A hundred spelled-out sequences say nothing and hide the
+one that matters.
+
+`journal_flowchart` renders one step's operator flow as Mermaid. When a run has
+more than one distinct sequence, each becomes its own subgraph labelled with
+the steps that took it, so an anomalous step is visible rather than averaged
+away.
 
 Both accept a live model, a `.jsonl` log, or the list `read_journal` returns.
 Not a text log: that one is a report, and reading it back is refused with the
