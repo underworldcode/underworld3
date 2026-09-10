@@ -63,7 +63,7 @@ class ModelStep:
     needs in order to walk the run backwards.
     """
 
-    __slots__ = ("index", "t0", "dt", "label", "events", "completed")
+    __slots__ = ("index", "t0", "dt", "label", "events", "completed", "snapshot")
 
     def __init__(self, index, t0, dt, label=None):
         self.index = index
@@ -72,6 +72,16 @@ class ModelStep:
         self.label = label
         self.events = []
         self.completed = False
+        # The state this step STARTED from, when the tape policy kept one.
+        # Taken before the operators ran, which is the only correct point: a
+        # DDt shifts its history in its post-solve hook, so a snapshot taken
+        # afterwards holds the shifted history rather than the step's input.
+        self.snapshot = None
+
+    @property
+    def restorable(self):
+        """Whether this step kept the state it started from."""
+        return self.snapshot is not None
 
     @property
     def t1(self):
@@ -182,6 +192,12 @@ class Model(PintNativeModelMixin, BaseModel):
     _open_step: Any = PrivateAttr(default=None)
     _journal: Any = PrivateAttr(default_factory=list)
     _journal_limit: Any = PrivateAttr(default=512)
+
+    # Tape policy: how often a step keeps a restorable snapshot of the state it
+    # started from, and how many of those to retain. See :meth:`step`.
+    _tape_every: Any = PrivateAttr(default=None)
+    _tape_limit: Any = PrivateAttr(default=8)
+    _tape_warned: Any = PrivateAttr(default=False)
 
     def __init__(self, name: Optional[str] = None, **kwargs):
         """
@@ -684,6 +700,76 @@ class Model(PintNativeModelMixin, BaseModel):
         if limit is not None and len(self._journal) > limit:
             del self._journal[: len(self._journal) - limit]
 
+    @property
+    def tape_every(self):
+        """Keep a restorable snapshot every N steps (None keeps none).
+
+        ``1`` tapes every step, which is what replay and an adjoint want.
+        Snapshots cost roughly 13 bytes per primary degree of freedom each, so
+        a long run on a large mesh should either raise :attr:`tape_limit` with
+        care or tape less often and recompute between.
+        """
+        return self._tape_every
+
+    @tape_every.setter
+    def tape_every(self, value):
+        self._tape_every = value
+
+    @property
+    def tape_limit(self):
+        """How many snapshots to retain (None retains all).
+
+        Older steps keep their journal record and lose their snapshot, so the
+        account of what happened survives even where the state does not.
+        """
+        return self._tape_limit
+
+    @tape_limit.setter
+    def tape_limit(self, value):
+        self._tape_limit = value
+        self._trim_tape()
+
+    @property
+    def tape(self):
+        """Completed steps that can still be restored, oldest first."""
+        return [entry for entry in self._journal if entry.restorable]
+
+    def _trim_tape(self):
+        limit = self._tape_limit
+        if limit is None:
+            return
+        restorable = [e for e in self._journal if e.restorable]
+        for entry in restorable[: max(0, len(restorable) - limit)]:
+            entry.snapshot = None
+
+    def rewind(self, steps: int = 1):
+        """Go back to the state at the start of a completed step.
+
+        ``steps=1`` returns to the beginning of the most recent completed step,
+        undoing it. Fields, histories and the clock all come back together,
+        because the clock lives on the tracker and the tracker is captured with
+        everything else.
+
+        The journal is truncated to match, so it continues to describe the run
+        that actually happened.
+        """
+        restorable = [e for e in self._journal if e.restorable]
+        if not restorable:
+            raise RuntimeError(
+                "nothing to rewind to: no completed step kept a snapshot. "
+                "Set model.tape_every = 1 before the loop to tape every step."
+            )
+        if steps < 1 or steps > len(restorable):
+            raise ValueError(
+                f"cannot rewind {steps} step(s); {len(restorable)} restorable "
+                f"step(s) are retained (see model.tape_limit)."
+            )
+        target = restorable[-steps]
+        self.load_state(target.snapshot)
+        cut = self._journal.index(target)
+        del self._journal[cut:]
+        return target
+
     def _record_step_event(self, kind: str, name: str, **detail) -> None:
         """Note that something happened inside the step in progress.
 
@@ -744,6 +830,30 @@ class Model(PintNativeModelMixin, BaseModel):
             t0 = self.tracker.time if "time" in self.tracker else 0.0
             index = self.tracker.step if "step" in self.tracker else 0
             record = ModelStep(index=index, t0=t0, dt=dt, label=label)
+
+            # Tape the state this step starts FROM, before any operator runs.
+            every = self._tape_every
+            if every and index % every == 0:
+                try:
+                    record.snapshot = self.save_state()
+                except Exception as exc:
+                    # A snapshot is a convenience here, not a precondition — a
+                    # deforming or adapted mesh cannot be captured yet, and the
+                    # run should carry on with a journal but no tape rather
+                    # than fail. Say so once.
+                    if not self._tape_warned:
+                        self._tape_warned = True
+                        import warnings
+
+                        warnings.warn(
+                            f"step {index}: could not tape the starting state "
+                            f"({type(exc).__name__}: {exc}). The journal still "
+                            f"records what ran, but model.rewind() will not "
+                            f"reach this step. This is expected on a mesh that "
+                            f"deforms or adapts.",
+                            RuntimeWarning,
+                        )
+
             self._open_step = record
 
             # Position the clock at the END of the interval for the duration of
@@ -766,6 +876,7 @@ class Model(PintNativeModelMixin, BaseModel):
             self._open_step = None
             self._journal.append(record)
             self._trim_journal()
+            self._trim_tape()
 
         return _step_context()
 

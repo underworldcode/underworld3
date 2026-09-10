@@ -125,3 +125,117 @@ def test_the_journal_is_bounded():
             pass
     assert len(model.journal) == 3
     assert [e.index for e in model.journal] == [4, 5, 6]
+
+
+# ---------------------------------------------------------------------------
+# The tape: a step keeps the state it started from, so the run can be replayed
+# ---------------------------------------------------------------------------
+
+
+def _advdiff(uw, mesh):
+    import sympy
+
+    T = uw.discretisation.MeshVariable("T_tape", mesh, 1, degree=2)
+    V = uw.discretisation.MeshVariable("V_tape", mesh, 2, degree=2)
+    x, y = mesh.X
+    V.array[:, 0, :] = np.asarray(
+        uw.function.evaluate(sympy.Matrix([[-(y - 0.5), (x - 0.5)]]), V.coords)
+    ).reshape(-1, 2)
+    T.array[:, 0, 0] = np.asarray(
+        uw.function.evaluate(sympy.exp(-(((x - 0.3) ** 2 + (y - 0.5) ** 2) / 0.02)), T.coords)
+    ).ravel()
+    solver = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=V.sym)
+    solver.constitutive_model = uw.constitutive_models.DiffusionModel
+    solver.constitutive_model.Parameters.diffusivity = 1.0e-4
+    solver.petsc_options.delValue("ksp_monitor")
+    return solver, T
+
+
+def test_taping_is_off_by_default():
+    uw, model = _fresh_model()
+    model.tracker.time, model.tracker.step = 0.0, 0
+    with model.step(0.1):
+        pass
+    assert model.journal[0].restorable is False
+    assert model.tape == []
+
+
+def test_rewind_undoes_a_step_exactly():
+    """Fields, history and clock all come back, and the step is undone."""
+    uw, model = _fresh_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
+    )
+    solver, T = _advdiff(uw, mesh)
+    model.tracker.time, model.tracker.step = 0.0, 0
+    model.tape_every = 1
+
+    for _ in range(2):
+        with model.step(0.02):
+            solver.solve(timestep=0.02)
+
+    at_two = np.array(T.array)
+    assert model.tracker.step == 2
+
+    # take a third step, then undo it
+    with model.step(0.02):
+        solver.solve(timestep=0.02)
+    assert model.tracker.step == 3
+    assert not np.allclose(np.array(T.array), at_two)
+
+    model.rewind()
+
+    assert np.array_equal(np.array(T.array), at_two), "fields did not come back"
+    assert model.tracker.step == 2, "the clock did not come back"
+    assert model.tracker.time == pytest.approx(0.04)
+    assert len(model.journal) == 2, "the journal still claims the undone step"
+
+
+def test_replaying_a_rewound_step_reproduces_it():
+    """The property replay debugging rests on: the same step, taken twice from
+    the same state, gives the same answer."""
+    uw, model = _fresh_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
+    )
+    solver, T = _advdiff(uw, mesh)
+    model.tracker.time, model.tracker.step = 0.0, 0
+    model.tape_every = 1
+
+    with model.step(0.02):
+        solver.solve(timestep=0.02)
+    first = np.array(T.array)
+
+    model.rewind()
+    with model.step(0.02):
+        solver.solve(timestep=0.02)
+    second = np.array(T.array)
+
+    assert np.array_equal(first, second), (
+        "replaying a step from its own snapshot did not reproduce it"
+    )
+
+
+def test_the_tape_is_bounded_but_the_journal_survives():
+    """Old steps lose their snapshot and keep their record, so the account of
+    what happened outlives the state."""
+    uw, model = _fresh_model()
+    model.tracker.time, model.tracker.step = 0.0, 0
+    model.tape_every = 1
+    model.tape_limit = 2
+
+    for _ in range(5):
+        with model.step(0.1):
+            pass
+
+    assert len(model.journal) == 5
+    assert [e.index for e in model.tape] == [3, 4]
+
+
+def test_rewind_without_a_tape_says_what_to_do():
+    uw, model = _fresh_model()
+    model.tracker.time, model.tracker.step = 0.0, 0
+    with model.step(0.1):
+        pass
+    with pytest.raises(RuntimeError, match="tape_every"):
+        model.rewind()

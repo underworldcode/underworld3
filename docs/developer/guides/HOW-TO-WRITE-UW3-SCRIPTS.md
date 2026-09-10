@@ -518,6 +518,38 @@ you want to ask of someone else's model, or your own six months later.
 
 Opening a step is optional. A script that never does behaves exactly as before.
 
+### Taping a run
+
+Ask the step to keep the state it started from and the journal becomes a tape:
+
+```python
+model.tape_every = 1        # keep every step; None (default) keeps none
+model.tape_limit = 8        # how many snapshots to retain
+
+while model.tracker.time < end_time:
+    with model.step(dt):
+        adv_diff.solve(timestep=dt)
+        stokes.solve(zero_init_guess=False)
+
+model.rewind()              # undo the last step: fields, history and clock
+```
+
+The snapshot is taken before the operators run, which is the only correct
+point — a `DDt` shifts its history in its post-solve hook, so a snapshot taken
+afterwards holds the shifted history rather than the step's input.
+
+Two things this buys beyond backstepping. Replaying a step from its own
+snapshot reproduces it exactly, where re-running the script does not, so a step
+that misbehaved can be looked at twice. And an adjoint needs precisely this: the
+state at each step and the order the operators were applied in.
+
+Snapshots cost roughly 13 bytes per primary degree of freedom per step. Older
+steps lose their snapshot and keep their journal record, so the account of what
+happened outlives the state it happened to.
+
+On a mesh that deforms or adapts the snapshot cannot be taken yet; the run
+warns once, keeps journalling, and `rewind()` will not reach those steps.
+
 ### Backstepping
 
 The pattern above is what makes speculative stepping safe:
@@ -568,6 +600,29 @@ keeps the symbol.
 ---
 
 ## Common Pitfalls and Anti-Patterns
+
+### ❌ Rebinding the name instead of setting `.sym`
+
+To change the value of an expression, set `.sym`. It is the only settable
+property — `.value` and `.data` are derived, read-only views.
+
+```python
+# ✅ CORRECT - a value change; the container keeps its identity
+viscosity.sym = sympy.Integer(0)
+solver._update_constants()      # only if you are not about to solve
+
+# ❌ WRONG - rebinds a Python name and changes nothing
+viscosity = 0
+```
+
+The second line leaves every expression that already references the atom
+pointing at the old object with its old value, and nothing complains. The
+identity is the point: because the container is unchanged, a ramped value
+reaches every residual that mentions it with no rebuild.
+
+`expr.copy(other)` does the same job from another expression, and assigning to
+a constitutive parameter slot (`Parameters.diffusivity = 0.0`) is also a value
+change rather than a replacement.
 
 ### ❌ Swarm Variable Creation After Population
 
@@ -852,6 +907,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - [ ] Declare the model and its reference quantities BEFORE creating the mesh
 - [ ] Keep `time`, `step` and `dt` on `model.tracker`, not in local variables
 - [ ] Wrap each step in `with model.step(dt):`
+- [ ] To change an expression's value set `.sym`, never rebind the name
 - [ ] Take snapshots BEFORE the operator you might want to undo
 - [ ] Use `mesh.t` inside an expression for time dependence, never bare
 
@@ -894,6 +950,8 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
   - Disk snapshots now carry dimensional values (magnitude + units)
   - `mesh.t` now resolves to the model clock (#410)
   - `model.step(dt)` — the step as a transaction, and the step journal
+  - `model.tape_every` / `model.rewind()` — the journal as a tape
+  - Set `.sym` to change a value; rebinding the name changes nothing
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version
