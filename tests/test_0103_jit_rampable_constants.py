@@ -135,6 +135,79 @@ def test_two_constants_with_the_same_name_do_not_collapse():
     assert len(lowered.free_symbols & placeholders) == 2, lowered
 
 
+def test_same_named_placeholders_order_deterministically():
+    """The ORDERING half of the same-name problem, pinned without MPI.
+
+    ``_hashable_content`` gives two placeholders separate identities but does
+    nothing for ``Symbol.sort_key()``, which comes from the name. Two
+    placeholders that sort equal leave term order inside an ``Add`` to hash
+    order, which is randomised per process — so the generated C differs
+    between MPI ranks and the cross-rank hash check aborts the run, on roughly
+    half of launches. This test is the deterministic proxy: distinct sort keys,
+    and a sum that canonicalises the same however it is written.
+    """
+    import sympy
+    from underworld3.utilities._jitextension import _JITConstant
+
+    c0 = _JITConstant(0, name=r"\eta")
+    c1 = _JITConstant(1, name=r"\eta")
+
+    assert c0.sort_key() != c1.sort_key(), (
+        "same-named placeholders sort equal; Add term order will follow the "
+        "hash seed and the generated C will differ between ranks")
+    assert c0 != c1 and c0 is not c1              # the identity half
+
+    p0, p1 = sympy.symbols("p0 p1")
+    written_one_way = sympy.printing.ccode(p0 / c0 + p1 / c1)
+    written_the_other = sympy.printing.ccode(p1 / c1 + p0 / c0)
+    assert written_one_way == written_the_other, (
+        written_one_way, written_the_other)
+    assert "constants[0]" in written_one_way and "constants[1]" in written_one_way
+
+
+def test_the_manifest_order_does_not_move_when_a_value_changes():
+    """Slot assignment follows creation order, not value.
+
+    ``_stable_sort_key`` falls through to ``str(expr)``, which for a
+    UWexpression is its CURRENT VALUE, so tie-breaking two same-named
+    constants on it permutes their ``constants[]`` slots the moment one is
+    ramped past the other lexically. Ramping 1000 -&gt; 0.5 does exactly that.
+    Slots that move for a reason unrelated to the model invalidate the JIT
+    cache needlessly, and would swap the two values outright for anything that
+    keyed on the manifest rather than on the generated source.
+
+    NB the values matter: 1000 -&gt; 1e-6 does NOT expose it, because
+    ``"1.00000000000000e-6"`` sorts after ``"1.00000000000000"`` as a prefix.
+    """
+    import sympy
+    from underworld3.utilities._jitextension import _extract_constants
+
+    mesh = uw.meshing.UnstructuredSimplexBox(cellSize=0.5, qdegree=2)
+    v = uw.discretisation.MeshVariable("vmo", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("pmo", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+
+    lower = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns, material_name="lo")
+    lower.Parameters.shear_viscosity_0 = 1.0
+    upper = uw.constitutive_models.ViscousFlowModel(stokes.Unknowns, material_name="up")
+    upper.Parameters.shear_viscosity_0 = 1000.0
+    a = lower.Parameters.shear_viscosity_0
+    b = upper.Parameters.shear_viscosity_0
+    assert a != b and a.name == b.name, "expected two distinct same-named constants"
+
+    x = sympy.Symbol("xmo")
+    slot_of = lambda manifest: {id(e): i for i, e in manifest}
+
+    before = slot_of(_extract_constants((a * x + b * x,), mesh)[0])
+    assert len(before) == 2, before
+
+    b.sym = 0.5                       # in place: the same object, a new value
+    after = slot_of(_extract_constants((a * x + b * x,), mesh)[0])
+
+    assert before == after, (
+        "ramping a value permuted the constants[] slots", before, after)
+
+
 def test_two_materials_solve_the_layered_problem_not_the_uniform_one():
     """The end-to-end form of the same defect.
 
