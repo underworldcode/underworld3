@@ -558,10 +558,92 @@ class FreeSurface:
                 rebind[source_L[i, j]] = target_L[i, j]
         return rebind
 
+    def _derived_solvers(self):
+        """The solves this manager owns, with what each is meant to share.
+
+        ``held_bg`` is omitted: it exists precisely to carry a different body
+        force, and its rheology is checked through ``held``.
+        """
+        pairs = [("held", self.held), ("consistent", self.consistent)]
+        return [(name, solver) for name, solver in pairs if solver is not None]
+
+    def _check_derived_solvers_match(self):
+        """Refuse to solve if a derived lid has drifted from the free solve.
+
+        ``held`` and ``consistent`` are separate Stokes solvers, and the free
+        solve's configuration was copied into them ONCE, when this manager was
+        built. Change the free solve afterwards — a different rheology, a
+        retuned tolerance, a new body force — and they keep the old values.
+        That is a wrong answer rather than a crash: ``h_inf``, the equilibrium
+        the surface relaxes toward, is recovered from the HELD solve, so the
+        surface would relax toward an equilibrium computed with stale physics
+        while the free solve uses the new.
+
+        A parameter whose value is an expression over mesh variables — a
+        temperature-dependent viscosity — is shared symbolically and tracks
+        correctly, as does a rampable constant. Only re-assignment drifts.
+        """
+        from underworld3.utilities._api_tools import ExpressionDescriptor
+        from underworld3.function.expressions import unwrap
+
+        drift = []
+
+        def note(name, what, mine, theirs):
+            if str(mine) != str(theirs):
+                drift.append(f"{what} — free: {str(mine)[:60]} | {name}: {str(theirs)[:60]}")
+
+        free_params = self.free.constitutive_model.Parameters
+        for name, solver in self._derived_solvers():
+            for setting in ("penalty", "tolerance", "consistent_jacobian"):
+                note(name, setting, getattr(self.free, setting, None),
+                     getattr(solver, setting, None))
+
+            # Compare against what copying the parameter TODAY would produce,
+            # applying the same velocity rebinding :meth:`_copy_constitutive_model`
+            # applies. A nonlinear rheology is deliberately rebound onto each
+            # derived solver's own unknowns, so the expressions are MEANT to
+            # differ textually; only a change of substance is drift.
+            rebind = self._velocity_rebind_map(solver)
+            their_params = solver.constitutive_model.Parameters
+            for cls in type(free_params).__mro__:
+                for attr, descriptor in cls.__dict__.items():
+                    if not isinstance(descriptor, ExpressionDescriptor):
+                        continue
+                    try:
+                        expected = getattr(free_params, attr)
+                        if hasattr(expected, "subs"):
+                            expected = unwrap(
+                                expected, keep_constants=True, return_self=True
+                            ).subs(rebind)
+                        actual = getattr(their_params, attr)
+                        if hasattr(actual, "subs"):
+                            actual = unwrap(
+                                actual, keep_constants=True, return_self=True
+                            )
+                        note(name, f"Parameters.{attr}", expected, actual)
+                    except Exception:
+                        pass
+            # `held` carries its own body force when driving_buoyancy was given;
+            # otherwise both are meant to be the free solve's.
+            if not (name == "held" and self._driving_buoyancy_given):
+                note(name, "bodyforce", self.free.bodyforce, solver.bodyforce)
+
+        if drift:
+            raise RuntimeError(
+                "the free surface's derived solves no longer match the free "
+                "solve:\n  " + "\n  ".join(sorted(set(drift))) + "\n"
+                "They were configured when the FreeSurface was built. Configure "
+                "the Stokes solver fully BEFORE constructing the FreeSurface, or "
+                "rebuild the manager after changing it. Solving now would relax "
+                "the surface toward an equilibrium computed with the stale "
+                "values, silently."
+            )
+
     def _build_held(self, driving_buoyancy):
         r"""The held free-slip lid: rotated ``u.n = 0`` on every wall and the
         surface, driving body force only. Its constraint reaction is
         :math:`\sigma_{nn}`, handed to ``dynamic_topography`` as :math:`h_\infty`."""
+        self._driving_buoyancy_given = driving_buoyancy is not None
         self.held = self._new_stokes("held")
         self.held.bodyforce = (
             self.free.bodyforce if driving_buoyancy is None else driving_buoyancy
@@ -861,6 +943,7 @@ class FreeSurface:
         rotated free-slip solve gives :math:`\sigma_{nn}` and hence :math:`h_\infty`.
         Call once per step before :meth:`estimate_dt` / :meth:`advance`.
         """
+        self._check_derived_solvers_match()
         self.free.solve(zero_init_guess=True)
         self.held.solve(zero_init_guess=True)
         self.held.dynamic_topography(
