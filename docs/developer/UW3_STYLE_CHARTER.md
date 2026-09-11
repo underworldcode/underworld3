@@ -141,9 +141,12 @@ something improves. Give such a test a failure message that says so, and record 
 measured numbers and their configuration in the docstring, dated. Do not revert code
 to make a tier C test pass — re-characterise it and say why.
 
-Where a per-test mark disagrees with the module-level one, the narrower tier wins:
-a `tier_c` test inside a `tier_a` module is tier C, and is excluded from anything
-gating on `not tier_c`.
+**A test carries exactly one tier, and it goes on the test, not the module.**
+pytest MERGES a module-level `pytestmark` with a function's own marks rather than
+overriding them, so a `tier_c` test inside a `tier_a` module carries BOTH and is
+still selected by `tier_a or tier_b` — which is what `scripts/release_gate.py`
+asks for. Where the tests in a file do not share a tier, put the level on the
+module and the tier on each test.
 
 ## 9. Scope Discipline for AI Sessions
 

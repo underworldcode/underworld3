@@ -107,10 +107,13 @@ alike, and it is separate from whether the test runs.
 - plus `@pytest.mark.xfail(reason=...)` / `@pytest.mark.skip(reason=...)` for C2
   where relevant
 
-**Where a per-test mark disagrees with the module-level one**, the narrower tier
-wins: a `tier_c` test inside a `tier_a` module is Tier C, and is excluded by
-`-m "not tier_c"`. Say so in a comment next to the mark, so it does not read as
-an oversight.
+**One tier per test, and it goes on the test.** pytest MERGES a module-level
+`pytestmark` with a function's own marks — it does not override them. A `tier_c`
+test inside a `tier_a` module therefore carries both, and `tier_a or tier_b` (the
+default selector in `scripts/release_gate.py`) still picks it up, so a
+characterisation could gate after all. Where the tests in a file do not share a
+tier, put the LEVEL on the module and the TIER on each test, and say why in a
+comment next to `pytestmark` so the split does not read as an oversight.
 
 **Promotion path**: C2 → B once the feature is implemented, the test passes
 consistently and a developer confirms the test itself is correct. C1 does not
@@ -126,7 +129,7 @@ markers =
     # Reliability tiers (how much to trust the test)
     tier_a: Production-ready tests (trusted, use for TDD and CI)
     tier_b: Validated tests (use with caution, manual review recommended)
-    tier_c: Experimental tests (development only, not for automation)
+    tier_c: Does not gate. Runs and is reported, but a failure demands an explanation, not a revert (characterisations, and work in progress)
 
     # Complexity levels (what kind of test, independent of number prefix)
     level_1: Quick core tests - imports, basic setup, no solving (~seconds)
