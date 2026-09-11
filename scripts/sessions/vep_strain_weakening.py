@@ -8,7 +8,7 @@ Plastic fraction computed directly from stored data:
 
 No evaluate, no projection — pure numpy on stored data.
 
-Run: pixi run -e amr-dev python tests/vep_strain_weakening.py
+Run: pixi run -e amr-dev python scripts/sessions/vep_strain_weakening.py
 """
 
 import time

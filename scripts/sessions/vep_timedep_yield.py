@@ -6,7 +6,7 @@ VE stress builds, hits tau_y, then tau_y drops and stress follows.
 No strain accumulation, no projection of viscosity ratios —
 just the solver responding to a changing yield stress parameter.
 
-Run: pixi run -e amr-dev python tests/vep_timedep_yield.py
+Run: pixi run -e amr-dev python scripts/sessions/vep_timedep_yield.py
 """
 
 import time

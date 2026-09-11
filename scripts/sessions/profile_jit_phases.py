@@ -3,7 +3,7 @@
 Instruments: sympy derivatives, expression unwrapping, hashing, C code generation,
 Cython compilation, and the actual PETSc solve.
 
-Run with: pixi run -e default python tests/profile_jit_phases.py
+Run with: pixi run -e default python scripts/sessions/profile_jit_phases.py
 """
 
 import time

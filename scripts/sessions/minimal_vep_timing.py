@@ -1,6 +1,6 @@
 """Minimal VEP timing test — isolate where time is spent.
 
-Run with: pixi run -e amr-dev python tests/minimal_vep_timing.py
+Run with: pixi run -e amr-dev python scripts/sessions/minimal_vep_timing.py
 """
 
 import time

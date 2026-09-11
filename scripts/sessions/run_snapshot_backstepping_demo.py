@@ -21,7 +21,7 @@ exist. The time axis is genuinely multi-valued there — that's the
 visual point of the figure.
 
 Run:
-    pixi run -e amr-dev python tests/run_snapshot_backstepping_demo.py
+    pixi run -e amr-dev python scripts/sessions/run_snapshot_backstepping_demo.py
 
 Output:
     snapshot_backstepping_demo.png in the current working directory.

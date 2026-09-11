@@ -20,11 +20,16 @@ REPO = Path(__file__).resolve().parent.parent
 
 # Deferred by maintainer decision, not by accident.
 DEFERRED = {
-    # Written as test_06NN_ rather than test_06*: the latter also swallows
-    # test_0062..test_0069, which are a different suite entirely and must run.
-    "test_06[0-9][0-9]_*": "regression suite disabled pending validation (see test.sh)",
+    # No issue: this band was disabled in scripts/test.sh as "potentially
+    # problematic" without one being filed. Recorded as it stands rather than
+    # dressed up — #721 follow-up work re-enables it and removes this entry.
+    "test_06[0-9][0-9]_*": "regression suite disabled in test.sh, no issue filed",
+    # Narrow: test_1072 is pulled out of this band and run by name, so a broad
+    # test_107* would list a covered file as deferred.
+    "test_1070_*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
+    "test_1071_*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
+    "test_1073_*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
     "test_106*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
-    "test_107*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
 }
 
 
@@ -44,11 +49,21 @@ def main():
         covered.update(glob.glob(str(REPO / pattern)))
     covered = {Path(p).name for p in covered}
 
-    deferred = set()
-    for pattern in DEFERRED:
-        deferred.update(Path(p).name for p in glob.glob(str(REPO / "tests" / pattern)))
-
     every = {p.name for p in (REPO / "tests").glob("test_*.py")}
+
+    # A deferred entry that matches nothing, or matches only files a glob
+    # already runs, is stale. Without this the list only ever grows: an entry
+    # keeps reporting a deferral that stopped being true, which is how the
+    # shrink-only invariant quietly becomes a fiction.
+    deferred, stale = set(), []
+    for pattern, reason in DEFERRED.items():
+        matched = {Path(p).name for p in glob.glob(str(REPO / "tests" / pattern))}
+        if not matched:
+            stale.append(f"{pattern!r} matches no test file")
+        elif matched <= covered:
+            stale.append(f"{pattern!r} matches only files that already run")
+        deferred.update(matched)
+
     dark = sorted(every - covered - deferred)
 
     if dark:
@@ -57,6 +72,13 @@ def main():
             print(f"    tests/{name}")
         print("\nWiden the batch glob that should have caught them, or add an entry")
         print("to DEFERRED in this file saying who deferred it and why.")
+        return 1
+
+    if stale:
+        print("DEFERRED has stale entries — the list may only shrink:")
+        for problem in stale:
+            print(f"    {problem}")
+        print("\nRemove them: the files they name are running, or no longer exist.")
         return 1
 
     print(f"OK: all {len(every)} test files are reachable from scripts/test.sh "

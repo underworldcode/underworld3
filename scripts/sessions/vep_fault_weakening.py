@@ -3,7 +3,7 @@
 Horizontal fault at y=0.5 using Surface gaussian influence function.
 Runs at two vertical resolutions to check convergence.
 
-Run: pixi run -e amr-dev python tests/vep_fault_weakening.py
+Run: pixi run -e amr-dev python scripts/sessions/vep_fault_weakening.py
 """
 
 import time

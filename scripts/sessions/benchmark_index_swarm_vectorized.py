@@ -3,7 +3,7 @@ Benchmark the vectorized IndexSwarmVariable._update_proxy_variables
 against the original loop-based reference.
 
 Uses a larger mesh to make the speedup measurable.
-Run with: python tests/benchmark_index_swarm_vectorized.py
+Run with: python scripts/sessions/benchmark_index_swarm_vectorized.py
 """
 import numpy as np
 import underworld3 as uw
