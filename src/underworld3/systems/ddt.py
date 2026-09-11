@@ -1863,6 +1863,7 @@ class EulerianSUPG(Eulerian):
         self._transport_flat = None
         self._transport_old = None
         self._transport_solver = None
+        self._inflow_value = None
         self.V_fn = V_fn
         self.V_fn_history = None
         self.diffusivity = diffusivity
@@ -1996,6 +1997,38 @@ class EulerianSUPG(Eulerian):
         column = R.reshape(len(R), 1)
         return self.tau() * (column * self.advecting_velocity(0))
 
+    @property
+    def inflow_value(self):
+        r"""What enters the domain where the flow comes in, or ``None``.
+
+        A transported quantity needs data wherever the flow enters, and nowhere
+        else. Which parts of the boundary those are is not fixed: on a shedding
+        wake the outflow boundary carries reversed flow that migrates along it,
+        so the condition is applied by the sign of :math:`\mathbf{u}\cdot\mathbf{n}`
+        rather than by naming a boundary. Left ``None`` the transport is
+        unconstrained at an inflow, and whatever the solve produces there is
+        carried into the domain: measured on the viscoelastic cylinder, that is
+        what destroys the run (the stress maximum leaves the cylinder for the
+        outlet as soon as the wake reverses through it).
+
+        The same quantity is the out-of-bounds value for the schemes that trace
+        back or carry particles: what a departure point or a particle finds when
+        it lands outside the domain. Set it to an expression of the unknown's
+        shape -- for a stress history, the relaxed stress of the incoming flow.
+        """
+        return self._inflow_value
+
+    @inflow_value.setter
+    def inflow_value(self, value):
+        if value is not None:
+            value = sympy.Matrix(value)
+            if value.shape != self._unknown_shape():
+                raise ValueError(
+                    f"inflow_value has shape {value.shape}, but the transported "
+                    f"quantity is {self._unknown_shape()}.")
+        self._inflow_value = value
+        self._transport_solver = None       # the condition is compiled into it
+
     # ----- transporting the history on the grid -----
 
     def _transport_components(self):
@@ -2084,6 +2117,25 @@ class EulerianSUPG(Eulerian):
         solver = _HistoryTransport(self.mesh, u_Field=self._transport_flat, verbose=self.verbose)
         solver._manager = self
         solver.constitutive_model = uw.constitutive_models.Constitutive_Model
+        if self._inflow_value is not None:
+            # The inflow condition, weakly: on every boundary, the term is the
+            # NEGATIVE part of u.n, so it is active exactly where the flow enters
+            # and vanishes where it leaves. Walls (u.n = 0) contribute nothing,
+            # so no boundary needs naming and a migrating inflow patch is covered.
+            a = self.advecting_velocity(0)
+            normal_flow = sum(a[0, i] * self.mesh.Gamma[i] for i in range(self.mesh.dim))
+            entering = sympy.Min(normal_flow, 0)
+            indices = self._transport_components()
+            incoming = self._inflow_value
+            # Sign: `entering` is non-positive, so -entering is |u.n| on the
+            # inflow and zero elsewhere, and the term is dissipative in
+            # (sigma - sigma_in). With the sign the other way it amplifies:
+            # measured on the cylinder, the stress reached 16 within ten steps.
+            condition = sympy.Matrix([[
+                -entering * (self._transport_flat.sym[0, k] - incoming[i, j])
+                for k, (i, j) in enumerate(indices)]])
+            for boundary in self.mesh.boundaries:
+                solver.add_natural_bc(condition, boundary.name)
         solver.petsc_options["snes_rtol"] = 1.0e-8
         solver.petsc_options["ksp_rtol"] = 1.0e-9
         solver.petsc_options["ksp_type"] = "gmres"
