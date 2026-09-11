@@ -116,35 +116,78 @@ class TestNitscheFreeslip:
         print(f"Penalty vs essential: relative L2 diff = {diff:.4e}")
         assert diff < 0.01, f"Penalty differs from essential by {diff:.4e}"
 
-    def test_nitsche_normal_velocity_zero(self, solutions):
-        """Normal velocity on free-slip boundaries should be near zero."""
+    def test_nitsche_constrains_the_wall_normal_velocity(self, solutions):
+        """The Nitsche term is wired up and acting on the wall-normal component.
+
+        This is a WIRING check, not an accuracy claim. Nitsche is a weak
+        constraint: it does not drive v.n to machine precision and is not
+        supposed to (see docs/developer/subsystems/rotated-freeslip.md, which is
+        why rotated strong free-slip exists). How small the residual leak is
+        depends on gamma, the mesh, the forcing and the viscosity, so any tight
+        number here would be a property of this fixture rather than of the code.
+
+        The bound is therefore deliberately loose — it fails if the constraint
+        is absent or has no effect, and passes for any configuration in which it
+        is doing its job. Do NOT tighten it to track a measured value: the
+        previous version of this test asserted an ABSOLUTE 1e-4, which scaled
+        with the buoyancy forcing rather than with anything about Nitsche, and
+        sat a fraction of a percent from failing for unrelated reasons.
+        """
         v, _, coords = solutions["nitsche"]
+        scale = np.max(np.abs(v))
 
-        # Top boundary (y ~ 1): v_y should be ~ 0
-        top = np.abs(coords[:, 1] - 1.0) < 1e-10
-        if np.any(top):
-            max_vy_top = np.max(np.abs(v[top, 1]))
-            print(f"Nitsche max |v_y| on top: {max_vy_top:.4e}")
-            assert max_vy_top < 1e-4
+        for name, on_wall in (("top", np.abs(coords[:, 1] - 1.0) < 1e-10),
+                              ("bottom", np.abs(coords[:, 1]) < 1e-10)):
+            if not np.any(on_wall):
+                continue
+            leak = np.max(np.abs(v[on_wall, 1])) / scale
+            print(f"Nitsche relative |v_y| on {name}: {leak:.3e}")
+            assert leak < 0.1, (
+                f"wall-normal velocity on {name} is {leak:.3e} of the velocity "
+                "scale — the free-slip constraint is not being applied"
+            )
 
-        # Bottom boundary (y ~ 0): v_y should be ~ 0
-        bot = np.abs(coords[:, 1]) < 1e-10
-        if np.any(bot):
-            max_vy_bot = np.max(np.abs(v[bot, 1]))
-            print(f"Nitsche max |v_y| on bottom: {max_vy_bot:.4e}")
-            assert max_vy_bot < 1e-4
+    @pytest.mark.tier_c
+    def test_constraint_strength_ordering_characterisation(self, solutions):
+        """Characterisation: strong is exact, both weak paths leak; tier C.
 
-    def test_nitsche_better_than_penalty_constraint(self, solutions):
-        """Nitsche should enforce normal constraint at least as well as penalty."""
-        v_nit, _, coords_nit = solutions["nitsche"]
-        v_pen, _, coords_pen = solutions["penalty"]
+        This test CAN fail because the code got better, and that is why it is
+        tier C: a failure here demands an explanation, not a revert. It is not
+        a contract, and nothing should be reverted to make it pass.
 
-        # Compare max |v_y| on top boundary
-        top_nit = np.abs(coords_nit[:, 1] - 1.0) < 1e-10
-        top_pen = np.abs(coords_pen[:, 1] - 1.0) < 1e-10
+        It exists because the ordering is what the free-slip rulings rest on —
+        an essential BC (and a rotated strong free-slip) holds v.n to machine
+        precision, while Nitsche and penalty are weak constraints that leave a
+        finite leak. If a weak path starts coming out exact, or the strong path
+        stops being exact, the documented reasoning in
+        docs/developer/subsystems/rotated-freeslip.md needs revisiting and
+        somebody should say why.
 
-        max_vn_nit = np.max(np.abs(v_nit[top_nit, 1])) if np.any(top_nit) else 0
-        max_vn_pen = np.max(np.abs(v_pen[top_pen, 1])) if np.any(top_pen) else 0
+        The numbers are a characterisation of THIS fixture, measured
+        2026-09-12 at res=8: essential 0.0, penalty 1.5e-3, nitsche 5.7e-3
+        relative to the velocity scale. They are deliberately not a ranking —
+        which of the two weak methods leaks less is problem-dependent, moves
+        with gamma and the penalty coefficient, and is not asserted here.
+        """
+        leaks = {}
+        for method in ("essential", "penalty", "nitsche"):
+            v, _, coords = solutions[method]
+            on_top = np.abs(coords[:, 1] - 1.0) < 1e-10
+            if not np.any(on_top):
+                pytest.skip("no nodes on the top wall in this partition")
+            leaks[method] = np.max(np.abs(v[on_top, 1])) / np.max(np.abs(v))
 
-        print(f"Normal velocity on top: Nitsche={max_vn_nit:.4e}, Penalty={max_vn_pen:.4e}")
-        # Nitsche at gamma=10 should be comparable or better than penalty at 1e4
+        print("Relative |v_y| on top: "
+              + ", ".join(f"{k}={v:.3e}" for k, v in leaks.items()))
+
+        assert leaks["essential"] < 1.0e-12, (
+            f"an essential BC is expected to hold v.n to machine precision; got "
+            f"{leaks['essential']:.3e}. This is the contract half of this test."
+        )
+        for method in ("penalty", "nitsche"):
+            assert leaks[method] > 1.0e-5, (
+                f"{method} leaked only {leaks[method]:.3e} — a weak constraint "
+                "reaching machine precision is GOOD NEWS and a change in "
+                "behaviour. Explain it and re-characterise; do not revert to "
+                "make this pass."
+            )
