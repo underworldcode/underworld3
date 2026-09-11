@@ -1537,15 +1537,14 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 "constitutive model that asks for one.")
         self._stress_transport = value
 
-    def _stress_history_pre_solve(self, timestep, verbose=False, evalf=False,
-                                  _force_setup=False):
-        """Prepare the viscoelastic step: carry the stress history to where the
-        momentum solve will read it, and refresh the model's coefficients.
+    def _stress_history_prepare(self, timestep, _force_setup=False):
+        """Set the elastic timestep and the flags a rebuild depends on.
 
-        Separated from :meth:`solve` so that a solver which takes several passes
-        over the momentum equation (the Navier-Stokes one, with its Picard
-        corrections) advances the stress history once per step rather than once
-        per pass.
+        Runs BEFORE the solver is built. The effective order of the stress
+        history ramps over the opening steps, and when it changes the compiled
+        functions must be rewired; setting that flag after the build has already
+        decided whether to set up leaves the managed multigrid block asking a
+        preconditioner for sub-solvers it has not created (#727).
         """
         if timestep is None:
             raise ValueError(
@@ -1573,12 +1572,13 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
 
-        if not self.is_setup:
-            self._setup_pointwise_functions(verbose)
-            self._setup_discretisation(verbose)
-            self._setup_solver(verbose)
-            self._check_velocity_preconditioner()
+    def _stress_history_advance(self, timestep, verbose=False, evalf=False):
+        """Carry the stress history to where the momentum solve will read it.
 
+        Runs AFTER the solver is built, and once per step: a solver that takes
+        several passes over the momentum equation (the Navier-Stokes one, with
+        its Picard corrections) must not advance the history once per pass.
+        """
         if uw.mpi.rank == 0 and verbose:
             print("Stokes solver - carry the stress history", flush=True)
 
@@ -1788,11 +1788,18 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                     "Call stokes.solve(timestep=dt)"
                 )
 
-            self._stress_history_pre_solve(
-                timestep, verbose=verbose, evalf=evalf, _force_setup=_force_setup)
+            self._stress_history_prepare(timestep, _force_setup=_force_setup)
 
             if order is None or order > self._order:
                 order = self._order
+
+            if not self.is_setup:
+                self._setup_pointwise_functions(verbose)
+                self._setup_discretisation(verbose)
+                self._setup_solver(verbose)
+                self._check_velocity_preconditioner()
+
+            self._stress_history_advance(timestep, verbose=verbose, evalf=evalf)
 
             # 2. SOLVE
             if uw.mpi.rank == 0 and verbose:

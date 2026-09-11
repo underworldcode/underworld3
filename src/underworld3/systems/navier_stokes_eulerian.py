@@ -540,12 +540,17 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
         # The base _build resolves the preconditioner choice against the mesh
         # before the SNES reads its options; the setup stages must not be run
         # directly here (they mark the solver set up first, #683).
-        self._build(verbose)
-
         carries_stress = self.Unknowns.DFDt is not None
         if carries_stress:
-            # Once per step, around the passes -- not once per pass.
-            self._stress_history_pre_solve(dt, verbose=verbose, evalf=False)
+            # BEFORE the build: the order ramp decides whether the compiled
+            # functions must be rewired, and the build reads that flag (#727).
+            self._stress_history_prepare(dt)
+
+        self._build(verbose)
+
+        if carries_stress:
+            # AFTER the build, once per step -- not once per pass.
+            self._stress_history_advance(dt, verbose=verbose, evalf=False)
 
         self._prime_history()
         u_n = np.array(self.u.array[...])
