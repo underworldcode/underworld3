@@ -17,7 +17,10 @@ import sympy
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+# Module carries the LEVEL only; the tier goes on each test. pytest MERGES module
+# and function marks, so a tier_c test in a tier_b module would carry both and
+# still be selected by `tier_a or tier_b`.
+pytestmark = [pytest.mark.level_2]
 
 
 def _case2(res):
@@ -69,6 +72,7 @@ def _case2(res):
 def _surface_amplitude(fs):
     top = fs.mesh.X.coords[fs._surf_rows, -1]
     return float(np.abs(top - top.mean()).max()) if top.size else 0.0
+@pytest.mark.tier_b
 
 
 def test_free_surface_plume_rises_and_conserves():
@@ -104,6 +108,7 @@ def _powerlaw(v, x):
     e = 0.5 * (g + g.T)
     eII = sympy.sqrt(0.5 * (e[0, 0] ** 2 + e[1, 1] ** 2) + e[0, 1] ** 2 + 1.0e-12)
     return eII ** (1.0 / 3.0 - 1.0)
+@pytest.mark.tier_b
 
 
 def test_free_surface_nonlinear_viscosity_self_consistent():
@@ -150,6 +155,7 @@ def test_free_surface_nonlinear_viscosity_self_consistent():
     assert np.linalg.norm(b) > 1.0e-3, "reference held solve produced no flow"
     rel = np.linalg.norm(a - b) / np.linalg.norm(b)
     assert rel < 1.0e-6, f"held viscosity not rebound to own velocity (rel diff {rel:.2e})"
+@pytest.mark.tier_b
 
 
 @pytest.mark.mpi(min_size=2)
@@ -163,6 +169,7 @@ def test_free_surface_plume_parallel():
     amplitude = _surface_amplitude(fs)
     # coarse res-40 reference is O(1e-4); assert the right sign and magnitude band.
     assert 1.0e-5 < amplitude < 1.0e-3, f"parallel surface amplitude off: {amplitude}"
+@pytest.mark.tier_b
 
 
 @pytest.mark.level_1
@@ -229,6 +236,7 @@ def _annulus_freesurface(constraint):
     fs._comp_adv.add_dirichlet_bc(1.0, "Lower")
     fs._comp_adv.add_dirichlet_bc(0.0, "Upper")
     return mesh, fs, rhat
+@pytest.mark.tier_b
 
 
 @pytest.mark.level_2
@@ -253,15 +261,13 @@ def test_freesurface_prescribed_rate_is_flux_free():
     assert ratio < 5.0e-3, f"prescribed rate carries {ratio:.2e} of net flux (nodal demean?)"
 
 
-@pytest.mark.level_2
-def test_freesurface_strong_constraint_beats_penalty():
-    r"""With a flux-free datum the STRONG rotated constraint holds the surface as a
-    material boundary far better than the weak penalty, and does not leak volume.
+@pytest.fixture(scope="module")
+def constraint_measurements():
+    """Datum error and net/gross surface flux for each constraint, measured once.
 
-    This is the reason ``consistent_constraint`` defaults to ``"strong"``: the penalty
-    both misses the prescribed rate and passes a net volume flux through the surface,
-    and material crossing the surface is what puts semi-Lagrangian departure points
-    outside the domain."""
+    Both the contract below and the characterisation after it read these, so the
+    four solve/advance steps per constraint are paid once rather than twice.
+    """
     errors, leaks = {}, {}
     for constraint in ("strong", "penalty"):
         mesh, fs, rhat = _annulus_freesurface(constraint)
@@ -280,15 +286,52 @@ def test_freesurface_strong_constraint_beats_penalty():
         target = np.asarray(fs._un_target.array[fs._un_target_rows, 0, 0]).flatten()
         errors[constraint] = np.abs(realised - target).max() / np.abs(target).max()
         leaks[constraint] = abs(float(net.evaluate())) / abs(float(gross.evaluate()))
+    return errors, leaks
 
-    assert errors["strong"] < 0.5 * errors["penalty"], (
-        f"strong constraint not better: {errors['strong']:.2e} vs "
-        f"penalty {errors['penalty']:.2e}")
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_freesurface_strong_constraint_passes_no_net_flux(constraint_measurements):
+    r"""Contract: the strong rotated constraint holds the surface as a material
+    boundary — no net volume flux through it.
+
+    Absolute, with no rival method in it. Material crossing the surface is what
+    puts semi-Lagrangian departure points outside the domain, so this one gates.
+    """
+    _, leaks = constraint_measurements
+    print(f"net/gross flux through the surface: strong={leaks['strong']:.2e}")
     assert leaks["strong"] < 1.0e-3, \
         f"strong constraint leaks net volume flux {leaks['strong']:.2e}"
 
 
+# The tier goes on the test, not the module: pytest MERGES marks, so a module
+# tier would remain on this item and `tier_a or tier_b` would still select it.
+@pytest.mark.level_2
+@pytest.mark.tier_c
+def test_freesurface_strong_constraint_against_penalty(constraint_measurements):
+    r"""Characterisation: the strong constraint tracks the prescribed rate more
+    closely than the weak penalty.
+
+    This compares two METHODS, so it can fail because the penalty path improved —
+    which would be good news. Tier C: a failure demands an explanation, not a
+    revert. It is NOT the justification for ``consistent_constraint="strong"``;
+    the contract that justifies it is the no-net-flux test above.
+
+    Measured 2026-09-12 on the annulus fixture, 4 solve/advance steps: datum
+    error strong 1.06e-2 against penalty 3.01e-2. The 0.5 factor characterises
+    this fixture and is not a specification.
+    """
+    errors, _ = constraint_measurements
+    print(f"datum error: strong={errors['strong']:.2e} "
+          f"penalty={errors['penalty']:.2e}")
+    assert errors["strong"] < 0.5 * errors["penalty"], (
+        f"strong constraint not better: {errors['strong']:.2e} vs "
+        f"penalty {errors['penalty']:.2e}. If the penalty path improved, "
+        "explain it and re-characterise; do not revert to make this pass.")
+
+
 @pytest.mark.level_1
+@pytest.mark.tier_b
 def test_freesurface_ring_quadrature_is_exact_in_parallel():
     """The arc-length datum gauge must be partition-independent.
 
