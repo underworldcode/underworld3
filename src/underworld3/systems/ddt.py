@@ -111,10 +111,39 @@ class DDtSymbolicState(_DDtCoreState):
     """Snapshot of a :class:`Symbolic` DDt instance's evolution state.
 
     ``Symbolic`` is the pure-symbolic flavor — ``psi_star`` history
-    slots hold sympy expressions (immutable), captured by value.
+    slots hold symbolic matrices whose containers are copied, but whose live
+    UWexpression atoms are retained by reference. This supports in-memory
+    backstepping, not isolation from subsequent changes to those atoms.
+    These references cannot be transported through disk snapshots; symbolic
+    history is currently skipped there. Reconstructing symbolic forms from
+    the solver would be needed for a general disk-restart guarantee.
     """
 
     psi_star: list = field(default_factory=list)
+
+    def __deepcopy__(self, memo):
+        """Copy history containers without reconstructing symbolic atoms.
+
+        SymPy matrices are value containers but their expression atoms include
+        UWexpression objects whose identity binds them to live parameter and
+        coefficient registries. Generic ``copy.deepcopy`` reconstructs those
+        Symbol subclasses without their wrapped value, producing invalid atoms
+        after snapshot restore. Matrix ``copy()`` keeps the immutable symbolic
+        atoms while separating the mutable history list and matrices.
+        """
+        import copy
+
+        duplicate = type(self)(
+            _schema_version=self._schema_version,
+            dt_history=copy.deepcopy(self.dt_history, memo),
+            history_initialised=self.history_initialised,
+            n_solves_completed=self.n_solves_completed,
+            dt=copy.deepcopy(self.dt, memo),
+            psi_star=[value.copy() for value in self.psi_star],
+        )
+        memo[id(self)] = duplicate
+        return duplicate
+
 
 
 @dataclass
