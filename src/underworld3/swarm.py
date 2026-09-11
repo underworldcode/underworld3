@@ -121,6 +121,112 @@ class SwarmType(Enum):
 from underworld3.utilities.dimensionality_mixin import DimensionalityMixin
 
 
+#: Which sampling rules each proxy target can offer. ``proxy_location`` chooses
+#: WHERE the assembler reads the particle data; ``proxy_sampling`` chooses WHAT
+#: it reads there. The two axes are not fully independent: a per-cell
+#: least-squares fit is a reconstruction by construction, and the Voronoi share
+#: needs the cell-major integration-point layout to restrict itself to a cell.
+_PROXY_SAMPLING_BY_LOCATION = {
+    "nodes": ("reconstruct",),
+    "integration_points": ("reconstruct", "share"),
+    "cells": ("reconstruct",),
+}
+
+#: ``"nearest"`` is deliberately absent above. Reading one particle's value
+#: whole is the MATERIAL mapping, and a material is an
+#: :class:`IndexSwarmVariable` — it carries the label, presents one level set
+#: per material, and lets the properties be blended by that partition of unity.
+#: Carrying a property field directly on the particles and sampling it is the
+#: route this does not offer: it puts the constitutive relationship on the
+#: particles, where the solver cannot reach the pieces it needs.
+_NO_HAND_ROLLED_MATERIALS = (
+    "a nearest-particle read is the material mapping, and a material is an "
+    "IndexSwarmVariable: it carries the label, presents one level set per "
+    "material, and blends the properties through that partition of unity "
+    "(see createMask). Building the property field itself on the particles is "
+    "deliberately not offered — the solver needs the constitutive law, not a "
+    "sampled answer to it."
+)
+
+_PROXY_SAMPLING_WHY = {
+    ("nodes", "nearest"): _NO_HAND_ROLLED_MATERIALS,
+    ("integration_points", "nearest"): _NO_HAND_ROLLED_MATERIALS,
+    ("cells", "nearest"): _NO_HAND_ROLLED_MATERIALS,
+    ("cells", "share"): (
+        "a 'cells' proxy already uses every particle in the cell, by fitting "
+        "them. The share is the integration-point equivalent: use "
+        "proxy_location='integration_points'."
+    ),
+    ("nodes", "share"): (
+        "the share partitions a cell between its integration points, and a "
+        "NODE is shared between cells, so there is no cell to restrict to. Use "
+        "proxy_location='integration_points'."
+    ),
+}
+
+
+def _validate_proxy_sampling(proxy_location, proxy_sampling):
+    """Check a (location, sampling) pair and return the sampling rule.
+
+    Raises rather than silently ignoring an unavailable combination: a
+    material mapping that quietly did something other than what was asked is
+    exactly the failure this machinery exists to prevent.
+    """
+    allowed = _PROXY_SAMPLING_BY_LOCATION.get(proxy_location)
+    if allowed is None:
+        raise ValueError(
+            "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+            f"not {proxy_location!r}"
+        )
+    if proxy_sampling in allowed:
+        return proxy_sampling
+    if proxy_sampling not in ("reconstruct", "nearest", "share"):
+        raise ValueError(
+            "proxy_sampling must be 'reconstruct', 'nearest' or 'share', "
+            f"not {proxy_sampling!r}"
+        )
+    why = _PROXY_SAMPLING_WHY.get((proxy_location, proxy_sampling), "")
+    raise ValueError(
+        f"proxy_sampling={proxy_sampling!r} is not available for "
+        f"proxy_location={proxy_location!r} (offered: {', '.join(allowed)})"
+        + (" — " + why if why else "")
+    )
+
+
+def _validate_index_proxy_sampling(proxy_location, proxy_sampling):
+    """Resolve ``proxy_sampling`` for a level-set (index) variable.
+
+    The level sets of an :class:`IndexSwarmVariable` are built differently at
+    each target — a distance-weighted nodal fill, a per-cell least-squares
+    fraction, or a direct read at the integration points — so the sampling
+    axis only opens up for the last of those. ``None`` means "the sensible
+    one for this location".
+    """
+    if proxy_location not in _PROXY_SAMPLING_BY_LOCATION:
+        raise ValueError(
+            "proxy_location must be 'nodes', 'integration_points' or 'cells', "
+            f"not {proxy_location!r}"
+        )
+    if proxy_location != "integration_points":
+        if proxy_sampling not in (None, "reconstruct"):
+            raise ValueError(
+                f"proxy_sampling={proxy_sampling!r} is only available for "
+                "proxy_location='integration_points'. A 'nodes' level set is a "
+                "distance-weighted fill and a 'cells' level set is a "
+                "least-squares fraction; neither takes a sampling rule."
+            )
+        return "reconstruct"
+    if proxy_sampling is None:
+        return "nearest"
+    if proxy_sampling not in ("nearest", "share"):
+        raise ValueError(
+            "proxy_sampling for an IndexSwarmVariable at the integration points "
+            f"must be 'nearest' (a material label, sharp) or 'share' (material "
+            f"fractions from every particle), not {proxy_sampling!r}"
+        )
+    return proxy_sampling
+
+
 class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object):
     r"""
     Variable supported by a particle swarm (point cloud).
@@ -152,13 +258,19 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         reconstructed from the nearest particles at every integration point
         and read there directly, with no second interpolation (the
         Ellipsis / Underworld PIC-LIP mapping); a material interface keeps
-        its sub-cell position, and the proxy has no gradient (a derivative
-        of its symbol is refused). ``proxy_degree`` / ``proxy_continuous``
-        are ignored in that case. ``"cells"``: a discontinuous mesh variable
+        its sub-cell position, and the proxy has no gradient of its own: a
+        derivative of its symbol in a WEAK FORM is refused (see ``"cells"``
+        below for the remedy), while ``uw.function.evaluate`` of the same
+        derivative answers by fitting the values per cell first.
+        ``proxy_degree`` / ``proxy_continuous`` are ignored in that case. ``"cells"``: a discontinuous mesh variable
         of ``proxy_degree`` holding, in every cell, the least-squares
         polynomial through the particles that cell holds (a thin cell takes
         a linear fit to the particles nearest its centroid, an empty cell
-        keeps its previous value). Exact for
+        keeps its previous value). THIS is the target to choose when a solve
+        needs a gradient: the level sets are polynomials, so they
+        differentiate directly in a weak form, with no projection solve
+        (degree 2 recovers the gradient of a quadratic particle field to
+        2e-7). Exact for
         polynomial particle fields up to ``proxy_degree``, integrated exactly
         by the default rule, sharp at cell edges, with a gradient, and no
         neighbour search across ranks; see
@@ -169,6 +281,31 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     proxy_continuous : bool, default=True
         Whether the proxy uses continuous (True) or discontinuous (False)
         interpolation.
+    proxy_sampling : {"reconstruct", "share"}, default="reconstruct"
+        How the particle values become a value at each proxy point.
+        ``proxy_location`` says *where* the assembler reads; this says *what*
+        it reads there.
+
+        - ``"reconstruct"``: a weighted fit over the ``nnn`` nearest
+          particles, exact for linear fields. What a smooth field wants.
+        - ``"share"``: the mean over the particles this point speaks for —
+          those whose nearest integration point *within their own cell* is
+          this one (the cell-restricted Voronoi share). Every particle reaches
+          the assembly, weighted by the sub-region it represents, which is
+          what a HISTORY wants: stress, damage, accumulated strain, anything
+          whose value was earned by being advected. Requires
+          ``proxy_location="integration_points"``.
+
+        There is no nearest-particle option here. Sampling one particle's
+        value whole is the *material* mapping, and materials are built from
+        :class:`IndexSwarmVariable`, which carries the label and presents one
+        level set per material for the properties to be blended by. Putting a
+        property field on the particles and sampling it hands the solver an
+        answer where it needs a constitutive law, so it is not offered.
+
+        ``"cells"`` fits a polynomial per cell and takes ``"reconstruct"``
+        only; ``"share"`` needs the cell-major integration-point layout. An
+        unavailable combination raises rather than being quietly ignored.
     varsymbol : str, optional
         LaTeX symbol for display. Defaults to ``name``.
     rebuild_on_cycle : bool, default=True
@@ -214,6 +351,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         proxy_degree=1,
         proxy_continuous=True,
         proxy_location="nodes",
+        proxy_sampling="reconstruct",
         _register=True,
         _proxy=True,
         varsymbol=None,
@@ -405,6 +543,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             )
         self._cell_projector = None
         self._proxy_location = proxy_location
+        self._proxy_sampling = _validate_proxy_sampling(proxy_location, proxy_sampling)
         self._create_proxy_variable()
 
         # Inert: kept for backward compatibility with the removed
@@ -1351,6 +1490,60 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         return
 
     # Maybe rbf_interpolate for this one and meshVar is a special case
+    def _share_to_integration_points(self, meshVar, values):
+        r"""Values at the integration points by the cell-restricted Voronoi share.
+
+        Each particle is assigned to the nearest integration point *of its own
+        cell*, and each point reads the mean over the particles assigned to
+        it. Every particle reaches the assembly exactly once, weighted by the
+        sub-region of the cell it represents — the nearest-particle rule, by
+        contrast, discards whichever particles are not closest to a rule point,
+        which at ten per cell is most of them.
+
+        A rule point whose share is empty (an under-filled or empty cell) falls
+        back to the nearest particle anywhere on this rank, which is the same
+        answer ``proxy_sampling="nearest"`` would have given it. The count of
+        such points is kept on ``self._share_empty`` — a persistently non-zero
+        value means the swarm is too thin for the rule, and
+        :meth:`Swarm.repopulate` is the fix.
+
+        Parameters
+        ----------
+        meshVar : IntegrationPointVariable
+            The proxy being filled.
+        values : ndarray, shape (Np, ncomp)
+            Particle values, non-dimensional.
+
+        Returns
+        -------
+        ndarray, shape (ncells * Nq, ncomp)
+        """
+        from underworld3.utilities.particle_share import (
+            share_assignment,
+            share_average,
+        )
+
+        ipc = np.asarray(meshVar.integration_points)      # (ncells, Nq, cdim)
+        npoints = ipc.shape[0] * ipc.shape[1]
+        values = np.asarray(values, dtype=float)
+        values = values.reshape(values.shape[0], -1)
+
+        flat = share_assignment(
+            ipc, np.asarray(self.swarm._particle_coordinates.data),
+            self.swarm._owning_cells(),
+        )
+        means, counts = share_average(flat, values, npoints)
+
+        empty = counts == 0
+        self._share_empty = int(empty.sum())
+        if self._share_empty:
+            _, nearest = self.swarm._get_kdtree().query(
+                ipc.reshape(-1, ipc.shape[-1])[empty], k=1, sqr_dists=False
+            )
+            means[empty] = values[np.asarray(nearest).reshape(-1)]
+
+        return means
+
     def _rbf_to_meshVar(self, meshVar, nnn=None, verbose=False, order=1,
                         monotone=False):
         """
@@ -1407,6 +1600,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     stacklevel=2,
                 )
             Values = current_values
+        elif getattr(self, "_proxy_sampling", "reconstruct") == "share":
+            Values = self._share_to_integration_points(
+                meshVar, self.unpack_raw_data_from_petsc(squeeze=False)
+            )
         elif monotone:
             # The limiter is data-dependent, so it cannot ride on a cached
             # geometry-only operator; take the direct path.
@@ -2442,6 +2639,49 @@ class IndexSwarmVariable(SwarmVariable):
         Polynomial degree for mesh projection (default 1).
     proxy_continuous : bool
         Whether mesh proxy is continuous (default True).
+    proxy_location : {"integration_points", "nodes", "cells"}, default="integration_points"
+        Where the level sets live.
+
+        ``"integration_points"`` (the default): the level sets are stored at
+        the points where the assembler evaluates the weak form, so a material
+        interface keeps its sub-cell position and each mask is exactly 0 or 1
+        (the Ellipsis / Underworld particle-in-cell material mapping). These
+        level sets have no gradient of their own, so a derivative of a mask in
+        a weak form is refused rather than silently answered with zero;
+        ``uw.function.evaluate`` still answers, by fitting per cell.
+
+        ``"nodes"``: a continuous field per material. A node on an interface
+        averages both materials, so the cells either side see a property that
+        is neither, and the smear is about one cell wide however many
+        particles you add — it is a property of the basis, not of the swarm.
+        Kept for continuity with existing models; measurably the worst of the
+        three at an interface (layered Couette: 8.0e-2 against 1.8e-7).
+
+        ``"cells"``: a polynomial material fraction per cell, clamped to
+        [0, 1] and renormalised. Sharp at cell edges and DIFFERENTIABLE — the
+        one to choose when a solve needs the gradient of a material property.
+
+        ``proxy_continuous`` applies only to ``"nodes"``.
+    proxy_sampling : {"nearest", "share"}, optional
+        Only for ``proxy_location="integration_points"``; defaults to
+        ``"nearest"``.
+
+        ``"nearest"``: each integration point takes the material of its
+        nearest particle, so the masks are 0 or 1 and sum to 1 by
+        construction. Nothing is mixed, so no mixing assumption is made. The
+        error falls as particles are added until the quadrature rule limits
+        it — about eight particles per cell on P2 velocity, after which the
+        mesh, not the swarm, is what to refine.
+
+        ``"share"``: each integration point takes the material FRACTIONS of
+        the particles it speaks for (the cell-restricted Voronoi share), so a
+        cell the interface crosses carries fractional masks. Use it when the
+        material genuinely is a sub-cell mixture rather than an interface, and
+        note the trap: :meth:`createMask` blends properties arithmetically,
+        which is a Voigt (equal-strain-rate) average, and on a sharp contrast
+        that does not converge with particle density — 3.5e-2 flat, against
+        1.2e-2 for the same masks blended harmonically. Fractions are only
+        worth having when you have chosen the mixing rule deliberately.
 
     Examples
     --------
@@ -2463,6 +2703,8 @@ class IndexSwarmVariable(SwarmVariable):
         indices=1,
         proxy_degree=1,
         proxy_continuous=True,
+        proxy_location="integration_points",
+        proxy_sampling=None,
         update_type=0,
         npoints=5,
         radius=0.5,
@@ -2471,6 +2713,18 @@ class IndexSwarmVariable(SwarmVariable):
         varsymbol=None,
     ):
         self.indices = indices
+        proxy_sampling = _validate_index_proxy_sampling(proxy_location, proxy_sampling)
+        if update_type != 0 and proxy_location != "nodes":
+            import warnings
+
+            warnings.warn(
+                f"update_type={update_type} selects between two NODAL fill "
+                f"algorithms and has no effect at proxy_location="
+                f"{proxy_location!r}; pass proxy_location='nodes' if that is "
+                "what you meant.",
+                stacklevel=2,
+            )
+        self._cell_projector = None
         self.nnn = npoints
         self.radius_s = radius  # **2 # changed to radius
         self.update_type = update_type
@@ -2490,16 +2744,12 @@ class IndexSwarmVariable(SwarmVariable):
             _proxy=False,
             varsymbol=varsymbol,
         )
-        """
-        vtype = (None,)
-        dtype = (float,)
-        proxy_degree = (1,)
-        proxy_continuous = (True,)
-        _register = (True,)
-        _proxy = (True,)
-        varsymbol = (None,)
-        rebuild_on_cycle = (True,)
-        """
+        # AFTER super().__init__, which sets _proxy_location / _proxy_sampling
+        # from its own defaults (this class does not forward the arguments,
+        # since the base single-proxy _meshVar is not built here at all).
+        self._proxy_location = proxy_location
+        self._proxy_sampling = proxy_sampling
+
         # The indices variable defines how many "level set" maps we create as components in the proxy variable
 
         import sympy
@@ -2508,13 +2758,21 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
-                name + R"^{[" + str(i) + R"]}",
-                self.swarm.mesh,
-                num_components=1,
-                degree=proxy_degree,
-                continuous=proxy_continuous,
-            )
+            lname = name + R"^{[" + str(i) + R"]}"
+            if proxy_location == "integration_points":
+                self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
+                    lname, self.swarm.mesh,
+                )
+            elif proxy_location == "cells":
+                self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
+                    lname, self.swarm.mesh, num_components=1,
+                    degree=proxy_degree, continuous=False,
+                )
+            else:
+                self._meshLevelSetVars[i] = uw.discretisation.MeshVariable(
+                    lname, self.swarm.mesh, num_components=1,
+                    degree=proxy_degree, continuous=proxy_continuous,
+                )
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
         # Initialize lazy evaluation state
@@ -2726,6 +2984,95 @@ class IndexSwarmVariable(SwarmVariable):
         uw.pprint(f"IndexSwarmVariable {self}")
         uw.pprint(f"Numer of indices {self.indices}")
 
+    def _update_index_proxies_from_particles(self):
+        r"""Fill the level sets directly from the particles, with no nodal step.
+
+        ``proxy_location="integration_points"`` with ``proxy_sampling="nearest"``
+        (the default): every integration point takes the material of its
+        NEAREST PARTICLE, so each level set is exactly 0 or 1 there and the
+        masks sum to 1 by construction. That is the Ellipsis / Underworld
+        particle-in-cell material mapping: the interface keeps its sub-cell
+        position, no node averages two materials, and no reconstruction can
+        overshoot into a negative viscosity.
+
+        ``proxy_sampling="share"``: every integration point takes the material
+        FRACTIONS of the particles it speaks for — those whose nearest
+        integration point within their own cell is this one. Every particle
+        contributes; a cell the interface crosses carries fractional masks.
+        See the class docstring for when that is what you want, and for the
+        mixing-rule trap that comes with it.
+
+        ``proxy_location="cells"``: each level set is the least-squares
+        polynomial through the cell's own particle indicators
+        (:class:`~underworld3.utilities.cell_polynomial_projection.CellPolynomialProjector`),
+        clamped to :math:`[0, 1]` and renormalised so the masks still sum to 1.
+        A material fraction per cell, with a gradient, sharp at cell edges.
+        """
+        from underworld3.utilities.cell_polynomial_projection import CellPolynomialProjector
+
+        # Collective read/write sequence: every rank walks the same variables
+        # (only the values differ), as in the nodal path's starved-rank guard.
+        # One particle is enough here, unlike the nodal path's weighted
+        # average: the nearest-particle answer is well defined from a single
+        # particle, and the cell fit falls back to its patch. Only a rank with
+        # NO particles has nothing to say.
+        starved = self.swarm.local_size < 1
+        if starved:
+            if self.swarm._population_generation > 0:
+                import warnings
+
+                warnings.warn(
+                    f"IndexSwarmVariable proxy update: rank {uw.mpi.rank} holds "
+                    f"{max(self.swarm.local_size, 0)} particles; level-set "
+                    f"variables for '{self.clean_name}' left unchanged on this rank.",
+                    stacklevel=2,
+                )
+            for var in self._meshLevelSetVars:
+                var.data[:, 0] = var.data[:, 0]          # keep, but write collectively
+            return
+
+        Xp = np.asarray(self.swarm._particle_coordinates.data)
+        idx = np.asarray(self.data).reshape(-1).astype(int)
+        indicator = (idx[:, None] == np.arange(self.indices)[None, :]).astype(float)
+
+        if self._proxy_location == "integration_points":
+            if self._proxy_sampling == "share":
+                # A mean of rows that each sum to 1 still sums to 1, and the
+                # empty-share fallback is one particle's 0/1 row, so the masks
+                # remain a partition of unity whatever the sampling density.
+                U = self._share_to_integration_points(
+                    self._meshLevelSetVars[0], indicator
+                )
+            else:
+                # Every level set is stored at the same points, so the
+                # nearest-particle lookup is done once for all of them.
+                tree = uw.kdtree.KDTree(Xp)
+                _, nearest = tree.query(
+                    np.asarray(self._meshLevelSetVars[0].coords_nd),
+                    k=1, sqr_dists=False,
+                )
+                U = indicator[np.asarray(nearest).reshape(-1)]
+            for ii, var in enumerate(self._meshLevelSetVars):
+                var.data[:, 0] = U[:, ii]
+            return
+
+        # "cells": one fit for every index at once (the level sets share a basis)
+        projector = self._cell_projector
+        if (projector is None or projector.var is not self._meshLevelSetVars[0]
+                or projector.mesh_version != self.swarm.mesh._mesh_version):
+            projector = CellPolynomialProjector(self._meshLevelSetVars[0])
+            self._cell_projector = projector
+        old = np.column_stack([np.asarray(v.data[:, 0]) for v in self._meshLevelSetVars])
+        U = projector.fit(Xp, indicator, old=old)
+        # A fitted indicator can leave [0, 1]; clamp, then renormalise so the
+        # masks remain a partition of unity (createMask stays a weighted mean).
+        U = np.clip(U, 0.0, 1.0)
+        total = U.sum(axis=1)
+        good = total > 1.0e-12
+        U[good] /= total[good, None]
+        for ii, var in enumerate(self._meshLevelSetVars):
+            var.data[:, 0] = U[:, ii]
+
     def _update_proxy_variables(self):
         """
         This method updates the proxy mesh (vector) variable for the index variable on the current swarm locations
@@ -2744,7 +3091,12 @@ class IndexSwarmVariable(SwarmVariable):
         update_type 0: assign the particles to the nearest mesh_levelset nodes, and calculate the value on nodes from them.
         update_type 1: calculate the material property value on mesh_levelset nodes from the nearest N particles directly.
 
+        ``proxy_location`` other than ``"nodes"`` takes neither route: see
+        :meth:`_update_index_proxies_from_particles`.
         """
+        if self._proxy_location != "nodes":
+            self._update_index_proxies_from_particles()
+            return
         # Starved-rank guard (SWARM-07): with <= 1 local particles the
         # nearest-neighbour machinery cannot run — KDTree construction on an
         # empty coordinate array raises IndexError, aborting/hanging the
@@ -3178,6 +3530,7 @@ class Swarm(Stateful, uw_object):
 
         # Invalidate cached spatial index
         self._kdtree = None
+        self._owning_cells_cache = None
 
     def _flush_pending_petsc_sync(self):
         """Pack canonical arrays written while migration was suppressed.
@@ -3329,6 +3682,31 @@ class Swarm(Stateful, uw_object):
         )
         self._proxy_interpolation_cache[key] = (kdtree, operator)
         return operator
+
+    def _owning_cells(self):
+        """Local owning cell of every particle, cached until they move.
+
+        A UW3 swarm is ``DMSWARM_BASIC``: PETSc keeps no cell id for us, so
+        the cell has to be located. That is the expensive half of any
+        cell-local particle operation, and several of them (the Voronoi share,
+        a population census, a per-cell fit) want the same answer within one
+        update, so it is cached here and dropped wherever ``_kdtree`` is.
+
+        Returns
+        -------
+        ndarray, shape (local_size,), int64
+            Local cell index, or ``-1`` for a particle the local mesh does not
+            contain (one in flight between ranks, or just outside an open
+            boundary).
+        """
+        if getattr(self, "_owning_cells_cache", None) is None:
+            X = np.asarray(self._particle_coordinates.data)
+            self._owning_cells_cache = (
+                np.asarray(self.mesh._robust_owning_cells(X), dtype=np.int64)
+                if X.shape[0]
+                else np.zeros(0, dtype=np.int64)
+            )
+        return self._owning_cells_cache
 
     def _get_kdtree(self):
         """
@@ -5040,6 +5418,7 @@ class Swarm(Stateful, uw_object):
         values=None,
         nnn=None,
         order=0,
+        nearest=None,
         verbose=False,
     ):
         """Add particles to cells that hold too few, remove from cells that hold
@@ -5077,6 +5456,12 @@ class Swarm(Stateful, uw_object):
         order : {0, 1}, optional
             RBF reconstruction order for new particles: 0 bounded (default),
             1 linear-exact.
+        nearest : variable, name, or list of them, optional
+            Variables (or names) a new particle takes whole from its nearest
+            existing neighbour instead of by reconstruction. INTEGER-valued
+            variables are always in this set: a material index is a label, and
+            the average of two labels is not a label. Use it for any other
+            field that must stay one of its own values.
 
         Returns
         -------
@@ -5100,7 +5485,13 @@ class Swarm(Stateful, uw_object):
         self._flush_pending_petsc_sync()
         X = np.array(self._particle_coordinates.data, copy=True) if self.local_size > 0 \
             else np.zeros((0, dim))
-        cells = np.asarray(mesh._robust_owning_cells(X), dtype=np.int64) if X.shape[0] else np.zeros(0, np.int64)
+        # The census and the Voronoi-share proxy fill want the same answer, and
+        # locating particles is the expensive half of both, so take the swarm's
+        # cached assignment (dropped whenever the particles move).
+        cells = self._owning_cells()
+        if cells.shape[0] != X.shape[0]:                # cache raced the copy above
+            cells = (np.asarray(mesh._robust_owning_cells(X), dtype=np.int64)
+                     if X.shape[0] else np.zeros(0, np.int64))
         npc = np.bincount(cells[cells >= 0], minlength=ncells)
         lat_cells = np.asarray(mesh._robust_owning_cells(lattice), dtype=np.int64)
         owned = np.zeros(ncells, dtype=bool)
@@ -5157,9 +5548,19 @@ class Swarm(Stateful, uw_object):
             nnn = min(nnn, max(n_old, 1))
             rbf_order = order if nnn >= dim + 2 else 0
             operator = None
+            nearest_row = None
             if n_old > 0:
-                operator = uw.kdtree.KDTree(X).interpolation_matrix(
+                tree = uw.kdtree.KDTree(X)
+                operator = tree.interpolation_matrix(
                     np.asarray(new_coords), nnn=nnn, p=2, order=rbf_order)
+                _, nearest_row = tree.query(np.asarray(new_coords), k=1)
+                nearest_row = np.asarray(nearest_row).reshape(-1)
+            nearest_spec = nearest or ()
+            if isinstance(nearest_spec, str) or not hasattr(nearest_spec, "__iter__"):
+                nearest_spec = (nearest_spec,)          # a bare name or variable
+            nearest_set = set()
+            for item in nearest_spec:
+                nearest_set.add(item if isinstance(item, str) else getattr(item, "clean_name", item))
             # raw values of every variable at the old particles, BEFORE the add
             raw_old = {}
             for name, var in self._vars.items():
@@ -5192,15 +5593,24 @@ class Swarm(Stateful, uw_object):
                     continue
                 spec = values.get(var, values.get(name, values.get(var.clean_name)))
                 ncomp = raw_old[name].shape[1] if n_old > 0 else var.num_components
+                # A label cannot be averaged: integer variables (a material
+                # index) take their nearest neighbour's value whole.
+                take_nearest = (
+                    name in nearest_set
+                    or var.clean_name in nearest_set
+                    or np.issubdtype(np.dtype(getattr(var, "_petsc_dtype", float)), np.integer)
+                )
                 if spec is not None:
                     vals = spec(np.asarray(new_coords)) if callable(spec) else spec
                     vals = np.broadcast_to(np.asarray(vals, dtype=float).reshape(n_new, -1) if np.ndim(vals) > 0 else vals, (n_new, ncomp))
+                elif take_nearest and nearest_row is not None:
+                    vals = raw_old[name][nearest_row]
                 elif operator is not None:
                     vals = operator @ raw_old[name]
                 else:
                     vals = np.zeros((n_new, ncomp))
                 f = self.dm.getField(var.clean_name).reshape((-1, ncomp))
-                f[n_old:, :] = np.asarray(vals).reshape(n_new, ncomp)
+                f[n_old:, :] = np.asarray(vals).reshape(n_new, ncomp).astype(f.dtype, copy=False)
                 self.dm.restoreField(var.clean_name)
             added = n_new
             self._invalidate_canonical_data()
@@ -5713,3 +6123,9 @@ class NodalPointSwarm(Swarm):
 ##  - PIC layouts of particles are not directly available / must be done by hand
 ##  - No automatic migration - must compute ranks for the particle swarms
 ##  - No automatic definition of coordinate fields (need to add by hand)
+
+
+# Materials live in their own module (this one is long enough) but belong to
+# the swarm namespace: a MaterialSwarm IS a Swarm. Imported at the end so the
+# submodule can import Swarm and IndexSwarmVariable from here.
+from underworld3.swarm_materials import MaterialSwarm  # noqa: E402,F401

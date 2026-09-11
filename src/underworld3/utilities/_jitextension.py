@@ -957,8 +957,13 @@ def generate_c_source(
             raise RuntimeError(
                 f"{self.__class__.__name__}: derivative of an integration-point "
                 "variable has no meaning (the field is defined only at the "
-                "quadrature points). Remove the derivative or project the "
-                "variable onto a nodal MeshVariable first."
+                "quadrature points), so the gradient here would be a silent "
+                "zero. This is refused in a WEAK FORM only, where the "
+                "discretisation is yours to choose: build the variable with "
+                "proxy_location='cells' instead, whose level sets are a "
+                "least-squares polynomial per cell and differentiate directly. "
+                "uw.function.evaluate() of the same derivative does answer: as "
+                "a query it recovers the gradient from a per-cell fit for you."
             )
 
         for var in varlist:
