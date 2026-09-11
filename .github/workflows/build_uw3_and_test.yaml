@@ -45,13 +45,16 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The suite has outgrown 60 minutes. Measured 2026-08-15: the SERIAL phase
-    # alone is ~55 min (three batches at 14-15 min each), so the parallel phase
-    # - which runs last - was being cut off mid-run and reported as a failure
-    # that looked like a test failure. Any addition at all pushed a run over.
-    # This is a stop-gap that unblocks landing work; the durable fix is to split
-    # the batches across parallel jobs so wall-clock stops tracking total test
-    # time. See the CI-runtime issue for that.
+    # Raised past 60 minutes on a 2026-08-15 measurement (serial phase ~55 min).
+    # xdist has since cut that: the five successful runs before 2026-09-12 spent
+    # 34, 35, 43, 44 and 48 minutes in "Run tests", well inside this budget. The
+    # headroom is why the previously-deferred bands could simply be switched on
+    # (#721 follow-up) rather than traded against something else.
+    #
+    # Sharding the batches across parallel jobs remains the durable fix if this
+    # tightens again; it was referenced here as "the CI-runtime issue" but never
+    # actually filed, so the numbers above are recorded in the issue that this
+    # change opens.
     timeout-minutes: 120
 
     steps:
