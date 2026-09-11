@@ -20,16 +20,11 @@ REPO = Path(__file__).resolve().parent.parent
 
 # Deferred by maintainer decision, not by accident.
 DEFERRED = {
-    # No issue: this band was disabled in scripts/test.sh as "potentially
-    # problematic" without one being filed. Recorded as it stands rather than
-    # dressed up — #721 follow-up work re-enables it and removes this entry.
-    "test_06[0-9][0-9]_*": "regression suite disabled in test.sh, no issue filed",
-    # Narrow: test_1072 is pulled out of this band and run by name, so a broad
-    # test_107* would list a covered file as deferred.
-    "test_1070_*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
-    "test_1071_*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
-    "test_1073_*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
-    "test_106*": "level_2/level_3 + tier_b/tier_c, awaiting triage (#504)",
+    # Empty, and that is the point. Every band that used to sit here — the
+    # test_06NN regression suite and test_106*/test_107* — is now batched in
+    # scripts/test.sh. Nothing is excluded from CI by its number any more; a
+    # test that should not gate says so with @pytest.mark.tier_c, which is a
+    # property of the test rather than of where it sits in the numbering.
 }
 
 
@@ -38,7 +33,10 @@ def globs_run_by(script):
     text = script.read_text().replace("\\\n", " ")
     patterns = set()
     for line in text.splitlines():
-        if "$PYTEST" in line and not line.lstrip().startswith("#"):
+        # Both spellings: the runner is a bash ARRAY, so call sites read
+        # "${PYTEST[@]}", but a plain $PYTEST is still worth matching in case
+        # one is left behind or reintroduced.
+        if re.search(r"\$\{?PYTEST", line) and not line.lstrip().startswith("#"):
             patterns.update(re.findall(r"tests/[A-Za-z0-9_\[\]*.\-]+", line))
     return patterns
 
