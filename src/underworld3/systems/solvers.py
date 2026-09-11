@@ -1592,10 +1592,12 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     def _stress_history_post_solve(self, timestep, verbose=False, evalf=False):
         """Commit the stress the solve produced and shift the history levels."""
-        # The history manager projects the new stress into level 0 and
-        # shifts the levels: the same step whichever flavour it is.
-        self.DFDt.commit_flux_to_history(
-            self.constitutive_model.flux, verbose=verbose)
+        # The history manager places the new stress in level 0 and shifts the
+        # levels. A particle-carried history does that itself in its post-solve,
+        # by evaluating the new stress at its own particles.
+        if not self.DFDt.commits_flux_in_post_solve:
+            self.DFDt.commit_flux_to_history(
+                self.constitutive_model.flux, verbose=verbose)
 
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
 

@@ -913,6 +913,11 @@ class _DDtBase(uw_object):
         if self._psi_snapshot_enabled and self._psi_snapshot is not None:
             self._psi_snapshot.data[...] = self.psi_star[0].data[...]
 
+    #: A history that places the new flux on its own storage during
+    #: ``update_post_solve`` (the particle flavours evaluate it at their
+    #: particles) rather than through :meth:`commit_flux_to_history`.
+    commits_flux_in_post_solve = False
+
     def commit_flux_to_history(self, flux, verbose=False):
         r"""Project ``flux`` into ``psi_star[0]`` and shift the history levels.
 
@@ -2425,6 +2430,13 @@ def _matrix_of(V):
     return V
 
 
+# TODO(BUG): a non-symmetric psi_fn under vtype=SYM_TENSOR is silently
+# reduced here, and this class keeps the LOWER entry where
+# IntegrationPointSemiLagrangian keeps the UPPER one. Measured 2026-09-10 on
+# [[1+x, 2+y], [100.0, 3+x*y]]: nodal psi_star -> [[1.45, 100.0], [100.0, 3.21]],
+# integration-point -> [[1.46, 2.47], [2.47, 3.21]]. Neither averages and
+# neither warns. The integration-point path now warns; this one should too,
+# and the two should agree on which triangle wins.
 class SemiLagrangian(_DDtBase):
     r"""
     Semi-Lagrangian history manager.
@@ -3891,6 +3903,8 @@ class Lagrangian(_DDtBase):
     Lagrangian_Swarm : For user-provided swarms.
     """
 
+    commits_flux_in_post_solve = True
+
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
     )
@@ -4170,6 +4184,15 @@ class Lagrangian_Swarm(_DDtBase):
         ``"cells"`` fits a least-squares polynomial of degree ``degree`` per
         cell, exact for polynomial histories and integrated exactly by the
         default rule.
+    proxy_sampling : {"reconstruct", "share"}, optional
+        How each slot's proxy reads the particles (default ``"reconstruct"``).
+        ``"share"`` requires ``proxy_location="integration_points"`` and gives
+        every integration point the mean of the particles it speaks for — the
+        cell-restricted Voronoi share. For a HISTORY that is usually what is
+        wanted: every particle's state contributes, the average is bounded by
+        the particle values so it cannot invent a stress the swarm never held,
+        and the stencil cannot reach across a cell wall into another material.
+        See :doc:`../../advanced/particle-population-and-materials`.
     step_averaging : int, optional
         Number of steps for history averaging (default ``2``).
 
@@ -4207,6 +4230,8 @@ class Lagrangian_Swarm(_DDtBase):
     Eulerian : Pure mesh-based history (no particle tracking).
     """
 
+    commits_flux_in_post_solve = True
+
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
     )
@@ -4226,6 +4251,7 @@ class Lagrangian_Swarm(_DDtBase):
         smoothing=0.0,
         step_averaging=2,
         proxy_location="nodes",
+        proxy_sampling="reconstruct",
         particle_update="pic",
         residual_retention=1.0,
     ):
@@ -4255,6 +4281,11 @@ class Lagrangian_Swarm(_DDtBase):
         # (discontinuous, degree `degree`), exact for polynomial histories
         # and integrated exactly by the default rule.
         self.proxy_location = proxy_location
+        # "share": each integration point averages the particles whose nearest
+        # point within their own cell it is, so every particle's history
+        # reaches the assembly and the average stays inside the range the
+        # particles hold.
+        self.proxy_sampling = proxy_sampling
 
         self._init_history_tracking(order)
 
@@ -4288,6 +4319,7 @@ class Lagrangian_Swarm(_DDtBase):
                     proxy_degree=degree,
                     proxy_continuous=continuous,
                     proxy_location=proxy_location,
+                    proxy_sampling=proxy_sampling,
                     varsymbol=rf"{varsymbol}^{{ {'*'*(i+1)} }}",
                 )
             )
@@ -4379,8 +4411,12 @@ class Lagrangian_Swarm(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
-        """Pre-solve: auto-initialise history on first call."""
+        """Pre-solve: auto-initialise history on first call. Extra keyword
+        arguments (the nodal manager's ``store_result``, ``dt_physical``,
+        ``monotone_mode``) are accepted and ignored so a solver written for
+        the nodal history can drive this one."""
         self._dt = dt
 
         if not self._history_initialised:
@@ -4422,9 +4458,37 @@ class Lagrangian_Swarm(_DDtBase):
         dt: float,
         evalf: Optional[bool] = False,
         verbose: Optional[bool] = False,
+        **_ignored,
     ):
-        r"""Shift history chain and evaluate current :math:`\psi` on swarm."""
+        r"""Evaluate the current :math:`\psi` at the particles, then shift the
+        history chain and store it in slot 0.
+
+        The evaluation comes FIRST, every component of it: ``psi_fn`` may
+        read the history itself (a viscoelastic stress is
+        :math:`2\eta_{\rm eff}E_{\rm eff}(\sigma^*, \sigma^{**})`), and
+        writing a component of slot 0 marks its proxy stale, so an
+        evaluation after a partial write would read a history that is half
+        new (audit SWARM-06); a shift before the evaluation would hand the
+        stress expression the wrong levels.
+        """
         self._dt = dt
+
+        phi = 1 / self.step_averaging
+        psi_star_0 = self.psi_star[0]
+        coords = np.asarray(self.swarm._particle_coordinates.data)
+        if self.particle_update == "flip":
+            # The proxy the mesh saw during this solve, at the particles: the
+            # residual psi_p - proxy(x_p) is what the mesh never resolved.
+            proxy_at_p = self._proxy_values_at_particles(psi_star_0, coords, evalf)
+        updated = {}
+        for i in range(psi_star_0.shape[0]):
+            for j in range(psi_star_0.shape[1]):
+                ij = psi_star_0._data_layout(i, j)
+                if ij in updated:
+                    continue                       # symmetric storage: one evaluation per slot
+                updated[ij] = np.asarray(
+                    uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
+                ).reshape(-1)
 
         # Record timestep history for variable-dt BDF
         for i in range(self.order - 1, 0, -1):
@@ -4433,51 +4497,65 @@ class Lagrangian_Swarm(_DDtBase):
 
         for h in range(self.order - 1):
             i = self.order - (h + 1)
-
-            # copy the information down the chain
             if verbose:
-                print(f"Lagrange swarm order = {self.order}", flush=True)
-                print(
-                    f"Mesh interpolant order = {self.psi_star[0]._meshVar.degree}",
-                    flush=True,
-                )
-                print(f"Lagrange swarm copying {i-1} to {i}", flush=True)
-
+                print(f"Lagrange swarm order = {self.order}: copying slot {i-1} to {i}", flush=True)
             self.psi_star[i].data[...] = self.psi_star[i - 1].data[...]
 
-        phi = 1 / self.step_averaging
-
-        psi_star_0 = self.psi_star[0]
-        coords = np.asarray(self.swarm._particle_coordinates.data)
-        if self.particle_update == "flip":
-            # The proxy the mesh saw during this solve, at the particles: the
-            # residual psi_p - proxy(x_p) is what the mesh never resolved.
-            proxy_at_p = self._proxy_values_at_particles(psi_star_0, coords, evalf)
-        # Blend the freshly-evaluated psi into slot 0 component-by-component
-        # through the canonical (N, components) storage (audit SWARM-06).
-        for i in range(psi_star_0.shape[0]):
-            for j in range(psi_star_0.shape[1]):
-                ij = psi_star_0._data_layout(i, j)
-                updated_psi = np.asarray(
-                    uw.function.evaluate(
-                        self.psi_fn[i, j],
-                        coords,
-                        evalf=evalf,
-                    )
-                ).reshape(-1)
-                if self.particle_update == "flip":
-                    residual = np.asarray(psi_star_0.data[:, ij]) - proxy_at_p[:, ij]
-                    psi_star_0.data[:, ij] = updated_psi + self.residual_retention * residual
-                else:
-                    psi_star_0.data[:, ij] = (
-                        phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
-                    )
+        # Store slot 0 component-by-component through the canonical
+        # (N, components) storage (audit SWARM-06).
+        for ij, updated_psi in updated.items():
+            if self.particle_update == "flip":
+                residual = np.asarray(psi_star_0.data[:, ij]) - proxy_at_p[:, ij]
+                psi_star_0.data[:, ij] = updated_psi + self.residual_retention * residual
+            else:
+                psi_star_0.data[:, ij] = (
+                    phi * updated_psi + (1 - phi) * psi_star_0.data[:, ij]
+                )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
 
         return
 
+
+
+def _psi_shape_for(vtype, cdim):
+    """The symbolic shape a history of ``vtype`` must have."""
+    if vtype == uw.VarType.SCALAR:
+        return (1, 1)
+    if vtype == uw.VarType.VECTOR:
+        return (1, cdim)
+    if vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR):
+        return (cdim, cdim)
+    return None                     # MATRIX and friends: shape is the caller's
+
+
+def _storage_components(vtype, shape):
+    """(i, j) of the symbolic matrix that each stored column holds.
+
+    A vector or tensor field stores one dof per INDEPENDENT component, which
+    is not the same as one per matrix entry: a symmetric tensor in 2-D has a
+    2x2 symbolic form and three stored columns. The order is the one the
+    variable's own ``.sym`` reconstructs from — diagonal first, then the
+    off-diagonals in row-major upper-triangular order — and
+    ``test_0066_integration_point_slcn.py`` asserts that round trip, so
+    a change of convention fails there rather than silently transposing a
+    stress.
+
+    The tensor dimension is read off ``shape``, not off ``mesh.dim``: on a
+    manifold the two differ (a spherical surface is dim 2, cdim 3) and the
+    variable sizes its storage by the embedding dimension, which is what
+    ``.sym`` is shaped by.
+    """
+    if vtype == uw.VarType.SCALAR or shape == (1, 1):
+        return [(0, 0)]
+    if shape[0] == 1:                                    # VECTOR
+        return [(0, j) for j in range(shape[1])]
+    if vtype == uw.VarType.SYM_TENSOR:
+        dim = shape[0]
+        return ([(i, i) for i in range(dim)]
+                + [(i, j) for i in range(dim) for j in range(i + 1, dim)])
+    return [(i, j) for i in range(shape[0]) for j in range(shape[1])]
 
 
 class IntegrationPointSemiLagrangian(_DDtBase):
@@ -4502,16 +4580,25 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     ``n-k`` at the foot. Every slot carries one evaluation error rather than
     one per generation.
 
-    What is not here (yet): vector/tensor histories, units-aware velocity
-    reduction, ALE / old-frame trace-back, forcing history, checkpoint state.
-    Use :class:`SemiLagrangian` for those.
+    Scalar, vector and tensor histories are all carried: pass ``vtype``, and
+    the slots hold one value per INDEPENDENT component per integration point
+    (a symmetric tensor in 2-D is 2x2 symbolically and three columns in
+    storage). The trace-back and the weighted sums are shape-agnostic; only
+    the fills know the shape. A vector history is what a Navier-Stokes
+    momentum term needs, a symmetric tensor what a viscoelastic stress
+    history needs.
+
+    What is not here (yet): units-aware velocity reduction, ALE / old-frame
+    trace-back, forcing history, checkpoint state. Use
+    :class:`SemiLagrangian` for those, or :class:`Lagrangian_Swarm` when the
+    history should ride on particles rather than on the rule.
 
     Parameters
     ----------
     mesh, psi_fn, V_fn, degree, continuous, varsymbol, verbose, bcs, order, theta
-        As for :class:`SemiLagrangian`. ``psi_fn`` may be a scalar
-        ``MeshVariable`` (its nodal data is then copied into the snapshot
-        rather than re-evaluated) or a scalar expression.
+        As for :class:`SemiLagrangian`. ``psi_fn`` may be a ``MeshVariable``
+        (its nodal data is then copied into the snapshot rather than
+        re-evaluated) or an expression, of any ``vtype``.
     ``V_fn`` may be any expression (``-v``, ``v/2``, ``c(t) v``); the
     velocity history caches it by evaluation at each time level.
     """
@@ -4533,10 +4620,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         **_unsupported,
     ):
         super().__init__()
-        if vtype != VarType.SCALAR:
-            raise NotImplementedError(
-                "IntegrationPointSemiLagrangian: scalar histories only for now"
-            )
+        self.vtype = vtype
         self.monotone_mode = monotone_mode
         self.mesh = mesh
         self.bcs = list(bcs) if bcs is not None else []   # per instance, never a shared default
@@ -4554,6 +4638,8 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             self._psi_meshVar = None
             self._psi_fn = psi_fn if isinstance(psi_fn, sympy.Matrix) else sympy.Matrix([[psi_fn]])
 
+        self._check_psi_shape(self._psi_fn)
+
         self._init_history_tracking(order)
         self._check_rule_oversampling(degree)
 
@@ -4566,10 +4652,17 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             psi_units = None
         self._psi_units = psi_units
 
+        # A vector or tensor history is one dof per INDEPENDENT component per
+        # point. The trace-back and the weighted sums are shape-agnostic, so
+        # the shape changes only how much each slot stores and how many
+        # columns the fills write. Let the variable derive its own count from
+        # the vtype (a symmetric tensor in 2-D is 2x2 symbolically and three
+        # columns in storage) and read it back.
+
         # History slots at the integration points (injected, never sampled).
         self.psi_star = [
             uw.discretisation.IntegrationPointVariable(
-                f"psi_star_ip_{inst}_{k}", mesh,
+                f"psi_star_ip_{inst}_{k}", mesh, vtype=vtype,
                 varsymbol=rf"{{ {varsymbol}^{{ {'*' * (k + 1)} }} }}",
                 units=psi_units,
             )
@@ -4579,12 +4672,23 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # (sampled at the departure points).
         self.psi_snap = [
             uw.discretisation.MeshVariable(
-                f"psi_snap_ip_{inst}_{k}", mesh, 1, degree=degree, continuous=continuous,
+                f"psi_snap_ip_{inst}_{k}", mesh, vtype=vtype,
+                degree=degree, continuous=continuous,
                 varsymbol=rf"{{ {varsymbol}^{{ (n-{k}) }} }}",
                 units=psi_units,
             )
             for k in range(order)
         ]
+        self.num_components = int(self.psi_star[0].num_components)
+        self._components = _storage_components(
+            vtype, tuple(self.psi_star[0].sym.shape)
+        )
+        if len(self._components) != self.num_components:
+            raise RuntimeError(
+                f"IntegrationPointSemiLagrangian: {vtype} maps "
+                f"{len(self._components)} components onto "
+                f"{self.num_components} stored columns"
+            )
         # At least two velocity levels: the current interval's mid-time
         # velocity is extrapolated from v^n and v^{n-1}. Each level caches
         # V_fn evaluated at the nodes at that time, so V_fn may be any
@@ -4667,8 +4771,70 @@ class IntegrationPointSemiLagrangian(_DDtBase):
 
     @psi_fn.setter
     def psi_fn(self, new_fn):
+        # Re-checked on every assignment, not only at construction: a solver
+        # reassigns this on each setup (``DFDt.psi_fn = flux.T``), so the
+        # constructor's guard would be bypassed on the one path that is
+        # actually driven. A wrong shape here silently truncates -- the
+        # component writer reads psi_fn[i, j] for the slots it already has.
+        new_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        self._check_psi_shape(new_fn)
         self._psi_meshVar = None
-        self._psi_fn = new_fn if isinstance(new_fn, sympy.Matrix) else sympy.Matrix([[new_fn]])
+        self._psi_fn = new_fn
+
+    def _check_psi_shape(self, psi_fn):
+        """Refuse a psi_fn whose shape does not match this history's vtype."""
+        expected = _psi_shape_for(self.vtype, self.mesh.cdim)
+        if expected is not None and tuple(psi_fn.shape) != expected:
+            raise ValueError(
+                f"IntegrationPointSemiLagrangian: psi_fn has shape "
+                f"{tuple(psi_fn.shape)} but vtype={self.vtype} on a cdim="
+                f"{self.mesh.cdim} mesh needs {expected}. Pass the vtype that "
+                "matches the field, or reshape psi_fn."
+            )
+        # SYM_TENSOR and TENSOR have the SAME symbolic shape and different
+        # storage widths (3 and 4 in 2-D), so shape alone cannot tell them
+        # apart. When psi_fn is a variable, it knows its own width; without
+        # this a full tensor handed to a symmetric history passes the check
+        # above and dies later in the component writer with a bare broadcast
+        # error that names neither vtype.
+        supplied_var = getattr(self, "_psi_meshVar", None)
+        wanted = len(_storage_components(self.vtype, tuple(psi_fn.shape)))
+        if supplied_var is not None and expected is not None:
+            if int(supplied_var.num_components) != wanted:
+                raise ValueError(
+                    f"IntegrationPointSemiLagrangian: psi_fn stores "
+                    f"{supplied_var.num_components} components but vtype="
+                    f"{self.vtype} stores {wanted}. A full tensor and a "
+                    "symmetric tensor share a shape; pass the vtype the field "
+                    "was built with."
+                )
+        components = getattr(self, "num_components", None)
+        if components is not None and expected is not None and wanted != components:
+            raise ValueError(
+                f"IntegrationPointSemiLagrangian: psi_fn needs {wanted} stored "
+                f"components but this history has {components}; vtype="
+                f"{self.vtype} is probably not the vtype of the field."
+            )
+
+        # A symmetric history stores the upper triangle, so an asymmetric
+        # psi_fn loses its lower entries without trace. Say so rather than
+        # quietly transporting half the field the user wrote.
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            dropped = [
+                (i, j) for i in range(psi_fn.shape[0])
+                for j in range(i + 1, psi_fn.shape[1])
+                if psi_fn[i, j] != psi_fn[j, i]
+            ]
+            if dropped:
+                import warnings
+
+                warnings.warn(
+                    f"IntegrationPointSemiLagrangian: psi_fn is not symmetric at "
+                    f"{dropped} but vtype=SYM_TENSOR stores only the upper "
+                    "triangle, so the lower entries are discarded (not averaged). "
+                    "Symmetrise psi_fn explicitly, or use VarType.TENSOR.",
+                    stacklevel=3,
+                )
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
@@ -4696,8 +4862,22 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         ):
             ps.data[...] = self._psi_meshVar.data[...]
         else:
-            vals = uw.function.evaluate(self.psi_fn[0], self._nudged_node_coords(ps))
-            ps.data[:, 0] = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+            self._write_components(ps, self.psi_fn, self._nudged_node_coords(ps))
+
+    def _write_components(self, var, expr, coords, evaluate=None, **kwargs):
+        """Evaluate ``expr`` at ``coords`` and store it component by component.
+
+        One evaluation per independent component rather than one of the whole
+        matrix: a symmetric tensor's symbolic form repeats its off-diagonals,
+        and only the independent columns exist in storage.
+        """
+        if evaluate is None:
+            evaluate = uw.function.evaluate
+        for column, (i, j) in enumerate(self._components):
+            vals = evaluate(expr[i, j], coords, **kwargs)
+            var.data[:, column] = np.asarray(
+                _to_nondim_ndarray(vals, units=self._psi_units)
+            ).reshape(-1)
 
     def _segment_dt(self, j, dt):
         """Length of segment ``j`` (0 = the current step)."""
@@ -4720,11 +4900,11 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             segments.append(("first", 0, self._segment_dt(0, dt)) if k == 0
                             else ("older", k, self._segment_dt(k, dt)))
             X = trace.departure_points(key, X0, tuple(segments), evalf=evalf)
-            vals = uw.function.global_evaluate(
-                self.psi_snap[k].sym[0], X, evalf=evalf, monotone=self.monotone_mode
+            self._write_components(
+                self.psi_star[k], self.psi_snap[k].sym, X,
+                evaluate=uw.function.global_evaluate,
+                evalf=evalf, monotone=self.monotone_mode,
             )
-            self.psi_star[k].data[:, 0] = np.asarray(
-                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
 
     def initialise_history(self):
         """Start every snapshot and slot from the current field, so
@@ -4734,10 +4914,9 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             self.psi_snap[k].data[...] = self.psi_snap[0].data[...]
         self.characteristics.initialise_levels(self._n_v)
         X = np.asarray(self.psi_star[0].coords_nd)
-        vals = uw.function.evaluate(self.psi_snap[0].sym[0], X)
-        vals = np.asarray(_to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
-        for k in range(self.order):
-            self.psi_star[k].data[:, 0] = vals
+        self._write_components(self.psi_star[0], self.psi_snap[0].sym, X)
+        for k in range(1, self.order):
+            self.psi_star[k].data[...] = self.psi_star[0].data[...]
         self._history_initialised = True
 
     def update_pre_solve(self, dt, evalf=False, verbose=False, **_ignored):
