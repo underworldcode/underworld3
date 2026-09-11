@@ -1513,13 +1513,15 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @property
     def stress_transport(self) -> str:
         """How a viscoelastic stress history is carried: ``"semi_lagrangian"``
-        (default) or ``"eulerian"``.
+        (default), ``"integration_point"`` or ``"eulerian"``.
 
-        The semi-Lagrangian history traces the stress back along characteristics;
-        the Eulerian one transports it on the grid with the same streamline-upwind
-        stabilisation the Eulerian solvers use. Measured on a stress blob carried
-        round a rigid rotation (design note, "Transporting a stress history"), the
-        trace-back is the more accurate per step and the grid transport gives the
+        The semi-Lagrangian history traces the stress back along characteristics
+        and stores it on a nodal field, which the assembler then interpolates to
+        the integration points: two interpolations a step. ``"integration_point"``
+        traces back to the integration points themselves and holds the history
+        there, so it carries one evaluation error and needs no projection. The
+        Eulerian one transports the stress on the grid with the same
+        streamline-upwind stabilisation the Eulerian solvers use, and gives the
         same answer on any partition. Set before the constitutive model is
         assigned, or before calling :meth:`_create_stress_history_ddt`.
         """
@@ -1528,9 +1530,10 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
     @stress_transport.setter
     def stress_transport(self, value):
         value = str(value)
-        if value not in ("semi_lagrangian", "eulerian"):
+        if value not in ("semi_lagrangian", "integration_point", "eulerian"):
             raise ValueError(
-                f"stress_transport must be 'semi_lagrangian' or 'eulerian', not {value!r}.")
+                "stress_transport must be 'semi_lagrangian', 'integration_point' "
+                f"or 'eulerian', not {value!r}.")
         if self.Unknowns.DFDt is not None:
             raise RuntimeError(
                 "the stress history already exists: set stress_transport before the "
@@ -1643,7 +1646,19 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             order=order,
             smoothing=0.0001,
         )
-        if self.stress_transport == "eulerian":
+        if self.stress_transport == "integration_point":
+            if ddt_kwargs:
+                raise NotImplementedError(
+                    f"{type(cm).__name__} asks its stress history for "
+                    f"{sorted(ddt_kwargs)}, which the integration-point flavour "
+                    "does not provide; use stress_transport='semi_lagrangian'.")
+            self.Unknowns.DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+                self.mesh,
+                sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
+                self.u.sym,
+                **{k: v for k, v in common.items() if k != "smoothing"},
+            )
+        elif self.stress_transport == "eulerian":
             if ddt_kwargs:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "

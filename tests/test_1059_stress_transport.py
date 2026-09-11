@@ -189,17 +189,32 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1):
     return type(stokes.DFDt).__name__, stress, exact
 
 
+KINDS = {
+    "semi_lagrangian": "SemiLagrangian",
+    "integration_point": "IntegrationPointSemiLagrangian",
+    "eulerian": "EulerianSUPG",
+}
+
+
 @pytest.mark.parametrize("order, tolerance", [(1, 0.02), (2, 0.002)])
-def test_either_stress_history_solves_the_maxwell_shear_box(order, tolerance):
+def test_every_stress_history_solves_the_maxwell_shear_box(order, tolerance):
     """A Stokes solve carries its viscoelastic stress with the history its
-    `stress_transport` names, and on a uniform stress the two agree exactly."""
-    traced_kind, traced, exact = _maxwell_shear("semi_lagrangian", order)
-    grid_kind, grid, _ = _maxwell_shear("eulerian", order)
-    assert traced_kind == "SemiLagrangian" and grid_kind == "EulerianSUPG"
-    assert abs(traced - exact) / exact < tolerance, (traced, exact)
-    assert abs(grid - exact) / exact < tolerance, (grid, exact)
-    # transport is a no-op on a uniform field: the plumbing must not add anything
-    assert abs(grid - traced) < 1e-6 * abs(exact), (grid, traced)
+    `stress_transport` names, and on a uniform stress all three agree exactly.
+
+    The analytic tolerance is what catches a history that is rebuilt from its
+    own flux instead of carried: that applies the constitutive update twice a
+    step and lands at 12.8% on this box at order 1 (#732).
+    """
+    results = {}
+    for transport, expected_kind in KINDS.items():
+        kind, stress, exact = _maxwell_shear(transport, order)
+        assert kind == expected_kind
+        assert abs(stress - exact) / exact < tolerance, (transport, stress, exact)
+        results[transport] = stress
+    # Transport is a no-op on a uniform field, so the flavours differ only in
+    # how they carry it: the plumbing must not add anything of its own.
+    spread = max(results.values()) - min(results.values())
+    assert spread < 1e-6 * abs(exact), results
 
 
 def test_stress_transport_is_validated_and_fixed_once_the_history_exists():

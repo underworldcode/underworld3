@@ -4603,6 +4603,59 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     velocity history caches it by evaluation at each time level.
     """
 
+    _commit_projection = None
+    _commit_flat = None
+
+    def commit_flux_to_history(self, flux, verbose=False):
+        """Project the new flux into the nodal snapshot and read it at the
+        points, then shift both ladders.
+
+        Two ladders have to move together here. ``psi_star`` holds the history
+        at the integration points, where the assembler reads it; ``psi_snap``
+        holds it nodally, which is what the next trace-back samples at the
+        departure points. A flux committed only to ``psi_star`` does not
+        survive a step -- the fill overwrites it from ``psi_snap`` -- so the
+        committed stress goes to both.
+
+        The projection, rather than a pointwise evaluation, is what the nodal
+        trace-back does and is what the snapshot needs: the trace-back samples
+        the snapshot between its nodes, so the snapshot has to be the L2 fit of
+        the flux on the history space, not the flux read at the nodes. Its
+        target is a separate field from the flux's inputs, so the projection is
+        explicit and needs no snapshot substitution.
+        """
+        history = self.psi_star[0]
+        flux = sympy.Matrix(flux)
+        columns = _storage_components(self.vtype, flux.shape)
+
+        if self._commit_projection is None:
+            self._commit_flat = uw.discretisation.MeshVariable(
+                f"flux_nodal_{self.instance_number}", self.mesh, (1, len(columns)),
+                vtype=uw.VarType.MATRIX, degree=self.degree,
+                continuous=self.continuous,
+                varsymbol=rf"{{F^{{\mathrm{{nodal}}}}_{{{self.instance_number}}}}}")
+            self._commit_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh, u_Field=self._commit_flat, n_components=len(columns),
+                verbose=self.verbose)
+        self._commit_projection.uw_function = sympy.Matrix(
+            [[flux[i, j] for (i, j) in columns]])
+        self._commit_projection.smoothing = 0.0
+        self._commit_projection.solve(verbose=verbose)
+
+        # Oldest first, so each level reads the one above before it is written.
+        for level in range(self.order - 1, 0, -1):
+            self.psi_star[level].data[...] = self.psi_star[level - 1].data[...]
+            self.psi_snap[level].data[...] = self.psi_snap[level - 1].data[...]
+
+        points = np.asarray(history.integration_points).reshape(-1, self.mesh.cdim)
+        for column in range(len(columns)):
+            nodal = self._commit_flat.data[:, column]
+            self.psi_snap[0].data[:, column] = np.asarray(nodal).reshape(-1)
+            history.data[:, column] = np.asarray(uw.function.evaluate(
+                self._commit_flat.sym[0, column], points)).reshape(-1)
+
+        self._history_committed = True
+
     def __init__(
         self,
         mesh,
@@ -4919,18 +4972,32 @@ class IntegrationPointSemiLagrangian(_DDtBase):
             self.psi_star[k].data[...] = self.psi_star[0].data[...]
         self._history_initialised = True
 
-    def update_pre_solve(self, dt, evalf=False, verbose=False, **_ignored):
+    def update_pre_solve(self, dt, evalf=False, verbose=False,
+                         store_result=True, **_ignored):
+        """Carry the history to the departure points of this step.
+
+        ``store_result=False`` says the snapshots already hold what is to be
+        transported and must not be rebuilt from ``psi_fn`` -- the viscoelastic
+        case, where ``psi_fn`` is the constitutive flux and the flux is a
+        function of the history. Recording it there applies the constitutive
+        update a second time on a field that is already the stress: on the
+        analytic Maxwell shear box that overshoots the relaxed stress by 12.8%
+        where the nodal and grid flavours sit at 1.5% (#732). The snapshots are
+        placed by ``commit_flux_to_history`` instead, and the shift with them.
+        """
         self._dt = dt
         if not self._history_initialised:
             self.initialise_history()
         _update_bdf_values(self._bdf_coeffs, self.effective_order, self._dt, self._dt_history)
         _update_am_values(self._am_coeffs, self.effective_order, self.theta)
-        for k in range(self.order - 1, 0, -1):
-            self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
+        if store_result:
+            for k in range(self.order - 1, 0, -1):
+                self.psi_snap[k].data[...] = self.psi_snap[k - 1].data[...]
         trace = self.characteristics
         if self._owns_characteristics:
             trace.begin_step(dt)
-        self._record_current()
+        if store_result:
+            self._record_current()
         self._fill_slots(dt, evalf)
         if self._owns_characteristics:
             trace.finish_step()
