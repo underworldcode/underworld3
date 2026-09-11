@@ -567,6 +567,10 @@ class _DDtBase(uw_object):
         # Set by commit_flux_to_history: the levels are already placed for this
         # step, so a post-solve must not shift or re-record them again.
         self._history_committed = False
+        # What the transported quantity is worth where the flow enters. Held on
+        # the base so a driver can set it whatever flavour it holds; see the
+        # inflow_value property for which flavours act on it.
+        self._inflow_value = None
         self._dt = None  # current timestep (set by solver or update_pre_solve)
         self._dt_history = [None] * order  # previous timesteps for variable-dt BDF
 
@@ -978,6 +982,57 @@ class _DDtBase(uw_object):
     def integrator(self) -> str:
         """``"am"`` (the theta rule on the spatial terms) at order 1, ``"bdf"`` above."""
         return "am" if self.order == 1 else "bdf"
+
+    @property
+    def inflow_value(self):
+        r"""What enters the domain where the flow comes in, or ``None``.
+
+        A transported quantity needs data wherever the flow enters, and nowhere
+        else. Which parts of the boundary those are is not fixed: on a shedding
+        wake the outflow boundary carries reversed flow that migrates along it,
+        so the condition is applied by the sign of :math:`\mathbf{u}\cdot\mathbf{n}`
+        rather than by naming a boundary. Left ``None`` the transport is
+        unconstrained at an inflow, and whatever the solve produces there is
+        carried into the domain: measured on the viscoelastic cylinder, that is
+        what destroys the run (the stress maximum leaves the cylinder for the
+        outlet as soon as the wake reverses through it).
+
+        Set it to an expression of the unknown's shape -- for a stress history,
+        the relaxed stress of the incoming flow.
+
+        Only :class:`EulerianSUPG` acts on the value, by compiling a boundary
+        term into its transport solve. The flavours that trace characteristics
+        back or carry particles are not unconstrained at an inflow, but they do
+        not use this value either: a departure point or a particle that lands
+        outside the domain is restored to the boundary and takes the
+        transported field's value THERE. That is why the traced viscoelastic
+        cylinder is clean at the inlet where the grid one was not. Setting a
+        value on such a flavour says so once rather than dropping it in
+        silence (#733); wiring it in as a true out-of-bounds value is a
+        separate change.
+        """
+        return self._inflow_value
+
+    @inflow_value.setter
+    def inflow_value(self, value):
+        if value is not None:
+            value = sympy.Matrix(value)
+            if value.shape != self._unknown_shape():
+                raise ValueError(
+                    f"inflow_value has shape {value.shape}, but the transported "
+                    f"quantity is {self._unknown_shape()}.")
+            if not self.applies_inflow_value:
+                warnings.warn(
+                    f"{type(self).__name__} does not apply inflow_value: it "
+                    "restores an out-of-bounds departure point to the boundary "
+                    "and reads the transported field there, which constrains "
+                    "the inflow but is not the value you set. Only EulerianSUPG "
+                    "uses it (#733).",
+                    stacklevel=2)
+        self._inflow_value = value
+
+    #: Whether this flavour compiles :attr:`inflow_value` into its transport.
+    applies_inflow_value = False
 
     def _unknown_shape(self):
         """Shape of the unknown as a matrix (``Symbolic`` stores ``_shape`` as data)."""
@@ -2002,37 +2057,14 @@ class EulerianSUPG(Eulerian):
         column = R.reshape(len(R), 1)
         return self.tau() * (column * self.advecting_velocity(0))
 
-    @property
-    def inflow_value(self):
-        r"""What enters the domain where the flow comes in, or ``None``.
+    applies_inflow_value = True
 
-        A transported quantity needs data wherever the flow enters, and nowhere
-        else. Which parts of the boundary those are is not fixed: on a shedding
-        wake the outflow boundary carries reversed flow that migrates along it,
-        so the condition is applied by the sign of :math:`\mathbf{u}\cdot\mathbf{n}`
-        rather than by naming a boundary. Left ``None`` the transport is
-        unconstrained at an inflow, and whatever the solve produces there is
-        carried into the domain: measured on the viscoelastic cylinder, that is
-        what destroys the run (the stress maximum leaves the cylinder for the
-        outlet as soon as the wake reverses through it).
-
-        The same quantity is the out-of-bounds value for the schemes that trace
-        back or carry particles: what a departure point or a particle finds when
-        it lands outside the domain. Set it to an expression of the unknown's
-        shape -- for a stress history, the relaxed stress of the incoming flow.
-        """
-        return self._inflow_value
-
-    @inflow_value.setter
+    @_DDtBase.inflow_value.setter
     def inflow_value(self, value):
-        if value is not None:
-            value = sympy.Matrix(value)
-            if value.shape != self._unknown_shape():
-                raise ValueError(
-                    f"inflow_value has shape {value.shape}, but the transported "
-                    f"quantity is {self._unknown_shape()}.")
-        self._inflow_value = value
-        self._transport_solver = None       # the condition is compiled into it
+        """As the base class, and then drop the transport solver: this flavour
+        compiles the condition into the weak form, so the solver is stale."""
+        _DDtBase.inflow_value.fset(self, value)
+        self._transport_solver = None
 
     # ----- transporting the history on the grid -----
 
