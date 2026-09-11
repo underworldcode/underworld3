@@ -9,6 +9,7 @@ Run: pixi run -e amr-dev python tests/vep_fault_weakening.py
 import time
 import numpy as np
 import sympy
+import os
 import underworld3 as uw
 
 ETA = 1.0
@@ -153,6 +154,6 @@ axes[1].grid(True, alpha=0.3)
 fig.suptitle(f"VEP embedded fault convergence: $\\tau_y$={TAU_Y_FAULT}/{TAU_Y_BULK}, width={FAULT_WIDTH}",
              fontsize=12, y=1.02)
 fig.tight_layout()
-out_path = "/Users/lmoresi/+Underworld/underworld3-pixi/.claude/worktrees/solver-unification/vep_fault.png"
+out_path = os.path.join(os.path.dirname(__file__), "vep_fault.png")
 fig.savefig(out_path, dpi=150, bbox_inches='tight')
 uw.pprint(0, f"Saved {out_path}")
