@@ -1,0 +1,230 @@
+name: "GHCR: Gadi Singularity Image"
+
+# Builds docs/developer/gadi_singularity/underworld3.rhel and pushes to GHCR for
+# `singularity pull docker://...` on Gadi.
+#
+# This is the layer that moves; the expensive PETSc base under it is built rarely
+# by gadi-petsc-image.yml. Unlike docker-image.yaml and binder-image.yml, this
+# image is Rocky Linux 8.10 + from-source PETSc, to match Gadi's ABI.
+
+on:
+  push:
+    branches:
+      - main
+      - development
+    tags: ['v*']
+    paths:
+      - 'docs/developer/gadi_singularity/underworld3.rhel'
+      - '.github/workflows/gadi-uw3-image.yml'
+      - 'pixi.toml'
+      - 'pyproject.toml'
+      - 'setup.py'
+      - 'src/**'
+  # Releases are the guaranteed path for a tagged image: the `tags:` filter above
+  # is combined with `paths:`, so a tag whose diff touches nothing in that list
+  # would not build on its own.
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      uw3_branch:
+        description: 'UW3 branch/tag to clone and build (e.g. development, v3.1.0). Empty = triggering ref.'
+        type: string
+        default: ''
+      petsc_image:
+        description: 'PETSc base image. Empty = ghcr.io/<owner>/petsc-gadi:3.25.0-ompi'
+        type: string
+        default: ''
+      image_tag:
+        description: 'Image tag override (e.g. ci-test). Empty = derive from ref.'
+        type: string
+        default: ''
+      force_rebuild:
+        description: 'Force full rebuild (no cache)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: gadi-uw3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve names and tags
+        id: meta
+        run: |
+          set -euo pipefail
+
+          # Image names must be lowercase; repository_owner may not be.
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/underworld3-gadi"
+
+          # Same ref-name / IS_RELEASE convention as binder-image.yml.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REF_NAME=${GITHUB_REF#refs/tags/}
+            IS_RELEASE=true
+          else
+            REF_NAME=${GITHUB_REF#refs/heads/}
+            IS_RELEASE=false
+          fi
+
+          if [[ -n "${{ inputs.uw3_branch }}" ]]; then
+            REF_NAME="${{ inputs.uw3_branch }}"
+            [[ "$REF_NAME" == v* ]] && IS_RELEASE=true
+          fi
+          if [[ -n "${{ inputs.image_tag }}" ]]; then
+            DOCKER_TAG="${{ inputs.image_tag }}"
+          else
+            # Docker tags cannot contain '/'
+            DOCKER_TAG=$(echo "$REF_NAME" | tr '/' '-')
+          fi
+
+          # Dispatch input wins, then the GADI_PETSC_IMAGE repo variable (lets a
+          # fork reuse a base image it already published under another name),
+          # then the canonical name.
+          PETSC_IMAGE="${{ inputs.petsc_image }}"
+          PETSC_IMAGE="${PETSC_IMAGE:-${{ vars.GADI_PETSC_IMAGE }}}"
+          PETSC_IMAGE="${PETSC_IMAGE:-ghcr.io/${OWNER}/petsc-gadi:3.25.0-ompi}"
+
+          TAGS="${IMAGE}:${DOCKER_TAG}"
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+
+          # A release tag is the version; anything else gets a PEP440 dev
+          # version carrying the commit, since branch names are not versions.
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            UW3_VERSION="${REF_NAME#v}"
+          else
+            UW3_VERSION="0.0.0.dev0+g${GITHUB_SHA:0:7}"
+          fi
+
+          {
+            echo "image=${IMAGE}:${DOCKER_TAG}"
+            echo "tags=${TAGS}"
+            echo "uw3_branch=${REF_NAME}"
+            echo "petsc_image=${PETSC_IMAGE}"
+            echo "uw3_version=${UW3_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Building ${IMAGE}:${DOCKER_TAG}"
+          echo "  UW3 ref:    ${REF_NAME}"
+          echo "  PETSc base: ${PETSC_IMAGE}"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docs/developer/gadi_singularity/underworld3.rhel
+          # Docker v2 media types rather than buildx's OCI default, matching the
+          # podman `--format docker` images already validated on Gadi. Older
+          # Singularity builds read OCI patchily; this removes the variable.
+          outputs: type=image,push=true,oci-mediatypes=false
+          # Gadi is x86_64. No arm64: it would need QEMU for no benefit, and the
+          # gmsh / vtk-osmesa wheels this image needs are x86_64-only anyway.
+          platforms: linux/amd64
+          # Attestations turn the result into a multi-manifest index containing an
+          # "unknown/unknown" entry, which some Singularity/Apptainer versions
+          # refuse to pull. Keep these off — see README "Automated builds".
+          provenance: false
+          sbom: false
+          no-cache: ${{ inputs.force_rebuild || false }}
+          build-args: |
+            PYTHON_VERSION=3.12
+            UW3_BRANCH=${{ steps.meta.outputs.uw3_branch }}
+            UW3_REPO=${{ github.server_url }}/${{ github.repository }}.git
+            PETSC_IMAGE=${{ steps.meta.outputs.petsc_image }}
+            SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.meta.outputs.uw3_version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          # Cache lives in its own package: sharing one with the image put stale
+          # cache manifests into the same untagged pool the cleanup job prunes,
+          # so they competed with old images for min-versions-to-keep.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/underworld3-gadi-buildcache:latest
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/underworld3-gadi-buildcache:latest,mode=max
+
+  smoke-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      packages: read
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image
+        run: docker pull ${{ needs.build-and-push.outputs.image }}
+
+      # A bare import is the cheapest check and catches a missing runtime dep
+      # (this is exactly how the absent `requests` would have shown up).
+      - name: Import underworld3
+        run: |
+          docker run --rm ${{ needs.build-and-push.outputs.image }} \
+            python -c "import underworld3; print('underworld3', underworld3.__version__)"
+
+      # The Containerfile installs gmsh and vtk-osmesa behind `|| echo skip`, so a
+      # failed install is silent. Import them explicitly or it ships broken.
+      - name: Import optional stack (gmsh, vtk, pyvista, h5py, petsc4py)
+        run: |
+          docker run --rm ${{ needs.build-and-push.outputs.image }} \
+            python -c "import gmsh, vtk, pyvista, h5py, petsc4py; print('optional stack OK')"
+
+      - name: MPI sanity (2 ranks)
+        run: |
+          docker run --rm ${{ needs.build-and-push.outputs.image }} \
+            mpiexec -n 2 python -c "
+          import underworld3 as uw
+          from mpi4py import MPI
+          c = MPI.COMM_WORLD
+          assert c.size == 2
+          print(f'rank {c.rank} of {c.size}, underworld3 {uw.__version__}')
+          "
+
+  cleanup:
+    # Only prune once the image is known good — otherwise a broken build would
+    # delete the last working one.
+    needs: [build-and-push, smoke-test]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      # Housekeeping only: a failed prune must not fail a run whose image is
+      # good. The action 404s partway through on user-owned (vs org-owned)
+      # packages, having already deleted what it could.
+      - name: Delete old untagged image versions
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ github.repository_owner }}
+          package-name: underworld3-gadi
+          package-type: container
+          min-versions-to-keep: 3
+          # Load-bearing: every TAGGED image (:latest, :v3.1.0, :main, and the
+          # current :development) is exempt regardless of age. Only superseded
+          # rolling builds are eligible.
+          delete-only-untagged-versions: true

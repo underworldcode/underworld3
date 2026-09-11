@@ -1,0 +1,171 @@
+name: "GHCR: Gadi PETSc Base Image"
+
+# Builds docs/developer/gadi_singularity/petsc.rhel — the from-source PETSc base
+# that gadi-uw3-image.yml layers on.
+#
+# Triggers are deliberately narrow: this compiles PETSc with mumps, hypre,
+# superlu_dist, mmg/parmmg, ptscotch and slepc, a build measured in hours, and
+# only petsc.rhel and its patches can change the result.
+
+on:
+  push:
+    branches:
+      - main
+      - development
+    paths:
+      - 'docs/developer/gadi_singularity/petsc.rhel'
+      - 'petsc-custom/patches/**'
+      - '.github/workflows/gadi-petsc-image.yml'
+  workflow_dispatch:
+    inputs:
+      petsc_version:
+        description: 'PETSc version to build'
+        type: string
+        default: '3.25.0'
+      make_np:
+        description: 'PETSc build parallelism (--with-make-np)'
+        type: string
+        default: '4'
+      force_rebuild:
+        description: 'Force full rebuild (no cache)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: gadi-petsc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    # Measured at ~25 min with ~25% run-to-run variance, so this is ~5x headroom
+    # for a heavier future PETSc while still failing a hang in hours, not a day.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Measured: the whole build consumes ~7 GB against 86 GB free on a fresh
+      # runner, so no space needs reclaiming. Kept as instrumentation in case a
+      # future PETSc pulls in far more --download- packages.
+      - name: Report disk headroom
+        run: df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve names and tags
+        id: meta
+        run: |
+          set -euo pipefail
+
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/petsc-gadi"
+
+          PETSC_VERSION="${{ inputs.petsc_version }}"
+          PETSC_VERSION="${PETSC_VERSION:-3.25.0}"
+          MAKE_NP="${{ inputs.make_np }}"
+          MAKE_NP="${MAKE_NP:-4}"
+
+          {
+            echo "image=${IMAGE}:${PETSC_VERSION}-ompi"
+            echo "tags=${IMAGE}:${PETSC_VERSION}-ompi,${IMAGE}:latest"
+            echo "petsc_version=${PETSC_VERSION}"
+            echo "make_np=${MAKE_NP}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Building ${IMAGE}:${PETSC_VERSION}-ompi with --with-make-np=${MAKE_NP}"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docs/developer/gadi_singularity/petsc.rhel
+          # Docker v2 media types — see the note in gadi-uw3-image.yml.
+          outputs: type=image,push=true,oci-mediatypes=false
+          platforms: linux/amd64
+          # See the note in gadi-uw3-image.yml — attestations break some
+          # `singularity pull` versions.
+          provenance: false
+          sbom: false
+          no-cache: ${{ inputs.force_rebuild || false }}
+          build-args: |
+            PYTHON_VERSION=3.12
+            PETSC_VERSION=${{ steps.meta.outputs.petsc_version }}
+            PETSC_MAKE_NP=${{ steps.meta.outputs.make_np }}
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Report build size
+        run: |
+          docker image ls ${{ steps.meta.outputs.image }} || true
+          df -h /
+
+  smoke-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image
+        run: docker pull ${{ needs.build-and-push.outputs.image }}
+
+      # petsc4py importing is the thing that actually breaks when the PETSc build
+      # goes subtly wrong (shared libraries, PYTHONPATH, the meson petsc4py step).
+      - name: Import petsc4py and slepc4py
+        run: |
+          docker run --rm ${{ needs.build-and-push.outputs.image }} python -c "
+          import petsc4py, slepc4py
+          petsc4py.init()
+          from petsc4py import PETSc
+          print('petsc4py', petsc4py.__version__)
+          print('slepc4py', slepc4py.__version__)
+          print('PETSc', PETSc.Sys.getVersion())
+          "
+
+      - name: MPI sanity (2 ranks)
+        run: |
+          docker run --rm ${{ needs.build-and-push.outputs.image }} \
+            mpiexec -n 2 python -c "
+          from mpi4py import MPI
+          c = MPI.COMM_WORLD
+          print(f'rank {c.rank} of {c.size}')
+          assert c.size == 2
+          "
+
+  cleanup:
+    needs: [build-and-push, smoke-test]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      # Housekeeping only: see the note in gadi-uw3-image.yml.
+      - name: Delete old untagged image versions
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ github.repository_owner }}
+          package-name: petsc-gadi
+          package-type: container
+          min-versions-to-keep: 2
+          delete-only-untagged-versions: true

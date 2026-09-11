@@ -19,7 +19,7 @@
 #
 # To build use podman from the top level underworld didrectory. i.e.
 #  $ podman build .  \
-            --platform linux/amd64 \
+#           --platform linux/amd64 \
 #           --format docker \
 #           --build-arg UW3_BRANCH=xxx \
 #           -t new_image_name \
@@ -31,8 +31,11 @@
 # https://docs.docker.com/engine/reference/builder/#understand-how-arg-and-from-interact
 ARG PYTHON_VERSION="3.12"
 ARG BASE_IMAGE="quay.io/rockylinux/rockylinux:8.10"
-ARG PETSC_IMAGE="ghcr.io/jcgraciosa/petsc:3.25.0-ompi"
+ARG PETSC_IMAGE="ghcr.io/underworldcode/petsc-gadi:3.25.0-ompi"
 ARG UW3_BRANCH="development"
+# Overridden by CI to the repository being built, so a fork builds its own
+# branches rather than looking for them upstream.
+ARG UW3_REPO="https://github.com/underworldcode/underworld3.git"
 
 # 'petsc-image' will be used later on in builder stage COPY command 
 FROM ${PETSC_IMAGE} as petsc-image
@@ -43,8 +46,10 @@ FROM ${PETSC_IMAGE} as petsc-image
 FROM ${BASE_IMAGE} as runtime
 LABEL maintainer="https://github.com/underworldcode/"
 
-# need to repeat ARGS after every FROM 
-ARG PYTHON_VERSION
+# Repeat the DEFAULT, not just the name: bare `ARG PYTHON_VERSION` relies on
+# inheriting the pre-FROM default, which some buildah/podman versions don't —
+# PYVER expands empty and yum then looks for a package called "python-pip".
+ARG PYTHON_VERSION="3.12"
 
 #### Containerfile ENV vars - for all image stages
 ENV LANG=C.UTF-8
@@ -102,8 +107,11 @@ ENV PYTHONPATH=$PYTHONPATH:$PETSC_DIR/lib
 # Stage 2: 'builder'
 ####################
 FROM petsc-image as builder
-ARG PYTHON_VERSION
-ARG UW3_BRANCH
+# defaults repeated deliberately — see the note in the runtime stage
+ARG PYTHON_VERSION="3.12"
+ARG UW3_BRANCH="development"
+ARG UW3_REPO="https://github.com/underworldcode/underworld3.git"
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 
 # root to install with yum
 USER root
@@ -123,6 +131,7 @@ RUN yum install -y\
 # install python build time and runtime requirements here
 RUN python${PYVER} -m pip install --no-cache-dir \
         "setuptools>=75" \
+        "setuptools-scm>=8" \
         "cython>=3.1" \
         "scipy>=1.15" \
         "numpy<2" \
@@ -136,9 +145,10 @@ RUN python${PYVER} -m pip install --no-cache-dir \
         psutil \
         typing_extensions \
         xxhash \
+        requests \
         trimesh \
         ipython \
-        jupyterlab \
+        "jupyterlab>=4.3,<5" \
         "ipywidgets<9.0.0" \
         jupyter-server-proxy \
         "trame>=2.5.2" \
@@ -168,9 +178,13 @@ RUN pip install --no-cache-dir --extra-index-url https://wheels.vtk.org vtk-osme
 
 # Clone and install uw3
 RUN git clone --depth 1 --branch ${UW3_BRANCH} \
-    https://github.com/underworldcode/underworld3.git /tmp/underworld3
+    ${UW3_REPO} /tmp/underworld3
 WORKDIR /tmp/underworld3
-RUN pip install --no-build-isolation --no-cache-dir .
+# The clone above is shallow and forks carry no tags, so setuptools-scm has
+# nothing to derive from and would stamp the build 0.0.0. CI passes the real
+# version; unset when empty so a local build keeps setuptools-scm's own logic.
+RUN [ -n "$SETUPTOOLS_SCM_PRETEND_VERSION" ] || unset SETUPTOOLS_SCM_PRETEND_VERSION; \
+    pip install --no-build-isolation --no-cache-dir .
 
 # record 'builder' stage packages used
 RUN python${PYVER} -m pip freeze >/opt/requirements.txt \
