@@ -91,6 +91,12 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   echo "Running serial test suite..."
   echo ""
 
+  # Every test file must be reachable from a glob below. #721 was a range that
+  # stopped covering its own band; 586224f6 took 006x-007x whole so that one
+  # cannot recur, but the other ranges are still hand-maintained. This is what
+  # notices when one of them goes stale.
+  python3 "$(dirname "$0")/check_test_coverage.py" || status=1
+
   # Run simple tests (0000-0299: basic functionality, imports, simple operations)
   $PYTEST tests/test_00[0-4]*py || status=1
   $PYTEST tests/test_0050*py || status=1
@@ -102,7 +108,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # siblings is not dark again. Verified passing (103 tests) before wiring in.
   $PYTEST tests/test_005[1-9]*py tests/test_00[6-7]*py || status=1
   $PYTEST tests/test_01*py || status=1
-  $PYTEST tests/test_02*py || status=1
+  $PYTEST tests/test_02*py tests/test_03*py || status=1
 
   # Intermediate tests (0500-0799: data structures, transformations, enhanced interfaces)
   # NOTE: Temporarily disabling test_06*py regression tests (potentially problematic)
@@ -113,7 +119,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   $PYTEST tests/test_08*py || status=1
 
   # Poisson solvers (including Darcy flow)
-  $PYTEST tests/test_100[0-9]*py || status=1
+  $PYTEST tests/test_100[0-9]*py tests/test_103*py || status=1
 
   # Solver / system tests (advanced solver problems)
   # test_101* / test_102* include the rotated free-slip suite (test_1018,
