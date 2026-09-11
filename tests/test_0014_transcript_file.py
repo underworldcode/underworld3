@@ -1,12 +1,12 @@
-"""The journal, written down.
+"""The transcript, written down.
 
-``model.journal`` is what a run can still undo: bounded, in memory, gone with
-the process. ``model.journal_file`` is what the run did: one JSON object per
+``model.transcript`` is what a run can still undo: bounded, in memory, gone with
+the process. ``model.transcript_file`` is what the run did: one JSON object per
 line, appended and flushed as each step closes.
 
 The two differ deliberately, and the differences are what the tests below pin.
 An abandoned step appears in the file and not in memory — it is the part of a
-run's history that is otherwise invisible. A step aged out by ``journal_limit``
+run's history that is otherwise invisible. A step aged out by ``transcript_limit``
 leaves memory and stays in the file. And one object per line means a run that
 is killed keeps everything up to the moment it died.
 """
@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 import json
 
 
-def _model(tmp_path, units=False, name="run.journal.jsonl", fmt=None):
+def _model(tmp_path, units=False, name="run.transcript.jsonl", fmt=None):
     import underworld3 as uw
 
     uw.reset_default_model()
@@ -30,9 +30,9 @@ def _model(tmp_path, units=False, name="run.journal.jsonl", fmt=None):
             lithostatic_pressure=uw.quantity(3300 * 9.81 * 500e3, "Pa"),
         )
     path = tmp_path / name
-    model.journal_file = str(path)
+    model.transcript_file = str(path)
     if fmt is not None:
-        model.journal_format = fmt
+        model.transcript_format = fmt
     model.tracker.time = uw.quantity(0.0, "Myr") if units else 0.0
     model.tracker.step = 0
     return uw, model, path
@@ -74,7 +74,7 @@ def test_an_abandoned_step_is_in_the_file_and_not_in_memory(tmp_path):
         with model.step(9.0, label="too big"):
             raise RuntimeError("courant")
 
-    assert [e.label for e in model.journal] == ["fine"]
+    assert [e.label for e in model.transcript] == ["fine"]
 
     steps = [json.loads(line) for line in path.read_text().splitlines()][1:]
     assert [s["label"] for s in steps] == ["fine", "too big"]
@@ -87,7 +87,7 @@ def test_an_abandoned_step_is_in_the_file_and_not_in_memory(tmp_path):
 
 
 def test_an_abandoned_step_does_not_retain_its_snapshot(tmp_path):
-    """It is unreachable — the journal never holds it — so it must not be kept."""
+    """It is unreachable — the transcript never holds it — so it must not be kept."""
     uw, model, path = _model(tmp_path)
     model.record_every = 1
 
@@ -104,13 +104,13 @@ def test_an_abandoned_step_does_not_retain_its_snapshot(tmp_path):
 
 def test_a_step_aged_out_of_memory_stays_in_the_file(tmp_path):
     uw, model, path = _model(tmp_path)
-    model.journal_limit = 2
+    model.transcript_limit = 2
 
     for _ in range(5):
         with model.step(0.1, label="convect"):
             pass
 
-    assert len(model.journal) == 2
+    assert len(model.transcript) == 2
     steps = [json.loads(line) for line in path.read_text().splitlines()][1:]
     assert len(steps) == 5
     assert [s["index"] for s in steps] == [0, 1, 2, 3, 4]
@@ -147,20 +147,20 @@ def test_dimensional_values_survive_the_round_trip(tmp_path):
     assert step["t1"] == {"magnitude": pytest.approx(1.5), "units": "megayear"}
 
 
-def test_clear_journal_opens_a_new_run_in_the_same_file(tmp_path):
+def test_clear_transcript_opens_a_new_run_in_the_same_file(tmp_path):
     """An inversion runs the forward model many times; one file, many runs."""
     uw, model, path = _model(tmp_path)
 
     for run in range(3):
-        model.clear_journal()
+        model.clear_transcript()
         model.tracker.time = 0.0
         model.tracker.step = 0
         for _ in range(run + 1):
             with model.step(0.1, label=f"run{run}"):
                 pass
 
-    runs = uw.read_journal(path)
-    # The first header is written when journal_file is set; clear_journal adds
+    runs = uw.read_transcript(path)
+    # The first header is written when transcript_file is set; clear_transcript adds
     # one per run, so the leading empty section is expected.
     populated = [r for r in runs if r["steps"]]
     assert [len(r["steps"]) for r in populated] == [1, 2, 3]
@@ -178,21 +178,21 @@ def test_a_truncated_final_line_does_not_lose_the_rest(tmp_path):
     with open(path, "a", encoding="utf-8") as handle:
         handle.write('{"kind": "step", "index": 3, "lab')
 
-    runs = uw.read_journal(path)
+    runs = uw.read_transcript(path)
     assert len(runs) == 1
     assert [s["index"] for s in runs[0]["steps"]] == [0, 1, 2]
 
 
 def test_logging_is_off_by_default(tmp_path):
     uw, model, path = _model(tmp_path)
-    model.journal_file = None
+    model.transcript_file = None
 
-    assert model.journal_file is None
+    assert model.transcript_file is None
     before = path.read_text()
     with model.step(0.1):
         pass
     assert path.read_text() == before, "writing continued after logging was off"
-    assert len(model.journal) == 1, "the in-memory journal must be unaffected"
+    assert len(model.transcript) == 1, "the in-memory transcript must be unaffected"
 
 
 # ---------------------------------------------------------------------------
@@ -202,13 +202,13 @@ def test_logging_is_off_by_default(tmp_path):
 
 def test_the_default_format_is_text_and_the_suffix_chooses_json(tmp_path):
     uw, model, path = _model(tmp_path, name="run.log")
-    assert model.journal_format == "text"
+    assert model.transcript_format == "text"
 
-    model.journal_file = str(tmp_path / "run.jsonl")
-    assert model.journal_format == "jsonl"
+    model.transcript_file = str(tmp_path / "run.jsonl")
+    assert model.transcript_format == "jsonl"
 
-    model.journal_format = "text"
-    assert model.journal_format == "text", "an explicit format must win"
+    model.transcript_format = "text"
+    assert model.transcript_format == "text", "an explicit format must win"
 
 
 def test_text_log_is_one_aligned_line_per_step(tmp_path):
@@ -223,7 +223,7 @@ def test_text_log_is_one_aligned_line_per_step(tmp_path):
     comments = [l for l in lines if l.startswith("#")]
     rows = [l for l in lines if l.strip() and not l.startswith("#")]
 
-    assert any("underworld3 step log" in c for c in comments)
+    assert any("underworld3 run transcript" in c for c in comments)
     assert any("scales:" in c for c in comments)
     assert any("t/Myr" in c and "dt/Myr" in c for c in comments), (
         "the column header must name the unit the time column is in"
@@ -356,7 +356,7 @@ def test_a_repeated_step_index_resolves_to_the_most_recent(tmp_path):
             pass
     model.rewind()                          # back to the start of step 3
 
-    runs = uw.read_journal(path)
+    runs = uw.read_transcript(path)
     steps, notes = runs[-1]["steps"], runs[-1]["notes"]
     assert [s["index"] for s in steps] == [0, 1, 2, 2, 3]
 
@@ -380,7 +380,7 @@ def test_a_bare_restore_is_located_by_its_clock(tmp_path):
         pass
     model.load_state(snap)
 
-    run = uw.read_journal(path)[-1]
+    run = uw.read_transcript(path)[-1]
     note = run["notes"][0]
     assert note["kind"] == "restore"
     assert note["after_position"] == 1
@@ -400,6 +400,6 @@ def test_a_backtrack_with_nothing_to_point_at_says_so(tmp_path):
         pass
     model.load_state(snap)
 
-    note = uw.read_journal(path)[-1]["notes"][0]
+    note = uw.read_transcript(path)[-1]["notes"][0]
     assert note["after_position"] == 1
     assert note["to_position"] is None

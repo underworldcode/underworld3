@@ -55,7 +55,7 @@ class ModelState(Enum):
 
 
 class ModelStep:
-    """What one timestep did — the journal entry for a ``model.step`` block.
+    """What one timestep did — the transcript entry for a ``model.step`` block.
 
     Ordered, so ``[e.name for e in step.events]`` is the sequence of operators
     the step actually applied. That sequence is what makes a step auditable
@@ -115,7 +115,7 @@ class ModelStep:
         repeated = {name: n for name, n in shifts.items() if n > 1}
         if repeated:
             detail = ", ".join(f"{name} x{n}" for name, n in sorted(repeated.items()))
-            # Also record it against the step, so the log and the journal carry
+            # Also record it against the step, so the log and the transcript carry
             # the complaint and not just the terminal the run happened to have.
             self.events.append({
                 "kind": "invariant",
@@ -153,7 +153,7 @@ class ModelStep:
         Each value keeps the units the run actually held it in, which is why
         ``t0`` may read in Myr beside a ``dt`` in seconds: the clock came from
         the tracker and the interval from ``estimate_dt()``. The log is a
-        record of the run, not a tidied report of it — convert on the way out.
+        transcript of the run, not a tidied report of it — convert on the way out.
         """
         return {
             "kind": "step",
@@ -360,20 +360,20 @@ class Model(PintNativeModelMixin, BaseModel):
     # src/underworld3/checkpoint/tracker.py.
     _tracker: Any = PrivateAttr(default=None)
 
-    # The step journal: an ordered record of what each timestep actually did.
+    # The step transcript: an ordered record of what each timestep actually did.
     # ``_open_step`` is the ModelStep currently in progress (None outside a
-    # ``with model.step(dt):`` block); ``_journal`` is the bounded history of
+    # ``with model.step(dt):`` block); ``_transcript`` is the bounded history of
     # completed steps. See :meth:`step`.
     _open_step: Any = PrivateAttr(default=None)
-    _journal: Any = PrivateAttr(default_factory=list)
-    _journal_limit: Any = PrivateAttr(default=512)
+    _transcript: Any = PrivateAttr(default_factory=list)
+    _transcript_limit: Any = PrivateAttr(default=512)
 
-    # Optional on-disk log of the journal: one JSON object per line, appended
-    # and flushed as each step closes. See :attr:`journal_file`.
-    _journal_path: Any = PrivateAttr(default=None)
-    _journal_fh: Any = PrivateAttr(default=None)
-    _journal_format: Any = PrivateAttr(default=None)
-    _journal_columns: Any = PrivateAttr(default=None)
+    # Optional on-disk log of the transcript: one JSON object per line, appended
+    # and flushed as each step closes. See :attr:`transcript_file`.
+    _transcript_path: Any = PrivateAttr(default=None)
+    _transcript_fh: Any = PrivateAttr(default=None)
+    _transcript_format: Any = PrivateAttr(default=None)
+    _transcript_columns: Any = PrivateAttr(default=None)
     # Set while rewind() is doing its own restore, so load_state does not log a
     # second, less informative note for the same backtrack.
     _restoring: Any = PrivateAttr(default=False)
@@ -848,11 +848,11 @@ class Model(PintNativeModelMixin, BaseModel):
         return self._tracker
 
     # ------------------------------------------------------------------
-    # The step journal
+    # The step transcript
     # ------------------------------------------------------------------
 
     @property
-    def journal(self) -> List[Any]:
+    def transcript(self) -> List[Any]:
         """Completed :class:`ModelStep` records, oldest first.
 
         An ordered account of what each timestep did — which solvers ran, in
@@ -860,32 +860,32 @@ class Model(PintNativeModelMixin, BaseModel):
         thing I said it does" without instrumenting the script, and is the
         record an adjoint or a replay needs.
 
-        Bounded by ``model.journal_limit`` (default 512 steps); set it to
+        Bounded by ``model.transcript_limit`` (default 512 steps); set it to
         ``None`` to keep everything.
         """
-        return list(self._journal)
+        return list(self._transcript)
 
     @property
-    def journal_limit(self):
+    def transcript_limit(self):
         """How many completed steps to retain (None keeps all)."""
-        return self._journal_limit
+        return self._transcript_limit
 
-    @journal_limit.setter
-    def journal_limit(self, value):
-        self._journal_limit = value
-        self._trim_journal()
+    @transcript_limit.setter
+    def transcript_limit(self, value):
+        self._transcript_limit = value
+        self._trim_transcript()
 
     @property
     def open_step(self):
         """The step in progress, or None outside a ``model.step`` block."""
         return self._open_step
 
-    def clear_journal(self):
-        """Start a new run's journal, discarding the records and snapshots in it.
+    def clear_transcript(self):
+        """Start a new run's transcript, discarding the entries and snapshots in it.
 
         A driver that runs the same model many times — an inversion, a
         parameter sweep, a restart from a saved state — needs each run to have
-        its own account. Without this the journal is a concatenation of every
+        its own account. Without this the transcript is a concatenation of every
         run the process has done, and ``rewind()`` will happily walk back into
         the previous one.
 
@@ -894,19 +894,19 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         if self._open_step is not None:
             raise RuntimeError(
-                "cannot clear the journal from inside a model.step block "
+                "cannot clear the transcript from inside a model.step block "
                 f"(step {self._open_step.index} is open)."
             )
-        self._journal.clear()
+        self._transcript.clear()
         self._record_warned = False
         # A new run gets a new section in the log rather than a new file, so
         # one file holds the whole process — thirteen forward runs of an
         # inversion, say — delimited by their headers.
-        self._write_journal_line(self._run_header())
+        self._write_transcript_line(self._run_header())
 
     @property
-    def journal_file(self):
-        """Path of the on-disk step log, or None (the default: memory only).
+    def transcript_file(self):
+        """Path of the on-disk transcript, or None (the default: memory only).
 
         Assign a path and every step that closes — completed OR abandoned —
         is appended as one JSON object on its own line, and flushed. A run
@@ -915,39 +915,39 @@ class Model(PintNativeModelMixin, BaseModel):
 
         ::
 
-            model.journal_file = "output/run.journal.jsonl"
+            model.transcript_file = "output/run.transcript.jsonl"
 
-        The file records what the run DID; ``model.journal`` is what it can
+        The file records what the run DID; ``model.transcript`` is what it can
         still UNDO. They differ in two ways, both deliberate: an abandoned step
         appears in the file and not in memory, and a step trimmed by
-        ``journal_limit`` leaves memory but stays in the file.
+        ``transcript_limit`` leaves memory but stays in the file.
 
-        Read one back with :func:`underworld3.read_journal`. Rank 0 writes;
+        Read one back with :func:`underworld3.read_transcript`. Rank 0 writes;
         other ranks record in memory as usual.
         """
-        return self._journal_path
+        return self._transcript_path
 
-    @journal_file.setter
-    def journal_file(self, path):
-        if self._journal_fh is not None:
-            self._journal_fh.close()
-            self._journal_fh = None
-        self._journal_path = None if path is None else str(path)
-        self._journal_columns = None
-        if self._journal_path is None:
+    @transcript_file.setter
+    def transcript_file(self, path):
+        if self._transcript_fh is not None:
+            self._transcript_fh.close()
+            self._transcript_fh = None
+        self._transcript_path = None if path is None else str(path)
+        self._transcript_columns = None
+        if self._transcript_path is None:
             return
         import underworld3 as uw
 
         if uw.mpi.rank != 0:
             return
-        directory = os.path.dirname(self._journal_path)
+        directory = os.path.dirname(self._transcript_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        self._journal_fh = open(self._journal_path, "w", encoding="utf-8")
-        self._write_journal_line(self._run_header())
+        self._transcript_fh = open(self._transcript_path, "w", encoding="utf-8")
+        self._write_transcript_line(self._run_header())
 
     @property
-    def journal_format(self):
+    def transcript_format(self):
         """``"text"`` (default) or ``"jsonl"``.
 
         Text is for reading — aligned columns, one line per step, designed to
@@ -959,19 +959,19 @@ class Model(PintNativeModelMixin, BaseModel):
         path ends ``.jsonl``, ``.ndjson`` or ``.json``; set this explicitly to
         override.
         """
-        if self._journal_format is not None:
-            return self._journal_format
-        if self._journal_path and self._journal_path.lower().endswith(
+        if self._transcript_format is not None:
+            return self._transcript_format
+        if self._transcript_path and self._transcript_path.lower().endswith(
                 (".jsonl", ".ndjson", ".json")):
             return "jsonl"
         return "text"
 
-    @journal_format.setter
-    def journal_format(self, value):
+    @transcript_format.setter
+    def transcript_format(self, value):
         if value not in (None, "text", "jsonl"):
             raise ValueError(
-                f"journal_format must be 'text', 'jsonl' or None, not {value!r}")
-        self._journal_format = value
+                f"transcript_format must be 'text', 'jsonl' or None, not {value!r}")
+        self._transcript_format = value
 
     def _run_header(self):
         """The record that opens a run in the log, so the file is self-describing."""
@@ -994,9 +994,9 @@ class Model(PintNativeModelMixin, BaseModel):
     # Rendering
     # ------------------------------------------------------------------
 
-    def _render_journal_text(self, payload):
+    def _render_transcript_text(self, payload):
         """One record as human-readable text. Returns a string, possibly
-        several lines, or None for a record this format does not show."""
+        several lines, or None for an entry this format does not show."""
         kind = payload.get("kind")
 
         if kind == "run":
@@ -1008,7 +1008,7 @@ class Model(PintNativeModelMixin, BaseModel):
             )
             lines = [
                 "",
-                f"# underworld3 step log · model {payload.get('model')!r} "
+                f"# underworld3 run transcript · model {payload.get('model')!r} "
                 f"· started {payload.get('started')}",
             ]
             if summary:
@@ -1017,7 +1017,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 lines.append("# scales: none declared (nondimensional run)")
             # Column names are written lazily, with the first step, because the
             # time unit is not known until a step carries one.
-            self._journal_columns = None
+            self._transcript_columns = None
             return "\n".join(lines)
 
         if kind == "step":
@@ -1025,8 +1025,8 @@ class Model(PintNativeModelMixin, BaseModel):
             unit = (payload["t1"] or {}).get("units") if isinstance(
                 payload.get("t1"), dict) else None
             short = _abbreviate_unit(unit)
-            if self._journal_columns is None:
-                self._journal_columns = short
+            if self._transcript_columns is None:
+                self._transcript_columns = short
                 t_col = f"t/{short}" if short else "t"
                 dt_col = f"dt/{short}" if short else "dt"
                 prefix = (
@@ -1062,39 +1062,39 @@ class Model(PintNativeModelMixin, BaseModel):
         # than a row of the table, so it breaks the columns deliberately.
         return f"  -- {payload.get('message', kind)}"
 
-    def _write_journal_line(self, payload):
+    def _write_transcript_line(self, payload):
         """Append one record and flush, so a killed run keeps its log."""
-        if self._journal_fh is None:
+        if self._transcript_fh is None:
             return
         import json
 
         try:
-            if self.journal_format == "jsonl":
+            if self.transcript_format == "jsonl":
                 text = json.dumps(payload, default=str)
             else:
-                text = self._render_journal_text(payload)
+                text = self._render_transcript_text(payload)
                 if text is None:
                     return
-            self._journal_fh.write(text + "\n")
-            self._journal_fh.flush()
+            self._transcript_fh.write(text + "\n")
+            self._transcript_fh.flush()
         except Exception:
             # A log is a convenience: never take a run down for it. Drop the
             # handle so the failure is reported once rather than per step.
             try:
-                self._journal_fh.close()
+                self._transcript_fh.close()
             except Exception:
                 pass
-            self._journal_fh = None
+            self._transcript_fh = None
             import warnings
 
             warnings.warn(
-                f"could not append to the journal file {self._journal_path!r}; "
+                f"could not append to the transcript file {self._transcript_path!r}; "
                 f"logging is off for the rest of this run. The in-memory "
-                f"model.journal is unaffected.",
+                f"model.transcript is unaffected.",
                 RuntimeWarning,
             )
 
-    def _write_journal_note(self, kind, message, **fields):
+    def _write_transcript_note(self, kind, message, **fields):
         """Log something that happened to the run but is not a step.
 
         A backtrack above all: a log that shows step 7, then step 7 again, with
@@ -1102,12 +1102,12 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         payload = {"kind": kind, "message": message}
         payload.update(fields)
-        self._write_journal_line(payload)
+        self._write_transcript_line(payload)
 
-    def _trim_journal(self):
-        limit = self._journal_limit
-        if limit is not None and len(self._journal) > limit:
-            del self._journal[: len(self._journal) - limit]
+    def _trim_transcript(self):
+        limit = self._transcript_limit
+        if limit is not None and len(self._transcript) > limit:
+            del self._transcript[: len(self._transcript) - limit]
 
     @property
     def record_every(self):
@@ -1128,7 +1128,7 @@ class Model(PintNativeModelMixin, BaseModel):
     def record_limit(self):
         """How many snapshots to retain (None retains all).
 
-        Older steps keep their journal record and lose their snapshot, so the
+        Older steps keep their transcript record and lose their snapshot, so the
         account of what happened survives even where the state does not.
         """
         return self._record_limit
@@ -1141,13 +1141,13 @@ class Model(PintNativeModelMixin, BaseModel):
     @property
     def restore_points(self):
         """Completed steps that can still be restored, oldest first."""
-        return [entry for entry in self._journal if entry.restorable]
+        return [entry for entry in self._transcript if entry.restorable]
 
     def _trim_records(self):
         limit = self._record_limit
         if limit is None:
             return
-        restorable = [e for e in self._journal if e.restorable]
+        restorable = [e for e in self._transcript if e.restorable]
         for entry in restorable[: max(0, len(restorable) - limit)]:
             entry.snapshot = None
 
@@ -1159,10 +1159,10 @@ class Model(PintNativeModelMixin, BaseModel):
         because the clock lives on the tracker and the tracker is captured with
         everything else.
 
-        The journal is truncated to match, so it continues to describe the run
+        The transcript is truncated to match, so it continues to describe the run
         that actually happened.
         """
-        restorable = [e for e in self._journal if e.restorable]
+        restorable = [e for e in self._transcript if e.restorable]
         if not restorable:
             raise RuntimeError(
                 "nothing to rewind to: no completed step kept a snapshot. "
@@ -1179,13 +1179,13 @@ class Model(PintNativeModelMixin, BaseModel):
             self.load_state(target.snapshot)
         finally:
             self._restoring = False
-        cut = self._journal.index(target)
-        dropped = len(self._journal) - cut
-        del self._journal[cut:]
+        cut = self._transcript.index(target)
+        dropped = len(self._transcript) - cut
+        del self._transcript[cut:]
 
         # A log that shows step 7, then step 7 again with nothing in between is
         # not a log of what happened. Say where the run went back to.
-        self._write_journal_note(
+        self._write_transcript_note(
             "rewind",
             f"rewind to the start of step {target.index} "
             f"(t = {_pretty_time(self.tracker.time)}); {dropped} step(s) undone",
@@ -1228,7 +1228,7 @@ class Model(PintNativeModelMixin, BaseModel):
         ``model.tracker`` exactly as it was. Backstepping no longer has to
         remember to unwind a counter.
 
-        **Everything the block did is recorded** in :attr:`journal`, in order,
+        **Everything the block did is recorded** in :attr:`transcript`, in order,
         with the interval it ran over.
 
         Nothing is compulsory: a script that never opens a step behaves as
@@ -1239,7 +1239,7 @@ class Model(PintNativeModelMixin, BaseModel):
         dt : float or dimensional quantity
             The interval this step covers.
         label : str, optional
-            A name for the step, carried into the journal.
+            A name for the step, carried into the transcript.
         """
         from contextlib import contextmanager
 
@@ -1264,7 +1264,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 except Exception as exc:
                     # A snapshot is a convenience here, not a precondition — a
                     # deforming or adapted mesh cannot be captured yet, and the
-                    # run should carry on with a journal but no restore
+                    # run should carry on with a transcript but no restore
                     # point rather than fail. Say so once.
                     if not self._record_warned:
                         self._record_warned = True
@@ -1272,7 +1272,7 @@ class Model(PintNativeModelMixin, BaseModel):
 
                         warnings.warn(
                             f"step {index}: could not record the starting state "
-                            f"({type(exc).__name__}: {exc}). The journal still "
+                            f"({type(exc).__name__}: {exc}). The transcript still "
                             f"holds what ran, but model.rewind() will not "
                             f"reach this step. This is expected on a mesh that "
                             f"deforms or adapts.",
@@ -1295,17 +1295,17 @@ class Model(PintNativeModelMixin, BaseModel):
                 self.tracker.time = t0
                 record.completed = False
                 self._open_step = None
-                # The abandoned record never joins the journal, so the state it
+                # The abandoned record never joins the transcript, so the state it
                 # captured is unreachable — drop it rather than hold a field-
                 # sized object until the exception's traceback is collected.
                 # The idiom for going back is the caller's own save_state()
                 # taken before the block.
                 record.snapshot = None
-                # The log keeps the record itself. A rejected step is the part
+                # The transcript keeps the entry itself. A rejected step is the part
                 # of a run's history that is otherwise invisible, and it is
                 # usually the part you want when asking why a run went the way
                 # it did.
-                self._write_journal_line(record.as_dict())
+                self._write_transcript_line(record.as_dict())
                 raise
 
             record.wall = _time.monotonic() - wall0
@@ -1317,9 +1317,9 @@ class Model(PintNativeModelMixin, BaseModel):
             self.tracker.dt = dt
             record.completed = True
             self._open_step = None
-            self._journal.append(record)
-            self._write_journal_line(record.as_dict())
-            self._trim_journal()
+            self._transcript.append(record)
+            self._write_transcript_line(record.as_dict())
+            self._trim_transcript()
             self._trim_records()
 
         return _step_context()
@@ -1415,7 +1415,7 @@ class Model(PintNativeModelMixin, BaseModel):
         # more specific, note and suppresses this one.
         if not self._restoring:
             where = "a file" if isinstance(source, (str, os.PathLike)) else "a snapshot"
-            self._write_journal_note(
+            self._write_transcript_note(
                 "restore",
                 f"restore from {where}; the clock now reads "
                 f"{_pretty_time(self.tracker.time)}",
@@ -5444,8 +5444,8 @@ def _backtrack_target(steps, here, note):
     return None
 
 
-def read_journal(path):
-    """Read a journal file back as a list of runs.
+def read_transcript(path):
+    """Read a transcript file back as a list of runs.
 
     Each entry is ``{"run": <header>, "steps": [<step>, ...]}``, in the order
     the process produced them — an inversion driver that ran the forward model
@@ -5458,7 +5458,7 @@ def read_journal(path):
     Parameters
     ----------
     path : str
-        A file written by a model with :attr:`Model.journal_file` set.
+        A file written by a model with :attr:`Model.transcript_file` set.
 
     Returns
     -------
@@ -5475,11 +5475,11 @@ def read_journal(path):
                 first = False
                 if line.startswith("#"):
                     raise ValueError(
-                        f"{path} is the TEXT journal format, which is a report "
-                        f"rather than a record — it converts the time column to "
+                        f"{path} is the TEXT transcript format, which is a report "
+                        f"rather than a transcript — it converts the time column to "
                         f"one unit and drops each event's detail, so it cannot "
                         f"be read back. Write JSON lines instead: give the path "
-                        f"a .jsonl suffix, or set model.journal_format = 'jsonl'."
+                        f"a .jsonl suffix, or set model.transcript_format = 'jsonl'."
                     )
             try:
                 entry = json.loads(line)

@@ -1,9 +1,9 @@
-"""What the step journal claims must be what happened.
+"""What the step transcript claims must be what happened.
 
 Two ways it was over- or under-reporting, both found by writing a real
 annulus convection run in the timestepping pattern.
 
-1. The journal counted one operator as two. The hook lives in
+1. The transcript counted one operator as two. The hook lives in
    ``_update_constants``, which is the single point every solver passes on its
    way to a solve — except that the rotated free-slip loop pushes constants a
    second time for its own assembly, after the public ``solve()`` has already
@@ -105,7 +105,7 @@ def test_rotated_freeslip_solve_is_recorded_once():
         adv.solve(timestep=0.01, zero_init_guess=False)
         stokes.solve(zero_init_guess=False)
 
-    entry = model.journal[-1]
+    entry = model.transcript[-1]
     solves = _names(entry)
     assert sum(1 for n in solves if "Stokes" in n) == 1, (
         f"the rotated free-slip dispatch recorded more than one Stokes solve: {solves}"
@@ -129,7 +129,7 @@ def test_a_solver_called_twice_is_still_recorded_twice():
             adv.solve(timestep=0.01, zero_init_guess=False)
             stokes.solve(zero_init_guess=False)
 
-    solves = _names(model.journal[-1])
+    solves = _names(model.transcript[-1])
     assert sum(1 for n in solves if "Stokes" in n) == 2, solves
 
 

@@ -4,7 +4,7 @@
 
 ## Why this note exists
 
-Underworld3 records what a run did — `model.journal`, the on-disk log, the
+Underworld3 records what a run did — `model.transcript`, the on-disk log, the
 figure. Building those made it clear that the hard part is not the recording
 but the **view**: the record has to make a *relation* visible, and until we
 knew which relation, each addition was a patch on the last.
@@ -146,6 +146,9 @@ played, including the false starts and the re-takes, which is precisely the
 thing being kept. The word also carries its own contrast with the score, so
 the pair names itself.
 
-The current API says `journal`. If this model is adopted, `transcript` is the
-better name for the same object, and the renderers follow from the pair —
-one draws the transcript, one draws the score.
+The API followed: what was `model.journal` is `model.transcript`, and the
+renderers follow from the pair — `transcript_diagram` draws the transcript,
+`transcript_flowchart` draws the score it implies.
+
+"Record" is kept as a **verb**. A step records what it did; the thing it
+produces is the transcript.

@@ -48,7 +48,7 @@ def _svg(tmp_path, runs, **kwargs):
     import underworld3 as uw
 
     out = str(tmp_path / "run.svg")
-    uw.journal_diagram(runs, out=out, **kwargs)
+    uw.transcript_diagram(runs, out=out, **kwargs)
     text = open(out, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)          # must be well-formed
     return text
@@ -189,7 +189,7 @@ def test_a_nondimensional_run_still_renders(tmp_path):
 def test_flowchart_is_one_chain_when_every_step_agrees():
     import underworld3 as uw
 
-    text = uw.journal_flowchart(_run([_step(i) for i in range(6)]))
+    text = uw.transcript_flowchart(_run([_step(i) for i in range(6)]))
     assert text.startswith("flowchart LR")
     assert "subgraph" not in text
     assert text.count("-->") == 2
@@ -200,7 +200,7 @@ def test_flowchart_separates_the_step_that_differs():
     import underworld3 as uw
 
     odd = _step(3, events=[{"kind": "solve", "name": "SNES_Stokes(v)"}])
-    text = uw.journal_flowchart(_run([_step(0), _step(1), _step(2), odd]))
+    text = uw.transcript_flowchart(_run([_step(0), _step(1), _step(2), odd]))
     assert text.count("subgraph") == 2
     assert 'step 3' in text
     assert 'step 0, 1, 2' in text
@@ -223,7 +223,7 @@ def test_a_live_model_can_be_drawn_without_a_file(tmp_path):
             model._record_step_event("solve", "SNES_Stokes(v)")
 
     out = str(tmp_path / "live.svg")
-    uw.journal_diagram(model, out=out)
+    uw.transcript_diagram(model, out=out)
     text = open(out, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)
     assert "3 steps" in text
@@ -235,14 +235,14 @@ def test_reading_a_text_log_says_what_to_do_instead(tmp_path):
     uw.reset_default_model()
     model = uw.get_default_model()
     path = tmp_path / "run.log"
-    model.journal_file = str(path)
+    model.transcript_file = str(path)
     model.tracker.time = 0.0
     model.tracker.step = 0
     with model.step(0.1):
         pass
 
-    with pytest.raises(ValueError, match="journal_format = 'jsonl'"):
-        uw.read_journal(str(path))
+    with pytest.raises(ValueError, match="transcript_format = 'jsonl'"):
+        uw.read_transcript(str(path))
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +254,7 @@ def _pdf(tmp_path, runs, name="run.pdf", **kwargs):
     import underworld3 as uw
 
     out = str(tmp_path / name)
-    uw.journal_diagram(runs, out=out, **kwargs)
+    uw.transcript_diagram(runs, out=out, **kwargs)
     return open(out, "rb").read()
 
 
@@ -262,7 +262,7 @@ def test_pdf_is_the_default_and_is_a_real_pdf(tmp_path):
     import underworld3 as uw
 
     out = str(tmp_path / "run")
-    written = uw.journal_diagram(_run([_step(i) for i in range(5)]), out=out)
+    written = uw.transcript_diagram(_run([_step(i) for i in range(5)]), out=out)
     assert written == out
     data = open(out, "rb").read()
     assert data.startswith(b"%PDF-1.4")
@@ -311,7 +311,7 @@ def test_a_jsonl_log_round_trips_into_a_figure(tmp_path):
     uw.reset_default_model()
     model = uw.get_default_model()
     path = tmp_path / "run.jsonl"
-    model.journal_file = str(path)
+    model.transcript_file = str(path)
     model.record_every = 1
     model.tracker.time = 0.0
     model.tracker.step = 0
@@ -321,11 +321,11 @@ def test_a_jsonl_log_round_trips_into_a_figure(tmp_path):
             model._record_step_event("solve", "SNES_Stokes(v)")
     model.rewind()
 
-    out = uw.journal_diagram(str(path))
+    out = uw.transcript_diagram(str(path))
     assert out.endswith(".pdf")
     assert open(out, "rb").read().startswith(b"%PDF")
 
-    out_svg = uw.journal_diagram(str(path), out=str(tmp_path / "run.svg"))
+    out_svg = uw.transcript_diagram(str(path), out=str(tmp_path / "run.svg"))
     text = open(out_svg, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)
     assert "1 backtrack(s)" in text

@@ -505,7 +505,7 @@ large — leaves the clock exactly as it was. And everything the block did is
 recorded:
 
 ```python
->>> for entry in model.journal[-3:]:
+>>> for entry in model.transcript[-3:]:
 ...     print(entry)
 <step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
 <step 1 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
@@ -520,7 +520,7 @@ Opening a step is optional. A script that never does behaves exactly as before.
 
 ### Recording a run
 
-Ask the step to keep the state it started from and the journal becomes a
+Ask the step to keep the state it started from and the transcript becomes a
 restorable record:
 
 ```python
@@ -545,32 +545,32 @@ that misbehaved can be looked at twice. And an adjoint needs precisely this: the
 state at each step and the order the operators were applied in.
 
 Snapshots cost roughly 13 bytes per primary degree of freedom per step. Older
-steps lose their snapshot and keep their journal record, so the account of what
+steps lose their snapshot and keep their transcript record, so the account of what
 happened outlives the state it happened to.
 
 A driver that runs the same model more than once — an inversion, a parameter
 sweep, a restart — should start each run with a clean account:
 
 ```python
-model.clear_journal()
+model.clear_transcript()
 model.tracker.time = uw.quantity(0.0, "Myr")
 model.tracker.step = 0
 ```
 
-Without it the journal is the concatenation of every run the process has done,
+Without it the transcript is the concatenation of every run the process has done,
 and `rewind()` will walk back into the previous one.
 
 On a mesh that deforms or adapts the snapshot cannot be taken yet; the run
-warns once, keeps journalling, and `rewind()` will not reach those steps.
+warns once, keeps recording, and `rewind()` will not reach those steps.
 
-### Writing the record down
+### Writing the transcript down
 
-`model.journal` is what the run can still undo. It lives in memory, it is
-bounded, and it dies with the process. `model.journal_file` is what the run
+`model.transcript` is what the run can still undo. It lives in memory, it is
+bounded, and it dies with the process. `model.transcript_file` is what the run
 *did*:
 
 ```python
-model.journal_file = "output/run.log"
+model.transcript_file = "output/run.log"
 ```
 
 One aligned line per step, appended and flushed as it closes, so `tail -f`
@@ -599,13 +599,13 @@ each write their own line, because a log that shows step 3, then step 3 again
 with nothing in between, is not a log of what happened. `rewind` writes the
 more specific note and suppresses the generic one.
 
-Four other things go in the file that are not in `model.journal`, all
+Four other things go in the file that are not in `model.transcript`, all
 deliberate:
 
 - **An abandoned step.** A rejected step is the part of a run's history that is
   otherwise invisible, and it is usually what you want when asking why a run
   went the way it did.
-- **A step aged out by `journal_limit`.** The account of what happened outlives
+- **A step aged out by `transcript_limit`.** The account of what happened outlives
   both the state and the bounded in-memory list.
 - **An invariant complaint**, as an `invariant` event on the step, so it
   survives the terminal the run happened to have.
@@ -613,7 +613,7 @@ deliberate:
 
 ### For parsing: JSON lines
 
-A path ending `.jsonl`, `.ndjson` or `.json` — or `model.journal_format =
+A path ending `.jsonl`, `.ndjson` or `.json` — or `model.transcript_format =
 "jsonl"` — writes the same record as one JSON object per line:
 
 ```json
@@ -629,13 +629,13 @@ A path ending `.jsonl`, `.ndjson` or `.json` — or `model.journal_format =
 {"kind": "rewind", "message": "...", "to_step": 3, "steps_undone": 1, "t": {"magnitude": 0.9909, "units": "megayear"}}
 ```
 
-Read it back with `uw.read_journal(path)`, which returns one entry per run — an
+Read it back with `uw.read_transcript(path)`, which returns one entry per run — an
 inversion driver that ran the forward model thirteen times leaves thirteen runs
-in one file, delimited by the header `clear_journal()` writes.
+in one file, delimited by the header `clear_transcript()` writes.
 
 **Why JSON lines and not YAML.** One self-contained record per line is the
 whole point. A killed run leaves a truncated final line that *fails* to parse,
-so `read_journal` drops it and keeps everything before; a half-written YAML
+so `read_transcript` drops it and keeps everything before; a half-written YAML
 mapping frequently still parses, as a real record with its last key missing.
 Line-oriented also means `grep`, `wc -l` and `jq -c` work without a parser, and
 `json` is stdlib with predictable float round-tripping. YAML is the right
@@ -655,12 +655,12 @@ Rank 0 writes; the other ranks record in memory as usual.
 A terminal is not where a run belongs in a paper.
 
 ```python
-uw.journal_diagram(model, out="figures/run.pdf")     # or a .jsonl log
-uw.journal_diagram(model, out="figures/run.svg")     # same figure, SVG
-uw.journal_flowchart(model)                          # Mermaid, for docs
+uw.transcript_diagram(model, out="figures/run.pdf")     # or a .jsonl log
+uw.transcript_diagram(model, out="figures/run.svg")     # same figure, SVG
+uw.transcript_flowchart(model)                          # Mermaid, for docs
 ```
 
-`journal_diagram` puts **time down the page**: one row per step, A4 portrait,
+`transcript_diagram` puts **time down the page**: one row per step, A4 portrait,
 paginated, so it drops into a document column and opens anywhere. Each row
 carries the step index, the clock, `dt` as a number and as a bar, a wall-clock
 tick, and one letter.
@@ -708,16 +708,16 @@ a check in the script — nothing failed. `B` is the same three operators run
 twice inside one step block, which is why that row also carries the invariant's
 `!`.
 
-`journal_flowchart` renders one step's operator flow as Mermaid. When a run has
+`transcript_flowchart` renders one step's operator flow as Mermaid. When a run has
 more than one distinct sequence, each becomes its own subgraph labelled with
 the steps that took it, so an anomalous step is visible rather than averaged
 away.
 
-Both accept a live model, a `.jsonl` log, or the list `read_journal` returns.
+Both accept a live model, a `.jsonl` log, or the list `read_transcript` returns.
 Not a text log: that one is a report, and reading it back is refused with the
 one line that fixes it.
 
-### What the record checks
+### What the transcript checks
 
 A step also checks that it can be what it claims to be. One invariant so far:
 a history manager must advance exactly once per step.
@@ -781,15 +781,15 @@ step twice, restore it rather than re-run it.
 Boussinesq convection in an annulus. Four reference quantities, a body force
 written as a force (Ra falls out of the nondimensionalisation rather than being
 typed in), rotated free-slip on the curved boundaries, and a varying
-`estimate_dt()`. It then demonstrates the four things the record buys, in
-order: the journal, a rejected step, a bit-exact replay, and the invariant
+`estimate_dt()`. It then demonstrates the four things the transcript buys, in
+order: the transcript, a rejected step, a bit-exact replay, and the invariant
 catching a step that was taken twice. Compare
 `../advanced/Ex_Convection_Cylinder.py`, which solves the same physics with a
 bare `for step in range(n)` loop and no clock at all.
 
-**An adjoint driven from the journal.** The backward pass of a discrete adjoint
-needs exactly what the record holds: the state at each step and the order the
-operators were applied in. Walking `model.journal` backwards —
+**An adjoint driven from the transcript.** The backward pass of a discrete adjoint
+needs exactly what the transcript holds: the state at each step and the order the
+operators were applied in. Walking `model.transcript` backwards —
 `load_state(entry.snapshot)`, replay, transpose-solve — replaces the
 hand-written checkpoint dictionary that an adjoint normally carries, and
 removes its dependence on knowing in advance which arrays the backward pass
@@ -1164,8 +1164,8 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
   - Clock on `model.tracker`, not loose variables (snapshot consistency)
   - Disk snapshots now carry dimensional values (magnitude + units)
   - `mesh.t` now resolves to the model clock (#410)
-  - `model.step(dt)` — the step as a transaction, and the step journal
-  - `model.record_every` / `model.rewind()` — the journal as a restorable record
+  - `model.step(dt)` — the step as a transaction, and the step transcript
+  - `model.record_every` / `model.rewind()` — the transcript as a restorable record
   - A step warns when a history advances more than once
   - Set `.sym` to change a value; rebinding the name changes nothing
   - Backstepping recipe; snapshot before the operator

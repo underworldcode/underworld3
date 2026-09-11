@@ -1,4 +1,4 @@
-"""The step journal — ``with model.step(dt):``.
+"""The step transcript — ``with model.step(dt):``.
 
 One timestep as a transaction. Three guarantees, one test each:
 
@@ -65,11 +65,11 @@ def test_an_abandoned_step_does_not_commit():
 
     assert model.tracker.time == pytest.approx(1.0)
     assert model.tracker.step == 3
-    assert model.journal == []
+    assert model.transcript == []
     assert model.open_step is None
 
 
-def test_the_journal_records_what_ran_and_in_what_order():
+def test_the_transcript_records_what_ran_and_in_what_order():
     """The point of the record: it answers what a step actually did, without
     the script being instrumented."""
     uw, model = _fresh_model()
@@ -84,8 +84,8 @@ def test_the_journal_records_what_ran_and_in_what_order():
         first.solve()
         second.solve()
 
-    assert len(model.journal) == 1
-    entry = model.journal[0]
+    assert len(model.transcript) == 1
+    entry = model.transcript[0]
     assert entry.label == "a step"
     assert entry.completed
     names = [e["name"] for e in entry.events if e["kind"] == "solve"]
@@ -112,19 +112,19 @@ def test_a_script_without_steps_is_unaffected():
     solver = _poisson(uw, mesh, "T_free")
     solver.solve()
     assert model.open_step is None
-    assert model.journal == []
+    assert model.transcript == []
     assert np.abs(np.asarray(solver.u.data)).max() > 1.0e-3
 
 
-def test_the_journal_is_bounded():
+def test_the_transcript_is_bounded():
     uw, model = _fresh_model()
     model.tracker.time, model.tracker.step = 0.0, 0
-    model.journal_limit = 3
+    model.transcript_limit = 3
     for _ in range(7):
         with model.step(0.1):
             pass
-    assert len(model.journal) == 3
-    assert [e.index for e in model.journal] == [4, 5, 6]
+    assert len(model.transcript) == 3
+    assert [e.index for e in model.transcript] == [4, 5, 6]
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def test_recording_is_off_by_default():
     model.tracker.time, model.tracker.step = 0.0, 0
     with model.step(0.1):
         pass
-    assert model.journal[0].restorable is False
+    assert model.transcript[0].restorable is False
     assert model.restore_points == []
 
 
@@ -188,7 +188,7 @@ def test_rewind_undoes_a_step_exactly():
     assert np.array_equal(np.array(T.array), at_two), "fields did not come back"
     assert model.tracker.step == 2, "the clock did not come back"
     assert model.tracker.time == pytest.approx(0.04)
-    assert len(model.journal) == 2, "the journal still claims the undone step"
+    assert len(model.transcript) == 2, "the transcript still claims the undone step"
 
 
 def test_replaying_a_rewound_step_reproduces_it():
@@ -216,7 +216,7 @@ def test_replaying_a_rewound_step_reproduces_it():
     )
 
 
-def test_the_record_is_bounded_but_the_journal_survives():
+def test_the_record_is_bounded_but_the_transcript_survives():
     """Old steps lose their snapshot and keep their record, so the account of
     what happened outlives the state."""
     uw, model = _fresh_model()
@@ -228,7 +228,7 @@ def test_the_record_is_bounded_but_the_journal_survives():
         with model.step(0.1):
             pass
 
-    assert len(model.journal) == 5
+    assert len(model.transcript) == 5
     assert [e.index for e in model.restore_points] == [3, 4]
 
 
@@ -262,7 +262,7 @@ def test_a_history_that_advances_twice_in_one_step_is_reported():
             solver.solve(timestep=0.02)
             solver.solve(timestep=0.02)   # the same step, taken twice
 
-    entry = model.journal[0]
+    entry = model.transcript[0]
     shifts = [e for e in entry.events if e["kind"] == "history_shift"]
     assert len(shifts) == 2
 
@@ -284,10 +284,10 @@ def test_one_solve_per_step_is_quiet():
             with model.step(0.02):
                 solver.solve(timestep=0.02)
 
-    assert len(model.journal) == 3
+    assert len(model.transcript) == 3
 
 
-def test_the_journal_shows_the_history_that_moved():
+def test_the_transcript_shows_the_history_that_moved():
     """The record names which history advanced, not just that a solve ran."""
     uw, model = _fresh_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
@@ -299,8 +299,8 @@ def test_the_journal_shows_the_history_that_moved():
     with model.step(0.02):
         solver.solve(timestep=0.02)
 
-    kinds = [e["kind"] for e in model.journal[0].events]
+    kinds = [e["kind"] for e in model.transcript[0].events]
     assert "solve" in kinds and "history_shift" in kinds
-    shift = next(e for e in model.journal[0].events if e["kind"] == "history_shift")
+    shift = next(e for e in model.transcript[0].events if e["kind"] == "history_shift")
     assert shift["dt"] == pytest.approx(0.02)
     assert "T_record" in shift["name"], shift["name"]

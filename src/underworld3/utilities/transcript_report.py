@@ -1,13 +1,13 @@
 """Turn a run's step log into a figure.
 
-The log is written to be watched (:attr:`underworld3.Model.journal_file`); this
+The log is written to be watched (:attr:`underworld3.Model.transcript_file`); this
 module turns it into something to put in a paper or read on a page.
 
-``journal_diagram``
+``transcript_diagram``
     What the run DID, as SVG or PDF. Time runs DOWN the page, one row per step,
     so the figure is portrait, paginates, and drops into a document column.
 
-``journal_flowchart``
+``transcript_flowchart``
     What ONE step does, as Mermaid, for dropping into documentation.
 
 The layout decision that makes a long run legible: each distinct operator
@@ -27,7 +27,7 @@ import math
 import os
 import zlib
 
-__all__ = ["journal_diagram", "journal_flowchart"]
+__all__ = ["transcript_diagram", "transcript_flowchart"]
 
 
 # --- palette ---------------------------------------------------------------
@@ -52,21 +52,21 @@ PAGE_W, PAGE_H = 595.0, 842.0
 # ---------------------------------------------------------------------------
 
 def _as_runs(source):
-    """Accept a path, the list ``read_journal`` returns, or a live model."""
+    """Accept a path, the list ``read_transcript`` returns, or a live model."""
     if isinstance(source, (str, os.PathLike)):
         import underworld3 as uw
 
-        return uw.read_journal(str(source))
-    if hasattr(source, "journal") and hasattr(source, "tracker"):
+        return uw.read_transcript(str(source))
+    if hasattr(source, "transcript") and hasattr(source, "tracker"):
         return [{"run": source._run_header(),
-                 "steps": [entry.as_dict() for entry in source.journal],
+                 "steps": [entry.as_dict() for entry in source.transcript],
                  "notes": []}]
     if isinstance(source, list):
         if source and isinstance(source[0], dict) and "steps" in source[0]:
             return source
         return [{"run": None, "steps": list(source), "notes": []}]
     raise TypeError(
-        f"expected a journal path, the list read_journal returns, or a Model; "
+        f"expected a transcript path, the list read_transcript returns, or a Model; "
         f"got {type(source).__name__}"
     )
 
@@ -74,7 +74,7 @@ def _as_runs(source):
 def _pick_run(runs, index):
     populated = [r for r in runs if r.get("steps")]
     if not populated:
-        raise ValueError("this journal holds no steps")
+        raise ValueError("this transcript holds no steps")
     return populated[index]
 
 
@@ -678,21 +678,21 @@ def _pdf_document(pages, width, height):
 # Entry points
 # ---------------------------------------------------------------------------
 
-def journal_diagram(source, out=None, run=-1, title=None, format=None,
+def transcript_diagram(source, out=None, run=-1, title=None, format=None,
                     width=None):
     """Render a run's log as a figure, with time running DOWN the page.
 
     Parameters
     ----------
     source : str, list or Model
-        A ``.jsonl`` journal file, the list :func:`underworld3.read_journal`
+        A ``.jsonl`` transcript file, the list :func:`underworld3.read_transcript`
         returns, or a live model. Not a text log — that format is a report and
         cannot be read back.
     out : str, optional
         Where to write. Defaults to the source path with the format's suffix,
-        else ``journal.pdf``.
+        else ``transcript.pdf``.
     run : int, default -1
-        Which run in the file. A file holds one per ``clear_journal()``.
+        Which run in the file. A file holds one per ``clear_transcript()``.
     title : str, optional
         Overrides the heading taken from the run header.
     format : {"pdf", "svg"}, optional
@@ -720,7 +720,7 @@ def journal_diagram(source, out=None, run=-1, title=None, format=None,
     if out is None:
         suffix = ".svg" if format == "svg" else ".pdf"
         out = (os.path.splitext(str(source))[0] + suffix
-               if isinstance(source, (str, os.PathLike)) else "journal" + suffix)
+               if isinstance(source, (str, os.PathLike)) else "transcript" + suffix)
 
     page_width = width or PAGE_W
     canvas, page_width, height = _layout(
@@ -742,7 +742,7 @@ def journal_diagram(source, out=None, run=-1, title=None, format=None,
     return out
 
 
-def journal_flowchart(source, run=-1, out=None):
+def transcript_flowchart(source, run=-1, out=None):
     """The operator flow of a step, as Mermaid, for dropping into documentation.
 
     When every step ran the same sequence — the usual case — that is one

@@ -2266,9 +2266,9 @@ class SolverBaseClass(uw_object):
         Called before each solve() to ensure constants are current without
         requiring JIT recompilation.
 
-        ``record=False`` suppresses the step-journal entry. Pass it from any
+        ``record=False`` suppresses the step-transcript entry. Pass it from any
         site that pushes constants for its OWN assembly rather than to
-        dispatch a solve — otherwise the journal reports one operator as two.
+        dispatch a solve — otherwise the transcript reports one operator as two.
         The rotated free-slip loop is such a site: it re-attaches the
         auxiliary vector and re-packs before running its own manual Krylov
         loop, after the public ``solve()`` has already announced itself.
@@ -2281,13 +2281,13 @@ class SolverBaseClass(uw_object):
         except AttributeError:
             pass
 
-        # Note the solve in the model's step journal, if a step is open. This
+        # Note the solve in the model's step transcript, if a step is open. This
         # is the one place every solver passes through before solving, so one
         # hook records them all, in order. A no-op outside a model.step block.
         if record:
             try:
                 # Name it by what it SOLVES, not by its auto-generated instance
-                # id: a journal reading "Stokes(V) -> AdvDiffusion(T)" is
+                # id: a transcript reading "Stokes(V) -> AdvDiffusion(T)" is
                 # auditable, one reading "Solver_8_ -> Solver_14_" is not.
                 try:
                     unknown = self.u.name
