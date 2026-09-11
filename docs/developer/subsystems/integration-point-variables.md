@@ -86,7 +86,12 @@ raises if they differ. Boundary integrals evaluate the field on the face
 rule and see zeros; that is correct for a history term and worth knowing for
 anything else.
 
-Scalar components only for now; use one variable per component.
+Vector and tensor variables are supported: one dof per **independent**
+component per point, so a symmetric tensor in 2-D is `2x2` symbolically and
+three columns in storage. The column order is the diagonal first, then the
+off-diagonals in row-major upper-triangular order — `(0,0), (1,1), (0,1)` in
+2-D — and `tests/test_0066_integration_point_slcn.py` pins it against
+what the variable's own `.sym` reconstructs.
 
 ## Implementation
 
@@ -132,8 +137,8 @@ adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V_fn, DuDt=DuDt, order=1
 ```
 
 The diffusive flux history (`DFDt`) keeps its nodal projection, since it
-carries derivatives. Scalar histories only; no ALE or old-frame trace-back,
-no checkpoint state yet.
+carries derivatives. Scalar, vector and tensor histories are all carried (see
+below); no ALE or old-frame trace-back, no checkpoint state yet.
 
 It is the transport manager of either advection-diffusion solver. In the
 composed `uw.systems.AdvDiffusion` (#688) it runs at `order=2` (BDF2) and
@@ -143,6 +148,61 @@ Crank-Nicolson flux (`theta=0.5`) the composed solver differentiates the
 old level, which a delta field cannot supply, and the JIT guard refuses
 with a clear message; for that scheme use `AdvDiffusionSLCN`, whose
 diffusive history is a separate nodal `DFDt`.
+
+### Vector and tensor histories
+
+`vtype` selects the shape, and the slots hold one value per **independent**
+component per integration point:
+
+```python
+# a momentum history for Navier-Stokes
+DuDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    mesh, v, v.sym, vtype=uw.VarType.VECTOR, degree=2, order=2)
+
+# a viscoelastic stress history
+DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
+    mesh, stress, v.sym, vtype=uw.VarType.SYM_TENSOR, degree=2, order=1)
+
+DFDt.psi_star[0].sym          # a 2x2 symbolic matrix
+DFDt.psi_star[0].data.shape   # (npoints, 3) -- three stored columns
+DFDt.bdf()                    # 2x2, as psi_fn is
+```
+
+| `vtype` (2-D) | symbolic shape | stored columns |
+|---|---|---|
+| `SCALAR` | 1×1 | 1 |
+| `VECTOR` | 1×2 | 2 |
+| `SYM_TENSOR` | 2×2 | **3** |
+
+The trace-back, the characteristic cache and the weighted sums are all
+shape-agnostic — only the fills know the shape, and they write component by
+component (`_write_components`) because a symmetric tensor's symbolic form
+repeats its off-diagonals and only the independent columns exist in storage.
+The order is diagonal first, then the off-diagonals in row-major
+upper-triangular order: `(0,0), (1,1), (0,1)` in 2-D and
+`(0,0), (1,1), (2,2), (0,1), (0,2), (1,2)` in 3-D. Get that wrong and a
+stress transposes silently, so `_storage_components` is pinned by test against
+what the variable's own `.sym` reconstructs.
+
+Accuracy is the scalar property, per component: with a uniform velocity and a
+field in the P2 space, every slot holds the snapshot evaluated at the exact
+departure point to round-off (`< 1e-12`), for one segment and for two.
+
+For the same history carried on **particles** rather than at the rule, use
+`Lagrangian_Swarm`, which has been vector- and tensor-capable since the
+viscoelastic stress history (see below). The choice between them is where the
+state lives, not what shape it can take.
+
+A symmetric history stores the **upper** triangle, so an asymmetric `psi_fn`
+loses its lower entries — the manager warns rather than transporting half the
+field silently. Note the nodal `SemiLagrangian` keeps the *other* triangle in
+the same situation and does not warn; that divergence is marked with a
+`TODO(BUG)` on that class.
+
+`psi_fn` is re-checked on every assignment, not only at construction, because
+a solver reassigns it (`DFDt.psi_fn = flux.T`) on each setup.
+
+Tests: `tests/test_0066_integration_point_slcn.py`.
 
 ### The mid-point velocity is taken at the mid time
 
