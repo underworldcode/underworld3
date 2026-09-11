@@ -879,9 +879,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                         f"  3. For non-dimensional values, use: {self.parent.name}.data[...] = value\n"
                     )
 
-                # Get current NON-DIMENSIONAL array data from PETSc
-                # Note: We use unpack directly here, not _get_array_data() which dimensionalizes
-                array_data = self.parent.unpack_uw_data_from_petsc(squeeze=False)
+                # Current NON-DIMENSIONAL values, read from the CANONICAL
+                # array rather than from the PETSc field.
+                #
+                # Reading PETSc here made every write inside
+                # uw.synchronised_array_update() overwrite the one before it:
+                # that context defers the PETSc pack, so the field still held
+                # the pre-context values and each __setitem__ started from
+                # them. Two component writes to one swarm variable kept only
+                # the last, silently -- and writing a vector or tensor one
+                # component at a time inside that context is exactly what the
+                # data-access guide recommends. Mesh variables were never
+                # affected: their view writes through the canonical array.
+                # (Not _get_array_data(), which dimensionalises.)
+                array_data = self.parent._unpack_data_to_array_format(
+                    np.asarray(self.parent.data)
+                )
                 # Create a copy to modify (avoid modifying view directly)
                 modified_data = array_data.copy()
 
@@ -926,6 +939,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
                 # Update the specific elements
                 modified_data[key] = value
+                # A symmetric tensor stores one value per off-diagonal PAIR,
+                # so a write to one half has to be carried to the other; see
+                # SwarmVariable._mirror_symmetric_pairs.
+                self.parent._mirror_symmetric_pairs(array_data, modified_data)
                 # Pack back to canonical data format
                 packed_data = self.parent._pack_array_to_data_format(modified_data)
                 self.parent.data[:] = packed_data
@@ -1009,19 +1026,77 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
 
         return TensorSwarmArrayView(self)
 
+    def _mirror_symmetric_pairs(self, before, after):
+        """Carry an off-diagonal write across to its mirror entry.
+
+        Only for a symmetric variable, whose ``(i, j)`` and ``(j, i)`` share
+        one stored value. Writing one half and leaving the other stale loses
+        the write; changing both to different values asks for something the
+        storage cannot hold and is refused.
+        """
+        if self.vtype != uw.VarType.SYM_TENSOR or after.ndim < 3:
+            return
+        rows, cols = after.shape[1], after.shape[2]
+        for i in range(rows):
+            for j in range(i + 1, cols):
+                upper_moved = not np.array_equal(after[:, i, j], before[:, i, j])
+                lower_moved = not np.array_equal(after[:, j, i], before[:, j, i])
+                if upper_moved and not lower_moved:
+                    after[:, j, i] = after[:, i, j]
+                elif lower_moved and not upper_moved:
+                    after[:, i, j] = after[:, j, i]
+                elif upper_moved and lower_moved and not np.array_equal(
+                    after[:, i, j], after[:, j, i]
+                ):
+                    raise ValueError(
+                        f"'{self.clean_name}' is a symmetric tensor: components "
+                        f"[{i}, {j}] and [{j}, {i}] share one stored value and "
+                        "cannot be set to different values in a single assignment."
+                    )
+
+    def _unpack_data_to_array_format(self, flat_data):
+        """Canonical ``(N, components)`` -> array ``(N, a, b)``.
+
+        The inverse of :meth:`_pack_array_to_data_format`, and the read half
+        of a read-modify-write on the canonical array. Follows
+        ``_data_layout``, so a symmetric tensor's shared off-diagonal column
+        appears at both ``(i, j)`` and ``(j, i)``.
+        """
+        flat_data = np.asarray(flat_data)
+        shape = self.shape
+        unpacked = np.empty((flat_data.shape[0], *shape), dtype=flat_data.dtype)
+        for i in range(shape[0]):
+            for j in range(shape[1]):
+                unpacked[:, i, j] = flat_data[:, self._data_layout(i, j)]
+        return unpacked
+
     def _pack_array_to_data_format(self, array_data):
-        """Convert array format (N,a,b) back to canonical data format (N,components)"""
-        # Use existing pack logic but return numpy array instead of writing to PETSc
-        # This is a pure conversion method - no PETSc access
+        """Convert array format (N,a,b) back to canonical data format (N,components)
+
+        A flat reshape is wrong for a symmetric tensor: the ``(N, dim, dim)``
+        view has ``dim*dim`` entries and storage holds only the independent
+        ones, so reshaping produced ``(N, 4)`` for a ``(N, 3)`` variable and
+        the assignment failed to broadcast. ``_data_layout`` is the mapping
+        that ``pack_uw_data_to_petsc`` uses; follow it.
+        """
         # Empty-partition guard: an N=0 array has total size 0, so numpy cannot
         # infer the -1 component dimension ("cannot reshape array of size 0 into
         # shape (0,newaxis)"). This bites a rank that owns no local particles
         # during a parallel read_timestep. Compute the component count from the
         # trailing dims explicitly.
         if array_data.size == 0:
-            ncomp = int(np.prod(array_data.shape[1:])) if array_data.ndim > 1 else 1
-            return array_data.reshape(array_data.shape[0], ncomp)
-        return array_data.reshape(array_data.shape[0], -1)
+            return array_data.reshape(array_data.shape[0], self.num_components)
+
+        if array_data.ndim < 3 or array_data.shape[1] * array_data.shape[2] == self.num_components:
+            return array_data.reshape(array_data.shape[0], -1)
+
+        packed = np.empty(
+            (array_data.shape[0], self.num_components), dtype=array_data.dtype
+        )
+        for i in range(array_data.shape[1]):
+            for j in range(array_data.shape[2]):
+                packed[:, self._data_layout(i, j)] = array_data[:, i, j]
+        return packed
 
     # Legacy methods preserved for backward compatibility (now do nothing)
     def use_legacy_array(self):
