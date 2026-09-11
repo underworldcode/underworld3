@@ -253,8 +253,11 @@ def test_freesurface_prescribed_rate_is_flux_free():
     assert ratio < 5.0e-3, f"prescribed rate carries {ratio:.2e} of net flux (nodal demean?)"
 
 
+# tier_c overrides the module-level tier_b: the second assertion compares two
+# constraint methods, so it can fail because one of them got better.
 @pytest.mark.level_2
-def test_freesurface_strong_constraint_beats_penalty():
+@pytest.mark.tier_c
+def test_freesurface_strong_constraint_against_penalty():
     r"""With a flux-free datum the STRONG rotated constraint holds the surface as a
     material boundary far better than the weak penalty, and does not leak volume.
 
@@ -281,11 +284,24 @@ def test_freesurface_strong_constraint_beats_penalty():
         errors[constraint] = np.abs(realised - target).max() / np.abs(target).max()
         leaks[constraint] = abs(float(net.evaluate())) / abs(float(gross.evaluate()))
 
-    assert errors["strong"] < 0.5 * errors["penalty"], (
-        f"strong constraint not better: {errors['strong']:.2e} vs "
-        f"penalty {errors['penalty']:.2e}")
+    print(f"datum error: strong={errors['strong']:.2e} "
+          f"penalty={errors['penalty']:.2e}; "
+          f"net/gross flux: strong={leaks['strong']:.2e}")
+
+    # Contract: the strong constraint must not pass a net volume flux through
+    # the surface. Absolute, no rival method in it — material crossing the
+    # surface is what puts semi-Lagrangian departure points outside the domain.
     assert leaks["strong"] < 1.0e-3, \
         f"strong constraint leaks net volume flux {leaks['strong']:.2e}"
+
+    # Characterisation (tier C, see the mark): the strong constraint tracks the
+    # prescribed rate more closely than the penalty. This compares two METHODS
+    # and can fail because the penalty path improved, which would be good news.
+    # The 0.5 factor characterises this fixture; it is not a specification.
+    assert errors["strong"] < 0.5 * errors["penalty"], (
+        f"strong constraint not better: {errors['strong']:.2e} vs "
+        f"penalty {errors['penalty']:.2e}. If the penalty path improved, "
+        "explain it and re-characterise; do not revert to make this pass.")
 
 
 @pytest.mark.level_1

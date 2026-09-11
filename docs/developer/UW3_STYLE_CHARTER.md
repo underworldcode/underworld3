@@ -112,8 +112,38 @@ temperature.data[:, 0] = values          # BAD  — compatibility layer in new c
   first, shown to fail, then fixed.
 - Test files follow `tests/test_NNNN_description.py` numbering and carry both markers:
   a level (`level_1`/`level_2`/`level_3`) and a tier (`tier_a`/`tier_b`/`tier_c`).
+  The number sets a broad sequence, nothing more — selection is by marker, and a
+  shared number is not a conflict.
 - Validate a new test's own correctness before changing library code to satisfy it.
-- NOTE: test tiers A,B,C ... A are the hardened tests that have been explicitly reviewed. You can build code around tier A tests, but tier C are tests that are not mature enough to drive coding.  
+- **Assert against a known answer, not against a rival method.** A test that asserts
+  one method is more accurate than another encodes a preference, not a contract: the
+  result moves with the fixture, the mesh, the forcing and every default the two
+  methods carry. Test the analytic or reference solution with an absolute bound.
+  Convergence ORDER and mathematical exactness are contracts and may be asserted
+  freely; "method A scored better than method B here" may not.
+- **Prefer a relative bound.** An absolute threshold silently tracks whatever sets
+  the scale — a free-slip test asserting `|v_n| < 1e-4` was really asserting
+  5.7e-3 relative, and tracked the buoyancy forcing rather than the method.
+- **If an assertion would break when the code gets better, it belongs at tier C.**
+  That is the test to apply, and it is what tier C is for.
+
+### The tiers
+
+| Tier | Meaning |
+|---|---|
+| `tier_a` | Hardened and reviewed. Safe to build code around, and safe to gate a merge on. |
+| `tier_b` | Validated; trustworthy but not yet hardened. |
+| `tier_c` | Validates that the code works, but MUST NOT block a change. A failure demands an EXPLANATION, not a revert. |
+
+Tier C is where a characterisation lives: a comparison between methods, a recorded
+measurement, a relationship that holds today and may legitimately stop holding when
+something improves. Give such a test a failure message that says so, and record the
+measured numbers and their configuration in the docstring, dated. Do not revert code
+to make a tier C test pass — re-characterise it and say why.
+
+Where a per-test mark disagrees with the module-level one, the narrower tier wins:
+a `tier_c` test inside a `tier_a` module is tier C, and is excluded from anything
+gating on `not tier_c`.
 
 ## 9. Scope Discipline for AI Sessions
 

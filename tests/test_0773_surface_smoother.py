@@ -54,9 +54,24 @@ def test_constant_field_preserved_exactly():
     assert np.abs(h.data[:, 0] - 0.37).max() < 1.0e-12
 
 
-def test_taubin_beats_plain_laplacian_on_signal_preservation():
-    # Plain Laplacian damps everything (shrinks the signal); Taubin preserves
-    # the passband. Same iterations/alpha — Taubin must keep the low mode better.
+# tier_c overrides the module-level tier_a for this test alone: it compares two
+# smoothers, so it can fail because one of them got better.
+@pytest.mark.tier_c
+def test_taubin_against_plain_laplacian_characterisation():
+    """Characterisation: Taubin keeps the passband that plain Laplacian damps.
+
+    This compares two METHODS, so it can fail because the code improved — if
+    plain Laplacian gains a passband, this breaks and that is good news. It is
+    tier C for that reason: a failure demands an explanation, not a revert.
+
+    The contract this rests on is asserted separately and unconditionally in
+    `test_taubin_preserves_low_attenuates_high`: Taubin must preserve the low
+    mode and kill the high one, against fixed bounds and no rival method.
+
+    Measured 2026-09-12 at n_iters=40, alpha=0.6: Taubin keeps ~0.99 of the low
+    mode, plain Laplacian markedly less. The 0.03 margin is a characterisation
+    of this fixture, not a specification.
+    """
     surf_t, h_t, th = _surface_with_modes()
     b_low = _amp(h_t.data[:, 0], th, 2)
     uw.meshing.smooth_surface_field(h_t, n_iters=40, alpha=0.6, taubin=True)
@@ -66,8 +81,14 @@ def test_taubin_beats_plain_laplacian_on_signal_preservation():
     uw.meshing.smooth_surface_field(h_l, n_iters=40, alpha=0.6, taubin=False)
     laplacian_low_kept = _amp(h_l.data[:, 0], th, 2) / b_low
 
-    assert taubin_low_kept > laplacian_low_kept + 0.03
-    assert taubin_low_kept > 0.97
+    print(f"low mode kept: taubin={taubin_low_kept:.3f} "
+          f"laplacian={laplacian_low_kept:.3f}")
+    assert taubin_low_kept > 0.97, (
+        f"Taubin kept only {taubin_low_kept:.3f} of the low mode")
+    assert taubin_low_kept > laplacian_low_kept + 0.03, (
+        f"the passband gap closed: taubin={taubin_low_kept:.3f} vs "
+        f"laplacian={laplacian_low_kept:.3f}. If plain Laplacian improved, "
+        "explain it and re-characterise; do not revert to make this pass.")
 
 
 def test_smoother_works_on_2d_surface():

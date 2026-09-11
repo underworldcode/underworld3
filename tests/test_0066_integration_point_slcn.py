@@ -104,16 +104,51 @@ def test_undersampled_rule_is_refused():
 
 
 @pytest.mark.level_2
-def test_rotating_gaussian_beats_nodal_slcn():
+def test_rotating_gaussian_ip_accuracy():
+    """Contract: the integration-point trace resolves the rotating Gaussian.
+
+    An absolute bound against the known solution, with no rival method in it.
+    """
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.08, qdegree=3
+    )
+    l2_ip, _ = _rotating_gaussian(mesh, "ip", 0.1, 16)
+    assert l2_ip < 0.02, f"integration-point trace L2 error {l2_ip:.3e}"
+
+
+# tier_c overrides the module-level tier_a for this test alone: it compares two
+# transport managers, so it can fail because one of them got better.
+@pytest.mark.level_2
+@pytest.mark.tier_c
+def test_rotating_gaussian_ip_against_nodal_characterisation():
+    """Characterisation: the integration-point trace is not worse than nodal.
+
+    This compares two METHODS, so it can fail because the code improved — a
+    better nodal SLCN would break it, and that is good news. Tier C: a failure
+    demands an explanation, not a revert. It is NOT the justification for the
+    integration-point path; `test_rotating_gaussian_ip_accuracy` asserts that
+    against the known solution.
+
+    The relationship is sensitive to the Courant number, the quadrature degree
+    and the element size, so it is a characterisation of this fixture
+    (cellSize=0.08, dt=0.1, 16 steps) rather than a general claim. Compare
+    `project_integration_point_proxy_pic_lip`, where the bulk diagnostics were
+    identical while the interface answer was not.
+    """
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.08, qdegree=3
     )
     dt, nsteps = 0.1, 16
     l2_nodal, peak_nodal = _rotating_gaussian(mesh, "nodal", dt, nsteps)
     l2_ip, peak_ip = _rotating_gaussian(mesh, "ip", dt, nsteps)
-    assert l2_ip <= l2_nodal
-    assert peak_ip >= peak_nodal
-    assert l2_ip < 0.02
+
+    print(f"L2: ip={l2_ip:.4e} nodal={l2_nodal:.4e}; "
+          f"peak: ip={peak_ip:.4f} nodal={peak_nodal:.4f}")
+    explain = ("If the nodal path improved, explain it and re-characterise; "
+               "do not revert to make this pass.")
+    assert l2_ip <= l2_nodal, f"ip {l2_ip:.3e} > nodal {l2_nodal:.3e}. {explain}"
+    assert peak_ip >= peak_nodal, (
+        f"ip peak {peak_ip:.4f} < nodal {peak_nodal:.4f}. {explain}")
 
 
 def _unsteady_uniform_flow_check(kind, vform="var"):

@@ -1,6 +1,6 @@
 # Test Reliability Classification System
 
-**Last Updated**: 2025-11-15
+**Last Updated**: 2026-09-12
 **Status**: Active - Use for all new tests and test reviews
 
 ## Overview
@@ -64,40 +64,57 @@ Underworld3 uses a three-tier reliability classification system (A/B/C) to ensur
 3. Core maintainer review confirms test quality
 4. Add to Tier A suite via PR review
 
-### Tier C: Experimental (Development)
-**Use for**: Feature Development, Debugging, Test Development
+### Tier C: Does Not Gate
 
-**Characteristics**:
-- 🚧 Test OR code (or both!) may be incorrect
-- 🚧 Actively under development
-- 🚧 Used to explore expected behavior
-- 🚧 May test unimplemented or partially implemented features
-- 🚧 Failures are EXPECTED and informative
-- 🚧 Not suitable for any automated testing
+**The defining property**: a Tier C failure NEVER blocks a change. It demands an
+explanation. Tier C tests still run in CI and are still read — they are excluded
+from what gates a merge, not from what is executed.
 
-**Examples**:
-- Tests written for not-yet-implemented features
-- Exploratory tests to understand API design
-- Tests for actively debugged features
-- Tests with known issues (mark with `@pytest.mark.xfail` + reason)
+Two different populations share that property.
 
-**Pytest Markers**:
+**C1 — Characterisation.** The test validates that the code works, but asserts a
+relationship that may legitimately stop holding when something improves: a
+comparison between two methods, a recorded measurement, a ratio that is true of
+today's defaults. These CAN fail because the code got better, and that failure is
+information, not a regression.
+
+- Give the assertion a failure message saying so outright — the reader must not
+  reach for a revert.
+- Record the measured numbers and the configuration that produced them in the
+  docstring, dated.
+- Do NOT change library code to make one pass. Re-characterise it and say why.
+- If an assertion would break when the code gets better, this is its home.
+
+Examples in the tree: `test_1060_nitsche_freeslip.py`
+(`test_constraint_strength_ordering_characterisation`),
+`test_0773_surface_smoother.py`, `test_0066_integration_point_slcn.py`,
+`test_1070_free_surface_plume.py`.
+
+**C2 — Experimental.** Test or code (or both) may be incorrect: written for a
+feature that is not finished, exploring what the behaviour should be, or
+reproducing a bug under investigation. Failures are expected and informative.
+Mark with `@pytest.mark.xfail(reason=...)` or `@pytest.mark.skip(reason=...)`
+where the failure is known.
+
+**Neither is a basis for coding.** Tier A is what you build code around; Tier C
+must not drive a code change. That constraint is the original reason the tiers
+exist — it keeps a freshly written test, which may simply be wrong, from
+steering the implementation it was written against. It applies to C1 and C2
+alike, and it is separate from whether the test runs.
+
+**Pytest markers**:
 - `@pytest.mark.tier_c`
-- `@pytest.mark.xfail(reason="Feature not yet implemented")`
-- `@pytest.mark.skip(reason="Waiting for X to be fixed")`
+- plus `@pytest.mark.xfail(reason=...)` / `@pytest.mark.skip(reason=...)` for C2
+  where relevant
 
-**When to Use**:
-- Feature development (write test first, then implement)
-- Debugging complex issues (write test to reproduce bug)
-- API design exploration (what SHOULD the behavior be?)
-- NEVER for automated CI/TDD
+**Where a per-test mark disagrees with the module-level one**, the narrower tier
+wins: a `tier_c` test inside a `tier_a` module is Tier C, and is excluded by
+`-m "not tier_c"`. Say so in a comment next to the mark, so it does not read as
+an oversight.
 
-**Promotion Path**: C → B
-1. Feature fully implemented
-2. Test passes consistently
-3. Developer confirms test is correct
-4. Remove xfail/skip markers
-5. Promote to Tier B for further validation
+**Promotion path**: C2 → B once the feature is implemented, the test passes
+consistently and a developer confirms the test itself is correct. C1 does not
+promote — a characterisation is Tier C permanently, by its nature.
 
 ## Implementation in Pytest
 
