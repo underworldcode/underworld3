@@ -566,15 +566,47 @@ warns once, keeps recording, and `rewind()` will not reach those steps.
 ### Writing the transcript down
 
 `model.transcript` is what the run can still undo. It lives in memory, it is
-bounded, and it dies with the process. `model.transcript_file` is what the run
-*did*:
+bounded, and it dies with the process. The transcript on disk is what the run
+*did* — and it is **on by default**, because the account is only worth having
+on the run you did not prepare for:
 
-```python
-model.transcript_file = "output/run.log"
+```
+transcripts/2026-09-11T14-32-05-my_model/
+    my_model.py          the script that launched it, verbatim
+    launch.json          argv, interpreter, cwd, version, commit
+    transcript.log       one aligned line per step, flushed
 ```
 
-One aligned line per step, appended and flushed as it closes, so `tail -f`
-follows a running job:
+The stamp is the point: the run you want is the one from this morning, and a
+fixed filename would have overwritten it. A directory rather than loose files
+because a working directory full of logs and script copies invites mass
+deletion, which loses the one you needed.
+
+`launch.json` is the honest answer to reproducibility. A programmatic launcher
+cannot be made reproducible by fiat, but what was *actually run* can be written
+down: the command line, the interpreter, the working directory, the package
+version, and the commit id with a dirty flag if the work is under version
+control. Only the entry script is copied — anything it imports is not, which is
+what the commit id is there to cover.
+
+Three things keep the default tolerable. **Nothing is created until the first
+step opens**, so an import, or a script that only builds a mesh, leaves no
+trace. **It is off under pytest**, because 1800 tests should not each leave a
+directory. And it can be turned off or sent elsewhere:
+
+```python
+model.transcript_file = "output/run.log"      # somewhere else, no launch record
+model.transcript_file = "output/run.jsonl"    # JSON lines instead
+model.transcript_file = None                  # off
+```
+
+```bash
+UW_TRANSCRIPT=off            # off for the session
+UW_TRANSCRIPT=/scratch/runs  # put the stamped directories there
+```
+
+The file itself is one aligned line per step, appended and flushed as it
+closes, so `tail -f` follows a running job:
 
 ```
 # underworld3 step log · model 'default' · started 2026-09-10T21:22:40+00:00

@@ -1,8 +1,13 @@
 """The transcript, written down.
 
 ``model.transcript`` is what a run can still undo: bounded, in memory, gone with
-the process. ``model.transcript_file`` is what the run did: one JSON object per
-line, appended and flushed as each step closes.
+the process. ``model.transcript_file`` is what the run did, on disk, appended
+and flushed as each step closes.
+
+It is ON by default and lands in a stamped directory under ``transcripts/``,
+beside a copy of the script that launched it — the last group of tests here
+pins that, including the two things that make a default tolerable: nothing is
+created for a run that takes no step, and it can be turned off.
 
 The two differ deliberately, and the differences are what the tests below pin.
 An abandoned step appears in the file and not in memory — it is the part of a
@@ -160,8 +165,8 @@ def test_clear_transcript_opens_a_new_run_in_the_same_file(tmp_path):
                 pass
 
     runs = uw.read_transcript(path)
-    # The first header is written when transcript_file is set; clear_transcript adds
-    # one per run, so the leading empty section is expected.
+    # The first header is written when the first step opens; clear_transcript
+    # adds one per run, so an empty leading section is expected.
     populated = [r for r in runs if r["steps"]]
     assert [len(r["steps"]) for r in populated] == [1, 2, 3]
     assert [r["steps"][0]["label"] for r in populated] == ["run0", "run1", "run2"]
@@ -183,16 +188,20 @@ def test_a_truncated_final_line_does_not_lose_the_rest(tmp_path):
     assert [s["index"] for s in runs[0]["steps"]] == [0, 1, 2]
 
 
-def test_logging_is_off_by_default(tmp_path):
+def test_turning_it_off_stops_the_writing(tmp_path):
     uw, model, path = _model(tmp_path)
-    model.transcript_file = None
-
-    assert model.transcript_file is None
-    before = path.read_text()
     with model.step(0.1):
         pass
-    assert path.read_text() == before, "writing continued after logging was off"
-    assert len(model.transcript) == 1, "the in-memory transcript must be unaffected"
+    before = path.read_text()
+    assert before, "the first step is what creates the file"
+
+    model.transcript_file = None
+    assert model.transcript_file is None
+    with model.step(0.1):
+        pass
+
+    assert path.read_text() == before, "writing continued after it was turned off"
+    assert len(model.transcript) == 2, "the in-memory transcript must be unaffected"
 
 
 # ---------------------------------------------------------------------------
@@ -410,3 +419,177 @@ def test_a_backtrack_with_nothing_to_point_at_says_so(tmp_path):
     note = uw.read_transcript(path)[-1]["notes"][0]
     assert note["after_position"] == 1
     assert note["to_position"] is None
+
+
+# ---------------------------------------------------------------------------
+# Where a transcript lands when nobody says
+# ---------------------------------------------------------------------------
+
+
+def _auto_model(monkeypatch, tmp_path, setting="on"):
+    """A model with the automatic transcript armed, in a scratch directory.
+
+    The automatic path is off under pytest by design — 1800 tests should not
+    each leave a directory — so these tests arm it explicitly and point it at
+    `tmp_path`.
+    """
+    import underworld3 as uw
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UW_TRANSCRIPT", setting)
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    model.tracker.time = 0.0
+    model.tracker.step = 0
+    return uw, model
+
+
+def test_the_default_lands_in_a_stamped_directory(monkeypatch, tmp_path):
+    uw, model = _auto_model(monkeypatch, tmp_path)
+
+    with model.step(0.5, label="convect"):
+        model._record_step_event("solve", "SNES_Stokes(v)")
+
+    roots = list(tmp_path.glob("transcripts/*"))
+    assert len(roots) == 1, roots
+    run_dir = roots[0]
+    # A stamp, so the run from this morning is still there after the next one.
+    assert run_dir.name[:4].isdigit() and "T" in run_dir.name
+    assert (run_dir / "transcript.log").exists()
+
+    text = (run_dir / "transcript.log").read_text()
+    assert "underworld3 run transcript" in text
+    assert "SNES_Stokes(v)" in text
+
+
+def test_nothing_is_created_for_a_run_that_takes_no_step(monkeypatch, tmp_path):
+    """An import, or a script that only builds a mesh, must leave no trace."""
+    uw, model = _auto_model(monkeypatch, tmp_path)
+
+    assert model.transcript_file is not None, "it is armed"
+    assert not (tmp_path / "transcripts").exists(), (
+        "the directory must not exist before the first step"
+    )
+
+
+def test_two_runs_do_not_overwrite_each_other(monkeypatch, tmp_path):
+    uw, model = _auto_model(monkeypatch, tmp_path)
+    with model.step(0.5, label="first"):
+        pass
+    first = model.transcript_file
+
+    uw.reset_default_model()
+    second_model = uw.get_default_model()
+    second_model.tracker.time = 0.0
+    second_model.tracker.step = 0
+    second_model._transcript_dir = None          # a later stamp
+    import time
+
+    time.sleep(1.1)                              # the stamp is to the second
+    with second_model.step(0.5, label="second"):
+        pass
+
+    assert second_model.transcript_file != first
+    assert "first" in open(first).read()
+    assert "second" in open(second_model.transcript_file).read()
+
+
+def test_the_launch_script_is_kept_beside_the_transcript(monkeypatch, tmp_path):
+    """A programmatic launcher cannot be made reproducible by fiat; what CAN be
+    done is to write down exactly what was run."""
+    import json
+    import sys
+
+    script = tmp_path / "my_run.py"
+    script.write_text("# the script that launched this\nprint('hello')\n")
+
+    uw, model = _auto_model(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(script), "-uw_res", "32"])
+    model._transcript_dir = None                 # re-resolve with the new argv
+
+    with model.step(0.5):
+        pass
+
+    run_dir = list(tmp_path.glob("transcripts/*"))[0]
+    assert "my_run" in run_dir.name, run_dir.name
+    assert (run_dir / "my_run.py").read_text() == script.read_text()
+
+    manifest = json.loads((run_dir / "launch.json").read_text())
+    assert manifest["argv"] == [str(script), "-uw_res", "32"]
+    assert manifest["script"] == "my_run.py"
+    assert manifest["cwd"] == str(tmp_path)
+    assert manifest["mpi_size"] == 1
+    assert "underworld3" in manifest and "python" in manifest
+
+
+def test_an_interactive_run_says_so_rather_than_failing(monkeypatch, tmp_path):
+    import json
+    import sys
+
+    uw, model = _auto_model(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", ["-c"])
+    model._transcript_dir = None
+
+    with model.step(0.5):
+        pass
+
+    run_dir = list(tmp_path.glob("transcripts/*"))[0]
+    assert "interactive" in run_dir.name
+    manifest = json.loads((run_dir / "launch.json").read_text())
+    assert manifest["script"] is None
+    assert "script_note" in manifest
+
+
+def test_an_explicit_path_is_a_file_not_a_place_to_put_things(monkeypatch, tmp_path):
+    uw, model = _auto_model(monkeypatch, tmp_path)
+    model.transcript_file = "run.log"
+
+    with model.step(0.5):
+        pass
+
+    assert (tmp_path / "run.log").exists()
+    assert not (tmp_path / "transcripts").exists()
+    assert not list(tmp_path.glob("launch.json"))
+
+
+def test_it_can_be_turned_off(monkeypatch, tmp_path):
+    uw, model = _auto_model(monkeypatch, tmp_path)
+    model.transcript_file = None
+
+    with model.step(0.5):
+        pass
+
+    assert model.transcript_file is None
+    assert not (tmp_path / "transcripts").exists()
+    assert len(model.transcript) == 1, "the in-memory transcript is unaffected"
+
+
+def test_the_environment_can_turn_it_off_and_relocate_it(monkeypatch, tmp_path):
+    uw, model = _auto_model(monkeypatch, tmp_path, setting="off")
+    assert model.transcript_file is None
+    with model.step(0.5):
+        pass
+    assert not (tmp_path / "transcripts").exists()
+
+    uw, model = _auto_model(monkeypatch, tmp_path, setting="somewhere/else")
+    with model.step(0.5):
+        pass
+    assert list(tmp_path.glob("somewhere/else/*/transcript.log"))
+    assert not (tmp_path / "transcripts").exists()
+
+
+def test_it_is_off_under_pytest_by_default(monkeypatch, tmp_path):
+    """The reason the tests above have to arm it: 1800 tests, 1800 directories."""
+    import underworld3 as uw
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("UW_TRANSCRIPT", raising=False)
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    model.tracker.time = 0.0
+    model.tracker.step = 0
+
+    assert model.transcript_file is None
+    with model.step(0.5):
+        pass
+    assert not (tmp_path / "transcripts").exists()

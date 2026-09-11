@@ -43,6 +43,106 @@ except ImportError:
         pass
 
 
+class _AutoSentinel:
+    """Sentinel for "the user has not said where the transcript goes".
+
+    Distinct from None, which means "off": the two have to be told apart,
+    because a default that cannot be switched off is worse than no default.
+
+    Copy-stable on purpose. ``PrivateAttr`` deep-copies its default, and a bare
+    ``object()`` would come back as a DIFFERENT object per model, so every
+    identity check against it would silently fail.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "<auto>"
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+_AUTO = _AutoSentinel()
+
+TRANSCRIPTS_DIR = "transcripts"
+
+
+def _transcript_disabled():
+    """Whether the automatic transcript should stay off.
+
+    Off under pytest — 1800 tests should not each leave a directory — and off
+    when ``UW_TRANSCRIPT`` says so, which is the switch for CI and for anyone
+    who does not want the files.
+    """
+    setting = os.environ.get("UW_TRANSCRIPT", "").strip().lower()
+    if setting in ("off", "0", "no", "none", "false"):
+        return True
+    if setting:
+        return False
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
+def _launch_stem():
+    """A short name for the run, taken from the script that started it."""
+    entry = sys.argv[0] if sys.argv else ""
+    if not entry or entry == "-c":
+        return "interactive"
+    stem = os.path.splitext(os.path.basename(entry))[0]
+    return "".join(c if (c.isalnum() or c in "-_") else "-" for c in stem) or "run"
+
+
+def _launch_manifest():
+    """What was invoked, as far as it can be known.
+
+    A programmatic launcher cannot be made reproducible by fiat, but what was
+    actually run CAN be written down: the command line, the interpreter, the
+    working directory, the package version, and the commit if there is one.
+    That is the difference between "I cannot reproduce this" and "I know
+    exactly what produced it and can decide what to change".
+    """
+    from datetime import datetime, timezone
+
+    import underworld3 as uw
+
+    manifest = {
+        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "argv": list(sys.argv),
+        "executable": sys.executable,
+        "cwd": os.getcwd(),
+        "underworld3": getattr(uw, "__version__", "unknown"),
+        "underworld3_path": os.path.dirname(getattr(uw, "__file__", "") or ""),
+        "python": sys.version.split()[0],
+        "mpi_size": int(uw.mpi.size),
+    }
+    try:
+        manifest["host"] = os.uname().nodename
+    except Exception:
+        pass
+    # The entry script is copied beside this; imported modules are NOT, so a
+    # commit id is what covers the rest when the work is under version control.
+    try:
+        import subprocess
+
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            timeout=5, cwd=os.getcwd(),
+        )
+        if sha.returncode == 0:
+            manifest["git_commit"] = sha.stdout.strip()
+            dirty = subprocess.run(
+                ["git", "status", "--porcelain"], capture_output=True, text=True,
+                timeout=5, cwd=os.getcwd(),
+            )
+            manifest["git_dirty"] = bool(dirty.stdout.strip())
+    except Exception:
+        pass
+    return manifest
+
+
 class ModelState(Enum):
     """Model lifecycle states"""
 
@@ -327,7 +427,12 @@ class Model(PintNativeModelMixin, BaseModel):
 
     # Optional on-disk log of the transcript: one JSON object per line, appended
     # and flushed as each step closes. See :attr:`transcript_file`.
-    _transcript_path: Any = PrivateAttr(default=None)
+    # ``_AUTO`` until the user says otherwise: a transcript lands in
+    # ``transcripts/<stamp>-<script>/`` on the first step, and nothing is
+    # created for a script that never takes one. Assigning a path overrides it;
+    # assigning None turns it off.
+    _transcript_path: Any = PrivateAttr(default=_AUTO)
+    _transcript_dir: Any = PrivateAttr(default=None)
     _transcript_fh: Any = PrivateAttr(default=None)
     _transcript_format: Any = PrivateAttr(default=None)
     _transcript_columns: Any = PrivateAttr(default=None)
@@ -863,16 +968,34 @@ class Model(PintNativeModelMixin, BaseModel):
 
     @property
     def transcript_file(self):
-        """Path of the on-disk transcript, or None (the default: memory only).
+        """Where the transcript is written, or None when it is off.
 
-        Assign a path and every step that closes — completed OR abandoned —
-        is appended as one JSON object on its own line, and flushed. A run
-        that crashes keeps the log up to the crash, which is when it is worth
-        most.
+        **On by default.** A run that takes a step lands in a stamped
+        directory under ``transcripts/`` beside the working directory::
 
-        ::
+            transcripts/2026-09-11T14-32-05-my_model/
+                my_model.py          the script that launched it, verbatim
+                launch.json          argv, interpreter, cwd, version, commit
+                transcript.log       one aligned line per step, flushed
 
-            model.transcript_file = "output/run.transcript.jsonl"
+        The stamp is why: the run you want is the one from this morning, and a
+        fixed filename would have overwritten it. Nothing is created for a
+        script that never opens a step, and nothing is created before the first
+        one — so an import, or a script that only builds a mesh, leaves no
+        trace.
+
+        Assign a path to put it somewhere else, or ``None`` to turn it off::
+
+            model.transcript_file = "output/run.jsonl"     # somewhere else
+            model.transcript_file = None                   # off
+
+        ``UW_TRANSCRIPT=off`` turns it off for a whole session; any other value
+        is taken as the directory the stamped run directories go in. It is off
+        under pytest, because 1800 tests should not each leave a directory.
+
+        Every step that closes — completed OR abandoned — is appended and
+        flushed, so a run that crashes keeps its transcript up to the crash,
+        which is when it is worth most.
 
         The file records what the run DID; ``model.transcript`` is what it can
         still UNDO. They differ in two ways, both deliberate: an abandoned step
@@ -882,26 +1005,112 @@ class Model(PintNativeModelMixin, BaseModel):
         Read one back with :func:`underworld3.read_transcript`. Rank 0 writes;
         other ranks record in memory as usual.
         """
+        if self._transcript_path is _AUTO:
+            return None if _transcript_disabled() else self._auto_transcript_path()
         return self._transcript_path
 
     @transcript_file.setter
     def transcript_file(self, path):
-        if self._transcript_fh is not None:
-            self._transcript_fh.close()
-            self._transcript_fh = None
+        self._close_transcript()
         self._transcript_path = None if path is None else str(path)
+        self._transcript_dir = None
         self._transcript_columns = None
-        if self._transcript_path is None:
+
+    def _close_transcript(self):
+        if self._transcript_fh is not None:
+            try:
+                self._transcript_fh.close()
+            except Exception:
+                pass
+            self._transcript_fh = None
+
+    def _auto_transcript_path(self):
+        """The stamped path this run would use. Computed once; creates nothing."""
+        if self._transcript_dir is None:
+            from datetime import datetime
+
+            root = os.environ.get("UW_TRANSCRIPT", "").strip()
+            if root.lower() in ("", "on", "1", "yes", "true"):
+                root = TRANSCRIPTS_DIR
+            stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+            self._transcript_dir = os.path.join(root, f"{stamp}-{_launch_stem()}")
+        return os.path.join(self._transcript_dir, "transcript.log")
+
+    def _open_transcript(self):
+        """Create the destination and write the run header. Idempotent.
+
+        Deferred to the first step on purpose: a transcript is about a run, and
+        a run is a sequence of steps. Creating the directory at model
+        construction would leave one behind for every import.
+        """
+        if self._transcript_fh is not None:
             return
         import underworld3 as uw
 
         if uw.mpi.rank != 0:
             return
-        directory = os.path.dirname(self._transcript_path)
+        path = self.transcript_file
+        if path is None:
+            return
+
+        directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        self._transcript_fh = open(self._transcript_path, "w", encoding="utf-8")
+        try:
+            self._transcript_fh = open(path, "w", encoding="utf-8")
+        except OSError as exc:
+            import warnings
+
+            warnings.warn(
+                f"could not open the transcript at {path!r} ({exc}); this run "
+                f"will not leave one. model.transcript is unaffected.",
+                RuntimeWarning,
+            )
+            self._transcript_path = None
+            return
+
+        # Only an automatic, stamped directory gets the launch record: a path
+        # the user named is a file they asked for, not a place to put things.
+        if directory and self._transcript_dir and os.path.samefile(
+                directory, self._transcript_dir):
+            self._write_launch_record(directory)
+
         self._write_transcript_line(self._run_header())
+
+    def _write_launch_record(self, directory):
+        """Copy the entry script and write what invoked it.
+
+        A programmatic launcher cannot be made reproducible by fiat. What CAN
+        be done is to write down exactly what was run, so the question six
+        months later is "what do I change" rather than "what was this".
+        """
+        import json as _json
+        import shutil
+
+        try:
+            manifest = _launch_manifest()
+            entry = sys.argv[0] if sys.argv else ""
+            if entry and entry != "-c" and os.path.isfile(entry):
+                target = os.path.join(directory, os.path.basename(entry))
+                shutil.copyfile(entry, target)
+                manifest["script"] = os.path.basename(entry)
+                manifest["script_source"] = os.path.abspath(entry)
+            else:
+                manifest["script"] = None
+                manifest["script_note"] = (
+                    "no entry script to copy (interactive, -c, or a notebook); "
+                    "argv and the commit id below are what identifies this run"
+                )
+            manifest["imported_modules_note"] = (
+                "only the entry script is copied; anything it imports is not — "
+                "git_commit covers the rest when the work is committed"
+            )
+            with open(os.path.join(directory, "launch.json"), "w",
+                      encoding="utf-8") as handle:
+                _json.dump(manifest, handle, indent=2, default=str)
+        except Exception:
+            # The launch record is a convenience. Never take a run down for it.
+            pass
 
     @property
     def transcript_format(self):
@@ -918,8 +1127,8 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         if self._transcript_format is not None:
             return self._transcript_format
-        if self._transcript_path and self._transcript_path.lower().endswith(
-                (".jsonl", ".ndjson", ".json")):
+        path = self.transcript_file
+        if path and str(path).lower().endswith((".jsonl", ".ndjson", ".json")):
             return "jsonl"
         return "text"
 
@@ -1041,7 +1250,7 @@ class Model(PintNativeModelMixin, BaseModel):
             import warnings
 
             warnings.warn(
-                f"could not append to the transcript file {self._transcript_path!r}; "
+                f"could not append to the transcript at {self.transcript_file!r}; "
                 f"logging is off for the rest of this run. The in-memory "
                 f"model.transcript is unaffected.",
                 RuntimeWarning,
@@ -1233,6 +1442,9 @@ class Model(PintNativeModelMixin, BaseModel):
                         )
 
             self._open_step = record
+            # First step of the run: this is where the transcript comes into
+            # existence, if it is going to.
+            self._open_transcript()
 
             # Position the clock at the END of the interval for the duration of
             # the block, so implicit coefficients (mesh.t) are evaluated there.
