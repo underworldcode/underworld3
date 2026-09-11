@@ -607,8 +607,6 @@ deliberate:
   went the way it did.
 - **A step aged out by `transcript_limit`.** The account of what happened outlives
   both the state and the bounded in-memory list.
-- **An invariant complaint**, as an `invariant` event on the step, so it
-  survives the terminal the run happened to have.
 - **Everything up to a kill.** The file is flushed per step.
 
 ### For parsing: JSON lines
@@ -705,8 +703,8 @@ The two columns are independent, which is worth reading carefully: **`seq` is
 what the step ran; `ok` / `abandoned` is whether it was kept.** In the figure
 above the abandoned step ran the ordinary sequence `A` and was then rejected by
 a check in the script — nothing failed. `B` is the same three operators run
-twice inside one step block, which is why that row also carries the invariant's
-`!`.
+twice inside one step block. The figure reports that it differs and makes no
+claim about whether it is wrong.
 
 `transcript_flowchart` renders one step's operator flow as Mermaid. When a run has
 more than one distinct sequence, each becomes its own subgraph labelled with
@@ -717,22 +715,41 @@ Both accept a live model, a `.jsonl` log, or the list `read_transcript` returns.
 Not a text log: that one is a report, and reading it back is refused with the
 one line that fixes it.
 
-### What the transcript checks
+### Recording, not judging
 
-A step also checks that it can be what it claims to be. One invariant so far:
-a history manager must advance exactly once per step.
+The step's job is to record faithfully. It does not decide whether what it
+recorded was a mistake.
 
-```
-<step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> history_shift:EulerianSUPG(T) -> solve:SNES_Stokes(V)>
-```
+Two kinds of check are easy to confuse, and only one belongs in the loop.
 
-Call a solver twice inside one step — a corrector, a Picard iteration on a
-coupled system, a retry — and its history advances twice, so the physical step
-is taken twice. The solve counter and the timestep history look identical to a
-single step, so nothing else in the library can see it. The step warns.
+**Structural checks** ask whether the transcript is well-formed — a step cannot
+be opened inside another step; a rewind cannot reach a step that kept no
+snapshot. These cannot legitimately fail, so they raise, immediately.
 
-A history advances on **every** solve, whether or not that call passed a
-timestep — omitting it reuses the last value. So a corrector or a Picard
+**Findings** ask whether what was recorded looks wrong. They belong to a pass
+over the transcript, after the run. That is not a deferral for convenience; it
+is where they can actually be computed:
+
+- A finding may need to look **across bars**. The free-surface instability in
+  `#423` is a history recorded in the old frame and read after the mesh moved,
+  growing about 10% per cycle. Its signature *is* the growth rate, so no
+  per-step check can see it at all.
+- A finding may be **wrong about what is legitimate**. "A history advanced
+  twice in this bar" is a mistake when a step was taken twice and perfectly
+  correct when a swarm sub-cycles. Inside the loop that has to be guessed;
+  over the transcript it is a question about whether the operations tile the
+  bar's interval.
+- A finding can be **re-run on an old transcript** when a new pathology is
+  learned. A warning fired at run time cannot.
+
+So the transcript records that a history shifted twice, with both shifts in
+order, and says nothing about it. Reading that is
+`docs/developer/design/run-score-and-transcript.md`'s subject, and the analysis
+pass it describes is not built yet.
+
+One thing worth knowing while it is not: a history advances on **every** solve,
+whether or not that call passed a timestep — omitting it reuses the last value.
+There is no "solve without advancing" switch, so a corrector or a Picard
 iteration on a coupled system has to put the history back between passes:
 
 ```python
@@ -741,9 +758,8 @@ adv_diff.solve(timestep=dt)          # the extra pass
 adv_diff.Unknowns.DuDt.state = saved
 ```
 
-There is no "solve without advancing the history" switch today. The invariant
-is telling you that a coupled iteration inside one step is not something the
-library supports directly yet.
+That a coupled iteration inside one step needs this is a gap in the library,
+not a rule the user broke.
 
 ### Backstepping
 
@@ -782,8 +798,8 @@ Boussinesq convection in an annulus. Four reference quantities, a body force
 written as a force (Ra falls out of the nondimensionalisation rather than being
 typed in), rotated free-slip on the curved boundaries, and a varying
 `estimate_dt()`. It then demonstrates the four things the transcript buys, in
-order: the transcript, a rejected step, a bit-exact replay, and the invariant
-catching a step that was taken twice. Compare
+order: the transcript, a rejected step, a bit-exact replay, and a step taken
+twice showing up as its own operator sequence. Compare
 `../advanced/Ex_Convection_Cylinder.py`, which solves the same physics with a
 bare `for step in range(n)` loop and no clock at all.
 

@@ -48,7 +48,7 @@ Thermal convection combines heat transfer and fluid mechanics to model buoyancy-
      Rayleigh number falls out of the nondimensionalisation
    - Rotated free-slip on the curved boundaries; a varying `estimate_dt()`
    - Demonstrates the run's own record: the transcript, a rejected step, a
-     bit-exact replay, and the step invariant that catches a doubled step
+     bit-exact replay, and a step taken twice showing in the record
    - See `docs/developer/guides/HOW-TO-WRITE-UW3-SCRIPTS.md`
 
 ### 🎓 Advanced Examples (`advanced/`)

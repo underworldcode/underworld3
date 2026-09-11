@@ -371,9 +371,6 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
             canvas.text(x_bar + length + 4, base, "abandoned", size=7.5,
                         fill=_ABANDONED)
 
-        if any(e.get("kind") == "invariant" for e in step.get("events", [])):
-            canvas.text(x_bar - 8, base, "!", size=10, fill=_FLAG, bold=True)
-
         if any(walls):
             w = max(0.6, (walls[i] / wall_max) * 30.0)
             canvas.rect(right - w, y + 4.0, w, _ROW - 9.0, fill=_WALL)
@@ -486,23 +483,6 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
                         fill=_ACCEPTED if signature == order[0] else _FLAG)
             y += 11
         y += 5
-
-    flagged = [
-        (step.get("index", i), event.get("detail", ""))
-        for i, step in enumerate(steps)
-        for event in step.get("events", [])
-        if event.get("kind") == "invariant"
-    ]
-    if flagged:
-        y += 6
-        canvas.text(_MARGIN, y + 8, "!  Invariant", size=9.5, bold=True, fill=_FLAG)
-        y += 15
-        for index, detail in flagged:
-            canvas.text(_MARGIN + 12, y + 8,
-                        f"step {index}: history advanced more than once "
-                        f"({detail}) — the step was taken twice",
-                        size=8, fill=_INK)
-            y += 12
 
     height = page_height if page_height is not None else y + _MARGIN
     return canvas, width, height

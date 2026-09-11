@@ -96,49 +96,6 @@ class ModelStep:
     def _record(self, kind, name, **detail):
         self.events.append({"kind": kind, "name": name, **detail})
 
-    def _check_invariants(self):
-        """Complain about a step that cannot be what it claims to be.
-
-        One invariant so far, and it catches a mistake that is otherwise
-        invisible: a history manager must advance EXACTLY ONCE per step. Twice
-        means the step was taken twice — a corrector, a Picard iteration or a
-        retry that called the solver again — and the field advances twice while
-        the solve counter and the timestep history look identical to a single
-        step.
-        """
-        import warnings
-        from collections import Counter
-
-        shifts = Counter(
-            e["name"] for e in self.events if e["kind"] == "history_shift"
-        )
-        repeated = {name: n for name, n in shifts.items() if n > 1}
-        if repeated:
-            detail = ", ".join(f"{name} x{n}" for name, n in sorted(repeated.items()))
-            # Also record it against the step, so the log and the transcript carry
-            # the complaint and not just the terminal the run happened to have.
-            self.events.append({
-                "kind": "invariant",
-                "name": "history advanced more than once",
-                "detail": detail,
-            })
-            warnings.warn(
-                f"step {self.index}: history advanced more than once ({detail}). "
-                f"The step has been taken more than once, so the field is "
-                f"further ahead than dt says while the clock, the step counter "
-                f"and the timestep history all read as one step. "
-                f"A history advances on every solve, whether or not that call "
-                f"passed a timestep — omitting it reuses the last value — so "
-                f"a corrector or a Picard iteration on a coupled system has to "
-                f"put the history back between passes:\n"
-                f"    saved = copy.deepcopy(solver.Unknowns.DuDt.state)\n"
-                f"    ... the extra solve ...\n"
-                f"    solver.Unknowns.DuDt.state = saved\n"
-                f"There is no 'solve without advancing' switch today.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-
     def as_dict(self):
         """This step as plain JSON-able data — the on-disk log's line format.
 
@@ -1042,16 +999,12 @@ class Model(PintNativeModelMixin, BaseModel):
             outcome = "ok" if payload.get("completed") else "ABANDONED"
             label = payload.get("label")
             tag = f"[{label}] " if label else ""
-            # An invariant is a flag on the step, not an operator it applied —
-            # it belongs beside the outcome, not in the sequence.
-            flagged = any(e.get("kind") == "invariant"
-                          for e in payload.get("events", []))
+            # Only what the step APPLIED goes in the sequence. Anything else an
+            # older transcript may carry is not an operator and is left out.
             operators = " > ".join(
                 f"{e['kind']}:{e['name']}" for e in payload.get("events", [])
-                if e.get("kind") != "invariant"
+                if e.get("kind") in ("solve", "history_shift")
             ) or "(nothing)"
-            if flagged:
-                outcome = f"{outcome} !"
             return (
                 f"{prefix}"
                 f"  {payload['index']:>5d}  {t1:>14.6g}  {dt:>14.6g}  "
@@ -1309,7 +1262,6 @@ class Model(PintNativeModelMixin, BaseModel):
                 raise
 
             record.wall = _time.monotonic() - wall0
-            record._check_invariants()
 
             # Commit.
             self.tracker.time = record.t1

@@ -33,7 +33,8 @@ that account is worth four things this script demonstrates in turn:
 1. **what ran** — an ordered transcript, named by what each solver solves
 2. **a rejected step** — the clock does not move when a step is abandoned
 3. **playback** — a recorded step replays bit-for-bit, where a re-run does not
-4. **an invariant** — a step that took the physical step twice says so
+4. **recording without judging** — a step taken twice is visible in the
+   transcript, and the transcript makes no claim about whether that is wrong
 5. **a log on disk** — the same account in aligned columns, flushed as each
    step closes, so a run that dies keeps its history and a run in progress can
    be watched with `tail -f`
@@ -59,8 +60,6 @@ Override from the command line, e.g. `-uw_n_steps 20 -uw_cell_size 0.075`.
 """
 
 # %%
-import warnings
-
 import numpy as np
 import sympy
 
@@ -307,7 +306,7 @@ instrumented for it — which is the question you want to ask of someone else's
 model, or of your own six months later.
 
 Note the `history_shift` between the two solves. That is the transport history
-advancing, and it is what the step's invariant checks.
+advancing — the thing that makes a step taken twice visible at all.
 """
 
 # %%
@@ -403,36 +402,38 @@ if params.uw_demos:
 
 # %% [markdown]
 """
-## 4. An invariant
+## 4. Recording, not judging
 
-A history manager must advance exactly once per step. Advancing twice means
-the step was taken twice — a corrector, a Picard iteration on the coupled
-system, or a retry that called the solver again — and the temperature moves
-two intervals while the timestep history and the solve counter look identical
-to a single step. Nothing else in the library can see that.
+Call a solver twice inside one step — a predictor/corrector, a Picard iteration
+on the coupled system, a retry — and its history advances twice, so the
+physical step is taken twice. The timestep history and the solve counter look
+identical to a single step, so the transcript is the only place it shows.
 
-The step says so. If a solver genuinely is called more than once within a step,
-only the last call should carry the timestep.
+The step records that and says nothing about it. Whether two shifts in one bar
+are a mistake or legitimate sub-cycling is a reading of the transcript, made by
+a later pass that can look across bars; inside the loop it would have to be
+guessed. See `docs/developer/design/run-score-and-transcript.md`.
+
+What you see below is the bar's operator sequence with everything in it twice —
+which is also why the figure gives that bar its own letter.
 """
 
 # %%
 if params.uw_demos:
     say("")
-    say("--- 4. the invariant " + "-" * 53)
+    say("--- 4. a step taken twice " + "-" * 47)
 
     dt = params.uw_dt_fraction * adv.estimate_dt()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        with model.step(dt, label="taken twice"):
-            adv.solve(timestep=dt, zero_init_guess=False)     # a "predictor"
-            stokes.solve(zero_init_guess=False)
-            adv.solve(timestep=dt, zero_init_guess=False)     # and a "corrector"
-            stokes.solve(zero_init_guess=False)
+    with model.step(dt, label="taken twice"):
+        adv.solve(timestep=dt, zero_init_guess=False)     # a "predictor"
+        stokes.solve(zero_init_guess=False)
+        adv.solve(timestep=dt, zero_init_guess=False)     # and a "corrector"
+        stokes.solve(zero_init_guess=False)
 
-    for w in caught:
-        if issubclass(w.category, RuntimeWarning):
-            say("      " + " ".join(str(w.message).split())[:200])
-    say(f"  the step as recorded: {model.transcript[-1]}")
+    entry = model.transcript[-1]
+    shifts = [e for e in entry.events if e["kind"] == "history_shift"]
+    say(f"  history shifts in this one step: {len(shifts)}")
+    say(f"  the step as recorded: {entry}")
 
 # %% [markdown]
 """

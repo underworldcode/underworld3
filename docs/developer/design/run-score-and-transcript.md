@@ -87,11 +87,20 @@ Each check is a reading of the notation rather than a separate assertion:
 | a tie crossing a beat that carries a barrier, with nothing re-expressing it | the `old_frame_traceback` class (#423) |
 | transcript ≠ score | the model is not doing what the script says |
 
-The second of those matters for how the current implementation should evolve.
-`ModelStep._check_invariants` asserts "a history must advance exactly once per
-bar", which is a crude proxy: it would fire on legitimate sub-cycling. Derived
-from the notation, the rule is the honest one — **the notes in a bar tile its
-interval exactly once** — and sub-cycling satisfies it.
+**None of these belong in the loop.** An earlier version asserted one of them
+there — "a history must advance exactly once per bar" — and it was wrong twice
+over: it would fire on legitimate sub-cycling, and it could not see the check
+that matters most, since #423's signature is a growth rate across bars. It has
+been removed. Derived from the notation the rule is the honest one — **the
+notes in a bar tile its interval exactly once** — and sub-cycling satisfies it.
+
+The separation that follows: **execution records, analysis judges.** A step
+raises only on structural failures, where the transcript could not be
+well-formed — a step opened inside another step, a rewind to a bar that kept no
+snapshot. Everything above is a *finding*, produced by a pass over a finished
+transcript, which can look across bars, can be re-run on an old transcript when
+a new pathology is learned, and never has to decide mid-run whether something
+was deliberate.
 
 ## Where reads and writes come from
 

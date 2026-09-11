@@ -318,20 +318,27 @@ def test_backtracks_are_records_in_the_json_format(tmp_path):
     assert rewind["steps_undone"] == 1
 
 
-def test_the_invariant_is_recorded_against_the_step(tmp_path):
-    """The complaint belongs in the log, not only in whatever terminal ran it."""
+def test_repeated_events_are_in_the_file_in_order(tmp_path):
+    """The transcript records a repeat; it does not judge it.
+
+    Whether two shifts in one bar are a mistake or legitimate sub-cycling is a
+    reading of the transcript made later, by a pass that can look across bars.
+    The file's job is to hold both, in order, with nothing added."""
     uw, model, path = _model(tmp_path, name="run.jsonl")
 
-    with pytest.warns(RuntimeWarning, match="history advanced more than once"):
-        with model.step(0.1):
-            model._record_step_event("history_shift", "EulerianSUPG(T)", dt=0.1)
-            model._record_step_event("history_shift", "EulerianSUPG(T)", dt=0.1)
+    with model.step(0.1):
+        model._record_step_event("solve", "SNES_AdvectionDiffusion(T)")
+        model._record_step_event("history_shift", "EulerianSUPG(T)", dt=0.1)
+        model._record_step_event("solve", "SNES_AdvectionDiffusion(T)")
+        model._record_step_event("history_shift", "EulerianSUPG(T)", dt=0.1)
 
     step = json.loads(path.read_text().splitlines()[-1])
-    flags = [e for e in step["events"] if e["kind"] == "invariant"]
-    assert len(flags) == 1
-    assert "more than once" in flags[0]["name"]
-    assert "EulerianSUPG(T) x2" in flags[0]["detail"]
+    assert [(e["kind"], e["name"]) for e in step["events"]] == [
+        ("solve", "SNES_AdvectionDiffusion(T)"),
+        ("history_shift", "EulerianSUPG(T)"),
+        ("solve", "SNES_AdvectionDiffusion(T)"),
+        ("history_shift", "EulerianSUPG(T)"),
+    ], "nothing added, nothing reordered"
 
 
 # ---------------------------------------------------------------------------

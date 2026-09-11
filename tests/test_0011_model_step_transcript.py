@@ -242,14 +242,19 @@ def test_rewind_without_a_record_says_what_to_do():
 
 
 # ---------------------------------------------------------------------------
-# Invariants: a step that cannot be what it claims to be
+# Recording, not judging
 # ---------------------------------------------------------------------------
 
 
-def test_a_history_that_advances_twice_in_one_step_is_reported():
+def test_a_history_that_advances_twice_is_recorded_twice():
     """Two solves inside one step take the physical step twice. The solve
-    counter and the timestep history look identical to a single step, so
-    without this the mistake is invisible."""
+    counter and the timestep history look identical to a single step, so the
+    transcript is the only place it is visible.
+
+    The step does NOT judge that. Whether two shifts in a bar are a mistake or
+    legitimate sub-cycling is a reading of the transcript, made by a later pass
+    that can look across bars — not a rule asserted inside the loop, which can
+    only see one bar and has to guess."""
     uw, model = _fresh_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
@@ -257,18 +262,24 @@ def test_a_history_that_advances_twice_in_one_step_is_reported():
     solver, T = _advdiff(uw, mesh)
     model.tracker.time, model.tracker.step = 0.0, 0
 
-    with pytest.warns(RuntimeWarning, match="advanced more than once"):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
         with model.step(0.02):
             solver.solve(timestep=0.02)
             solver.solve(timestep=0.02)   # the same step, taken twice
 
     entry = model.transcript[0]
     shifts = [e for e in entry.events if e["kind"] == "history_shift"]
-    assert len(shifts) == 2
+    assert len(shifts) == 2, "the transcript must hold both shifts, in order"
+    assert [e["kind"] for e in entry.events] == [
+        "solve", "history_shift", "solve", "history_shift"
+    ]
 
 
 def test_one_solve_per_step_is_quiet():
-    """The negative control: the ordinary loop must not warn."""
+    """The ordinary loop records one shift and says nothing about it."""
     uw, model = _fresh_model()
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3

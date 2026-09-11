@@ -126,16 +126,21 @@ def test_a_backtrack_is_drawn(tmp_path):
     assert "<path" in text, "the backtrack should be drawn, not only named"
 
 
-def test_the_invariant_is_reported_on_the_figure(tmp_path):
-    flagged = _step(2, events=[
+def test_a_repeat_shows_as_its_own_sequence(tmp_path):
+    """A bar whose operators ran twice differs from its neighbours, so it gets
+    its own letter. The figure reports that and makes no claim about whether it
+    is wrong — that reading belongs to a later pass over the transcript."""
+    doubled = _step(2, events=[
+        {"kind": "solve", "name": "SNES_AdvectionDiffusion_Composed(T)"},
         {"kind": "history_shift", "name": "EulerianSUPG(T)", "dt": 0.5},
+        {"kind": "solve", "name": "SNES_AdvectionDiffusion_Composed(T)"},
         {"kind": "history_shift", "name": "EulerianSUPG(T)", "dt": 0.5},
-        {"kind": "invariant", "name": "history advanced more than once",
-         "detail": "EulerianSUPG(T) x2"},
     ])
-    text = _svg(tmp_path, _run([_step(0), _step(1), flagged]))
-    assert "Invariant" in text
-    assert "EulerianSUPG(T) x2" in text
+    text = _svg(tmp_path, _run([_step(0), _step(1), doubled]))
+    assert ">A<" in text and ">B<" in text
+    assert "Invariant" not in text, (
+        "the figure must not assert that a repeat is a mistake"
+    )
 
 
 def test_a_long_sequence_is_wrapped_not_run_off_the_page(tmp_path):

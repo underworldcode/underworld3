@@ -122,12 +122,11 @@ def test_a_solver_called_twice_is_still_recorded_twice():
     model.tracker.time = 0.0
     model.tracker.step = 0
 
-    with pytest.warns(RuntimeWarning, match="history advanced more than once"):
-        with model.step(0.01):
-            adv.solve(timestep=0.01, zero_init_guess=False)
-            stokes.solve(zero_init_guess=False)
-            adv.solve(timestep=0.01, zero_init_guess=False)
-            stokes.solve(zero_init_guess=False)
+    with model.step(0.01):
+        adv.solve(timestep=0.01, zero_init_guess=False)
+        stokes.solve(zero_init_guess=False)
+        adv.solve(timestep=0.01, zero_init_guess=False)
+        stokes.solve(zero_init_guess=False)
 
     solves = _names(model.transcript[-1])
     assert sum(1 for n in solves if "Stokes" in n) == 2, solves
