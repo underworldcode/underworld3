@@ -4518,6 +4518,10 @@ class MultiMaterialConstitutiveModel(Constitutive_Model):
             Set to True if IndexSwarmVariable does not maintain partition of unity.
             Default: False (assumes IndexSwarmVariable maintains partition of unity)
         """
+        # Constituents that share a parameter name (every ViscousFlowModel
+        # calls its viscosity \eta) rely on _JITConstant keeping its
+        # constants[] slots distinct; see utilities/_jitextension.py and the
+        # regression in tests/test_0103_jit_rampable_constants.py.
         # Validate compatibility before initialization
         self._validate_model_compatibility(constitutive_models)
 

@@ -329,20 +329,54 @@ def prepare_for_cache_key(fn, constants_subs_map):
 # ============================================================================
 
 class _JITConstant(sympy.Symbol):
-    """Symbol subclass that renders as constants[i] in generated C code.
+    r"""Symbol subclass that renders as ``constants[i]`` in generated C code.
 
-    Used by the JIT compiler to route constant UWexpressions through
-    PETSc's PetscDSSetConstants() mechanism instead of baking values
-    as C literals.
+    Used by the JIT compiler to route constant UWexpressions through PETSc's
+    ``PetscDSSetConstants()`` mechanism instead of baking values as C literals.
+
+    Two constants may legitimately share a display name — every
+    ``ViscousFlowModel`` calls its viscosity :math:`\eta`, so a two-material
+    model has two of them — and each needs its own ``constants[]`` slot. Two
+    separate SymPy properties have to hold for that to work, and they are not
+    the same property:
+
+    **Identity** — the slot index is in ``_hashable_content``, and the symbol
+    is built with ``Symbol.__xnew__`` to bypass SymPy's ``(cls, name)``
+    instance cache. Without both, ``Symbol.__new__`` hands back the cached
+    instance for that name: the second placeholder IS the first object, and
+    setting its ``_ccodestr`` overwrites the first one's, so every occurrence
+    renders as one slot.
+
+    **Ordering** — the slot index is also in the NAME. ``_hashable_content``
+    does nothing for ``Symbol.sort_key()``, which is derived from the name, so
+    two same-named placeholders sort equal; term order inside an ``Add`` then
+    falls back to hash order, which is randomised per process. The generated C
+    then differs between MPI ranks and ``getext``'s cross-rank hash check
+    aborts the run — intermittently, since it depends on the hash seed.
+
+    Identity without ordering is a parallel abort; ordering without identity is
+    a silently wrong answer. Keep both. ``tests/test_0103_jit_rampable_constants.py``
+    pins each one separately.
     """
 
+    __slots__ = ("_const_index", "_ccodestr")
+
     def __new__(cls, index, name=None):
-        if name is None:
-            name = f"_jit_const_{index}"
-        obj = super().__new__(cls, name)
+        # The index leads the name so that sort_key() orders placeholders by
+        # slot; see the class docstring on why the name alone is not enough
+        # and _hashable_content alone is not either.
+        suffix = "" if name is None else f"_{name}"
+        obj = sympy.Symbol.__xnew__(cls, f"_jit_const_{index}{suffix}")
         obj._const_index = index
         obj._ccodestr = f"constants[{index}]"
         return obj
+
+    def _hashable_content(self):
+        """Two placeholders differ if their constants[] slot differs."""
+        return sympy.Symbol._hashable_content(self) + (self._const_index,)
+
+    def __getnewargs_ex__(self):
+        return ((self._const_index, self.name), {})
 
     def _ccode(self, printer):
         return self._ccodestr
@@ -394,14 +428,26 @@ def _extract_constants(all_fns, mesh):
     # Sort by the user-given symbol name, not ``str(expr)`` — ``__str__`` on a
     # UWexpression returns the current *value*, which shuffles the index
     # assignment whenever a value changes. ``.name`` is stable.
-    sorted_constants = sorted(constant_exprs, key=lambda e: (e.name, _stable_sort_key(e)))
+    #
+    # Two constants can legitimately SHARE a name: every ViscousFlowModel calls
+    # its viscosity \eta, so a model with two of them has two \eta constants.
+    # ``instance_number`` (creation order, identical on every rank running the
+    # same script) breaks that tie without reintroducing the value into the key.
+    # Creation order breaks a name tie. It is identical on every rank of an
+    # SPMD run, and unlike the value it does not move when a parameter is
+    # ramped — a slot permutation between two solves of the same model would
+    # invalidate the JIT cache for no reason.
+    sorted_constants = sorted(
+        constant_exprs, key=lambda e: (e.name, e.instance_number, _stable_sort_key(e))
+    )
 
     manifest = []
     subs_map = {}
     for i, expr in enumerate(sorted_constants):
         # Use ``expr.name`` (stable) instead of ``str(expr)`` (= current value)
         # so the placeholder symbol's identity is independent of parameter value.
-        jit_const = _JITConstant(i, name=f"_jit_const_{expr.name}")
+        #
+        jit_const = _JITConstant(i, name=expr.name)
         manifest.append((i, expr))
         subs_map[expr] = jit_const
 
