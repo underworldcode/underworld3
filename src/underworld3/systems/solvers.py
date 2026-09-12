@@ -513,6 +513,10 @@ class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
 
     """
 
+    _solver_terms = (
+        ("f", "volumetric source term"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -725,6 +729,10 @@ class SNES_Darcy(SNES_Scalar):
     SNES_Poisson : Related diffusion-only solver.
     uw.constitutive_models.DarcyFlowModel : Constitutive model for Darcy flow.
     """
+
+    _solver_terms = (
+        ("f", "volumetric source/sink W"),
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1799,35 +1807,14 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             # Confirm the preconditioner the automatic penalty was chosen for.
             self._check_velocity_preconditioner()
 
-    def _declared_terms(self):
-        """What this Stokes solver was given, by the name it was given under.
-
-        The residual shows the assembled product; this shows the name to
-        change. ``F0`` is ``-bodyforce``, so a buoyancy written as
-        ``-rho0 * alpha * g * T * rhat`` appears here under ``bodyforce``
-        rather than only as the coefficient it collapsed to.
-        """
-        terms = [
-            {"name": "bodyforce",
-             "value": getattr(self.bodyforce, "sym", self.bodyforce),
-             "description": "body force per unit volume; F0 is its negative"},
-            {"name": "penalty",
-             "value": getattr(self, "penalty", None),
-             "description": "augmented-Lagrangian grad-div penalty (0 = off)"},
-        ]
-        model = getattr(self, "constitutive_model", None)
-        if model is not None:
-            declared = getattr(model, "_declared_terms", None)
-            if callable(declared):
-                terms.extend(declared() or [])
-            else:
-                terms.append({
-                    "name": "constitutive_model",
-                    "value": None,
-                    "description": f"{type(model).__name__} "
-                                   f"(does not declare its terms)",
-                })
-        return terms
+    # What this Stokes solver was given, by the name it was given under. The
+    # residual shows the assembled product; this shows the name to change, so
+    # a buoyancy written as ``-rho0 * alpha * g * T * rhat`` appears under
+    # ``bodyforce`` rather than only as the coefficient it collapsed to.
+    _solver_terms = (
+        ("bodyforce", "body force per unit volume; F0 is its negative"),
+        ("penalty", "augmented-Lagrangian grad-div penalty (0 = off)"),
+    )
 
     @property
     def tau(self):
@@ -3342,6 +3329,11 @@ class SNES_Projection(_SmoothingLengthMixin, SNES_Scalar):
         Enable verbose output.
     """
 
+    _solver_terms = (
+        ("uw_function", "the function being projected onto the mesh variable"),
+        ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -3624,6 +3616,11 @@ class SNES_Vector_Projection(_SmoothingLengthMixin, SNES_Vector):
     SNES_Projection : Scalar field projection (full mathematical detail).
     SNES_Tensor_Projection : Tensor field projection.
     """
+
+    _solver_terms = (
+        ("uw_function", "the function being projected onto the mesh variable"),
+        ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -3956,6 +3953,11 @@ class SNES_MultiComponent_Projection(_SmoothingLengthMixin, SNES_MultiComponent)
     SNES_Tensor_Projection : Legacy per-component cycling projector.
     """
 
+    _solver_terms = (
+        ("uw_function", "the function being projected onto the mesh variable"),
+        ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -4196,6 +4198,11 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     SNES_Diffusion : Pure diffusion solver without advection.
     SNES_Navier_Stokes : Full momentum advection-diffusion.
     """
+
+    _solver_terms = (
+        ("f", "volumetric source term"),
+        ("V_fn", "advecting velocity"),
+    )
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
@@ -4649,6 +4656,10 @@ class SNES_Diffusion(SNES_Scalar):
     SNES_Poisson : Steady-state diffusion (no time derivative).
     """
 
+    _solver_terms = (
+        ("f", "volumetric source term"),
+    )
+
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
 
@@ -4983,6 +4994,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     SNES_Stokes : Steady-state Stokes flow (no inertia).
     SNES_AdvectionDiffusion : Scalar advection-diffusion.
     """
+
+    _solver_terms = (
+        ("bodyforce", "body force per unit volume; F0 is its negative"),
+        ("rho", "density multiplying the inertial terms"),
+        ("penalty", "augmented-Lagrangian grad-div penalty (0 = off)"),
+    )
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display

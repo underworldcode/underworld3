@@ -1368,19 +1368,69 @@ class SolverBaseClass(uw_object):
             "multipliers": list(getattr(self, "_multipliers", None) or []),
         }
 
+    #: The terms this solver is given, as ``(attribute, description)`` pairs,
+    #: in the order a reader should meet them. A subclass that sets this gets
+    #: :meth:`_declared_terms` for free; ``None`` means the solver has not
+    #: adopted the contract, which :meth:`describe` reports as such rather
+    #: than passing it off as "no terms". Inherited, so a derived solver
+    #: extends its parent's roster rather than restating it:
+    #: ``_solver_terms = SNES_Stokes._solver_terms + (("rho", "..."),)``.
+    #: Enforced by ``tests/test_0016_solver_description_contract.py``.
+    _solver_terms = None
+
     def _declared_terms(self):
         """The terms this solver was GIVEN, by the name they were given under.
 
-        The contract a solver implements so its description can say where a
+        The contract a solver satisfies so its description can say where a
         residual came from. ``F0`` for Stokes is ``-bodyforce``; without this,
         a description can show the assembled product and not that the user
         wrote ``-rho0 * alpha * g * T * rhat``, nor which name to change.
 
-        Return a list of ``{"name", "value", "description"}``. ``None`` means
-        the solver has not adopted the contract, and :meth:`describe` reports
-        that rather than passing it off as "no terms".
+        Returns a list of ``{"name", "value", "description"}`` built from
+        :attr:`_solver_terms`, with the constitutive model's own terms
+        appended — the model is where most of the named physics lives, and a
+        solver that reported only its own attributes would stop at
+        ``constitutive_model`` as an opaque object.
+
+        Override only where the roster cannot express what was given; the
+        declaration is the intended path, so that adopting the contract is a
+        line of data rather than a method to keep in step with :meth:`describe`.
         """
-        return None
+        roster = type(self)._solver_terms
+        if roster is None:
+            return None
+
+        terms = []
+        for attribute, description in roster:
+            # A term can be a property that is not answerable yet — a solver
+            # described before it is configured, at collection time or in a
+            # notebook. Report that in place of the value; raising here would
+            # take out view() and the transcript for a solver that is merely
+            # incomplete.
+            try:
+                value = getattr(self, attribute, None)
+                value = getattr(value, "sym", value)
+            except Exception as exc:
+                value, description = None, f"{description} (unavailable: {exc})"
+            terms.append({
+                "name": attribute,
+                "value": value,
+                "description": description,
+            })
+
+        model = getattr(self, "constitutive_model", None)
+        if model is not None:
+            declared = getattr(model, "_declared_terms", None)
+            if callable(declared):
+                terms.extend(declared() or [])
+            else:
+                terms.append({
+                    "name": "constitutive_model",
+                    "value": None,
+                    "description": f"{type(model).__name__} "
+                                   f"(does not declare its terms)",
+                })
+        return terms
 
     def describe(self, depth=4):
         """What this solver solves, as data.
