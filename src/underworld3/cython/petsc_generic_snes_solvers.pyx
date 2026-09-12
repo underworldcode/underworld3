@@ -1352,6 +1352,270 @@ class SolverBaseClass(uw_object):
             """Coordinate system of the underlying mesh."""
             return inner_self._owning_solver.mesh.CoordinateSystem
 
+    def _transcript_identity(self):
+        """``(part, label)`` for this solver in a run transcript.
+
+        Name it by what it SOLVES, not by its auto-generated instance id: a
+        transcript reading ``Stokes(V) -> AdvDiffusion(T)`` is auditable, one
+        reading ``Solver_8_ -> Solver_14_`` is not.
+
+        ``label`` is what gets printed; ``part`` is what a column keys on. A
+        rendered label is not an identity — two solvers that happen to render
+        the same would collapse into one part, and changing how the label is
+        built would silently re-partition every transcript ever written.
+        """
+        try:
+            unknown = self.u.name
+        except Exception:
+            unknown = "?"
+        return (f"{type(self).__name__}#{self.instance_number}",
+                f"{type(self).__name__}({unknown})")
+
+    def _record_solve_outcome(self, report):
+        """Write the outcome of the solve just finished onto its transcript event.
+
+        The ``solve`` event is recorded BEFORE the solve, because the order
+        operators ran in is the thing the transcript exists to preserve. The
+        outcome is only known afterwards, so it is attached to that same event
+        rather than appended as a second one: one solve, one row, carrying both
+        where it came in the sequence and how it went.
+
+        Without this a transcript says a run solved 300 times and nothing about
+        the fifty that diverged — which is the difference between a record of a
+        run and an account of it.
+        """
+        if report is None:
+            return
+        try:
+            model = uw.get_default_model()
+            part, _ = self._transcript_identity()
+            model._record_solve_outcome(part, report)
+        except Exception:
+            pass
+
+    def _constraint_mechanisms(self):
+        """Every way a constraint can have been put on this solver.
+
+        ONE enumeration, used by the mixed-mechanism guard and by
+        :meth:`describe`. A mechanism added later and not registered here
+        breaks the guard first, which is a loud failure — where a second list
+        kept for reporting would simply omit it from the description and say
+        nothing.
+        """
+        return {
+            "essential": list(getattr(self, "essential_bcs", None) or []),
+            "natural": list(getattr(self, "natural_bcs", None) or []),
+            "rotated_freeslip": list(getattr(self, "_rotated_freeslip_bcs", None) or []),
+            "fault_contact": list(getattr(self, "_fault_contact_faults", None) or []),
+            "multipliers": list(getattr(self, "_multipliers", None) or []),
+        }
+
+    #: The terms this solver is given, as ``(attribute, description)`` pairs,
+    #: in the order a reader should meet them. A subclass that sets this gets
+    #: :meth:`_declared_terms` for free; ``None`` means the solver has not
+    #: adopted the contract, which :meth:`describe` reports as such rather
+    #: than passing it off as "no terms". Inherited, so a derived solver
+    #: extends its parent's roster rather than restating it:
+    #: ``_solver_terms = SNES_Stokes._solver_terms + (("rho", "..."),)``.
+    #: Enforced by ``tests/test_0016_solver_description_contract.py``.
+    _solver_terms = None
+
+    def _declared_terms(self):
+        """The terms this solver was GIVEN, by the name they were given under.
+
+        The contract a solver satisfies so its description can say where a
+        residual came from. ``F0`` for Stokes is ``-bodyforce``; without this,
+        a description can show the assembled product and not that the user
+        wrote ``-rho0 * alpha * g * T * rhat``, nor which name to change.
+
+        Returns a list of ``{"name", "value", "description"}`` built from
+        :attr:`_solver_terms`, with the constitutive model's own terms
+        appended — the model is where most of the named physics lives, and a
+        solver that reported only its own attributes would stop at
+        ``constitutive_model`` as an opaque object.
+
+        Override only where the roster cannot express what was given; the
+        declaration is the intended path, so that adopting the contract is a
+        line of data rather than a method to keep in step with :meth:`describe`.
+        """
+        roster = type(self)._solver_terms
+        if roster is None:
+            return None
+
+        terms = []
+        for attribute, description in roster:
+            # A term can be a property that is not answerable yet — a solver
+            # described before it is configured, at collection time or in a
+            # notebook. Report that in place of the value; raising here would
+            # take out view() and the transcript for a solver that is merely
+            # incomplete.
+            try:
+                value = getattr(self, attribute, None)
+                value = getattr(value, "sym", value)
+            except Exception as exc:
+                value, description = None, f"{description} (unavailable: {exc})"
+            terms.append({
+                "name": attribute,
+                "value": value,
+                "description": description,
+            })
+
+        model = getattr(self, "constitutive_model", None)
+        if model is not None:
+            declared = getattr(model, "_declared_terms", None)
+            if callable(declared):
+                terms.extend(declared() or [])
+            else:
+                terms.append({
+                    "name": "constitutive_model",
+                    "value": None,
+                    "description": f"{type(model).__name__} "
+                                   f"(does not declare its terms)",
+                })
+        return terms
+
+    def describe(self, depth=4):
+        """What this solver solves, as data.
+
+        The residual templates with their symbols and descriptions, the named
+        expressions they contain — expanded RECURSIVELY, so a constitutive
+        model written in terms of further named quantities is followed rather
+        than printed as one opaque value — and the boundary conditions.
+
+        One description, two consumers. :meth:`view` renders it for a reader
+        and the run transcript serialises it, so the equation a note quotes and
+        the equation the run recorded cannot drift apart.
+
+        Parameters
+        ----------
+        depth : int, default 4
+            How far to follow named expressions into each other. A cycle stops
+            at the symbol that repeats, whatever the depth.
+
+        Returns
+        -------
+        dict
+        """
+        import sympy
+
+        def unpack(expression, level, seen):
+            """Named expressions inside ``expression``, and inside those."""
+            out = []
+            if level > depth:
+                return out
+            try:
+                found = uw.function.fn_extract_expressions(expression)
+            except Exception:
+                return out
+            for named in sorted(found, key=lambda e: str(getattr(e, "symbol", e))):
+                symbol = str(getattr(named, "symbol", named))
+                if symbol in seen:
+                    continue
+                seen.add(symbol)
+                value = getattr(named, "sym", None)
+                description = str(getattr(named, "description", "") or "")
+                out.append({
+                    "symbol": symbol,
+                    "latex": sympy.latex(value) if value is not None else None,
+                    "value": str(value) if value is not None else None,
+                    "units": (str(named.units)
+                              if getattr(named, "units", None) else None),
+                    "description": ("" if description == "No description provided"
+                                    else description),
+                    "where": unpack(value, level + 1, seen) if value is not None else [],
+                })
+            return out
+
+        forms, seen = {}, set()
+        for name in ("F0", "F1", "PF0"):
+            template = getattr(self, name, None)
+            if template is None:
+                continue
+            expression = getattr(template, "sym", None)
+            if expression is None:
+                continue
+            # The template's own symbol and docstring are the equation's
+            # published names; they belong beside its value.
+            declared = getattr(type(self), name, None)
+            forms[name] = {
+                "symbol": getattr(declared, "name", None),
+                "description": (getattr(declared, "__doc__", "") or "").strip().split("\n")[0],
+                "latex": sympy.latex(expression),
+                "text": str(expression),
+            }
+            forms[name]["where"] = unpack(expression, 1, seen)
+
+        mechanisms = self._constraint_mechanisms()
+        conditions = []
+        for kind in ("essential", "natural"):
+            for bc in mechanisms[kind]:
+                function = getattr(bc, "fn", None)
+                if function is None:
+                    function = getattr(bc, "fn_f", None)
+                conditions.append({
+                    "mechanism": kind,
+                    "type": str(getattr(bc, "type", kind)),
+                    "boundary": str(getattr(bc, "boundary", "?")),
+                    "latex": sympy.latex(function) if function is not None else None,
+                    "text": str(function) if function is not None else None,
+                })
+        # Rotated free-slip is applied by machinery outside the solver, but the
+        # solver holds what was asked for — so a description that skipped it
+        # would report "no boundary conditions" for a model whose entire
+        # boundary treatment is rotated.
+        datum = getattr(self, "_rotated_freeslip_datum", None) or {}
+        for boundary, normal in mechanisms["rotated_freeslip"]:
+            value = datum.get(boundary)
+            conditions.append({
+                "mechanism": "rotated_freeslip",
+                "type": "rotated free-slip" if value is None
+                        else "rotated normal datum",
+                "boundary": str(boundary),
+                "latex": sympy.latex(value) if value is not None else r"\mathbf{u}\cdot\hat{\mathbf{n}} = 0",
+                "text": str(value) if value is not None else "u . n = 0",
+                "normal": "mesh" if normal is None else str(normal),
+            })
+        for fault in mechanisms["fault_contact"]:
+            conditions.append({
+                "mechanism": "fault_contact",
+                "type": "fault contact",
+                "boundary": str(getattr(fault, "name", fault)),
+                "latex": None, "text": None,
+            })
+
+        terms = self._declared_terms()
+        described_terms = None
+        if terms is not None:
+            described_terms = []
+            for term in terms:
+                value = term.get("value")
+                described_terms.append({
+                    "name": term.get("name"),
+                    "description": term.get("description", ""),
+                    "latex": sympy.latex(value) if value is not None else None,
+                    "text": str(value) if value is not None else None,
+                    "where": unpack(value, 1, set()) if value is not None else [],
+                })
+
+        return {
+            "solver": type(self).__name__,
+            "unknown": getattr(getattr(self, "u", None), "name", None),
+            "dim": getattr(self.mesh, "dim", None),
+            "cdim": getattr(self.mesh, "cdim", None),
+            "forms": forms,
+            "boundary_conditions": conditions,
+            "terms": described_terms,
+            "terms_declared": terms is not None,
+        }
+
+    def _describe_where(self, entries, display, Latex, level=0):
+        """Render the "Where:" tree from :meth:`describe`."""
+        for entry in entries:
+            indent = "\\quad " * (level + 1)
+            tail = f" \\quad ({entry['description']})" if entry["description"] else ""
+            display(Latex(f"${indent}{entry['symbol']} = {entry['latex']}${tail}"))
+            self._describe_where(entry.get("where", []), display, Latex, level + 1)
+
     def _object_viewer(self):
         '''This will add specific information about this object to the generic class viewer
         '''
@@ -1505,6 +1769,7 @@ class SolverBaseClass(uw_object):
         )
         self._solve_report = report
         self._solve_history.append(report)
+        self._record_solve_outcome(report)
         return report
 
     def _capture_rotated_report(self, info):
@@ -1548,6 +1813,7 @@ class SolverBaseClass(uw_object):
         )
         self._solve_report = report
         self._solve_history.append(report)
+        self._record_solve_outcome(report)
         return report
 
     def guard(self, *, wall_per_step):
@@ -2263,12 +2529,42 @@ class SolverBaseClass(uw_object):
         cdef double[::1] vals_view = np.ascontiguousarray(values, dtype=np.float64)
         CHKERRQ(PetscDSSetConstants(cds.ds, n_constants, <const PetscScalar*>&vals_view[0]))
 
-    def _update_constants(self):
+    def _update_constants(self, record=True):
         """Re-pack current UWexpression values and call PetscDSSetConstants.
 
         Called before each solve() to ensure constants are current without
         requiring JIT recompilation.
+
+        ``record=False`` suppresses the step-transcript entry. Pass it from any
+        site that pushes constants for its OWN assembly rather than to
+        dispatch a solve — otherwise the transcript reports one operator as two.
+        The rotated free-slip loop is such a site: it re-attaches the
+        auxiliary vector and re-packs before running its own manual Krylov
+        loop, after the public ``solve()`` has already announced itself.
         """
+        # Refresh mesh.t from the model clock first, so a time-dependent
+        # expression is repacked with the rest of the constants rather than
+        # needing its own hook (or a recompile) per timestep.
+        try:
+            self.mesh._sync_time_from_model()
+        except AttributeError:
+            pass
+
+        # Note the solve in the model's step transcript, if a step is open. This
+        # is the one place every solver passes through before solving, so one
+        # hook records them all, in order. A no-op outside a model.step block.
+        if record:
+            try:
+                part, label = self._transcript_identity()
+                model = uw.get_default_model()
+                # What it solves, not only that it solved: the residual is
+                # SymPy, so the weak form can be written into the transcript
+                # exactly as implemented.
+                model._describe_part(self, part, label)
+                model._record_step_event("solve", label, part=part)
+            except Exception:
+                pass
+
         if not self.constants_manifest or self.dm is None:
             return
 
@@ -4158,14 +4454,14 @@ class SNES_Scalar(SolverBaseClass):
         )
 
 
-        exprs = uw.function.fn_extract_expressions(self.F0)
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
-
-        if len(exprs) != 0:
+        # Rendered from describe(), so the "Where:" a reader sees and the
+        # equation the run transcript records come from one description.
+        where = []
+        for form in self.describe()["forms"].values():
+            where.extend(form.get("where", []))
+        if where:
             display(Markdown("*Where:*"))
-
-            for expr in exprs:
-                expr._object_viewer()
+            self._describe_where(where, display, Latex)
 
 
         display(
@@ -5207,14 +5503,14 @@ class SNES_Vector(SolverBaseClass):
             Latex(eqF1), Latex(eqf0),
         )
 
-        exprs = uw.function.fn_extract_expressions(self.F0)
-        exprs = exprs.union(uw.function.fn_extract_expressions(self.F1))
-
-        if len(exprs) != 0:
+        # Rendered from describe(), so the "Where:" a reader sees and the
+        # equation the run transcript records come from one description.
+        where = []
+        for form in self.describe()["forms"].values():
+            where.extend(form.get("where", []))
+        if where:
             display(Markdown("*Where:*"))
-
-            for expr in exprs:
-                expr._object_viewer()
+            self._describe_where(where, display, Latex)
 
         display(
             Markdown(fr"# Boundary Conditions"),)
@@ -6273,10 +6569,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             mechanism is already in place and which one was refused.
         """
 
-        rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or []) + list(
-            getattr(self, "_fault_contact_faults", None) or []
-        )
-        multipliers = list(getattr(self, "_multipliers", None) or [])
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        multipliers = mechanisms["multipliers"]
 
         if adding == "solve":
             # The dispatch reads both lists, so it can only report the pair.

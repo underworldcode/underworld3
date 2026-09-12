@@ -43,6 +43,106 @@ except ImportError:
         pass
 
 
+class _AutoSentinel:
+    """Sentinel for "the user has not said where the transcript goes".
+
+    Distinct from None, which means "off": the two have to be told apart,
+    because a default that cannot be switched off is worse than no default.
+
+    Copy-stable on purpose. ``PrivateAttr`` deep-copies its default, and a bare
+    ``object()`` would come back as a DIFFERENT object per model, so every
+    identity check against it would silently fail.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "<auto>"
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+_AUTO = _AutoSentinel()
+
+TRANSCRIPTS_DIR = "transcripts"
+
+
+def _transcript_disabled():
+    """Whether the automatic transcript should stay off.
+
+    Off under pytest — 1800 tests should not each leave a directory — and off
+    when ``UW_TRANSCRIPT`` says so, which is the switch for CI and for anyone
+    who does not want the files.
+    """
+    setting = os.environ.get("UW_TRANSCRIPT", "").strip().lower()
+    if setting in ("off", "0", "no", "none", "false"):
+        return True
+    if setting:
+        return False
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
+def _launch_stem():
+    """A short name for the run, taken from the script that started it."""
+    entry = sys.argv[0] if sys.argv else ""
+    if not entry or entry == "-c":
+        return "interactive"
+    stem = os.path.splitext(os.path.basename(entry))[0]
+    return "".join(c if (c.isalnum() or c in "-_") else "-" for c in stem) or "run"
+
+
+def _launch_manifest():
+    """What was invoked, as far as it can be known.
+
+    A programmatic launcher cannot be made reproducible by fiat, but what was
+    actually run CAN be written down: the command line, the interpreter, the
+    working directory, the package version, and the commit if there is one.
+    That is the difference between "I cannot reproduce this" and "I know
+    exactly what produced it and can decide what to change".
+    """
+    from datetime import datetime, timezone
+
+    import underworld3 as uw
+
+    manifest = {
+        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "argv": list(sys.argv),
+        "executable": sys.executable,
+        "cwd": os.getcwd(),
+        "underworld3": getattr(uw, "__version__", "unknown"),
+        "underworld3_path": os.path.dirname(getattr(uw, "__file__", "") or ""),
+        "python": sys.version.split()[0],
+        "mpi_size": int(uw.mpi.size),
+    }
+    try:
+        manifest["host"] = os.uname().nodename
+    except Exception:
+        pass
+    # The entry script is copied beside this; imported modules are NOT, so a
+    # commit id is what covers the rest when the work is under version control.
+    try:
+        import subprocess
+
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            timeout=5, cwd=os.getcwd(),
+        )
+        if sha.returncode == 0:
+            manifest["git_commit"] = sha.stdout.strip()
+            dirty = subprocess.run(
+                ["git", "status", "--porcelain"], capture_output=True, text=True,
+                timeout=5, cwd=os.getcwd(),
+            )
+            manifest["git_dirty"] = bool(dirty.stdout.strip())
+    except Exception:
+        pass
+    return manifest
+
+
 class ModelState(Enum):
     """Model lifecycle states"""
 
@@ -52,6 +152,182 @@ class ModelState(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
+
+
+class ModelStep:
+    """What one timestep did — the transcript entry for a ``model.step`` block.
+
+    Ordered, so ``[e.name for e in step.events]`` is the sequence of operators
+    the step actually applied. That sequence is what makes a step auditable
+    (did this run do what the write-up says?) and what a replay or an adjoint
+    needs in order to walk the run backwards.
+    """
+
+    __slots__ = ("index", "t0", "dt", "label", "events", "completed", "snapshot",
+                 "wall")
+
+    def __init__(self, index, t0, dt, label=None):
+        self.index = index
+        self.t0 = t0
+        self.dt = dt
+        self.label = label
+        self.events = []
+        self.completed = False
+        # Seconds of wall clock the block took. Not physics, but the number you
+        # want when watching a run: a step that suddenly takes ten times as
+        # long is the first sign of a solver in trouble.
+        self.wall = None
+        # The state this step STARTED from, when the recording policy kept one.
+        # Taken before the operators ran, which is the only correct point: a
+        # DDt shifts its history in its post-solve hook, so a snapshot taken
+        # afterwards holds the shifted history rather than the step's input.
+        self.snapshot = None
+
+    @property
+    def restorable(self):
+        """Whether this step kept the state it started from."""
+        return self.snapshot is not None
+
+    @property
+    def t1(self):
+        """The end of the interval this step covers."""
+        return self.t0 + self.dt
+
+    def _record(self, kind, name, **detail):
+        self.events.append({"kind": kind, "name": name, **detail})
+
+    def as_dict(self):
+        """This step as plain JSON-able data — the on-disk log's line format.
+
+        Dimensional values become ``{"magnitude": ..., "units": ...}``, the
+        same split the on-disk snapshot uses, so a log written by a run with
+        units is readable without a live model to interpret it.
+
+        ``snapshot`` is deliberately absent: it is megabytes of field data and
+        does not survive the process. ``restorable`` records whether one was
+        held, which is what a reader of the log can act on.
+
+        Each value keeps the units the run actually held it in, which is why
+        ``t0`` may read in Myr beside a ``dt`` in seconds: the clock came from
+        the tracker and the interval from ``estimate_dt()``. The log is a
+        transcript of the run, not a tidied report of it — convert on the way out.
+        """
+        return {
+            "kind": "step",
+            "index": self.index,
+            "label": self.label,
+            "t0": _jsonable_quantity(self.t0),
+            "t1": _jsonable_quantity(self.t1),
+            "dt": _jsonable_quantity(self.dt),
+            "completed": bool(self.completed),
+            "restorable": bool(self.restorable),
+            "wall": None if self.wall is None else float(self.wall),
+            "events": [dict(e) for e in self.events],
+        }
+
+    def __repr__(self):
+        state = "" if self.completed else " ABANDONED"
+        seq = " -> ".join(f"{e['kind']}:{e['name']}" for e in self.events) or "(nothing)"
+        tag = f" {self.label!r}" if self.label else ""
+        return f"<step {self.index}{tag} dt={self.dt} {seq}{state}>"
+
+
+def _quantity_parts(value):
+    """``(magnitude, unit string or None)`` for a value that may be dimensional."""
+    if hasattr(value, "magnitude") and hasattr(value, "units"):
+        try:
+            return float(value.magnitude), str(value.units)
+        except (TypeError, ValueError):
+            return None, str(value.units)
+    try:
+        return float(value), None
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _abbreviate_unit(unit):
+    """A short unit name for a column header. Falls back to the full name."""
+    if unit is None:
+        return ""
+    return {
+        "second": "s", "minute": "min", "hour": "hr", "day": "d",
+        "year": "yr", "kiloyear": "kyr", "megayear": "Myr", "gigayear": "Gyr",
+        "meter": "m", "kilometer": "km", "kelvin": "K", "kilogram": "kg",
+    }.get(str(unit), str(unit))
+
+
+def _in_units_of(value, unit):
+    """``value`` as a bare number in ``unit``, or its own magnitude if it cannot
+    be converted. A text log is a report: one time column, one unit."""
+    if unit is None:
+        magnitude, _ = _quantity_parts(value)
+        return magnitude
+    try:
+        return float(value.to(unit).magnitude)
+    except Exception:
+        magnitude, _ = _quantity_parts(value)
+        return magnitude
+
+
+def _bare(value, unit):
+    """A serialised value as a bare number, converted to ``unit`` if it can be.
+
+    ``value`` is what :meth:`ModelStep.as_dict` produced: a float, or a
+    ``{"magnitude", "units"}`` pair. The text log shows one time column in one
+    unit, so a ``dt`` in seconds beside a clock in Myr is converted rather than
+    printed as it stands.
+    """
+    if not isinstance(value, dict):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
+    magnitude = value.get("magnitude")
+    units = value.get("units")
+    if unit is None or units is None or str(units) == str(unit):
+        try:
+            return float(magnitude)
+        except (TypeError, ValueError):
+            return float("nan")
+    try:
+        import underworld3 as uw
+
+        return float(uw.quantity(float(magnitude), str(units)).to(unit).magnitude)
+    except Exception:
+        try:
+            return float(magnitude)
+        except (TypeError, ValueError):
+            return float("nan")
+
+
+def _pretty_time(value):
+    """A compact, readable rendering of a clock value for a log note."""
+    magnitude, unit = _quantity_parts(value)
+    if magnitude is None:
+        return str(value)
+    if unit is None:
+        return f"{magnitude:.6g}"
+    return f"{magnitude:.6g} {_abbreviate_unit(unit)}"
+
+
+def _jsonable_quantity(value):
+    """A number, or a dimensional value split into magnitude and units.
+
+    Duck-typed, because ``uw.quantity`` returns a ``UWQuantity``, which is not
+    a ``pint.Quantity`` subclass — an isinstance test against either would
+    miss one of them. Both carry ``magnitude`` and ``units``.
+    """
+    if hasattr(value, "magnitude") and hasattr(value, "units"):
+        magnitude = value.magnitude
+        try:
+            magnitude = float(magnitude)
+        except (TypeError, ValueError):
+            magnitude = str(magnitude)
+        return {"magnitude": magnitude, "units": str(value.units)}
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 class Model(PintNativeModelMixin, BaseModel):
@@ -140,6 +416,45 @@ class Model(PintNativeModelMixin, BaseModel):
     # restore manage it automatically. See
     # src/underworld3/checkpoint/tracker.py.
     _tracker: Any = PrivateAttr(default=None)
+
+    # The step transcript: an ordered record of what each timestep actually did.
+    # ``_open_step`` is the ModelStep currently in progress (None outside a
+    # ``with model.step(dt):`` block); ``_transcript`` is the bounded history of
+    # completed steps. See :meth:`step`.
+    _open_step: Any = PrivateAttr(default=None)
+    _transcript: Any = PrivateAttr(default_factory=list)
+    _transcript_limit: Any = PrivateAttr(default=512)
+
+    # Optional on-disk log of the transcript: one JSON object per line, appended
+    # and flushed as each step closes. See :attr:`transcript_file`.
+    # ``_AUTO`` until the user says otherwise: a transcript lands in
+    # ``transcripts/<stamp>-<script>/`` on the first step, and nothing is
+    # created for a script that never takes one. Assigning a path overrides it;
+    # assigning None turns it off.
+    _transcript_path: Any = PrivateAttr(default=_AUTO)
+    _transcript_dir: Any = PrivateAttr(default=None)
+    _transcript_fh: Any = PrivateAttr(default=None)
+    _transcript_format: Any = PrivateAttr(default=None)
+    _transcript_columns: Any = PrivateAttr(default=None)
+    _announced_transcript: Any = PrivateAttr(default=None)
+    # The automatic run directory carries BOTH renderings: the text one is for
+    # watching, the JSON one is the record a score or an analysis reads. Having
+    # to have chosen the right format in advance is the same mistake as making
+    # the transcript opt-in — it asks for foresight in the case that arises
+    # without it.
+    _transcript_jsonl_fh: Any = PrivateAttr(default=None)
+    # What each part SOLVES, keyed by part id: the residual as implemented,
+    # recorded once per run and again if the form changes. See _describe_part.
+    _parts: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # Set while rewind() is doing its own restore, so load_state does not log a
+    # second, less informative note for the same backtrack.
+    _restoring: Any = PrivateAttr(default=False)
+
+    # Recording policy: how often a step keeps a restorable snapshot of the
+    # state it started from, and how many of those to retain. See :meth:`step`.
+    _record_every: Any = PrivateAttr(default=None)
+    _record_limit: Any = PrivateAttr(default=8)
+    _record_warned: Any = PrivateAttr(default=False)
 
     def __init__(self, name: Optional[str] = None, **kwargs):
         """
@@ -604,6 +919,860 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         return self._tracker
 
+    # ------------------------------------------------------------------
+    # The step transcript
+    # ------------------------------------------------------------------
+
+    @property
+    def transcript(self) -> List[Any]:
+        """Completed :class:`ModelStep` records, oldest first.
+
+        An ordered account of what each timestep did — which solvers ran, in
+        what order, over which time interval. Answers "is this model doing the
+        thing I said it does" without instrumenting the script, and is the
+        record an adjoint or a replay needs.
+
+        Bounded by ``model.transcript_limit`` (default 512 steps); set it to
+        ``None`` to keep everything.
+        """
+        return list(self._transcript)
+
+    @property
+    def transcript_limit(self):
+        """How many completed steps to retain (None keeps all)."""
+        return self._transcript_limit
+
+    @transcript_limit.setter
+    def transcript_limit(self, value):
+        self._transcript_limit = value
+        self._trim_transcript()
+
+    @property
+    def open_step(self):
+        """The step in progress, or None outside a ``model.step`` block."""
+        return self._open_step
+
+    def clear_transcript(self):
+        """Start a new run's transcript, discarding the entries and snapshots in it.
+
+        A driver that runs the same model many times — an inversion, a
+        parameter sweep, a restart from a saved state — needs each run to have
+        its own account. Without this the transcript is a concatenation of every
+        run the process has done, and ``rewind()`` will happily walk back into
+        the previous one.
+
+        Does not touch the clock: reset ``model.tracker.time`` / ``step``
+        yourself if the new run starts from zero.
+        """
+        if self._open_step is not None:
+            raise RuntimeError(
+                "cannot clear the transcript from inside a model.step block "
+                f"(step {self._open_step.index} is open)."
+            )
+        self._transcript.clear()
+        self._record_warned = False
+        # A new run gets a new section in the log rather than a new file, so
+        # one file holds the whole process — thirteen forward runs of an
+        # inversion, say — delimited by their headers.
+        self._write_transcript_line(self._run_header())
+
+    @property
+    def transcript_file(self):
+        """Where the transcript is written, or None when it is off.
+
+        **On by default.** A run that takes a step lands in a stamped
+        directory under ``transcripts/`` beside the working directory::
+
+            transcripts/2026-09-11T14-32-05-my_model/
+                my_model.py          the script that launched it, verbatim
+                launch.json          argv, interpreter, cwd, version, commit
+                transcript.log       one aligned line per step, flushed
+
+        The stamp is why: the run you want is the one from this morning, and a
+        fixed filename would have overwritten it. Nothing is created for a
+        script that never opens a step, and nothing is created before the first
+        one — so an import, or a script that only builds a mesh, leaves no
+        trace.
+
+        Assign a path to put it somewhere else, or ``None`` to turn it off::
+
+            model.transcript_file = "output/run.jsonl"     # somewhere else
+            model.transcript_file = None                   # off
+
+        ``UW_TRANSCRIPT=off`` turns it off for a whole session; any other value
+        is taken as the directory the stamped run directories go in. It is off
+        under pytest, because 1800 tests should not each leave a directory.
+
+        Every step that closes — completed OR abandoned — is appended and
+        flushed, so a run that crashes keeps its transcript up to the crash,
+        which is when it is worth most.
+
+        The file records what the run DID; ``model.transcript`` is what it can
+        still UNDO. They differ in two ways, both deliberate: an abandoned step
+        appears in the file and not in memory, and a step trimmed by
+        ``transcript_limit`` leaves memory but stays in the file.
+
+        Read one back with :func:`underworld3.read_transcript`. Rank 0 writes;
+        other ranks record in memory as usual.
+        """
+        if self._transcript_path is _AUTO:
+            return None if _transcript_disabled() else self._auto_transcript_path()
+        return self._transcript_path
+
+    @transcript_file.setter
+    def transcript_file(self, path):
+        self._close_transcript()
+        self._transcript_path = None if path is None else str(path)
+        self._transcript_dir = None
+        self._transcript_columns = None
+
+    def announce_transcript(self):
+        """Print where this run's transcript went. A no-op if there isn't one.
+
+        Called automatically when the interpreter exits, because the end of the
+        run is when the path is wanted and the start of it is where the message
+        has already scrolled away.
+        """
+        directory = self._announced_transcript
+        if not directory:
+            return
+        import underworld3 as uw
+
+        self._close_transcript(completed=True)
+        uw.pprint(f"underworld3: transcript -> {directory}", clean_display=False)
+
+    def _close_transcript(self, completed=False):
+        """Close the transcript, optionally marking the run as finished.
+
+        A transcript that just STOPS is ambiguous three ways: still running,
+        killed, or done. A terminator on clean exit separates them, which is
+        what lets a score of a partial record say which it is looking at.
+        """
+        if completed and self._transcript_fh is not None:
+            from datetime import datetime, timezone
+
+            self._write_transcript_line({
+                "kind": "run_end",
+                "message": f"run ended after {len(self._transcript)} recorded step(s)",
+                "ended": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "steps": len(self._transcript),
+            })
+        for attr in ("_transcript_fh", "_transcript_jsonl_fh"):
+            handle = getattr(self, attr)
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+    def _auto_transcript_path(self):
+        """The stamped path this run would use. Computed once; creates nothing."""
+        if self._transcript_dir is None:
+            from datetime import datetime
+
+            root = os.environ.get("UW_TRANSCRIPT", "").strip()
+            if root.lower() in ("", "on", "1", "yes", "true"):
+                root = TRANSCRIPTS_DIR
+            stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+            # Absolute, because this path gets printed and the first thing
+            # anyone does with it is paste it somewhere. A relative path is
+            # only meaningful next to the working directory it was resolved
+            # in, which is exactly the context a reader no longer has.
+            self._transcript_dir = os.path.abspath(
+                os.path.join(root, f"{stamp}-{_launch_stem()}"))
+        return os.path.join(self._transcript_dir, "transcript.log")
+
+    def _open_transcript(self):
+        """Create the destination and write the run header. Idempotent.
+
+        Deferred to the first step on purpose: a transcript is about a run, and
+        a run is a sequence of steps. Creating the directory at model
+        construction would leave one behind for every import.
+        """
+        if self._transcript_fh is not None:
+            return
+        import underworld3 as uw
+
+        if uw.mpi.rank != 0:
+            return
+        path = self.transcript_file
+        if path is None:
+            return
+
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        try:
+            self._transcript_fh = open(path, "w", encoding="utf-8")
+        except OSError as exc:
+            import warnings
+
+            warnings.warn(
+                f"could not open the transcript at {path!r} ({exc}); this run "
+                f"will not leave one. model.transcript is unaffected.",
+                RuntimeWarning,
+            )
+            self._transcript_path = None
+            return
+
+        # Only an automatic, stamped directory gets the launch record: a path
+        # the user named is a file they asked for, not a place to put things.
+        automatic = bool(
+            directory and self._transcript_dir
+            and os.path.abspath(directory) == os.path.abspath(self._transcript_dir)
+        )
+        if automatic:
+            self._write_launch_record(directory)
+            self._point_latest_at(directory)
+            # The second rendering. A score, or any analysis, reads the record
+            # rather than the report — and the run you want to score is the one
+            # already going, so it cannot be a format chosen up front.
+            other = "transcript.jsonl" if self.transcript_format == "text" \
+                else "transcript.log"
+            try:
+                self._transcript_jsonl_fh = open(
+                    os.path.join(directory, other), "w", encoding="utf-8")
+            except OSError:
+                self._transcript_jsonl_fh = None
+
+        self._write_transcript_line(self._run_header())
+
+        # Say where it went. A file created without being asked has to
+        # announce itself, or it is litter the user cannot find — and the
+        # path is the thing they will want at the END of the run, so it is
+        # worth one line now and one line then.
+        if automatic:
+            import atexit
+
+            import underworld3 as uw
+
+            uw.pprint(f"underworld3: transcript -> {directory}", clean_display=False)
+            if self._announced_transcript is None:
+                atexit.register(self.announce_transcript)
+            self._announced_transcript = directory
+
+    def _point_latest_at(self, directory):
+        """Leave a ``latest`` pointer beside the stamped directories.
+
+        The stamp answers "where is this morning's run"; ``latest`` answers
+        "where is the one I just ran", which is the question asked far more
+        often and the one a timestamp is worst at.
+        """
+        try:
+            parent = os.path.dirname(directory)
+            link = os.path.join(parent, "latest")
+            if os.path.islink(link) or os.path.exists(link):
+                os.remove(link)
+            os.symlink(os.path.basename(directory), link)
+        except Exception:
+            # Symlinks are not available everywhere. The stamped directory is
+            # the record; this is a convenience on top of it.
+            pass
+
+    def _write_launch_record(self, directory):
+        """Copy the entry script and write what invoked it.
+
+        A programmatic launcher cannot be made reproducible by fiat. What CAN
+        be done is to write down exactly what was run, so the question six
+        months later is "what do I change" rather than "what was this".
+        """
+        import json as _json
+        import shutil
+
+        try:
+            manifest = _launch_manifest()
+            entry = sys.argv[0] if sys.argv else ""
+            if entry and entry != "-c" and os.path.isfile(entry):
+                target = os.path.join(directory, os.path.basename(entry))
+                shutil.copyfile(entry, target)
+                manifest["script"] = os.path.basename(entry)
+                manifest["script_source"] = os.path.abspath(entry)
+            else:
+                manifest["script"] = None
+                manifest["script_note"] = (
+                    "no entry script to copy (interactive, -c, or a notebook); "
+                    "argv and the commit id below are what identifies this run"
+                )
+            manifest["imported_modules_note"] = (
+                "only the entry script is copied; anything it imports is not — "
+                "git_commit covers the rest when the work is committed"
+            )
+            with open(os.path.join(directory, "launch.json"), "w",
+                      encoding="utf-8") as handle:
+                _json.dump(manifest, handle, indent=2, default=str)
+        except Exception:
+            # The launch record is a convenience. Never take a run down for it.
+            pass
+
+    @property
+    def transcript_format(self):
+        """``"text"`` (default) or ``"jsonl"``.
+
+        Text is for reading — aligned columns, one line per step, designed to
+        be watched with ``tail -f`` while a run is going. It is a report: the
+        time column is converted to a single unit named in the header.
+
+        ``"jsonl"`` is for parsing — one JSON object per line, every value in
+        the units the run actually held it in. Chosen automatically when the
+        path ends ``.jsonl``, ``.ndjson`` or ``.json``; set this explicitly to
+        override.
+        """
+        if self._transcript_format is not None:
+            return self._transcript_format
+        path = self.transcript_file
+        if path and str(path).lower().endswith((".jsonl", ".ndjson", ".json")):
+            return "jsonl"
+        return "text"
+
+    @transcript_format.setter
+    def transcript_format(self, value):
+        if value not in (None, "text", "jsonl"):
+            raise ValueError(
+                f"transcript_format must be 'text', 'jsonl' or None, not {value!r}")
+        self._transcript_format = value
+
+    def _run_header(self):
+        """The record that opens a run in the log, so the file is self-describing."""
+        from datetime import datetime, timezone
+
+        scales = {}
+        try:
+            for name, scale in (self.get_fundamental_scales() or {}).items():
+                scales[str(name)] = _jsonable_quantity(scale)
+        except Exception:
+            scales = {}
+        return {
+            "kind": "run",
+            "model": getattr(self, "name", None),
+            "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "scales": scales,
+        }
+
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _render_transcript_text(self, payload):
+        """One record as human-readable text. Returns a string, possibly
+        several lines, or None for an entry this format does not show."""
+        kind = payload.get("kind")
+
+        if kind == "run":
+            scales = payload.get("scales") or {}
+            summary = " | ".join(
+                f"{name} {value['magnitude']:.4g} {_abbreviate_unit(value['units'])}"
+                for name, value in scales.items()
+                if isinstance(value, dict)
+            )
+            lines = [
+                "",
+                f"# underworld3 run transcript · model {payload.get('model')!r} "
+                f"· started {payload.get('started')}",
+            ]
+            if summary:
+                lines.append(f"# scales: {summary}")
+            else:
+                lines.append("# scales: none declared (nondimensional run)")
+            # Column names are written lazily, with the first step, because the
+            # time unit is not known until a step carries one.
+            self._transcript_columns = None
+            return "\n".join(lines)
+
+        if kind == "step":
+            prefix = ""
+            unit = (payload["t1"] or {}).get("units") if isinstance(
+                payload.get("t1"), dict) else None
+            short = _abbreviate_unit(unit)
+            if self._transcript_columns is None:
+                self._transcript_columns = short
+                t_col = f"t/{short}" if short else "t"
+                dt_col = f"dt/{short}" if short else "dt"
+                prefix = (
+                    f"#{'step':>5s}  {t_col:>14s}  {dt_col:>14s}  {'wall/s':>8s}  "
+                    f"{'outcome':<9s}  operators, in order\n"
+                )
+
+            t1 = _bare(payload["t1"], unit)
+            dt = _bare(payload["dt"], unit)
+
+            wall = payload.get("wall")
+            wall_text = "-" if wall is None else f"{wall:.2f}"
+            events = payload.get("events", [])
+
+            # A step whose solves did not converge is not an "ok" step. The
+            # column says so at a glance and the notes below say which solve
+            # and why — a run that logged only "ok" for three hundred steps,
+            # fifty of them diverged, is a record of a run rather than an
+            # account of it.
+            failed = [e for e in events
+                      if e.get("kind") == "solve" and e.get("converged") is False]
+            if not payload.get("completed"):
+                outcome = "ABANDONED"
+            elif failed:
+                outcome = "DIVERGED"
+            else:
+                outcome = "ok"
+
+            label = payload.get("label")
+            tag = f"[{label}] " if label else ""
+            # Only what the step APPLIED goes in the sequence. Anything else an
+            # older transcript may carry is not an operator and is left out.
+            operators = " > ".join(
+                f"{e['kind']}:{e['name']}" for e in events
+                if e.get("kind") in ("solve", "history_shift")
+            ) or "(nothing)"
+
+            notes = []
+            for event in failed:
+                fnorm = event.get("fnorm")
+                tail = "" if fnorm is None else f", |F| {fnorm:.3g}"
+                notes.append(
+                    f"  !! {event['name']}: {event.get('reason', 'did not converge')}"
+                    f" after {event.get('nl_its', 0)} its"
+                    f" ({event.get('ksp_its', 0)} ksp){tail}"
+                )
+            for event in events:
+                if event.get("kind") != "warning":
+                    continue
+                text = " ".join(str(event.get("message", "")).split())
+                if len(text) > 120:
+                    text = text[:117] + "..."
+                notes.append(f"  ~~ {event['name']}: {text}")
+
+            return "\n".join([
+                f"{prefix}"
+                f"  {payload['index']:>5d}  {t1:>14.6g}  {dt:>14.6g}  "
+                f"{wall_text:>8s}  {outcome:<9s}  {tag}{operators}"
+            ] + notes)
+
+        if kind == "part":
+            forms = ", ".join(sorted(payload.get("forms", {})))
+            return (f"  -- solves: {payload.get('label')}  [{forms}]  "
+                    f"(the form is in the transcript record)")
+
+        if kind == "run_end":
+            return f"# {payload.get('message', 'run ended')} · {payload.get('ended', '')}"
+
+        # Everything else — rewind, restore — is a note about the run rather
+        # than a row of the table, so it breaks the columns deliberately.
+        return f"  -- {payload.get('message', kind)}"
+
+    def _write_transcript_line(self, payload):
+        """Append one record and flush, so a killed run keeps its log."""
+        if self._transcript_fh is None:
+            return
+        import json
+
+        try:
+            primary_is_json = self.transcript_format == "jsonl"
+            if primary_is_json:
+                text = json.dumps(payload, default=str)
+            else:
+                text = self._render_transcript_text(payload)
+            if text is not None:
+                self._transcript_fh.write(text + "\n")
+                self._transcript_fh.flush()
+
+            if self._transcript_jsonl_fh is not None:
+                if primary_is_json:
+                    other = self._render_transcript_text(payload)
+                else:
+                    other = json.dumps(payload, default=str)
+                if other is not None:
+                    self._transcript_jsonl_fh.write(other + "\n")
+                    self._transcript_jsonl_fh.flush()
+        except Exception:
+            # A log is a convenience: never take a run down for it. Drop the
+            # handle so the failure is reported once rather than per step.
+            try:
+                self._transcript_fh.close()
+            except Exception:
+                pass
+            self._transcript_fh = None
+            import warnings
+
+            warnings.warn(
+                f"could not append to the transcript at {self.transcript_file!r}; "
+                f"logging is off for the rest of this run. The in-memory "
+                f"model.transcript is unaffected.",
+                RuntimeWarning,
+            )
+
+    def _write_transcript_note(self, kind, message, **fields):
+        """Log something that happened to the run but is not a step.
+
+        A backtrack above all: a log that shows step 7, then step 7 again, with
+        nothing in between, is not a log of what happened.
+        """
+        payload = {"kind": kind, "message": message}
+        payload.update(fields)
+        self._write_transcript_line(payload)
+
+    def _trim_transcript(self):
+        limit = self._transcript_limit
+        if limit is not None and len(self._transcript) > limit:
+            del self._transcript[: len(self._transcript) - limit]
+
+    @property
+    def record_every(self):
+        """Keep a restorable snapshot every N steps (None keeps none).
+
+        ``1`` records every step, which is what replay and an adjoint want.
+        Snapshots cost roughly 13 bytes per primary degree of freedom each, so
+        a long run on a large mesh should either raise :attr:`record_limit`
+        with care or record less often and recompute between.
+        """
+        return self._record_every
+
+    @record_every.setter
+    def record_every(self, value):
+        self._record_every = value
+
+    @property
+    def record_limit(self):
+        """How many snapshots to retain (None retains all).
+
+        Older steps keep their transcript record and lose their snapshot, so the
+        account of what happened survives even where the state does not.
+        """
+        return self._record_limit
+
+    @record_limit.setter
+    def record_limit(self, value):
+        self._record_limit = value
+        self._trim_records()
+
+    @property
+    def restore_points(self):
+        """Completed steps that can still be restored, oldest first."""
+        return [entry for entry in self._transcript if entry.restorable]
+
+    def _trim_records(self):
+        limit = self._record_limit
+        if limit is None:
+            return
+        restorable = [e for e in self._transcript if e.restorable]
+        for entry in restorable[: max(0, len(restorable) - limit)]:
+            entry.snapshot = None
+
+    def rewind(self, steps: int = 1):
+        """Go back to the state at the start of a completed step.
+
+        ``steps=1`` returns to the beginning of the most recent completed step,
+        undoing it. Fields, histories and the clock all come back together,
+        because the clock lives on the tracker and the tracker is captured with
+        everything else.
+
+        The transcript is truncated to match, so it continues to describe the run
+        that actually happened.
+        """
+        restorable = [e for e in self._transcript if e.restorable]
+        if not restorable:
+            raise RuntimeError(
+                "nothing to rewind to: no completed step kept a snapshot. "
+                "Set model.record_every = 1 before the loop to record every step."
+            )
+        if steps < 1 or steps > len(restorable):
+            raise ValueError(
+                f"cannot rewind {steps} step(s); {len(restorable)} restorable "
+                f"step(s) are retained (see model.record_limit)."
+            )
+        target = restorable[-steps]
+        self._restoring = True
+        try:
+            self.load_state(target.snapshot)
+        finally:
+            self._restoring = False
+        cut = self._transcript.index(target)
+        dropped = len(self._transcript) - cut
+        del self._transcript[cut:]
+
+        # A log that shows step 7, then step 7 again with nothing in between is
+        # not a log of what happened. Say where the run went back to.
+        self._write_transcript_note(
+            "rewind",
+            f"rewind to the start of step {target.index} "
+            f"(t = {_pretty_time(self.tracker.time)}); {dropped} step(s) undone",
+            to_step=int(target.index),
+            steps_undone=int(dropped),
+            t=_jsonable_quantity(self.tracker.time),
+        )
+        return target
+
+    def _describe_part(self, owner, part: str, label: str) -> None:
+        """Record what a part SOLVES, not just that it ran.
+
+        Underworld3's residuals are SymPy, so the weak form a solver assembles
+        can be written down exactly as implemented — and at the right level,
+        because the constitutive pieces stay as named expressions rather than
+        expanding into the algebra that reaches the compiler. A transcript that
+        says ``solve:Stokes(v)`` says which solver ran; this says which
+        equation it ran.
+
+        Written once per part per run. A residual is a LIVE template and can
+        change mid-run, so the form is re-read whenever the solver is about to
+        rebuild — the signal that something it depends on was reassigned — and
+        a new record is written if it differs.
+        """
+        if self._open_step is None:
+            return
+        known = self._parts.get(part)
+        rebuilding = not getattr(owner, "is_setup", True)
+        if known is not None and not rebuilding:
+            return
+
+        described = None
+        try:
+            described = owner.describe()
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            import warnings
+
+            warnings.warn(
+                f"could not record what {label} solves: "
+                f"{type(exc).__name__}: {exc}",
+                RuntimeWarning,
+            )
+            return
+        if not described or not described.get("forms"):
+            return
+
+        fingerprint = "".join(
+            described["forms"][f].get("text", "")
+            for f in sorted(described["forms"])
+        )
+        if known is not None and known.get("fingerprint") == fingerprint:
+            return
+
+        record = {
+            "kind": "part",
+            "part": part,
+            "label": label,
+            "at_step": self._open_step.index,
+            "fingerprint": fingerprint,
+        }
+        record.update(described)
+        self._parts[part] = record
+        self._write_transcript_line(record)
+
+    def _record_step_event(self, kind: str, name: str, **detail) -> None:
+        """Note that something happened inside the step in progress.
+
+        Called by the machinery (solvers, history managers), not by users.
+        A no-op outside a ``model.step`` block, so nothing is required of a
+        script that does not use one.
+        """
+        step = self._open_step
+        if step is not None:
+            step._record(kind, name, **detail)
+
+    def _record_solve_outcome(self, part: str, report) -> None:
+        """Attach how a solve went to the event that recorded it running.
+
+        The ``solve`` event goes in before the solve, because the order the
+        operators ran in is what the transcript exists to preserve; the outcome
+        is only known afterwards. Rather than a second event, it lands on the
+        same one, so a solve is one row carrying both its place in the sequence
+        and its result.
+
+        The event is found by ``part`` and from the end, so an inner solve (a
+        projection inside a Darcy solve, say) claims its own event rather than
+        the enclosing solver's. A no-op outside a ``model.step`` block.
+        """
+        step = self._open_step
+        if step is None:
+            return
+        for event in reversed(step.events):
+            if event.get("kind") != "solve" or event.get("part") != part:
+                continue
+            if "converged" in event:
+                continue          # already carries an outcome: an earlier solve
+            event["converged"] = bool(getattr(report, "converged", False))
+            event["reason"] = str(getattr(report, "reason_str", ""))
+            event["nl_its"] = int(getattr(report, "nl_its", 0) or 0)
+            event["ksp_its"] = int(getattr(report, "ksp_its", 0) or 0)
+            fnorm = getattr(report, "fnorm", None)
+            if fnorm is not None:
+                event["fnorm"] = float(fnorm)
+            reduction = getattr(report, "reduction", None)
+            if reduction is not None:
+                event["reduction"] = float(reduction)
+
+            # A converged solve is not necessarily a solve that worked. A
+            # fieldsplit block that ended at its iteration cap did NOT solve:
+            # the Schur operator is applied through the velocity solve, so a
+            # capped block hands the pressure Krylov an operator that moves
+            # between applications (#625). The outer SNES can still report
+            # CONVERGED. Record it, so the figure can mark the difference
+            # between "converged" and "converged, and a block gave up".
+            capped = {}
+            for name, sub in (getattr(report, "sub", None) or {}).items():
+                count = int(getattr(sub, "capped", 0) or 0)
+                if count:
+                    capped[str(name)] = count
+            if capped:
+                event["capped"] = capped
+            if getattr(report, "deadline_expired", False):
+                event["deadline_expired"] = True
+            if getattr(report, "bounded", False):
+                event["bounded"] = True
+            return
+
+    def _record_warning(self, message, category, filename, lineno) -> None:
+        """Note a warning raised inside the step in progress.
+
+        A warning is the other half of how a step went. "The velocity block
+        fell back to gamg" changes what the numbers mean, and a transcript that
+        kept the residual norms but not that line would be an account of the
+        run with the explanation removed.
+        """
+        step = self._open_step
+        if step is None:
+            return
+        step._record(
+            "warning",
+            getattr(category, "__name__", str(category)),
+            message=str(message),
+            where=f"{filename}:{lineno}",
+        )
+
+    def step(self, dt, label: Optional[str] = None):
+        """One timestep, as a transaction.
+
+        ::
+
+            with model.step(dt):
+                adv_diff.solve(timestep=dt)
+                stokes.solve(zero_init_guess=False)
+
+        The block owns a time INTERVAL. Three things follow:
+
+        **The clock reads as the end of the interval for the whole block.**
+        An implicit scheme centres its residual at the new time, so a
+        time-dependent coefficient — a driven boundary above all — belongs at
+        ``t + dt``. Advancing only on exit would evaluate every implicit
+        coefficient one step late.
+
+        **The advance commits on clean exit, and only then.** An exception, or
+        a step abandoned because the Courant number came out too large, leaves
+        ``model.tracker`` exactly as it was. Backstepping no longer has to
+        remember to unwind a counter.
+
+        **Everything the block did is recorded** in :attr:`transcript`, in order,
+        with the interval it ran over.
+
+        Nothing is compulsory: a script that never opens a step behaves as
+        before, and the machinery's recording calls become no-ops.
+
+        Parameters
+        ----------
+        dt : float or dimensional quantity
+            The interval this step covers.
+        label : str, optional
+            A name for the step, carried into the transcript.
+        """
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _step_context():
+            if self._open_step is not None:
+                raise RuntimeError(
+                    "a model step is already open "
+                    f"(step {self._open_step.index}, label {self._open_step.label!r}). "
+                    "Steps do not nest — close the outer one first."
+                )
+
+            t0 = self.tracker.time if "time" in self.tracker else 0.0
+            index = self.tracker.step if "step" in self.tracker else 0
+            record = ModelStep(index=index, t0=t0, dt=dt, label=label)
+
+            # Record the state this step starts FROM, before any operator runs.
+            every = self._record_every
+            if every and index % every == 0:
+                try:
+                    record.snapshot = self.save_state()
+                except Exception as exc:
+                    # A snapshot is a convenience here, not a precondition — a
+                    # deforming or adapted mesh cannot be captured yet, and the
+                    # run should carry on with a transcript but no restore
+                    # point rather than fail. Say so once.
+                    if not self._record_warned:
+                        self._record_warned = True
+                        import warnings
+
+                        warnings.warn(
+                            f"step {index}: could not record the starting state "
+                            f"({type(exc).__name__}: {exc}). The transcript still "
+                            f"holds what ran, but model.rewind() will not "
+                            f"reach this step. This is expected on a mesh that "
+                            f"deforms or adapts.",
+                            RuntimeWarning,
+                        )
+
+            self._open_step = record
+            # First step of the run: this is where the transcript comes into
+            # existence, if it is going to.
+            self._open_transcript()
+
+            # Position the clock at the END of the interval for the duration of
+            # the block, so implicit coefficients (mesh.t) are evaluated there.
+            self.tracker.time = record.t1
+            import time as _time
+
+            wall0 = _time.monotonic()
+            # Warnings raised inside the block join the record. The shim
+            # delegates to whatever was already installed, so pytest's capture
+            # and the user's own filters keep working and the warning is still
+            # shown; the transcript gets a copy rather than the only copy.
+            import warnings as _warnings
+
+            previous_showwarning = _warnings.showwarning
+
+            def _record_and_show(message, category, filename, lineno,
+                                 file=None, line=None):
+                self._record_warning(message, category, filename, lineno)
+                previous_showwarning(message, category, filename, lineno,
+                                     file, line)
+
+            _warnings.showwarning = _record_and_show
+            try:
+                yield record
+            except BaseException:
+                _warnings.showwarning = previous_showwarning
+                record.wall = _time.monotonic() - wall0
+                # Abandon: put the clock back and do not commit.
+                self.tracker.time = t0
+                record.completed = False
+                self._open_step = None
+                # The abandoned record never joins the transcript, so the state it
+                # captured is unreachable — drop it rather than hold a field-
+                # sized object until the exception's traceback is collected.
+                # The idiom for going back is the caller's own save_state()
+                # taken before the block.
+                record.snapshot = None
+                # The transcript keeps the entry itself. A rejected step is the part
+                # of a run's history that is otherwise invisible, and it is
+                # usually the part you want when asking why a run went the way
+                # it did.
+                self._write_transcript_line(record.as_dict())
+                raise
+
+            _warnings.showwarning = previous_showwarning
+            record.wall = _time.monotonic() - wall0
+
+            # Commit.
+            self.tracker.time = record.t1
+            self.tracker.step = index + 1
+            self.tracker.dt = dt
+            record.completed = True
+            self._open_step = None
+            self._transcript.append(record)
+            self._write_transcript_line(record.as_dict())
+            self._trim_transcript()
+            self._trim_records()
+
+        return _step_context()
+
     def _register_state_bearer(self, obj) -> None:
         """Register a Snapshottable object with this model.
 
@@ -680,13 +1849,29 @@ class Model(PintNativeModelMixin, BaseModel):
         from underworld3.checkpoint import read_snapshot as _read_snapshot
 
         if isinstance(source, Snapshot):
-            return _restore(self, source)
-        if isinstance(source, (str, os.PathLike)):
-            return _read_snapshot(self, str(source))
-        raise TypeError(
-            f"load_state expects a Snapshot token or a path string, "
-            f"got {type(source).__name__}"
-        )
+            result = _restore(self, source)
+        elif isinstance(source, (str, os.PathLike)):
+            result = _read_snapshot(self, str(source))
+        else:
+            raise TypeError(
+                f"load_state expects a Snapshot token or a path string, "
+                f"got {type(source).__name__}"
+            )
+
+        # A restore moves the run backwards. It belongs in the log for the same
+        # reason a rewind does: without it the log shows a step, then an
+        # earlier step, with nothing to say why. ``rewind`` writes its own,
+        # more specific, note and suppresses this one.
+        if not self._restoring:
+            where = "a file" if isinstance(source, (str, os.PathLike)) else "a snapshot"
+            self._write_transcript_note(
+                "restore",
+                f"restore from {where}; the clock now reads "
+                f"{_pretty_time(self.tracker.time)}",
+                source=str(source) if isinstance(source, (str, os.PathLike)) else "memory",
+                t=_jsonable_quantity(self.tracker.time),
+            )
+        return result
 
     def define_parameter(self, name: str, ptype=None, **kwargs):
         """
@@ -4667,6 +5852,123 @@ class Model(PintNativeModelMixin, BaseModel):
 
 # Global default model for automatic registration
 _default_model = None
+
+
+def _backtrack_target(steps, here, note):
+    """Which recorded step a backtrack landed on, or None.
+
+    Searched BACKWARDS from where the note fired, because a step index can
+    appear more than once in a run: after a rewind the same step is taken
+    again, and the note refers to the most recent one, not the first.
+
+    A rewind names its step. A bare restore does not, so it is matched on the
+    clock the note recorded — the value it put the run's time back to.
+    """
+    if note.get("kind") == "rewind" and note.get("to_step") is not None:
+        target = note["to_step"]
+        for i in range(here, -1, -1):
+            if steps[i].get("index") == target:
+                return i
+        return None
+
+    clock = note.get("t")
+    if isinstance(clock, dict):
+        magnitude, units = clock.get("magnitude"), clock.get("units")
+        for i in range(here, -1, -1):
+            t1 = steps[i].get("t1")
+            if (isinstance(t1, dict) and t1.get("units") == units
+                    and magnitude is not None
+                    and abs(t1.get("magnitude", 0.0) - magnitude)
+                    <= 1e-9 * max(1.0, abs(magnitude))):
+                return i
+    elif clock is not None:
+        for i in range(here, -1, -1):
+            t1 = steps[i].get("t1")
+            if not isinstance(t1, dict) and t1 is not None:
+                try:
+                    if abs(float(t1) - float(clock)) <= 1e-9 * max(1.0, abs(float(clock))):
+                        return i
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
+def read_transcript(path):
+    """Read a transcript file back as a list of runs.
+
+    Each entry is ``{"run": <header>, "steps": [<step>, ...]}``, in the order
+    the process produced them — an inversion driver that ran the forward model
+    thirteen times leaves thirteen runs in one file.
+
+    The file is JSON lines, so it is also readable with ``jq`` and survives a
+    run that was killed part way: a truncated final line is dropped and
+    everything before it is returned.
+
+    Parameters
+    ----------
+    path : str
+        A file written by a model with :attr:`Model.transcript_file` set.
+
+    Returns
+    -------
+    list of dict
+    """
+    runs = []
+    first = True
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            if first:
+                first = False
+                if line.startswith("#"):
+                    raise ValueError(
+                        f"{path} is the TEXT transcript format, which is a report "
+                        f"rather than a transcript — it converts the time column to "
+                        f"one unit and drops each event's detail, so it cannot "
+                        f"be read back. Write JSON lines instead: give the path "
+                        f"a .jsonl suffix, or set model.transcript_format = 'jsonl'."
+                    )
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                # A run killed mid-write leaves a partial last line. Everything
+                # before it is intact, which is the point of one object per line.
+                break
+            kind = entry.get("kind")
+            if kind == "run":
+                runs.append({"run": entry, "steps": [], "notes": [], "ended": None})
+                continue
+            if kind == "run_end":
+                if runs:
+                    runs[-1]["ended"] = entry
+                continue
+            if kind == "part":
+                if not runs:
+                    runs.append({"run": None, "steps": [], "notes": [],
+                                 "ended": None})
+                runs[-1].setdefault("parts", []).append(entry)
+                continue
+            if not runs:
+                runs.append({"run": None, "steps": [], "notes": [], "ended": None})
+            if kind == "step":
+                runs[-1]["steps"].append(entry)
+            else:
+                # A backtrack, or anything else that is not a step. Record WHERE
+                # in the sequence it happened — a rewind means nothing without
+                # the step it interrupted and the step it went back to.
+                entry = dict(entry)
+                here = len(runs[-1]["steps"]) - 1
+                entry["after_position"] = here
+                entry["to_position"] = _backtrack_target(
+                    runs[-1]["steps"], here, entry)
+                entry.setdefault(
+                    "short",
+                    f"rewind {entry.get('steps_undone', 1)}"
+                    if kind == "rewind" else kind)
+                runs[-1]["notes"].append(entry)
+    return runs
 
 
 def get_default_model():

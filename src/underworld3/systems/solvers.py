@@ -409,14 +409,24 @@ def _advective_diffusive_dt(constitutive_K, V_fn, mesh, direction_aware=False,
 
 def _dimensionalise_dt(dt_estimate):
     """Return a timestep estimate with physical time units when a model with
-    reference scales is active, otherwise as a plain nondimensional scalar."""
+    reference scales is active, otherwise as a plain nondimensional scalar.
+
+    ``_as_scalar`` is applied BEFORE dimensionalising, not only in the
+    no-units fallback. ``np.squeeze`` promotes a Python float to a 0-d array,
+    and ``uw.dimensionalise`` maps an array to a ``UnitAwareArray`` — which
+    follows the transparent-container principle and drops its units under
+    arithmetic. A timestep is a scalar quantity, not a field, so the estimate
+    must come back as a ``UWQuantity``: the pattern's own idiom
+    ``dt = fraction * solver.estimate_dt()`` silently loses the units
+    otherwise, and the loss only surfaces later, wherever the bare number
+    meets the dimensional clock.
+    """
+    scalar = _as_scalar(np.squeeze(dt_estimate))
     try:
-        return uw.dimensionalise(np.squeeze(dt_estimate), {'[time]': 1})
+        return uw.dimensionalise(scalar, {'[time]': 1})
     except Exception:
-        # Sanctioned fallback: no active scaling model. _as_scalar because
-        # np.squeeze promotes a Python float to a 0-d array, which is not a
-        # number any caller expects (see _apply_unit_aware_scaling).
-        return _as_scalar(np.squeeze(dt_estimate))
+        # Sanctioned fallback: no active scaling model.
+        return scalar
 
 
 def _invalidate_solution_cache(u):
@@ -502,6 +512,10 @@ class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
     DeprecationWarning.
 
     """
+
+    _solver_terms = (
+        ("f", "volumetric source term"),
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -602,8 +616,14 @@ class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
         """Set the source term (handles units and scaling)."""
         self._needs_function_rewire = True
 
-        # Handle UWQuantity with units - enforce "units everywhere" principle
-        if hasattr(value, "value") and hasattr(value, "units"):
+        # Handle UWQuantity with units - enforce "units everywhere" principle.
+        # The `.value`/`.units` duck-test also matches a UWexpression, which is
+        # a SYMBOLIC atom, not a plain quantity — unwrapping one here baked a
+        # live-rampable constants[] atom to a C literal at assignment time
+        # (`poisson.f = mesh.t` became a constant zero). UWQuantity and pint
+        # Quantity are not sympy objects; UWexpression is, so that separates them.
+        if (hasattr(value, "value") and hasattr(value, "units")
+                and not isinstance(value, sympy.Basic)):
             # Extract the plain value
             plain_value = float(value.value)
 
@@ -709,6 +729,10 @@ class SNES_Darcy(SNES_Scalar):
     SNES_Poisson : Related diffusion-only solver.
     uw.constitutive_models.DarcyFlowModel : Constitutive model for Darcy flow.
     """
+
+    _solver_terms = (
+        ("f", "volumetric source/sink W"),
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1787,6 +1811,15 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             )
             # Confirm the preconditioner the automatic penalty was chosen for.
             self._check_velocity_preconditioner()
+
+    # What this Stokes solver was given, by the name it was given under. The
+    # residual shows the assembled product; this shows the name to change, so
+    # a buoyancy written as ``-rho0 * alpha * g * T * rhat`` appears under
+    # ``bodyforce`` rather than only as the coefficient it collapsed to.
+    _solver_terms = (
+        ("bodyforce", "body force per unit volume; F0 is its negative"),
+        ("penalty", "augmented-Lagrangian grad-div penalty (0 = off)"),
+    )
 
     @property
     def tau(self):
@@ -3301,6 +3334,11 @@ class SNES_Projection(_SmoothingLengthMixin, SNES_Scalar):
         Enable verbose output.
     """
 
+    _solver_terms = (
+        ("uw_function", "the function being projected onto the mesh variable"),
+        ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -3583,6 +3621,11 @@ class SNES_Vector_Projection(_SmoothingLengthMixin, SNES_Vector):
     SNES_Projection : Scalar field projection (full mathematical detail).
     SNES_Tensor_Projection : Tensor field projection.
     """
+
+    _solver_terms = (
+        ("uw_function", "the function being projected onto the mesh variable"),
+        ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
+    )
 
     @timing.routine_timer_decorator
     def __init__(
@@ -3915,6 +3958,11 @@ class SNES_MultiComponent_Projection(_SmoothingLengthMixin, SNES_MultiComponent)
     SNES_Tensor_Projection : Legacy per-component cycling projector.
     """
 
+    _solver_terms = (
+        ("uw_function", "the function being projected onto the mesh variable"),
+        ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
+    )
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -4155,6 +4203,11 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
     SNES_Diffusion : Pure diffusion solver without advection.
     SNES_Navier_Stokes : Full momentum advection-diffusion.
     """
+
+    _solver_terms = (
+        ("f", "volumetric source term"),
+        ("V_fn", "advecting velocity"),
+    )
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
@@ -4608,6 +4661,10 @@ class SNES_Diffusion(SNES_Scalar):
     SNES_Poisson : Steady-state diffusion (no time derivative).
     """
 
+    _solver_terms = (
+        ("f", "volumetric source term"),
+    )
+
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display
 
@@ -4942,6 +4999,12 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
     SNES_Stokes : Steady-state Stokes flow (no inertia).
     SNES_AdvectionDiffusion : Scalar advection-diffusion.
     """
+
+    _solver_terms = (
+        ("bodyforce", "body force per unit volume; F0 is its negative"),
+        ("rho", "density multiplying the inertial terms"),
+        ("penalty", "augmented-Lagrangian grad-div penalty (0 = off)"),
+    )
 
     def _object_viewer(self):
         from IPython.display import Latex, Markdown, display

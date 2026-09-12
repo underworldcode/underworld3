@@ -130,6 +130,7 @@ guides/HOW-TO-WRITE-UW3-SCRIPTS
 guides/notebook-style-guide
 guides/GMSH_INTEGRATION_GUIDE
 guides/CODE-REVIEW-PROCESS
+guides/adversarial-review
 guides/style-gates
 guides/SPELLING_CONVENTION
 guides/version-management
@@ -145,6 +146,7 @@ guides/mpi-hang-supervision
 :hidden:
 :caption: Design Documents
 
+design/run-plan-and-transcript
 design/UNITS_SIMPLIFIED_DESIGN_2025-11
 design/ND_UNITS_BOUNDARY_CONTRACT
 design/WHY_UNITS_NOT_DIMENSIONALITY

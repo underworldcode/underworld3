@@ -14,9 +14,10 @@ This guide captures critical lessons learned from writing and debugging Underwor
 3. [Units System Integration](#units-system-integration)
 4. [Mesh and Variable Creation](#mesh-and-variable-creation)
 5. [Solver Setup and Execution](#solver-setup-and-execution)
-6. [Common Pitfalls and Anti-Patterns](#common-pitfalls-and-anti-patterns)
-7. [Testing Best Practices](#testing-best-practices)
-8. [Debugging Techniques](#debugging-techniques)
+6. [The Timestepping Pattern](#the-timestepping-pattern)
+7. [Common Pitfalls and Anti-Patterns](#common-pitfalls-and-anti-patterns)
+8. [Testing Best Practices](#testing-best-practices)
+9. [Debugging Techniques](#debugging-techniques)
 
 ---
 
@@ -414,7 +415,499 @@ model = stokes.constitutive_model  # Confusing with uw.Model
 
 ---
 
+## The Timestepping Pattern
+
+### ⚠️ RULE: the clock lives on `model.tracker`, never in a loose variable
+
+Every time-dependent script needs a clock. Declare the model and its reference
+quantities first (see [RULE #2](#rule-2-reference-quantities-before-mesh-creation)
+— they must precede mesh creation), then keep the clock on the tracker:
+
+```python
+uw.reset_default_model()
+model = uw.get_default_model()
+model.set_reference_quantities(
+    domain_depth=uw.quantity(500, "km"),
+    material_density=uw.quantity(3300, "kg/m**3"),
+    material_viscosity=uw.quantity(1e21, "Pa*s"),
+)
+
+mesh = uw.meshing.UnstructuredSimplexBox(...)      # inherits the reference quantities
+# ... variables, solvers ...
+
+model.tracker.time = uw.quantity(0.0, "Myr")
+model.tracker.step = 0
+model.tracker.dt = None
+
+while model.tracker.time < end_time:
+    dt = adv_diff.estimate_dt()        # a dimensional quantity when units are active
+
+    adv_diff.solve(timestep=dt)
+    stokes.solve(zero_init_guess=False)
+
+    model.tracker.time = model.tracker.time + dt
+    model.tracker.step += 1
+    model.tracker.dt = dt
+```
+
+**Start from the model, not from the mesh.** A default model is created for you
+if you never ask for one, so it is easy to write a whole script without noticing
+it exists — and then reference quantities, which must be set before the mesh, are
+already too late. Declaring the model on the first line makes the units decision
+explicit at the only point where it can still be made. `estimate_dt()` then
+returns a dimensional quantity and the clock carries units with no extra work.
+
+Neither the model nor the units are enforced today; both arrived after much of
+the surrounding code. Treat this ordering as the pattern regardless, because
+retrofitting units to a script written without them means rebuilding the mesh.
+
+**Why this and not `t = 0.0; t += dt`.** The tracker is captured by
+`model.save_state()` and reverted by `model.load_state()`. A loose Python
+variable is not — the tracker's own docstring says so:
+
+> Everything on the tracker is captured by `snapshot` and reverted by
+> `restore`; loose Python variables are not.
+
+So a script that keeps its clock in a local and then backsteps gets its
+**fields** restored and its **time** left in the future. Nothing raises; the
+run simply carries a clock that disagrees with the state it is describing, and
+every output written from that point is mislabelled. Measured on a real
+five-step run: after restoring a snapshot taken at t = 1140, a loose `t` still
+read 2280 while the fields were correctly back at 1140.
+
+This holds for both snapshot flavours — the in-memory token and the on-disk
+snapshot used for restart.
+
+`time`, `step` and `dt` are pre-seeded on the tracker as a convention. Anything
+else you assign to it (`model.tracker.rms_velocity = ...`) is captured and
+restored the same way, so a diagnostic you want to survive a backstep belongs
+there too.
+
+### Wrap the step
+
+`model.step(dt)` makes the loop a transaction:
+
+```python
+while model.tracker.time < end_time:
+    dt = adv_diff.estimate_dt()
+
+    with model.step(dt):
+        adv_diff.solve(timestep=dt)
+        stokes.solve(zero_init_guess=False)
+```
+
+Three things follow, and none of them requires anything else in the script to
+change. The clock reads the END of the interval for the whole block, which is
+where an implicit scheme centres its residual, so a time-dependent coefficient
+is evaluated at the right time. The advance commits only on clean exit, so a
+step that raises — or one abandoned because the Courant number came out too
+large — leaves the clock exactly as it was. And everything the block did is
+recorded:
+
+```python
+>>> for entry in model.transcript[-3:]:
+...     print(entry)
+<step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+<step 1 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+<step 2 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+```
+
+That record is worth having on its own. It answers what a run actually did,
+in order, without the script being instrumented for it — which is the question
+you want to ask of someone else's model, or your own six months later.
+
+Opening a step is optional. A script that never does behaves exactly as before.
+
+### Recording a run
+
+Ask the step to keep the state it started from and the transcript becomes a
+restorable record:
+
+```python
+model.record_every = 1      # keep every step; None (default) keeps none
+model.record_limit = 8      # how many snapshots to retain
+
+while model.tracker.time < end_time:
+    with model.step(dt):
+        adv_diff.solve(timestep=dt)
+        stokes.solve(zero_init_guess=False)
+
+model.rewind()              # undo the last step: fields, history and clock
+```
+
+The snapshot is taken before the operators run, which is the only correct
+point — a `DDt` shifts its history in its post-solve hook, so a snapshot taken
+afterwards holds the shifted history rather than the step's input.
+
+Two things this buys beyond backstepping. Replaying a step from its own
+snapshot reproduces it exactly, where re-running the script does not, so a step
+that misbehaved can be looked at twice. And an adjoint needs precisely this: the
+state at each step and the order the operators were applied in.
+
+Snapshots cost roughly 13 bytes per primary degree of freedom per step. Older
+steps lose their snapshot and keep their transcript record, so the account of what
+happened outlives the state it happened to.
+
+A driver that runs the same model more than once — an inversion, a parameter
+sweep, a restart — should start each run with a clean account:
+
+```python
+model.clear_transcript()
+model.tracker.time = uw.quantity(0.0, "Myr")
+model.tracker.step = 0
+```
+
+Without it the transcript is the concatenation of every run the process has done,
+and `rewind()` will walk back into the previous one.
+
+On a mesh that deforms or adapts the snapshot cannot be taken yet; the run
+warns once, keeps recording, and `rewind()` will not reach those steps.
+
+### Writing the transcript down
+
+`model.transcript` is what the run can still undo. It lives in memory, it is
+bounded, and it dies with the process. The transcript on disk is what the run
+*did* — and it is **on by default**, because the account is only worth having
+on the run you did not prepare for:
+
+```
+transcripts/2026-09-11T14-32-05-my_model/
+    my_model.py          the script that launched it, verbatim
+    launch.json          argv, interpreter, cwd, version, commit
+    transcript.log       one aligned line per step, flushed
+```
+
+The stamp is the point: the run you want is the one from this morning, and a
+fixed filename would have overwritten it. A directory rather than loose files
+because a working directory full of logs and script copies invites mass
+deletion, which loses the one you needed.
+
+`launch.json` is the honest answer to reproducibility. A programmatic launcher
+cannot be made reproducible by fiat, but what was *actually run* can be written
+down: the command line, the interpreter, the working directory, the package
+version, and the commit id with a dirty flag if the work is under version
+control. Only the entry script is copied — anything it imports is not, which is
+what the commit id is there to cover.
+
+Three things keep the default tolerable. **Nothing is created until the first
+step opens**, so an import, or a script that only builds a mesh, leaves no
+trace. **It is off under pytest**, because 1800 tests should not each leave a
+directory. And it can be turned off or sent elsewhere:
+
+```python
+model.transcript_file = "output/run.log"      # somewhere else, no launch record
+model.transcript_file = "output/run.jsonl"    # JSON lines instead
+model.transcript_file = None                  # off
+```
+
+```bash
+UW_TRANSCRIPT=off            # off for the session
+UW_TRANSCRIPT=/scratch/runs  # put the stamped directories there
+```
+
+The file itself is one aligned line per step, appended and flushed as it
+closes, so `tail -f` follows a running job:
+
+```
+# underworld3 step log · model 'default' · started 2026-09-10T21:22:40+00:00
+# scales: length 2.2e+06 m | time 4.84e+18 s | mass 1.065e+47 kg | temperature 2500 K
+# step           t/Myr          dt/Myr    wall/s  outcome    operators, in order
+      0        0.175907        0.175907      0.44  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      1        0.501546        0.325639      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      2        0.990939        0.489393      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      3         1.51459        0.523655      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      4         30.5663         29.0517      0.09  ABANDONED  [too big] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+  -- restore from a snapshot; the clock now reads 1.51459 Myr
+  -- rewind to the start of step 3 (t = 0.990939 Myr); 1 step(s) undone
+      3         1.51459        0.523655      0.42  ok         [replay] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+```
+
+`wall/s` is how long the block took. It is not physics, but it is the number
+you want when watching: a step that suddenly takes ten times as long is the
+first sign of a solver in trouble.
+
+**The outcome column says how the step went, not only that it ran.** A step
+whose solves all converged reads `ok`; one where a solve did not reads
+`DIVERGED`, and the solve is named underneath with its reason and its work:
+
+```
+      7         2.63841        0.523655      4.81  DIVERGED   [convect] solve:SNES_Stokes(v) > ...
+  !! SNES_Stokes(v): DIVERGED_LINEAR_SOLVE after 6 its (1200 ksp), |F| 3.11e-04
+  ~~ RuntimeWarning: Stokes: the velocity block fell back to 'gamg' — no mesh hierarchy was available...
+```
+
+Warnings raised inside the block are recorded the same way, with where they
+came from. The transcript gets a copy, not the only copy: the warning is still
+shown, and your own filters still apply. "The velocity block fell back to
+gamg" changes what the numbers mean, and a record that kept the residual norms
+but not that line would be an account of the run with the explanation removed.
+
+The figure marks the same three states per solve — converged, converged with a
+fieldsplit block that hit its iteration cap, and diverged. The middle one is
+worth the separate mark: a capped block did not solve, so the Schur operator
+was applied through a velocity solve that was still moving, and the outer SNES
+can still report CONVERGED (#625).
+
+**A true log records the backtracks.** `rewind()` and a bare `load_state()`
+each write their own line, because a log that shows step 3, then step 3 again
+with nothing in between, is not a log of what happened. `rewind` writes the
+more specific note and suppresses the generic one.
+
+Four other things go in the file that are not in `model.transcript`, all
+deliberate:
+
+- **An abandoned step.** A rejected step is the part of a run's history that is
+  otherwise invisible, and it is usually what you want when asking why a run
+  went the way it did.
+- **A step aged out by `transcript_limit`.** The account of what happened outlives
+  both the state and the bounded in-memory list.
+- **Everything up to a kill.** The file is flushed per step.
+
+### For parsing: JSON lines
+
+A path ending `.jsonl`, `.ndjson` or `.json` — or `model.transcript_format =
+"jsonl"` — writes the same record as one JSON object per line:
+
+```json
+{"kind": "run",  "model": "default", "started": "2026-09-10T21:22:40+00:00", "scales": {"length": {"magnitude": 2200000.0, "units": "meter"}, ...}}
+{"kind": "step", "index": 0, "label": "convect",
+ "t0": {"magnitude": 0.0, "units": "megayear"},
+ "t1": {"magnitude": 0.1759, "units": "megayear"},
+ "dt": {"magnitude": 5551210433127.7, "units": "second"},
+ "completed": true, "restorable": true, "wall": 0.44,
+ "events": [{"kind": "solve", "name": "SNES_AdvectionDiffusion_Composed(T)"},
+            {"kind": "history_shift", "name": "EulerianSUPG(T)", "dt": 1.1469e-06},
+            {"kind": "solve", "name": "SNES_Stokes(v)"}]}
+{"kind": "rewind", "message": "...", "to_step": 3, "steps_undone": 1, "t": {"magnitude": 0.9909, "units": "megayear"}}
+```
+
+Read it back with `uw.read_transcript(path)`, which returns one entry per run — an
+inversion driver that ran the forward model thirteen times leaves thirteen runs
+in one file, delimited by the header `clear_transcript()` writes.
+
+**Why JSON lines and not YAML.** One self-contained record per line is the
+whole point. A killed run leaves a truncated final line that *fails* to parse,
+so `read_transcript` drops it and keeps everything before; a half-written YAML
+mapping frequently still parses, as a real record with its last key missing.
+Line-oriented also means `grep`, `wc -l` and `jq -c` work without a parser, and
+`json` is stdlib with predictable float round-tripping. YAML is the right
+format for a whole document written once and edited by hand — which is what
+`Model.to_yaml` uses it for — but a log is a stream.
+
+The two formats differ in one more way. The text log is a **report**: the time
+column is converted into one unit, named in the header. The JSON log is a
+**record**: every value keeps the units the run actually held it in, which is
+why `t0` may read in Myr beside a `dt` in seconds — the clock came from the
+tracker and the interval from `estimate_dt()`.
+
+Rank 0 writes; the other ranks record in memory as usual.
+
+### The same account, as a figure
+
+A terminal is not where a run belongs in a paper.
+
+```python
+uw.transcript_diagram(model, out="figures/run.pdf")     # or a .jsonl log
+uw.transcript_diagram(model, out="figures/run.svg")     # same figure, SVG
+uw.transcript_flowchart(model)                          # Mermaid, for docs
+```
+
+`transcript_diagram` puts **time down the page**: one row per step, A4 portrait,
+paginated, so it drops into a document column and opens anywhere. Each row
+carries the step index, the clock, `dt` as a number and as a bar, a wall-clock
+tick, and one letter.
+
+Backtracks are drawn in the left gutter as the path the run took: a dashed
+arrow **up** from the step it bailed out of to the step whose state it returned
+to, then a solid arrow **down** from there to the row that takes that step
+again. The pair is what makes a repeated step index read as a repeat rather
+than a typo. Two calls that make the same jump — a `load_state` and then a
+`rewind` to the same place — are one backtrack in the run's story and one arrow
+on the page.
+
+The PDF and the SVG are both written directly — no plotting library, no
+rasterisation, nothing fetched at render time, and a print-safe palette that
+separates in greyscale. The `dt` axis goes logarithmic when the range exceeds
+20x and says so: a rejected step is often tens of times the accepted ones,
+which is *why* it was rejected, and on a linear axis it flattens everything
+else to nothing.
+
+**The letter is the layout.** Each distinct operator sequence gets one, defined
+once at the foot of the figure:
+
+```
+step   t/Myr   dt/Myr   seq   dt
+   9   6.472    1.176    A    ▇▇▇▇▇▇▇▇▇▇▇▇
+  10   7.936    1.464    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  11   9.856    1.920    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  12     145    135.2    A    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄  abandoned
+  11   9.856    1.920    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  12   12.56    2.704    B !  ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+
+A   AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)        14 steps
+B   AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)  >
+    AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)         1 step
+```
+
+A column of `A` with a single `B` in it says at a glance that one step did
+something different. A hundred spelled-out sequences say nothing and hide the
+one that matters.
+
+The two columns are independent, which is worth reading carefully: **`seq` is
+what the step ran; `ok` / `abandoned` is whether it was kept.** In the figure
+above the abandoned step ran the ordinary sequence `A` and was then rejected by
+a check in the script — nothing failed. `B` is the same three operators run
+twice inside one step block. The figure reports that it differs and makes no
+claim about whether it is wrong.
+
+`transcript_flowchart` renders one step's operator flow as Mermaid. When a run has
+more than one distinct sequence, each becomes its own subgraph labelled with
+the steps that took it, so an anomalous step is visible rather than averaged
+away.
+
+Both accept a live model, a `.jsonl` log, or the list `read_transcript` returns.
+Not a text log: that one is a report, and reading it back is refused with the
+one line that fixes it.
+
+### Recording, not judging
+
+The step's job is to record faithfully. It does not decide whether what it
+recorded was a mistake.
+
+Two kinds of check are easy to confuse, and only one belongs in the loop.
+
+**Structural checks** ask whether the transcript is well-formed — a step cannot
+be opened inside another step; a rewind cannot reach a step that kept no
+snapshot. These cannot legitimately fail, so they raise, immediately.
+
+**Findings** ask whether what was recorded looks wrong. They belong to a pass
+over the transcript, after the run. That is not a deferral for convenience; it
+is where they can actually be computed:
+
+- A finding may need to look **across bars**. The free-surface instability in
+  `#423` is a history recorded in the old frame and read after the mesh moved,
+  growing about 10% per cycle. Its signature *is* the growth rate, so no
+  per-step check can see it at all.
+- A finding may be **wrong about what is legitimate**. "A history advanced
+  twice in this bar" is a mistake when a step was taken twice and perfectly
+  correct when a swarm sub-cycles. Inside the loop that has to be guessed;
+  over the transcript it is a question about whether the operations tile the
+  bar's interval.
+- A finding can be **re-run on an old transcript** when a new pathology is
+  learned. A warning fired at run time cannot.
+
+So the transcript records that a history shifted twice, with both shifts in
+order, and says nothing about it. Reading that is
+`docs/developer/design/run-plan-and-transcript.md`'s subject, and the analysis
+pass it describes is not built yet.
+
+One thing worth knowing while it is not: a history advances on **every** solve,
+whether or not that call passed a timestep — omitting it reuses the last value.
+There is no "solve without advancing" switch, so a corrector or a Picard
+iteration on a coupled system has to put the history back between passes:
+
+```python
+saved = copy.deepcopy(adv_diff.Unknowns.DuDt.state)
+adv_diff.solve(timestep=dt)          # the extra pass
+adv_diff.Unknowns.DuDt.state = saved
+```
+
+That a coupled iteration inside one step needs this is a gap in the library,
+not a rule the user broke.
+
+### Backstepping
+
+The pattern above is what makes speculative stepping safe:
+
+```python
+snap = model.save_state()          # before the step, not after
+
+try:
+    with model.step(big_dt):
+        adv_diff.solve(timestep=big_dt)
+        stokes.solve(zero_init_guess=False)
+        if courant_number() > courant_limit:
+            raise StepRejected            # abandons the step; the clock stays put
+except StepRejected:
+    model.load_state(snap)                # fields go back; the clock never moved
+    for sub_dt in substeps(big_dt):
+        with model.step(sub_dt):
+            ...
+```
+
+Take the snapshot **before** the operator, not after. A `DDt` history plugin
+shifts its history in its post-solve hook, so a snapshot taken after a solve
+holds the shifted history, which is not the state that step ran from.
+
+Restoring a snapshot is bit-exact and repeatable. Re-running the same script is
+not: warm starts and preconditioner reuse are solver history that is not part
+of model state, so two independent runs of the same problem on the same solver
+objects diverge at the 1e-13 level from the first step. If you need to look at a
+step twice, restore it rather than re-run it.
+
+### Two worked cases
+
+**`docs/examples/convection/intermediate/Ex_Convection_Annulus_Recorded.py`** —
+Boussinesq convection in an annulus. Four reference quantities, a body force
+written as a force (Ra falls out of the nondimensionalisation rather than being
+typed in), rotated free-slip on the curved boundaries, and a varying
+`estimate_dt()`. It then demonstrates the four things the transcript buys, in
+order: the transcript, a rejected step, a bit-exact replay, and a step taken
+twice showing up as its own operator sequence. Compare
+`../advanced/Ex_Convection_Cylinder.py`, which solves the same physics with a
+bare `for step in range(n)` loop and no clock at all.
+
+**An adjoint driven from the transcript.** The backward pass of a discrete adjoint
+needs exactly what the transcript holds: the state at each step and the order the
+operators were applied in. Walking `model.transcript` backwards —
+`load_state(entry.snapshot)`, replay, transpose-solve — replaces the
+hand-written checkpoint dictionary that an adjoint normally carries, and
+removes its dependence on knowing in advance which arrays the backward pass
+will want.
+
+### Time-dependent expressions
+
+`mesh.t` is the model clock as a symbol. It is repacked from
+`model.tracker.time` before every solve, so a time-dependent source or
+boundary condition follows the loop above with no recompilation per step:
+
+```python
+omega = 2 * sympy.pi / period
+stokes.add_dirichlet_bc((V0 * sympy.sin(omega * mesh.t), 0.0), "Top")
+```
+
+Two things to know. A script that never advances `model.tracker.time` leaves
+`mesh.t` at zero, so the clock and the pattern above are the same subject. And
+`mesh.t` should appear inside an expression rather than be handed bare to a
+scalar setter — `poisson.f = mesh.t` stores a value, `poisson.f = 1.0 * mesh.t`
+keeps the symbol.
+
+---
+
 ## Common Pitfalls and Anti-Patterns
+
+### ❌ Rebinding the name instead of setting `.sym`
+
+To change the value of an expression, set `.sym`. It is the only settable
+property — `.value` and `.data` are derived, read-only views.
+
+```python
+# ✅ CORRECT - a value change; the container keeps its identity
+viscosity.sym = sympy.Integer(0)
+solver._update_constants()      # only if you are not about to solve
+
+# ❌ WRONG - rebinds a Python name and changes nothing
+viscosity = 0
+```
+
+The second line leaves every expression that already references the atom
+pointing at the old object with its old value, and nothing complains. The
+identity is the point: because the container is unchanged, a ramped value
+reaches every residual that mentions it with no rebuild.
+
+`expr.copy(other)` does the same job from another expression, and assigning to
+a constitutive parameter slot (`Parameters.diffusivity = 0.0`) is also a value
+change rather than a replacement.
 
 ### ❌ Swarm Variable Creation After Population
 
@@ -694,6 +1187,15 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - [ ] If using units: Set reference quantities BEFORE mesh creation
 - [ ] If using units with [M]: Provide material_density or equivalent
 
+### Writing a Timestepping Loop
+
+- [ ] Declare the model and its reference quantities BEFORE creating the mesh
+- [ ] Keep `time`, `step` and `dt` on `model.tracker`, not in local variables
+- [ ] Wrap each step in `with model.step(dt):`
+- [ ] To change an expression's value set `.sym`, never rebind the name
+- [ ] Take snapshots BEFORE the operator you might want to undo
+- [ ] Use `mesh.t` inside an expression for time dependence, never bare
+
 ### Creating a Swarm
 
 - [ ] Create mesh first
@@ -727,6 +1229,17 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 
 ## Version History
 
+- **2026-09-09**: The timestepping pattern
+  - Start from the model and its reference quantities, not from the mesh
+  - Clock on `model.tracker`, not loose variables (snapshot consistency)
+  - Disk snapshots now carry dimensional values (magnitude + units)
+  - `mesh.t` now resolves to the model clock (#410)
+  - `model.step(dt)` — the step as a transaction, and the step transcript
+  - `model.record_every` / `model.rewind()` — the transcript as a restorable record
+  - A step warns when a history advances more than once
+  - Set `.sym` to change a value; rebinding the name changes nothing
+  - Backstepping recipe; snapshot before the operator
+  - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version
   - Swarm ordering rules from test_0850/0851 debugging
   - Units everywhere-or-nowhere principle
@@ -744,3 +1257,5 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - `docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md`: Coordinate units implementation
 - `docs/beginner/tutorials/12-Units_System.ipynb`: Units system tutorial
 - `docs/beginner/tutorials/13-Non_Dimensional_Scaling.ipynb`: Dimensional analysis
+- `docs/advanced/snapshot-restore.md`: Snapshot and restore semantics
+- `tests/test_0009_model_tracker.py`: The pattern, enforced
