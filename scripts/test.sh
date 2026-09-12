@@ -6,6 +6,9 @@
 #   --p N            Run parallel tests with N MPI ranks (default: skip parallel tests)
 #   --full-parallel  Add a second parallel pass at 4 ranks (see below; slow on CI)
 #   --parallel-only  Run ONLY parallel tests (skip all serial tests)
+#   --tier-c-report  Run ONLY the tier C characterisations and report them.
+#                    Never gates: it always exits 0. CI asks for this on a
+#                    push to development, not on every pull request.
 #
 # Examples:
 #   ./test.sh                     # All serial tests only
@@ -22,6 +25,7 @@ status=0
 # Parse arguments
 PARALLEL_RANKS=0
 PARALLEL_ONLY=0
+TIER_C_REPORT=0
 # Second parallel pass at four ranks. OFF by default: on a 2-core CI runner
 # np=4 is oversubscribed and the pass costs far more than the ~3 minutes it
 # takes on a workstation — enough to exceed the 120-minute job cap (#573).
@@ -40,9 +44,13 @@ while [[ $# -gt 0 ]]; do
             PARALLEL_ONLY=1
             shift
             ;;
+        --tier-c-report)
+            TIER_C_REPORT=1
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--p N] [--full-parallel] [--parallel-only]"
+            echo "Usage: $0 [--p N] [--full-parallel] [--parallel-only] [--tier-c-report]"
             exit 1
             ;;
     esac
@@ -84,6 +92,29 @@ export MKL_NUM_THREADS=1
 # — a green run that tested nothing. An array carries its elements intact through
 # "${PYTEST[@]}", and globs on the command line still expand normally.
 PYTEST=(pytest --config-file=tests/pytest.ini)
+# Tier C is a REPORT, not a gate: this mode runs the characterisations, prints
+# what changed, and always exits 0.
+#
+# It is separate from the main run because the tier C set includes the slow
+# level_3 cases — test_1064 alone is most of it — costing ~42 min, which took
+# the job from ~45 to ~100 minutes against a 120-minute cap. Dropping the slow
+# ones would re-hide test_1064, whose two-month absence concealed #734, so the
+# COST moves off the pull-request path rather than the COVERAGE being cut.
+if [ $TIER_C_REPORT -eq 1 ]; then
+  echo "=========================================="
+  echo "Tier C characterisations (reported, not gating)"
+  echo "=========================================="
+  if pytest --config-file=tests/pytest.ini -m tier_c tests/; then
+    echo "Tier C: all characterisations still hold."
+  else
+    echo ""
+    echo "⚠️  A tier C characterisation changed. This is NOT a failure."
+    echo "    Explain what moved and re-characterise the test — do not revert"
+    echo "    code to make it pass. See docs/developer/TESTING-RELIABILITY-SYSTEM.md."
+  fi
+  exit 0
+fi
+
 if [ -n "$WORKERS" ] && [ "$WORKERS" -gt 1 ]; then
     echo "Serial batches: $WORKERS worker process(es)"
     PYTEST+=(--dist loadfile -n "$WORKERS")
@@ -269,23 +300,6 @@ if [ $PARALLEL_RANKS -gt 0 ]; then
 else
   echo ""
   echo "⚠️  Skipping parallel tests (use --p N to enable)"
-fi
-
-# Tier C: run and report, never gate. Failures here are read by a human and
-# answered with an explanation or a re-characterisation, never with a revert.
-if [ $PARALLEL_ONLY -eq 0 ]; then
-  echo ""
-  echo "=========================================="
-  echo "Tier C characterisations (reported, not gating)"
-  echo "=========================================="
-  if pytest --config-file=tests/pytest.ini -m tier_c tests/; then
-    echo "Tier C: all characterisations still hold."
-  else
-    echo ""
-    echo "⚠️  A tier C characterisation changed. This does NOT fail the build."
-    echo "    Explain what moved and re-characterise the test — do not revert"
-    echo "    code to make it pass. See docs/developer/TESTING-RELIABILITY-SYSTEM.md."
-  fi
 fi
 
 #

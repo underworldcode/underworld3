@@ -90,3 +90,12 @@ jobs:
 
       - name: Run tests
         run: pixi run -e dev ./scripts/test.sh --p 2
+
+      # The tier C characterisations are a REPORT, not a gate, so they run on a
+      # push to development rather than on every pull request. They include the
+      # slow level_3 cases and add ~42 min, which a PR should not pay to learn
+      # something that cannot block it. Failures here are expected to be read
+      # and answered, not reverted.
+      - name: Tier C characterisations (report only)
+        if: github.event_name == 'push'
+        run: pixi run -e dev ./scripts/test.sh --tier-c-report
