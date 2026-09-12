@@ -635,7 +635,8 @@ class _DDtBase(uw_object):
             import underworld3 as uw
 
             uw.get_default_model()._record_step_event(
-                "history_shift", self._history_label(), dt=float(dt)
+                "history_shift", self._history_label(), dt=float(dt),
+                part=f"{type(self).__name__}#{self.instance_number}",
             )
         except Exception:
             pass

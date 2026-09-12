@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="595" height="466" viewBox="0 0 595 466">
+<rect x="0" y="0" width="595.0" height="466.0" fill="#fdfcfa"/>
+<text x="40.0" y="52.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" fill="#1c1c1f" text-anchor="start" font-weight="600">Annulus convection — run transcript</text>
+<text x="40.0" y="68.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#6b7380" text-anchor="start" font-weight="normal">started 2026-09-12T17:25:37+00:00  ·  t = 0 to 25.45 Myr  ·  17 steps  ·  1 abandoned  ·  2 backtrack(s)</text>
+<text x="40.0" y="81.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="start" font-weight="normal">scales: length 2.2e+06 m   time 4.84e+18 s   mass 1.065e+47 kg   temperature 2500 K</text>
+<text x="124.0" y="103.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">step</text>
+<text x="178.0" y="103.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">t/Myr</text>
+<text x="230.0" y="103.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">dt/Myr</text>
+<text x="246.0" y="103.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="start" font-weight="normal">seq</text>
+<text x="264.0" y="103.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="start" font-weight="normal">dt (log scale)</text>
+<text x="555.0" y="103.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">wall</text>
+<line x1="40.0" y1="107.0" x2="555.0" y2="107.0" stroke="#d6d4cf" stroke-width="0.7"/>
+<text x="124.0" y="121.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0</text>
+<text x="178.0" y="121.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.1759</text>
+<text x="230.0" y="121.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.1759</text>
+<text x="246.0" y="121.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="113.5" width="14.8" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="530.5" y="115.0" width="24.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="135.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">1</text>
+<text x="178.0" y="135.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.5015</text>
+<text x="230.0" y="135.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.3256</text>
+<text x="246.0" y="135.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="127.5" width="33.2" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.4" y="129.0" width="7.6" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="149.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">2</text>
+<text x="178.0" y="149.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.9909</text>
+<text x="230.0" y="149.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.4894</text>
+<text x="246.0" y="149.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="141.5" width="45.3" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.2" y="143.0" width="7.8" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="163.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">3</text>
+<text x="178.0" y="163.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">1.515</text>
+<text x="230.0" y="163.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.5237</text>
+<text x="246.0" y="163.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="155.5" width="47.3" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.5" y="157.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="177.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4</text>
+<text x="178.0" y="177.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">2.096</text>
+<text x="230.0" y="177.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.581</text>
+<text x="246.0" y="177.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="169.5" width="50.4" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.4" y="171.0" width="7.6" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="191.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">5</text>
+<text x="178.0" y="191.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">2.746</text>
+<text x="230.0" y="191.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.6503</text>
+<text x="246.0" y="191.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="183.5" width="53.7" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.5" y="185.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="205.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">6</text>
+<text x="178.0" y="205.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">3.478</text>
+<text x="230.0" y="205.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.7323</text>
+<text x="246.0" y="205.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="197.5" width="57.3" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.6" y="199.0" width="7.4" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="219.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">7</text>
+<text x="178.0" y="219.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4.317</text>
+<text x="230.0" y="219.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.8383</text>
+<text x="246.0" y="219.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="211.5" width="61.3" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.6" y="213.0" width="7.4" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="233.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">8</text>
+<text x="178.0" y="233.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">5.296</text>
+<text x="230.0" y="233.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.9797</text>
+<text x="246.0" y="233.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="225.5" width="65.9" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.5" y="227.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="247.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">9</text>
+<text x="178.0" y="247.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">6.472</text>
+<text x="230.0" y="247.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">1.176</text>
+<text x="246.0" y="247.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="239.5" width="71.4" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.6" y="241.0" width="7.4" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="261.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">10</text>
+<text x="178.0" y="261.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">7.936</text>
+<text x="230.0" y="261.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">1.464</text>
+<text x="246.0" y="261.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="253.5" width="77.9" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.5" y="255.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="275.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">11</text>
+<text x="178.0" y="275.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">9.856</text>
+<text x="230.0" y="275.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">1.92</text>
+<text x="246.0" y="275.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="267.5" width="86.0" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.5" y="269.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="289.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">12</text>
+<text x="178.0" y="289.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">12.56</text>
+<text x="230.0" y="289.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">2.704</text>
+<text x="246.0" y="289.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="281.5" width="96.2" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.5" y="283.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="303.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">13</text>
+<text x="178.0" y="303.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">16.87</text>
+<text x="230.0" y="303.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4.311</text>
+<text x="246.0" y="303.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="295.5" width="110.0" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="547.5" y="297.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="317.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">14</text>
+<text x="178.0" y="317.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">446</text>
+<text x="230.0" y="317.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">429.2</text>
+<text x="246.0" y="317.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="309.5" width="201.0" height="7.5" rx="1" fill="none" stroke="#b5544a" stroke-width="1.0" stroke-dasharray="2.0 1.5"/>
+<text x="467.0" y="317.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#b5544a" text-anchor="start" font-weight="normal">abandoned</text>
+<rect x="547.5" y="311.0" width="7.5" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="331.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">13</text>
+<text x="178.0" y="331.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">16.87</text>
+<text x="230.0" y="331.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4.311</text>
+<text x="246.0" y="331.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<rect x="262.0" y="323.5" width="110.0" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="525.0" y="325.0" width="30.0" height="5.0" rx="1" fill="#99a6b0"/>
+<text x="124.0" y="345.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">14</text>
+<text x="178.0" y="345.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">25.45</text>
+<text x="230.0" y="345.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">8.583</text>
+<text x="246.0" y="345.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#4a70a6" text-anchor="start" font-weight="600">B</text>
+<rect x="262.0" y="337.5" width="130.5" height="7.5" rx="1" fill="#4a70a6"/>
+<rect x="540.3" y="339.0" width="14.7" height="5.0" rx="1" fill="#99a6b0"/>
+<line x1="40.0" y1="351.0" x2="555.0" y2="351.0" stroke="#d6d4cf" stroke-width="0.7"/>
+<line x1="92.0" y1="318.0" x2="92.0" y2="296.0" stroke="#b5544a" stroke-width="0.8" stroke-dasharray="2.0 1.5"/>
+<line x1="92.0" y1="318.0" x2="96.0" y2="318.0" stroke="#b5544a" stroke-width="0.8"/>
+<path d="M 92.0 296.0 l -2.5 4.0 l 5.0 0 z" fill="#b5544a"/>
+<text x="86.0" y="319.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7" fill="#b5544a" text-anchor="end" font-weight="normal">rewind 1 (+1)</text>
+<line x1="86.0" y1="304.0" x2="86.0" y2="328.0" stroke="#4a70a6" stroke-width="0.8"/>
+<line x1="86.0" y1="304.0" x2="89.0" y2="304.0" stroke="#4a70a6" stroke-width="0.8"/>
+<path d="M 86.0 328.0 l -2.5 -4.0 l 5.0 0 z" fill="#4a70a6"/>
+<text x="82.0" y="331.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7" fill="#4a70a6" text-anchor="end" font-weight="normal">again</text>
+<text x="40.0" y="373.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="9.5" fill="#1c1c1f" text-anchor="start" font-weight="600">Operator sequences  —  what the seq letter on each row stands for</text>
+<text x="42.0" y="391.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="9" fill="#4a70a6" text-anchor="start" font-weight="600">A</text>
+<text x="555.0" y="391.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">16 steps</text>
+<text x="58.0" y="391.0" font-family="'SF Mono', Menlo, monospace" font-size="8" fill="#4a70a6" text-anchor="start" font-weight="normal">AdvectionDiffusion(T)  &gt;  shift EulerianSUPG(T)  &gt;  Stokes(v)</text>
+<text x="42.0" y="407.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="9" fill="#c2751f" text-anchor="start" font-weight="600">B</text>
+<text x="555.0" y="407.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">1 step</text>
+<text x="58.0" y="407.0" font-family="'SF Mono', Menlo, monospace" font-size="8" fill="#c2751f" text-anchor="start" font-weight="normal">AdvectionDiffusion(T)  &gt;  shift EulerianSUPG(T)  &gt;  Stokes(v)  &gt;  AdvectionDiffusion(T)  &gt;</text>
+<text x="58.0" y="418.0" font-family="'SF Mono', Menlo, monospace" font-size="8" fill="#c2751f" text-anchor="start" font-weight="normal">shift EulerianSUPG(T)  &gt;  Stokes(v)</text>
+</svg>

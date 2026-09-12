@@ -222,7 +222,12 @@ from .model import (
     ThermalConvectionConfig,
     create_thermal_convection_model,
 )
-from .utilities.transcript_report import transcript_diagram, transcript_flowchart
+from .utilities.transcript_report import (
+    transcript_diagram,
+    transcript_flowchart,
+    transcript_score,
+    transcript_score_figure,
+)
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel

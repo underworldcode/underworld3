@@ -44,16 +44,24 @@ against the score**.
 
 ## Vocabulary
 
+The terms below are where the ideas came from, and they are deliberately NOT
+the words the code and the figures use. "Bar", "note", "rest" and "simile" were
+useful for getting the model right and are forced as public vocabulary: what
+ships says **step**, **part**, **did nothing**, and **unchanged**. The mapping
+is kept here because the reasoning depends on it — each musical term carries a
+convention that is the reason the corresponding decision was made.
+
+
 | term | meaning here |
 |---|---|
-| **bar** | one turn of the orchestrating loop. Numbered monotonically, never reused, and the thing you refer to. NOT necessarily a physical time interval — it may be a task. |
-| **beat** | a position inside a bar at which alignment is required. **Barriers** sit on beats: a mesh deform, an adapt, a migration, a remesh. |
-| **part** | a participant with its own stave. Two kinds: *actors* (solvers, swarm pushes, mesh movers) and *state-holders* (DDt histories, fields, particle coordinates). |
-| **note** | what a part did in a bar, carrying its own duration — its `dt`, which need not be the bar's. |
-| **rest** | notated absence. Distinguishes *did nothing this bar* from *was not being watched*. |
+| **bar** → *step* | one turn of the orchestrating loop. Numbered monotonically, never reused, and the thing you refer to. NOT necessarily a physical time interval — it may be a task. |
+| **beat** | a position inside a step at which alignment is required. **Barriers** sit on beats: a mesh deform, an adapt, a migration, a remesh. |
+| **part** (kept) | a participant with its own column. Two kinds: *actors* (solvers, swarm pushes, mesh movers) and *state-holders* (DDt histories, fields, particle coordinates). |
+| **note** → *a mark* | what a part did in a step, carrying its own duration — its `dt`, which need not be the bar's. |
+| **rest** → *did nothing* | notated absence. Distinguishes *did nothing this bar* from *was not being watched*. |
 | **tuplet** | n notes in the space of the bar, bracketed with the ratio. Sub-cycling, notated as ordinary rather than flagged as anomalous. |
-| **tie** | a value written in one bar and read in the next, drawn as an arc across the barline. |
-| **tempo** | how bar numbers map to real time. Deliberately separate from the meter: `dt` varies, wall clock varies more, and the vertical axis is ordinal. |
+| **tie** | a value written in one step and read in the next, drawn as an arc across the barline. |
+| **tempo** | how step numbers map to real time. Deliberately separate from the meter: `dt` varies, wall clock varies more, and the vertical axis is ordinal. |
 | **performance event** | not part of the piece: a bar abandoned, a jump back, a re-take. Transcript only. |
 
 Two conventions borrowed with the vocabulary and worth keeping:

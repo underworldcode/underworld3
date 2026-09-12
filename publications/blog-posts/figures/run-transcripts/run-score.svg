@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="595" height="324" viewBox="0 0 595 324">
+<rect x="0" y="0" width="595.0" height="324.0" fill="#fdfcfa"/>
+<text x="40.0" y="52.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" fill="#1c1c1f" text-anchor="start" font-weight="600">Annulus convection — score</text>
+<text x="40.0" y="68.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#6b7380" text-anchor="start" font-weight="normal">started 2026-09-12T17:25:37+00:00  ·  no terminator: still running, or interrupted  ·  3 parts</text>
+<text x="112.0" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">step</text>
+<text x="164.0" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">t/Myr</text>
+<text x="214.0" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">dt/Myr</text>
+<text x="289.2" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="middle" font-weight="600">AdvectionDiffusion(T)</text>
+<text x="395.5" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="middle" font-weight="600">Stokes(v)</text>
+<text x="501.8" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="middle" font-weight="600">EulerianSUPG(T)</text>
+<line x1="40.0" y1="95.0" x2="555.0" y2="95.0" stroke="#d6d4cf" stroke-width="0.8"/>
+<text x="112.0" y="109.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0</text>
+<text x="164.0" y="109.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.175907</text>
+<text x="214.0" y="109.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.175907</text>
+<circle cx="289.2" cy="106.0" r="4.2" fill="#4a70a6"/>
+<text x="289.2" y="108.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">1</text>
+<circle cx="395.5" cy="106.0" r="4.2" fill="#4a70a6"/>
+<text x="395.5" y="108.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">3</text>
+<circle cx="501.8" cy="106.0" r="4.2" fill="#4a70a6"/>
+<text x="501.8" y="108.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">2</text>
+<rect x="40.0" y="114.0" width="515.0" height="30.0" rx="1" fill="#f6f4f2"/>
+<text x="112.0" y="123.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">1</text>
+<text x="112.0" y="141.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">12</text>
+<text x="119.0" y="132.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7" fill="#6b7380" text-anchor="start" font-weight="normal">×12</text>
+<text x="164.0" y="123.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">0.5015</text>
+<text x="164.0" y="141.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">12.56</text>
+<line x1="170.0" y1="125.0" x2="170.0" y2="132.8" stroke="#6b7380" stroke-width="0.7"/>
+<path d="M 170.0 135.0 l -2.0 -3.2 l 4.0 0 z" fill="#6b7380"/>
+<text x="214.0" y="123.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">0.3256</text>
+<text x="214.0" y="141.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">2.704</text>
+<line x1="220.0" y1="125.0" x2="220.0" y2="132.8" stroke="#6b7380" stroke-width="0.7"/>
+<path d="M 220.0 135.0 l -2.0 -3.2 l 4.0 0 z" fill="#6b7380"/>
+<line x1="289.2" y1="118.0" x2="289.2" y2="137.8" stroke="#6b7380" stroke-width="0.7"/>
+<path d="M 289.2 140.0 l -2.0 -3.2 l 4.0 0 z" fill="#6b7380"/>
+<line x1="395.5" y1="118.0" x2="395.5" y2="137.8" stroke="#6b7380" stroke-width="0.7"/>
+<path d="M 395.5 140.0 l -2.0 -3.2 l 4.0 0 z" fill="#6b7380"/>
+<line x1="501.8" y1="118.0" x2="501.8" y2="137.8" stroke="#6b7380" stroke-width="0.7"/>
+<path d="M 501.8 140.0 l -2.0 -3.2 l 4.0 0 z" fill="#6b7380"/>
+<text x="112.0" y="155.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">13</text>
+<text x="164.0" y="155.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">16.8708</text>
+<text x="214.0" y="155.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4.31057</text>
+<circle cx="289.2" cy="152.0" r="4.2" fill="#4a70a6"/>
+<text x="289.2" y="154.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">1</text>
+<circle cx="395.5" cy="152.0" r="4.2" fill="#4a70a6"/>
+<text x="395.5" y="154.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">3</text>
+<circle cx="501.8" cy="152.0" r="4.2" fill="#4a70a6"/>
+<text x="501.8" y="154.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">2</text>
+<text x="112.0" y="171.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">14</text>
+<text x="164.0" y="171.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">446.031</text>
+<text x="214.0" y="171.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">429.161</text>
+<circle cx="289.2" cy="168.0" r="4.2" fill="none" stroke="#b5544a" stroke-width="1.1" stroke-dasharray="2 1.4"/>
+<text x="289.2" y="170.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#b5544a" text-anchor="middle" font-weight="600">1</text>
+<circle cx="395.5" cy="168.0" r="4.2" fill="none" stroke="#b5544a" stroke-width="1.1" stroke-dasharray="2 1.4"/>
+<text x="395.5" y="170.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#b5544a" text-anchor="middle" font-weight="600">3</text>
+<circle cx="501.8" cy="168.0" r="4.2" fill="none" stroke="#b5544a" stroke-width="1.1" stroke-dasharray="2 1.4"/>
+<text x="501.8" y="170.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#b5544a" text-anchor="middle" font-weight="600">2</text>
+<text x="555.0" y="171.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#b5544a" text-anchor="end" font-weight="normal">abandoned</text>
+<text x="112.0" y="187.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">13</text>
+<text x="164.0" y="187.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">16.8708</text>
+<text x="214.0" y="187.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4.31057</text>
+<circle cx="289.2" cy="184.0" r="4.2" fill="#4a70a6"/>
+<text x="289.2" y="186.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">1</text>
+<circle cx="395.5" cy="184.0" r="4.2" fill="#4a70a6"/>
+<text x="395.5" y="186.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">3</text>
+<circle cx="501.8" cy="184.0" r="4.2" fill="#4a70a6"/>
+<text x="501.8" y="186.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">2</text>
+<text x="112.0" y="203.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">14</text>
+<text x="164.0" y="203.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">25.454</text>
+<text x="214.0" y="203.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">8.58321</text>
+<circle cx="283.7" cy="200.0" r="4.2" fill="#4a70a6"/>
+<text x="283.7" y="202.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">1</text>
+<circle cx="294.7" cy="200.0" r="4.2" fill="#4a70a6"/>
+<text x="294.7" y="202.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">4</text>
+<circle cx="390.0" cy="200.0" r="4.2" fill="#4a70a6"/>
+<text x="390.0" y="202.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">3</text>
+<circle cx="401.0" cy="200.0" r="4.2" fill="#4a70a6"/>
+<text x="401.0" y="202.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">6</text>
+<circle cx="496.3" cy="200.0" r="4.2" fill="#4a70a6"/>
+<text x="496.3" y="202.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">2</text>
+<circle cx="507.3" cy="200.0" r="4.2" fill="#4a70a6"/>
+<text x="507.3" y="202.6" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="6.5" fill="#fdfcfa" text-anchor="middle" font-weight="600">5</text>
+<line x1="289.2" y1="98.0" x2="289.2" y2="208.0" stroke="#ccc9c4" stroke-width="0.7"/>
+<line x1="395.5" y1="98.0" x2="395.5" y2="208.0" stroke="#ccc9c4" stroke-width="0.7"/>
+<line x1="501.8" y1="98.0" x2="501.8" y2="208.0" stroke="#ccc9c4" stroke-width="0.7"/>
+<line x1="40.0" y1="208.0" x2="555.0" y2="208.0" stroke="#d6d4cf" stroke-width="0.8"/>
+<line x1="80.0" y1="168.0" x2="80.0" y2="152.0" stroke="#b5544a" stroke-width="0.8" stroke-dasharray="2.0 1.5"/>
+<line x1="80.0" y1="168.0" x2="85.0" y2="168.0" stroke="#b5544a" stroke-width="0.8"/>
+<path d="M 80.0 154.5 l -2.5 4.0 l 5.0 0 z" fill="#b5544a"/>
+<text x="75.0" y="163.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7" fill="#b5544a" text-anchor="end" font-weight="normal">rewind 1 (+1)</text>
+<line x1="74.0" y1="152.0" x2="74.0" y2="184.0" stroke="#4a70a6" stroke-width="0.8"/>
+<line x1="74.0" y1="152.0" x2="77.0" y2="152.0" stroke="#4a70a6" stroke-width="0.8"/>
+<path d="M 74.0 181.5 l -2.5 -4.0 l 5.0 0 z" fill="#4a70a6"/>
+<text x="70.0" y="187.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7" fill="#4a70a6" text-anchor="end" font-weight="normal">again</text>
+<circle cx="44.0" cy="226.0" r="4.2" fill="#4a70a6"/>
+<text x="56.0" y="229.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="start" font-weight="normal">ran; the digit is the order it ran within the step</text>
+<circle cx="44.0" cy="240.0" r="4.2" fill="none" stroke="#b5544a" stroke-width="1.1" stroke-dasharray="2 1.4"/>
+<text x="56.0" y="243.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="start" font-weight="normal">ran in a step that was then abandoned</text>
+<rect x="39.5" y="253.0" width="9.0" height="2.0" rx="1" fill="#6b7380"/>
+<text x="56.0" y="257.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="start" font-weight="normal">did nothing in this step</text>
+<line x1="44.0" y1="263.0" x2="44.0" y2="269.8" stroke="#6b7380" stroke-width="0.7"/>
+<path d="M 44.0 272.0 l -2.0 -3.2 l 4.0 0 z" fill="#6b7380"/>
+<text x="56.0" y="271.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="start" font-weight="normal">the steps between did exactly this, unchanged; first and last values are shown where they differ</text>
+</svg>

@@ -1799,6 +1799,36 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             # Confirm the preconditioner the automatic penalty was chosen for.
             self._check_velocity_preconditioner()
 
+    def _declared_terms(self):
+        """What this Stokes solver was given, by the name it was given under.
+
+        The residual shows the assembled product; this shows the name to
+        change. ``F0`` is ``-bodyforce``, so a buoyancy written as
+        ``-rho0 * alpha * g * T * rhat`` appears here under ``bodyforce``
+        rather than only as the coefficient it collapsed to.
+        """
+        terms = [
+            {"name": "bodyforce",
+             "value": getattr(self.bodyforce, "sym", self.bodyforce),
+             "description": "body force per unit volume; F0 is its negative"},
+            {"name": "penalty",
+             "value": getattr(self, "penalty", None),
+             "description": "augmented-Lagrangian grad-div penalty (0 = off)"},
+        ]
+        model = getattr(self, "constitutive_model", None)
+        if model is not None:
+            declared = getattr(model, "_declared_terms", None)
+            if callable(declared):
+                terms.extend(declared() or [])
+            else:
+                terms.append({
+                    "name": "constitutive_model",
+                    "value": None,
+                    "description": f"{type(model).__name__} "
+                                   f"(does not declare its terms)",
+                })
+        return terms
+
     @property
     def tau(self):
         r"""Deviatoric stress from the most recent solve.

@@ -60,6 +60,8 @@ Override from the command line, e.g. `-uw_n_steps 20 -uw_cell_size 0.075`.
 """
 
 # %%
+import os
+
 import numpy as np
 import sympy
 
@@ -82,7 +84,6 @@ params = uw.Params(
     uw_n_steps=8,              # timesteps in the recorded run
     uw_dt_fraction=0.5,        # accuracy factor on estimate_dt()
     uw_demos=1,                # run the transcript demonstrations after the loop
-    uw_transcript_file="output/annulus_convection.log",
 )
 
 # %% [markdown]
@@ -179,7 +180,16 @@ stokes.add_rotated_freeslip_bc(0.0, "Lower")
 
 radius = sympy.sqrt(mesh.X.dot(mesh.X))
 rhat = mesh.X / radius
-stokes.bodyforce = -RHO0 * ALPHA * GRAVITY * T.sym[0] * rhat
+# Name the coefficient rather than letting the product collapse into an
+# anonymous number. Python multiplies the three quantities at assignment, so
+# without this the run records a bare -0.97119 kg/(K m^2 s^2) and nothing
+# saying where it came from.
+BUOYANCY = uw.expression(
+    r"\rho_0 \alpha g",
+    RHO0 * ALPHA * GRAVITY,
+    "buoyancy coefficient: reference density x thermal expansivity x gravity",
+)
+stokes.bodyforce = -BUOYANCY * T.sym[0] * rhat
 
 # %% [markdown]
 """
@@ -274,13 +284,14 @@ model.tracker.v_rms = v_rms()
 model.record_every = 1
 model.record_limit = params.uw_n_steps
 
-# The in-memory transcript is what the run can still UNDO; it is bounded and it
-# dies with the process. The log is what the run DID: one aligned line per step,
-# appended and flushed as each step closes, including the steps that were
-# abandoned and the backtracks. Setting it is optional and costs a line per
-# step. A `.jsonl` suffix (or `model.transcript_format = "jsonl"`) writes the same
-# record as JSON objects instead, for parsing rather than reading.
-model.transcript_file = str(params.uw_transcript_file)
+# The on-disk transcript needs no setting up: it is on by default, and this run
+# will leave one under `transcripts/` beside a copy of this script. Section 5
+# shows what landed. To send it elsewhere, or to turn it off:
+#
+#     model.transcript_file = "output/annulus.log"     # somewhere else
+#     model.transcript_file = "output/annulus.jsonl"   # JSON lines, for parsing
+#     model.transcript_file = None                     # off
+say(f"transcript: {model.transcript_file or '(off)'}")
 
 for _ in range(int(params.uw_n_steps)):
     dt = params.uw_dt_fraction * adv.estimate_dt()
@@ -439,9 +450,11 @@ if params.uw_demos:
 """
 ## 5. The log on disk
 
-`model.transcript_file` writes the same account to a file, one line per step,
-flushed as it closes — so `tail -f` on it follows a running job, and a run that
-is killed keeps everything up to the moment it died.
+The transcript lands on disk without being asked, in a stamped directory under
+`transcripts/` beside a copy of the script that launched it and a `launch.json`
+recording what invoked it. One line per step, flushed as it closes — so
+`tail -f` follows a running job, and a run that is killed keeps everything up
+to the moment it died. Nothing is created for a script that never takes a step.
 
 Three differences from `model.transcript`, all deliberate. An **abandoned** step
 appears in the file and not in memory. A step aged out by `transcript_limit`
@@ -456,6 +469,11 @@ if params.uw_demos:
     say("--- 5. the log on disk " + "-" * 51)
     say(f"  {model.transcript_file}")
 
+    run_dir = os.path.dirname(model.transcript_file) if model.transcript_file else ""
+    if run_dir:
+        say(f"  the run directory holds: "
+            f"{', '.join(sorted(os.listdir(run_dir)))}")
+    say("")
     with open(model.transcript_file, encoding="utf-8") as handle:
         for line in handle.read().splitlines():
             say("  " + line)
@@ -486,7 +504,7 @@ if params.uw_demos:
     say("")
     say("--- 6. the figure " + "-" * 56)
 
-    stem = model.transcript_file.rsplit(".", 1)[0]
+    stem = model.transcript_file.rsplit(".", 1)[0]   # beside the transcript
     say(f"  {uw.transcript_diagram(model, out=stem + '.pdf', title='Annulus convection - run log')}")
     say(f"  {uw.transcript_diagram(model, out=stem + '.svg', title='Annulus convection - run log')}")
     say("")

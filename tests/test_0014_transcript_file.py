@@ -450,7 +450,8 @@ def test_the_default_lands_in_a_stamped_directory(monkeypatch, tmp_path):
     with model.step(0.5, label="convect"):
         model._record_step_event("solve", "SNES_Stokes(v)")
 
-    roots = list(tmp_path.glob("transcripts/*"))
+    # `latest` is a symlink beside the run directories, not one of them.
+    roots = [d for d in tmp_path.glob("transcripts/*") if not d.is_symlink()]
     assert len(roots) == 1, roots
     run_dir = roots[0]
     # A stamp, so the run from this morning is still there after the next one.
@@ -510,7 +511,7 @@ def test_the_launch_script_is_kept_beside_the_transcript(monkeypatch, tmp_path):
     with model.step(0.5):
         pass
 
-    run_dir = list(tmp_path.glob("transcripts/*"))[0]
+    run_dir = [d for d in tmp_path.glob("transcripts/*") if not d.is_symlink()][0]
     assert "my_run" in run_dir.name, run_dir.name
     assert (run_dir / "my_run.py").read_text() == script.read_text()
 
@@ -533,7 +534,7 @@ def test_an_interactive_run_says_so_rather_than_failing(monkeypatch, tmp_path):
     with model.step(0.5):
         pass
 
-    run_dir = list(tmp_path.glob("transcripts/*"))[0]
+    run_dir = [d for d in tmp_path.glob("transcripts/*") if not d.is_symlink()][0]
     assert "interactive" in run_dir.name
     manifest = json.loads((run_dir / "launch.json").read_text())
     assert manifest["script"] is None

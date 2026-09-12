@@ -436,6 +436,16 @@ class Model(PintNativeModelMixin, BaseModel):
     _transcript_fh: Any = PrivateAttr(default=None)
     _transcript_format: Any = PrivateAttr(default=None)
     _transcript_columns: Any = PrivateAttr(default=None)
+    _announced_transcript: Any = PrivateAttr(default=None)
+    # The automatic run directory carries BOTH renderings: the text one is for
+    # watching, the JSON one is the record a score or an analysis reads. Having
+    # to have chosen the right format in advance is the same mistake as making
+    # the transcript opt-in — it asks for foresight in the case that arises
+    # without it.
+    _transcript_jsonl_fh: Any = PrivateAttr(default=None)
+    # What each part SOLVES, keyed by part id: the residual as implemented,
+    # recorded once per run and again if the form changes. See _describe_part.
+    _parts: Dict[str, Any] = PrivateAttr(default_factory=dict)
     # Set while rewind() is doing its own restore, so load_state does not log a
     # second, less informative note for the same backtrack.
     _restoring: Any = PrivateAttr(default=False)
@@ -1016,13 +1026,45 @@ class Model(PintNativeModelMixin, BaseModel):
         self._transcript_dir = None
         self._transcript_columns = None
 
-    def _close_transcript(self):
-        if self._transcript_fh is not None:
-            try:
-                self._transcript_fh.close()
-            except Exception:
-                pass
-            self._transcript_fh = None
+    def announce_transcript(self):
+        """Print where this run's transcript went. A no-op if there isn't one.
+
+        Called automatically when the interpreter exits, because the end of the
+        run is when the path is wanted and the start of it is where the message
+        has already scrolled away.
+        """
+        directory = self._announced_transcript
+        if not directory:
+            return
+        import underworld3 as uw
+
+        self._close_transcript(completed=True)
+        uw.pprint(f"underworld3: transcript -> {directory}", clean_display=False)
+
+    def _close_transcript(self, completed=False):
+        """Close the transcript, optionally marking the run as finished.
+
+        A transcript that just STOPS is ambiguous three ways: still running,
+        killed, or done. A terminator on clean exit separates them, which is
+        what lets a score of a partial record say which it is looking at.
+        """
+        if completed and self._transcript_fh is not None:
+            from datetime import datetime, timezone
+
+            self._write_transcript_line({
+                "kind": "run_end",
+                "message": f"run ended after {len(self._transcript)} recorded step(s)",
+                "ended": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "steps": len(self._transcript),
+            })
+        for attr in ("_transcript_fh", "_transcript_jsonl_fh"):
+            handle = getattr(self, attr)
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
 
     def _auto_transcript_path(self):
         """The stamped path this run would use. Computed once; creates nothing."""
@@ -1033,7 +1075,12 @@ class Model(PintNativeModelMixin, BaseModel):
             if root.lower() in ("", "on", "1", "yes", "true"):
                 root = TRANSCRIPTS_DIR
             stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-            self._transcript_dir = os.path.join(root, f"{stamp}-{_launch_stem()}")
+            # Absolute, because this path gets printed and the first thing
+            # anyone does with it is paste it somewhere. A relative path is
+            # only meaningful next to the working directory it was resolved
+            # in, which is exactly the context a reader no longer has.
+            self._transcript_dir = os.path.abspath(
+                os.path.join(root, f"{stamp}-{_launch_stem()}"))
         return os.path.join(self._transcript_dir, "transcript.log")
 
     def _open_transcript(self):
@@ -1071,11 +1118,57 @@ class Model(PintNativeModelMixin, BaseModel):
 
         # Only an automatic, stamped directory gets the launch record: a path
         # the user named is a file they asked for, not a place to put things.
-        if directory and self._transcript_dir and os.path.samefile(
-                directory, self._transcript_dir):
+        automatic = bool(
+            directory and self._transcript_dir
+            and os.path.abspath(directory) == os.path.abspath(self._transcript_dir)
+        )
+        if automatic:
             self._write_launch_record(directory)
+            self._point_latest_at(directory)
+            # The second rendering. A score, or any analysis, reads the record
+            # rather than the report — and the run you want to score is the one
+            # already going, so it cannot be a format chosen up front.
+            other = "transcript.jsonl" if self.transcript_format == "text" \
+                else "transcript.log"
+            try:
+                self._transcript_jsonl_fh = open(
+                    os.path.join(directory, other), "w", encoding="utf-8")
+            except OSError:
+                self._transcript_jsonl_fh = None
 
         self._write_transcript_line(self._run_header())
+
+        # Say where it went. A file created without being asked has to
+        # announce itself, or it is litter the user cannot find — and the
+        # path is the thing they will want at the END of the run, so it is
+        # worth one line now and one line then.
+        if automatic:
+            import atexit
+
+            import underworld3 as uw
+
+            uw.pprint(f"underworld3: transcript -> {directory}", clean_display=False)
+            if self._announced_transcript is None:
+                atexit.register(self.announce_transcript)
+            self._announced_transcript = directory
+
+    def _point_latest_at(self, directory):
+        """Leave a ``latest`` pointer beside the stamped directories.
+
+        The stamp answers "where is this morning's run"; ``latest`` answers
+        "where is the one I just ran", which is the question asked far more
+        often and the one a timestamp is worst at.
+        """
+        try:
+            parent = os.path.dirname(directory)
+            link = os.path.join(parent, "latest")
+            if os.path.islink(link) or os.path.exists(link):
+                os.remove(link)
+            os.symlink(os.path.basename(directory), link)
+        except Exception:
+            # Symlinks are not available everywhere. The stamped directory is
+            # the record; this is a convenience on top of it.
+            pass
 
     def _write_launch_record(self, directory):
         """Copy the entry script and write what invoked it.
@@ -1220,6 +1313,14 @@ class Model(PintNativeModelMixin, BaseModel):
                 f"{wall_text:>8s}  {outcome:<9s}  {tag}{operators}"
             )
 
+        if kind == "part":
+            forms = ", ".join(sorted(payload.get("forms", {})))
+            return (f"  -- solves: {payload.get('label')}  [{forms}]  "
+                    f"(the form is in the transcript record)")
+
+        if kind == "run_end":
+            return f"# {payload.get('message', 'run ended')} · {payload.get('ended', '')}"
+
         # Everything else — rewind, restore — is a note about the run rather
         # than a row of the table, so it breaks the columns deliberately.
         return f"  -- {payload.get('message', kind)}"
@@ -1231,14 +1332,23 @@ class Model(PintNativeModelMixin, BaseModel):
         import json
 
         try:
-            if self.transcript_format == "jsonl":
+            primary_is_json = self.transcript_format == "jsonl"
+            if primary_is_json:
                 text = json.dumps(payload, default=str)
             else:
                 text = self._render_transcript_text(payload)
-                if text is None:
-                    return
-            self._transcript_fh.write(text + "\n")
-            self._transcript_fh.flush()
+            if text is not None:
+                self._transcript_fh.write(text + "\n")
+                self._transcript_fh.flush()
+
+            if self._transcript_jsonl_fh is not None:
+                if primary_is_json:
+                    other = self._render_transcript_text(payload)
+                else:
+                    other = json.dumps(payload, default=str)
+                if other is not None:
+                    self._transcript_jsonl_fh.write(other + "\n")
+                    self._transcript_jsonl_fh.flush()
         except Exception:
             # A log is a convenience: never take a run down for it. Drop the
             # handle so the failure is reported once rather than per step.
@@ -1356,6 +1466,61 @@ class Model(PintNativeModelMixin, BaseModel):
             t=_jsonable_quantity(self.tracker.time),
         )
         return target
+
+    def _describe_part(self, owner, part: str, label: str) -> None:
+        """Record what a part SOLVES, not just that it ran.
+
+        Underworld3's residuals are SymPy, so the weak form a solver assembles
+        can be written down exactly as implemented — and at the right level,
+        because the constitutive pieces stay as named expressions rather than
+        expanding into the algebra that reaches the compiler. A transcript that
+        says ``solve:Stokes(v)`` says which solver ran; this says which
+        equation it ran.
+
+        Written once per part per run. A residual is a LIVE template and can
+        change mid-run, so the form is re-read whenever the solver is about to
+        rebuild — the signal that something it depends on was reassigned — and
+        a new record is written if it differs.
+        """
+        if self._open_step is None:
+            return
+        known = self._parts.get(part)
+        rebuilding = not getattr(owner, "is_setup", True)
+        if known is not None and not rebuilding:
+            return
+
+        described = None
+        try:
+            described = owner.describe()
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            import warnings
+
+            warnings.warn(
+                f"could not record what {label} solves: "
+                f"{type(exc).__name__}: {exc}",
+                RuntimeWarning,
+            )
+            return
+        if not described or not described.get("forms"):
+            return
+
+        fingerprint = "".join(
+            described["forms"][f].get("text", "")
+            for f in sorted(described["forms"])
+        )
+        if known is not None and known.get("fingerprint") == fingerprint:
+            return
+
+        record = {
+            "kind": "part",
+            "part": part,
+            "label": label,
+            "at_step": self._open_step.index,
+            "fingerprint": fingerprint,
+        }
+        record.update(described)
+        self._parts[part] = record
+        self._write_transcript_line(record)
 
     def _record_step_event(self, kind: str, name: str, **detail) -> None:
         """Note that something happened inside the step in progress.
@@ -5653,10 +5818,20 @@ def read_transcript(path):
                 break
             kind = entry.get("kind")
             if kind == "run":
-                runs.append({"run": entry, "steps": [], "notes": []})
+                runs.append({"run": entry, "steps": [], "notes": [], "ended": None})
+                continue
+            if kind == "run_end":
+                if runs:
+                    runs[-1]["ended"] = entry
+                continue
+            if kind == "part":
+                if not runs:
+                    runs.append({"run": None, "steps": [], "notes": [],
+                                 "ended": None})
+                runs[-1].setdefault("parts", []).append(entry)
                 continue
             if not runs:
-                runs.append({"run": None, "steps": [], "notes": []})
+                runs.append({"run": None, "steps": [], "notes": [], "ended": None})
             if kind == "step":
                 runs[-1]["steps"].append(entry)
             else:
