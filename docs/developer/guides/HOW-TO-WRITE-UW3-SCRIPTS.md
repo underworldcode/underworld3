@@ -626,6 +626,28 @@ closes, so `tail -f` follows a running job:
 you want when watching: a step that suddenly takes ten times as long is the
 first sign of a solver in trouble.
 
+**The outcome column says how the step went, not only that it ran.** A step
+whose solves all converged reads `ok`; one where a solve did not reads
+`DIVERGED`, and the solve is named underneath with its reason and its work:
+
+```
+      7         2.63841        0.523655      4.81  DIVERGED   [convect] solve:SNES_Stokes(v) > ...
+  !! SNES_Stokes(v): DIVERGED_LINEAR_SOLVE after 6 its (1200 ksp), |F| 3.11e-04
+  ~~ RuntimeWarning: Stokes: the velocity block fell back to 'gamg' — no mesh hierarchy was available...
+```
+
+Warnings raised inside the block are recorded the same way, with where they
+came from. The transcript gets a copy, not the only copy: the warning is still
+shown, and your own filters still apply. "The velocity block fell back to
+gamg" changes what the numbers mean, and a record that kept the residual norms
+but not that line would be an account of the run with the explanation removed.
+
+The figure marks the same three states per solve — converged, converged with a
+fieldsplit block that hit its iteration cap, and diverged. The middle one is
+worth the separate mark: a capped block did not solve, so the Schur operator
+was applied through a velocity solve that was still moving, and the outer SNES
+can still report CONVERGED (#625).
+
 **A true log records the backtracks.** `rewind()` and a bare `load_state()`
 each write their own line, because a log that shows step 3, then step 3 again
 with nothing in between, is not a log of what happened. `rewind` writes the

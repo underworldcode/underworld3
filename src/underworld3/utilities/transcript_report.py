@@ -40,6 +40,15 @@ _RULE = (0.84, 0.83, 0.81)
 _PAPER = (0.992, 0.988, 0.980)
 _ACCEPTED = (0.29, 0.44, 0.65)
 _ABANDONED = (0.71, 0.33, 0.29)
+# How a solve went. The emoji are what SVG draws; the PDF strokes the same
+# three states in these tones, which are the page's palette rather than the
+# emoji's own.
+_OK = (0.29, 0.50, 0.36)
+_CAPPED = (0.80, 0.58, 0.20)
+_DIVERGED = (0.71, 0.33, 0.29)
+_OUTCOME_EMOJI = {"ok": "\u2705", "capped": "\u26a0\ufe0f", "diverged": "\u274c"}
+_OUTCOME_COLOUR = {"ok": _OK, "capped": _CAPPED, "diverged": _DIVERGED}
+_TEXT_OUTCOME = {"ok": "", "capped": "!", "diverged": "x"}
 _WALL = (0.60, 0.65, 0.69)
 _FLAG = (0.76, 0.46, 0.12)
 
@@ -208,6 +217,15 @@ class _Canvas:
     def note(self, x, y, r, fill, hollow=False):
         """A note head. Hollow when the bar it sits in was abandoned."""
         self.ops.append(("note", x, y, r, fill, bool(hollow)))
+
+    def mark(self, x, y, r, state, hollow=False):
+        """How a solve went: ``"ok"``, ``"capped"`` or ``"diverged"``.
+
+        Drawn as an emoji in SVG and as a glyph in PDF — the PDF is written
+        against the base-14 fonts, which have no emoji, so the same three
+        states are stroked by hand there rather than set as text.
+        """
+        self.ops.append(("mark", x, y, r, state, bool(hollow)))
 
 
 _HELV_EM, _COUR_EM = 0.53, 0.60
@@ -538,6 +556,18 @@ def _svg_ops(ops, width, height):
             else:
                 out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" '
                            f'fill="{_hex(colour)}"/>')
+        elif kind == "mark":
+            _, x, y, r, state, hollow = op
+            if hollow:
+                out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 2.2:.1f}" '
+                           f'fill="none" stroke="{_hex(_ABANDONED)}" '
+                           f'stroke-width="1.0" stroke-dasharray="2 1.4"/>')
+            glyph = _OUTCOME_EMOJI.get(state, "")
+            out.append(
+                f'<text x="{x:.1f}" y="{y + r * 0.95:.1f}" '
+                f'font-size="{r * 2.1:.1f}" text-anchor="middle">'
+                f'{html.escape(glyph)}</text>'
+            )
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
             family = ("'SF Mono', Menlo, monospace" if mono
@@ -631,6 +661,56 @@ def _pdf_page_stream(ops, width, height):
             out.append(f"{x + k:.2f} {yy - r:.2f} {x + r:.2f} {yy - k:.2f} "
                        f"{x + r:.2f} {yy:.2f} c")
             out.append("S Q" if hollow else "f Q")
+        elif kind == "mark":
+            # Base-14 fonts carry no emoji, so the three states are stroked.
+            _, x, y, r, state, hollow = op
+            colour = _OUTCOME_COLOUR.get(state, _MUTED)
+            k, yy = r * 0.5523, fy(y)
+            out.append("q")
+            out.append(f"{colour[0]:.3f} {colour[1]:.3f} {colour[2]:.3f} rg")
+            out.append(f"{x + r:.2f} {yy:.2f} m")
+            out.append(f"{x + r:.2f} {yy + k:.2f} {x + k:.2f} {yy + r:.2f} "
+                       f"{x:.2f} {yy + r:.2f} c")
+            out.append(f"{x - k:.2f} {yy + r:.2f} {x - r:.2f} {yy + k:.2f} "
+                       f"{x - r:.2f} {yy:.2f} c")
+            out.append(f"{x - r:.2f} {yy - k:.2f} {x - k:.2f} {yy - r:.2f} "
+                       f"{x:.2f} {yy - r:.2f} c")
+            out.append(f"{x + k:.2f} {yy - r:.2f} {x + r:.2f} {yy - k:.2f} "
+                       f"{x + r:.2f} {yy:.2f} c")
+            out.append("f")
+            out.append(f"{_PAPER[0]:.3f} {_PAPER[1]:.3f} {_PAPER[2]:.3f} RG "
+                       f"{max(r * 0.30, 0.8):.2f} w 1 J 1 j")
+            if state == "ok":
+                out.append(f"{x - r * 0.50:.2f} {yy + r * 0.05:.2f} m "
+                           f"{x - r * 0.12:.2f} {yy - r * 0.38:.2f} l "
+                           f"{x + r * 0.52:.2f} {yy + r * 0.45:.2f} l S")
+            elif state == "diverged":
+                out.append(f"{x - r * 0.42:.2f} {yy + r * 0.42:.2f} m "
+                           f"{x + r * 0.42:.2f} {yy - r * 0.42:.2f} l S")
+                out.append(f"{x - r * 0.42:.2f} {yy - r * 0.42:.2f} m "
+                           f"{x + r * 0.42:.2f} {yy + r * 0.42:.2f} l S")
+            else:
+                out.append(f"{x:.2f} {yy + r * 0.52:.2f} m "
+                           f"{x:.2f} {yy - r * 0.10:.2f} l S")
+                out.append(f"{x:.2f} {yy - r * 0.42:.2f} m "
+                           f"{x:.2f} {yy - r * 0.44:.2f} l S")
+            out.append("Q")
+            if hollow:
+                out.append("q")
+                out.append(f"{_ABANDONED[0]:.3f} {_ABANDONED[1]:.3f} "
+                           f"{_ABANDONED[2]:.3f} RG 1.0 w [2 1.4] 0 d")
+                rr = r + 2.2
+                kk = rr * 0.5523
+                out.append(f"{x + rr:.2f} {yy:.2f} m")
+                out.append(f"{x + rr:.2f} {yy + kk:.2f} {x + kk:.2f} {yy + rr:.2f} "
+                           f"{x:.2f} {yy + rr:.2f} c")
+                out.append(f"{x - kk:.2f} {yy + rr:.2f} {x - rr:.2f} {yy + kk:.2f} "
+                           f"{x - rr:.2f} {yy:.2f} c")
+                out.append(f"{x - rr:.2f} {yy - kk:.2f} {x - kk:.2f} {yy - rr:.2f} "
+                           f"{x:.2f} {yy - rr:.2f} c")
+                out.append(f"{x + kk:.2f} {yy - rr:.2f} {x + rr:.2f} {yy - kk:.2f} "
+                           f"{x + rr:.2f} {yy:.2f} c")
+                out.append("S Q")
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
             font = "/F3" if mono else ("/F2" if bold else "/F1")
@@ -847,16 +927,46 @@ def _is_history(key, steps):
     return False
 
 
+def _outcome(event):
+    """How a solve went: ``"ok"``, ``"capped"``, ``"diverged"``, or ``None``.
+
+    ``None`` covers both a history shift, which has nothing to converge, and a
+    transcript written before outcomes were recorded — neither is an outcome
+    the figure may invent.
+
+    ``"capped"`` is a solve the SNES called converged while one of its
+    fieldsplit blocks ended at its iteration cap. That block did not solve
+    (#625), so the answer came back on a preconditioner that was still moving;
+    it is neither a clean convergence nor a failure, and reading it as either
+    loses the thing worth seeing.
+    """
+    if event.get("kind") != "solve" or "converged" not in event:
+        return None
+    if not event.get("converged"):
+        return "diverged"
+    if event.get("capped") or event.get("deadline_expired"):
+        return "capped"
+    return "ok"
+
+
 def _bar_cells(step, parts):
-    """One cell per part: the positions at which it played, or a rest."""
+    """One cell per part: what it played and how that went, or a rest.
+
+    A cell is a tuple of ``(position, outcome)``, so two bars collapse into a
+    repeat only when they played the same parts in the same order AND those
+    solves went the same way. A step where the velocity block gave up does not
+    hide inside a run of clean ones.
+    """
     played = []
     for event in step.get("events", []):
         if event.get("kind") in ("solve", "history_shift"):
-            played.append(event.get("part") or event.get("name"))
+            played.append((event.get("part") or event.get("name"),
+                           _outcome(event)))
     cells = []
     for key, _ in parts:
-        hits = [i + 1 for i, k in enumerate(played) if k == key]
-        cells.append(",".join(str(h) for h in hits) if hits else None)
+        hits = tuple((i + 1, outcome) for i, (k, outcome) in enumerate(played)
+                     if k == key)
+        cells.append(hits or None)
     return cells
 
 
@@ -1048,14 +1158,20 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                     # different from a part nobody was watching.
                     canvas.rect(cx - 4.5, mid - 1.0, 9.0, 2.0, fill=_MUTED)
                     continue
-                orders = cell.split(",")
-                span = 11.0 * (len(orders) - 1)
-                for k, order in enumerate(orders):
+                span = 11.0 * (len(cell) - 1)
+                for k, (order, outcome) in enumerate(cell):
                     nx = cx - span / 2 + 11.0 * k
-                    canvas.note(nx, mid, 4.2, colour, hollow=not completed)
-                    canvas.text(nx, mid + 2.6, order, size=6.5,
-                                fill=_PAPER if completed else _ABANDONED,
-                                anchor="middle", bold=True)
+                    if outcome is None:
+                        # A history shift, or a transcript from before
+                        # outcomes were recorded: the note head says it ran.
+                        canvas.note(nx, mid, 4.2, colour, hollow=not completed)
+                        canvas.text(nx, mid + 2.6, order, size=6.5,
+                                    fill=_PAPER if completed else _ABANDONED,
+                                    anchor="middle", bold=True)
+                    else:
+                        canvas.mark(nx, mid, 4.2, outcome, hollow=not completed)
+                        canvas.text(nx + 5.8, mid - 2.4, order, size=6.0,
+                                    fill=_MUTED, anchor="middle")
             if not completed:
                 canvas.text(right, mid + 3, "abandoned", size=7.5,
                             fill=_ABANDONED, anchor="end")
@@ -1129,6 +1245,19 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
     canvas.text(_MARGIN + 16, y + 3,
                 "ran; the digit is the order it ran within the step",
                 size=8, fill=_INK)
+    y += 14
+    canvas.mark(_MARGIN + 4, y, 4.2, "ok")
+    canvas.text(_MARGIN + 16, y + 3, "solved, and converged", size=8, fill=_INK)
+    y += 14
+    canvas.mark(_MARGIN + 4, y, 4.2, "capped")
+    canvas.text(_MARGIN + 16, y + 3,
+                "converged, but a fieldsplit block hit its iteration cap — "
+                "that block did not solve", size=8, fill=_INK)
+    y += 14
+    canvas.mark(_MARGIN + 4, y, 4.2, "diverged")
+    canvas.text(_MARGIN + 16, y + 3,
+                "did not converge; the reason is in the record", size=8,
+                fill=_INK)
     y += 14
     canvas.note(_MARGIN + 4, y, 4.2, _ABANDONED, hollow=True)
     canvas.text(_MARGIN + 16, y + 3,
@@ -1219,10 +1348,20 @@ def transcript_score(source, run=-1, width=11, collapse=True):
     out.append(head)
     out.append("─" * len(head))
 
+    def cell_text(cell):
+        """Positions and how they went. ASCII, because this view is columns in
+        a terminal and an emoji is two cells wide in some of them and one in
+        others — the alignment is the point here, and the figure is where the
+        emoji belong."""
+        if not cell:
+            return "·"
+        return ",".join(f"{order}{_TEXT_OUTCOME.get(outcome, '')}"
+                        for order, outcome in cell)
+
     def row(step, cells):
         t1 = _converted(step.get("t1"), unit)
         dt = _converted(step.get("dt"), unit)
-        body = " │ ".join(f"{(c if c else '·'):^{width}}" for c in cells)
+        body = " │ ".join(f"{cell_text(c):^{width}}" for c in cells)
         tail = "" if step.get("completed") else "   ABANDONED"
         return (f"{step.get('index', '?'):>{bar_w}} {t1:>{t_w}.6g} "
                 f"{dt:>{t_w}.6g} │ {body} │{tail}")
@@ -1269,4 +1408,7 @@ def transcript_score(source, run=-1, width=11, collapse=True):
     out.append("↓  the steps between did exactly this, unchanged")
     out.append("·  this part did nothing in that step")
     out.append("digits are the order the parts ran within the step")
+    out.append("!  converged, but a fieldsplit block ended at its iteration "
+               "cap — that block did not solve")
+    out.append("x  did not converge")
     return "\n".join(out)

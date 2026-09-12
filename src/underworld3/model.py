@@ -1298,20 +1298,53 @@ class Model(PintNativeModelMixin, BaseModel):
 
             wall = payload.get("wall")
             wall_text = "-" if wall is None else f"{wall:.2f}"
-            outcome = "ok" if payload.get("completed") else "ABANDONED"
+            events = payload.get("events", [])
+
+            # A step whose solves did not converge is not an "ok" step. The
+            # column says so at a glance and the notes below say which solve
+            # and why — a run that logged only "ok" for three hundred steps,
+            # fifty of them diverged, is a record of a run rather than an
+            # account of it.
+            failed = [e for e in events
+                      if e.get("kind") == "solve" and e.get("converged") is False]
+            if not payload.get("completed"):
+                outcome = "ABANDONED"
+            elif failed:
+                outcome = "DIVERGED"
+            else:
+                outcome = "ok"
+
             label = payload.get("label")
             tag = f"[{label}] " if label else ""
             # Only what the step APPLIED goes in the sequence. Anything else an
             # older transcript may carry is not an operator and is left out.
             operators = " > ".join(
-                f"{e['kind']}:{e['name']}" for e in payload.get("events", [])
+                f"{e['kind']}:{e['name']}" for e in events
                 if e.get("kind") in ("solve", "history_shift")
             ) or "(nothing)"
-            return (
+
+            notes = []
+            for event in failed:
+                fnorm = event.get("fnorm")
+                tail = "" if fnorm is None else f", |F| {fnorm:.3g}"
+                notes.append(
+                    f"  !! {event['name']}: {event.get('reason', 'did not converge')}"
+                    f" after {event.get('nl_its', 0)} its"
+                    f" ({event.get('ksp_its', 0)} ksp){tail}"
+                )
+            for event in events:
+                if event.get("kind") != "warning":
+                    continue
+                text = " ".join(str(event.get("message", "")).split())
+                if len(text) > 120:
+                    text = text[:117] + "..."
+                notes.append(f"  ~~ {event['name']}: {text}")
+
+            return "\n".join([
                 f"{prefix}"
                 f"  {payload['index']:>5d}  {t1:>14.6g}  {dt:>14.6g}  "
                 f"{wall_text:>8s}  {outcome:<9s}  {tag}{operators}"
-            )
+            ] + notes)
 
         if kind == "part":
             forms = ", ".join(sorted(payload.get("forms", {})))
@@ -1533,6 +1566,76 @@ class Model(PintNativeModelMixin, BaseModel):
         if step is not None:
             step._record(kind, name, **detail)
 
+    def _record_solve_outcome(self, part: str, report) -> None:
+        """Attach how a solve went to the event that recorded it running.
+
+        The ``solve`` event goes in before the solve, because the order the
+        operators ran in is what the transcript exists to preserve; the outcome
+        is only known afterwards. Rather than a second event, it lands on the
+        same one, so a solve is one row carrying both its place in the sequence
+        and its result.
+
+        The event is found by ``part`` and from the end, so an inner solve (a
+        projection inside a Darcy solve, say) claims its own event rather than
+        the enclosing solver's. A no-op outside a ``model.step`` block.
+        """
+        step = self._open_step
+        if step is None:
+            return
+        for event in reversed(step.events):
+            if event.get("kind") != "solve" or event.get("part") != part:
+                continue
+            if "converged" in event:
+                continue          # already carries an outcome: an earlier solve
+            event["converged"] = bool(getattr(report, "converged", False))
+            event["reason"] = str(getattr(report, "reason_str", ""))
+            event["nl_its"] = int(getattr(report, "nl_its", 0) or 0)
+            event["ksp_its"] = int(getattr(report, "ksp_its", 0) or 0)
+            fnorm = getattr(report, "fnorm", None)
+            if fnorm is not None:
+                event["fnorm"] = float(fnorm)
+            reduction = getattr(report, "reduction", None)
+            if reduction is not None:
+                event["reduction"] = float(reduction)
+
+            # A converged solve is not necessarily a solve that worked. A
+            # fieldsplit block that ended at its iteration cap did NOT solve:
+            # the Schur operator is applied through the velocity solve, so a
+            # capped block hands the pressure Krylov an operator that moves
+            # between applications (#625). The outer SNES can still report
+            # CONVERGED. Record it, so the figure can mark the difference
+            # between "converged" and "converged, and a block gave up".
+            capped = {}
+            for name, sub in (getattr(report, "sub", None) or {}).items():
+                count = int(getattr(sub, "capped", 0) or 0)
+                if count:
+                    capped[str(name)] = count
+            if capped:
+                event["capped"] = capped
+            if getattr(report, "deadline_expired", False):
+                event["deadline_expired"] = True
+            if getattr(report, "bounded", False):
+                event["bounded"] = True
+            return
+
+    def _record_warning(self, message, category, filename, lineno) -> None:
+        """Note a warning raised inside the step in progress.
+
+        A warning is the other half of how a step went. "The velocity block
+        fell back to gamg" changes what the numbers mean, and a transcript that
+        kept the residual norms but not that line would be an account of the
+        run with the explanation removed.
+        """
+        step = self._open_step
+        if step is None:
+            return
+        step._record(
+            "warning",
+            getattr(category, "__name__", str(category)),
+            message=str(message),
+            where=f"{filename}:{lineno}",
+        )
+
     def step(self, dt, label: Optional[str] = None):
         """One timestep, as a transaction.
 
@@ -1617,9 +1720,25 @@ class Model(PintNativeModelMixin, BaseModel):
             import time as _time
 
             wall0 = _time.monotonic()
+            # Warnings raised inside the block join the record. The shim
+            # delegates to whatever was already installed, so pytest's capture
+            # and the user's own filters keep working and the warning is still
+            # shown; the transcript gets a copy rather than the only copy.
+            import warnings as _warnings
+
+            previous_showwarning = _warnings.showwarning
+
+            def _record_and_show(message, category, filename, lineno,
+                                 file=None, line=None):
+                self._record_warning(message, category, filename, lineno)
+                previous_showwarning(message, category, filename, lineno,
+                                     file, line)
+
+            _warnings.showwarning = _record_and_show
             try:
                 yield record
             except BaseException:
+                _warnings.showwarning = previous_showwarning
                 record.wall = _time.monotonic() - wall0
                 # Abandon: put the clock back and do not commit.
                 self.tracker.time = t0
@@ -1638,6 +1757,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 self._write_transcript_line(record.as_dict())
                 raise
 
+            _warnings.showwarning = previous_showwarning
             record.wall = _time.monotonic() - wall0
 
             # Commit.

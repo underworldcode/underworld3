@@ -1351,6 +1351,47 @@ class SolverBaseClass(uw_object):
             """Coordinate system of the underlying mesh."""
             return inner_self._owning_solver.mesh.CoordinateSystem
 
+    def _transcript_identity(self):
+        """``(part, label)`` for this solver in a run transcript.
+
+        Name it by what it SOLVES, not by its auto-generated instance id: a
+        transcript reading ``Stokes(V) -> AdvDiffusion(T)`` is auditable, one
+        reading ``Solver_8_ -> Solver_14_`` is not.
+
+        ``label`` is what gets printed; ``part`` is what a column keys on. A
+        rendered label is not an identity — two solvers that happen to render
+        the same would collapse into one part, and changing how the label is
+        built would silently re-partition every transcript ever written.
+        """
+        try:
+            unknown = self.u.name
+        except Exception:
+            unknown = "?"
+        return (f"{type(self).__name__}#{self.instance_number}",
+                f"{type(self).__name__}({unknown})")
+
+    def _record_solve_outcome(self, report):
+        """Write the outcome of the solve just finished onto its transcript event.
+
+        The ``solve`` event is recorded BEFORE the solve, because the order
+        operators ran in is the thing the transcript exists to preserve. The
+        outcome is only known afterwards, so it is attached to that same event
+        rather than appended as a second one: one solve, one row, carrying both
+        where it came in the sequence and how it went.
+
+        Without this a transcript says a run solved 300 times and nothing about
+        the fifty that diverged — which is the difference between a record of a
+        run and an account of it.
+        """
+        if report is None:
+            return
+        try:
+            model = uw.get_default_model()
+            part, _ = self._transcript_identity()
+            model._record_solve_outcome(part, report)
+        except Exception:
+            pass
+
     def _constraint_mechanisms(self):
         """Every way a constraint can have been put on this solver.
 
@@ -1727,6 +1768,7 @@ class SolverBaseClass(uw_object):
         )
         self._solve_report = report
         self._solve_history.append(report)
+        self._record_solve_outcome(report)
         return report
 
     def _capture_rotated_report(self, info):
@@ -1770,6 +1812,7 @@ class SolverBaseClass(uw_object):
         )
         self._solve_report = report
         self._solve_history.append(report)
+        self._record_solve_outcome(report)
         return report
 
     def guard(self, *, wall_per_step):
@@ -2509,20 +2552,7 @@ class SolverBaseClass(uw_object):
         # hook records them all, in order. A no-op outside a model.step block.
         if record:
             try:
-                # Name it by what it SOLVES, not by its auto-generated instance
-                # id: a transcript reading "Stokes(V) -> AdvDiffusion(T)" is
-                # auditable, one reading "Solver_8_ -> Solver_14_" is not.
-                try:
-                    unknown = self.u.name
-                except Exception:
-                    unknown = "?"
-                # `name` is what gets printed; `part` is what a column keys on.
-                # A rendered label is not an identity — two solvers that happen
-                # to render the same would collapse into one part, and changing
-                # how the label is built would silently re-partition every
-                # transcript ever written.
-                part = f"{type(self).__name__}#{self.instance_number}"
-                label = f"{type(self).__name__}({unknown})"
+                part, label = self._transcript_identity()
                 model = uw.get_default_model()
                 # What it solves, not only that it solved: the residual is
                 # SymPy, so the weak form can be written into the transcript
