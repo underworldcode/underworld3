@@ -4877,11 +4877,31 @@ class Mesh(Stateful, uw_object):
             exists. If ``True``, write an indexed mesh file for this timestep.
         create_xdmf
             Write ParaView/XDMF-compatible datasets and companion XDMF file.
+            DG1 on full-dimensional triangles/tetrahedra uses a separate grid
+            with independent vertices per cell, preserving jumps without
+            smoothing. Visualization-only arrays live under ``/dg1`` in the
+            variable files; native checkpoint and reload data are unchanged.
+            Higher-order discontinuous and non-simplex DG visualization are
+            not supported (use ``create_xdmf=False`` for native-only output).
         petsc_reload
             Write PETSc DMPlex section/vector metadata for reload with
             ``MeshVariable.read_checkpoint()``.
 
         """
+        if create_xdmf:
+            for var in meshVars or []:
+                integration_point = getattr(var, "is_integration_point", False)
+                if integration_point or (not var.continuous and var.degree > 0):
+                    if (
+                        var.degree != 1 or not self.isSimplex
+                        or self.dim not in (2, 3) or self.cdim != self.dim
+                        or integration_point
+                    ):
+                        raise NotImplementedError(
+                            "DG XDMF supports degree-one fields on full-dimensional "
+                            "triangle/tetrahedron meshes only; use create_xdmf=False "
+                            "for native-only checkpoints."
+                        )
         options = PETSc.Options()
         options.setValue("viewer_hdf5_sp_output", True)
         options.setValue("viewer_hdf5_collective", False)
@@ -9632,6 +9652,8 @@ def _write_compat_groups(mesh, var, var_h5_path):
     Uses ``uw.function.write_vertices_to_viewer`` (PETSc interpolation +
     ViewerHDF5) for continuous variables, and
     ``uw.function.write_cell_field_to_viewer`` for cell/DG-0 variables.
+    DG1 uses ``/dg1`` with disconnected simplex vertices and nodal traces,
+    never the one-value-per-cell compatibility path.
     PETSc handles all parallel I/O natively.
 
     Vertex coordinates are also written to ``/vertex_fields/coordinates``
@@ -9649,8 +9671,9 @@ def _write_compat_groups(mesh, var, var_h5_path):
     """
     import underworld3 as uw
 
-    is_cell = (not var.continuous) or (var.degree == 0)
-    group = "cell_fields" if is_cell else "vertex_fields"
+    is_dg1 = not var.continuous and var.degree == 1
+    is_cell = var.degree == 0
+    group = "dg1" if is_dg1 else ("cell_fields" if is_cell else "vertex_fields")
 
     # Some PETSc versions (3.21+) write /vertex_fields/ or /cell_fields/
     # automatically during var.write().  Remove any pre-existing group so
@@ -9668,13 +9691,28 @@ def _write_compat_groups(mesh, var, var_h5_path):
         var_h5_path, "a", comm=PETSc.COMM_WORLD,
     )
 
-    if is_cell:
+    if is_dg1:
+        from underworld3.function.field_projection import _write_dg1_to_viewer
+        _write_dg1_to_viewer(var, viewer)
+    elif is_cell:
         uw.function.write_cell_field_to_viewer(var, viewer)
     else:
         uw.function.write_vertices_to_viewer(var, viewer)
         uw.function.write_coordinates_to_viewer(mesh, viewer)
 
     viewer.destroy()
+
+    if is_dg1:
+        # Only topology is generated on rank zero; field values and vertices
+        # were written collectively by PETSc in the same owned-cell order.
+        if uw.mpi.rank == 0:
+            with h5py.File(var_h5_path, "a") as f:
+                nvertices = f["dg1/vertices"].shape[0]
+                ncorners = mesh.dim + 1
+                f["dg1"].create_dataset(
+                    "cells", data=numpy.arange(nvertices, dtype=numpy.int64).reshape(-1, ncorners)
+                )
+        uw.mpi.barrier()
 
 
 def checkpoint_xdmf(
@@ -9802,6 +9840,13 @@ def checkpoint_xdmf(
     header += """
 ]>"""
 
+    dg_vars = [var for var in meshVars if not var.continuous and var.degree == 1]
+    collection_start = (
+        '<Grid Name="fields" GridType="Collection" CollectionType="Spatial">'
+        f'<Time Value="{index}"/>'
+        if dg_vars else ""
+    )
+    collection_end = "</Grid>" if dg_vars else ""
     xdmf_start = f"""
 <Xdmf>
   <Domain Name="domain">
@@ -9818,6 +9863,7 @@ def checkpoint_xdmf(
       &MeshData;:/{geomPath}/vertices
     </DataItem>
     <!-- ============================================================ -->
+      {collection_start}
       <Grid Name="domain" GridType="Uniform">
         <Topology
            TopologyType="{topology_type}"
@@ -9862,6 +9908,8 @@ def checkpoint_xdmf(
 
     attributes = ""
     for var in meshVars:
+        if not var.continuous and var.degree == 1:
+            continue
         var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
 
         # Determine if data is stored on nodes (vertex_fields) or cells (cell_fields)
@@ -9946,8 +9994,54 @@ def checkpoint_xdmf(
     """
         attributes += var_attribute
 
+    dg_grid = ""
+    if dg_vars:
+        first = dg_vars[0]
+        first_filename = filename + f".mesh.{first.clean_name}.{index:05}.h5"
+        with h5py.File(first_filename, "r") as f:
+            dg_cells = f["dg1/cells"].shape
+            dg_points = f["dg1/vertices"].shape
+        if dg_cells != (numCells, numCorners) or dg_points != (numCells * numCorners, spaceDim):
+            raise ValueError("DG1 visualization topology does not match the checkpoint mesh")
+        dg_grid = f"""
+    <Grid Name="DG1" GridType="Uniform">
+      <Topology TopologyType="{topology_type}" NumberOfElements="{numCells}">
+        <DataItem Format="HDF" NumberType="Int" Precision="8" Dimensions="{numCells} {numCorners}">
+          &{first.clean_name}_Data;:/dg1/cells
+        </DataItem>
+      </Topology>
+      <Geometry GeometryType="{geomType}">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dg_points[0]} {spaceDim}">
+          &{first.clean_name}_Data;:/dg1/vertices
+        </DataItem>
+      </Geometry>
+"""
+        for var in dg_vars:
+            var_filename = filename + f".mesh.{var.clean_name}.{index:05}.h5"
+            with h5py.File(var_filename, "r") as f:
+                shape = f["dg1/values"].shape
+            if shape[0] != dg_points[0]:
+                raise ValueError(f"DG1 visualization size mismatch for {var.clean_name}")
+            components = shape[1] if len(shape) == 2 else 1
+            if var.vtype in (uw.VarType.TENSOR, uw.VarType.SYM_TENSOR):
+                kind = "Tensor"
+            elif var.vtype == uw.VarType.MATRIX:
+                kind = "Matrix"
+            else:
+                kind = "Scalar" if components == 1 else "Vector"
+            dimensions = " ".join(str(value) for value in shape)
+            dg_grid += f"""
+      <Attribute Name="{var.clean_name}" AttributeType="{kind}" Center="Node">
+        <DataItem Format="HDF" NumberType="Float" Precision="8" Dimensions="{dimensions}">
+          &{var.clean_name}_Data;:/dg1/values
+        </DataItem>
+      </Attribute>
+"""
+        dg_grid += "    </Grid>"
     xdmf_end = f"""
     </Grid>
+    {dg_grid}
+    {collection_end}
   </Domain>
 </Xdmf>
     """
