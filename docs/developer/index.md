@@ -146,7 +146,7 @@ guides/mpi-hang-supervision
 :hidden:
 :caption: Design Documents
 
-design/run-score-and-transcript
+design/run-plan-and-transcript
 design/UNITS_SIMPLIFIED_DESIGN_2025-11
 design/ND_UNITS_BOUNDARY_CONTRACT
 design/WHY_UNITS_NOT_DIMENSIONALITY

@@ -28,7 +28,7 @@ import os
 import zlib
 
 __all__ = ["transcript_diagram", "transcript_flowchart",
-           "transcript_score", "transcript_score_figure"]
+           "transcript_table", "transcript_figure"]
 
 
 # --- palette ---------------------------------------------------------------
@@ -215,7 +215,7 @@ class _Canvas:
                          bold, mono))
 
     def note(self, x, y, r, fill, hollow=False):
-        """A note head. Hollow when the bar it sits in was abandoned."""
+        """A mark that a part ran. Hollow when its step was abandoned."""
         self.ops.append(("note", x, y, r, fill, bool(hollow)))
 
     def mark(self, x, y, r, state, hollow=False):
@@ -889,14 +889,14 @@ def transcript_flowchart(source, run=-1, out=None):
 
 
 # ---------------------------------------------------------------------------
-# The score: parts across the page, bars down it
+# The transcript as a chart: parts across the page, steps down it
 # ---------------------------------------------------------------------------
 
 def _parts_of(steps):
     """The roster, in a stable order, from what actually played.
 
-    A part that never plays gets no stave — music's rule, and the one that
-    keeps a model's registered cast from becoming a page of empty columns.
+    A part that never runs gets no column, which keeps a model's registered
+    cast from becoming a page of empty ones.
     Keyed on ``part`` (the instance) rather than ``name`` (the label), so two
     solvers that render alike stay distinct and a change to how labels are
     built does not re-partition an old transcript.
@@ -912,8 +912,8 @@ def _parts_of(steps):
                 labels[key] = _short_operator(event.get("name", key))
             elif event.get("kind") == "history_shift":
                 labels[key] = _short_operator(event.get("name", key))
-    # Actors first, then the state they carry: a score is laid out by family,
-    # not by order of first entry, so a part sits in the same place every run.
+    # Actors first, then the state they carry: laid out by family rather than
+    # by order of first entry, so a part sits in the same place every run.
     actors = [k for k in order if "#" not in str(k) or not _is_history(k, steps)]
     histories = [k for k in order if k not in actors]
     return [(k, labels[k]) for k in actors + histories]
@@ -949,13 +949,13 @@ def _outcome(event):
     return "ok"
 
 
-def _bar_cells(step, parts):
+def _step_cells(step, parts):
     """One cell per part: what it played and how that went, or a rest.
 
-    A cell is a tuple of ``(position, outcome)``, so two bars collapse into a
-    repeat only when they played the same parts in the same order AND those
-    solves went the same way. A step where the velocity block gave up does not
-    hide inside a run of clean ones.
+    A cell is a tuple of ``(position, outcome)``, so two steps collapse into a
+    repeat only when they ran the same parts in the same order AND those solves
+    went the same way. A step where the velocity block gave up does not hide
+    inside a run of clean ones.
     """
     played = []
     for event in step.get("events", []):
@@ -970,41 +970,41 @@ def _bar_cells(step, parts):
     return cells
 
 
-def _score_rows(steps, parts, note_at, anchors=()):
-    """Bars grouped into rows: a bar, or a run of identical bars collapsed.
+def _transcript_rows(steps, parts, note_at, anchors=()):
+    """Steps grouped into rows: one step, or a run of identical steps collapsed.
 
     Returns ``(kind, first_index, last_index, cells, count)`` with ``kind``
-    either ``"bar"`` or ``"simile"``. The collapse asserts identity — same
+    either ``"step"`` or ``"repeat"``. The collapse asserts identity — same
     cells, same outcome, same label, nothing recorded between them — which is
     what makes it safe to hide thirteen rows behind one mark.
     """
     anchors = set(anchors)
     rows, i = [], 0
     while i < len(steps):
-        cells = _bar_cells(steps[i], parts)
+        cells = _step_cells(steps[i], parts)
         j = i + 1
         while (j < len(steps)
                and (j - 1) not in note_at
                and j not in anchors
-               and _bar_cells(steps[j], parts) == cells
+               and _step_cells(steps[j], parts) == cells
                and steps[j].get("completed") == steps[i].get("completed")
                and steps[j].get("label") == steps[i].get("label")):
             j += 1
-        rows.append(("bar", i, i, cells, 1))
+        rows.append(("step", i, i, cells, 1))
         if j - i > 1:
-            rows.append(("simile", i + 1, j - 1, cells, j - i - 1))
+            rows.append(("repeat", i + 1, j - 1, cells, j - i - 1))
         i = j
     return rows
 
 
-def transcript_score_figure(source, out=None, run=-1, title=None,
+def transcript_figure(source, out=None, run=-1, title=None,
                             width=PAGE_W, format=None, collapse=True):
-    """Draw the score: a stave per part, bars down the page.
+    """Draw the transcript: a column per part, a row per step.
 
-    The same reading as :func:`transcript_score`, set as notation rather than
-    as text. A filled head is a part that played, with the order it played in;
-    a rest is a part that did nothing; a run of identical bars collapses to one
-    band carrying music's simile mark and a count.
+    The same reading as :func:`transcript_table`, drawn rather than set in
+    text. A mark is a part that ran, carrying the order it ran in and how the
+    solve went; a dash is a part that did nothing; a run of identical steps
+    collapses to one band with a count and a downward arrow.
 
     Parameters
     ----------
@@ -1012,8 +1012,8 @@ def transcript_score_figure(source, out=None, run=-1, title=None,
         A ``.jsonl`` transcript, the list :func:`underworld3.read_transcript`
         returns, or a live model.
     out : str, optional
-        Where to write. Defaults to the source path with ``-score`` and the
-        format's suffix.
+        Where to write. Defaults to the source path with ``-transcript`` and
+        the format's suffix.
     format : {"pdf", "svg"}, optional
         Inferred from ``out``'s suffix; PDF by default.
     collapse : bool, default True
@@ -1037,10 +1037,11 @@ def transcript_score_figure(source, out=None, run=-1, title=None,
         format = "svg" if (out and str(out).lower().endswith(".svg")) else "pdf"
     if out is None:
         suffix = ".svg" if format == "svg" else ".pdf"
-        out = (os.path.splitext(str(source))[0] + "-score" + suffix
-               if isinstance(source, (str, os.PathLike)) else "score" + suffix)
+        out = (os.path.splitext(str(source))[0] + "-transcript" + suffix
+               if isinstance(source, (str, os.PathLike)) else
+               "transcript" + suffix)
 
-    canvas, page_w, height = _score_layout(
+    canvas, page_w, height = _transcript_layout(
         header, steps, notes, entry, title=title, width=width,
         collapse=collapse)
 
@@ -1065,7 +1066,7 @@ def _down_arrow(canvas, x, y_from, y_to, colour, width=0.7):
     canvas.ops.append(("tri_down", x, y_to, 2.0, colour))
 
 
-def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
+def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                   collapse=True):
     canvas = _Canvas()
     right = width - _MARGIN
@@ -1085,23 +1086,23 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
         anchors = {n.get("to_position") for n in notes}
         anchors |= {n.get("after_position") for n in notes}
         anchors |= {p + 1 for p in list(anchors) if p is not None}
-        rows = _score_rows(steps, parts, note_at,
+        rows = _transcript_rows(steps, parts, note_at,
                            anchors={a for a in anchors if a is not None})
     else:
-        rows = [("bar", i, i, _bar_cells(step, parts), 1)
+        rows = [("step", i, i, _step_cells(step, parts), 1)
                 for i, step in enumerate(steps)]
 
     y = _MARGIN
-    canvas.text(_MARGIN, y + 12, title or f"Score — {header.get('model', 'model')!r}",
+    canvas.text(_MARGIN, y + 12, title or f"Transcript — {header.get('model', 'model')!r}",
                 size=14, bold=True)
     y += 20
     bits = []
     if header.get("started"):
         bits.append(f"started {header['started']}")
     if entry.get("ended"):
-        bits.append(f"complete, {entry['ended'].get('steps', len(steps))} bars")
+        bits.append(f"complete, {entry['ended'].get('steps', len(steps))} steps")
     elif entry.get("live"):
-        bits.append(f"in progress, {len(steps)} bars so far")
+        bits.append(f"in progress, {len(steps)} steps so far")
     else:
         bits.append("no terminator: still running, or interrupted")
     bits.append(f"{len(parts)} parts")
@@ -1110,8 +1111,8 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
 
     # --- columns ---
     gutter = _MARGIN + 46.0
-    x_bar = gutter + 26.0
-    x_time = x_bar + 52.0
+    x_step = gutter + 26.0
+    x_time = x_step + 52.0
     x_dt = x_time + 50.0
     lane0 = x_dt + 22.0
     lane_w = max(44.0, (right - lane0) / max(len(parts), 1))
@@ -1119,7 +1120,7 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
     def lane_x(i):
         return lane0 + lane_w * (i + 0.5)
 
-    canvas.text(x_bar, y + 8, "step", size=8, fill=_MUTED, anchor="end")
+    canvas.text(x_step, y + 8, "step", size=8, fill=_MUTED, anchor="end")
     canvas.text(x_time, y + 8, f"t/{short}" if short else "t", size=8,
                 fill=_MUTED, anchor="end")
     canvas.text(x_dt, y + 8, f"dt/{short}" if short else "dt", size=8,
@@ -1136,14 +1137,14 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
     row_y, row_page = {}, {}
     y = top
     for kind, first, last, cells, count in rows:
-        h = row_h if kind == "bar" else band_h
+        h = row_h if kind == "step" else band_h
         mid = y + h / 2
-        if kind == "bar":
+        if kind == "step":
             step = steps[first]
             row_y[first] = mid
             completed = bool(step.get("completed"))
             colour = _ACCEPTED if completed else _ABANDONED
-            canvas.text(x_bar, mid + 3, step.get("index", first), size=8.5,
+            canvas.text(x_step, mid + 3, step.get("index", first), size=8.5,
                         fill=_INK if completed else _ABANDONED, anchor="end")
             t1 = _converted(step.get("t1"), unit)
             dt = _converted(step.get("dt"), unit)
@@ -1182,13 +1183,13 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
             # symbol that only says "repeats" would throw it away.
             canvas.rect(_MARGIN, y, right - _MARGIN, h, fill=(0.965, 0.958, 0.948))
             first_step, last_step = steps[first], steps[last]
-            canvas.text(x_bar, y + 9,
+            canvas.text(x_step, y + 9,
                         f"{first_step.get('index', first)}", size=8, fill=_MUTED,
                         anchor="end")
-            canvas.text(x_bar, y + h - 3,
+            canvas.text(x_step, y + h - 3,
                         f"{last_step.get('index', last)}", size=8, fill=_MUTED,
                         anchor="end")
-            canvas.text(x_bar + 7, mid + 3, f"×{count}", size=7, fill=_MUTED)
+            canvas.text(x_step + 7, mid + 3, f"×{count}", size=7, fill=_MUTED)
             for column, key in ((x_time, "t1"), (x_dt, "dt")):
                 a = _converted(first_step.get(key), unit)
                 b = _converted(last_step.get(key), unit)
@@ -1203,7 +1204,7 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
         y += h
 
     bottom = y
-    # staves, drawn behind nothing but spanning the whole block
+    # the columns themselves, spanning the whole block
     for i, _ in enumerate(parts):
         canvas.line(lane_x(i), top, lane_x(i), bottom, _STAVE, 0.7)
     canvas.line(_MARGIN, bottom, right, bottom, _RULE, 0.8)
@@ -1276,15 +1277,14 @@ def _score_layout(header, steps, notes, entry, title=None, width=PAGE_W,
     return canvas, width, y + _MARGIN
 
 
-def transcript_score(source, run=-1, width=11, collapse=True):
-    """The transcript as a score: parts across the page, bars down it.
+def transcript_table(source, run=-1, width=11, collapse=True):
+    """The transcript as a chart: parts across the page, steps down it.
 
-    Post-hoc by design. The roster is not known until a run has played — a part
-    that first enters at bar 300 must still have a stave at bar 1, resting —
-    so a score cannot be the thing streamed line-by-line as steps close. It is
-    what you read afterwards, or partway through: rendering a transcript that
-    is still being written gives the score of what has happened so far, and
-    says so.
+    Post-hoc by design. The roster is not known until a run has happened — a
+    part that first appears at step 300 must still have a column at step 1,
+    empty — so this cannot be the thing streamed line-by-line as steps close.
+    It is what you read afterwards, or partway through: rendering a transcript
+    that is still being written gives what has happened so far, and says so.
 
     Consecutive steps that did the same thing collapse into one line, which
     carries the first and last value of anything that changed across them. The
@@ -1329,7 +1329,7 @@ def transcript_score(source, run=-1, width=11, collapse=True):
 
     out = []
     title = header.get("model")
-    out.append(f"score · model {title!r}" if title else "score")
+    out.append(f"transcript · model {title!r}" if title else "transcript")
     if header.get("started"):
         out.append(f"started {header['started']}")
     if ended:
@@ -1338,11 +1338,11 @@ def transcript_score(source, run=-1, width=11, collapse=True):
         out.append(f"in progress — {len(steps)} step(s) so far")
     else:
         out.append("no terminator: this run is still going, or it was "
-                   "interrupted. What follows is the score of a prefix.")
+                   "interrupted. What follows is the transcript of a prefix.")
     out.append("")
 
-    bar_w, t_w = 5, 10
-    head = (f"{'step':>{bar_w}} {('t/' + short) if short else 't':>{t_w}} "
+    step_w, t_w = 5, 10
+    head = (f"{'step':>{step_w}} {('t/' + short) if short else 't':>{t_w}} "
             f"{('dt/' + short) if short else 'dt':>{t_w}} │ "
             + " │ ".join(f"{label[:width]:^{width}}" for _, label in parts) + " │")
     out.append(head)
@@ -1363,21 +1363,21 @@ def transcript_score(source, run=-1, width=11, collapse=True):
         dt = _converted(step.get("dt"), unit)
         body = " │ ".join(f"{cell_text(c):^{width}}" for c in cells)
         tail = "" if step.get("completed") else "   ABANDONED"
-        return (f"{step.get('index', '?'):>{bar_w}} {t1:>{t_w}.6g} "
+        return (f"{step.get('index', '?'):>{step_w}} {t1:>{t_w}.6g} "
                 f"{dt:>{t_w}.6g} │ {body} │{tail}")
 
     i = 0
     while i < len(steps):
         step = steps[i]
-        cells = _bar_cells(step, parts)
-        # How many bars that follow are IDENTICAL — same cells, same outcome,
+        cells = _step_cells(step, parts)
+        # How many steps that follow are IDENTICAL — same cells, same outcome,
         # and nothing happened between them.
         run_len = 0
         j = i + 1
         while (collapse
                and j < len(steps)
                and (j - 1) not in note_at
-               and _bar_cells(steps[j], parts) == cells
+               and _step_cells(steps[j], parts) == cells
                and steps[j].get("completed") == step.get("completed")
                and steps[j].get("label") == step.get("label")):
             run_len += 1
@@ -1391,14 +1391,14 @@ def transcript_score(source, run=-1, width=11, collapse=True):
             dt_to = _converted(last.get("dt"), unit)
             carry = " │ ".join(f"{'↓':^{width}}" for _ in parts)
             label = f"…{last.get('index', '?')}"
-            out.append(f"{label:>{bar_w}} {t_to:>{t_w}.6g} {dt_to:>{t_w}.6g} "
+            out.append(f"{label:>{step_w}} {t_to:>{t_w}.6g} {dt_to:>{t_w}.6g} "
                        f"│ {carry} │   ×{run_len} unchanged"
                        + (f", dt {dt_from:.4g} → {dt_to:.4g}"
                           if abs(dt_to - dt_from) > 1e-12 * max(1.0, abs(dt_from))
                           else ""))
         for k in range(i, j):
             for note in note_at.get(k, []):
-                out.append(f"{'':>{bar_w}} {'':>{t_w}} {'':>{t_w}} │ "
+                out.append(f"{'':>{step_w}} {'':>{t_w}} {'':>{t_w}} │ "
                            f"{note.get('message', note.get('kind'))}")
         i = j
 

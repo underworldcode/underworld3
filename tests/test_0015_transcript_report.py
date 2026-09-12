@@ -431,7 +431,7 @@ def _solve(name, converged=None, **detail):
     return event
 
 
-def test_the_score_marks_each_of_the_three_outcomes(tmp_path):
+def test_the_figure_marks_each_of_the_three_outcomes(tmp_path):
     """Converged, converged-with-a-block-that-gave-up, and diverged are three
     different things, and the figure has to be able to say which."""
     import underworld3 as uw
@@ -441,13 +441,13 @@ def test_the_score_marks_each_of_the_three_outcomes(tmp_path):
         _step(1, events=[_solve("Stokes(v)", True, capped={"velocity": 3})]),
         _step(2, events=[_solve("Stokes(v)", False)]),
     ]
-    out = str(tmp_path / "score.svg")
-    uw.utilities.transcript_report.transcript_score_figure(_run(steps), out=out)
+    out = str(tmp_path / "transcript.svg")
+    uw.utilities.transcript_report.transcript_figure(_run(steps), out=out)
     text = open(out, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)
 
     # The emoji are what a reader sees; each state must appear at least twice
-    # (once in the score, once in the legend).
+    # (once in the chart, once in the legend).
     for glyph in ("✅", "⚠", "❌"):
         assert text.count(glyph) >= 2, f"{glyph!r} missing from the figure"
 
@@ -461,8 +461,8 @@ def test_the_pdf_draws_the_outcomes_without_emoji(tmp_path):
         _step(0, events=[_solve("Stokes(v)", True)]),
         _step(1, events=[_solve("Stokes(v)", False)]),
     ]
-    out = str(tmp_path / "score.pdf")
-    uw.utilities.transcript_report.transcript_score_figure(_run(steps), out=out)
+    out = str(tmp_path / "transcript.pdf")
+    uw.utilities.transcript_report.transcript_figure(_run(steps), out=out)
     raw = open(out, "rb").read()
     assert raw.startswith(b"%PDF-")
     assert b"%%EOF" in raw
@@ -472,11 +472,11 @@ def test_the_pdf_draws_the_outcomes_without_emoji(tmp_path):
 def test_a_capped_block_does_not_hide_inside_a_run_of_clean_steps(tmp_path):
     """The collapse asserts identity. A step whose velocity block gave up did
     not do the same thing as the steps around it, so it must break the run."""
-    from underworld3.utilities.transcript_report import transcript_score
+    from underworld3.utilities.transcript_report import transcript_table
 
     steps = [_step(i, events=[_solve("Stokes(v)", True)]) for i in range(5)]
     steps[2]["events"] = [_solve("Stokes(v)", True, capped={"velocity": 4})]
-    text = transcript_score(_run(steps))
+    text = transcript_table(_run(steps))
 
     assert "1!" in text, text
     # the bar that differs is printed in full rather than swallowed by a
@@ -491,8 +491,8 @@ def test_a_transcript_without_outcomes_still_renders(tmp_path):
 
     steps = [_step(i, events=[_solve("Stokes(v)")]) for i in range(3)]
     out = str(tmp_path / "old.svg")
-    uw.utilities.transcript_report.transcript_score_figure(_run(steps), out=out)
+    uw.utilities.transcript_report.transcript_figure(_run(steps), out=out)
     text = open(out, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)
-    # once, in the legend — the score itself marks nothing.
+    # once, in the legend — the chart itself marks nothing.
     assert text.count("✅") == 1, text.count("✅")

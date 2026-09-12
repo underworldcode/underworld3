@@ -225,8 +225,8 @@ from .model import (
 from .utilities.transcript_report import (
     transcript_diagram,
     transcript_flowchart,
-    transcript_score,
-    transcript_score_figure,
+    transcript_table,
+    transcript_figure,
 )
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty

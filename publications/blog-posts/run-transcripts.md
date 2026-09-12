@@ -125,15 +125,15 @@ misbehaved can be looked at twice, which re-running cannot give you.
 
 The transcript is complete, which creates the problem a profiler has: every
 step is in it, and most steps are identical. Removing the repetitive ones by
-hand would be a judgement about what mattered. A **score** removes them by
+hand would be a judgement about what mattered. A **chart** removes them by
 rule instead — it groups consecutive steps that did exactly the same thing,
 and carries the first and last value of anything that changed across the
 group, so a timestep that grew by a factor of eight survives the grouping.
 
 ```
-score · model 'default'
+transcript · model 'default'
 started 2026-09-12T15:22:22+00:00
-no terminator: this run is still going, or it was interrupted. What follows is the score of a prefix.
+no terminator: this run is still going, or it was interrupted. What follows is the transcript of a prefix.
 
  step      t/Myr     dt/Myr │ AdvectionDiffus │    Stokes(v)    │ EulerianSUPG(T) │
 ───────────────────────────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ ones a reader would have picked out. Grouping is optional, because a run whose
 timestep is itself the thing under examination is easier to read one row at a
 time.
 
-Three things are visible in those six rows, and in @fig-score, that no print
+Three things are visible in those six rows, and in @fig-chart, that no print
 statement was written to report. Step 14 attempted 429 Myr and was rejected on a velocity
 diagnostic, so the run went back to step 13 and took it again. The replayed
 step 13 took 0.30 s of wall clock against the original's 0.06, because the
@@ -169,11 +169,11 @@ restore discarded the warm start. And the last step ran everything twice —
 that the transport history advances on every solve, so the temperature
 advanced two intervals while the clock advanced one.
 
-```{figure} figures/run-transcripts/run-score.svg
-:label: fig-score
-:alt: A score of a 17-step annulus convection run. Three columns — AdvectionDiffusion(T), Stokes(v) and EulerianSUPG(T) — each carry a filled mark per step with the order it ran: 1, 3 and 2. Steps 1 to 12 group into one shaded band with a downward arrow in each column, labelled x12, showing t running 0.5015 to 12.56 Myr and dt 0.3256 to 2.704 Myr. Step 14 at 446.031 Myr is drawn with hollow dashed marks and labelled abandoned. A dashed red arrow in the left gutter labelled "rewind 1 (+1)" runs back from it to step 13, and a blue arrow labelled "again" runs down to the replayed step 13. The final step carries two marks in every column, numbered 1 and 4, 3 and 6, 2 and 5.
+```{figure} figures/run-transcripts/run-chart.svg
+:label: fig-chart
+:alt: A chart of a 17-step annulus convection run. Three columns — AdvectionDiffusion(T), Stokes(v) and EulerianSUPG(T) — each carry a filled mark per step with the order it ran: 1, 3 and 2. Steps 1 to 12 group into one shaded band with a downward arrow in each column, labelled x12, showing t running 0.5015 to 12.56 Myr and dt 0.3256 to 2.704 Myr. Step 14 at 446.031 Myr is drawn with hollow dashed marks and labelled abandoned. A dashed red arrow in the left gutter labelled "rewind 1 (+1)" runs back from it to step 13, and a blue arrow labelled "again" runs down to the replayed step 13. The final step carries two marks in every column, numbered 1 and 4, 3 and 6, 2 and 5.
 
-The same run as a score. Each column is a participant and each row a step; a
+The same run as a chart. Each column is a participant and each row a step; a
 filled mark carries the order that participant ran within the step. Steps 1 to
 12 are grouped into one band, which asserts that they did exactly what step 0
 did, and reports the range of `t` and `dt` across them. The final step carries
@@ -192,8 +192,8 @@ letter, defined once at the foot, so the one step that did something different
 is the one letter that differs.
 ```
 
-The figure and the score are rendered from the JSON record after the run, or
-during it — the score above is of a run still in progress, which is why it
+The figure and the chart are rendered from the JSON record after the run, or
+during it — the chart above is of a run still in progress, which is why it
 says so. Both are produced by
 [`make_figures.py`](figures/run-transcripts/make_figures.py), which is also
 the run they describe.
@@ -207,13 +207,13 @@ step and are off unless asked for; the transcript itself is bytes.
 Three things are not in it yet. A part that does nothing in a step does not
 appear, so silence and absence are indistinguishable. Mesh deformation and
 adaptation are not recorded as events, so a history stored before the mesh
-moved and read after it has nothing in the record to flag it. And the score is
-inferred from what repeated rather than declared by the script, so it can say
-that one step differs from its neighbours and cannot yet say that a run
-disagrees with its own description.
+moved and read after it has nothing in the record to flag it. And what a step
+is supposed to contain is inferred from what repeated rather than declared by
+the script, so the record can say that one step differs from its neighbours
+and cannot yet say that a run disagrees with its own description.
 
 The last of those is where the Underworld 1 comparison ends up. A declared
-score would be the XML's descendant — a statement of what a step is supposed
+plan would be the XML's descendant — a statement of what a step is supposed
 to contain — checked against the transcript rather than executed from it. The
 document would describe the model without having to be the only way to express
 it.

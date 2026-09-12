@@ -80,7 +80,7 @@ the transcript. A new operation that changes model state inside a step — a
 solve, a history shift, a mesh deformation — records itself, or the transcript
 silently understates the run. See
 [HOW-TO-WRITE-UW3-SCRIPTS](HOW-TO-WRITE-UW3-SCRIPTS.md) and
-`docs/developer/design/run-score-and-transcript.md`.
+`docs/developer/design/run-plan-and-transcript.md`.
 
 **Named quantities keep their names.** A coefficient written as
 `uw.expression(r"\rho_0 \alpha g", ...)` appears in the description under that

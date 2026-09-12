@@ -10,11 +10,11 @@ It writes, beside itself:
 
     run-transcript.svg     the run as a figure (web)
     run-transcript.pdf     the same, for print
-    run-score.svg          the same run as a score (web)
-    run-score.pdf          the same, for print
+    run-chart.svg          the same run as a chart (web)
+    run-chart.pdf          the same, for print
     transcript.log         the text transcript the run wrote
     transcript.jsonl       the machine-readable transcript
-    score.txt              the score rendered from the transcript
+    chart.txt              the same chart, in text
 
 Everything here is Underworld3's own machinery: the transcript is written
 without being asked, and the figure is rendered from it afterwards.
@@ -177,13 +177,13 @@ title = "Annulus convection — run transcript"
 uw.transcript_diagram(record, out=os.path.join(HERE, "run-transcript.svg"), title=title)
 uw.transcript_diagram(record, out=os.path.join(HERE, "run-transcript.pdf"), title=title)
 
-score_title = "Annulus convection — score"
-uw.transcript_score_figure(record, out=os.path.join(HERE, "run-score.svg"), title=score_title)
-uw.transcript_score_figure(record, out=os.path.join(HERE, "run-score.pdf"), title=score_title)
+chart_title = "Annulus convection — transcript"
+uw.transcript_figure(record, out=os.path.join(HERE, "run-chart.svg"), title=chart_title)
+uw.transcript_figure(record, out=os.path.join(HERE, "run-chart.pdf"), title=chart_title)
 
-score = uw.transcript_score(record, width=15)
-with open(os.path.join(HERE, "score.txt"), "w", encoding="utf-8") as handle:
-    handle.write(score + "\n")
+chart = uw.transcript_table(record, width=15)
+with open(os.path.join(HERE, "chart.txt"), "w", encoding="utf-8") as handle:
+    handle.write(chart + "\n")
 
-uw.pprint(score, clean_display=False)
+uw.pprint(chart, clean_display=False)
 uw.pprint(f"figures and transcript written to {HERE}", clean_display=False)

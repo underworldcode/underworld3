@@ -798,7 +798,7 @@ is where they can actually be computed:
 
 So the transcript records that a history shifted twice, with both shifts in
 order, and says nothing about it. Reading that is
-`docs/developer/design/run-score-and-transcript.md`'s subject, and the analysis
+`docs/developer/design/run-plan-and-transcript.md`'s subject, and the analysis
 pass it describes is not built yet.
 
 One thing worth knowing while it is not: a history advances on **every** solve,

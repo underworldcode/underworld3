@@ -1,6 +1,6 @@
-score · model 'default'
-started 2026-09-12T17:25:37+00:00
-no terminator: this run is still going, or it was interrupted. What follows is the score of a prefix.
+transcript · model 'default'
+started 2026-09-12T22:24:49+00:00
+no terminator: this run is still going, or it was interrupted. What follows is the transcript of a prefix.
 
  step      t/Myr     dt/Myr │ AdvectionDiffus │    Stokes(v)    │ EulerianSUPG(T) │
 ───────────────────────────────────────────────────────────────────────────────────
@@ -16,3 +16,5 @@ no terminator: this run is still going, or it was interrupted. What follows is t
 ↓  the steps between did exactly this, unchanged
 ·  this part did nothing in that step
 digits are the order the parts ran within the step
+!  converged, but a fieldsplit block ended at its iteration cap — that block did not solve
+x  did not converge

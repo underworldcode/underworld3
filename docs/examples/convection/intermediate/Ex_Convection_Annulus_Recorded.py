@@ -423,7 +423,7 @@ identical to a single step, so the transcript is the only place it shows.
 The step records that and says nothing about it. Whether two shifts in one bar
 are a mistake or legitimate sub-cycling is a reading of the transcript, made by
 a later pass that can look across bars; inside the loop it would have to be
-guessed. See `docs/developer/design/run-score-and-transcript.md`.
+guessed. See `docs/developer/design/run-plan-and-transcript.md`.
 
 What you see below is the bar's operator sequence with everything in it twice —
 which is also why the figure gives that bar its own letter.
