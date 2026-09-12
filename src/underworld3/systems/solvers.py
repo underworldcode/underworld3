@@ -1099,6 +1099,9 @@ class SNES_TransientDarcy(SNES_Darcy):
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
+            # D starts from the velocity as it is now, so the DEVSS pair
+            # cancels on the first step as it does on every later one.
+            self._devss_refresh()
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
@@ -1446,6 +1449,15 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         self._Estar = None
 
+        # DEVSS (Guenette & Fortin 1995): an artificial viscosity added to the
+        # momentum flux on the velocity and subtracted through a projected
+        # strain rate, so the velocity always sees an elliptic operator when the
+        # stress is elastic and lives in a coarser, discontinuous space. Off
+        # unless devss_viscosity is set; see _devss_flux.
+        self._devss_viscosity = None
+        self._devss_D = None
+        self._devss_flat = None
+        self._devss_projection = None
         self._penalty = expression(R"\uplambda", 0, "Numerical Penalty")
         # Whether `penalty` still holds its automatic value. An explicit
         # assignment latches this False and the auto default stands down --
@@ -1540,6 +1552,94 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 "constitutive model that asks for one.")
         self._stress_transport = value
 
+    # ----- DEVSS: stabilising a discontinuous elastic stress -----
+
+    @property
+    def devss_viscosity(self):
+        r"""Artificial viscosity :math:`\eta_a` of the DEVSS split, or ``None``.
+
+        With a transported elastic stress the momentum flux is
+        :math:`2\eta_{\mathrm{eff}}\dot\varepsilon(\mathbf u) + c\,\sigma^*`, and as the
+        Weissenberg number rises the elastic term dominates: the velocity is
+        driven by the divergence of a field that is coarser than
+        :math:`\dot\varepsilon(\mathbf u)`, discontinuous across elements, and not
+        derived from the velocity. The discrete operator loses its viscous
+        character and the stress's inter-element jumps force the velocity at
+        mesh scale with nothing to damp them -- measured on the viscoelastic
+        cylinder with an integration-point stress history, 14% of the stress
+        by rms, every step.
+
+        DEVSS (Guenette & Fortin 1995) adds and subtracts a viscous term,
+
+        .. math::
+            \mathbf F_1 \mathrel{+}= 2\eta_a\,(\dot\varepsilon(\mathbf u) - \mathbf D),
+
+        with :math:`\mathbf D` the projection of the strain rate onto the
+        stress history's space, lagged one step. At convergence the two cancel
+        to projection error, so nothing physical is added; but the first term
+        is implicit in the velocity and the second is data, so a mesh-scale
+        velocity response -- which the projection does not carry -- sees the
+        full viscosity :math:`\eta_a` while smooth modes see none. It acts on
+        the RESPONSE to the discontinuous stress, not on the stress, so the
+        history keeps everything it carries. A natural value for our
+        discretised Maxwell element is the viscosity the time discretisation
+        removed, :math:`\eta - \eta_{\mathrm{eff}}`.
+        """
+        return self._devss_viscosity
+
+    @devss_viscosity.setter
+    def devss_viscosity(self, value):
+        self._devss_viscosity = value
+        # The flux expression changes: the compiled functions must be rewired.
+        self._needs_function_rewire = True
+        cm = getattr(self, "_constitutive_model", None)
+        if cm is not None:
+            cm._solver_is_setup = False
+
+    def _devss_space(self):
+        """Build the projected strain rate and its projection on first use, in
+        the stress history's space (degree u-1, continuous)."""
+        if self._devss_D is not None:
+            return
+        dim = self.mesh.dim
+        columns = [(i, j) for i in range(dim) for j in range(i, dim)]
+        self._devss_columns = columns
+        self._devss_D = uw.discretisation.MeshVariable(
+            f"devss_D_{self.instance_number}", self.mesh, (dim, dim),
+            vtype=uw.VarType.SYM_TENSOR, degree=self.u.degree - 1, continuous=True,
+            varsymbol=rf"{{\mathbf{{D}}_{{{self.instance_number}}}}}")
+        self._devss_flat = uw.discretisation.MeshVariable(
+            f"devss_flat_{self.instance_number}", self.mesh, (1, len(columns)),
+            vtype=uw.VarType.MATRIX, degree=self.u.degree - 1, continuous=True)
+        self._devss_projection = SNES_MultiComponent_Projection(
+            self.mesh, u_Field=self._devss_flat, n_components=len(columns),
+            verbose=self.verbose)
+        self._devss_projection.smoothing = 0.0
+
+    def _devss_flux(self):
+        """The DEVSS term of the momentum flux, or a zero matrix when off."""
+        dim = self.mesh.dim
+        if self._devss_viscosity is None:
+            return sympy.zeros(dim, dim)
+        self._devss_space()
+        return 2 * self._devss_viscosity * (
+            sympy.Matrix(self.strainrate) - sympy.Matrix(self._devss_D.sym))
+
+    def _devss_refresh(self, verbose=False):
+        """Lag the projected strain rate: D <- projection of strain(u) now."""
+        if self._devss_viscosity is None:
+            return
+        self._devss_space()
+        E = sympy.Matrix(self.strainrate)
+        self._devss_projection.uw_function = sympy.Matrix(
+            [[E[i, j] for (i, j) in self._devss_columns]])
+        self._devss_projection.solve(verbose=verbose)
+        for k, (i, j) in enumerate(self._devss_columns):
+            values = self._devss_flat.array[:, 0, k]
+            self._devss_D.array[:, i, j] = values
+            if i != j:
+                self._devss_D.array[:, j, i] = values
+
     def _stress_history_prepare(self, timestep, _force_setup=False):
         """Set the elastic timestep and the flags a rebuild depends on.
 
@@ -1603,6 +1703,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
                 self.constitutive_model.flux, verbose=verbose)
 
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
+        self._devss_refresh(verbose=verbose)
 
         # Uniform post-solve hook for any extra integrator-state storage.
         # VEP: no-op. ETD-2 / MaxwellExponentialFlowModel: refresh
@@ -1880,7 +1981,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
     F1 = Template(
         r"\mathbf{F}_1\left( \mathbf{u} \right)",
-        lambda self: self.stress,
+        lambda self: self.stress + self._devss_flux(),
         r"""Velocity equation flux/stress term (pointwise).
 
         The $\mathbf{F}_1$ tensor represents the stress response of the fluid,

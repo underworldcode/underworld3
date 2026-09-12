@@ -459,7 +459,7 @@ class SNES_NavierStokes_Composed(SNES_Stokes):
             self.p.sym[0] - self.penalty * self.constitutive_model.K * self.div_u)
         F1 = public_expression(
             r"\mathbf{F}_1\left( \mathbf{u} \right)",
-            self._viscous_flux() - sympy.eye(dim) * mechanical_pressure
+            self._viscous_flux() + self._devss_flux() - sympy.eye(dim) * mechanical_pressure
             + self._stabilisation_flux(),
             "Navier-Stokes SUPG: viscous flux of the time scheme, pressure, tau R (x) a",
         )

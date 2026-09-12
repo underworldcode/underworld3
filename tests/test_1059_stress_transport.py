@@ -377,3 +377,38 @@ def test_crank_nicolson_carries_a_viscoelastic_stress_either_way():
 
     traced, grid = run("semi_lagrangian"), run("eulerian")
     assert traced > 0.1 and abs(grid - traced) / traced < 1.0e-3, (grid, traced)
+
+
+def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate():
+    """DEVSS adds 2 eta_a (edot - D) to the momentum flux with D the projected
+    strain rate. On the uniform Maxwell shear box D equals edot exactly, so the
+    term must vanish and the answer must not move for any eta_a; and it must be
+    off unless asked for. The varying-modulus box is the negative control: there
+    D differs from edot by projection error, the term is live, and the answer
+    must move -- by projection error, which is small, but not by nothing."""
+    _kind, off, exact = _maxwell_shear("integration_point", 1)
+    assert abs(off - exact) / exact < 0.02
+
+    def with_devss(builder, *args, **kw):
+        # the helpers build their own solver; re-run them with the term on by
+        # patching the class default for the duration of the call
+        original = uw.systems.Stokes.__init__
+        def patched(self, *a, **k):
+            original(self, *a, **k)
+            self.devss_viscosity = 1.0
+        uw.systems.Stokes.__init__ = patched
+        try:
+            return builder(*args, **kw)
+        finally:
+            uw.systems.Stokes.__init__ = original
+
+    _kind, on, _ = with_devss(_maxwell_shear, "integration_point", 1)
+    assert abs(on - off) < 1e-8 * abs(exact), (on, off)      # the pair cancelled
+
+    # the varying-modulus helper differentiates the history in a weak form,
+    # which an integration-point variable refuses; the term is on the solver
+    # and flavour-independent, so the nodal history serves for this half
+    norm_off, _ = _sheared_varying_modulus("semi_lagrangian", 1)
+    norm_on, _ = with_devss(_sheared_varying_modulus, "semi_lagrangian", 1)
+    moved = abs(norm_on - norm_off) / norm_off
+    assert 1e-6 < moved < 5e-2, moved                        # live, and only projection-sized
