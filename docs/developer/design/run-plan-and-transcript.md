@@ -146,6 +146,40 @@ insists that it is.** The signature requires a `dt`, so there is no container
 for "the next task". If the event clock is the general thing, the timestep is
 the common case rather than the definition.
 
+## Where the adjoint lives, and where it stops
+
+The transcript now supplies two of the three things a discrete adjoint needs:
+the ordered operator list, and the state each operator was linearised about
+(a snapshot before the operator, bit-exact on restore). The third — the
+linearisation itself — is a contract on each operator, not a pass over the
+record: an operator provides it or declines with a reason.
+
+The declining is recorded first. Every `solve`, `history_shift` and
+`swarm_advect` event carries `adjoint: {supported, reason}`, written when it
+ran. The verdicts are structural: an implicit step is a residual (Jacobian
+transpose for the state, symbolic derivative for a parameter); a rotated
+constraint solves inside its own Krylov loop with no transpose path; an
+unconverged solve is linearised about a state it never reached; a
+semi-Lagrangian trace is differentiable in the velocity but its interpolation
+at the departure points is not materialised; a particle step is adjointable
+exactly when the particle set is fixed across it, which `swarm.advection`
+checks by counting.
+
+Read back, the verdicts partition the run (`transcript_adjoint_segments`).
+That partition is what data assimilation needs rather than perfect
+invertibility: strong-constraint adjoint within a segment where every operator
+is smooth, and across a refusal a control variable with an error covariance —
+weak-constraint 4D-Var, with the joins chosen by the run. The optimiser needs
+a descent direction that is the same inexact direction each iteration, not an
+exact gradient; the exact discrete adjoint is the verification anchor where
+the operators admit it, and the segments say where that anchor holds.
+
+What follows from it, in order: `adjoint_solve` and `sensitivity` on the
+solvers (the steady half, already shown exact on the sinker); the two
+transport operators materialised — interpolation at departure points and
+∂X_dep/∂v; a reverse driver that walks the transcript backwards, restoring
+snapshots forward as needed; and a Taylor test in the library.
+
 ## Inferred plan, then declared plan
 
 The plan is **inferred** today — the figure takes the most common step as the

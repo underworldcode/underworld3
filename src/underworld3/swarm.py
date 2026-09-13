@@ -5035,6 +5035,11 @@ class Swarm(Stateful, uw_object):
         for hook in list(getattr(self, "_pre_advection_hooks", ())):
             hook()
 
+        # The particle count before the move. advection() is collective, so
+        # the reduction is safe here; the count after the migrate at the end
+        # is what decides whether this step kept the particle set fixed.
+        n_before = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+
         # X0 holds the particle location at the start of advection
         # This is needed because the particles may be migrated off-proc
         # during timestepping. Probably not needed - use global evaluation instead
@@ -5182,7 +5187,49 @@ class Swarm(Stateful, uw_object):
             delete_lost_points=True,
         )
 
+        self._note_advection(delta_t_model, substeps, order, n_before)
         return
+
+    def _adjoint_support(self, n_before, n_after):
+        """Whether this advection admits a discrete adjoint.
+
+        The Runge-Kutta step in position is an explicit ODE step and is
+        differentiable; migration is a permutation. What is not is a change
+        in the NUMBER of particles — a particle removed on leaving the domain
+        changes the dimension of the state, and there is no linear map to
+        transpose. So the rule is one line: the step is adjointable exactly
+        when the particle set is fixed across it. That is checkable, and this
+        checks it.
+        """
+        if n_after != n_before:
+            return (False,
+                    f"the particle set changed: {n_before} -> {n_after} "
+                    f"({n_before - n_after:+d} removed on leaving the domain, "
+                    f"or repopulated); the state changed dimension")
+        return (True,
+                "explicit Runge-Kutta step in position on a fixed particle set; "
+                "migration is a permutation")
+
+    def _note_advection(self, dt, substeps, order, n_before):
+        """Tell the model's open step that this swarm moved.
+
+        Recorded with the particle count before and after, because that count
+        is the adjoint verdict — and because a swarm that quietly lost forty
+        particles to the boundary is the kind of thing a run should say.
+        A no-op outside a ``model.step`` block.
+        """
+        try:
+            n_after = uw.mpi.comm.allreduce(max(self.local_size, 0), op=uw.MPI.SUM)
+            supported, why = self._adjoint_support(n_before, n_after)
+            uw.get_default_model()._record_step_event(
+                "swarm_advect", f"{type(self).__name__}#{self.instance_number}",
+                part=f"{type(self).__name__}#{self.instance_number}",
+                dt=float(dt), substeps=int(substeps), order=int(order),
+                n_before=int(n_before), n_after=int(n_after),
+                adjoint={"supported": bool(supported), "reason": why},
+            )
+        except Exception:
+            pass
 
     @timing.routine_timer_decorator
     def estimate_dt(self, V_fn):

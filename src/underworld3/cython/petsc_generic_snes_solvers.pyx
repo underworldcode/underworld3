@@ -1392,6 +1392,40 @@ class SolverBaseClass(uw_object):
         except Exception:
             pass
 
+    def _adjoint_support(self):
+        """Whether this solve, as configured, admits a discrete adjoint.
+
+        ``(supported, reason)``. The verdict is STRUCTURAL — about the
+        operator, not about whether a driver exists yet — and it is written
+        into the transcript when the solve is recorded, so a run says where
+        its adjoint breaks while it runs, not three hours into an inversion.
+
+        An implicit step is a residual, so its adjoint is the Jacobian
+        transpose for the state and the symbolic derivative of the residual
+        for a parameter. What removes that:
+
+        * a rotated constraint — free-slip or fault contact — solves on a
+          rotated operator inside its own Krylov loop (``rotated_bc.py``),
+          and there is no transpose path through it;
+        * an unconverged solve, which is caught after the fact by
+          :meth:`_record_solve_outcome`: a linearisation about a state the
+          solve never reached is not the adjoint of anything.
+
+        A subclass whose operator is not a residual overrides this and says
+        why. The contract is enforced by
+        ``tests/test_0018_adjoint_support_record.py``.
+        """
+        mechanisms = self._constraint_mechanisms()
+        rotated = mechanisms["rotated_freeslip"] + mechanisms["fault_contact"]
+        if rotated:
+            return (False,
+                    f"{len(rotated)} rotated constraint(s): the solve runs on a "
+                    f"rotated operator with its own Krylov loop, and there is "
+                    f"no transpose path through it")
+        return (True,
+                "implicit residual: Jacobian transpose for the state, symbolic "
+                "derivative of the residual for a parameter")
+
     def _constraint_mechanisms(self):
         """Every way a constraint can have been put on this solver.
 
@@ -2558,7 +2592,10 @@ class SolverBaseClass(uw_object):
                 # SymPy, so the weak form can be written into the transcript
                 # exactly as implemented.
                 model._describe_part(self, part, label)
-                model._record_step_event("solve", label, part=part)
+                supported, why = self._adjoint_support()
+                model._record_step_event(
+                    "solve", label, part=part,
+                    adjoint={"supported": bool(supported), "reason": why})
             except Exception:
                 pass
 

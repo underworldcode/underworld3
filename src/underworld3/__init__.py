@@ -227,6 +227,7 @@ from .utilities.transcript_report import (
     transcript_flowchart,
     transcript_table,
     transcript_figure,
+    transcript_adjoint_segments,
 )
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty

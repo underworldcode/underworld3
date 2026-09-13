@@ -642,6 +642,47 @@ shown, and your own filters still apply. "The velocity block fell back to
 gamg" changes what the numbers mean, and a record that kept the residual norms
 but not that line would be an account of the run with the explanation removed.
 
+**Every operator says whether it admits a discrete adjoint.** Each `solve`,
+`history_shift` and `swarm_advect` event carries a verdict, written when the
+operator ran:
+
+```json
+{"kind": "solve", "name": "SNES_Stokes(v)",
+ "adjoint": {"supported": true,
+             "reason": "implicit residual: Jacobian transpose for the state, symbolic derivative of the residual for a parameter"}}
+```
+
+The verdict is structural — about the operator as configured, not about
+whether a driver exists yet — so a run says where its adjoint breaks *while it
+runs*. What refuses, and why:
+
+- a rotated constraint (free-slip or fault contact): the solve runs on a
+  rotated operator inside its own Krylov loop, with no transpose path;
+- a solve that did not converge: a linearisation about a state the solve
+  never reached is not the adjoint of anything — the outcome overrides the
+  structural verdict after the fact;
+- a semi-Lagrangian history: the departure-point trace is differentiable in
+  the velocity, but the interpolation at the departure points is not
+  materialised as an operator;
+- a swarm step whose particle set changed — `swarm.advection` records the
+  count before and after, and a particle removed on leaving the domain
+  changes the dimension of the state. The rule is one line: a particle step
+  is adjointable exactly when the particle set is fixed across it.
+
+An Eulerian or SUPG history is supported — an implicit step is a residual,
+and the SUPG adjoint that passed its Taylor test at 1.00000 is exactly that
+case. The text transcript notes where the adjoint breaks, once per change
+rather than on every step.
+
+`uw.transcript_adjoint_segments(source)` reads the verdicts back as the
+partition they imply — maximal runs of steps whose every operator admits an
+adjoint, separated by the steps where one refused. That partition is the
+assimilation window's structure: strong-constraint adjoint within a segment;
+across a refusal, a control variable and an error covariance, which is
+weak-constraint 4D-Var with the joins chosen by the run rather than by hand.
+Nothing is approximated silently — the refusal says what the model was
+allowed to be wrong about.
+
 The figure marks the same three states per solve — converged, converged with a
 fieldsplit block that hit its iteration cap, and diverged. The middle one is
 worth the separate mark: a capped block did not solve, so the Schur operator

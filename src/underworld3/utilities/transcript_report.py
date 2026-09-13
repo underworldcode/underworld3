@@ -28,7 +28,7 @@ import os
 import zlib
 
 __all__ = ["transcript_diagram", "transcript_flowchart",
-           "transcript_table", "transcript_figure"]
+           "transcript_table", "transcript_figure", "transcript_adjoint_segments"]
 
 
 # --- palette ---------------------------------------------------------------
@@ -81,6 +81,66 @@ def _as_runs(source):
         f"expected a transcript path, the list read_transcript returns, or a Model; "
         f"got {type(source).__name__}"
     )
+
+
+def transcript_adjoint_segments(source, run=-1):
+    """Where a run can be inverted, and where it cannot.
+
+    Each recorded operator carries a verdict — ``adjoint: {supported,
+    reason}`` — written when it ran. This reads them back as the partition
+    they imply: maximal runs of consecutive steps whose every operator admits
+    a discrete adjoint, separated by the steps where one refused.
+
+    That partition is the assimilation window's structure. Strong-constraint
+    adjoint within a segment; across a refusal, a control variable and an
+    error covariance — weak-constraint 4D-Var, with the joins chosen by the
+    run rather than by hand. Nothing is approximated silently: the refusal
+    says what the model was allowed to be wrong about.
+
+    Returns
+    -------
+    list of dict
+        ``{"first", "last", "steps", "supported", "refusals"}`` per segment,
+        in order. ``first``/``last`` are step indices as recorded;
+        ``refusals`` is a sorted list of ``(operator name, reason)`` for an
+        unsupported segment, empty for a supported one. Steps that were
+        abandoned are left out — they are not part of the run's state
+        history.
+    """
+    runs = _as_runs(source)
+    entry = _pick_run(runs, run)
+    steps = [s for s in entry["steps"] if s.get("completed")]
+
+    def verdict(step):
+        refusals = set()
+        undeclared = set()
+        for event in step.get("events", []):
+            if event.get("kind") not in ("solve", "history_shift", "swarm_advect"):
+                continue
+            verdict = event.get("adjoint")
+            if not isinstance(verdict, dict):
+                # Recorded before verdicts existed. Not a refusal, not a
+                # pass: say so rather than read absence as either.
+                undeclared.add((event.get("name", "?"),
+                                "recorded without an adjoint verdict"))
+            elif verdict.get("supported") is False:
+                refusals.add((event.get("name", "?"), verdict.get("reason", "")))
+        return tuple(sorted(refusals | undeclared))
+
+    segments = []
+    for step in steps:
+        refusals = verdict(step)
+        supported = not refusals
+        if segments and segments[-1]["supported"] == supported \
+                and tuple(segments[-1]["refusals"]) == refusals:
+            segments[-1]["last"] = step.get("index")
+            segments[-1]["steps"] += 1
+            continue
+        segments.append({
+            "first": step.get("index"), "last": step.get("index"), "steps": 1,
+            "supported": supported, "refusals": list(refusals),
+        })
+    return segments
 
 
 def _pick_run(runs, index):
