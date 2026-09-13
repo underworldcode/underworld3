@@ -315,3 +315,49 @@ def test_the_transcript_shows_the_history_that_moved():
     shift = next(e for e in model.transcript[0].events if e["kind"] == "history_shift")
     assert shift["dt"] == pytest.approx(0.02)
     assert "T_record" in shift["name"], shift["name"]
+
+
+# ---------------------------------------------------------------------------
+# Two histories on one field are two parts, and read as two
+# ---------------------------------------------------------------------------
+
+
+def test_a_field_history_and_its_flux_history_are_named_apart():
+    """The semi-Lagrangian solver carries the history of T (DuDt) and of its
+    flux kappa grad T (DFDt) for the Crank–Nicolson midpoint. Both follow the
+    same characteristics and both shift every step; only the first is the
+    history of T. A record that labelled both ``SemiLagrangian(T)`` read as
+    one history advanced twice — which is a different thing, and a mistake
+    the transcript exists to catch."""
+    uw, model = _fresh_model()
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8, qdegree=3
+    )
+    x, y = mesh.X
+    V = uw.discretisation.MeshVariable("V_two", mesh, 2, degree=2)
+    V.array[:, 0, :] = np.asarray(
+        uw.function.evaluate(sympy.Matrix([[-(y - 0.5), (x - 0.5)]]), V.coords)
+    ).reshape(-1, 2)
+    T = uw.discretisation.MeshVariable("T_two", mesh, 1, degree=2)
+    solver = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym)
+    solver.constitutive_model = uw.constitutive_models.DiffusionModel
+    solver.constitutive_model.Parameters.diffusivity = 1.0e-3
+    solver.petsc_options.delValue("ksp_monitor")
+    model.tracker.time, model.tracker.step = 0.0, 0
+
+    with model.step(0.01):
+        solver.solve(timestep=0.01)
+
+    shifts = [e for e in model.transcript[0].events if e["kind"] == "history_shift"]
+    assert [e["name"] for e in shifts] == [
+        "SemiLagrangian(T_two)", "SemiLagrangian(F[T_two])"
+    ], [e["name"] for e in shifts]
+    assert shifts[0]["part"] != shifts[1]["part"]
+    # what each holds is in the record, exactly
+    assert "T_two" in shifts[0]["tracks"] and "_{,0}" not in shifts[0]["tracks"]
+    assert "_{,0}" in shifts[1]["tracks"], shifts[1]["tracks"]
+    # and the tie: the trace-back read the velocity, and says which levels
+    for shift in shifts:
+        assert "V_two" in shift["velocity"]
+        assert shift["past_velocity_levels"] >= 0
+        assert isinstance(shift["midtime_velocity"], bool)

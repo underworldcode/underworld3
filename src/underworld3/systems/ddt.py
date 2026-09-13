@@ -629,8 +629,13 @@ class _DDtBase(uw_object):
         """
         return (False, f"{type(self).__name__} declares no linearisation")
 
-    def _note_history_shift(self, dt):
+    def _note_history_shift(self, dt, **detail):
         """Tell the model's open step that this history advanced.
+
+        ``detail`` is whatever the scheme knows about the shift that a reader
+        of the record would want — for a semi-Lagrangian history, which
+        velocity levels the trace-back read, because that is the tie from
+        this step to the last one.
 
         A history manager should shift EXACTLY ONCE per model step. Shifting
         twice means the step was taken twice — a Picard iteration, a corrector
@@ -648,33 +653,60 @@ class _DDtBase(uw_object):
             uw.get_default_model()._record_step_event(
                 "history_shift", self._history_label(), dt=float(dt),
                 part=f"{type(self).__name__}#{self.instance_number}",
+                tracks=self._tracked_expression(),
                 adjoint={"supported": bool(supported), "reason": why},
+                **detail,
             )
         except Exception:
             pass
 
+    def _tracked_expression(self):
+        """What this history holds, as text, for the record."""
+        try:
+            return str(self.psi_fn)
+        except Exception:
+            return None
+
     def _history_label(self):
-        """Name this history by the field it TRACKS, for the step record.
+        """Name this history by what it TRACKS, for the step record.
 
         Not by its ``psi_star`` slot, whose name is generated from the instance
         number and tells a reader nothing.
+
+        A solver can carry two histories on one field: the field itself
+        (``DuDt``) and its flux (``DFDt``, the Crank–Nicolson midpoint's
+        :math:`\kappa \nabla T`). Both are semi-Lagrangian, both follow the
+        same characteristics, and only the first is the history of ``T``. They
+        are distinct parts in the record — different instance numbers — but
+        they must also READ as distinct, so a history of an expression in the
+        field is labelled ``F[T]`` rather than ``T``.
         """
-        tracked = None
+        import re
+
+        tracked, bare = None, False
         try:
             psi = self.psi_fn
             tracked = getattr(psi, "name", None)
-            if tracked is None:
+            if tracked is not None:
+                bare = True
+            else:
                 # a MeshVariable's .sym prints as "{name}(N.x, N.y)", possibly
-                # wrapped in a Matrix for a vector or tensor unknown
-                import re
-
-                match = re.search(r"\{([^{}]+)\}", str(psi))
+                # wrapped in a Matrix for a vector or tensor unknown; a
+                # derivative prints as "{name}_{,0}(N.x, N.y)"
+                text = str(psi)
+                match = re.search(r"\{([^{}]+)\}", text)
                 if match:
                     tracked = match.group(1)
+                    bare = re.fullmatch(
+                        r"(Matrix\(\[\[)?\{" + re.escape(tracked)
+                        + r"\}\(N\.x(?:, N\.y)?(?:, N\.z)?\)(\]\]\))?",
+                        text) is not None
         except Exception:
             pass
         if tracked is None:
             tracked = getattr(self, "instance_number", "?")
+        elif not bare:
+            tracked = f"F[{tracked}]"
         return f"{type(self).__name__}({tracked})"
 
     def _register_with_default_model(self):
@@ -3089,7 +3121,17 @@ class SemiLagrangian(_DDtBase):
         for i in range(self.order - 1, 0, -1):
             self._dt_history[i] = self._dt_history[i - 1]
         self._dt_history[0] = dt
-        self._note_history_shift(dt)
+        # The tie to the previous step: the trace-back read the velocity at
+        # this step and, for the midpoint, at the last one. That dependence
+        # on v and its history is what the record has to carry for a reader
+        # asking what this shift was computed FROM.
+        trace = getattr(self, "characteristics", None)
+        self._note_history_shift(
+            dt,
+            velocity=str(getattr(trace, "V_fn", self.V_fn))[:80],
+            past_velocity_levels=int(getattr(trace, "_levels_valid", 0)),
+            midtime_velocity=bool(getattr(trace, "midtime_velocity", False)),
+        )
 
         if self._n_solves_completed < self.order:
             self._n_solves_completed += 1
