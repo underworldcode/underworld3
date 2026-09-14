@@ -332,3 +332,29 @@ def test_the_text_transcript_notes_a_refusal_once_per_change(tmp_path):
     assert len(cleared) == 2, cleared          # steps 3 and 5
     # a clean run says nothing: step 0 is one line, with no note under it
     assert "admits one" not in lines[lines.index(next(l for l in lines if l.strip().startswith("0 "))) + 1]
+
+
+def test_segments_take_only_a_literal_true_as_support():
+    """A verdict of None, 0 or "false" is not support (found in review)."""
+    import underworld3 as uw
+
+    steps = []
+    for i, value in enumerate([True, None, 0, "false", True]):
+        steps.append(_step(i, [{"kind": "solve", "name": "S", "part": "S#1",
+                                "adjoint": {"supported": value, "reason": "r"}}]))
+    segments = uw.transcript_adjoint_segments(
+        [{"run": {"kind": "run", "model": "t"}, "steps": steps, "notes": []}])
+    assert [s["supported"] for s in segments] == [True, False, True]
+    assert segments[1]["steps"] == 3
+
+
+def test_segments_do_not_fold_a_replayed_step_into_the_one_it_replaced():
+    """After a rewind the record carries index 3, then 3 again. They are two
+    records, and the segment boundary must sit between them."""
+    import underworld3 as uw
+
+    steps = [_step(i, [_solve("S", True)]) for i in (0, 1, 2, 3)]
+    steps.append(_step(3, [_solve("S", True)]))          # the replay
+    segments = uw.transcript_adjoint_segments(
+        [{"run": {"kind": "run", "model": "t"}, "steps": steps, "notes": []}])
+    assert [(s["first_position"], s["last_position"]) for s in segments] == [(0, 3), (4, 4)]

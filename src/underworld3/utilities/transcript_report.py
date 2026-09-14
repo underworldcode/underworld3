@@ -118,26 +118,37 @@ def transcript_adjoint_segments(source, run=-1):
             if event.get("kind") not in ("solve", "history_shift", "swarm_advect"):
                 continue
             verdict = event.get("adjoint")
-            if not isinstance(verdict, dict):
+            if not isinstance(verdict, dict) or "supported" not in verdict:
                 # Recorded before verdicts existed. Not a refusal, not a
                 # pass: say so rather than read absence as either.
                 undeclared.add((event.get("name", "?"),
                                 "recorded without an adjoint verdict"))
-            elif verdict.get("supported") is False:
+            elif verdict.get("supported") is not True:
+                # Anything but a literal True is a refusal — a None, a 0 or a
+                # string is not a verdict this reader may take as support.
                 refusals.add((event.get("name", "?"), verdict.get("reason", "")))
         return tuple(sorted(refusals | undeclared))
 
     segments = []
-    for step in steps:
+    for position, step in enumerate(steps):
         refusals = verdict(step)
         supported = not refusals
+        index = step.get("index")
+        # A rewind replays an index, so consecutive records can carry the same
+        # or a smaller index. Segments follow the RECORD's order (positions);
+        # an index that goes backwards ends the segment rather than folding a
+        # replayed step into the one it replaced.
         if segments and segments[-1]["supported"] == supported \
-                and tuple(segments[-1]["refusals"]) == refusals:
-            segments[-1]["last"] = step.get("index")
+                and tuple(segments[-1]["refusals"]) == refusals \
+                and index is not None and segments[-1]["last"] is not None \
+                and index > segments[-1]["last"]:
+            segments[-1]["last"] = index
+            segments[-1]["last_position"] = position
             segments[-1]["steps"] += 1
             continue
         segments.append({
-            "first": step.get("index"), "last": step.get("index"), "steps": 1,
+            "first": index, "last": index,
+            "first_position": position, "last_position": position, "steps": 1,
             "supported": supported, "refusals": list(refusals),
         })
     return segments

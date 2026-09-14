@@ -345,10 +345,11 @@ to impose `v·n̂ = 0`:
   `docs/developer/subsystems/rotated-freeslip.md` ("Which normal to use").
 - Works **inside the nonlinear SNES** and with **geometric FMG**. It honours
   `solver.consistent_jacobian`: `True` (consistent Newton, the default — the
-  residual is symbolic, so the tangent is exact; a cold start takes one Picard step
-  first); `"continuation"` (staged Picard→Newton) for robustness far from the
-  solution; `False` (Picard) only where a hard-yield viscoplastic solve needs it as
-  an entry requirement. The rotated constraint is transparent to the tangent.
+  residual is symbolic, so the tangent is exact); `"continuation"` (staged
+  Picard→Newton) for robustness far from the solution; `False` (Picard) only where
+  a hard-yield viscoplastic solve needs it as an entry requirement. The rotated
+  constraint is transparent to the tangent, and the rotated path takes no warm-up
+  sweep before Newton.
 - The constraint **reaction** is the boundary normal traction σ_nn
   (`solver.boundary_normal_traction(boundary)` / `solver.dynamic_topography(...)`) — no
   augmented-Lagrangian splitting.

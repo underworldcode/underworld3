@@ -40,24 +40,71 @@ import sympy
 import underworld3 as uw
 
 
-def dual_on(variable, expression):
+class _Scratch:
+    """Fields and projections on a space, reused rather than re-created.
+
+    A fresh MeshVariable per dual leaked sixteen registered variables per
+    ``gradient()`` call and slowed the sixth call tenfold (found in review).
+    Variables are handed out and taken back; a projection is built once per
+    space and re-pointed at each expression.
+    """
+
+    def __init__(self):
+        self.free = {}
+        self.projections = {}
+
+    @staticmethod
+    def space(variable):
+        return (variable.mesh, getattr(variable, "num_components", 1),
+                str(variable.vtype), int(variable.degree),
+                bool(getattr(variable, "continuous", True)))
+
+    def take(self, like):
+        key = self.space(like)
+        pool = self.free.setdefault(key, [])
+        if pool:
+            var = pool.pop()
+            var.array[...] = 0.0
+            return var
+        mesh, n, _, degree, continuous = key
+        return uw.discretisation.MeshVariable(
+            f"_adj_scratch_{_counter()}", mesh, num_components=n,
+            vtype=like.vtype, degree=degree, continuous=continuous)
+
+    def give(self, var):
+        self.free.setdefault(self.space(var), []).append(var)
+
+    def projection(self, like):
+        key = self.space(like)
+        proj = self.projections.get(key)
+        if proj is None:
+            target = self.take(like)
+            mesh, n = key[0], key[1]
+            proj = (uw.systems.Projection(mesh, target) if n == 1
+                    else uw.systems.Vector_Projection(mesh, target))
+            proj.smoothing = 0.0
+            proj.petsc_options.delValue("ksp_monitor")
+            self.projections[key] = proj
+        return proj
+
+
+_shared_scratch = _Scratch()
+
+
+def dual_on(variable, expression, scratch=None):
     r"""The dual of ``expression`` on ``variable``'s space, held as a field.
 
     :math:`b_j = \int e\,\phi_j` for every basis function of ``variable``,
-    written into a fresh MeshVariable of the same discretisation (one
-    coefficient per node) and returned. Assembled as a projection's residual
-    at zero, so no linear solve is taken.
+    written into a MeshVariable of the same discretisation (one coefficient
+    per node) and returned. Assembled as a projection's residual at zero, so
+    no linear solve is taken. The returned field comes from ``scratch``
+    (a :class:`_Scratch` pool; the module's shared one by default) — give it
+    back with ``scratch.give(field)`` when finished with it.
     """
+    scratch = _shared_scratch if scratch is None else scratch
     mesh = variable.mesh
-    n = getattr(variable, "num_components", 1)
-    scratch = uw.discretisation.MeshVariable(
-        f"_dual_{variable.name}_{_counter()}", mesh, num_components=n,
-        vtype=variable.vtype, degree=variable.degree,
-        continuous=getattr(variable, "continuous", True))
-    proj = (uw.systems.Projection(mesh, scratch) if n == 1
-            else uw.systems.Vector_Projection(mesh, scratch))
-    proj.smoothing = 0.0
-    proj.petsc_options.delValue("ksp_monitor")
+    proj = scratch.projection(variable)
+    out_var = scratch.take(variable)
     proj.uw_function = expression
     proj._build(False, False, None)
     gvec = proj.dm.getGlobalVec()
@@ -70,16 +117,45 @@ def dual_on(variable, expression):
     lvec = proj.dm.getLocalVec()
     lvec.set(0.0)
     proj.dm.globalToLocal(F, lvec)
-    scratch.vec.array[:] = lvec.array[:]
+    out_var.vec.array[:] = lvec.array[:]
     proj.dm.restoreLocalVec(lvec)
     F.destroy()
     proj.dm.restoreGlobalVec(gvec)
     mesh._stale_lvec = True
     try:
-        scratch._sync_lvec_to_gvec()
+        out_var._sync_lvec_to_gvec()
     except AttributeError:
         pass
-    return scratch
+    return out_var
+
+
+def inner(variable, a, b):
+    r"""``a . b`` over the OWNED degrees of freedom of ``variable``'s space,
+    reduced across ranks.
+
+    A dual is a covector on the basis, so ``dJ = sum_j dual_j * delta_j``
+    is the right pairing — but ``.array`` on a rank holds ghost nodes as
+    well, so a plain NumPy dot counts shared nodes twice (found in review:
+    a different number on each rank, neither the finite difference). This
+    routes both through the field's global vector, which holds each degree
+    of freedom once.
+    """
+    mesh = variable.mesh
+    dm = mesh.dm
+    field = variable.field_id
+    _is, subdm = dm.createSubDM(field)
+    ga = subdm.getGlobalVec()
+    gb = subdm.getGlobalVec()
+    la = subdm.getLocalVec()
+    lb = subdm.getLocalVec()
+    la.array[:] = np.asarray(a).ravel()
+    lb.array[:] = np.asarray(b).ravel()
+    subdm.localToGlobal(la, ga)
+    subdm.localToGlobal(lb, gb)
+    value = float(ga.dot(gb))
+    subdm.restoreLocalVec(la); subdm.restoreLocalVec(lb)
+    subdm.restoreGlobalVec(ga); subdm.restoreGlobalVec(gb)
+    return value
 
 
 _n = [0]
@@ -108,6 +184,7 @@ class TranscriptAdjoint:
         self.model = model
         self.final_state = final_state
         self.steps = list(model.transcript)
+        self._scratch = _Scratch()
         missing = [s.index for s in self.steps if not s.restorable]
         if missing:
             raise RuntimeError(
@@ -139,17 +216,23 @@ class TranscriptAdjoint:
         parameters = list(parameters)
         fields = list(fields)
         model = self.model
+        scratch = self._scratch
 
-        # J and its dual on every field it touches, at the final level.
+        # J and its dual on every field it touches, at the final level — and
+        # the explicit dJ/dm, for a misfit that names a parameter directly.
         model.load_state(self.final_state)
         J = float(uw.maths.Integral(self._mesh(), misfit).evaluate())
         acc: Dict[str, object] = {}
         peeled = _peel(misfit)
         for var, symbols in self._fields_in(misfit):
             dJ = [sympy.diff(peeled, s) for s in symbols]
-            self._accumulate(acc, var, dual_on(var, _as_expression(dJ)))
+            self._accumulate(acc, var, dual_on(var, _as_expression(dJ), scratch))
 
         grad = {p: 0.0 for p in parameters}
+        for p in parameters:
+            explicit = sympy.diff(_peel_except(misfit, p), p)
+            if explicit != 0:
+                grad[p] += float(uw.maths.Integral(self._mesh(), explicit).evaluate())
 
         for k in range(len(self.steps) - 1, -1, -1):
             step = self.steps[k]
@@ -163,11 +246,14 @@ class TranscriptAdjoint:
                         f"solvers of the run in this process")
                 u = solver.u
                 rhs = acc.get(u.name)
-                if rhs is None or not self._nonzero(rhs):
+                # Decided on every rank together: the gate guards a collective
+                # solve, and a misfit supported on one rank's cells deadlocked
+                # here when each rank looked only at its own values.
+                if not self._nonzero(rhs):
                     continue
                 inputs = self._linearise_at(step, solves, j)
                 mu = self._adjoint(solver, rhs)
-                acc.pop(u.name, None)          # consumed: this level's output
+                scratch.give(acc.pop(u.name))  # consumed: this level's output
 
                 for p in parameters:
                     grad[p] += solver.sensitivity(mu, p)
@@ -176,13 +262,16 @@ class TranscriptAdjoint:
                     integrand = [solver.adjoint_integrand(mu, s) for s in symbols]
                     target = inputs.get(var.name, var)     # a history -> its field
                     self._accumulate(acc, target,
-                                     dual_on(target, _as_expression(integrand)))
+                                     dual_on(target, _as_expression(integrand), scratch))
+                scratch.give(mu)
 
         out_fields = {}
         for var in fields:
             held = acc.get(var.name)
             out_fields[var] = (np.zeros_like(np.asarray(var.array)) if held is None
                                else np.array(held.array, copy=True))
+        for held in acc.values():
+            scratch.give(held)
         return {"J": J, "parameters": grad, "fields": out_fields}
 
     # ------------------------------------------------------------------
@@ -228,10 +317,17 @@ class TranscriptAdjoint:
             # a component prints as {v}_{ 0 }; a derivative carries a comma,
             # {v}_{ 0,1} for a vector and {T}_{,1} for a scalar
             if re.search(re.escape(token) + r"_\{[^}]*,", text):
+                shown = var.name
+                if var.name.startswith("psi_star"):
+                    tracked = self._tracked_field_of_slot(var)
+                    shown = (f"the history of {tracked.name!r}" if tracked is not None
+                             else var.name)
                 raise NotImplementedError(
-                    f"{type(solver).__name__}: the residual reads a derivative "
-                    f"of {var.name!r}; the dual on a field read through its "
-                    f"gradient is not built yet")
+                    f"{type(solver).__name__}: the residual reads a derivative of "
+                    f"{shown}; the dual on a field read through its gradient (the "
+                    f"integration-by-parts term with its boundary part) is not "
+                    f"built. A Crank-Nicolson step (theta=0.5) reads the old flux "
+                    f"this way; theta=1 does not.")
             found.append((var, _symbols_of(var)))
         return found
 
@@ -265,6 +361,14 @@ class TranscriptAdjoint:
         else:
             solver.solve(zero_init_guess=False)
 
+    def _tracked_field_of_slot(self, slot):
+        """The field a ``psi_star`` slot belongs to, via the live histories."""
+        for obj in self.model._part_objects.values():
+            stars = getattr(obj, "psi_star", None)
+            if stars and any(s is slot for s in stars):
+                return self._tracked_field(obj)
+        return None
+
     def _tracked_field(self, history):
         text = str(history.psi_fn)
         for token, var in self._tokens().items():
@@ -274,37 +378,39 @@ class TranscriptAdjoint:
 
     def _adjoint(self, solver, rhs):
         u = solver.u
-        n = getattr(u, "num_components", 1)
-        mu = uw.discretisation.MeshVariable(
-            f"_mu_{u.name}_{_counter()}", u.mesh, num_components=n,
-            vtype=u.vtype, degree=u.degree, continuous=getattr(u, "continuous", True))
-        neg = uw.discretisation.MeshVariable(
-            f"_rhs_{u.name}_{_counter()}", u.mesh, num_components=n,
-            vtype=u.vtype, degree=u.degree, continuous=getattr(u, "continuous", True))
+        scratch = self._scratch
+        mu = scratch.take(u)
+        neg = scratch.take(u)
         neg.array[...] = -np.asarray(rhs.array)
         if getattr(solver, "p", None) is not None and hasattr(solver, "_subdict"):
-            pv = solver.p
-            p_adj = uw.discretisation.MeshVariable(
-                f"_lam_{pv.name}_{_counter()}", pv.mesh, num_components=1,
-                vtype=pv.vtype, degree=pv.degree, continuous=getattr(pv, "continuous", True))
+            p_adj = scratch.take(solver.p)
             _, reason = solver.adjoint_solve((neg, None), target=(mu, p_adj))
+            scratch.give(p_adj)
         else:
             _, reason = solver.adjoint_solve(neg, target=mu)
+        scratch.give(neg)
         if reason <= 0:
             raise RuntimeError(f"adjoint of {type(solver).__name__}({u.name}) did not converge ({reason})")
         return mu
 
-    @staticmethod
-    def _accumulate(acc, var, dual):
+    def _accumulate(self, acc, var, dual):
         held = acc.get(var.name)
         if held is None:
             acc[var.name] = dual
             return
         held.array[...] = np.asarray(held.array) + np.asarray(dual.array)
+        self._scratch.give(dual)
 
     @staticmethod
     def _nonzero(dual):
-        return np.abs(np.asarray(dual.array)).max() > 0.0
+        """Whether the dual is nonzero ANYWHERE — reduced across ranks, and
+        safe on a rank that holds no degrees of freedom of the space."""
+        if dual is None:
+            local = 0.0
+        else:
+            values = np.asarray(dual.array)
+            local = float(np.abs(values).max()) if values.size else 0.0
+        return uw.mpi.comm.allreduce(local, op=uw.MPI.MAX) > 0.0
 
 
 def _symbols_of(var):
@@ -316,6 +422,19 @@ def _as_expression(components):
     """A scalar for a scalar field, a row vector for a vector one — the shape
     a projection onto that field's space expects."""
     return components[0] if len(components) == 1 else sympy.Matrix([components])
+
+
+def _peel_except(expression, wrt, depth=8):
+    """Expand every named expression except ``wrt`` (see the solver's
+    ``_peel_except``): ``_peel`` would substitute the parameter's value and
+    the derivative of a number is zero."""
+    for _ in range(depth):
+        named = [e for e in uw.function.fn_extract_expressions(expression)
+                 if e is not wrt and e != wrt]
+        if not named:
+            break
+        expression = expression.subs({e: e.sym for e in named})
+    return expression
 
 
 def _peel(expression, depth=8):

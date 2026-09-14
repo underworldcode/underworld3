@@ -1320,6 +1320,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 outcome = "ok"
 
             label = payload.get("label")
+            label = " ".join(str(label).split()) if label else None   # one row
             tag = f"[{label}] " if label else ""
             # Only what the step APPLIED goes in the sequence. Anything else an
             # older transcript may carry is not an operator and is left out.
@@ -1337,13 +1338,27 @@ class Model(PintNativeModelMixin, BaseModel):
                     f" after {event.get('nl_its', 0)} its"
                     f" ({event.get('ksp_its', 0)} ksp){tail}"
                 )
+            # Warnings: identical ones once, with a count, and at most a few
+            # per step — the record holds them all; the log is for reading.
+            seen, order = {}, []
             for event in events:
                 if event.get("kind") != "warning":
                     continue
                 text = " ".join(str(event.get("message", "")).split())
                 if len(text) > 120:
                     text = text[:117] + "..."
-                notes.append(f"  ~~ {event['name']}: {text}")
+                key = (event["name"], text)
+                if key not in seen:
+                    seen[key] = 0
+                    order.append(key)
+                seen[key] += 1
+            for key in order[:8]:
+                name, text = key
+                times = f" (x{seen[key]})" if seen[key] > 1 else ""
+                notes.append(f"  ~~ {name}: {text}{times}")
+            if len(order) > 8:
+                notes.append(f"  ~~ ... and {len(order) - 8} more distinct warning(s) "
+                             f"in the record")
 
             # Where the adjoint breaks. Written when the set of refusals
             # CHANGES from the previous step, not on every step — a
@@ -1679,15 +1694,31 @@ class Model(PintNativeModelMixin, BaseModel):
         fell back to gamg" changes what the numbers mean, and a transcript that
         kept the residual norms but not that line would be an account of the
         run with the explanation removed.
+
+        Three limits, all of the warnings machinery rather than the record:
+        the shim sees what Python SHOWS, so under the default filter a warning
+        that recurs at one location is recorded the first time only
+        (``warnings.simplefilter("always")`` records every occurrence); a
+        warning inside a nested ``catch_warnings(record=True)`` goes to that
+        list and not here; and the file is written by rank 0, so a warning
+        raised on another rank is in that rank's in-memory step (tagged with
+        its rank) and not in the file.
         """
         step = self._open_step
         if step is None:
             return
+        try:
+            import underworld3 as uw
+
+            rank = int(uw.mpi.rank)
+        except Exception:
+            rank = 0
         step._record(
             "warning",
             getattr(category, "__name__", str(category)),
             message=str(message),
             where=f"{filename}:{lineno}",
+            rank=rank,
         )
 
     def step(self, dt, label: Optional[str] = None):
@@ -1785,14 +1816,24 @@ class Model(PintNativeModelMixin, BaseModel):
             def _record_and_show(message, category, filename, lineno,
                                  file=None, line=None):
                 self._record_warning(message, category, filename, lineno)
-                previous_showwarning(message, category, filename, lineno,
-                                     file, line)
+                try:
+                    previous_showwarning(message, category, filename, lineno,
+                                         file, line)
+                except TypeError:
+                    # an older-style hook taking the four positional arguments
+                    previous_showwarning(message, category, filename, lineno)
+
+            def _restore():
+                # Only if it is still ours: a hook the block installed is
+                # the block's business, not something to undo behind it.
+                if _warnings.showwarning is _record_and_show:
+                    _warnings.showwarning = previous_showwarning
 
             _warnings.showwarning = _record_and_show
             try:
                 yield record
             except BaseException:
-                _warnings.showwarning = previous_showwarning
+                _restore()
                 record.wall = _time.monotonic() - wall0
                 # Abandon: put the clock back and do not commit.
                 self.tracker.time = t0
@@ -1811,7 +1852,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 self._write_transcript_line(record.as_dict())
                 raise
 
-            _warnings.showwarning = previous_showwarning
+            _restore()
             record.wall = _time.monotonic() - wall0
 
             # Commit.

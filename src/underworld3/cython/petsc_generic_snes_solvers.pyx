@@ -397,10 +397,12 @@ class SolverBaseClass(uw_object):
         ``True`` (default)
             Unwrap the flux before differentiation so the tangent captures
             :math:`\partial\eta/\partial(\nabla v)` (full Newton). The
-            residual is symbolic, so this tangent is exact and cheap; a cold
-            start takes one Picard step first to find the basin (the
-            ``picard = 1`` warm-up in ``solve``), then Newton. It is also the
-            tangent the adjoint transposes.
+            residual is symbolic, so this tangent is exact and cheap, and it
+            is the tangent the adjoint transposes. On the saddle-point
+            solvers' standard path only (not the scalar/vector solvers, not
+            the rotated or fault-contact path), a cold start first takes one
+            ``nrichardson`` residual sweep (``solve(picard=-1)`` turns it
+            off); see the note at that line for what it is and is not.
         ``False``
             Differentiate the residual flux *as wrapped* — the effective
             viscosity is frozen, giving a Picard / defect-correction tangent.
@@ -1136,6 +1138,7 @@ class SolverBaseClass(uw_object):
             self._needs_dm_rebuild = False
             self._needs_bc_reregister = False
             self._needs_function_rewire = False
+            self._adjoint_kernel_installed = False
         else:
             self._needs_dm_rebuild = True
             self._needs_bc_reregister = True
@@ -1501,7 +1504,8 @@ class SolverBaseClass(uw_object):
         supported, why = self._adjoint_support()
         if not supported:
             raise RuntimeError(f"adjoint_solve: this solve refuses an adjoint — {why}")
-        if self.snes is None or not self.is_setup:
+        if self.snes is None or (not self.is_setup
+                                 and not getattr(self, "_adjoint_kernel_installed", False)):
             raise RuntimeError(
                 "adjoint_solve: no forward solve to take the adjoint of. Call "
                 "solve() first; the adjoint is taken about the state it ended in.")
@@ -1538,10 +1542,11 @@ class SolverBaseClass(uw_object):
             self.dm.localToGlobal(rhs.vec, b)
         else:
             values = np.asarray(rhs, dtype=float).ravel()
-            if values.size != b.getLocalSize():
+            bad = uw.mpi.comm.allreduce(int(values.size != b.getLocalSize()), op=uw.MPI.MAX)
+            if bad:
                 raise ValueError(
                     f"adjoint_solve: rhs has {values.size} entries; this solver's "
-                    f"global vector has {b.getLocalSize()} on this rank")
+                    f"global vector has {b.getLocalSize()} on rank {uw.mpi.rank}")
             b.array[:] = values
         x = gvec.duplicate()
         x.set(0.0)
@@ -1609,12 +1614,14 @@ class SolverBaseClass(uw_object):
         expected = self.dm.getGlobalVec()
         n_solver = expected.getLocalSize()
         self.dm.restoreGlobalVec(expected)
-        if out.size != n_solver:
+        bad = uw.mpi.comm.allreduce(int(out.size != n_solver), op=uw.MPI.MAX)
+        if bad:
             raise RuntimeError(
                 f"dual_of: the dual has {out.size} entries and the solver's "
-                f"global vector {n_solver}; the two spaces constrain different "
-                f"nodes. Essential conditions added through a route other than "
-                f"add_dirichlet_bc are not mirrored onto the dual space.")
+                f"global vector {n_solver} on rank {uw.mpi.rank}; the two spaces "
+                f"constrain different nodes. Essential conditions added through "
+                f"a route other than add_dirichlet_bc are not mirrored onto the "
+                f"dual space.")
         F.destroy()
         proj.dm.restoreGlobalVec(gvec)
         return out
@@ -1637,7 +1644,8 @@ class SolverBaseClass(uw_object):
         proj = getattr(self, "_dual_projection_solver", None)
         if proj is None or getattr(self, "_dual_projection_signature", None) != signature:
             scratch = uw.discretisation.MeshVariable(
-                f"_dual_{type(self).__name__}_{self.instance_number}_{len(signature)}",
+                f"_dual_{type(self).__name__}_{self.instance_number}_"
+                f"{abs(hash(signature)) % 100000}",
                 self.mesh, num_components=n, vtype=u.vtype, degree=u.degree,
                 continuous=getattr(u, "continuous", True))
             if n == 1:
@@ -1702,6 +1710,8 @@ class SolverBaseClass(uw_object):
             return None
         if self._residual_is_linear_in_unknown():
             return None                       # the two tangents coincide
+        if getattr(self, "_adjoint_kernel_installed", False):
+            return "picard"                   # still there from the last adjoint
         self._consistent_jacobian = True
         self._needs_function_rewire = True
         self._build(False, False, None)
@@ -1712,10 +1722,16 @@ class SolverBaseClass(uw_object):
         return "picard"
 
     def _restore_tangent(self, token):
+        """Put the Picard setting back, but LEAVE the consistent kernel
+        installed: a second adjoint (a second misfit on the same forward)
+        reuses it, and the next forward solve's own build rewires to Picard.
+        Tearing it down here made a second adjoint_solve refuse with "no
+        forward solve" (found in review)."""
         if token is None:
             return
         self._consistent_jacobian = False
-        self._needs_function_rewire = True    # rebuilt lazily by the next solve
+        self._adjoint_kernel_installed = True
+        self._needs_function_rewire = True    # the next forward solve rewires
 
     def _newton_alpha_for_adjoint(self):
         """Under ``"continuation"``, put the tangent at full Newton for the
@@ -2944,7 +2960,7 @@ class SolverBaseClass(uw_object):
         cdef double[::1] vals_view = np.ascontiguousarray(values, dtype=np.float64)
         CHKERRQ(PetscDSSetConstants(cds.ds, n_constants, <const PetscScalar*>&vals_view[0]))
 
-    def _update_constants(self, record=True):
+    def _update_constants(self, record=False):
         """Re-pack current UWexpression values and call PetscDSSetConstants.
 
         Called before each solve() to ensure constants are current without
@@ -2967,7 +2983,12 @@ class SolverBaseClass(uw_object):
 
         # Note the solve in the model's step transcript, if a step is open. This
         # is the one place every solver passes through before solving, so one
-        # hook records them all, in order. A no-op outside a model.step block.
+        # hook records them all, in order — but it is ALSO called by a
+        # Parameter change, the continuation alpha toggle, reaction assembly
+        # and residual-field evaluation, none of which is a solve. Only the
+        # solve() bodies pass record=True; a call from anywhere else must not
+        # write a solve event, or one solve reads as several in the record
+        # (found in review: 2-4 events per solve under continuation).
         if record:
             try:
                 part, label = self._transcript_identity()
@@ -4755,7 +4776,7 @@ class SNES_Scalar(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         # Pure-Neumann scalar problems: attach a constant nullspace
         # to the (now set-up) Jacobian. No-op unless
@@ -5803,7 +5824,7 @@ class SNES_Vector(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
         # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
@@ -6519,7 +6540,7 @@ class SNES_MultiComponent(SolverBaseClass):
         cmesh_lvec = self.mesh.lvec
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
-        self._update_constants()
+        self._update_constants(record=True)
 
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
@@ -10053,14 +10074,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         supported, why = SolverBaseClass._adjoint_support(self)
         if not supported:
             return supported, why
-        # The numerical probe, not the symbolic test: a viscosity carried as a
-        # JIT placeholder is invisible to the symbolic form (see the probe's
-        # docstring), and two assemblies are cheap beside an adjoint solve.
-        try:
-            nonlinear = self._residual_is_nonlinear() if self.is_setup \
-                else not self._residual_is_linear_in_unknown()
-        except Exception:
-            nonlinear = not self._residual_is_linear_in_unknown()
+        # The verdict is written on EVERY solve inside a step, so it must be
+        # cheap: the symbolic test, cached until the residual can change. The
+        # numerical probe (two assemblies) belongs in adjoint_solve, where an
+        # adjoint is actually being taken and the cost is paid once.
+        key = (self.consistent_jacobian, id(getattr(self, "_constitutive_model", None)),
+               self.is_setup, self._needs_function_rewire)
+        cached = getattr(self, "_adjoint_linearity_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, self._residual_is_linear_in_unknown())
+            self._adjoint_linearity_cache = cached
+        nonlinear = not cached[1]
         if not self.consistent_jacobian and nonlinear:
             return (True,
                     why + ". The forward solve used the Picard tangent, so the "
@@ -10093,7 +10117,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         supported, why = self._adjoint_support()
         if not supported:
             raise RuntimeError(f"adjoint_solve: this solve refuses an adjoint — {why}")
-        if self.snes is None or not self.is_setup:
+        if self.snes is None or (not self.is_setup
+                                 and not getattr(self, "_adjoint_kernel_installed", False)):
             raise RuntimeError(
                 "adjoint_solve: no forward solve to take the adjoint of. Call "
                 "solve() first; the adjoint is taken about the state it ended in.")
@@ -10128,10 +10153,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 b.restoreSubVector(gis, sub)
         else:
             values = np.asarray(rhs, dtype=float).ravel()
-            if values.size != b.getLocalSize():
+            bad = uw.mpi.comm.allreduce(int(values.size != b.getLocalSize()), op=uw.MPI.MAX)
+            if bad:
                 raise ValueError(
                     f"adjoint_solve: rhs has {values.size} entries; this solver's "
-                    f"composite global vector has {b.getLocalSize()} on this rank")
+                    f"composite global vector has {b.getLocalSize()} on rank "
+                    f"{uw.mpi.rank}")
             b.array[:] = values
         x = gvec.duplicate()
         x.set(0.0)
@@ -10204,8 +10231,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         gvec.setArray(0.0)
         gis, _subdm = self._subdict["velocity"]
         sub = gvec.getSubVector(gis)
-        if sub.getLocalSize() != velocity_dual.size:
-            n = sub.getLocalSize()
+        n = sub.getLocalSize()
+        bad = uw.mpi.comm.allreduce(int(n != velocity_dual.size), op=uw.MPI.MAX)
+        if bad:
             gvec.restoreSubVector(gis, sub)
             self.dm.restoreGlobalVec(gvec)
             raise RuntimeError(
@@ -10509,7 +10537,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 UW_DMSetTime(_time_dm_stokes.dm, t_nd)
             self.mesh.update_lvec()
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
-            self._update_constants()
+            self._update_constants(record=True)
 
             # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
             # Re-check here: this path never reaches the instrumentation, so an armed
@@ -10562,7 +10590,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)
@@ -10615,15 +10643,26 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # with the guard in place both tangents are finite everywhere. See
         # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
         # Not for a linear solve. ``ksponly`` is the user's declaration that
-        # the problem is linear, and a Picard step before it is not merely
+        # the problem is linear, and a sweep before it is not merely
         # redundant: under Eisenstat-Walker the real solve then starts from a
         # reduced residual and is handed a loose tolerance — measured 12%
         # error against 2% on the spherical-shell Nitsche response
-        # (test_1064) when this ran before ksponly.
+        # (test_1064) when this ran before ksponly. Read the DECLARATION:
+        # ``snes.getType()`` is whatever the previous solve's setFromOptions
+        # left, so a type set between solves was missed (found in review).
+        #
+        # What this sweep IS: one ``nrichardson`` step, x <- x - lambda F(x),
+        # with no linear solve and no frozen tangent. It is not a Picard step
+        # and it is nearly inert (1-12% residual reduction on a linear Stokes,
+        # measured); whether it earns its place on a nonlinear cold start is
+        # a benchmark item. ``picard=-1`` switches it off explicitly.
+        declared = self.petsc_options.getString("snes_type", snes_type) or snes_type
         if (picard == 0 and self.consistent_jacobian is True
-                and snes_type != "ksponly"
+                and declared != "ksponly"
                 and (zero_init_guess or self._solution_is_trivially_zero())):
             picard = 1
+        if picard < 0:
+            picard = 0
 
         if verbose and uw.mpi.rank == 0:
             print(f"SNES solve - picard = {picard}", flush=True)

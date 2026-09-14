@@ -136,5 +136,44 @@ def test_initial_field_gradient_matches_a_directional_finite_difference():
     _, Jp = _forward(m, b0 + h * direction)
     _, Jm = _forward(m, b0 - h * direction)
     fd = (Jp - Jm) / (2 * h)
-    adjoint = float(dual @ direction)
+    # over the OWNED degrees of freedom: a NumPy dot on .array counts the
+    # ghost nodes of a partition twice (found in review at np=2)
+    adjoint = uw.adjoint.inner(beta, dual, direction)
     assert adjoint == pytest.approx(fd, rel=1.0e-4), (adjoint, fd)
+
+
+def test_a_misfit_that_names_the_parameter_gets_its_explicit_term():
+    """dJ/dm = the implicit part through the solves plus dJ/dm at the final
+    level for a misfit written in terms of m (found in review: omitted)."""
+    m = _build()
+    uw, eta0 = m["uw"], m["eta0"]
+    b0 = m["beta0"]()
+    misfit = eta0 * _misfit_expr(m)
+
+    final, J = _forward(m, b0)
+    adjoint = uw.adjoint.TranscriptAdjoint(m["model"], final).gradient(
+        misfit, parameters=[eta0])["parameters"][eta0]
+
+    def J_at(value):
+        eta0.sym = sympy.Float(value)
+        _forward(m, b0)
+        return float(uw.maths.Integral(m["mesh"], misfit).evaluate())
+
+    h = 1.0e-4
+    fd = (J_at(1.0 + h) - J_at(1.0 - h)) / (2 * h)
+    eta0.sym = sympy.Float(1.0)
+    assert adjoint == pytest.approx(fd, rel=1.0e-4), (adjoint, fd)
+
+
+def test_gradient_reuses_its_scratch_fields():
+    """Sixteen registered variables leaked per call and the sixth call took
+    ten times the first (found in review)."""
+    m = _build()
+    uw, eta0 = m["uw"], m["eta0"]
+    final, _ = _forward(m, m["beta0"]())
+    back = uw.adjoint.TranscriptAdjoint(m["model"], final)
+    back.gradient(_misfit_expr(m), parameters=[eta0])
+    n_after_first = len(m["model"]._variables)
+    for _ in range(3):
+        back.gradient(_misfit_expr(m), parameters=[eta0])
+    assert len(m["model"]._variables) == n_after_first
