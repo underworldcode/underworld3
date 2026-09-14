@@ -131,7 +131,7 @@ class SolverBaseClass(uw_object):
 
         # Jacobian tangent selection — validated property, see the
         # consistent_jacobian docstring below for the mode semantics.
-        self.consistent_jacobian = False
+        self.consistent_jacobian = True
         # Picard->Newton continuation parameter (constants[]-routed so it can be
         # ramped at solve time without a JIT recompile). 0 = Picard, 1 = Newton.
         # Created LAZILY (see _get_newton_alpha) only when continuation is used,
@@ -394,15 +394,21 @@ class SolverBaseClass(uw_object):
         dispatch; the residual is never affected, so the converged solution
         always satisfies the exact constitutive law.
 
-        ``False`` (default)
+        ``True`` (default)
+            Unwrap the flux before differentiation so the tangent captures
+            :math:`\partial\eta/\partial(\nabla v)` (full Newton). The
+            residual is symbolic, so this tangent is exact and cheap; a cold
+            start takes one Picard step first to find the basin (the
+            ``picard = 1`` warm-up in ``solve``), then Newton. It is also the
+            tangent the adjoint transposes.
+        ``False``
             Differentiate the residual flux *as wrapped* — the effective
             viscosity is frozen, giving a Picard / defect-correction tangent.
-            Bit-identical to the long-standing behaviour. Globally robust;
-            load-bearing for the tuned hard-yield viscoplastic paths.
-        ``True``
-            Unwrap the flux before differentiation so the tangent captures
-            :math:`\partial\eta/\partial(\nabla v)` (full Newton). Fast near
-            the solution; its yield kink can stall the line search far from it.
+            Linearly convergent, and the SNES then holds a Jacobian that is
+            not :math:`\partial R/\partial u`. Opt in where the hard-yield
+            viscoplastic solves need it (the notch class), where Picard is an
+            entry requirement rather than an accelerator. Was the default
+            until 2026-09.
         ``"continuation"``
             Picard :math:`\rightarrow` Newton. Blend
             :math:`J(\alpha) = J_{\mathrm{picard}} + \alpha\,(J_{\mathrm{newton}}
@@ -10549,7 +10555,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # still evaluates the Newton branch pointwise, and IEEE 0*NaN = NaN);
         # with the guard in place both tangents are finite everywhere. See
         # docs/developer/design/nonlinear-solver-homotopy-warmstart.md (Layer 1).
+        # Not for a linear solve. ``ksponly`` is the user's declaration that
+        # the problem is linear, and a Picard step before it is not merely
+        # redundant: under Eisenstat-Walker the real solve then starts from a
+        # reduced residual and is handed a loose tolerance — measured 12%
+        # error against 2% on the spherical-shell Nitsche response
+        # (test_1064) when this ran before ksponly.
         if (picard == 0 and self.consistent_jacobian is True
+                and snes_type != "ksponly"
                 and (zero_init_guess or self._solution_is_trivially_zero())):
             picard = 1
 
