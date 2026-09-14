@@ -149,7 +149,7 @@ def test_transport_is_off_unless_asked_for():
     assert manager._transport_solver is None
 
 
-def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf"):
+def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver="stokes", initial_velocity=False):
     """The analytic Maxwell shear box, with the stress history of one's choosing.
 
     Simple shear of a Maxwell material: sigma_xy = eta gammadot (1 - exp(-t/t_r)).
@@ -164,7 +164,12 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf"):
         maxCoords=(width / 2, height / 2))
     v = uw.discretisation.MeshVariable(f"U_{transport}{order}", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable(f"P_{transport}{order}", mesh, 1, degree=1)
-    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
+    if solver == "stokes":
+        stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
+    else:
+        # The trace-back Navier-Stokes solver at negligible inertia: the same box.
+        stokes = uw.systems.NavierStokesSLCN(mesh, v, p, rho=1.0e-6, order=1)
+        stokes.bodyforce = sympy.Matrix([[0.0, 0.0]])
     stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         stokes.Unknowns, order=order, integrator=integrator)
@@ -179,11 +184,20 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf"):
     stokes.petsc_options["snes_type"] = "newtonls"
     stokes.petsc_options["ksp_type"] = "fgmres"
 
+    if initial_velocity:
+        # The steady shear profile, already in place before the first solve.
+        v.array[:, 0, :] = uw.function.evaluate(
+            sympy.Matrix([[2.0 * speed * mesh.X[1] / height, 0.0]]), v.coords).reshape(-1, 2)
     for _ in range(steps):
-        stokes.solve(timestep=dt, zero_init_guess=False, evalf=False)
+        stokes.solve(timestep=dt, zero_init_guess=False)
 
+    # After a solve the Stokes family has committed the new stress into the
+    # history's first level; the trace-back Navier-Stokes solver records it at
+    # the NEXT carry, so there its first level still holds the previous step
+    # and the stress just solved for is the constitutive flux (#742).
+    latest = stokes.DFDt.psi_star[0].sym if solver == "stokes" else stokes.constitutive_model.flux
     stress = float(np.asarray(uw.function.evaluate(
-        stokes.DFDt.psi_star[0].sym[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
+        latest[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
     rate = 2.0 * speed / height
     exact = eta * rate * (1.0 - np.exp(-steps * dt * shear_modulus / eta))
     return type(stokes.DFDt).__name__, stress, exact
@@ -415,3 +429,26 @@ def test_devss_is_off_by_default_and_vanishes_on_a_uniform_strain_rate():
     norm_on, _ = with_devss(_sheared_varying_modulus, "semi_lagrangian", 1)
     moved = abs(norm_on - norm_off) / norm_off
     assert 1e-6 < moved < 5e-2, moved                        # live, and only projection-sized
+
+
+def test_the_exponential_integrator_runs_on_the_trace_back_navier_stokes():
+    """The trace-back Navier-Stokes solver has its own history path. It must
+    tell a viscoelastic model the step and refresh the integrator coefficients
+    as the Stokes family does; it did neither, so the memory term was absent
+    and the exponential integrator ran in its viscous limit (#741)."""
+    for integrator, tolerance in (("etd", 1e-3), ("bdf", 0.02)):
+        _, stress, exact = _maxwell_shear("semi_lagrangian", 1, integrator=integrator, solver="ns_slcn")
+        assert abs(stress - exact) / exact < tolerance, (integrator, stress, exact)
+
+
+def test_a_preset_velocity_gives_both_integrators_the_same_first_stress():
+    """A trace-back history initialises its first level from the constitutive
+    flux of the velocity it finds. With a velocity already in place that flux
+    must be formed with the integrator's coefficients for this step -- the
+    exponential one read alpha = phi = 0 and recorded the full viscous stress,
+    seven times the BDF value on the cylinder (#740). One step: the two
+    first-order integrators agree to O(dt / t_r)."""
+    _, bdf, _ = _maxwell_shear("semi_lagrangian", 1, steps=1, integrator="bdf", initial_velocity=True)
+    _, etd, _ = _maxwell_shear("semi_lagrangian", 1, steps=1, integrator="etd", initial_velocity=True)
+    assert abs(etd - bdf) < 0.05 * abs(bdf), (etd, bdf)
+

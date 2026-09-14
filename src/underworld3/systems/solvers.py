@@ -1660,6 +1660,14 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         # Parameters.dt_elastic. If it differs from the actual timestep,
         # the stress computation is inconsistent with the time integration.
         self.constitutive_model.Parameters.dt_elastic = timestep
+        # The integrator coefficients must be current BEFORE the history is
+        # first carried: a trace-back history initialises its first level from
+        # the constitutive flux of the velocity it finds, and with the
+        # exponential integrator that flux read the viscous-limit coefficients
+        # (alpha = phi = 0) until the update that used to follow the carry
+        # (#740). The BDF coefficients are refreshed again after the carry, as
+        # before, since they read the step history the carry updates.
+        self.constitutive_model._update_history_coefficients()
 
         if _force_setup:
             self._needs_function_rewire = True
@@ -5436,6 +5444,17 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             self._needs_function_rewire = True
             self.DFDt.psi_fn = self.constitutive_model.flux.T
 
+        # A viscoelastic constitutive model integrates its stress over the
+        # solve step: it has to be told the step, and its integrator
+        # coefficients refreshed, exactly as the Stokes family does in
+        # _stress_history_prepare / _stress_history_advance. Without this the
+        # memory term was silently absent here (dt_elastic never set) and the
+        # exponential integrator ran in its viscous limit (#741).
+        _cm = self.constitutive_model
+        if getattr(_cm, "requires_stress_history", False) and hasattr(_cm.Parameters, "dt_elastic"):
+            _cm.Parameters.dt_elastic = timestep
+            _cm._update_history_coefficients()
+
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
             self._setup_discretisation(verbose)
@@ -5456,6 +5475,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
         if trace is not None:
             trace.finish_step()
+        if getattr(_cm, "requires_stress_history", False):
+            _cm._update_history_coefficients()      # BDF reads the carried step history
 
         # Override AM coefficients if flux_order is explicitly set
         if self._flux_order is not None:
