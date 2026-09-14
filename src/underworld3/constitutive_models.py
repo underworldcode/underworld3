@@ -2383,8 +2383,9 @@ class ViscoElasticPlasticFlowModel(ViscousFlowModel):
             and self.Unknowns.DFDt.forcing_star is None
         ):
             raise RuntimeError(
-                "integrator='etd' requires a SemiLagrangian DDt with "
-                "with_forcing_history=True. The auto-DDt creation path "
+                "integrator='etd' at order 2 needs a stress history with a "
+                "forcing slot (with_forcing_history=True: the nodal or the "
+                "integration-point flavour). The auto-DDt creation path "
                 "reads stress_history_ddt_kwargs — re-create the solver/"
                 "model so the kwargs propagate."
             )

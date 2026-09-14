@@ -211,7 +211,7 @@ KINDS = {
 
 
 @pytest.mark.parametrize("order, integrator, tolerance",
-                         [(1, "bdf", 0.02), (2, "bdf", 0.002), (1, "etd", 1e-4)])
+                         [(1, "bdf", 0.02), (2, "bdf", 0.002), (1, "etd", 1e-4), (2, "etd", 0.01)])
 def test_every_stress_history_solves_the_maxwell_shear_box(order, integrator, tolerance):
     """A Stokes solve carries its viscoelastic stress with the history its
     `stress_transport` names, and on a uniform stress all three agree exactly.
@@ -224,6 +224,8 @@ def test_every_stress_history_solves_the_maxwell_shear_box(order, integrator, to
     """
     results = {}
     for transport, expected_kind in KINDS.items():
+        if integrator == "etd" and order == 2 and transport == "eulerian":
+            continue        # the grid flavour has no forcing-history slot yet
         kind, stress, exact = _maxwell_shear(transport, order, integrator=integrator)
         assert kind == expected_kind
         assert abs(stress - exact) / exact < tolerance, (transport, stress, exact)

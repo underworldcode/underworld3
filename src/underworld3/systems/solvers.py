@@ -1756,15 +1756,17 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
             smoothing=0.0001,
         )
         if self.stress_transport == "integration_point":
-            if ddt_kwargs:
+            unsupported = set(ddt_kwargs) - {"with_forcing_history"}
+            if unsupported:
                 raise NotImplementedError(
                     f"{type(cm).__name__} asks its stress history for "
-                    f"{sorted(ddt_kwargs)}, which the integration-point flavour "
+                    f"{sorted(unsupported)}, which the integration-point flavour "
                     "does not provide; use stress_transport='semi_lagrangian'.")
             self.Unknowns.DFDt = uw.systems.ddt.IntegrationPointSemiLagrangian(
                 self.mesh,
                 sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
                 self.u.sym,
+                **ddt_kwargs,
                 **{k: v for k, v in common.items() if k != "smoothing"},
             )
         elif self.stress_transport == "eulerian":

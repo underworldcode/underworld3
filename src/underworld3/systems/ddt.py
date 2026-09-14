@@ -4694,11 +4694,13 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         order: int = 1,
         theta: float = 0.5,
         monotone_mode: Optional[str] = None,
+        with_forcing_history: bool = False,
         **_unsupported,
     ):
         super().__init__()
         self.vtype = vtype
         self.monotone_mode = monotone_mode
+        self.with_forcing_history = bool(with_forcing_history)
         self.mesh = mesh
         self.bcs = list(bcs) if bcs is not None else []   # per instance, never a shared default
         self.verbose = verbose
@@ -4772,6 +4774,26 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # expression (variables, ramping constants, swarm proxies).
         self._n_v = max(order, 2)          # velocity levels the segments read
         self._init_coefficient_expressions(order, self.theta, with_exp=True)
+        # The forcing (strain-rate) history the second-order exponential
+        # integrator reads. Unlike the nodal flavour, which re-evaluates the
+        # strain rate at its nodes, this one is carried along the same
+        # characteristic as the stress: ``forcing_star`` at the points is what
+        # the parcel saw a step ago, sampled from the continuous snapshot at
+        # the departure point. Committed from the solved strain rate in
+        # :meth:`update_forcing_history` (the constitutive model's post-solve
+        # hook), traced in :meth:`_fill_slots`.
+        self.forcing_star = None
+        self._forcing_fn = None
+        self._forcing_projection = None
+        self._forcing_flat = None
+        if self.with_forcing_history:
+            self.forcing_star = uw.discretisation.IntegrationPointVariable(
+                f"forcing_star_ip_{inst}", mesh, vtype=vtype,
+                varsymbol=rf"{{ \dot\varepsilon^{{ * }}_{{ [{inst}] }} }}", units=None)
+            self.forcing_snap = uw.discretisation.MeshVariable(
+                f"forcing_snap_ip_{inst}", mesh, vtype=vtype,
+                degree=degree, continuous=continuous,
+                varsymbol=rf"{{ \dot\varepsilon^{{ (n) }}_{{ [{inst}] }} }}", units=None)
 
     def spatial_weights(self):
         """As the base class, except that at ``theta = 1`` the old-level
@@ -4982,6 +5004,46 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 evaluate=uw.function.global_evaluate,
                 evalf=evalf, monotone=self.monotone_mode,
             )
+            if k == 0 and self.forcing_star is not None:
+                # the strain rate the parcel saw a step ago, at the same
+                # departure point as its stress
+                self._write_components(
+                    self.forcing_star, self.forcing_snap.sym, X,
+                    evaluate=uw.function.global_evaluate, evalf=evalf,
+                )
+
+    def update_forcing_history(self, forcing_fn=None, evalf=False, verbose=False):
+        """Commit the solved strain rate as the forcing history: an L2 fit onto
+        the continuous snapshot, read back at the points. Same construction
+        as :meth:`commit_flux_to_history`, for the same reason -- the next
+        trace-back samples the snapshot between its nodes. A no-op unless
+        ``with_forcing_history`` was asked for."""
+        if self.forcing_star is None:
+            return
+        if forcing_fn is None:
+            forcing_fn = self._forcing_fn
+        if forcing_fn is None:
+            return
+        forcing = sympy.Matrix(forcing_fn)
+        columns = _storage_components(self.vtype, forcing.shape)
+        if self._forcing_projection is None:
+            self._forcing_flat = uw.discretisation.MeshVariable(
+                f"forcing_nodal_{self.instance_number}", self.mesh, (1, len(columns)),
+                vtype=uw.VarType.MATRIX, degree=self.degree, continuous=self.continuous,
+                varsymbol=rf"{{E^{{\mathrm{{nodal}}}}_{{{self.instance_number}}}}}")
+            self._forcing_projection = uw.systems.solvers.SNES_MultiComponent_Projection(
+                self.mesh, u_Field=self._forcing_flat, n_components=len(columns),
+                verbose=self.verbose)
+        self._forcing_projection.uw_function = sympy.Matrix(
+            [[forcing[i, j] for (i, j) in columns]])
+        self._forcing_projection.smoothing = 0.0
+        self._forcing_projection.solve(verbose=verbose)
+        points = np.asarray(self.forcing_star.integration_points).reshape(-1, self.mesh.cdim)
+        for column in range(len(columns)):
+            self.forcing_snap.data[:, column] = np.asarray(
+                self._forcing_flat.data[:, column]).reshape(-1)
+            self.forcing_star.data[:, column] = np.asarray(uw.function.evaluate(
+                self._forcing_flat.sym[0, column], points)).reshape(-1)
 
     def initialise_history(self):
         """Start every snapshot and slot from the current field, so
