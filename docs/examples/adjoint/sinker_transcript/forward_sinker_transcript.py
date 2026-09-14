@@ -186,7 +186,7 @@ def _mag(q):
 
 
 # %%
-def solve_forward(model, centre, nsteps=NSTEPS, dt=DT):
+def solve_forward(model, centre, nsteps=NSTEPS, dt=DT, initial_on_tape=False):
     """Run the forward model from `centre`.
 
     Returns `(transcript, final_state)`. The transcript is the record of the run:
@@ -205,7 +205,6 @@ def solve_forward(model, centre, nsteps=NSTEPS, dt=DT):
     # run's psi_star. An inversion driver runs the forward model many times;
     # reset the history explicitly every time the initial condition is set.
     adv.Unknowns.DuDt.initialise_history()
-    stokes.solve(zero_init_guess=True)
 
     # A new run gets a new transcript and a clock at zero. Without the clear, the
     # transcript would be the concatenation of every run this process has done and
@@ -217,6 +216,16 @@ def solve_forward(model, centre, nsteps=NSTEPS, dt=DT):
     uwmodel.record_every = 1          # keep the state every step started from
     uwmodel.record_limit = None       # this run is short; keep all of them
 
+    if initial_on_tape:
+        # v_0 = Stokes(beta_0) as a zero-length step, so the library's backward
+        # pass (uw.adjoint.TranscriptAdjoint) sees beta_0 -> v_0. The
+        # hand-rolled adjoint in inverse_sinker_transcript.py accounts for
+        # this solve itself and expects one transport per entry, so it keeps
+        # the solve off the tape.
+        with uwmodel.step(0 * dt, label="initial"):
+            stokes.solve(zero_init_guess=True)
+    else:
+        stokes.solve(zero_init_guess=True)
     for _ in range(nsteps):
         with uwmodel.step(dt, label="sink"):
             adv.solve(timestep=dt, zero_init_guess=False)

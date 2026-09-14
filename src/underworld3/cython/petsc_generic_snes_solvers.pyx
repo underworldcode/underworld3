@@ -1531,6 +1531,11 @@ class SolverBaseClass(uw_object):
         b = gvec.duplicate()
         if isinstance(rhs, PETSc.Vec):
             rhs.copy(b)
+        elif hasattr(rhs, "vec") and hasattr(rhs, "array"):
+            # A dual held as a FIELD on the unknown's space: one coefficient
+            # per node. localToGlobal keeps the unconstrained ones, which is
+            # the restriction to this solver's rows.
+            self.dm.localToGlobal(rhs.vec, b)
         else:
             values = np.asarray(rhs, dtype=float).ravel()
             if values.size != b.getLocalSize():
@@ -10110,6 +10115,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         b = gvec.duplicate()
         if isinstance(rhs, PETSc.Vec):
             rhs.copy(b)
+        elif isinstance(rhs, (tuple, list)) and len(rhs) == 2 \
+                and hasattr(rhs[0], "vec"):
+            # (u_dual, p_dual) held as fields: restrict each to its block.
+            b.setArray(0.0)
+            for name, var in zip(("velocity", "pressure"), rhs):
+                if var is None or name not in self._subdict:
+                    continue
+                gis, subdm = self._subdict[name]
+                sub = b.getSubVector(gis)
+                subdm.localToGlobal(var.vec, sub)
+                b.restoreSubVector(gis, sub)
         else:
             values = np.asarray(rhs, dtype=float).ravel()
             if values.size != b.getLocalSize():

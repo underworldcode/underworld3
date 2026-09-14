@@ -447,6 +447,9 @@ class Model(PintNativeModelMixin, BaseModel):
     # What each part SOLVES, keyed by part id: the residual as implemented,
     # recorded once per run and again if the form changes. See _describe_part.
     _parts: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # part -> the live object behind it (solver, history manager), so a
+    # pass over the transcript can call the operator a record names.
+    _part_objects: Dict[str, Any] = PrivateAttr(default_factory=dict)
     # Set while rewind() is doing its own restore, so load_state does not log a
     # second, less informative note for the same backtrack.
     _restoring: Any = PrivateAttr(default=False)
@@ -1542,6 +1545,7 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         if self._open_step is None:
             return
+        self._part_objects[part] = owner
         known = self._parts.get(part)
         rebuilding = not getattr(owner, "is_setup", True)
         if known is not None and not rebuilding:
@@ -1579,6 +1583,12 @@ class Model(PintNativeModelMixin, BaseModel):
         record.update(described)
         self._parts[part] = record
         self._write_transcript_line(record)
+
+    def part_object(self, part: str):
+        """The live object behind a recorded part, or None if it is not in
+        this process — a transcript read back from disk names parts that no
+        longer exist."""
+        return self._part_objects.get(part)
 
     def _record_step_event(self, kind: str, name: str, **detail) -> None:
         """Note that something happened inside the step in progress.

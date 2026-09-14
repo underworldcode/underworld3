@@ -650,9 +650,11 @@ class _DDtBase(uw_object):
             import underworld3 as uw
 
             supported, why = self._adjoint_support()
+            part = f"{type(self).__name__}#{self.instance_number}"
+            uw.get_default_model()._part_objects[part] = self
             uw.get_default_model()._record_step_event(
                 "history_shift", self._history_label(), dt=float(dt),
-                part=f"{type(self).__name__}#{self.instance_number}",
+                part=part,
                 tracks=self._tracked_expression(),
                 adjoint={"supported": bool(supported), "reason": why},
                 **detail,

@@ -9,8 +9,16 @@ Run it:
 ```bash
 python generate_target_transcript.py     # twin experiment: v(T) at the true centre
 python forward_sinker_transcript.py      # one forward run, printing its transcript
-python taylor_test_transcript.py         # the gate
+python taylor_test_transcript.py         # the gate, with the hand-rolled adjoint below
+python taylor_test_library.py            # the same gate, with uw.adjoint.TranscriptAdjoint
 ```
+
+The second Taylor test replaces everything in `inverse_sinker_transcript.py`
+with one library call: the transcript is the tape, each solve's residual says
+what it reads, and the backward pass needs no wiring from this script beyond
+the misfit and the control. The initial Stokes solve goes on the tape as a
+zero-length step (`solve_forward(..., initial_on_tape=True)`) so the walk
+sees `beta_0 -> v_0`; the hand-rolled version accounts for that solve itself.
 
 ---
 

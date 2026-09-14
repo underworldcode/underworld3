@@ -718,6 +718,40 @@ tangent for its assembly (a JIT rebuild; the DM and KSP are kept), transposes
 that, and puts the Picard kernel back for the next forward solve. The
 verdict says so.
 
+**The whole run, backwards.** With `model.record_every = 1` the transcript is
+a forward tape — the operators per step, and the state each step started
+from — and `uw.adjoint.TranscriptAdjoint` walks it in reverse with no
+problem-specific wiring:
+
+```python
+final = model.save_state()                       # the N+1th level
+back = uw.adjoint.TranscriptAdjoint(model, final)
+result = back.gradient(misfit_integrand, parameters=[eta0], fields=[beta])
+result["parameters"][eta0]                       # dJ/d eta0
+result["fields"][beta]                           # dJ/d beta_0, as a dual field
+```
+
+For each solve, in reverse order of the record, it restores the step's
+snapshot, replays the solves before it, replays it, and puts each history's
+input back where the post-solve hook shifted it — so the residual is
+linearised at the solve's own input state without anyone touching
+`psi_star`. The residual then says what the solve read: every field in
+`F0`/`F1` other than the unknown gets the dual `(dR/df)^T mu`, a history
+slot's dual goes to the field it tracks at the previous level, and every
+parameter gets `mu^T dR/dm`. A dual is held as a field (one coefficient per
+node), so a control `c` with `f_0 = f_0(c)` finishes with a dot product
+against `d f_0 / d c`.
+
+Two things the tape has to contain. Every solve must be inside a step — a
+Stokes solve taken before the loop to make `v_0` is invisible to the walk,
+and its dependence on the parameters with it. And a driver that runs the
+forward model more than once must reset the Eulerian history each time it
+sets the initial condition (`adv.DuDt.initialise_history()`), or the second
+run reads the first run's history. Checked in `tests/test_0020` on a
+two-solver, two-step sinking blob: the viscosity gradient and the dual on
+the initial level set both match central finite differences to 1e-4
+(measured 1e-7).
+
 All of it is checked against central finite differences in `tests/test_0019`:
 Poisson; one SUPG step, where the Jacobian is not symmetric and a transpose
 taken the wrong way round would show; Stokes with a constant viscosity; and

@@ -190,12 +190,13 @@ What follows from it, in order: `adjoint_solve`, `dual_of` and
 `sensitivity` on the solvers — landed, checked against finite differences
 on Poisson, on a non-symmetric SUPG step, and on Stokes with a linear and a
 strain-rate-dependent viscosity, with the consistent tangent assembled for
-the adjoint whichever tangent the forward iteration used; the two transport
-operators
-materialised — interpolation at departure points and ∂X_dep/∂v; a reverse
-driver that walks the transcript backwards, restoring each step's snapshot
-and replaying it so the residual is linearised at the step's own input; and
-a Taylor test in the library.
+the adjoint whichever tangent the forward iteration used; the reverse driver
+(`uw.adjoint.TranscriptAdjoint`) — landed: it walks the transcript backwards,
+restores each step's snapshot, replays each solve to its own input state, and
+reads what each solve depends on from its residual, checked to 1e-7 against
+finite differences on a two-solver run; the two transport operators
+materialised — interpolation at departure points and ∂X_dep/∂v, which lift
+the semi-Lagrangian refusal; and a Taylor test in the library.
 
 ## Inferred plan, then declared plan
 
