@@ -115,17 +115,27 @@ temperature.data[:, 0] = values          # BAD  — compatibility layer in new c
   The number sets a broad sequence, nothing more — selection is by marker, and a
   shared number is not a conflict.
 - Validate a new test's own correctness before changing library code to satisfy it.
-- **Assert against a known answer, not against a rival method.** A test that asserts
-  one method is more accurate than another encodes a preference, not a contract: the
-  result moves with the fixture, the mesh, the forcing and every default the two
-  methods carry. Test the analytic or reference solution with an absolute bound.
-  Convergence ORDER and mathematical exactness are contracts and may be asserted
-  freely; "method A scored better than method B here" may not.
-- **Prefer a relative bound.** An absolute threshold silently tracks whatever sets
-  the scale — a free-slip test asserting `|v_n| < 1e-4` was really asserting
-  5.7e-3 relative, and tracked the buoyancy forcing rather than the method.
-- **If an assertion would break when the code gets better, it belongs at tier C.**
-  That is the test to apply, and it is what tier C is for.
+- **Every test asserts against a HARD BASELINE.** An analytic solution, a published
+  value, a closed-form geometric quantity, a conservation identity, an exactness
+  property. If a failure cannot name what is broken, it is not a test — it is a
+  drift detector, and it belongs in a benchmark rather than the suite.
+- **A baseline must be tight enough to fail the moment a default changes.** This is
+  the point of the rule. A loose test does not fail when behaviour moves: it absorbs
+  the change, drifts inside its own margin, and fails later somewhere else for
+  reasons that are hard to trace back. #692 redefined `mesh.cell_size()`, nothing
+  failed, the Nitsche penalty moved 43%, and a spherical-shell benchmark slid from
+  0.2% to 2.4% — still inside its 5% tolerance — before breaking months later on one
+  platform's triangulation (#734). The test that would have caught it on the day is
+  `cell_size` pinned to its closed form on a known simplex.
+- **Never assert that one method beats another.** A ratio between two errors moves
+  when either moves, so it cannot say which; it is strictly less informative than the
+  numbers it was computed from, and it encodes a preference rather than a contract.
+  Assert each method against the baseline instead. Convergence ORDER and mathematical
+  exactness are contracts and may be asserted freely.
+- **Prefer a relative bound to an absolute one** where the scale is set elsewhere. An
+  absolute threshold silently tracks whatever sets that scale — a free-slip test
+  asserting `|v_n| < 1e-4` was really asserting 5.7e-3 relative, and tracked the
+  buoyancy forcing rather than the method under test.
 
 ### The tiers
 
