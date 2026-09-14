@@ -177,3 +177,35 @@ def test_gradient_reuses_its_scratch_fields():
     for _ in range(3):
         back.gradient(_misfit_expr(m), parameters=[eta0])
     assert len(m["model"]._variables) == n_after_first
+
+
+def test_a_crank_nicolson_step_reads_the_old_flux_and_the_gradient_still_matches():
+    """theta = 0.5 (the AdvDiffusion default) reads the previous level through
+    its GRADIENT — kappa grad(T_old) in the residual — so the dual on that
+    level has a gradient part. This was refused by name; now it is assembled
+    as the FEM load int g1 . grad(phi_j), and the field gradient matches
+    finite differences as it does at theta = 1."""
+    m = _build()
+    uw, beta = m["uw"], m["beta"]
+    adv = uw.systems.AdvDiffusion(m["mesh"], u_Field=beta, V_fn=m["v"].sym)   # default theta
+    adv.constitutive_model = uw.constitutive_models.DiffusionModel
+    adv.constitutive_model.Parameters.diffusivity = 1.0e-2   # a visible flux term
+    adv.petsc_options.delValue("ksp_monitor")
+    adv.tolerance = 1.0e-12
+    assert adv.theta == 0.5
+    m["adv"] = adv
+    b0 = m["beta0"]()
+
+    final, J = _forward(m, b0)
+    result = uw.adjoint.TranscriptAdjoint(m["model"], final).gradient(
+        _misfit_expr(m), fields=[beta], parameters=[m["eta0"]])
+    dual = result["fields"][beta][:, 0, 0]
+
+    X = np.asarray(beta.coords)
+    direction = np.sin(np.pi * X[:, 0]) * np.sin(np.pi * X[:, 1])
+    h = 1.0e-3
+    _, Jp = _forward(m, b0 + h * direction)
+    _, Jm = _forward(m, b0 - h * direction)
+    fd = (Jp - Jm) / (2 * h)
+    adjoint = uw.adjoint.inner(beta, dual, direction)
+    assert adjoint == pytest.approx(fd, rel=1.0e-4), (adjoint, fd)

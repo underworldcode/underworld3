@@ -194,9 +194,12 @@ the adjoint whichever tangent the forward iteration used; the reverse driver
 (`uw.adjoint.TranscriptAdjoint`) — landed: it walks the transcript backwards,
 restores each step's snapshot, replays each solve to its own input state, and
 reads what each solve depends on from its residual, checked to 1e-7 against
-finite differences on a two-solver run; the two transport operators
-materialised — interpolation at departure points and ∂X_dep/∂v, which lift
-the semi-Lagrangian refusal; and a Taylor test in the library.
+finite differences on a two-solver run, including a field read through its
+gradient (the Crank–Nicolson old flux), assembled as a FEM load rather than
+by parts; the two transport operators materialised — interpolation at
+departure points and ∂X_dep/∂v, which lift the semi-Lagrangian refusal; and
+a Taylor test in the library (`test_0020`, and the sinker example through
+the library at 1.00000).
 
 ## Inferred plan, then declared plan
 

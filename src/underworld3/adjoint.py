@@ -38,20 +38,47 @@ import numpy as np
 import sympy
 
 import underworld3 as uw
+from underworld3.cython.generic_solvers import SNES_Scalar as _SNES_Scalar
+from underworld3.cython.generic_solvers import SNES_Vector as _SNES_Vector
+from underworld3.utilities._api_tools import Template
+
+
+class _ScalarLoad(_SNES_Scalar):
+    r"""A generic scalar solver used as an ASSEMBLER: its residual at zero is
+    :math:`\int g_0\,\phi_j + \mathbf g_1\cdot\nabla\phi_j`, which is the
+    dual of a field read through its value (``g0``) and its gradient (``g1``)
+    in one assembly — no integration by parts, no boundary term to get wrong.
+    """
+
+    _solver_terms = (("_g0", "value part of the load"), ("_g1", "gradient part"))
+    F0 = Template(r"g_0", lambda self: sympy.Matrix([[self._g0]]),
+                  "value part of a dual load")
+    F1 = Template(r"\mathbf{g}_1", lambda self: self._g1,
+                  "gradient part of a dual load (1 x cdim)")
+
+
+class _VectorLoad(_SNES_Vector):
+    """The vector-field counterpart of :class:`_ScalarLoad`: ``g0`` a row of
+    ``dim`` components, ``g1`` a ``dim x cdim`` matrix."""
+
+    _solver_terms = (("_g0", "value part of the load"), ("_g1", "gradient part"))
+    F0 = Template(r"\mathbf{g}_0", lambda self: self._g0, "value part of a dual load")
+    F1 = Template(r"\mathbf{G}_1", lambda self: self._g1,
+                  "gradient part of a dual load (dim x cdim)")
 
 
 class _Scratch:
-    """Fields and projections on a space, reused rather than re-created.
+    """Fields and assemblers on a space, reused rather than re-created.
 
     A fresh MeshVariable per dual leaked sixteen registered variables per
     ``gradient()`` call and slowed the sixth call tenfold (found in review).
-    Variables are handed out and taken back; a projection is built once per
-    space and re-pointed at each expression.
+    Variables are handed out and taken back; an assembler is built once per
+    space and re-pointed at each load.
     """
 
     def __init__(self):
         self.free = {}
-        self.projections = {}
+        self.assemblers = {}
 
     @staticmethod
     def space(variable):
@@ -74,53 +101,70 @@ class _Scratch:
     def give(self, var):
         self.free.setdefault(self.space(var), []).append(var)
 
-    def projection(self, like):
+    def assembler(self, like):
         key = self.space(like)
-        proj = self.projections.get(key)
-        if proj is None:
+        asm = self.assemblers.get(key)
+        if asm is None:
             target = self.take(like)
             mesh, n = key[0], key[1]
-            proj = (uw.systems.Projection(mesh, target) if n == 1
-                    else uw.systems.Vector_Projection(mesh, target))
-            proj.smoothing = 0.0
-            proj.petsc_options.delValue("ksp_monitor")
-            self.projections[key] = proj
-        return proj
+            asm = (_ScalarLoad(mesh, u_Field=target) if n == 1
+                   else _VectorLoad(mesh, u_Field=target))
+            # Every solver family's setup reads constitutive_model._solver_is_setup
+            # unguarded, so the assembler carries an inert model: its F0/F1
+            # templates override the model's flux entirely.
+            if n == 1:
+                asm.constitutive_model = uw.constitutive_models.DiffusionModel
+                asm.constitutive_model.Parameters.diffusivity = 1.0
+            else:
+                asm.constitutive_model = uw.constitutive_models.ViscousFlowModel
+                asm.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+            asm.consistent_jacobian = False      # a residual evaluation only
+            asm.petsc_options.delValue("ksp_monitor")
+            self.assemblers[key] = asm
+        return asm
 
 
 _shared_scratch = _Scratch()
 
 
-def dual_on(variable, expression, scratch=None):
-    r"""The dual of ``expression`` on ``variable``'s space, held as a field.
+def dual_on(variable, value, grad=None, scratch=None):
+    r"""The dual of a load on ``variable``'s space, held as a field.
 
-    :math:`b_j = \int e\,\phi_j` for every basis function of ``variable``,
-    written into a MeshVariable of the same discretisation (one coefficient
-    per node) and returned. Assembled as a projection's residual at zero, so
-    no linear solve is taken. The returned field comes from ``scratch``
-    (a :class:`_Scratch` pool; the module's shared one by default) — give it
-    back with ``scratch.give(field)`` when finished with it.
+    :math:`b_j = \int v\,\phi_j + \mathbf g\cdot\nabla\phi_j` for every basis
+    function of ``variable``: ``value`` is the part read through the field's
+    value, ``grad`` (optional; ``1 x cdim`` for a scalar field, ``dim x cdim``
+    for a vector one) the part read through its gradient — a Crank–Nicolson
+    step reads the old level's flux this way. Assembled as the residual of a
+    generic solver at zero, so it is exactly the FEM load, with no linear
+    solve and no integration by parts. The returned field comes from
+    ``scratch`` (a :class:`_Scratch` pool; the module's shared one by
+    default) — give it back with ``scratch.give(field)`` when done.
     """
     scratch = _shared_scratch if scratch is None else scratch
     mesh = variable.mesh
-    proj = scratch.projection(variable)
+    n = getattr(variable, "num_components", 1)
+    dim, cdim = mesh.dim, mesh.cdim
+    asm = scratch.assembler(variable)
+    if grad is None:
+        grad = sympy.zeros(1, cdim) if n == 1 else sympy.zeros(dim, cdim)
+    asm._g0 = value
+    asm._g1 = sympy.Matrix(grad)
+    asm._needs_function_rewire = True          # the templates re-evaluate
+    asm._build(False, False, None)
     out_var = scratch.take(variable)
-    proj.uw_function = expression
-    proj._build(False, False, None)
-    gvec = proj.dm.getGlobalVec()
+    gvec = asm.dm.getGlobalVec()
     gvec.set(0.0)
     mesh.update_lvec()
-    proj.dm.setAuxiliaryVec(mesh.lvec, None)
+    asm.dm.setAuxiliaryVec(mesh.lvec, None)
     F = gvec.duplicate()
-    proj.snes.computeFunction(gvec, F)
-    F.scale(-1.0)
-    lvec = proj.dm.getLocalVec()
+    asm.snes.computeFunction(gvec, F)
+    lvec = asm.dm.getLocalVec()
     lvec.set(0.0)
-    proj.dm.globalToLocal(F, lvec)
+    asm.dm.globalToLocal(F, lvec)
     out_var.vec.array[:] = lvec.array[:]
-    proj.dm.restoreLocalVec(lvec)
+    asm.dm.restoreLocalVec(lvec)
     F.destroy()
-    proj.dm.restoreGlobalVec(gvec)
+    asm.dm.restoreGlobalVec(gvec)
     mesh._stale_lvec = True
     try:
         out_var._sync_lvec_to_gvec()
@@ -226,7 +270,7 @@ class TranscriptAdjoint:
         peeled = _peel(misfit)
         for var, symbols in self._fields_in(misfit):
             dJ = [sympy.diff(peeled, s) for s in symbols]
-            self._accumulate(acc, var, dual_on(var, _as_expression(dJ), scratch))
+            self._accumulate(acc, var, dual_on(var, _as_expression(dJ), None, scratch))
 
         grad = {p: 0.0 for p in parameters}
         for p in parameters:
@@ -258,11 +302,18 @@ class TranscriptAdjoint:
                 for p in parameters:
                     grad[p] += solver.sensitivity(mu, p)
 
-                for var, symbols in self._reads(solver, u):
-                    integrand = [solver.adjoint_integrand(mu, s) for s in symbols]
+                for var, symbols, derivatives in self._reads(solver, u):
+                    value = [solver.adjoint_integrand(mu, s) for s in symbols]
+                    g1 = None
+                    if derivatives:
+                        # g1[i, k] = the contraction with respect to d f_i / d x_k
+                        cdim = self._mesh().cdim
+                        g1 = sympy.zeros(len(symbols), cdim)
+                        for (i, k), atom in derivatives.items():
+                            g1[i, k] = solver.adjoint_integrand(mu, atom)
                     target = inputs.get(var.name, var)     # a history -> its field
                     self._accumulate(acc, target,
-                                     dual_on(target, _as_expression(integrand), scratch))
+                                     dual_on(target, _as_expression(value), g1, scratch))
                 scratch.give(mu)
 
         out_fields = {}
@@ -303,32 +354,29 @@ class TranscriptAdjoint:
                 if token in text]
 
     def _reads(self, solver, unknown):
-        """The (variable, component, symbol) triples a solver's residual reads,
-        other than its unknown. Direct values only; a residual that reads the
-        GRADIENT of another field needs the integration-by-parts term, which
-        is not built, so it is refused by name rather than dropped."""
-        text = str(_peel(solver.F0.sym)) + str(_peel(solver.F1.sym))
+        """What a solver's residual reads, other than its unknown.
+
+        ``(variable, value symbols, {(component, direction): derivative atom})``
+        per variable. A component prints as ``{v}_{ 0 }``; a derivative
+        carries a comma — ``{v}_{ 0,1}`` for a vector, ``{T}_{,1}`` for a
+        scalar — and is read through the gradient part of the load.
+        """
+        f0 = _peel(solver.F0.sym)
+        f1 = _peel(solver.F1.sym)
+        text = str(f0) + str(f1)
+        atoms = set(f0.atoms(sympy.Function)) | set(f1.atoms(sympy.Function))
         found = []
         for token, var in self._tokens().items():
-            if var is unknown:
+            if var is unknown or token not in text:
                 continue
-            if token not in text:
-                continue
-            # a component prints as {v}_{ 0 }; a derivative carries a comma,
-            # {v}_{ 0,1} for a vector and {T}_{,1} for a scalar
-            if re.search(re.escape(token) + r"_\{[^}]*,", text):
-                shown = var.name
-                if var.name.startswith("psi_star"):
-                    tracked = self._tracked_field_of_slot(var)
-                    shown = (f"the history of {tracked.name!r}" if tracked is not None
-                             else var.name)
-                raise NotImplementedError(
-                    f"{type(solver).__name__}: the residual reads a derivative of "
-                    f"{shown}; the dual on a field read through its gradient (the "
-                    f"integration-by-parts term with its boundary part) is not "
-                    f"built. A Crank-Nicolson step (theta=0.5) reads the old flux "
-                    f"this way; theta=1 does not.")
-            found.append((var, _symbols_of(var)))
+            derivatives = {}
+            pattern = re.compile(re.escape(token) + r"_\{ ?(\d*),(\d+)\}\(")
+            for atom in atoms:
+                m = pattern.match(str(atom))
+                if m:
+                    i = int(m.group(1)) if m.group(1) else 0
+                    derivatives[(i, int(m.group(2)))] = atom
+            found.append((var, _symbols_of(var), derivatives))
         return found
 
     def _linearise_at(self, step, solves, j):
@@ -360,14 +408,6 @@ class TranscriptAdjoint:
             solver.solve(timestep=step.dt, zero_init_guess=False)
         else:
             solver.solve(zero_init_guess=False)
-
-    def _tracked_field_of_slot(self, slot):
-        """The field a ``psi_star`` slot belongs to, via the live histories."""
-        for obj in self.model._part_objects.values():
-            stars = getattr(obj, "psi_star", None)
-            if stars and any(s is slot for s in stars):
-                return self._tracked_field(obj)
-        return None
 
     def _tracked_field(self, history):
         text = str(history.psi_fn)

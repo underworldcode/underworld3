@@ -738,9 +738,16 @@ linearised at the solve's own input state without anyone touching
 `psi_star`. The residual then says what the solve read: every field in
 `F0`/`F1` other than the unknown gets the dual `(dR/df)^T mu`, a history
 slot's dual goes to the field it tracks at the previous level, and every
-parameter gets `mu^T dR/dm`. A dual is held as a field (one coefficient per
-node), so a control `c` with `f_0 = f_0(c)` finishes with a dot product
-against `d f_0 / d c`.
+parameter gets `mu^T dR/dm`. A field read through its *gradient* — a
+Crank–Nicolson step (θ = 0.5, the `AdvDiffusion` default) reads the old
+level as `κ∇T_old` — gets the gradient part of the load too: the dual is
+assembled as the FEM load `∫ g₀ φⱼ + g₁·∇φⱼ` by a generic solver's residual
+at zero, so there is no integration by parts and no boundary term to drop.
+A dual is held as a field (one coefficient per node); pair it with a
+direction using `uw.adjoint.inner(field, dual, direction)`, which sums over
+the owned degrees of freedom (a NumPy dot on `.array` counts a partition's
+ghost nodes twice), so a control `c` with `f_0 = f_0(c)` finishes with
+`inner(f, dual, d f_0 / d c)`.
 
 Two things the tape has to contain. Every solve must be inside a step — a
 Stokes solve taken before the loop to make `v_0` is invisible to the walk,
@@ -750,7 +757,8 @@ sets the initial condition (`adv.DuDt.initialise_history()`), or the second
 run reads the first run's history. Checked in `tests/test_0020` on a
 two-solver, two-step sinking blob: the viscosity gradient and the dual on
 the initial level set both match central finite differences to 1e-4
-(measured 1e-7).
+(measured 1e-7), at θ = 1 and at the default θ = 0.5, serially and on two
+ranks.
 
 All of it is checked against central finite differences in `tests/test_0019`:
 Poisson; one SUPG step, where the Jacobian is not symmetric and a transpose
