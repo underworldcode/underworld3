@@ -683,6 +683,45 @@ weak-constraint 4D-Var with the joins chosen by the run rather than by hand.
 Nothing is approximated silently — the refusal says what the model was
 allowed to be wrong about.
 
+**The adjoint of one solve is built in.** For a solver whose verdict is
+"supported", the discrete adjoint is two calls, with no hand algebra:
+
+```python
+b = -solver.dual_of(T.sym[0] - T_target.sym[0])   # -dJ/dT for J = 1/2 int (T - T*)^2
+mu, reason = solver.adjoint_solve(b, target=mu_var)  # K^T mu = b, K the SNES Jacobian
+dJ_dkappa = solver.sensitivity(mu_var, kappa)        # int (dF/dkappa) . mu, symbolic dF/dkappa
+```
+
+`dual_of` assembles the right-hand side on the solver's own space, so the
+Dirichlet nodes are excluded and the multiplier comes back zero there — the
+homogenised adjoint conditions, without stating them. `sensitivity` follows
+the parameter through the constitutive model's own symbol (the residual holds
+`\upkappa`, whose value is your `kappa`), so the chain rule reaches it.
+
+One thing to get right, because `solve()` moves it: a time step's residual is
+`F(u_new; u_old, v, dt)`, and the history manager shifts `u_old` out of its
+slot in the post-solve hook. Put the step's input back before linearising —
+`solver.DuDt.psi_star[0].array[...] = u_old` — or the sensitivity is a few
+per cent wrong on a SUPG step (measured).
+
+Stokes takes the same transpose on its composite (u, p) system, with
+`target=(u_adj, p_adj)` and `dual_of` taking a velocity-space expression.
+With a linear viscosity the operator is symmetric, and this reproduces the
+second-solver construction in `docs/examples/adjoint`. With a strain-rate- or
+pressure-dependent viscosity the adjoint is the transpose of the **consistent
+tangent**, which that construction cannot build — and which the SNES only
+holds if the forward solve used it. The default `consistent_jacobian=False`
+is the Picard tangent with the viscosity frozen; the forward solve converges
+either way, so nothing complains, and the transposed adjoint would be
+silently wrong. A nonlinear rheology solved that way refuses, in the verdict
+and in `adjoint_solve`, with the fix in the message: set
+`consistent_jacobian=True`.
+
+All of it is checked against central finite differences in `tests/test_0019`:
+Poisson; one SUPG step, where the Jacobian is not symmetric and a transpose
+taken the wrong way round would show; Stokes with a constant viscosity; and
+Stokes with η(ε̇) under the consistent tangent.
+
 The figure marks the same three states per solve — converged, converged with a
 fieldsplit block that hit its iteration cap, and diverged. The middle one is
 worth the separate mark: a capped block did not solve, so the Schur operator

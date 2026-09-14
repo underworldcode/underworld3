@@ -174,11 +174,15 @@ a descent direction that is the same inexact direction each iteration, not an
 exact gradient; the exact discrete adjoint is the verification anchor where
 the operators admit it, and the segments say where that anchor holds.
 
-What follows from it, in order: `adjoint_solve` and `sensitivity` on the
-solvers (the steady half, already shown exact on the sinker); the two
-transport operators materialised — interpolation at departure points and
-∂X_dep/∂v; a reverse driver that walks the transcript backwards, restoring
-snapshots forward as needed; and a Taylor test in the library.
+What follows from it, in order: `adjoint_solve`, `dual_of` and
+`sensitivity` on the solvers — landed, checked against finite differences
+on Poisson, on a non-symmetric SUPG step, and on Stokes with a linear and a
+strain-rate-dependent viscosity (the latter refusing under the Picard
+tangent, whose transpose is not the adjoint); the two transport operators
+materialised — interpolation at departure points and ∂X_dep/∂v; a reverse
+driver that walks the transcript backwards, restoring each step's snapshot
+and replaying it so the residual is linearised at the step's own input; and
+a Taylor test in the library.
 
 ## Inferred plan, then declared plan
 
