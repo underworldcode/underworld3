@@ -1429,10 +1429,11 @@ class SolverBaseClass(uw_object):
                     f"rotated operator with its own Krylov loop, and there is "
                     f"no transpose path through it")
         if not self.consistent_jacobian and not self._residual_is_linear_in_unknown():
-            return (False,
-                    "nonlinear residual solved with the Picard tangent: the SNES "
-                    "Jacobian is the frozen-coefficient operator, not dR/du. Set "
-                    "consistent_jacobian=True for the adjoint")
+            return (True,
+                    "implicit residual: Jacobian transpose for the state, symbolic "
+                    "derivative of the residual for a parameter. The forward solve "
+                    "used the Picard tangent, so the consistent tangent is assembled "
+                    "for the adjoint (a rebuild of the Jacobian kernel)")
         return (True,
                 "implicit residual: Jacobian transpose for the state, symbolic "
                 "derivative of the residual for a parameter")
@@ -1506,8 +1507,14 @@ class SolverBaseClass(uw_object):
                 "solve() first; the adjoint is taken about the state it ended in.")
         import numpy as np
 
-        cdef DM dm = self.dm
+        cdef DM dm
         cdef Vec cmesh_lvec
+
+        # The kernel first: if the forward ran Picard, the rebuild below may
+        # replace the DS the SNES assembles with, so every handle taken from
+        # the DM must be taken AFTER it.
+        tangent = self._consistent_tangent_for_adjoint()
+        dm = self.dm
 
         # The Jacobian at the state the forward solve ended in.
         gvec = self.dm.getGlobalVec()
@@ -1538,6 +1545,7 @@ class SolverBaseClass(uw_object):
         ksp.setOperators(J, P)
         ksp.solveTranspose(b, x)
         reason = int(ksp.getConvergedReason())
+        self._restore_tangent(tangent)
 
         if target is not None:
             # Homogeneous constraints: the local vector is zeroed before the
@@ -1670,6 +1678,39 @@ class SolverBaseClass(uw_object):
         for i in range(self.mesh.dim):
             out = out + d0[i] * mu_sym[i]
         return out + uw.maths.tensor.rank2_inner_product(d1, grad_mu)
+
+    def _consistent_tangent_for_adjoint(self):
+        """Make sure the Jacobian kernel the adjoint assembles is dR/du.
+
+        The converged state is the same whichever tangent the forward
+        iteration used, and dR/du is a function of that state alone — so
+        Picard iterations spoil nothing. What they leave behind is a SNES
+        whose Jacobian KERNEL is the frozen-coefficient one, and assembling
+        that at the converged state gives the wrong matrix to transpose. If
+        the forward ran Picard on a nonlinear residual, switch the kernel to
+        the consistent tangent here (a JIT rebuild of the pointwise
+        functions; the DM, SNES and KSP are kept) and return a token so
+        :meth:`_restore_tangent` can put the Picard kernel back for the next
+        forward solve. Returns None when nothing had to change.
+        """
+        if self.consistent_jacobian is not False:
+            return None
+        if self._residual_is_linear_in_unknown():
+            return None                       # the two tangents coincide
+        self._consistent_jacobian = True
+        self._needs_function_rewire = True
+        self._build(False, False, None)
+        # The rewire hands back a new DM and SNES on the saddle-point class.
+        # snes.solve() would set them up itself; a direct computeJacobian
+        # will not, and segfaults on the unset-up SNES (measured).
+        self.snes.setUp()
+        return "picard"
+
+    def _restore_tangent(self, token):
+        if token is None:
+            return
+        self._consistent_jacobian = False
+        self._needs_function_rewire = True    # rebuilt lazily by the next solve
 
     def _newton_alpha_for_adjoint(self):
         """Under ``"continuation"``, put the tangent at full Newton for the
@@ -10016,10 +10057,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         except Exception:
             nonlinear = not self._residual_is_linear_in_unknown()
         if not self.consistent_jacobian and nonlinear:
-            return (False,
-                    "nonlinear rheology solved with the Picard tangent: the SNES "
-                    "Jacobian is the frozen-viscosity operator, not dR/du. Set "
-                    "consistent_jacobian=True (or 'continuation') for the adjoint")
+            return (True,
+                    why + ". The forward solve used the Picard tangent, so the "
+                    "consistent tangent is assembled for the adjoint (a rebuild "
+                    "of the Jacobian kernel)")
         return supported, why
 
     def adjoint_solve(self, rhs, target=None):
@@ -10054,6 +10095,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         import numpy as np
 
+        tangent = self._consistent_tangent_for_adjoint()   # before any DM vector
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)
         self._gather_fields_to_global(gvec)
@@ -10082,6 +10124,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ksp.setOperators(J, P)
         ksp.solveTranspose(b, x)
         reason = int(ksp.getConvergedReason())
+        self._restore_tangent(tangent)
 
         if target is not None:
             u_adj, p_adj = target

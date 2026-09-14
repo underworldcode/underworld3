@@ -195,18 +195,39 @@ def test_stokes_gradient_in_the_viscosity_matches_finite_differences():
     assert adjoint < 0
 
 
-def test_a_nonlinear_rheology_solved_with_picard_refuses_and_says_the_fix():
+def test_a_nonlinear_rheology_solved_with_picard_still_gives_the_right_gradient():
+    """Picard iterations spoil nothing: the converged state is the same, and
+    dR/du is a function of that state alone. What Picard leaves behind is a
+    Jacobian KERNEL that is the frozen-viscosity one — so the adjoint
+    assembles the consistent tangent itself, and the gradient matches finite
+    differences exactly as it does under Newton. The Picard kernel is put
+    back for the next forward solve."""
     uw, model = _fresh()
     mesh = _mesh(uw)
     eta0 = uw.expression(r"\eta_0", 1.0, "prefactor")
-    stokes, V, P = _stokes(uw, mesh, "pic", lambda s: eta0 / (1 + s.Unknowns.Einv2))
+    stokes, V, P = _stokes(uw, mesh, "pic", lambda s: eta0 / (1 + 4 * s.Unknowns.Einv2))
     stokes.consistent_jacobian = False          # Picard, explicitly
-    stokes.solve()
+    u_adj = uw.discretisation.MeshVariable("u_adj_pic", mesh, 2, degree=2)
+    p_adj = uw.discretisation.MeshVariable("p_adj_pic", mesh, 1, degree=1)
+
+    def J_at(value):
+        eta0.sym = sympy.Float(value)
+        stokes.solve(zero_init_guess=True)
+        assert stokes.solve_report.converged, stokes.solve_report
+        return _kinetic(uw, mesh, V)
+
+    J_at(1.0)
     supported, why = stokes.adjoint_support()
-    assert supported is False
-    assert "consistent_jacobian" in why
-    with pytest.raises(RuntimeError, match="Picard"):
-        stokes.adjoint_solve(np.zeros(1))
+    assert supported is True and "Picard" in why, why
+    b = -stokes.dual_of(V.sym)
+    _, reason = stokes.adjoint_solve(b, target=(u_adj, p_adj))
+    assert reason > 0, reason
+    adjoint = stokes.sensitivity(u_adj, eta0)
+    assert stokes.consistent_jacobian is False   # put back
+
+    h = 1.0e-4
+    fd = (J_at(1.0 + h) - J_at(1.0 - h)) / (2 * h)
+    assert adjoint == pytest.approx(fd, rel=1.0e-3), (adjoint, fd)
 
 
 def test_a_nonlinear_rheology_with_the_consistent_tangent_matches_finite_differences():

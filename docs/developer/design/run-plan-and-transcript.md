@@ -174,11 +174,24 @@ a descent direction that is the same inexact direction each iteration, not an
 exact gradient; the exact discrete adjoint is the verification anchor where
 the operators admit it, and the segments say where that anchor holds.
 
+Two things follow from the residual being symbolic. First, every first
+derivative is always available: ∂R/∂u and ∂R/∂m are differentiated, not
+approximated, so the gradient is never in question — and the tangent the
+forward *iteration* used is irrelevant to it. Picard iterations spoil
+nothing; the converged state is the same, and the adjoint assembles ∂R/∂u at
+that state itself. Second, the same is not automatically true at second
+order. A Hessian — for posterior covariance, or a Newton step on the outer
+optimisation — needs ∂²R/∂u², ∂²R/∂u∂m, and a yield law written with `Min`
+or a softmin has a second derivative that is a distribution at the yield
+surface. Those terms exist symbolically, but they have to be handled with
+care rather than differentiated and trusted.
+
 What follows from it, in order: `adjoint_solve`, `dual_of` and
 `sensitivity` on the solvers — landed, checked against finite differences
 on Poisson, on a non-symmetric SUPG step, and on Stokes with a linear and a
-strain-rate-dependent viscosity (the latter refusing under the Picard
-tangent, whose transpose is not the adjoint); the two transport operators
+strain-rate-dependent viscosity, with the consistent tangent assembled for
+the adjoint whichever tangent the forward iteration used; the two transport
+operators
 materialised — interpolation at departure points and ∂X_dep/∂v; a reverse
 driver that walks the transcript backwards, restoring each step's snapshot
 and replaying it so the residual is linearised at the step's own input; and

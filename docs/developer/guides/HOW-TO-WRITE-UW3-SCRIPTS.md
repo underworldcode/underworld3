@@ -709,13 +709,14 @@ Stokes takes the same transpose on its composite (u, p) system, with
 With a linear viscosity the operator is symmetric, and this reproduces the
 second-solver construction in `docs/examples/adjoint`. With a strain-rate- or
 pressure-dependent viscosity the adjoint is the transpose of the **consistent
-tangent**, which that construction cannot build — and which the SNES only
-holds if the forward solve used it. The default `consistent_jacobian=False`
-is the Picard tangent with the viscosity frozen; the forward solve converges
-either way, so nothing complains, and the transposed adjoint would be
-silently wrong. A nonlinear rheology solved that way refuses, in the verdict
-and in `adjoint_solve`, with the fix in the message: set
-`consistent_jacobian=True`.
+tangent** ∂R/∂u, which that construction cannot build. Picard iterations in
+the forward solve spoil nothing — the converged state is the same, and ∂R/∂u
+is a function of that state alone — but they leave the SNES holding the
+frozen-viscosity Jacobian *kernel*. So when the forward ran Picard on a
+nonlinear residual, `adjoint_solve` switches the kernel to the consistent
+tangent for its assembly (a JIT rebuild; the DM and KSP are kept), transposes
+that, and puts the Picard kernel back for the next forward solve. The
+verdict says so.
 
 All of it is checked against central finite differences in `tests/test_0019`:
 Poisson; one SUPG step, where the Jacobian is not symmetric and a transpose
