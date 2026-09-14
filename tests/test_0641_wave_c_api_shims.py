@@ -250,13 +250,9 @@ class TestConsistentJacobianValidation:
             with pytest.raises(ValueError, match="consistent_jacobian"):
                 stokes.consistent_jacobian = value
 
-    def test_default_is_the_consistent_tangent(self, mesh):
-        """Newton by default: the residual is symbolic, so the tangent is
-        exact and cheap, and it is the matrix the adjoint transposes. Picard
-        (``False``) is the opt-in for the hard-yield solves that need it as
-        an entry requirement (flipped 2026-09)."""
+    def test_default_is_false(self, mesh):
         solver = uw.systems.Poisson(mesh)
-        assert solver.consistent_jacobian is True
+        assert solver.consistent_jacobian is False
 
 
 # ---------------------------------------------------------------------------

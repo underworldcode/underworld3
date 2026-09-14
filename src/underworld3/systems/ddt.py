@@ -619,16 +619,6 @@ class _DDtBase(uw_object):
         if with_exp:
             _update_exp_values(self._exp_coeffs, None, None)
 
-    def _adjoint_support(self):
-        """Whether this history's shift admits a discrete adjoint.
-
-        ``(supported, reason)``, written onto the ``history_shift`` event.
-        The default is a refusal that names the class, so a scheme added
-        without a verdict shows up in the transcript as undeclared rather
-        than passing as either.
-        """
-        return (False, f"{type(self).__name__} declares no linearisation")
-
     def _note_history_shift(self, dt, **detail):
         """Tell the model's open step that this history advanced.
 
@@ -649,14 +639,12 @@ class _DDtBase(uw_object):
         try:
             import underworld3 as uw
 
-            supported, why = self._adjoint_support()
             part = f"{type(self).__name__}#{self.instance_number}"
             uw.get_default_model()._part_objects[part] = self
             uw.get_default_model()._record_step_event(
                 "history_shift", self._history_label(), dt=float(dt),
                 part=part,
                 tracks=self._tracked_expression(),
-                adjoint={"supported": bool(supported), "reason": why},
                 **detail,
             )
         except Exception:
@@ -1055,8 +1043,6 @@ class Symbolic(_DDtBase):
     Lagrangian : Swarm-based material tracking.
     """
 
-    def _adjoint_support(self):
-        return (True, "implicit residual: the linearisation is the owning solver's Jacobian")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -1321,8 +1307,6 @@ class Eulerian(_DDtBase):
     Symbolic : For purely symbolic history (no mesh storage).
     """
 
-    def _adjoint_support(self):
-        return (True, "implicit residual: the linearisation is the owning solver's Jacobian")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -2318,8 +2302,6 @@ class SemiLagrangian(_DDtBase):
     Lagrangian : For full particle-following Lagrangian tracking.
     """
 
-    def _adjoint_support(self):
-        return (False, "the departure-point trace is differentiable in the velocity, but the interpolation at the departure points is not materialised as an operator")
 
     @timing.routine_timer_decorator
     def __init__(
@@ -3743,8 +3725,6 @@ class Lagrangian(_DDtBase):
     Lagrangian_Swarm : For user-provided swarms.
     """
 
-    def _adjoint_support(self):
-        return (True, "a copy on the particle set; valid while that set is fixed across the step — the swarm's advection record says whether it was")
 
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
@@ -4063,8 +4043,6 @@ class Lagrangian_Swarm(_DDtBase):
     Eulerian : Pure mesh-based history (no particle tracking).
     """
 
-    def _adjoint_support(self):
-        return (True, "a copy on the particle set; valid while that set is fixed across the step — the swarm's advection record says whether it was")
 
     instances = (
         0  # count how many of these there are in order to create unique private mesh variable ids
@@ -4376,8 +4354,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
     velocity history caches it by evaluation at each time level.
     """
 
-    def _adjoint_support(self):
-        return (False, "the departure-point trace is differentiable in the velocity, but the interpolation at the departure points is not materialised as an operator")
 
     def __init__(
         self,
