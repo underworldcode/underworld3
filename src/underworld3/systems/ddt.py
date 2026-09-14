@@ -619,7 +619,7 @@ class _DDtBase(uw_object):
             Also create the ETD-2 ``[α, φ]`` coefficients used by
             Maxwell-relaxation integration; values are pushed via
             PetscDSSetConstants every step in ``update_exp_coefficients``
-            (Symbolic, Eulerian, SemiLagrangian only).
+            (every flavour but the particle ones, #739).
         """
         self._bdf_coeffs = _create_coefficients(order, r"c^{\mathrm{BDF}}", self.instance_number)
         self._am_coeffs = _create_coefficients(order, r"a^{\mathrm{AM}}", self.instance_number)
@@ -630,6 +630,29 @@ class _DDtBase(uw_object):
         _update_am_values(self._am_coeffs, 1, theta)
         if with_exp:
             _update_exp_values(self._exp_coeffs, None, None)
+
+    def update_exp_coefficients(self, dt, tau_eff):
+        r"""Set the exponential (ETD) coefficients for this step.
+
+        ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
+        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)``, with τ_eff the
+        Maxwell relaxation time :math:`\eta_\mathrm{eff}/\mu`. Called by the
+        constitutive model, which owns τ_eff, before each solve -- peer to the
+        BDF/AM coefficient updates that ``update_pre_solve`` makes itself.
+        Every flavour that can carry a Maxwell stress allocates these
+        coefficients (#739); the particle flavours do not.
+        """
+        _update_exp_values(self._exp_coeffs, dt, tau_eff)
+
+    @property
+    def _exp_alpha(self):
+        """The ETD ``α`` coefficient UWexpression."""
+        return self._exp_coeffs[0]
+
+    @property
+    def _exp_phi(self):
+        """The ETD ``φ`` coefficient UWexpression."""
+        return self._exp_coeffs[1]
 
     def _register_with_default_model(self):
         """Register with the active default model as a snapshot state-bearer.
@@ -921,6 +944,11 @@ class _DDtBase(uw_object):
     #: ``update_post_solve`` (the particle flavours evaluate it at their
     #: particles) rather than through :meth:`commit_flux_to_history`.
     commits_flux_in_post_solve = False
+
+    #: The forcing (strain-rate) history the second-order exponential
+    #: integrator reads; only :class:`SemiLagrangian` allocates one, on
+    #: request. ``None`` means the integrator runs at first order (#739).
+    forcing_star = None
 
     def commit_flux_to_history(self, flux, verbose=False):
         r"""Project ``flux`` into ``psi_star[0]`` and shift the history levels.
@@ -1350,18 +1378,6 @@ class Symbolic(_DDtBase):
     def _history_syms(self):
         """Symbolic stores raw sympy matrices in ``psi_star`` — return them as-is."""
         return list(self.psi_star)
-
-    def update_exp_coefficients(self, dt, tau_eff):
-        r"""Update the ETD-2 (exponential) coefficient values for this step.
-
-        Sets ``self._exp_coeffs[0].sym = α`` and ``self._exp_coeffs[1].sym = φ``
-        from current ``dt`` and ``tau_eff`` (Maxwell relaxation time
-        :math:`\tau = \eta_\mathrm{eff}/\mu`). Called by the constitutive
-        model (which owns τ_eff) before each solve, peer to the BDF/AM
-        coefficient updates that happen automatically in
-        ``update_pre_solve``.
-        """
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
 
 
 class Eulerian(_DDtBase):
@@ -1805,10 +1821,6 @@ class Eulerian(_DDtBase):
             self._n_solves_completed += 1
 
         return
-
-    def update_exp_coefficients(self, dt, tau_eff):
-        r"""Update the ETD-2 (exponential) coefficient values for this step."""
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
 
 
 class EulerianSUPG(Eulerian):
@@ -3763,26 +3775,6 @@ class SemiLagrangian(_DDtBase):
 
         return
 
-    def update_exp_coefficients(self, dt, tau_eff):
-        r"""Update the scalar ETD-2 (exponential) coefficient UWexpressions.
-
-        Sets ``self._exp_coeffs[0].sym = α = exp(-Δt/τ_eff)`` and
-        ``self._exp_coeffs[1].sym = φ = (1-α)/(Δt/τ_eff)`` so the next solve
-        uses the correct exponential coefficients via PetscDSSetConstants
-        on the next ``_update_constants`` call.
-        """
-        _update_exp_values(self._exp_coeffs, dt, tau_eff)
-
-    @property
-    def _exp_alpha(self):
-        """Convenience accessor for the ETD-2 ``α`` coefficient UWexpression."""
-        return self._exp_coeffs[0]
-
-    @property
-    def _exp_phi(self):
-        """Convenience accessor for the ETD-2 ``φ`` coefficient UWexpression."""
-        return self._exp_coeffs[1]
-
     def update_forcing_history(self, forcing_fn=None, evalf=False, verbose=False):
         r"""Refresh ``forcing_star`` from ``forcing_fn`` via direct nodal evaluation.
 
@@ -4779,7 +4771,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         # V_fn evaluated at the nodes at that time, so V_fn may be any
         # expression (variables, ramping constants, swarm proxies).
         self._n_v = max(order, 2)          # velocity levels the segments read
-        self._init_coefficient_expressions(order, self.theta, with_exp=False)
+        self._init_coefficient_expressions(order, self.theta, with_exp=True)
 
     def spatial_weights(self):
         """As the base class, except that at ``theta = 1`` the old-level

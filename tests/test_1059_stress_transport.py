@@ -149,7 +149,7 @@ def test_transport_is_off_unless_asked_for():
     assert manager._transport_solver is None
 
 
-def _maxwell_shear(transport, order, steps=20, dt=0.1):
+def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf"):
     """The analytic Maxwell shear box, with the stress history of one's choosing.
 
     Simple shear of a Maxwell material: sigma_xy = eta gammadot (1 - exp(-t/t_r)).
@@ -167,7 +167,7 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1):
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
     stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        stokes.Unknowns, order=order)
+        stokes.Unknowns, order=order, integrator=integrator)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
     stokes.constitutive_model.Parameters.shear_modulus = shear_modulus
     stokes.constitutive_model.Parameters.dt_elastic = dt
@@ -196,18 +196,21 @@ KINDS = {
 }
 
 
-@pytest.mark.parametrize("order, tolerance", [(1, 0.02), (2, 0.002)])
-def test_every_stress_history_solves_the_maxwell_shear_box(order, tolerance):
+@pytest.mark.parametrize("order, integrator, tolerance",
+                         [(1, "bdf", 0.02), (2, "bdf", 0.002), (1, "etd", 1e-4)])
+def test_every_stress_history_solves_the_maxwell_shear_box(order, integrator, tolerance):
     """A Stokes solve carries its viscoelastic stress with the history its
     `stress_transport` names, and on a uniform stress all three agree exactly.
 
     The analytic tolerance is what catches a history that is rebuilt from its
     own flux instead of carried: that applies the constitutive update twice a
-    step and lands at 12.8% on this box at order 1 (#732).
+    step and lands at 12.8% on this box at order 1 (#732). The exponential
+    integrator is exact for a constant strain rate, and it must run on every
+    flavour, not only the nodal one (#739).
     """
     results = {}
     for transport, expected_kind in KINDS.items():
-        kind, stress, exact = _maxwell_shear(transport, order)
+        kind, stress, exact = _maxwell_shear(transport, order, integrator=integrator)
         assert kind == expected_kind
         assert abs(stress - exact) / exact < tolerance, (transport, stress, exact)
         results[transport] = stress
