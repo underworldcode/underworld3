@@ -425,19 +425,24 @@ def _update_am_values(coeffs, effective_order, theta=0.5):
     - Order 2: [5/12, 8/12, -1/12]
     - Order 3: [9/24, 19/24, -5/24, 1/24]
     """
+    # Exact, so the scheme's form prints as it is written: a^AM = 1/2, not
+    # 0.5, and 5/12 rather than 0.41666. The JIT sees the same double.
+    one = sympy.Integer(1)
     if effective_order <= 0:
-        values = [1.0]
+        values = [one]
     elif effective_order == 1:
-        values = [float(theta), 1.0 - float(theta)]
+        theta = sympy.nsimplify(theta, rational=True)
+        values = [theta, one - theta]
     elif effective_order == 2:
-        values = [5.0 / 12, 8.0 / 12, -1.0 / 12]
+        values = [sympy.Rational(5, 12), sympy.Rational(8, 12), sympy.Rational(-1, 12)]
     elif effective_order >= 3:
-        values = [9.0 / 24, 19.0 / 24, -5.0 / 24, 1.0 / 24]
+        values = [sympy.Rational(9, 24), sympy.Rational(19, 24),
+                  sympy.Rational(-5, 24), sympy.Rational(1, 24)]
 
     for i, v in enumerate(values):
         coeffs[i].sym = v
     for i in range(len(values), len(coeffs)):
-        coeffs[i].sym = 0.0
+        coeffs[i].sym = sympy.Integer(0)
 
 
 def _create_exp_coefficients(instance_id):
@@ -1790,7 +1795,8 @@ class EulerianSUPG(Eulerian):
         self.V_fn_history = None
         self.diffusivity = diffusivity
         self._tau_shape = str(tau_shape)
-        self._peclet_weight = float(peclet_weight)
+        # Exact, so 4 Pe_c^2 prints and cancels as 64, not 64.0.
+        self._peclet_weight = sympy.nsimplify(peclet_weight, rational=True)
 
         # The stabilisation knobs are runtime constants.
         tag = self.instance_number
@@ -1832,7 +1838,7 @@ class EulerianSUPG(Eulerian):
 
     @property
     def peclet_weight(self) -> float:
-        return self._peclet_weight
+        return float(self._peclet_weight)
 
     @property
     def supg_weight(self) -> float:
@@ -1889,23 +1895,26 @@ class EulerianSUPG(Eulerian):
         ct, cu, cv = self._tau_weights
         transient = (ct * c0 / self._delta_t) ** 2
         weight = self._supg_weight
+        # The regulariser that keeps every denominator finite is the library's
+        # named vanishing value, so the form prints it as a symbol.
+        eps = uw.maths.functions.vanishing
         if self._peclet_weight > 0.0:
             # Pe^2 / (Pe^2 + Pe_c^2) written without dividing by nu (1 for nu = 0).
             ah2 = a_mag2 * h ** 2
-            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + 1.0e-30)
+            weight = weight * ah2 / (ah2 + 4 * self._peclet_weight ** 2 * nu ** 2 + eps)
         if self._tau_shape == "inverse_sum":
             advective = (cu * sympy.sqrt(a_mag2) / h) ** 2
             viscous = (cv * nu / h ** 2) ** 2
-            return weight / sympy.sqrt(transient + advective + viscous + 1.0e-30)
+            return weight / sympy.sqrt(transient + advective + viscous + eps)
         # The 1-D optimal shapes: tau = (h / 2|a|) xi(Pe), Pe = |a| h / (2 nu).
-        a_mag = sympy.sqrt(a_mag2 + 1.0e-30)
-        Pe = a_mag * h / (2 * nu + 1.0e-30)      # finite at zero diffusivity (the default)
+        a_mag = sympy.sqrt(a_mag2 + eps)
+        Pe = a_mag * h / (2 * nu + eps)      # finite at zero diffusivity (the default)
         if self._tau_shape == "brooks_hughes":
             xi = 1 / sympy.tanh(Pe) - 1 / Pe      # coth is not C99: the printer would rewrite it through exp
         else:
             xi = sympy.Min(Pe / 3, 1)
         tau_steady = h / (2 * a_mag) * xi
-        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + 1.0e-30))
+        return weight / sympy.sqrt(transient + 1 / (tau_steady ** 2 + eps))
 
     def stabilisation_flux(self, R):
         r"""The SUPG flux :math:`\tau\,R\otimes\mathbf{a}`, one row per component of ``R``.
