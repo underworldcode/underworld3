@@ -6,12 +6,13 @@ import matplotlib.pyplot as plt
 
 d = np.load("fault_segments_data.npz")
 history, true = d["history"], d["true"]
+names = ["flat", "lower ramp", "upper ramp", "near surface"]
 n_seg = len(true)
 
 fig, axes = plt.subplots(1, 3, figsize=(11, 3.2), gridspec_kw={"width_ratios": [2.2, 1.6, 1.4]})
 
 ax = axes[0]
-ax.contourf(d["gx"], d["gy"], np.log10(d["eta_1"]), levels=np.linspace(-2.2, 0, 12), cmap="viridis")
+ax.contourf(d["gx"], d["gy"], np.log10(d["eta_1"]), levels=np.linspace(-2.4, 0, 13), cmap="viridis")
 ax.plot(d["points"][:, 0], d["points"][:, 1], "wx", ms=7, mew=1.5)
 ax.set_aspect("equal")
 ax.set_xlim(0, 2); ax.set_ylim(0, 1)
@@ -28,7 +29,7 @@ ax.legend(fontsize=8, frameon=False)
 ax = axes[2]
 its = np.arange(len(history))
 for k in range(n_seg):
-    ax.semilogy(its, history[:, 1 + k], "o-", ms=3, lw=1, color=f"C{k}", label=f"segment {k + 1}")
+    ax.semilogy(its, history[:, 1 + k], "o-", ms=3, lw=1, color=f"C{k}", label=names[k])
     ax.axhline(true[k], color=f"C{k}", lw=0.8, ls="--")
 ax.set_xlabel("misfit evaluation"); ax.set_ylabel("weak-plane viscosity")
 ax.set_title("strengths (dashed: true)", fontsize=10)

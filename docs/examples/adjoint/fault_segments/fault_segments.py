@@ -1,11 +1,13 @@
-"""Strength of a fault, segment by segment, from surface uplift and stress.
+"""Strength of a listric fault, segment by segment, from surface uplift and stress.
 
-A dipping fault under horizontal shortening, represented as a weak plane in a
-transversely isotropic viscosity (no cut in the mesh). Its weak-plane
-viscosity is different on each of a few segments down dip, and those are the
-unknowns. The observations are the uplift rate along the top surface and the
-shear stress in the bulk near a handful of points, taken from a run at the
-true strengths.
+A listric fault under horizontal shortening: a ramp that steepens from a flat
+decollement at depth to a dip of sixty degrees at the surface, represented as
+a weak plane in a transversely isotropic viscosity (no cut in the mesh). Its
+weak-plane viscosity is different on the flat, on the lower and upper parts
+of the ramp, and near the surface, and those four strengths are the unknowns.
+The observations are the uplift rate along the top surface and the shear
+stress in the bulk near a handful of points, taken from a run at the true
+strengths.
 
 The gradient of the misfit with respect to each segment's strength comes
 from the solver's own discrete adjoint: a transpose against the Jacobian it
@@ -27,12 +29,13 @@ from underworld3.adjoint import misfit_duals, inner
 
 params = uw.Params(
     cell_size=uw.Param(1 / 24, "mesh cell size (box is 2 x 1)"),
-    dip=uw.Param(45.0, "fault dip, degrees"),
-    n_segments=uw.Param(3, "segments of independent strength down dip"),
+    surface_dip=uw.Param(60.0, "dip of the ramp where it reaches the surface, degrees"),
+    flat_depth=uw.Param(0.3, "height of the decollement above the base"),
+    surface_x=uw.Param(1.9, "where the fault reaches the surface"),
     band=uw.Param(0.08, "half-width of the weak band, in box units"),
-    true_strengths=uw.Param("0.01,0.1,0.03", "weak-plane viscosity per segment, true run"),
+    true_strengths=uw.Param("0.005,0.05,0.02,0.2",
+                            "weak-plane viscosity: flat, lower ramp, upper ramp, near surface"),
     initial_strength=uw.Param(0.1, "starting guess, every segment"),
-    n_stress_points=uw.Param(4, "shear-stress observation points in the bulk"),
     check_only=uw.Param(0, "1: gradient check against finite differences, no inversion"),
 )
 
@@ -45,27 +48,40 @@ v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=True)
 v_obs = uw.discretisation.MeshVariable("v_obs", mesh, mesh.dim, degree=2)
 
-# The fault: a plane through (0.6, 0) at the given dip, a weak band around it,
-# and segments of equal length along it.
-theta = math.radians(params.dip)
-t_hat = sympy.Matrix([[math.cos(theta), math.sin(theta)]])     # along dip
-n_hat = sympy.Matrix([[-math.sin(theta), math.cos(theta)]])    # the director
-d = (x - 0.6) * n_hat[0] + y * n_hat[1]                         # distance from the plane
-s = (x - 0.6) * t_hat[0] + y * t_hat[1]                         # position along it
-length = 1.0 / math.sin(theta)
+# The fault: a flat decollement at y = flat_depth running from the left wall
+# to x = xc, then a circular ramp of radius R about (xc, yc) that leaves the
+# flat horizontally and reaches the surface at the given dip. The signed
+# distance to it and the position along it are exact on each piece, and the
+# director is the normal at the nearest point: vertical on the flat, radial on
+# the ramp.
+phi_top = math.radians(params.surface_dip) - math.pi / 2       # angle of the surface point about the centre
+R = (1.0 - params.flat_depth) / (1.0 + math.sin(phi_top))
+yc = params.flat_depth + R
+xc = params.surface_x - R * math.cos(phi_top)
+r = sympy.sqrt((x - xc) ** 2 + (y - yc) ** 2)
+phi = sympy.atan2(y - yc, x - xc)
+on_flat = x < xc
+d = sympy.Piecewise((y - params.flat_depth, on_flat), (R - r, True))
+s = sympy.Piecewise((x, on_flat), (xc + R * (phi + sympy.pi / 2), True))
+n_hat = sympy.Matrix([[sympy.Piecewise((0, on_flat), ((x - xc) / r, True)),
+                       sympy.Piecewise((1, on_flat), ((y - yc) / r, True))]])
+ramp = R * (phi_top + math.pi / 2)
+length = xc + ramp
 band = sympy.exp(-(d / params.band) ** 2)
 
-n_seg = int(params.n_segments)
-strengths = [uw.expression(rf"\eta_{k + 1}", params.initial_strength,
-                           f"weak-plane viscosity of segment {k + 1}")
+# Segments along the fault: the flat, then the ramp in three equal parts.
+edges = [0.0, xc, xc + ramp / 3, xc + 2 * ramp / 3, length]
+names = ["flat", "lower ramp", "upper ramp", "near surface"]
+n_seg = len(names)
+strengths = [uw.expression(rf"\eta_{{{k + 1}}}", params.initial_strength,
+                           f"weak-plane viscosity, {names[k]}")
              for k in range(n_seg)]
 
 def segment(k):
     """A smooth indicator for segment k along the fault, in [0, 1]."""
     edge = params.band
-    lo, hi = k * length / n_seg, (k + 1) * length / n_seg
-    on = 1 if k == 0 else (1 + sympy.tanh((s - lo) / edge)) / 2
-    off = 1 if k == n_seg - 1 else (1 - sympy.tanh((s - hi) / edge)) / 2
+    on = 1 if k == 0 else (1 + sympy.tanh((s - edges[k]) / edge)) / 2
+    off = 1 if k == n_seg - 1 else (1 - sympy.tanh((s - edges[k + 1]) / edge)) / 2
     return on * off
 
 eta_0 = 1
@@ -86,9 +102,7 @@ stokes.add_essential_bc((-0.5, None), "Right")
 
 # --- the observations ------------------------------------------------------
 w_top = sympy.exp(-((1 - y) / params.band) ** 2)
-rng = np.random.default_rng(7)
-points = [(0.3 + 1.4 * i / max(int(params.n_stress_points) - 1, 1), 0.3 + 0.3 * (i % 2))
-          for i in range(int(params.n_stress_points))]
+points = [(0.3, 0.65), (0.75, 0.12), (1.25, 0.3), (0.9, 0.6), (1.55, 0.85)]
 w_points = sum(sympy.exp(-((x - px) ** 2 + (y - py) ** 2) / (2 * params.band) ** 2)
                for px, py in points)
 
@@ -139,7 +153,7 @@ for k in range(n_seg):
         stokes.solve(zero_init_guess=True)
         fd.append(float(uw.maths.Integral(mesh, misfit).evaluate()))
     fd = (fd[0] - fd[1]) / (2 * h)
-    uw.pprint(f"segment {k + 1}: adjoint {g0[k]: .6e}   finite difference {fd: .6e}   "
+    uw.pprint(f"{names[k]:>13}: adjoint {g0[k]: .6e}   finite difference {fd: .6e}   "
               f"ratio {fd / g0[k]:.5f}")
 set_strengths([params.initial_strength] * n_seg)
 
