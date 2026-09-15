@@ -2260,11 +2260,18 @@ class SolverBaseClass(uw_object):
         cdef double[::1] vals_view = np.ascontiguousarray(values, dtype=np.float64)
         CHKERRQ(PetscDSSetConstants(cds.ds, n_constants, <const PetscScalar*>&vals_view[0]))
 
-    def _update_constants(self):
+    def _update_constants(self, record=True):
         """Re-pack current UWexpression values and call PetscDSSetConstants.
 
         Called before each solve() to ensure constants are current without
         requiring JIT recompilation.
+
+        ``record=False`` suppresses the step-journal entry. Pass it from any
+        site that pushes constants for its OWN assembly rather than to
+        dispatch a solve — otherwise the journal reports one operator as two.
+        The rotated free-slip loop is such a site: it re-attaches the
+        auxiliary vector and re-packs before running its own manual Krylov
+        loop, after the public ``solve()`` has already announced itself.
         """
         # Refresh mesh.t from the model clock first, so a time-dependent
         # expression is repacked with the rest of the constants rather than
@@ -2277,19 +2284,20 @@ class SolverBaseClass(uw_object):
         # Note the solve in the model's step journal, if a step is open. This
         # is the one place every solver passes through before solving, so one
         # hook records them all, in order. A no-op outside a model.step block.
-        try:
-            # Name it by what it SOLVES, not by its auto-generated instance id:
-            # a journal reading "Stokes(V) -> AdvDiffusion(T)" is auditable,
-            # one reading "Solver_8_ -> Solver_14_" is not.
+        if record:
             try:
-                unknown = self.u.name
+                # Name it by what it SOLVES, not by its auto-generated instance
+                # id: a journal reading "Stokes(V) -> AdvDiffusion(T)" is
+                # auditable, one reading "Solver_8_ -> Solver_14_" is not.
+                try:
+                    unknown = self.u.name
+                except Exception:
+                    unknown = "?"
+                uw.get_default_model()._record_step_event(
+                    "solve", f"{type(self).__name__}({unknown})"
+                )
             except Exception:
-                unknown = "?"
-            uw.get_default_model()._record_step_event(
-                "solve", f"{type(self).__name__}({unknown})"
-            )
-        except Exception:
-            pass
+                pass
 
         if not self.constants_manifest or self.dm is None:
             return

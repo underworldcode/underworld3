@@ -218,9 +218,11 @@ from .model import (
     create_model,
     get_default_model,
     reset_default_model,
+    read_journal,
     ThermalConvectionConfig,
     create_thermal_convection_model,
 )
+from .utilities.journal_report import journal_diagram, journal_flowchart
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
 from .constitutive_models import MultiMaterialConstitutiveModel

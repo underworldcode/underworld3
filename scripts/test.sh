@@ -134,6 +134,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # unbatched file would have closed the issue without closing the gap.
   # level_2/tier_b, ~55s serial; passes at np=1 and np=2.
   $PYTEST tests/test_1072_free_surface_spherical.py || status=1
+  $PYTEST tests/test_1074_free_surface_config_drift.py || status=1
 
   # Diffusion / Advection tests
   $PYTEST tests/test_1100*py || status=1

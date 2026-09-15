@@ -42,6 +42,15 @@ Thermal convection combines heat transfer and fluid mechanics to model buoyancy-
    - Multiple convection cells and interactions
    - Introduces: domain geometry effects, cell interactions
 
+7. **Annulus Convection, Recorded** - `Ex_Convection_Annulus_Recorded.py`
+   - Boussinesq convection in a 2D annulus, written in the timestepping pattern
+   - Reference quantities first, so the buoyancy is written as a force and the
+     Rayleigh number falls out of the nondimensionalisation
+   - Rotated free-slip on the curved boundaries; a varying `estimate_dt()`
+   - Demonstrates the run's own record: the journal, a rejected step, a
+     bit-exact replay, and the step invariant that catches a doubled step
+   - See `docs/developer/guides/HOW-TO-WRITE-UW3-SCRIPTS.md`
+
 ### 🎓 Advanced Examples (`advanced/`)
 
 **Complex convection systems.**

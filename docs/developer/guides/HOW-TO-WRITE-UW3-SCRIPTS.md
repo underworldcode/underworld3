@@ -518,6 +518,208 @@ you want to ask of someone else's model, or your own six months later.
 
 Opening a step is optional. A script that never does behaves exactly as before.
 
+### Recording a run
+
+Ask the step to keep the state it started from and the journal becomes a
+restorable record:
+
+```python
+model.record_every = 1      # keep every step; None (default) keeps none
+model.record_limit = 8      # how many snapshots to retain
+
+while model.tracker.time < end_time:
+    with model.step(dt):
+        adv_diff.solve(timestep=dt)
+        stokes.solve(zero_init_guess=False)
+
+model.rewind()              # undo the last step: fields, history and clock
+```
+
+The snapshot is taken before the operators run, which is the only correct
+point — a `DDt` shifts its history in its post-solve hook, so a snapshot taken
+afterwards holds the shifted history rather than the step's input.
+
+Two things this buys beyond backstepping. Replaying a step from its own
+snapshot reproduces it exactly, where re-running the script does not, so a step
+that misbehaved can be looked at twice. And an adjoint needs precisely this: the
+state at each step and the order the operators were applied in.
+
+Snapshots cost roughly 13 bytes per primary degree of freedom per step. Older
+steps lose their snapshot and keep their journal record, so the account of what
+happened outlives the state it happened to.
+
+A driver that runs the same model more than once — an inversion, a parameter
+sweep, a restart — should start each run with a clean account:
+
+```python
+model.clear_journal()
+model.tracker.time = uw.quantity(0.0, "Myr")
+model.tracker.step = 0
+```
+
+Without it the journal is the concatenation of every run the process has done,
+and `rewind()` will walk back into the previous one.
+
+On a mesh that deforms or adapts the snapshot cannot be taken yet; the run
+warns once, keeps journalling, and `rewind()` will not reach those steps.
+
+### Writing the record down
+
+`model.journal` is what the run can still undo. It lives in memory, it is
+bounded, and it dies with the process. `model.journal_file` is what the run
+*did*:
+
+```python
+model.journal_file = "output/run.log"
+```
+
+One aligned line per step, appended and flushed as it closes, so `tail -f`
+follows a running job:
+
+```
+# underworld3 step log · model 'default' · started 2026-09-10T21:22:40+00:00
+# scales: length 2.2e+06 m | time 4.84e+18 s | mass 1.065e+47 kg | temperature 2500 K
+# step           t/Myr          dt/Myr    wall/s  outcome    operators, in order
+      0        0.175907        0.175907      0.44  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      1        0.501546        0.325639      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      2        0.990939        0.489393      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      3         1.51459        0.523655      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      4         30.5663         29.0517      0.09  ABANDONED  [too big] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+  -- restore from a snapshot; the clock now reads 1.51459 Myr
+  -- rewind to the start of step 3 (t = 0.990939 Myr); 1 step(s) undone
+      3         1.51459        0.523655      0.42  ok         [replay] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+```
+
+`wall/s` is how long the block took. It is not physics, but it is the number
+you want when watching: a step that suddenly takes ten times as long is the
+first sign of a solver in trouble.
+
+**A true log records the backtracks.** `rewind()` and a bare `load_state()`
+each write their own line, because a log that shows step 3, then step 3 again
+with nothing in between, is not a log of what happened. `rewind` writes the
+more specific note and suppresses the generic one.
+
+Four other things go in the file that are not in `model.journal`, all
+deliberate:
+
+- **An abandoned step.** A rejected step is the part of a run's history that is
+  otherwise invisible, and it is usually what you want when asking why a run
+  went the way it did.
+- **A step aged out by `journal_limit`.** The account of what happened outlives
+  both the state and the bounded in-memory list.
+- **An invariant complaint**, as an `invariant` event on the step, so it
+  survives the terminal the run happened to have.
+- **Everything up to a kill.** The file is flushed per step.
+
+### For parsing: JSON lines
+
+A path ending `.jsonl`, `.ndjson` or `.json` — or `model.journal_format =
+"jsonl"` — writes the same record as one JSON object per line:
+
+```json
+{"kind": "run",  "model": "default", "started": "2026-09-10T21:22:40+00:00", "scales": {"length": {"magnitude": 2200000.0, "units": "meter"}, ...}}
+{"kind": "step", "index": 0, "label": "convect",
+ "t0": {"magnitude": 0.0, "units": "megayear"},
+ "t1": {"magnitude": 0.1759, "units": "megayear"},
+ "dt": {"magnitude": 5551210433127.7, "units": "second"},
+ "completed": true, "restorable": true, "wall": 0.44,
+ "events": [{"kind": "solve", "name": "SNES_AdvectionDiffusion_Composed(T)"},
+            {"kind": "history_shift", "name": "EulerianSUPG(T)", "dt": 1.1469e-06},
+            {"kind": "solve", "name": "SNES_Stokes(v)"}]}
+{"kind": "rewind", "message": "...", "to_step": 3, "steps_undone": 1, "t": {"magnitude": 0.9909, "units": "megayear"}}
+```
+
+Read it back with `uw.read_journal(path)`, which returns one entry per run — an
+inversion driver that ran the forward model thirteen times leaves thirteen runs
+in one file, delimited by the header `clear_journal()` writes.
+
+**Why JSON lines and not YAML.** One self-contained record per line is the
+whole point. A killed run leaves a truncated final line that *fails* to parse,
+so `read_journal` drops it and keeps everything before; a half-written YAML
+mapping frequently still parses, as a real record with its last key missing.
+Line-oriented also means `grep`, `wc -l` and `jq -c` work without a parser, and
+`json` is stdlib with predictable float round-tripping. YAML is the right
+format for a whole document written once and edited by hand — which is what
+`Model.to_yaml` uses it for — but a log is a stream.
+
+The two formats differ in one more way. The text log is a **report**: the time
+column is converted into one unit, named in the header. The JSON log is a
+**record**: every value keeps the units the run actually held it in, which is
+why `t0` may read in Myr beside a `dt` in seconds — the clock came from the
+tracker and the interval from `estimate_dt()`.
+
+Rank 0 writes; the other ranks record in memory as usual.
+
+### The same account, as a figure
+
+A terminal is not where a run belongs in a paper.
+
+```python
+uw.journal_diagram(model, out="figures/run.pdf")     # or a .jsonl log
+uw.journal_diagram(model, out="figures/run.svg")     # same figure, SVG
+uw.journal_flowchart(model)                          # Mermaid, for docs
+```
+
+`journal_diagram` puts **time down the page**: one row per step, A4 portrait,
+paginated, so it drops into a document column and opens anywhere. Each row
+carries the step index, the clock, `dt` as a number and as a bar, a wall-clock
+tick, and one letter. Backtracks are drawn in the left gutter as an arrow from
+the step that ended back up to the step it returned to.
+
+The PDF and the SVG are both written directly — no plotting library, no
+rasterisation, nothing fetched at render time, and a print-safe palette that
+separates in greyscale. The `dt` axis goes logarithmic when the range exceeds
+20x and says so: a rejected step is often tens of times the accepted ones,
+which is *why* it was rejected, and on a linear axis it flattens everything
+else to nothing.
+
+**The letter is the layout.** Each distinct operator sequence gets one, defined
+once at the foot of the figure:
+
+```
+step   t/Myr   dt/Myr   seq   dt
+   9   6.472    1.176    A    ▇▇▇▇▇▇▇▇▇▇▇▇
+  10   7.936    1.464    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  11   9.856    1.920    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  12     145    135.2    A    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄  abandoned
+  11   9.856    1.920    A    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  12   12.56    2.704    B !  ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+
+A   AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)        14 steps
+B   AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)  >
+    AdvectionDiffusion(T)  >  shift EulerianSUPG(T)  >  Stokes(v)         1 step
+```
+
+A column of `A` with a single `B` in it says at a glance that one step did
+something different. A hundred spelled-out sequences say nothing and hide the
+one that matters.
+
+`journal_flowchart` renders one step's operator flow as Mermaid. When a run has
+more than one distinct sequence, each becomes its own subgraph labelled with
+the steps that took it, so an anomalous step is visible rather than averaged
+away.
+
+Both accept a live model, a `.jsonl` log, or the list `read_journal` returns.
+Not a text log: that one is a report, and reading it back is refused with the
+one line that fixes it.
+
+### What the record checks
+
+A step also checks that it can be what it claims to be. One invariant so far:
+a history manager must advance exactly once per step.
+
+```
+<step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> history_shift:EulerianSUPG(T) -> solve:SNES_Stokes(V)>
+```
+
+Call a solver twice inside one step — a corrector, a Picard iteration on a
+coupled system, a retry — and its history advances twice, so the physical step
+is taken twice. The solve counter and the timestep history look identical to a
+single step, so nothing else in the library can see it. The step warns.
+
+If a solver genuinely is called more than once within a step, only the last
+call should carry the timestep.
+
 ### Backstepping
 
 The pattern above is what makes speculative stepping safe:
@@ -548,6 +750,26 @@ of model state, so two independent runs of the same problem on the same solver
 objects diverge at the 1e-13 level from the first step. If you need to look at a
 step twice, restore it rather than re-run it.
 
+### Two worked cases
+
+**`docs/examples/convection/intermediate/Ex_Convection_Annulus_Recorded.py`** —
+Boussinesq convection in an annulus. Four reference quantities, a body force
+written as a force (Ra falls out of the nondimensionalisation rather than being
+typed in), rotated free-slip on the curved boundaries, and a varying
+`estimate_dt()`. It then demonstrates the four things the record buys, in
+order: the journal, a rejected step, a bit-exact replay, and the invariant
+catching a step that was taken twice. Compare
+`../advanced/Ex_Convection_Cylinder.py`, which solves the same physics with a
+bare `for step in range(n)` loop and no clock at all.
+
+**An adjoint driven from the journal.** The backward pass of a discrete adjoint
+needs exactly what the record holds: the state at each step and the order the
+operators were applied in. Walking `model.journal` backwards —
+`load_state(entry.snapshot)`, replay, transpose-solve — replaces the
+hand-written checkpoint dictionary that an adjoint normally carries, and
+removes its dependence on knowing in advance which arrays the backward pass
+will want.
+
 ### Time-dependent expressions
 
 `mesh.t` is the model clock as a symbol. It is repacked from
@@ -568,6 +790,29 @@ keeps the symbol.
 ---
 
 ## Common Pitfalls and Anti-Patterns
+
+### ❌ Rebinding the name instead of setting `.sym`
+
+To change the value of an expression, set `.sym`. It is the only settable
+property — `.value` and `.data` are derived, read-only views.
+
+```python
+# ✅ CORRECT - a value change; the container keeps its identity
+viscosity.sym = sympy.Integer(0)
+solver._update_constants()      # only if you are not about to solve
+
+# ❌ WRONG - rebinds a Python name and changes nothing
+viscosity = 0
+```
+
+The second line leaves every expression that already references the atom
+pointing at the old object with its old value, and nothing complains. The
+identity is the point: because the container is unchanged, a ramped value
+reaches every residual that mentions it with no rebuild.
+
+`expr.copy(other)` does the same job from another expression, and assigning to
+a constitutive parameter slot (`Parameters.diffusivity = 0.0`) is also a value
+change rather than a replacement.
 
 ### ❌ Swarm Variable Creation After Population
 
@@ -852,6 +1097,7 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - [ ] Declare the model and its reference quantities BEFORE creating the mesh
 - [ ] Keep `time`, `step` and `dt` on `model.tracker`, not in local variables
 - [ ] Wrap each step in `with model.step(dt):`
+- [ ] To change an expression's value set `.sym`, never rebind the name
 - [ ] Take snapshots BEFORE the operator you might want to undo
 - [ ] Use `mesh.t` inside an expression for time dependence, never bare
 
@@ -894,6 +1140,9 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
   - Disk snapshots now carry dimensional values (magnitude + units)
   - `mesh.t` now resolves to the model clock (#410)
   - `model.step(dt)` — the step as a transaction, and the step journal
+  - `model.record_every` / `model.rewind()` — the journal as a restorable record
+  - A step warns when a history advances more than once
+  - Set `.sym` to change a value; rebinding the name changes nothing
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version

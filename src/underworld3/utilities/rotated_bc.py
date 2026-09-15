@@ -1043,7 +1043,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # already attached it.
     solver.mesh.update_lvec()
     solver.dm.setAuxiliaryVec(solver.mesh.lvec, None)
-    solver._update_constants()
+    # record=False: the public solve() that dispatched here has already
+    # announced this solver to the step journal. This push is for THIS
+    # function's own assembly; recording it again reports one operator as two.
+    solver._update_constants(record=False)
     if rtol is None:
         rtol = float(solver.tolerance)
 
