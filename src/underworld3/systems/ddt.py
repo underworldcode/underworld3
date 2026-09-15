@@ -4583,6 +4583,10 @@ def _storage_components(vtype, shape):
 
 
 class IntegrationPointSemiLagrangian(_DDtBase):
+    #: Departure points restored to the boundary take :attr:`inflow_value`
+    #: there when one is set (#745); without one they sample the edge.
+    applies_inflow_value = True
+
     r"""Semi-Lagrangian history stored at the mesh integration points.
 
     The history slots ``psi_star[k]`` are
@@ -4978,6 +4982,15 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 _to_nondim_ndarray(vals, units=self._psi_units)
             ).reshape(-1)
 
+    def _write_inflow(self, var, coords, rows):
+        """Overwrite ``rows`` of ``var`` with :attr:`inflow_value` evaluated at
+        ``coords`` (the restored boundary positions of those points)."""
+        expr = sympy.Matrix(self._inflow_value)
+        for column, (i, j) in enumerate(self._components):
+            vals = uw.function.evaluate(expr[i, j], coords)
+            var.data[rows, column] = np.asarray(
+                _to_nondim_ndarray(vals, units=self._psi_units)).reshape(-1)
+
     def _segment_dt(self, j, dt):
         """Length of segment ``j`` (0 = the current step)."""
         if j == 0:
@@ -5004,6 +5017,18 @@ class IntegrationPointSemiLagrangian(_DDtBase):
                 evaluate=uw.function.global_evaluate,
                 evalf=evalf, monotone=self.monotone_mode,
             )
+            if self._inflow_value is not None:
+                # A departure point that left the domain was restored to the
+                # boundary by the trace. What it should carry is the stress of
+                # the fluid ENTERING there, not a sample of the boundary edge:
+                # on a box channel that edge sample fed a growing mode in the
+                # inlet cell column (#745). The unclamped end point says which
+                # points left.
+                X_raw = trace.departure_points(key, X0, tuple(segments), evalf=evalf,
+                                               clamp_final=False)
+                left = np.any(np.abs(np.asarray(X_raw) - np.asarray(X)) > 0.0, axis=1)
+                if left.any():
+                    self._write_inflow(self.psi_star[k], X[left], left)
             if k == 0 and self.forcing_star is not None:
                 # the strain rate the parcel saw a step ago, at the same
                 # departure point as its stress

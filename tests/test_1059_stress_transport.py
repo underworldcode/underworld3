@@ -454,3 +454,40 @@ def test_a_preset_velocity_gives_both_integrators_the_same_first_stress():
     _, etd, _ = _maxwell_shear("semi_lagrangian", 1, steps=1, integrator="etd", initial_velocity=True)
     assert abs(etd - bdf) < 0.05 * abs(bdf), (etd, bdf)
 
+
+def test_the_integration_point_history_takes_the_inflow_value_at_an_inlet():
+    """A departure point that leaves through the inlet is restored to the
+    boundary by the trace. Left to sample the boundary edge, the
+    integration-point history on a box channel grew a mode in the inlet cell
+    column at Wi 1 and 5 (#745); given an inflow value it takes that instead.
+    Uniform flow into a box carrying zero stress: after k steps the inflow
+    value has entered a distance k * speed * dt, and no further."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0), cellSize=1 / 24, qdegree=3)
+    speed, dt, steps = 0.5, 0.05, 8
+    velocity = sympy.Matrix([[speed, 0.0]])
+    incoming = sympy.Matrix([[1.0, 0.25], [0.25, -1.0]])
+    results = {}
+    for tag, inflow in (("with", incoming), ("without", None)):
+        manager = uw.systems.ddt.IntegrationPointSemiLagrangian(
+            mesh, sympy.Matrix.zeros(2, 2), velocity, vtype=uw.VarType.SYM_TENSOR,
+            degree=1, continuous=True, order=1, varsymbol=rf"S^{{{tag}}}")
+        assert manager.applies_inflow_value
+        if inflow is not None:
+            manager.inflow_value = inflow
+        manager.initialise_history()
+        for _ in range(steps):
+            manager.update_pre_solve(dt, store_result=False)
+            manager.commit_flux_to_history(manager.psi_star[0].sym)   # identity commit
+        points = np.asarray(manager.psi_star[0].integration_points).reshape(-1, 2)
+        xy = np.asarray(manager.psi_star[0].data)[:, manager._components.index((0, 1))]
+        entered = points[:, 0] < -1.0 + 0.6 * speed * dt * steps
+        untouched = points[:, 0] > -1.0 + 1.5 * speed * dt * steps
+        results[tag] = (xy[entered], xy[untouched])
+    with_in, with_out = results["with"]
+    assert np.allclose(with_in, 0.25, atol=0.02), (with_in.min(), with_in.max())
+    assert np.abs(with_out).max() < 0.02
+    # negative control: sampling the edge of a zero field brings nothing in
+    without_in, _ = results["without"]
+    assert np.abs(without_in).max() < 1e-6
+
