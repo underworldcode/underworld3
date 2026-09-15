@@ -2526,7 +2526,7 @@ class SolverBaseClass(uw_object):
         cdef double[::1] vals_view = np.ascontiguousarray(values, dtype=np.float64)
         CHKERRQ(PetscDSSetConstants(cds.ds, n_constants, <const PetscScalar*>&vals_view[0]))
 
-    def _update_constants(self, record=True):
+    def _update_constants(self, record=False):
         """Re-pack current UWexpression values and call PetscDSSetConstants.
 
         Called before each solve() to ensure constants are current without
@@ -2549,7 +2549,12 @@ class SolverBaseClass(uw_object):
 
         # Note the solve in the model's step transcript, if a step is open. This
         # is the one place every solver passes through before solving, so one
-        # hook records them all, in order. A no-op outside a model.step block.
+        # hook records them all, in order — but it is ALSO called by a
+        # Parameter change, the continuation alpha toggle, reaction assembly
+        # and residual-field evaluation, none of which is a solve. Only the
+        # solve() bodies pass record=True; a call from anywhere else must not
+        # write a solve event, or one solve reads as several in the record
+        # (found in review: 2-4 events per solve under continuation).
         if record:
             try:
                 part, label = self._transcript_identity()
@@ -4334,7 +4339,7 @@ class SNES_Scalar(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         # Pure-Neumann scalar problems: attach a constant nullspace
         # to the (now set-up) Jacobian. No-op unless
@@ -5382,7 +5387,7 @@ class SNES_Vector(SolverBaseClass):
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         # Custom geometric-MG prolongation on the (top-level vector) PC, if
         # registered via set_custom_fmg or owned by an adapt() mesh. Mirrors the
@@ -6098,7 +6103,7 @@ class SNES_MultiComponent(SolverBaseClass):
         cmesh_lvec = self.mesh.lvec
         ierr = DMSetAuxiliaryVec_UW(dm.dm, NULL, 0, 0, cmesh_lvec.vec); CHKERRQ(ierr)
 
-        self._update_constants()
+        self._update_constants(record=True)
 
         self._snes_solve_with_retries(gvec, divergence_retries, verbose)
 
@@ -9911,7 +9916,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 UW_DMSetTime(_time_dm_stokes.dm, t_nd)
             self.mesh.update_lvec()
             self.dm.setAuxiliaryVec(self.mesh.lvec, None)
-            self._update_constants()
+            self._update_constants(record=True)
 
             # guard() refuses rotated free-slip, but the BC can be added AFTER arming.
             # Re-check here: this path never reaches the instrumentation, so an armed
@@ -9964,7 +9969,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self.dm.setAuxiliaryVec(self.mesh.lvec, None)
 
         # Update constants (e.g. changed material params) before solve
-        self._update_constants()
+        self._update_constants(record=True)
 
         gvec = self.dm.getGlobalVec()
         gvec.setArray(0.0)

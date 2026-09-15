@@ -155,6 +155,7 @@ uw_*.msh
 
 # Visualization outputs (exclude generated, allow curated assets)
 docs/examples/**/output/**
+docs/examples/**/transcripts/**
 docs/examples/**/*.png
 docs/examples/**/*.jpg
 docs/examples/**/*.gif

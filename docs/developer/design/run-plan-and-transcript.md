@@ -121,8 +121,8 @@ buildable:
   solve, `psi_star[i]` in `update_post_solve`, particle coordinates after an
   advection.
 - **Reads** are derivable *symbolically*. A solve's residual is a SymPy form,
-  so the variables it depends on are in `F0` / `F1`'s atoms. This is how the
-  discrete adjoint obtained `∂F/∂ψ*` at all. No kernel instrumentation.
+  so the variables it depends on are in `F0` / `F1`'s atoms. No kernel
+  instrumentation.
 
 Within one solve, reads and writes are not ordered — the kernel reads
 `psi_star` throughout the Newton iteration — so the edge is *write → solve*,
@@ -160,8 +160,8 @@ up front; nothing in the vocabulary above depends on which we have.
 
 ## A note on names
 
-"Transcript" rather than tape or record: a transcript is what was actually
-played, including the false starts and the re-takes, which is precisely the
+"Transcript" rather than log or record: a transcript is what actually
+happened, including the false starts and the re-takes, which is precisely the
 thing being kept.
 
 The API followed: what was `model.journal` is `model.transcript`, and the

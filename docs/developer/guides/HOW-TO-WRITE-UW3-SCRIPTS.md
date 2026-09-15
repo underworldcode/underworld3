@@ -539,10 +539,10 @@ The snapshot is taken before the operators run, which is the only correct
 point — a `DDt` shifts its history in its post-solve hook, so a snapshot taken
 afterwards holds the shifted history rather than the step's input.
 
-Two things this buys beyond backstepping. Replaying a step from its own
-snapshot reproduces it exactly, where re-running the script does not, so a step
-that misbehaved can be looked at twice. And an adjoint needs precisely this: the
-state at each step and the order the operators were applied in.
+What this buys beyond backstepping: replaying a step from its own snapshot
+reproduces it exactly, where re-running the script does not, so a step that
+misbehaved can be looked at twice — with the state it started from and the
+order the operators were applied in both on record.
 
 Snapshots cost roughly 13 bytes per primary degree of freedom per step. Older
 steps lose their snapshot and keep their transcript record, so the account of what
@@ -857,13 +857,13 @@ twice showing up as its own operator sequence. Compare
 `../advanced/Ex_Convection_Cylinder.py`, which solves the same physics with a
 bare `for step in range(n)` loop and no clock at all.
 
-**An adjoint driven from the transcript.** The backward pass of a discrete adjoint
-needs exactly what the transcript holds: the state at each step and the order the
-operators were applied in. Walking `model.transcript` backwards —
-`load_state(entry.snapshot)`, replay, transpose-solve — replaces the
-hand-written checkpoint dictionary that an adjoint normally carries, and
-removes its dependence on knowing in advance which arrays the backward pass
-will want.
+**Reproducing a run from its record.** `read_transcript()` gives the steps
+back in order, each with the interval it covered and the operators it applied,
+and a run kept with `record_every` can be re-entered at any recorded step with
+`load_state(entry.snapshot)`. That is what makes a result reproducible from
+the record rather than from a re-run of the script: the same state, the same
+operators, in the same order, without anyone having decided in advance which
+arrays would be wanted.
 
 ### Time-dependent expressions
 

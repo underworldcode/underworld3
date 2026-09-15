@@ -159,8 +159,8 @@ class ModelStep:
 
     Ordered, so ``[e.name for e in step.events]`` is the sequence of operators
     the step actually applied. That sequence is what makes a step auditable
-    (did this run do what the write-up says?) and what a replay or an adjoint
-    needs in order to walk the run backwards.
+    (did this run do what the write-up says?) and what a replay needs in
+    order to reproduce it.
     """
 
     __slots__ = ("index", "t0", "dt", "label", "events", "completed", "snapshot",
@@ -446,6 +446,9 @@ class Model(PintNativeModelMixin, BaseModel):
     # What each part SOLVES, keyed by part id: the residual as implemented,
     # recorded once per run and again if the form changes. See _describe_part.
     _parts: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    # part -> the live object behind it (solver, history manager), so a
+    # pass over the transcript can call the operator a record names.
+    _part_objects: Dict[str, Any] = PrivateAttr(default_factory=dict)
     # Set while rewind() is doing its own restore, so load_state does not log a
     # second, less informative note for the same backtrack.
     _restoring: Any = PrivateAttr(default=False)
@@ -930,7 +933,7 @@ class Model(PintNativeModelMixin, BaseModel):
         An ordered account of what each timestep did — which solvers ran, in
         what order, over which time interval. Answers "is this model doing the
         thing I said it does" without instrumenting the script, and is the
-        record an adjoint or a replay needs.
+        record a replay needs.
 
         Bounded by ``model.transcript_limit`` (default 512 steps); set it to
         ``None`` to keep everything.
@@ -1315,6 +1318,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 outcome = "ok"
 
             label = payload.get("label")
+            label = " ".join(str(label).split()) if label else None   # one row
             tag = f"[{label}] " if label else ""
             # Only what the step APPLIED goes in the sequence. Anything else an
             # older transcript may carry is not an operator and is left out.
@@ -1332,13 +1336,27 @@ class Model(PintNativeModelMixin, BaseModel):
                     f" after {event.get('nl_its', 0)} its"
                     f" ({event.get('ksp_its', 0)} ksp){tail}"
                 )
+            # Warnings: identical ones once, with a count, and at most a few
+            # per step — the record holds them all; the log is for reading.
+            seen, order = {}, []
             for event in events:
                 if event.get("kind") != "warning":
                     continue
                 text = " ".join(str(event.get("message", "")).split())
                 if len(text) > 120:
                     text = text[:117] + "..."
-                notes.append(f"  ~~ {event['name']}: {text}")
+                key = (event["name"], text)
+                if key not in seen:
+                    seen[key] = 0
+                    order.append(key)
+                seen[key] += 1
+            for key in order[:8]:
+                name, text = key
+                times = f" (x{seen[key]})" if seen[key] > 1 else ""
+                notes.append(f"  ~~ {name}: {text}{times}")
+            if len(order) > 8:
+                notes.append(f"  ~~ ... and {len(order) - 8} more distinct warning(s) "
+                             f"in the record")
 
             return "\n".join([
                 f"{prefix}"
@@ -1418,7 +1436,7 @@ class Model(PintNativeModelMixin, BaseModel):
     def record_every(self):
         """Keep a restorable snapshot every N steps (None keeps none).
 
-        ``1`` records every step, which is what replay and an adjoint want.
+        ``1`` records every step, which is what replay and debugging want.
         Snapshots cost roughly 13 bytes per primary degree of freedom each, so
         a long run on a large mesh should either raise :attr:`record_limit`
         with care or record less often and recompute between.
@@ -1517,6 +1535,7 @@ class Model(PintNativeModelMixin, BaseModel):
         """
         if self._open_step is None:
             return
+        self._part_objects[part] = owner
         known = self._parts.get(part)
         rebuilding = not getattr(owner, "is_setup", True)
         if known is not None and not rebuilding:
@@ -1554,6 +1573,12 @@ class Model(PintNativeModelMixin, BaseModel):
         record.update(described)
         self._parts[part] = record
         self._write_transcript_line(record)
+
+    def part_object(self, part: str):
+        """The live object behind a recorded part, or None if it is not in
+        this process — a transcript read back from disk names parts that no
+        longer exist."""
+        return self._part_objects.get(part)
 
     def _record_step_event(self, kind: str, name: str, **detail) -> None:
         """Note that something happened inside the step in progress.
@@ -1625,15 +1650,31 @@ class Model(PintNativeModelMixin, BaseModel):
         fell back to gamg" changes what the numbers mean, and a transcript that
         kept the residual norms but not that line would be an account of the
         run with the explanation removed.
+
+        Three limits, all of the warnings machinery rather than the record:
+        the shim sees what Python SHOWS, so under the default filter a warning
+        that recurs at one location is recorded the first time only
+        (``warnings.simplefilter("always")`` records every occurrence); a
+        warning inside a nested ``catch_warnings(record=True)`` goes to that
+        list and not here; and the file is written by rank 0, so a warning
+        raised on another rank is in that rank's in-memory step (tagged with
+        its rank) and not in the file.
         """
         step = self._open_step
         if step is None:
             return
+        try:
+            import underworld3 as uw
+
+            rank = int(uw.mpi.rank)
+        except Exception:
+            rank = 0
         step._record(
             "warning",
             getattr(category, "__name__", str(category)),
             message=str(message),
             where=f"{filename}:{lineno}",
+            rank=rank,
         )
 
     def step(self, dt, label: Optional[str] = None):
@@ -1731,14 +1772,24 @@ class Model(PintNativeModelMixin, BaseModel):
             def _record_and_show(message, category, filename, lineno,
                                  file=None, line=None):
                 self._record_warning(message, category, filename, lineno)
-                previous_showwarning(message, category, filename, lineno,
-                                     file, line)
+                try:
+                    previous_showwarning(message, category, filename, lineno,
+                                         file, line)
+                except TypeError:
+                    # an older-style hook taking the four positional arguments
+                    previous_showwarning(message, category, filename, lineno)
+
+            def _restore():
+                # Only if it is still ours: a hook the block installed is
+                # the block's business, not something to undo behind it.
+                if _warnings.showwarning is _record_and_show:
+                    _warnings.showwarning = previous_showwarning
 
             _warnings.showwarning = _record_and_show
             try:
                 yield record
             except BaseException:
-                _warnings.showwarning = previous_showwarning
+                _restore()
                 record.wall = _time.monotonic() - wall0
                 # Abandon: put the clock back and do not commit.
                 self.tracker.time = t0
@@ -1757,7 +1808,7 @@ class Model(PintNativeModelMixin, BaseModel):
                 self._write_transcript_line(record.as_dict())
                 raise
 
-            _warnings.showwarning = previous_showwarning
+            _restore()
             record.wall = _time.monotonic() - wall0
 
             # Commit.
