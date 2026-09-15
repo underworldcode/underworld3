@@ -30,13 +30,31 @@ Optional payloads are controlled by explicit flags:
 
 ### Visualisation and Coordinate Remap
 
+Continuous fields use the standard mesh vertices, and DG0 fields use cell data.
+DG1 fields on full-dimensional triangular and tetrahedral meshes use a second
+grid named `DG1` in the same XDMF file. Each simplex has its own three or four
+physical vertices: the saved linear polynomial is evaluated within that cell,
+without averaging traces across shared edges or faces. Interior DG interpolation
+nodes are not mistaken for the physical mesh vertices.
+
+The DG1 visualization arrays (`vertices`, `cells`, `values`) live under `/dg1`
+in each variable HDF5 file. Tensor visualization uses a nine-component 3-by-3
+layout (zero-padded in 2D); `/fields` and PETSc reload data retain their native
+layout and precision. Open the one `.xdmf` file in ParaView and select the
+`domain` or `DG1` block for the corresponding fields. Do not merge coincident
+points or apply point-averaging filters if discontinuities must be preserved.
+
+Higher-degree discontinuous fields, tensor-product DG cells, embedded manifolds,
+and integration-point fields are not supported by this DG1 exporter. They raise
+an explicit error when visualization is requested; `create_xdmf=False` still
+allows native checkpoint output. Parallel export uses owned cells only.
+
 ```python
 mesh.write_timestep(
     "output",
     index=100,
     outputPath="output",
     meshVars=[velocity, pressure, temperature],
-    time=100.0,
     create_xdmf=True,
 )
 ```
