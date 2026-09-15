@@ -222,12 +222,14 @@ from .model import (
     ThermalConvectionConfig,
     create_thermal_convection_model,
 )
+from . import adjoint
 from .utilities.transcript_report import (
     transcript_diagram,
     transcript_flowchart,
     transcript_table,
     transcript_figure,
     transcript_key,
+    transcript_adjoint_segments,
 )
 from .parameters import ParameterRegistry, ParameterType
 from .materials import MaterialRegistry, MaterialProperty
