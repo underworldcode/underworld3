@@ -202,6 +202,53 @@ def inner(variable, a, b):
     return value
 
 
+def _token_of(var):
+    """How ``var`` prints inside an expression: everything before the
+    coordinate arguments and, for a vector, before the component index."""
+    text = str(_symbols_of(var)[0]).rsplit("(", 1)[0]
+    if getattr(var, "num_components", 1) > 1:
+        text = text.rsplit("_{", 1)[0]
+    return text
+
+
+def misfit_duals(misfit, variables, scratch=None):
+    r"""``dJ/df`` as a dual field on each field the misfit reads.
+
+    ``J = \int misfit`` over the mesh; a field enters through its value and,
+    for a misfit on a stress or a strain rate, through its gradient. Both
+    parts are differentiated symbolically and assembled as one load
+    (:func:`dual_on`), so a misfit written in terms of :math:`\nabla u` needs
+    no integration by parts by the caller. Returns ``{variable: dual}`` for
+    the variables that appear; give each dual back to the scratch pool when
+    done.
+    """
+    scratch = _shared_scratch if scratch is None else scratch
+    peeled = _peel(misfit)
+    text = str(peeled)
+    atoms = set(peeled.atoms(sympy.Function))
+    out = {}
+    for var in variables:
+        token = _token_of(var)
+        if token not in text:
+            continue
+        symbols = _symbols_of(var)
+        value = [sympy.diff(peeled, s) for s in symbols]
+        pattern = re.compile(re.escape(token) + r"_\{ ?(\d*),(\d+)\}\(")
+        g1 = None
+        for atom in atoms:
+            m = pattern.match(str(atom))
+            if not m:
+                continue
+            if g1 is None:
+                g1 = sympy.zeros(len(symbols), var.mesh.cdim)
+            i = int(m.group(1)) if m.group(1) else 0
+            g1[i, int(m.group(2))] = sympy.diff(peeled, atom)
+        if all(v == 0 for v in value) and (g1 is None or g1.is_zero_matrix):
+            continue
+        out[var] = dual_on(var, _as_expression(value), g1, scratch)
+    return out
+
+
 _n = [0]
 
 
@@ -267,10 +314,8 @@ class TranscriptAdjoint:
         model.load_state(self.final_state)
         J = float(uw.maths.Integral(self._mesh(), misfit).evaluate())
         acc: Dict[str, object] = {}
-        peeled = _peel(misfit)
-        for var, symbols in self._fields_in(misfit):
-            dJ = [sympy.diff(peeled, s) for s in symbols]
-            self._accumulate(acc, var, dual_on(var, _as_expression(dJ), None, scratch))
+        for var, dual in misfit_duals(misfit, self._tokens().values(), scratch).items():
+            self._accumulate(acc, var, dual)
 
         grad = {p: 0.0 for p in parameters}
         for p in parameters:
@@ -334,24 +379,11 @@ class TranscriptAdjoint:
 
         A variable prints as its symbol, which need not be its name and can
         carry nested braces (a history slot is ``{\\psi^{*}_{...}}``), so the
-        token is taken from the symbol's own text: everything before the
-        coordinate arguments and, for a vector, before the component index.
+        token is taken from the symbol's own text (:func:`_token_of`).
         Matching on the name found the user's fields and silently missed
         every history, which cut the chain at the first step."""
-        out = {}
-        for var in self.model._variables.values():
-            if not hasattr(var, "sym"):
-                continue
-            text = str(_symbols_of(var)[0]).rsplit("(", 1)[0]     # drop (N.x, N.y)
-            if getattr(var, "num_components", 1) > 1:
-                text = text.rsplit("_{", 1)[0]                   # drop _{ i }
-            out[text] = var
-        return out
-
-    def _fields_in(self, expression):
-        text = str(_peel(expression))
-        return [(v, _symbols_of(v)) for token, v in self._tokens().items()
-                if token in text]
+        return {_token_of(var): var for var in self.model._variables.values()
+                if hasattr(var, "sym")}
 
     def _reads(self, solver, unknown):
         """What a solver's residual reads, other than its unknown.
