@@ -21,6 +21,9 @@ this even after seeing the legacy matplotlib renderer
   the run directory, comparison figures into the sim-dir root.
 - `pv.OFF_SCREEN = True` at import; finish with `pl.screenshot(path); pl.close()`.
 
+Overlays drawn ON a render (a boundary, an arrow, a label) and every DRAWN
+schematic follow the `uw-line-diagrams` skill.
+
 ## The field+mesh pattern (copy this exactly)
 
 ```python
