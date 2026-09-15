@@ -1,5 +1,5 @@
 ## Key — what each part solved in make_figures
-*run started 2026-09-15T13:18:44+10:00*
+*run started 2026-09-15T13:43:35+10:00*
 
 ### AdvDiffusion(T)
 `SNES_AdvectionDiffusion_Composed`, unknown `T`, 2-D; recorded at step 0
@@ -10,9 +10,9 @@ $$f_0(\phi) = \left[\begin{matrix}a^{\mathrm{AM}}_{0,18} \left({T}_{,0}(\mathbf{
 *Strong residual of the time scheme: time derivative, advection and source.*
 
 where
-- $\Delta t_{18}$ $= 1.147 \times 10^{-6}$ — DDt timestep
-- $a^{\mathrm{AM}}_{0,18}$ $= 0.5$ — a^{\mathrm{AM}} coefficient 0 (DDt instance 18)
-- $a^{\mathrm{AM}}_{1,18}$ $= 0.5$ — a^{\mathrm{AM}} coefficient 1 (DDt instance 18)
+- $\Delta t_{18}$ $= 1.147 \times 10^{-6}$ — timestep of this history
+- $a^{\mathrm{AM}}_{0,18}$ $= 0.5$ — Adams-Moulton coefficient 0 of history 18
+- $a^{\mathrm{AM}}_{1,18}$ $= 0.5$ — Adams-Moulton coefficient 1 of history 18
 
 $$\mathbf{F}_1(\phi) = \left[\begin{matrix}\upkappa a^{\mathrm{AM}}_{0,18} {T}_{,0}(\mathbf{x}) + \upkappa a^{\mathrm{AM}}_{1,18} {{T}^{ * }}_{,0}(\mathbf{x}) + \frac{w^{\mathrm{SUPG}}_{18} \left({v}_{ 0 }^{ 2 }(\mathbf{x}) + {v}_{ 1 }^{ 2 }(\mathbf{x})\right) \left(a^{\mathrm{AM}}_{0,18} \left({T}_{,0}(\mathbf{x}) {v}_{ 0 }(\mathbf{x}) + {T}_{,1}(\mathbf{x}) {v}_{ 1 }(\mathbf{x})\right) + a^{\mathrm{AM}}_{1,18} \left({v}_{ 0 }(\mathbf{x}) {{T}^{ * }}_{,0}(\mathbf{x}) + {v}_{ 1 }(\mathbf{x}) {{T}^{ * }}_{,1}(\mathbf{x})\right) + \frac{{T}(\mathbf{x}) - {{T}^{ * }}(\mathbf{x})}{\Delta t_{18}}\right) {_h_cell}^{ 2 }(\mathbf{x}) {v}_{ 0 }(\mathbf{x})}{\left(64.0 \upkappa^{2} + \left({v}_{ 0 }^{ 2 }(\mathbf{x}) + {v}_{ 1 }^{ 2 }(\mathbf{x})\right) {_h_cell}^{ 2 }(\mathbf{x}) + 1.0 \cdot 10^{-30}\right) \sqrt{\frac{\upkappa^{2} \left(C^{\tau}_{\kappa,18}\right)^{2}}{{_h_cell}^{ 4 }(\mathbf{x})} + \frac{\left(C^{\tau}_{t,18}\right)^{2}}{\Delta t_{18}^{2}} + \frac{\left(C^{\tau}_{u,18}\right)^{2} \left({v}_{ 0 }^{ 2 }(\mathbf{x}) + {v}_{ 1 }^{ 2 }(\mathbf{x})\right)}{{_h_cell}^{ 2 }(\mathbf{x})} + 1.0 \cdot 10^{-30}}} & \upkappa a^{\mathrm{AM}}_{0,18} {T}_{,1}(\mathbf{x}) + \upkappa a^{\mathrm{AM}}_{1,18} {{T}^{ * }}_{,1}(\mathbf{x}) + \frac{w^{\mathrm{SUPG}}_{18} \left({v}_{ 0 }^{ 2 }(\mathbf{x}) + {v}_{ 1 }^{ 2 }(\mathbf{x})\right) \left(a^{\mathrm{AM}}_{0,18} \left({T}_{,0}(\mathbf{x}) {v}_{ 0 }(\mathbf{x}) + {T}_{,1}(\mathbf{x}) {v}_{ 1 }(\mathbf{x})\right) + a^{\mathrm{AM}}_{1,18} \left({v}_{ 0 }(\mathbf{x}) {{T}^{ * }}_{,0}(\mathbf{x}) + {v}_{ 1 }(\mathbf{x}) {{T}^{ * }}_{,1}(\mathbf{x})\right) + \frac{{T}(\mathbf{x}) - {{T}^{ * }}(\mathbf{x})}{\Delta t_{18}}\right) {_h_cell}^{ 2 }(\mathbf{x}) {v}_{ 1 }(\mathbf{x})}{\left(64.0 \upkappa^{2} + \left({v}_{ 0 }^{ 2 }(\mathbf{x}) + {v}_{ 1 }^{ 2 }(\mathbf{x})\right) {_h_cell}^{ 2 }(\mathbf{x}) + 1.0 \cdot 10^{-30}\right) \sqrt{\frac{\upkappa^{2} \left(C^{\tau}_{\kappa,18}\right)^{2}}{{_h_cell}^{ 4 }(\mathbf{x})} + \frac{\left(C^{\tau}_{t,18}\right)^{2}}{\Delta t_{18}^{2}} + \frac{\left(C^{\tau}_{u,18}\right)^{2} \left({v}_{ 0 }^{ 2 }(\mathbf{x}) + {v}_{ 1 }^{ 2 }(\mathbf{x})\right)}{{_h_cell}^{ 2 }(\mathbf{x})} + 1.0 \cdot 10^{-30}}}\end{matrix}\right]$$
 *Diffusive flux of the time scheme plus the SUPG flux tau R u.*

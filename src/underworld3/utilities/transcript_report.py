@@ -592,6 +592,23 @@ class _Canvas:
         self.ops.append(("text", x, y, str(content), size, fill, anchor,
                          bold, mono))
 
+    def math(self, x, y, latex, size=8.0, fill=_INK, fallback=None):
+        """A line of mathematics, set from ``latex`` as glyph outlines.
+
+        Returns the width drawn, so a caption can follow it. The outlines
+        come from matplotlib's mathtext, which needs no TeX installation;
+        without matplotlib, or for LaTeX mathtext cannot set (a matrix), the
+        plain-text ``fallback`` is written as text instead.
+        """
+        segments, width = _mathtext_outline(latex, size)
+        if segments is None:
+            text = fallback if fallback is not None else _plain_symbol(latex)
+            self.text(x, y, text, size=size, fill=fill)
+            return _text_width(text, size, False)
+        self.ops.append(("path", [(cmd, *[(x + px, y - py) for px, py in pts])
+                                  for cmd, *pts in segments], fill))
+        return width
+
     def note(self, x, y, r, fill, hollow=False):
         """A mark that a part ran. Hollow when its step was abandoned."""
         self.ops.append(("note", x, y, r, fill, bool(hollow)))
@@ -899,6 +916,55 @@ def _hex(colour):
     return "#" + "".join(f"{int(round(c * 255)):02x}" for c in colour)
 
 
+_MATHTEXT_REMAP = {"\\upkappa": "\\kappa", "\\uplambda": "\\lambda",
+                   "\\upmu": "\\mu", "\\uprho": "\\rho", "\\upeta": "\\eta"}
+
+
+def _mathtext_outline(latex, size):
+    """``latex`` as glyph outlines: ``(segments, width)`` or ``(None, 0)``.
+
+    A segment is ``("M" | "L" | "Q" | "Z", *points)`` with the baseline at
+    ``y = 0`` and y UP, as matplotlib gives it; the caller flips it. Quadratic
+    curves are kept as quadratics — SVG has them and the PDF writer raises
+    them to cubics.
+    """
+    try:
+        from matplotlib.textpath import TextPath
+        from matplotlib.font_manager import FontProperties
+        from matplotlib.path import Path
+    except Exception:
+        return None, 0.0
+    text = str(latex)
+    for source, target in _MATHTEXT_REMAP.items():
+        text = text.replace(source, target)
+    try:
+        path = TextPath((0.0, 0.0), f"${text}$", size=size,
+                        prop=FontProperties(family="DejaVu Sans"))
+    except Exception:
+        return None, 0.0
+    segments, i = [], 0
+    vertices, codes = path.vertices, path.codes
+    while i < len(codes):
+        code = codes[i]
+        if code == Path.MOVETO:
+            segments.append(("M", tuple(vertices[i])))
+            i += 1
+        elif code == Path.LINETO:
+            segments.append(("L", tuple(vertices[i])))
+            i += 1
+        elif code == Path.CURVE3:
+            segments.append(("Q", tuple(vertices[i]), tuple(vertices[i + 1])))
+            i += 2
+        elif code == Path.CURVE4:
+            segments.append(("C", tuple(vertices[i]), tuple(vertices[i + 1]),
+                             tuple(vertices[i + 2])))
+            i += 3
+        else:
+            segments.append(("Z",))
+            i += 1
+    return segments, float(path.get_extents().x1)
+
+
 def _svg_ops(ops, width, height):
     out = [f'<rect x="0" y="0" width="{width:.1f}" height="{height:.1f}" '
            f'fill="{_hex(_PAPER)}"/>']
@@ -946,6 +1012,12 @@ def _svg_ops(ops, width, height):
                 f'font-size="{r * 2.1:.1f}" text-anchor="middle">'
                 f'{html.escape(glyph)}</text>'
             )
+        elif kind == "path":
+            _, segments, fill = op
+            d = " ".join(
+                cmd + " " + " ".join(f"{px:.2f} {py:.2f}" for px, py in pts)
+                for cmd, *pts in segments)
+            out.append(f'<path d="{d}" fill="{_hex(fill)}" fill-rule="nonzero"/>')
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
             family = ("'SF Mono', Menlo, monospace" if mono
@@ -1101,6 +1173,34 @@ def _pdf_page_stream(ops, width, height):
                 out.append(f"{x + kk:.2f} {yy - rr:.2f} {x + rr:.2f} {yy - kk:.2f} "
                            f"{x + rr:.2f} {yy:.2f} c")
                 out.append("S Q")
+        elif kind == "path":
+            _, segments, fill = op
+            out.append(f"q {fill[0]:.3f} {fill[1]:.3f} {fill[2]:.3f} rg")
+            current = (0.0, 0.0)
+            for cmd, *pts in segments:
+                if cmd == "M":
+                    current = pts[0]
+                    out.append(f"{pts[0][0]:.2f} {fy(pts[0][1]):.2f} m")
+                elif cmd == "L":
+                    current = pts[0]
+                    out.append(f"{pts[0][0]:.2f} {fy(pts[0][1]):.2f} l")
+                elif cmd == "Q":
+                    # PDF has no quadratic; raise it to the equal cubic.
+                    (qx, qy), (ex, ey) = pts
+                    c1 = (current[0] + 2 / 3 * (qx - current[0]),
+                          current[1] + 2 / 3 * (qy - current[1]))
+                    c2 = (ex + 2 / 3 * (qx - ex), ey + 2 / 3 * (qy - ey))
+                    out.append(f"{c1[0]:.2f} {fy(c1[1]):.2f} {c2[0]:.2f} "
+                               f"{fy(c2[1]):.2f} {ex:.2f} {fy(ey):.2f} c")
+                    current = (ex, ey)
+                elif cmd == "C":
+                    (ax, ay), (bx, by), (ex, ey) = pts
+                    out.append(f"{ax:.2f} {fy(ay):.2f} {bx:.2f} {fy(by):.2f} "
+                               f"{ex:.2f} {fy(ey):.2f} c")
+                    current = (ex, ey)
+                else:
+                    out.append("h")
+            out.append("f Q")
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
             font = "/F3" if mono else ("/F2" if bold else "/F1")
@@ -1703,13 +1803,18 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                         continue
                     seen.add(w["symbol"])
                     number, unit = _magnitude_and_unit(w.get("value"), w.get("units"))
-                    line = _plain_symbol(w["symbol"])
+                    latex, plain = str(w["symbol"]), _plain_symbol(w["symbol"])
                     if number not in (None, ""):
-                        line += f" = {number}" + (f" {unit}" if unit else "")
+                        latex += " = " + _latex_value(w.get("latex"), w.get("value"),
+                                                      w.get("units"))
+                        plain += f" = {number}" + (f" {unit}" if unit else "")
+                    drawn = canvas.math(_MARGIN + 12, y + 9, latex, size=7.5,
+                                        fallback=plain[:60])
                     if w.get("description"):
-                        line += f"  — {w['description']}"
-                    canvas.text(_MARGIN + 12, y + 8, line[:110], size=7.5)
-                    y += 11
+                        canvas.text(_MARGIN + 12 + drawn + 8, y + 9,
+                                    f"— {w['description']}"[:100], size=7.5,
+                                    fill=_MUTED)
+                    y += 12.5
             for bc in record.get("boundary_conditions") or []:
                 line = f"{bc.get('type', bc.get('mechanism', '?'))} on {bc.get('boundary', '?')}"
                 number, _u = _magnitude_and_unit(bc.get("text"), None)

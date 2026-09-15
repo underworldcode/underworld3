@@ -370,6 +370,10 @@ def _bdf_coefficients(order, dt_current, dt_history):
 from underworld3.function.expressions import UWexpression as _UWexpression
 
 
+_SCHEME_NAMES = {"c^{BDF}": "BDF", r"c^{\mathrm{BDF}}": "BDF",
+                 "a^{AM}": "Adams-Moulton", r"a^{\mathrm{AM}}": "Adams-Moulton"}
+
+
 def _create_coefficients(order, prefix, instance_id):
     """Create UWexpression objects for BDF or AM coefficients.
 
@@ -392,7 +396,8 @@ def _create_coefficients(order, prefix, instance_id):
         c = _UWexpression(
             rf"{prefix}_{{{i},{instance_id}}}",
             sym=0.0,
-            description=f"{prefix} coefficient {i} (DDt instance {instance_id})",
+            description=(f"{_SCHEME_NAMES.get(prefix, prefix)} coefficient {i} "
+                         f"of history {instance_id}"),
             _unique_name_generation=True,
         )
         coeffs.append(c)
@@ -554,7 +559,7 @@ class _DDtBase(uw_object):
         # composes its residual from :meth:`time_derivative` never recompiles
         # when the step changes.
         self._delta_t = _UWexpression(
-            rf"\Delta t_{{{self.instance_number}}}", 1.0, "DDt timestep",
+            rf"\Delta t_{{{self.instance_number}}}", 1.0, "timestep of this history",
             _unique_name_generation=True)
         # History tracking: deferred initialization and effective order
         self._history_initialised = False
