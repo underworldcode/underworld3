@@ -2266,6 +2266,31 @@ class SolverBaseClass(uw_object):
         Called before each solve() to ensure constants are current without
         requiring JIT recompilation.
         """
+        # Refresh mesh.t from the model clock first, so a time-dependent
+        # expression is repacked with the rest of the constants rather than
+        # needing its own hook (or a recompile) per timestep.
+        try:
+            self.mesh._sync_time_from_model()
+        except AttributeError:
+            pass
+
+        # Note the solve in the model's step journal, if a step is open. This
+        # is the one place every solver passes through before solving, so one
+        # hook records them all, in order. A no-op outside a model.step block.
+        try:
+            # Name it by what it SOLVES, not by its auto-generated instance id:
+            # a journal reading "Stokes(V) -> AdvDiffusion(T)" is auditable,
+            # one reading "Solver_8_ -> Solver_14_" is not.
+            try:
+                unknown = self.u.name
+            except Exception:
+                unknown = "?"
+            uw.get_default_model()._record_step_event(
+                "solve", f"{type(self).__name__}({unknown})"
+            )
+        except Exception:
+            pass
+
         if not self.constants_manifest or self.dm is None:
             return
 

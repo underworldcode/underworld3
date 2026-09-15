@@ -483,6 +483,41 @@ else you assign to it (`model.tracker.rms_velocity = ...`) is captured and
 restored the same way, so a diagnostic you want to survive a backstep belongs
 there too.
 
+### Wrap the step
+
+`model.step(dt)` makes the loop a transaction:
+
+```python
+while model.tracker.time < end_time:
+    dt = adv_diff.estimate_dt()
+
+    with model.step(dt):
+        adv_diff.solve(timestep=dt)
+        stokes.solve(zero_init_guess=False)
+```
+
+Three things follow, and none of them requires anything else in the script to
+change. The clock reads the END of the interval for the whole block, which is
+where an implicit scheme centres its residual, so a time-dependent coefficient
+is evaluated at the right time. The advance commits only on clean exit, so a
+step that raises — or one abandoned because the Courant number came out too
+large — leaves the clock exactly as it was. And everything the block did is
+recorded:
+
+```python
+>>> for entry in model.journal[-3:]:
+...     print(entry)
+<step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+<step 1 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+<step 2 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+```
+
+That record is worth having on its own. It answers what a run actually did,
+in order, without the script being instrumented for it — which is the question
+you want to ask of someone else's model, or your own six months later.
+
+Opening a step is optional. A script that never does behaves exactly as before.
+
 ### Backstepping
 
 The pattern above is what makes speculative stepping safe:
@@ -490,17 +525,17 @@ The pattern above is what makes speculative stepping safe:
 ```python
 snap = model.save_state()          # before the step, not after
 
-dt = big_dt
-adv_diff.solve(timestep=dt)
-stokes.solve(zero_init_guess=False)
-
-if courant_number() > courant_limit:
-    model.load_state(snap)         # fields AND clock go back together
-    for _ in range(n_substeps):
-        ...                        # replay with smaller steps
-else:
-    model.tracker.time += dt
-    model.tracker.step += 1
+try:
+    with model.step(big_dt):
+        adv_diff.solve(timestep=big_dt)
+        stokes.solve(zero_init_guess=False)
+        if courant_number() > courant_limit:
+            raise StepRejected            # abandons the step; the clock stays put
+except StepRejected:
+    model.load_state(snap)                # fields go back; the clock never moved
+    for sub_dt in substeps(big_dt):
+        with model.step(sub_dt):
+            ...
 ```
 
 Take the snapshot **before** the operator, not after. A `DDt` history plugin
@@ -513,34 +548,22 @@ of model state, so two independent runs of the same problem on the same solver
 objects diverge at the 1e-13 level from the first step. If you need to look at a
 step twice, restore it rather than re-run it.
 
-### Known gap: a dimensional clock does not survive a restart
+### Time-dependent expressions
 
-An in-memory snapshot round-trips a units-carrying tracker entry correctly. The
-**on-disk** snapshot does not: a `pint` quantity falls through to the
-"unserialisable type" branch, is recorded in the file as
-`<name>__skipped` and is simply **absent** after `load_state`, so reading
-`model.tracker.time` afterwards raises. Nothing warns at save time. Plain
-floats, ints and numpy arrays are unaffected.
-
-Until that is fixed, a script that needs to restart from disk should keep the
-clock non-dimensional, or re-establish it explicitly after loading:
+`mesh.t` is the model clock as a symbol. It is repacked from
+`model.tracker.time` before every solve, so a time-dependent source or
+boundary condition follows the loop above with no recompilation per step:
 
 ```python
-model.load_state(path)
-model.tracker.time = uw.quantity(model.tracker.time_Myr, "Myr")   # stored as a float
+omega = 2 * sympy.pi / period
+stokes.add_dirichlet_bc((V0 * sympy.sin(omega * mesh.t), 0.0), "Top")
 ```
 
-### Known gap: `mesh.t` is not this clock
-
-`mesh.t` is a separate, symbolic time atom bound to PETSc's `petsc_t`. The
-high-level `solve()` wrappers never set it, so **an expression containing
-`mesh.t` evaluates to zero inside a solve**, silently. A time-dependent
-boundary condition written as `sympy.sin(omega * mesh.t)` is identically zero
-and nothing warns. `solve(time=...)` is accepted and ignored.
-
-Until `mesh.t` is wired to the model clock, build time dependence from a
-`uw.function.expression` you update yourself each step, and drive it from
-`model.tracker.time`.
+Two things to know. A script that never advances `model.tracker.time` leaves
+`mesh.t` at zero, so the clock and the pattern above are the same subject. And
+`mesh.t` should appear inside an expression rather than be handed bare to a
+scalar setter — `poisson.f = mesh.t` stores a value, `poisson.f = 1.0 * mesh.t`
+keeps the symbol.
 
 ---
 
@@ -828,8 +851,9 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 
 - [ ] Declare the model and its reference quantities BEFORE creating the mesh
 - [ ] Keep `time`, `step` and `dt` on `model.tracker`, not in local variables
+- [ ] Wrap each step in `with model.step(dt):`
 - [ ] Take snapshots BEFORE the operator you might want to undo
-- [ ] Do not use `mesh.t` for time dependence — it is not the model clock
+- [ ] Use `mesh.t` inside an expression for time dependence, never bare
 
 ### Creating a Swarm
 
@@ -867,7 +891,9 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - **2026-09-09**: The timestepping pattern
   - Start from the model and its reference quantities, not from the mesh
   - Clock on `model.tracker`, not loose variables (snapshot consistency)
-  - A dimensional clock is dropped by the on-disk snapshot
+  - Disk snapshots now carry dimensional values (magnitude + units)
+  - `mesh.t` now resolves to the model clock (#410)
+  - `model.step(dt)` — the step as a transaction, and the step journal
   - Backstepping recipe; snapshot before the operator
   - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version

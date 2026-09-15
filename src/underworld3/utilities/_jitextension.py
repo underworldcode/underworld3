@@ -510,7 +510,34 @@ def _pack_constants(manifest):
             try:
                 values[idx] = float(uw_expr.data)
             except Exception:
-                values[idx] = 0.0
+                # Do NOT pack a zero here. A constants[] slot exists because
+                # this expression resolved to a single number when the kernel
+                # was COMPILED. If it no longer does, the compiled kernel is
+                # structurally wrong for the current model — it reads a scalar
+                # where the expression now varies in space — and packing 0.0
+                # hands that kernel a zero coefficient. That is silent and
+                # catastrophic: a zero diffusivity or viscosity diverges, and
+                # nothing says why.
+                #
+                # The usual cause is a nested atom that has been ramped.
+                # `(1 + T**2)**(-m) + 1` is the NUMBER 2 while m is zero, so it
+                # banks as one constant; ramp m and it depends on T again, but
+                # the kernel still expects a scalar.
+                raise RuntimeError(
+                    f"constants[] slot {idx} ({uw_expr.name!r}) no longer "
+                    f"reduces to a number, so the compiled kernel — which "
+                    f"treats it as a scalar constant — is out of date.\n"
+                    f"  current content: {str(getattr(uw_expr, '_sym', uw_expr))[:160]}\n"
+                    f"This usually means an atom nested inside it has been "
+                    f"ramped, and the expression has stopped being constant. "
+                    f"Force a rebuild before solving again:\n"
+                    f"    solver.is_setup = False\n"
+                    f"    solver._needs_function_rewire = True\n"
+                    f"To keep a coefficient rampable without this, give it its "
+                    f"own atom rather than letting the enclosing expression "
+                    f"collapse to a number at compile time — see "
+                    f"uw.maths.functions.vanishing."
+                ) from None
     return values
 
 

@@ -602,8 +602,14 @@ class SNES_Poisson(_ConstitutiveModelStateMixin, SNES_Scalar):
         """Set the source term (handles units and scaling)."""
         self._needs_function_rewire = True
 
-        # Handle UWQuantity with units - enforce "units everywhere" principle
-        if hasattr(value, "value") and hasattr(value, "units"):
+        # Handle UWQuantity with units - enforce "units everywhere" principle.
+        # The `.value`/`.units` duck-test also matches a UWexpression, which is
+        # a SYMBOLIC atom, not a plain quantity — unwrapping one here baked a
+        # live-rampable constants[] atom to a C literal at assignment time
+        # (`poisson.f = mesh.t` became a constant zero). UWQuantity and pint
+        # Quantity are not sympy objects; UWexpression is, so that separates them.
+        if (hasattr(value, "value") and hasattr(value, "units")
+                and not isinstance(value, sympy.Basic)):
             # Extract the plain value
             plain_value = float(value.value)
 
