@@ -30,10 +30,11 @@ with a bare `for step in range(n)` loop and no clock at all. The physics here is
 unchanged. What the pattern adds is that the run keeps an account of itself, and
 that account is worth four things this script demonstrates in turn:
 
-1. **what ran** — an ordered journal, named by what each solver solves
+1. **what ran** — an ordered transcript, named by what each solver solves
 2. **a rejected step** — the clock does not move when a step is abandoned
 3. **playback** — a recorded step replays bit-for-bit, where a re-run does not
-4. **an invariant** — a step that took the physical step twice says so
+4. **recording without judging** — a step taken twice is visible in the
+   transcript, and the transcript makes no claim about whether that is wrong
 5. **a log on disk** — the same account in aligned columns, flushed as each
    step closes, so a run that dies keeps its history and a run in progress can
    be watched with `tail -f`
@@ -59,8 +60,6 @@ Override from the command line, e.g. `-uw_n_steps 20 -uw_cell_size 0.075`.
 """
 
 # %%
-import warnings
-
 import numpy as np
 import sympy
 
@@ -82,8 +81,8 @@ params = uw.Params(
     uw_cell_size=0.1,          # mesh resolution, as a fraction of the outer radius
     uw_n_steps=8,              # timesteps in the recorded run
     uw_dt_fraction=0.5,        # accuracy factor on estimate_dt()
-    uw_demos=1,                # run the journal demonstrations after the loop
-    uw_journal_file="output/annulus_convection.log",
+    uw_demos=1,                # run the transcript demonstrations after the loop
+    uw_transcript_file="output/annulus_convection.log",
 )
 
 # %% [markdown]
@@ -275,13 +274,13 @@ model.tracker.v_rms = v_rms()
 model.record_every = 1
 model.record_limit = params.uw_n_steps
 
-# The in-memory journal is what the run can still UNDO; it is bounded and it
+# The in-memory transcript is what the run can still UNDO; it is bounded and it
 # dies with the process. The log is what the run DID: one aligned line per step,
 # appended and flushed as each step closes, including the steps that were
 # abandoned and the backtracks. Setting it is optional and costs a line per
-# step. A `.jsonl` suffix (or `model.journal_format = "jsonl"`) writes the same
+# step. A `.jsonl` suffix (or `model.transcript_format = "jsonl"`) writes the same
 # record as JSON objects instead, for parsing rather than reading.
-model.journal_file = str(params.uw_journal_file)
+model.transcript_file = str(params.uw_transcript_file)
 
 for _ in range(int(params.uw_n_steps)):
     dt = params.uw_dt_fraction * adv.estimate_dt()
@@ -300,24 +299,24 @@ for _ in range(int(params.uw_n_steps)):
 """
 ## 1. What ran
 
-The journal is an ordered account of each step: the interval it covered and
+The transcript is an ordered account of each step: the interval it covered and
 the operators it applied, named by what they solve. It answers "is this model
 doing the thing the write-up says it does" without the script being
 instrumented for it — which is the question you want to ask of someone else's
 model, or of your own six months later.
 
 Note the `history_shift` between the two solves. That is the transport history
-advancing, and it is what the step's invariant checks.
+advancing — the thing that makes a step taken twice visible at all.
 """
 
 # %%
 if params.uw_demos:
     say("")
-    say("--- 1. the journal " + "-" * 55)
-    for entry in model.journal:
+    say("--- 1. the transcript " + "-" * 55)
+    for entry in model.transcript:
         say(f"  step {entry.index:>2d}  dt = {myr(entry.dt):>12s}   "
             + " -> ".join(f"{e['kind']}:{e['name']}" for e in entry.events))
-    say(f"  {len(model.restore_points)} of {len(model.journal)} steps "
+    say(f"  {len(model.restore_points)} of {len(model.transcript)} steps "
         f"are restorable")
 
 # %% [markdown]
@@ -327,7 +326,7 @@ if params.uw_demos:
 A `model.step` block is a transaction. If it does not exit cleanly — an
 exception, or a step abandoned because a diagnostic came out wrong — the clock
 and the step counter are left exactly as they were, and nothing is added to the
-journal. Backstepping no longer has to remember to unwind a counter.
+transcript. Backstepping no longer has to remember to unwind a counter.
 
 The fields are yours to restore: take a snapshot before the block, and load it
 in the handler. The clock never moved, so the two stay consistent.
@@ -343,7 +342,7 @@ if params.uw_demos:
     say("")
     say("--- 2. a rejected step " + "-" * 51)
 
-    before = (myr(model.tracker.time), model.tracker.step, len(model.journal))
+    before = (myr(model.tracker.time), model.tracker.step, len(model.transcript))
     snap = model.save_state()          # BEFORE the step, not after
 
     reckless_dt = 50.0 * params.uw_dt_fraction * adv.estimate_dt()
@@ -357,9 +356,9 @@ if params.uw_demos:
         model.load_state(snap)
         say(f"  rejected: {why}")
 
-    after = (myr(model.tracker.time), model.tracker.step, len(model.journal))
-    say(f"  clock/step/journal before : {before}")
-    say(f"  clock/step/journal after  : {after}")
+    after = (myr(model.tracker.time), model.tracker.step, len(model.transcript))
+    say(f"  clock/step/transcript before : {before}")
+    say(f"  clock/step/transcript after  : {after}")
     say(f"  unchanged: {before == after}")
 
 # %% [markdown]
@@ -368,7 +367,7 @@ if params.uw_demos:
 
 `model.rewind()` puts the run back to the start of a completed step — fields,
 transport history, clock and tracker diagnostics together — and truncates the
-journal to match, so it continues to describe the run that actually happened.
+transcript to match, so it continues to describe the run that actually happened.
 
 Replaying the step from there reproduces it exactly. Re-*running* the script
 does not: warm starts and preconditioner reuse are solver history rather than
@@ -403,47 +402,49 @@ if params.uw_demos:
 
 # %% [markdown]
 """
-## 4. An invariant
+## 4. Recording, not judging
 
-A history manager must advance exactly once per step. Advancing twice means
-the step was taken twice — a corrector, a Picard iteration on the coupled
-system, or a retry that called the solver again — and the temperature moves
-two intervals while the timestep history and the solve counter look identical
-to a single step. Nothing else in the library can see that.
+Call a solver twice inside one step — a predictor/corrector, a Picard iteration
+on the coupled system, a retry — and its history advances twice, so the
+physical step is taken twice. The timestep history and the solve counter look
+identical to a single step, so the transcript is the only place it shows.
 
-The step says so. If a solver genuinely is called more than once within a step,
-only the last call should carry the timestep.
+The step records that and says nothing about it. Whether two shifts in one bar
+are a mistake or legitimate sub-cycling is a reading of the transcript, made by
+a later pass that can look across bars; inside the loop it would have to be
+guessed. See `docs/developer/design/run-score-and-transcript.md`.
+
+What you see below is the bar's operator sequence with everything in it twice —
+which is also why the figure gives that bar its own letter.
 """
 
 # %%
 if params.uw_demos:
     say("")
-    say("--- 4. the invariant " + "-" * 53)
+    say("--- 4. a step taken twice " + "-" * 47)
 
     dt = params.uw_dt_fraction * adv.estimate_dt()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        with model.step(dt, label="taken twice"):
-            adv.solve(timestep=dt, zero_init_guess=False)     # a "predictor"
-            stokes.solve(zero_init_guess=False)
-            adv.solve(timestep=dt, zero_init_guess=False)     # and a "corrector"
-            stokes.solve(zero_init_guess=False)
+    with model.step(dt, label="taken twice"):
+        adv.solve(timestep=dt, zero_init_guess=False)     # a "predictor"
+        stokes.solve(zero_init_guess=False)
+        adv.solve(timestep=dt, zero_init_guess=False)     # and a "corrector"
+        stokes.solve(zero_init_guess=False)
 
-    for w in caught:
-        if issubclass(w.category, RuntimeWarning):
-            say("      " + " ".join(str(w.message).split())[:200])
-    say(f"  the step as recorded: {model.journal[-1]}")
+    entry = model.transcript[-1]
+    shifts = [e for e in entry.events if e["kind"] == "history_shift"]
+    say(f"  history shifts in this one step: {len(shifts)}")
+    say(f"  the step as recorded: {entry}")
 
 # %% [markdown]
 """
 ## 5. The log on disk
 
-`model.journal_file` writes the same account to a file, one line per step,
+`model.transcript_file` writes the same account to a file, one line per step,
 flushed as it closes — so `tail -f` on it follows a running job, and a run that
 is killed keeps everything up to the moment it died.
 
-Three differences from `model.journal`, all deliberate. An **abandoned** step
-appears in the file and not in memory. A step aged out by `journal_limit`
+Three differences from `model.transcript`, all deliberate. An **abandoned** step
+appears in the file and not in memory. A step aged out by `transcript_limit`
 leaves memory but stays in the file. And a **backtrack** — `rewind()` or a
 bare `load_state()` — writes its own line, because a log that shows step 7 and
 then step 7 again, with nothing in between, is not a log of what happened.
@@ -453,9 +454,9 @@ then step 7 again, with nothing in between, is not a log of what happened.
 if params.uw_demos:
     say("")
     say("--- 5. the log on disk " + "-" * 51)
-    say(f"  {model.journal_file}")
+    say(f"  {model.transcript_file}")
 
-    with open(model.journal_file, encoding="utf-8") as handle:
+    with open(model.transcript_file, encoding="utf-8") as handle:
         for line in handle.read().splitlines():
             say("  " + line)
 
@@ -463,11 +464,11 @@ if params.uw_demos:
 """
 ## 6. The same account, as a figure
 
-A terminal is not where a run belongs in a paper. `uw.journal_diagram` renders
+A terminal is not where a run belongs in a paper. `uw.transcript_diagram` renders
 the record with **time running down the page** — one row per step, A4 portrait,
 paginated — and writes it as a PDF, which opens anywhere, or an SVG if the
 suffix says so. Both are written directly: no plotting library, no
-rasterisation, no theme to fight with. `uw.journal_flowchart` renders one
+rasterisation, no theme to fight with. `uw.transcript_flowchart` renders one
 step's operator flow as Mermaid, for dropping into documentation.
 
 The layout decision worth knowing about: each distinct operator sequence gets a
@@ -485,11 +486,11 @@ if params.uw_demos:
     say("")
     say("--- 6. the figure " + "-" * 56)
 
-    stem = model.journal_file.rsplit(".", 1)[0]
-    say(f"  {uw.journal_diagram(model, out=stem + '.pdf', title='Annulus convection - run log')}")
-    say(f"  {uw.journal_diagram(model, out=stem + '.svg', title='Annulus convection - run log')}")
+    stem = model.transcript_file.rsplit(".", 1)[0]
+    say(f"  {uw.transcript_diagram(model, out=stem + '.pdf', title='Annulus convection - run log')}")
+    say(f"  {uw.transcript_diagram(model, out=stem + '.svg', title='Annulus convection - run log')}")
     say("")
-    for line in uw.journal_flowchart(model).splitlines():
+    for line in uw.transcript_flowchart(model).splitlines():
         say("  " + line)
 
 # %%

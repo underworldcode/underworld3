@@ -1,13 +1,13 @@
 """Turn a run's step log into a figure.
 
-The log is written to be watched (:attr:`underworld3.Model.journal_file`); this
+The log is written to be watched (:attr:`underworld3.Model.transcript_file`); this
 module turns it into something to put in a paper or read on a page.
 
-``journal_diagram``
+``transcript_diagram``
     What the run DID, as SVG or PDF. Time runs DOWN the page, one row per step,
     so the figure is portrait, paginates, and drops into a document column.
 
-``journal_flowchart``
+``transcript_flowchart``
     What ONE step does, as Mermaid, for dropping into documentation.
 
 The layout decision that makes a long run legible: each distinct operator
@@ -27,7 +27,7 @@ import math
 import os
 import zlib
 
-__all__ = ["journal_diagram", "journal_flowchart"]
+__all__ = ["transcript_diagram", "transcript_flowchart"]
 
 
 # --- palette ---------------------------------------------------------------
@@ -52,21 +52,21 @@ PAGE_W, PAGE_H = 595.0, 842.0
 # ---------------------------------------------------------------------------
 
 def _as_runs(source):
-    """Accept a path, the list ``read_journal`` returns, or a live model."""
+    """Accept a path, the list ``read_transcript`` returns, or a live model."""
     if isinstance(source, (str, os.PathLike)):
         import underworld3 as uw
 
-        return uw.read_journal(str(source))
-    if hasattr(source, "journal") and hasattr(source, "tracker"):
+        return uw.read_transcript(str(source))
+    if hasattr(source, "transcript") and hasattr(source, "tracker"):
         return [{"run": source._run_header(),
-                 "steps": [entry.as_dict() for entry in source.journal],
+                 "steps": [entry.as_dict() for entry in source.transcript],
                  "notes": []}]
     if isinstance(source, list):
         if source and isinstance(source[0], dict) and "steps" in source[0]:
             return source
         return [{"run": None, "steps": list(source), "notes": []}]
     raise TypeError(
-        f"expected a journal path, the list read_journal returns, or a Model; "
+        f"expected a transcript path, the list read_transcript returns, or a Model; "
         f"got {type(source).__name__}"
     )
 
@@ -74,7 +74,7 @@ def _as_runs(source):
 def _pick_run(runs, index):
     populated = [r for r in runs if r.get("steps")]
     if not populated:
-        raise ValueError("this journal holds no steps")
+        raise ValueError("this transcript holds no steps")
     return populated[index]
 
 
@@ -214,8 +214,12 @@ def _text_width(content, size, mono):
 # Layout — time runs down the page
 # ---------------------------------------------------------------------------
 
-_MARGIN = 46.0
+_MARGIN = 40.0
 _ROW = 14.0
+# The left gutter carries the backtrack arrows and their labels. Wide enough
+# for "restore + rewind 1" at 7pt, because a label that runs off the page is
+# worse than no label.
+_GUTTER = 58.0
 
 
 def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
@@ -257,7 +261,7 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
         counts[_signature(step)] = counts.get(_signature(step), 0) + 1
 
     # --- columns -----------------------------------------------------------
-    x_gutter = _MARGIN + 14.0          # backtrack arrows live to the left
+    x_gutter = _MARGIN + _GUTTER       # backtrack arrows live to the left
     x_index = x_gutter + 26.0          # step number, right aligned
     x_time = x_index + 54.0            # t, right aligned
     x_dt = x_time + 52.0               # dt, right aligned
@@ -367,9 +371,6 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
             canvas.text(x_bar + length + 4, base, "abandoned", size=7.5,
                         fill=_ABANDONED)
 
-        if any(e.get("kind") == "invariant" for e in step.get("events", [])):
-            canvas.text(x_bar - 8, base, "!", size=10, fill=_FLAG, bold=True)
-
         if any(walls):
             w = max(0.6, (walls[i] / wall_max) * 30.0)
             canvas.rect(right - w, y + 4.0, w, _ROW - 9.0, fill=_WALL)
@@ -380,22 +381,50 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
     y += 6
 
     # --- backtracks, in the left gutter ------------------------------------
-    # Backtracks go in the left gutter, each on its own track so two that land
-    # on adjacent rows do not draw over one another. They are drawn last but
-    # must land on the PAGE THEIR ROWS ARE ON, not on whichever page the
-    # cursor happens to have reached.
-    for track, note in enumerate(notes):
-        after = note.get("after_position")
-        target = note.get("to_position")
+    # Backtracks go in the left gutter, and they are drawn as the path the run
+    # actually took: BACK from the step it bailed out of, to the step whose
+    # state it returned to, and then DOWN from that step to the row that redoes
+    # it. Two arrows rather than one, because they are two different things —
+    # an undo, and the repeat that follows it — and the pair is what makes the
+    # repeated step index in the table read as a repeat rather than a typo.
+    # They are drawn last but must land on the PAGE THEIR ROWS ARE ON, not on
+    # whichever page the cursor happens to have reached.
+    # Two calls that make the same jump — a load_state followed by a rewind to
+    # the same place — are one backtrack in the run's story and one arrow on
+    # the page. Grouping them also stops their labels printing over each other.
+    grouped = []
+    for note in notes:
+        key = (note.get("after_position"), note.get("to_position"))
+        if grouped and grouped[-1][0] == key:
+            grouped[-1][1].append(note)
+        else:
+            grouped.append((key, [note]))
+
+    resumed = set()
+    for track, ((after, target), members) in enumerate(grouped):
+        note = members[0]
+        note = dict(note)
+        # Label the group by the LAST note in it: that is the call that set
+        # where the run ended up, and it is the more specific one (a rewind
+        # names how many steps it undid). The others are in the log; a gutter
+        # label has room for the net effect, not the sequence of calls.
+        note["short"] = members[-1].get("short", members[-1].get("kind", "back"))
+        if len(members) > 1:
+            note["short"] += f" (+{len(members) - 1})"
         if after is None or after not in row_y:
             continue
-        if target is None or target not in row_y:
-            target = after
         page = row_page[after]
         ops = canvas.pages[page]
-        x = _MARGIN + 10 - 4.0 * (track % 3)
+        x = x_gutter - 6.0 - 4.0 * (track % 3)
         y_from = row_y[after] + _ROW - 3
         label = note.get("short", "back")
+
+        if target is None or target not in row_y:
+            # Nothing recorded to point at: mark where it happened.
+            ops.append(("line", x, y_from, x + 4, y_from, _ABANDONED, 0.8, None))
+            ops.append(("text", x - 6, y_from, label, 7, _ABANDONED,
+                        "end", False, False))
+            continue
 
         if row_page[target] != page:
             # It reached back past a page break; say so where it happened
@@ -404,20 +433,34 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
             ops.append(("line", x, y_from, x, y_from - _ROW * 0.8, _ABANDONED,
                         0.8, (2.0, 1.5)))
             ops.append(("tri", x, y_from - _ROW * 0.8, 2.5, _ABANDONED))
-            ops.append(("text", _MARGIN - 2, y_from, f"{label} \u2191", 7,
+            ops.append(("text", x - 6, y_from, f"{label} \u2191", 7,
                         _ABANDONED, "end", False, False))
             continue
 
-        y_to = row_y[target] + 2
-        if y_to > y_from:
-            continue
-        ops.append(("line", x, y_from, x, y_to, _ABANDONED, 0.8, (2.0, 1.5)))
-        ops.append(("line", x, y_from, x + 4, y_from, _ABANDONED, 0.8, None))
-        ops.append(("tri", x, y_to, 2.5, _ABANDONED))
-        # Only label a backtrack that spans enough rows to hold the word.
-        if y_from - y_to >= _ROW * 1.5:
-            ops.append(("text", _MARGIN - 2, (y_from + y_to) / 2 + 3, label, 7,
-                        _ABANDONED, "end", False, False))
+        y_to = row_y[target] + 3
+        if y_to <= y_from:
+            ops.append(("line", x, y_from, x, y_to, _ABANDONED, 0.8, (2.0, 1.5)))
+            ops.append(("line", x, y_from, x + 4, y_from, _ABANDONED, 0.8, None))
+            ops.append(("tri", x, y_to, 2.5, _ABANDONED))
+            ops.append(("text", x - 6,
+                        (y_from + y_to) / 2 + 3 if y_from - y_to >= _ROW * 2.0
+                        else y_from + 1, label, 7, _ABANDONED, "end", False,
+                        False))
+
+        # ... and the repeat. The row that follows the backtrack is the run
+        # picking the step up again; joining the two says so.
+        redo = after + 1
+        if (redo in row_y and row_page[redo] == page and target not in resumed
+                and steps[redo].get("index") == steps[target].get("index")):
+            resumed.add(target)
+            xr = x - 6.0
+            y_top = row_y[target] + _ROW - 3
+            y_bottom = row_y[redo] + _ROW / 2
+            ops.append(("line", xr, y_top, xr, y_bottom, _ACCEPTED, 0.8, None))
+            ops.append(("line", xr, y_top, xr + 3, y_top, _ACCEPTED, 0.8, None))
+            ops.append(("tri_down", xr, y_bottom, 2.5, _ACCEPTED))
+            ops.append(("text", xr - 4, y_bottom + 3, "again", 7,
+                        _ACCEPTED, "end", False, False))
 
     # --- the legend: what each letter means --------------------------------
     if page_height is not None and y + 30 + 14 * len(order) > page_height - _MARGIN:
@@ -425,7 +468,8 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
         y = _MARGIN
 
     y += 10
-    canvas.text(_MARGIN, y + 8, "Operator sequences", size=9.5, bold=True)
+    canvas.text(_MARGIN, y + 8, "Operator sequences  —  what the seq letter "
+                "on each row stands for", size=9.5, bold=True)
     y += 18
     budget = int((right - _MARGIN - 34) / (_COUR_EM * 8.0))
     for signature in order:
@@ -439,23 +483,6 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
                         fill=_ACCEPTED if signature == order[0] else _FLAG)
             y += 11
         y += 5
-
-    flagged = [
-        (step.get("index", i), event.get("detail", ""))
-        for i, step in enumerate(steps)
-        for event in step.get("events", [])
-        if event.get("kind") == "invariant"
-    ]
-    if flagged:
-        y += 6
-        canvas.text(_MARGIN, y + 8, "!  Invariant", size=9.5, bold=True, fill=_FLAG)
-        y += 15
-        for index, detail in flagged:
-            canvas.text(_MARGIN + 12, y + 8,
-                        f"step {index}: history advanced more than once "
-                        f"({detail}) — the step was taken twice",
-                        size=8, fill=_INK)
-            y += 12
 
     height = page_height if page_height is not None else y + _MARGIN
     return canvas, width, height
@@ -490,9 +517,10 @@ def _svg_ops(ops, width, height):
             if dash:
                 attrs += f' stroke-dasharray="{dash[0]} {dash[1]}"'
             out.append(f"<line {attrs}/>")
-        elif kind == "tri":
+        elif kind in ("tri", "tri_down"):
             _, x, y, r, colour = op
-            out.append(f'<path d="M {x:.1f} {y:.1f} l {-r:.1f} {r * 1.6:.1f} '
+            dy = r * 1.6 if kind == "tri" else -r * 1.6
+            out.append(f'<path d="M {x:.1f} {y:.1f} l {-r:.1f} {dy:.1f} '
                        f'l {r * 2:.1f} 0 z" fill="{_hex(colour)}"/>')
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
@@ -517,6 +545,7 @@ def _svg_ops(ops, width, height):
 
 _PDF_SUBSTITUTIONS = {
     "→": "->", "·": "-", "⚠": "!", "—": "-", "–": "-",
+    "…": "...", "↑": "^", "↓": "v", "×": "x",
     "'": "'", "'": "'", """: '"', """: '"', "≥": ">=", "≤": "<=",
 }
 
@@ -559,11 +588,12 @@ def _pdf_page_stream(ops, width, height):
             out.append(f"{stroke[0]:.3f} {stroke[1]:.3f} {stroke[2]:.3f} RG {lw} w")
             out.append(f"{x1:.2f} {fy(y1):.2f} m {x2:.2f} {fy(y2):.2f} l S")
             out.append("Q")
-        elif kind == "tri":
+        elif kind in ("tri", "tri_down"):
             _, x, y, r, colour = op
+            dy = r * 1.6 if kind == "tri" else -r * 1.6
             out.append(f"q {colour[0]:.3f} {colour[1]:.3f} {colour[2]:.3f} rg")
-            out.append(f"{x:.2f} {fy(y):.2f} m {x - r:.2f} {fy(y + r * 1.6):.2f} l "
-                       f"{x + r:.2f} {fy(y + r * 1.6):.2f} l f Q")
+            out.append(f"{x:.2f} {fy(y):.2f} m {x - r:.2f} {fy(y + dy):.2f} l "
+                       f"{x + r:.2f} {fy(y + dy):.2f} l f Q")
         elif kind == "text":
             _, x, y, content, size, fill, anchor, bold, mono = op
             font = "/F3" if mono else ("/F2" if bold else "/F1")
@@ -628,21 +658,21 @@ def _pdf_document(pages, width, height):
 # Entry points
 # ---------------------------------------------------------------------------
 
-def journal_diagram(source, out=None, run=-1, title=None, format=None,
+def transcript_diagram(source, out=None, run=-1, title=None, format=None,
                     width=None):
     """Render a run's log as a figure, with time running DOWN the page.
 
     Parameters
     ----------
     source : str, list or Model
-        A ``.jsonl`` journal file, the list :func:`underworld3.read_journal`
+        A ``.jsonl`` transcript file, the list :func:`underworld3.read_transcript`
         returns, or a live model. Not a text log — that format is a report and
         cannot be read back.
     out : str, optional
         Where to write. Defaults to the source path with the format's suffix,
-        else ``journal.pdf``.
+        else ``transcript.pdf``.
     run : int, default -1
-        Which run in the file. A file holds one per ``clear_journal()``.
+        Which run in the file. A file holds one per ``clear_transcript()``.
     title : str, optional
         Overrides the heading taken from the run header.
     format : {"pdf", "svg"}, optional
@@ -670,7 +700,7 @@ def journal_diagram(source, out=None, run=-1, title=None, format=None,
     if out is None:
         suffix = ".svg" if format == "svg" else ".pdf"
         out = (os.path.splitext(str(source))[0] + suffix
-               if isinstance(source, (str, os.PathLike)) else "journal" + suffix)
+               if isinstance(source, (str, os.PathLike)) else "transcript" + suffix)
 
     page_width = width or PAGE_W
     canvas, page_width, height = _layout(
@@ -692,7 +722,7 @@ def journal_diagram(source, out=None, run=-1, title=None, format=None,
     return out
 
 
-def journal_flowchart(source, run=-1, out=None):
+def transcript_flowchart(source, run=-1, out=None):
     """The operator flow of a step, as Mermaid, for dropping into documentation.
 
     When every step ran the same sequence — the usual case — that is one

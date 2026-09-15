@@ -48,7 +48,7 @@ def _svg(tmp_path, runs, **kwargs):
     import underworld3 as uw
 
     out = str(tmp_path / "run.svg")
-    uw.journal_diagram(runs, out=out, **kwargs)
+    uw.transcript_diagram(runs, out=out, **kwargs)
     text = open(out, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)          # must be well-formed
     return text
@@ -126,16 +126,21 @@ def test_a_backtrack_is_drawn(tmp_path):
     assert "<path" in text, "the backtrack should be drawn, not only named"
 
 
-def test_the_invariant_is_reported_on_the_figure(tmp_path):
-    flagged = _step(2, events=[
+def test_a_repeat_shows_as_its_own_sequence(tmp_path):
+    """A bar whose operators ran twice differs from its neighbours, so it gets
+    its own letter. The figure reports that and makes no claim about whether it
+    is wrong — that reading belongs to a later pass over the transcript."""
+    doubled = _step(2, events=[
+        {"kind": "solve", "name": "SNES_AdvectionDiffusion_Composed(T)"},
         {"kind": "history_shift", "name": "EulerianSUPG(T)", "dt": 0.5},
+        {"kind": "solve", "name": "SNES_AdvectionDiffusion_Composed(T)"},
         {"kind": "history_shift", "name": "EulerianSUPG(T)", "dt": 0.5},
-        {"kind": "invariant", "name": "history advanced more than once",
-         "detail": "EulerianSUPG(T) x2"},
     ])
-    text = _svg(tmp_path, _run([_step(0), _step(1), flagged]))
-    assert "Invariant" in text
-    assert "EulerianSUPG(T) x2" in text
+    text = _svg(tmp_path, _run([_step(0), _step(1), doubled]))
+    assert ">A<" in text and ">B<" in text
+    assert "Invariant" not in text, (
+        "the figure must not assert that a repeat is a mistake"
+    )
 
 
 def test_a_long_sequence_is_wrapped_not_run_off_the_page(tmp_path):
@@ -189,7 +194,7 @@ def test_a_nondimensional_run_still_renders(tmp_path):
 def test_flowchart_is_one_chain_when_every_step_agrees():
     import underworld3 as uw
 
-    text = uw.journal_flowchart(_run([_step(i) for i in range(6)]))
+    text = uw.transcript_flowchart(_run([_step(i) for i in range(6)]))
     assert text.startswith("flowchart LR")
     assert "subgraph" not in text
     assert text.count("-->") == 2
@@ -200,7 +205,7 @@ def test_flowchart_separates_the_step_that_differs():
     import underworld3 as uw
 
     odd = _step(3, events=[{"kind": "solve", "name": "SNES_Stokes(v)"}])
-    text = uw.journal_flowchart(_run([_step(0), _step(1), _step(2), odd]))
+    text = uw.transcript_flowchart(_run([_step(0), _step(1), _step(2), odd]))
     assert text.count("subgraph") == 2
     assert 'step 3' in text
     assert 'step 0, 1, 2' in text
@@ -223,7 +228,7 @@ def test_a_live_model_can_be_drawn_without_a_file(tmp_path):
             model._record_step_event("solve", "SNES_Stokes(v)")
 
     out = str(tmp_path / "live.svg")
-    uw.journal_diagram(model, out=out)
+    uw.transcript_diagram(model, out=out)
     text = open(out, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)
     assert "3 steps" in text
@@ -235,14 +240,14 @@ def test_reading_a_text_log_says_what_to_do_instead(tmp_path):
     uw.reset_default_model()
     model = uw.get_default_model()
     path = tmp_path / "run.log"
-    model.journal_file = str(path)
+    model.transcript_file = str(path)
     model.tracker.time = 0.0
     model.tracker.step = 0
     with model.step(0.1):
         pass
 
-    with pytest.raises(ValueError, match="journal_format = 'jsonl'"):
-        uw.read_journal(str(path))
+    with pytest.raises(ValueError, match="transcript_format = 'jsonl'"):
+        uw.read_transcript(str(path))
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +259,7 @@ def _pdf(tmp_path, runs, name="run.pdf", **kwargs):
     import underworld3 as uw
 
     out = str(tmp_path / name)
-    uw.journal_diagram(runs, out=out, **kwargs)
+    uw.transcript_diagram(runs, out=out, **kwargs)
     return open(out, "rb").read()
 
 
@@ -262,7 +267,7 @@ def test_pdf_is_the_default_and_is_a_real_pdf(tmp_path):
     import underworld3 as uw
 
     out = str(tmp_path / "run")
-    written = uw.journal_diagram(_run([_step(i) for i in range(5)]), out=out)
+    written = uw.transcript_diagram(_run([_step(i) for i in range(5)]), out=out)
     assert written == out
     data = open(out, "rb").read()
     assert data.startswith(b"%PDF-1.4")
@@ -311,7 +316,7 @@ def test_a_jsonl_log_round_trips_into_a_figure(tmp_path):
     uw.reset_default_model()
     model = uw.get_default_model()
     path = tmp_path / "run.jsonl"
-    model.journal_file = str(path)
+    model.transcript_file = str(path)
     model.record_every = 1
     model.tracker.time = 0.0
     model.tracker.step = 0
@@ -321,12 +326,91 @@ def test_a_jsonl_log_round_trips_into_a_figure(tmp_path):
             model._record_step_event("solve", "SNES_Stokes(v)")
     model.rewind()
 
-    out = uw.journal_diagram(str(path))
+    out = uw.transcript_diagram(str(path))
     assert out.endswith(".pdf")
     assert open(out, "rb").read().startswith(b"%PDF")
 
-    out_svg = uw.journal_diagram(str(path), out=str(tmp_path / "run.svg"))
+    out_svg = uw.transcript_diagram(str(path), out=str(tmp_path / "run.svg"))
     text = open(out_svg, encoding="utf-8").read()
     xml.dom.minidom.parseString(text)
     assert "1 backtrack(s)" in text
     assert "stroke-dasharray" in text, "the backtrack should be drawn"
+
+
+# ---------------------------------------------------------------------------
+# Backtracks read as the path the run took
+# ---------------------------------------------------------------------------
+
+
+def test_a_backtrack_draws_the_undo_and_the_repeat(tmp_path):
+    """Back out of the abandoned step, then down to the row that redoes it."""
+    # The shape a real run leaves: ... 2 ok, 3 abandoned, back to 2, 2 again.
+    steps = [_step(i) for i in range(3)]
+    steps.append(_step(3, dt=9.0, completed=False, label="too big"))
+    steps.append(_step(2, label="replay"))
+    notes = [{"kind": "rewind", "after_position": 3, "to_position": 2,
+              "short": "rewind 1", "steps_undone": 1}]
+
+    text = _svg(tmp_path, _run(steps, notes))
+    assert "rewind 1" in text
+    assert "again" in text, (
+        "the row that repeats the step should be joined to the one it repeats"
+    )
+    # Two arrowheads: one back (up), one forward (down).
+    assert text.count("<path") >= 2
+
+
+def test_no_repeat_arrow_when_the_run_moves_on(tmp_path):
+    """A backtrack followed by a DIFFERENT step is not a repeat."""
+    steps = [_step(i) for i in range(3)] + [_step(7, label="elsewhere")]
+    notes = [{"kind": "rewind", "after_position": 2, "to_position": 1,
+              "short": "rewind 1"}]
+
+    text = _svg(tmp_path, _run(steps, notes))
+    assert "rewind 1" in text
+    assert "again" not in text
+
+
+def test_notes_that_make_the_same_jump_share_one_arrow(tmp_path):
+    """A load_state then a rewind to the same place is one backtrack."""
+    steps = [_step(i) for i in range(4)] + [_step(2, label="replay")]
+    notes = [
+        {"kind": "restore", "after_position": 3, "to_position": 2,
+         "short": "restore"},
+        {"kind": "rewind", "after_position": 3, "to_position": 2,
+         "short": "rewind 1"},
+    ]
+
+    text = _svg(tmp_path, _run(steps, notes))
+    assert "rewind 1 (+1)" in text, "the group should be labelled once"
+    assert "restore" not in text.split("Operator sequences")[0], (
+        "the two labels must not both print in the gutter"
+    )
+
+
+def test_gutter_labels_stay_on_the_page(tmp_path):
+    import re
+
+    steps = [_step(i) for i in range(4)] + [_step(1)]
+    notes = [{"kind": "rewind", "after_position": 3, "to_position": 1,
+              "short": "rewind 2 (+1)"}]
+    text = _svg(tmp_path, _run(steps, notes))
+    for x, anchor, content in re.findall(
+            r'<text x="([-\d.]+)"[^>]*text-anchor="(\w+)"[^>]*>([^<]*)<', text):
+        if anchor == "end":
+            assert float(x) - len(content) * 0.53 * 7.0 >= -1.0, content
+
+
+def test_pdf_has_no_replacement_characters(tmp_path):
+    """Arrows and ellipses must be mapped, not turned into '?'."""
+    import zlib
+    import re
+
+    steps = [_step(i) for i in range(4)] + [_step(2)]
+    notes = [{"kind": "rewind", "after_position": 3, "to_position": 2,
+              "short": "rewind 1 (+1)"}]
+    data = _pdf(tmp_path, _run(steps, notes))
+    streams = re.findall(rb"stream\r?\n(.*?)\r?\nendstream", data, re.S)
+    body = b"".join(zlib.decompress(s) for s in streams).decode("latin-1")
+    for drawn in re.findall(r"\((.*?)\) Tj", body):
+        assert "?" not in drawn, drawn
