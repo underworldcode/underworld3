@@ -149,7 +149,8 @@ def test_transport_is_off_unless_asked_for():
     assert manager._transport_solver is None
 
 
-def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver="stokes", initial_velocity=False):
+def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver="stokes", initial_velocity=False,
+                   objective_rate="none", solvent=0.0):
     """The analytic Maxwell shear box, with the stress history of one's choosing.
 
     Simple shear of a Maxwell material: sigma_xy = eta gammadot (1 - exp(-t/t_r)).
@@ -172,9 +173,10 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
         stokes.bodyforce = sympy.Matrix([[0.0, 0.0]])
     stokes.stress_transport = transport
     stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-        stokes.Unknowns, order=order, integrator=integrator)
+        stokes.Unknowns, order=order, integrator=integrator, objective_rate=objective_rate)
     stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
     stokes.constitutive_model.Parameters.shear_modulus = shear_modulus
+    stokes.constitutive_model.Parameters.solvent_viscosity = solvent
     stokes.constitutive_model.Parameters.dt_elastic = dt
     stokes.add_dirichlet_bc((speed, 0.0), "Top")
     stokes.add_dirichlet_bc((-speed, 0.0), "Bottom")
@@ -196,10 +198,18 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
     # the NEXT carry, so there its first level still holds the previous step
     # and the stress just solved for is the constitutive flux (#742).
     latest = stokes.DFDt.psi_star[0].sym if solver == "stokes" else stokes.constitutive_model.flux
-    stress = float(np.asarray(uw.function.evaluate(
-        latest[0, 1], np.array([[0.0, 0.0]]))).reshape(-1)[0])
+    origin = np.array([[0.0, 0.0]])
+    stress = float(np.asarray(uw.function.evaluate(latest[0, 1], origin)).reshape(-1)[0])
     rate = 2.0 * speed / height
     exact = eta * rate * (1.0 - np.exp(-steps * dt * shear_modulus / eta))
+    if objective_rate != "none" or solvent:
+        n1 = float(np.asarray(uw.function.evaluate(latest[0, 0] - latest[1, 1], origin)).reshape(-1)[0])
+        # the momentum flux and the polymer part of it, both formed on the
+        # just-committed level (one step ahead of `latest`, see #742): their
+        # difference is the solvent's stress alone
+        total_xy = float(np.asarray(uw.function.evaluate(stokes.constitutive_model.flux[0, 1], origin)).reshape(-1)[0])
+        polymer_flux_xy = float(np.asarray(uw.function.evaluate(stokes.constitutive_model.history_flux[0, 1], origin)).reshape(-1)[0])
+        return type(stokes.DFDt).__name__, stress, exact, n1, total_xy - polymer_flux_xy
     return type(stokes.DFDt).__name__, stress, exact
 
 
@@ -491,3 +501,32 @@ def test_the_integration_point_history_takes_the_inflow_value_at_an_inlet():
     without_in, _ = results["without"]
     assert np.abs(without_in).max() < 1e-6
 
+
+
+
+@pytest.mark.parametrize("transport", ["semi_lagrangian", "integration_point"])
+def test_the_upper_convected_element_builds_the_first_normal_stress_in_shear(transport):
+    """Start-up of simple shear for the UCM fluid has the closed form
+    sigma_xy = eta gdot (1 - e^{-t/lambda}) and
+    N1 = sigma_xx - sigma_yy = 2 eta lambda gdot^2 (1 - e^{-t/lambda}(1 + t/lambda)).
+    The passive Maxwell element makes no normal stress at all; the objective
+    rate is what makes it. First order in time on the stretching term, so the
+    tolerance is loose; the shear stress is unchanged by the term."""
+    eta = lam = 1.0; gdot = 1.0; steps, dt = 20, 0.1
+    t = steps * dt
+    _, xy, exact_xy, n1, _ = _maxwell_shear(transport, 1, steps=steps, dt=dt, objective_rate="upper_convected")
+    n1_exact = 2 * eta * lam * gdot ** 2 * (1 - np.exp(-t / lam) * (1 + t / lam))
+    assert abs(xy - exact_xy) / exact_xy < 0.02, (xy, exact_xy)
+    assert abs(n1 - n1_exact) / n1_exact < 0.10, (n1, n1_exact)
+    _, _, _, n1_passive, _ = _maxwell_shear(transport, 1, steps=steps, dt=dt, objective_rate="none", solvent=1e-12)
+    assert abs(n1_passive) < 1e-6 * n1_exact
+
+
+def test_a_solvent_viscosity_adds_its_newtonian_stress():
+    """Oldroyd-B in shear: the total shear stress is the solvent's eta_s gdot at
+    once plus the polymer's eta_p gdot (1 - e^{-t/lambda}) building up."""
+    steps, dt, eta_s = 20, 0.1, 0.5
+    _, polymer_xy, polymer_exact, _, solvent_xy = _maxwell_shear("semi_lagrangian", 1, steps=steps, dt=dt, solvent=eta_s)
+    gdot = 1.0
+    assert abs(polymer_xy - polymer_exact) / polymer_exact < 0.02, (polymer_xy, polymer_exact)
+    assert abs(solvent_xy - eta_s * gdot) < 1e-6, solvent_xy

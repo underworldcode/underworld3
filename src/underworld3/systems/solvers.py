@@ -1098,7 +1098,7 @@ class SNES_TransientDarcy(SNES_Darcy):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
             # D starts from the velocity as it is now, so the DEVSS pair
             # cancels on the first step as it does on every later one.
             self._devss_refresh()
@@ -1681,7 +1681,7 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
 
     def _stress_history_advance(self, timestep, verbose=False, evalf=False):
         """Carry the stress history to where the momentum solve will read it.
@@ -1708,7 +1708,8 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         # by evaluating the new stress at its own particles.
         if not self.DFDt.commits_flux_in_post_solve:
             self.DFDt.commit_flux_to_history(
-                self.constitutive_model.flux, verbose=verbose)
+                getattr(self.constitutive_model, "history_flux", self.constitutive_model.flux),
+                verbose=verbose)
 
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=evalf)
         self._devss_refresh(verbose=verbose)
@@ -4703,7 +4704,7 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
 
         if not self.is_setup:
             self._setup_pointwise_functions(verbose)
@@ -5021,7 +5022,7 @@ class SNES_Diffusion(SNES_Scalar):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
             # self._flux =  self.constitutive_model.flux.T
             # self._flux_star =  self._flux.copy()
 
@@ -5242,7 +5243,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         if DFDt is not None:
             # We can flag to only do this if the constitutive model has been updated
-            DFDt.psi_fn = self._constitutive_model.flux.T
+            DFDt.psi_fn = getattr(self._constitutive_model, 'history_flux', self._constitutive_model.flux).T
 
             F1 = expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
@@ -5444,7 +5445,7 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
 
         if not self.constitutive_model._solver_is_setup:
             self._needs_function_rewire = True
-            self.DFDt.psi_fn = self.constitutive_model.flux.T
+            self.DFDt.psi_fn = getattr(self.constitutive_model, 'history_flux', self.constitutive_model.flux).T
 
         # A viscoelastic constitutive model integrates its stress over the
         # solve step: it has to be told the step, and its integrator
