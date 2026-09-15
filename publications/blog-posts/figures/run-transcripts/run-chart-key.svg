@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="595" height="726" viewBox="0 0 595 726">
 <rect x="0" y="0" width="595.0" height="726.5" fill="#fdfcfa"/>
 <text x="40.0" y="52.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" fill="#1c1c1f" text-anchor="start" font-weight="600">Annulus convection — transcript</text>
-<text x="40.0" y="68.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#6b7380" text-anchor="start" font-weight="normal">started 2026-09-15T13:43:35+10:00  ·  no terminator: still running, or interrupted  ·  3 parts</text>
+<text x="40.0" y="68.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#6b7380" text-anchor="start" font-weight="normal">started 2026-09-15T13:59:58+10:00  ·  no terminator: still running, or interrupted  ·  3 parts</text>
 <text x="112.0" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">step</text>
 <text x="164.0" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">t/Myr</text>
 <text x="214.0" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">dt/Myr</text>
@@ -12,8 +12,12 @@
 <text x="112.0" y="109.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0</text>
 <text x="164.0" y="109.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.175907</text>
 <text x="214.0" y="109.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">0.175907</text>
-<line x1="289.2" y1="106.0" x2="395.5" y2="115.0" stroke="#4a70a6" stroke-width="0.7"/>
-<line x1="395.5" y1="115.0" x2="501.8" y2="124.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="289.2" y1="106.0" x2="342.3" y2="106.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="106.0" x2="342.3" y2="115.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="115.0" x2="395.5" y2="115.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="395.5" y1="115.0" x2="448.7" y2="115.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="115.0" x2="448.7" y2="124.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="124.0" x2="501.8" y2="124.0" stroke="#4a70a6" stroke-width="0.7"/>
 <text x="289.2" y="110.0" font-size="8.8" text-anchor="middle">✅</text>
 <circle cx="395.5" cy="115.0" r="3.4" fill="#4a70a6"/>
 <text x="501.8" y="128.0" font-size="8.8" text-anchor="middle">✅</text>
@@ -39,8 +43,12 @@
 <text x="112.0" y="173.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">13</text>
 <text x="164.0" y="173.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">16.8708</text>
 <text x="214.0" y="173.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4.31057</text>
-<line x1="289.2" y1="170.0" x2="395.5" y2="179.0" stroke="#4a70a6" stroke-width="0.7"/>
-<line x1="395.5" y1="179.0" x2="501.8" y2="188.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="289.2" y1="170.0" x2="342.3" y2="170.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="170.0" x2="342.3" y2="179.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="179.0" x2="395.5" y2="179.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="395.5" y1="179.0" x2="448.7" y2="179.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="179.0" x2="448.7" y2="188.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="188.0" x2="501.8" y2="188.0" stroke="#4a70a6" stroke-width="0.7"/>
 <text x="289.2" y="174.0" font-size="8.8" text-anchor="middle">✅</text>
 <circle cx="395.5" cy="179.0" r="3.4" fill="#4a70a6"/>
 <text x="501.8" y="192.0" font-size="8.8" text-anchor="middle">✅</text>
@@ -48,8 +56,12 @@
 <text x="112.0" y="207.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">14</text>
 <text x="164.0" y="207.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">446.031</text>
 <text x="214.0" y="207.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#b5544a" text-anchor="end" font-weight="normal">429.161</text>
-<line x1="289.2" y1="204.0" x2="395.5" y2="213.0" stroke="#b5544a" stroke-width="0.7"/>
-<line x1="395.5" y1="213.0" x2="501.8" y2="222.0" stroke="#b5544a" stroke-width="0.7"/>
+<line x1="289.2" y1="204.0" x2="342.3" y2="204.0" stroke="#b5544a" stroke-width="0.7"/>
+<line x1="342.3" y1="204.0" x2="342.3" y2="213.0" stroke="#b5544a" stroke-width="0.7"/>
+<line x1="342.3" y1="213.0" x2="395.5" y2="213.0" stroke="#b5544a" stroke-width="0.7"/>
+<line x1="395.5" y1="213.0" x2="448.7" y2="213.0" stroke="#b5544a" stroke-width="0.7"/>
+<line x1="448.7" y1="213.0" x2="448.7" y2="222.0" stroke="#b5544a" stroke-width="0.7"/>
+<line x1="448.7" y1="222.0" x2="501.8" y2="222.0" stroke="#b5544a" stroke-width="0.7"/>
 <circle cx="289.2" cy="204.0" r="6.4" fill="none" stroke="#b5544a" stroke-width="1.0" stroke-dasharray="2 1.4"/>
 <text x="289.2" y="208.0" font-size="8.8" text-anchor="middle">✅</text>
 <circle cx="395.5" cy="213.0" r="3.4" fill="none" stroke="#b5544a" stroke-width="1.1" stroke-dasharray="2 1.4"/>
@@ -60,8 +72,12 @@
 <text x="112.0" y="241.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">13</text>
 <text x="164.0" y="241.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">16.8708</text>
 <text x="214.0" y="241.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">4.31057</text>
-<line x1="289.2" y1="238.0" x2="395.5" y2="247.0" stroke="#4a70a6" stroke-width="0.7"/>
-<line x1="395.5" y1="247.0" x2="501.8" y2="256.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="289.2" y1="238.0" x2="342.3" y2="238.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="238.0" x2="342.3" y2="247.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="247.0" x2="395.5" y2="247.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="395.5" y1="247.0" x2="448.7" y2="247.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="247.0" x2="448.7" y2="256.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="256.0" x2="501.8" y2="256.0" stroke="#4a70a6" stroke-width="0.7"/>
 <text x="289.2" y="242.0" font-size="8.8" text-anchor="middle">✅</text>
 <circle cx="395.5" cy="247.0" r="3.4" fill="#4a70a6"/>
 <text x="501.8" y="260.0" font-size="8.8" text-anchor="middle">✅</text>
@@ -69,11 +85,21 @@
 <text x="112.0" y="275.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">14</text>
 <text x="164.0" y="275.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">25.454</text>
 <text x="214.0" y="275.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="end" font-weight="normal">8.58321</text>
-<line x1="289.2" y1="272.0" x2="395.5" y2="281.0" stroke="#4a70a6" stroke-width="0.7"/>
-<line x1="395.5" y1="281.0" x2="501.8" y2="290.0" stroke="#4a70a6" stroke-width="0.7"/>
-<line x1="501.8" y1="290.0" x2="289.2" y2="299.0" stroke="#4a70a6" stroke-width="0.7"/>
-<line x1="289.2" y1="299.0" x2="395.5" y2="308.0" stroke="#4a70a6" stroke-width="0.7"/>
-<line x1="395.5" y1="308.0" x2="501.8" y2="317.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="289.2" y1="272.0" x2="342.3" y2="272.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="272.0" x2="342.3" y2="281.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="281.0" x2="395.5" y2="281.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="395.5" y1="281.0" x2="448.7" y2="281.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="281.0" x2="448.7" y2="290.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="290.0" x2="501.8" y2="290.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="501.8" y1="290.0" x2="395.5" y2="290.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="395.5" y1="290.0" x2="395.5" y2="299.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="395.5" y1="299.0" x2="289.2" y2="299.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="289.2" y1="299.0" x2="342.3" y2="299.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="299.0" x2="342.3" y2="308.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="342.3" y1="308.0" x2="395.5" y2="308.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="395.5" y1="308.0" x2="448.7" y2="308.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="308.0" x2="448.7" y2="317.0" stroke="#4a70a6" stroke-width="0.7"/>
+<line x1="448.7" y1="317.0" x2="501.8" y2="317.0" stroke="#4a70a6" stroke-width="0.7"/>
 <text x="289.2" y="276.0" font-size="8.8" text-anchor="middle">✅</text>
 <circle cx="395.5" cy="281.0" r="3.4" fill="#4a70a6"/>
 <text x="501.8" y="294.0" font-size="8.8" text-anchor="middle">✅</text>

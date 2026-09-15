@@ -1625,10 +1625,10 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
     # --- rows ---
     # A step is a bar. Inside it, time runs down: the first thing that ran
     # sits on the top line, the next one line below, each in its own
-    # column, joined by a path. The shape of the path is the sequence — an
-    # extra line in a bar is a part that ran twice, and a path that doubles
-    # back is a solve out of its usual turn. Nothing has to be read off a
-    # digit.
+    # column, joined by a stepped path. The shape of the path is the
+    # sequence — an extra line in a bar is a part that ran twice, and a path
+    # that doubles back is a solve out of its usual turn. Nothing has to be
+    # read off a digit.
     pad, pitch, band_h = 3.5, 9.0, 30.0
     row_h = 2 * pad + pitch
 
@@ -1668,10 +1668,15 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                     played.append((order, cx, y + pad + pitch * (order - 0.5),
                                    outcome))
             played.sort()
-            # the path first, so the marks sit on it
+            # the path first, so the marks sit on it. Each link runs level,
+            # drops halfway across, and runs level again: the step is a
+            # ticker, and the shape says so.
             for (_, x0, y0, _), (_, x1, y1, _) in zip(played, played[1:]):
-                canvas.line(x0, y0, x1, y1,
-                            _ACCEPTED if completed else _ABANDONED, 0.7)
+                xm = (x0 + x1) / 2
+                stroke = _ACCEPTED if completed else _ABANDONED
+                canvas.line(x0, y0, xm, y0, stroke, 0.7)
+                canvas.line(xm, y0, xm, y1, stroke, 0.7)
+                canvas.line(xm, y1, x1, y1, stroke, 0.7)
             for _, nx, ny, outcome in played:
                 if outcome is None:
                     # A history shift, or a transcript from before outcomes

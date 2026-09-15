@@ -174,7 +174,7 @@ examination is easier to read one row at a time.
 
 ```{figure} figures/run-transcripts/run-chart-key.svg
 :label: fig-chart
-:alt: The annulus run as a chart. Three columns — AdvDiffusion(T), EulerianSUPG(T), Stokes(v) — and a bar per step in which the marks descend, one line each, joined by a path that steps down and to the right; steps 1 to 10 collapsed into one band; step 12 marked abandoned with a rewind arrow back to step 11 and an arrow down to the replayed step 11; the last step's bar twice as tall, its path making two descents. Below, a legend, and a key listing each part's named quantities with values and units and its boundary conditions.
+:alt: The annulus run as a chart. Three columns — AdvDiffusion(T), EulerianSUPG(T), Stokes(v) — and a bar per step in which the marks descend, one line each, joined by a stepped path that runs level and drops halfway between columns; steps 1 to 10 collapsed into one band; step 12 marked abandoned with a rewind arrow back to step 11 and an arrow down to the replayed step 11; the last step's bar twice as tall, its path making two descents. Below, a legend, and a key listing each part's named quantities with values and units and its boundary conditions.
 
 The same run as a figure. Each step is a bar, and inside it what ran sits one
 line below what ran before, in its own column, joined by a path: the shape of

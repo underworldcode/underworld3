@@ -1,5 +1,5 @@
 ## Key — what each part solved in make_figures
-*run started 2026-09-15T13:43:35+10:00*
+*run started 2026-09-15T13:59:58+10:00*
 
 ### AdvDiffusion(T)
 `SNES_AdvectionDiffusion_Composed`, unknown `T`, 2-D; recorded at step 0
