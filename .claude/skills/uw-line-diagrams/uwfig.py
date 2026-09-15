@@ -30,7 +30,7 @@ __all__ = [
     "INK", "MESH", "VELOCITY", "FORCE", "ENERGY", "DIMENSION", "TINT_FLUID", "TINT_SOLID",
     "LINE", "ARROW", "line_style", "arrow_style",
     "figure", "mesh_triangles", "draw_mesh", "boundary", "circle_body", "wall",
-    "arrow", "inflow_profile", "uniform_arrows", "dimension", "axes_glyph", "label", "leader", "save",
+    "arrow", "flow_profile", "inflow_profile", "uniform_arrows", "dimension", "axes_glyph", "label", "leader", "save",
 ]
 
 # --------------------------------------------------------------------------- colour tokens
@@ -166,24 +166,36 @@ def arrow(ax, tail, head, kind: str = "velocity", **override):
     ax.annotate("", xy=head, xytext=tail, arrowprops=arrow_style(kind, **override))
 
 
-def inflow_profile(ax, x0, y0, y1, umax, side: str = "left", n: int = 9, scale: float = 1.0,
-                   kind: str = "velocity", **override):
-    """A parabolic velocity profile drawn outside a vertical edge, arrows following the flow.
+def flow_profile(ax, p0, p1, umax, inward, into: bool = True, n: int = 9, scale: float = 1.0,
+                 kind: str = "velocity", **override):
+    """A parabolic velocity profile on the edge p0 -> p1, drawn outside the domain.
 
-    ``side="left"``: the profile sits to the left of x = x0 and the arrows point into the
-    domain (an inlet). ``side="right"``: the profile sits to the right of x = x0 and the
-    arrows point out (an outlet). ``scale`` converts velocity to drawing units.
-    Draw the profile instead of writing it: the parabola says "Poiseuille" on its own.
+    ``inward`` is a vector pointing from the edge into the domain. The parabola bulges
+    away from the domain; the arrows follow the flow: from outside onto the edge for an
+    inlet (``into=True``), from the edge outwards for an outlet (``into=False``).
+    ``scale`` converts velocity to drawing units. Draw the profile instead of writing
+    it: the parabola says "Poiseuille" on its own.
     """
-    ys = np.linspace(y0, y1, 200); h = y1 - y0
-    u = 4 * umax * (ys - y0) * (y1 - ys) / h ** 2 * scale
-    xs = x0 - u if side == "left" else x0 + u
+    p0, p1 = np.asarray(p0, float), np.asarray(p1, float)
+    nrm = -np.asarray(inward, float); nrm = nrm / (np.linalg.norm(nrm) or 1.0)   # outward unit normal
+    s = np.linspace(0, 1, 200)
+    u = 4 * umax * s * (1 - s) * scale
+    pts = p0 + np.outer(s, p1 - p0) + np.outer(u, nrm)
     st = arrow_style(kind, **override)
-    ax.plot(xs, ys, color=st["color"], lw=st["lw"])
-    for y in np.linspace(y0, y1, n + 2)[1:-1]:
-        uu = 4 * umax * (y - y0) * (y1 - y) / h ** 2 * scale
-        tail, head = ((x0 - uu, x0) if side == "left" else (x0, x0 + uu))
-        arrow(ax, (tail, y), (head, y), kind, lw=st["lw"] * 0.8, **override)
+    ax.plot(pts[:, 0], pts[:, 1], color=st["color"], lw=st["lw"])
+    for si in np.linspace(0, 1, n + 2)[1:-1]:
+        e = p0 + si * (p1 - p0); o = e + 4 * umax * si * (1 - si) * scale * nrm
+        tail, head = (o, e) if into else (e, o)
+        arrow(ax, tail, head, kind, lw=st["lw"] * 0.8, **override)
+
+
+def inflow_profile(ax, x0, y0, y1, umax, side: str = "left", **kw):
+    """``flow_profile`` on a vertical edge x = x0: ``side="left"`` is an inlet on the left
+    of the domain, ``side="right"`` an outlet on the right."""
+    if side == "left":
+        flow_profile(ax, (x0, y0), (x0, y1), umax, inward=(1, 0), into=True, **kw)
+    else:
+        flow_profile(ax, (x0, y0), (x0, y1), umax, inward=(-1, 0), into=False, **kw)
 
 
 def uniform_arrows(ax, x0, x1, ys, kind: str = "force", **override):
