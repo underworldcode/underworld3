@@ -1,5 +1,5 @@
 transcript · make_figures
-started 2026-09-15T13:59:58+10:00
+started 2026-09-15T14:04:04+10:00
 no terminator: this run is still going, or it was interrupted. What follows is the transcript of a prefix.
 
  step      t/Myr     dt/Myr │ AdvDiffusion(T) │ EulerianSUPG(T) │    Stokes(v)    │

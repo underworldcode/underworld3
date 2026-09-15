@@ -600,14 +600,71 @@ class _Canvas:
         without matplotlib, or for LaTeX mathtext cannot set (a matrix), the
         plain-text ``fallback`` is written as text instead.
         """
-        segments, width = _mathtext_outline(latex, size)
+        segments, box = _mathtext_outline(latex, size)
         if segments is None:
             text = fallback if fallback is not None else _plain_symbol(latex)
             self.text(x, y, text, size=size, fill=fill)
             return _text_width(text, size, False)
+        self._outline(x, y, segments, fill)
+        return box[2]
+
+    def _outline(self, x, y, segments, fill):
         self.ops.append(("path", [(cmd, *[(x + px, y - py) for px, py in pts])
                                   for cmd, *pts in segments], fill))
-        return width
+
+    def equation(self, x, y, symbol, latex, size=8.0, fill=_INK, max_width=None):
+        """``symbol = latex`` set as mathematics, from ``y`` downwards.
+
+        A matrix on the right-hand side is laid out cell by cell with drawn
+        brackets, because mathtext has no matrix environment. The whole
+        equation is scaled to ``max_width`` when it would not fit — a long
+        residual is set small and stays vector, rather than being cut.
+        Returns the height used, or ``None`` when it could not be set.
+        """
+        cells = _matrix_cells(latex) or [[latex]]
+        for attempt in range(3):
+            head = _mathtext_outline(symbol + " =", size)
+            grid = [[_mathtext_outline(cell, size) for cell in row] for row in cells]
+            if head[0] is None or any(g[0] is None for row in grid for g in row):
+                return None
+            gap_x, gap_y = size * 0.9, size * 0.45
+            col_w = [max(grid[r][c][1][2] - grid[r][c][1][0] for r in range(len(grid)))
+                     for c in range(len(grid[0]))]
+            asc = [max(g[1][3] for g in row) for row in grid]
+            desc = [max(-g[1][1], 0.0) for row in grid for g in [max(row, key=lambda g: -g[1][1])]]
+            rows_h = [a + d + gap_y for a, d in zip(asc, desc)]
+            bracket = size * 0.5 if len(cells) > 1 or len(cells[0]) > 1 else 0.0
+            matrix_w = sum(col_w) + gap_x * (len(col_w) - 1) + 2 * bracket + size * 0.6
+            total_w = head[1][2] + size * 0.6 + matrix_w
+            if max_width is None or total_w <= max_width or attempt == 2:
+                break
+            if (attempt == 0 and len(cells) == 1 and len(cells[0]) > 1
+                    and max_width / total_w < 0.6):
+                # A wide row vector would have to shrink past reading; set
+                # its components one under another instead, then scale.
+                cells = [[cell] for cell in cells[0]]
+                continue
+            size = max(size * max_width / total_w, 1.0)
+        height = sum(rows_h)
+        mid = y + height / 2
+        self._outline(x, mid + size * 0.35, head[0], fill)
+        x0 = x + head[1][2] + size * 0.6
+        if bracket:
+            for bx, tick in ((x0, 1), (x0 + matrix_w, -1)):
+                self.line(bx, y, bx, y + height, fill, 0.6)
+                self.line(bx, y, bx + tick * bracket * 0.6, y, fill, 0.6)
+                self.line(bx, y + height, bx + tick * bracket * 0.6, y + height,
+                          fill, 0.6)
+        yy = y
+        for r, row in enumerate(grid):
+            baseline = yy + gap_y / 2 + asc[r]
+            xx = x0 + bracket + size * 0.3
+            for c, (segments, box) in enumerate(row):
+                cx = xx + (col_w[c] - (box[2] - box[0])) / 2 - box[0]
+                self._outline(cx, baseline, segments, fill)
+                xx += col_w[c] + gap_x
+            yy += rows_h[r]
+        return height
 
     def note(self, x, y, r, fill, hollow=False):
         """A mark that a part ran. Hollow when its step was abandoned."""
@@ -937,6 +994,11 @@ def _mathtext_outline(latex, size):
     text = str(latex)
     for source, target in _MATHTEXT_REMAP.items():
         text = text.replace(source, target)
+    # A variable whose name starts with an underscore (the mesh's own
+    # ``_h_cell``) reaches sympy's LaTeX as ``{_h_cell}``, which no TeX can
+    # set; it becomes ``h_{cell}``.
+    text = re.sub(r"\{_([A-Za-z])_([A-Za-z0-9]+)\}", r"\1_{\2}", text)
+    text = re.sub(r"\{_([A-Za-z][A-Za-z0-9]*)\}", r"\1", text)
     try:
         path = TextPath((0.0, 0.0), f"${text}$", size=size,
                         prop=FontProperties(family="DejaVu Sans"))
@@ -962,7 +1024,24 @@ def _mathtext_outline(latex, size):
         else:
             segments.append(("Z",))
             i += 1
-    return segments, float(path.get_extents().x1)
+    box = path.get_extents()
+    return segments, (float(box.x0), float(box.y0), float(box.x1), float(box.y1))
+
+
+_MATRIX = re.compile(r"^\s*\\left\[\s*\\begin\{matrix\}(.*)\\end\{matrix\}\s*\\right\]\s*$",
+                     re.S)
+
+
+def _matrix_cells(latex):
+    """``\\left[\\begin{matrix}a & b\\\\c & d\\end{matrix}\\right]`` as ``[[a, b], [c, d]]``,
+    or ``None`` when ``latex`` is not a bare matrix. SymPy writes every
+    vector and tensor form this way, and mathtext cannot set the
+    environment, so the figure lays the cells out itself."""
+    m = _MATRIX.match(latex)
+    if not m:
+        return None
+    return [[cell.strip() for cell in row.split("&")]
+            for row in m.group(1).split("\\\\")]
 
 
 def _svg_ops(ops, width, height):
@@ -1801,8 +1880,28 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                 canvas.text(right, y + 8, f"recorded at step {step}", size=7,
                             fill=_MUTED, anchor="end")
             y += 13
+            statement = canvas.math(
+                _MARGIN + 12, y + 9,
+                r"\int F_0\,\phi + F_1 \cdot \nabla\phi = 0",
+                size=7.5, fallback="residual: int F0 phi + F1 . grad(phi) = 0")
+            canvas.text(_MARGIN + 12 + statement + 8, y + 9, "— with", size=7.5,
+                        fill=_MUTED)
+            y += 15
             seen = set()
             for form in record.get("forms", {}).values():
+                if form.get("description"):
+                    canvas.text(_MARGIN + 12, y + 8, form["description"][:110],
+                                size=7.5, fill=_MUTED)
+                    y += 11
+                used = canvas.equation(_MARGIN + 12, y + 2, form.get("symbol") or "F",
+                                       form.get("latex", ""), size=7.5,
+                                       max_width=right - _MARGIN - 12)
+                if used is None:
+                    canvas.text(_MARGIN + 12, y + 8,
+                                "(the form is in the record; uw.transcript_key "
+                                "renders it)", size=7.5, fill=_MUTED)
+                    used = 8
+                y += used + 8
                 for w in _flatten_where(form.get("where", [])):
                     if w["symbol"] in seen:
                         continue
