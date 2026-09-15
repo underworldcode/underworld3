@@ -8,212 +8,265 @@ figures: figures/run-transcripts
 
 Six months after a result, the questions are always the same: which version of
 the code produced it, what the parameters were, and whether the run did what
-the caption says it did. Underworld 1 could answer all three from a single
-file. Underworld3 could answer none of them, until recently, and the reason is
-worth setting out, because it is a consequence of what makes the current code
-usable at all.
+the caption says it did. Underworld 1 could answer all three from one file.
+Underworld3 could answer none of them until recently, and the reason is worth
+a paragraph, because it is a consequence of what makes the current code usable
+at all.
 
-## The Underworld 1 answer
+## Why a Python model has no document to keep
 
 A model in Underworld 1 was an XML document. The launcher read it, StGermain
 assembled the components it named, and the run followed. Provenance came for
-free: the XML *was* the model, so keeping it kept everything. Two people with
-the same XML and the same binary were running the same experiment, and could
-say so without qualification.
+free: the XML *was* the model, so keeping it kept everything. The cost was that
+the XML was a programming language without being one — no expressions worth
+the name, no control flow, no debugger — and anything the schema had not
+anticipated needed C.
 
-The cost was that the XML was a programming language without being one. It had
-no expressions worth the name, no control flow a reader could follow, and no
-debugger. Anything the schema had not anticipated could not be said, and a
-model that needed something new needed C. A great deal of scientific intent
-ended up encoded as combinations of components that happened to compose, which
-is a poor medium for explaining what a model does.
+A model in Underworld3 is a Python program. The library takes SymPy
+expressions for constitutive behaviour, boundary conditions and sources, it
+puts no constraint on what happens between solves, and the timestep loop is
+written by the user. That openness is what makes the library drivable by a
+colleague who has never used it, or by a language model: the surface is
+compositional, so a reader can predict what a call does from what the pieces
+mean. It also means no serialisable model document exists, even in principle.
+The model is a program, and what it did is a sequence of calls whose arguments
+depended on runtime state.
 
-## Why that answer is not available now
+So we keep a record of what the run *did*. The rest of this post is about
+what that record looks like, because a record nobody can read is a record
+nobody checks.
 
-A model in Underworld3 is a Python program. The library takes SymPy expressions
-for constitutive behaviour, boundary conditions and source terms; it puts no
-constraint on what happens between solves; and the timestep loop is written by
-the user. That openness is deliberate, and it is the same property that makes
-the library drivable by a colleague who has never used it, or by a language
-model: the surface is compositional, so a reader can predict what a call will
-do from what the pieces mean.
+## What a run leaves
 
-It also means no serialisable model document exists, even in principle. The
-model is an arbitrary program, and what it does is a sequence of calls —
-including calls whose arguments depend on runtime state. Nothing can be
-recovered from the objects afterwards, because the objects do not record the
-order in which anyone touched them.
-
-That is a real trade. Underworld 1 had a complete statement of intent and very
-little expressive power. Underworld3 has the expressive power and, until
-recently, kept no statement of anything at all.
-
-## What a run leaves now
-
-Every Underworld3 run that takes a timestep writes a **transcript**: a record
-of what it did, appended and flushed as each step closes. No configuration is
-involved. A run that takes no step writes nothing, and a run under `pytest`
+Every run that takes a timestep writes a transcript. There is nothing to
+configure, a run that takes no step writes nothing, and a run under `pytest`
 writes nothing, so the default costs nothing where it would only be noise.
 
 ```
-transcripts/2026-09-12T03-31-34-make_figures/
-    make_figures.py      the script that launched it, verbatim
-    launch.json          argv, interpreter, cwd, versions, commit
-    transcript.log       one aligned line per step, flushed
-    transcript.jsonl     the same record, machine-readable
+transcripts/2026-09-15T13-02-27-Ex_Convection_Annulus_Recorded/
+    Ex_Convection_Annulus_Recorded.py    the script that launched it, verbatim
+    launch.json                          argv, interpreter, cwd, version, commit
+    transcript.log                       one aligned line per step — for watching
+    transcript.jsonl                     one JSON object per step — for reading back
+    transcript.svg, transcript.pdf       the run as a figure
+transcripts/latest -> 2026-09-15T13-02-27-Ex_Convection_Annulus_Recorded
 ```
 
-The directory is stamped with the time the run started, so a second run does
-not overwrite the first. The path is printed when the run begins and again
-when it ends, and a `latest` symlink points at the most recent one.
+The directory is stamped, so this morning's run is still there this afternoon;
+`latest` points at the newest; the path is announced when the run ends. The
+script is copied because a run's own launch line is the first thing a reader
+wants and the first thing that is gone.
 
-`launch.json` is the replacement for the XML, and it is a weaker thing
-honestly labelled. It cannot state what the model *is*; it states what was
-*run*:
+## One line per step, aligned, flushed
 
-```json
-{
-  "started": "2026-09-12T03:31:34+00:00",
-  "argv": ["make_figures.py"],
-  "python": "3.12.12",
-  "underworld3": "0.0.0",
-  "mpi_size": 1,
-  "git_commit": "638a6c3c5a3859fc40e2a87f4f918ba9f3aebcb1",
-  "git_dirty": true,
-  "script": "make_figures.py"
-}
-```
-
-The entry script is copied beside it. Modules it imports are not, which is
-what the commit id is there to cover, and the file says so rather than leaving
-a reader to find out. `git_dirty` is the field that earns its place: a commit
-id with uncommitted changes on top of it identifies nothing, and recording the
-flag is the difference between provenance and the appearance of it.
-
-## Where this lands against FAIR
-
-**Findable** is the stamped directory, the `latest` pointer and the announced
-path. A run that produced a figure can be located without anyone having
-remembered to write down where it went.
-
-**Accessible** is the two file formats. The text transcript is read with
-`tail -f` while a job is running; the JSON Lines record is read with `jq`, or
-with `uw.read_transcript`. Neither needs Underworld3 installed to open.
-
-**Interoperable** is the way dimensional values are stored. Each carries its
-own magnitude and unit string — `{"magnitude": 4.31, "units": "megayear"}` —
-rather than a bespoke convention that a reader has to be told about.
-
-**Reusable** is the launch record together with the transcript. The two
-together let someone decide what to change, which is what reuse requires.
-
-## Provenance is not reproducibility
-
-The transcript identifies a run. It does not promise that running the script
-again produces the same numbers, and on this code it will not. Warm starts and
-preconditioner reuse are solver history that sits outside model state, so two
-independent runs of the same script on the same machine diverge at the 1e-13
-level from the first step.
-
-Restoring is exact where re-running is not. A step restored from the snapshot
-it began with and taken again reproduces its temperature field bit for bit —
-`max |ΔT| = 0` across every step of the annulus run below. That asymmetry is
-the practical reason a run keeps its own restore points: a step that
-misbehaved can be looked at twice, which re-running cannot give you.
-
-## Reading a run
-
-The transcript is complete, which creates the problem a profiler has: every
-step is in it, and most steps are identical. Removing the repetitive ones by
-hand would be a judgement about what mattered. A **chart** removes them by
-rule instead — it groups consecutive steps that did exactly the same thing,
-and carries the first and last value of anything that changed across the
-group, so a timestep that grew by a factor of eight survives the grouping.
+The text log is written to be watched. Each step is one line, appended and
+flushed as the step closes, so `tail -f` follows a running job and a job that
+is killed keeps every step it finished.
 
 ```
-transcript · model 'default'
-started 2026-09-12T15:22:22+00:00
-no terminator: this run is still going, or it was interrupted. What follows is the transcript of a prefix.
+# underworld3 run transcript · Ex_Convection_Annulus_Recorded · started 2026-09-15T13:02:27+10:00
+# scales: length 2.2e+06 m | time 4.84e+18 s | mass 1.065e+47 kg | temperature 2500 K
+  -- solves: AdvDiffusion(T)  [F0, F1]  (the form is in the record; uw.transcript_key renders it)
+  -- solves: Stokes(v)  [F0, F1, PF0]  (the form is in the record; uw.transcript_key renders it)
+# step           t/Myr          dt/Myr    wall/s  outcome    operators, in order
+      0        0.175907        0.175907      0.26  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+      1        0.501546        0.325639      0.06  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+      2        0.990939        0.489393      0.06  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+     ...
+     11         9.85635         1.92019      0.06  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+     12         145.049         135.192      0.06  ABANDONED  [too big] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+  -- restore from a snapshot; the clock now reads 9.85635 Myr
+  -- rewind to the start of step 11 (t = 7.93616 Myr); 1 step(s) undone
+     11         9.85635         1.92019      0.30  ok         [replay] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+     12         12.5602         2.70384      0.12  ok         [taken twice] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v) > AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+# run ended after 13 recorded step(s) · 2026-09-15T13:02:29+10:00
+```
 
- step      t/Myr     dt/Myr │ AdvectionDiffus │    Stokes(v)    │ EulerianSUPG(T) │
+Every column is there because someone watching a run wants it. `t` and `dt`
+are in one unit, chosen once from the run's own scales and named in the
+header, so a reader is not converting between lines. `wall/s` is the first
+number to move when a solver gets into trouble — the
+replayed step 11 took 0.30 s against the original's 0.06, because the restore
+discarded the warm start. The label in brackets is the name the script gave
+the step, so a run that does different things at different times says which.
+And the operators are listed in the order they ran, which is the thing a
+caption asserts and a reader cannot otherwise check.
+
+The names are the names the user wrote. The record itself holds the class that
+implemented each operator — `SNES_AdvectionDiffusion_Composed` — but the log
+says `AdvDiffusion(T)`, which is what the script said, and `Stokes(v)`, and
+`shift EulerianSUPG(T)` for the transport history that advanced. The same
+vocabulary is used by every view of the record, so a name learned in the log
+is the name found in the figure.
+
+## How it went, not just that it ran
+
+The `outcome` column reads `ok`, `DIVERGED` or `ABANDONED`. A solve that did
+not converge is named under its step, with the reason and the work:
+
+```
+      7         2.63841        0.523655      4.81  DIVERGED   [convect] Stokes(v) > ...
+  !! Stokes(v): DIVERGED_LINEAR_SOLVE after 6 its (1200 ksp), |F| 3.11e-04
+```
+
+Behind the column, each solve's record carries the converged reason, the
+nonlinear and Krylov counts, the residual norm, and whether a fieldsplit block
+hit its iteration cap. That last one is worth its own state: a Stokes solve
+whose velocity block gave up reports converged, and the pressure it returned
+was solved on an operator that was still moving. The record says which, and
+the figure marks it.
+
+Warnings raised inside a step are recorded with where they came from:
+
+```
+  ~~ RuntimeWarning: Stokes: the velocity block fell back to 'gamg' — no mesh hierarchy was available...
+```
+
+"The velocity block fell back to gamg" changes what the numbers mean. A record
+that kept the residual norms but not that line would be an account of the run
+with the explanation removed.
+
+## Notes only when something changes
+
+A log that repeats itself is a log nobody reads. The step lines repeat because
+each is a fact; everything else is written once, when it happens. A restore
+and a rewind are notes between the steps they sit between, so a log that shows
+step 11, then step 11 again, says what happened in between. Identical warnings
+within a step are written once with a count. The one-line-per-step promise
+holds, and the notes are the places to look.
+
+## The chart: collapsing what repeated, by rule
+
+The log is complete, and that creates the problem a profiler has: most steps
+are identical, and the ones that matter are buried. Removing the repetitive
+ones by hand would be a judgement about what mattered. The chart removes them
+by rule instead — consecutive steps that did exactly the same thing collapse
+into one line, which carries the first and last value of anything that changed
+across them.
+
+```
+ step      t/Myr     dt/Myr │ AdvDiffusion(T) │ EulerianSUPG(T) │    Stokes(v)    │
 ───────────────────────────────────────────────────────────────────────────────────
-    0   0.175907   0.175907 │        1        │        3        │        2        │
-  …13    16.8708    4.31057 │        ↓        │        ↓        │        ↓        │   ×13 unchanged, dt 0.1759 → 4.311
-   14    446.031    429.161 │        1        │        3        │        2        │   ABANDONED
-                            │ restore from a snapshot; the clock now reads 16.8708 Myr
-                            │ rewind to the start of step 13 (t = 12.5602 Myr); 1 step(s) undone
-   13    16.8708    4.31057 │        1        │        3        │        2        │
-   14     25.454    8.58321 │       1,4       │       3,6       │       2,5       │
-
-17 step(s), 3 part(s): AdvectionDiffusion(T), Stokes(v), EulerianSUPG(T)
-↓  the steps between did exactly this, unchanged
-·  this part did nothing in that step
-digits are the order the parts ran within the step
+    0   0.175907   0.175907 │        1        │        2        │        3        │
+  …11    9.85635    1.92019 │        ↓        │        ↓        │        ↓        │   ×11 unchanged, dt 0.1759 → 1.92
+   12    145.049    135.192 │        1        │        2        │        3        │   ABANDONED
+                            │ restore from a snapshot; the clock now reads 9.85635 Myr
+                            │ rewind to the start of step 11 (t = 7.93616 Myr); 1 step(s) undone
+   11    9.85635    1.92019 │        1        │        2        │        3        │
+   12    12.5602    2.70384 │       1,4       │       2,5       │       3,6       │
 ```
 
-Each column is a participant: the advection-diffusion solver, the Stokes
-solver, and the transport history the first of them holds. The digits give the
-order they ran within the step. The grouped line asserts that steps 1 to 13
-were *identical* to step 0 in what ran and in what order, so nothing can hide
-behind it. Seventeen steps become six rows, and the rows that remain are the
-ones a reader would have picked out. Grouping is optional, because a run whose
-timestep is itself the thing under examination is easier to read one row at a
-time.
+Each column is a participant, and the digits give the order it ran within the
+step. The collapsed line asserts that steps 1 to 11 were *identical* to step 0
+in what ran and in what order, so nothing hides behind it — and it still says
+that `dt` grew from 0.18 to 1.92 Myr across them, because a timestep that
+grew tenfold is a diagnostic. Fifteen records become six rows, and the rows
+that remain are the ones a reader would have picked out: the step that tried
+135 Myr and was rejected, the step taken again, and the last step that ran
+everything twice — `1,4 │ 2,5 │ 3,6` — a predictor-corrector written without
+noticing that the transport history advances on every solve, so the
+temperature advanced two intervals while the clock advanced one.
 
-Three things are visible in those six rows, and in @fig-chart, that no print
-statement was written to report. Step 14 attempted 429 Myr and was rejected on a velocity
-diagnostic, so the run went back to step 13 and took it again. The replayed
-step 13 took 0.30 s of wall clock against the original's 0.06, because the
-restore discarded the warm start. And the last step ran everything twice —
-`1,4 │ 3,6 │ 2,5` — which is a predictor-corrector written without noticing
-that the transport history advances on every solve, so the temperature
-advanced two intervals while the clock advanced one.
+Collapsing is optional. A run whose timestep is itself the thing under
+examination is easier to read one row at a time.
 
-```{figure} figures/run-transcripts/run-chart.svg
+## The figure
+
+```{figure} figures/run-transcripts/run-chart-key.svg
 :label: fig-chart
-:alt: A chart of a 17-step annulus convection run. Three columns — AdvectionDiffusion(T), Stokes(v) and EulerianSUPG(T) — each carry a filled mark per step with the order it ran: 1, 3 and 2. Steps 1 to 12 group into one shaded band with a downward arrow in each column, labelled x12, showing t running 0.5015 to 12.56 Myr and dt 0.3256 to 2.704 Myr. Step 14 at 446.031 Myr is drawn with hollow dashed marks and labelled abandoned. A dashed red arrow in the left gutter labelled "rewind 1 (+1)" runs back from it to step 13, and a blue arrow labelled "again" runs down to the replayed step 13. The final step carries two marks in every column, numbered 1 and 4, 3 and 6, 2 and 5.
+:alt: The annulus run as a chart. Three columns — AdvDiffusion(T), EulerianSUPG(T), Stokes(v) — and a bar per step in which the marks descend, one line each, joined by a path that steps down and to the right; steps 1 to 10 collapsed into one band; step 12 marked abandoned with a rewind arrow back to step 11 and an arrow down to the replayed step 11; the last step's bar twice as tall, its path making two descents. Below, a legend, and a key listing each part's named quantities with values and units and its boundary conditions.
 
-The same run as a chart. Each column is a participant and each row a step; a
-filled mark carries the order that participant ran within the step. Steps 1 to
-12 are grouped into one band, which asserts that they did exactly what step 0
-did, and reports the range of `t` and `dt` across them. The final step carries
-two marks in every column, which is the predictor-corrector advancing the
-transport history twice.
+The same run as a figure. Each step is a bar, and inside it what ran sits one
+line below what ran before, in its own column, joined by a path: the shape of
+the path is the sequence. A step that runs everything twice is twice as tall,
+and shows it. Each mark says how the solve went — converged, converged with a
+block at its cap, or diverged. A run of identical steps collapses into a band
+carrying the range of anything that changed. The backtrack is drawn where it
+happened: back out of the abandoned step, down to the step taken again. The
+key beneath is the model, by the quantities in its residuals.
 ```
+
+The three marks are the three things a solve can do. A page that says every
+solve converged is a page that can be skimmed; a page with one amber mark in
+three hundred is a page that says where to look. The figure is SVG for the
+web and PDF for print, drawn without a plotting dependency, so the record and
+its figure need nothing installed to be looked at.
 
 ```{figure} figures/run-transcripts/run-transcript.svg
 :label: fig-run-transcript
-:alt: A portrait figure of a 17-step annulus convection run. Steps run down the page with dt as a horizontal bar; dt grows from 0.18 to 4.31 Myr over the first fourteen. Step 14 is drawn hatched in red at 429 Myr and marked abandoned. A dashed arrow in the left gutter runs back from it to step 13, and a solid arrow labelled "again" runs down to the replayed step 13. The final step carries the letter B where every other step carries A.
+:alt: The same run with time down the page and dt as a horizontal bar per step, growing from 0.18 to 1.92 Myr; the abandoned step drawn as a dashed bar; the rewind and replay arrows in the gutter; each row lettered by its operator sequence, with the sequences defined once at the foot.
 
-The same run as a figure. Time runs down the page, `dt` across it, and the two
-backtracks are drawn in the left gutter: back out of the abandoned step, then
-down to the step that was taken again. Each distinct operator sequence gets a
+Time down the page, `dt` across it. Each distinct operator sequence gets a
 letter, defined once at the foot, so the one step that did something different
 is the one letter that differs.
 ```
 
-The figure and the chart are rendered from the JSON record after the run, or
-during it — the chart above is of a run still in progress, which is why it
-says so. Both are produced by
-[`make_figures.py`](figures/run-transcripts/make_figures.py), which is also
-the run they describe.
+## The equations, as implemented
 
-## What it costs, and what it does not do
+The header lines say each solver's form is in the record. It is: each solver
+records the residual it assembled — the templates with their own symbols and
+docstrings, the named expressions inside them expanded down to the
+constitutive model, the boundary conditions, and the terms it was given — once
+per run and again if it changes. `uw.transcript_key` renders that as a key, in
+Markdown with LaTeX for a note or a notebook, or in plain text for a terminal.
+For the Stokes solver in the run above:
 
-A step appends two lines, one to each format, and flushes. The snapshots that
-make `rewind` possible cost about 13 bytes per primary degree of freedom per
-step and are off unless asked for; the transcript itself is bytes.
+$$\mathbf{f}_0(\mathbf{u}) = \left[\begin{matrix}\dfrac{x\,\rho_0 \alpha g\,T}{\sqrt{x^{2} + y^{2}}}\\[6pt] \dfrac{y\,\rho_0 \alpha g\,T}{\sqrt{x^{2} + y^{2}}}\end{matrix}\right]
+\qquad
+\mathbf{F}_1(\mathbf{u}) = 2\eta\,\dot{\boldsymbol\varepsilon} + \eta\lambda\,(\nabla\cdot\mathbf{v})\,\mathbf{I} - p\,\mathbf{I}$$
 
-Three things are not in it yet. A part that does nothing in a step does not
-appear, so silence and absence are indistinguishable. Mesh deformation and
-adaptation are not recorded as events, so a history stored before the mesh
-moved and read after it has nothing in the record to flag it. And what a step
-is supposed to contain is inferred from what repeated rather than declared by
-the script, so the record can say that one step differs from its neighbours
-and cannot yet say that a run disagrees with its own description.
+where $\rho_0 \alpha g = 0.9712\ \mathrm{kg/K/m^{2}/s^{2}}$ — buoyancy
+coefficient: reference density × thermal expansivity × gravity; $\eta =
+10^{22}\ \mathrm{Pa\cdot s}$ — shear viscosity; $\lambda = 0$ — numerical
+penalty; with rotated free-slip on the upper and lower boundaries,
+$\mathbf{u}\cdot\hat{\mathbf{n}} = 0$.
 
-The last of those is where the Underworld 1 comparison ends up. A declared
-plan would be the XML's descendant — a statement of what a step is supposed
-to contain — checked against the transcript rather than executed from it. The
-document would describe the model without having to be the only way to express
-it.
+Two things make that more than a pretty-print. The equation is read from the
+solver at the moment it solved, so it is the equation that ran, not the one
+the script intended. And the names are the user's: the buoyancy coefficient
+appears under the name it was given, with its description, rather than as the
+number it collapsed to. A coefficient written as an anonymous float would have
+appeared as a float. The key is where the discipline of naming things pays
+off, and it pays off in the record rather than in the source.
+
+## Reproducing a result from the record
+
+Restoring is exact where re-running is not. Two independent runs of the same
+script on the same machine diverge at the 1e-13 level from the first step,
+because warm starts and preconditioner reuse are solver history that sits
+outside model state. A step restored from the snapshot it began with and taken
+again reproduces its temperature field bit for bit — `max |ΔT| = 0` across
+every step of the run above.
+
+That asymmetry is why a run can keep its own restore points.
+`model.record_every = 1` keeps the state each step started from — fields,
+transport history and clock together — and `model.rewind()` returns to it;
+`read_transcript()` gives the steps back in order with the interval each
+covered and the operators it applied, and any recorded step can be re-entered
+with `load_state(entry.snapshot)`. A step that misbehaved can be looked at
+twice, which re-running the script cannot give you. Snapshots cost about 13
+bytes per primary degree of freedom per step and are off unless asked for;
+the transcript itself is bytes.
+
+## Where this lands against FAIR
+
+*Findable* is the stamped directory, the `latest` pointer and the announced
+path. *Accessible* is the two formats: the log for `tail -f`, the JSON Lines
+for `jq` or `read_transcript`, neither needing Underworld3 to open.
+*Interoperable* is how dimensional values are stored — each with its own
+magnitude and unit string, `{"magnitude": 4.31, "units": "megayear"}`, rather
+than a convention a reader has to be told. *Reusable* is the launch record and
+the key together: what ran it, and what it solved.
+
+## What is not in it yet
+
+A part that does nothing in a step is marked as having done nothing only in
+the chart, from the roster of parts that played; the log does not mention it.
+Mesh deformation and adaptation are not recorded as events, so a history
+stored before the mesh moved and read after it has nothing in the record to
+flag it. And what a step is *supposed* to contain is inferred from what
+repeated rather than declared by the script, so the record can say that one
+step differs from its neighbours and cannot yet say that a run disagrees with
+its own description. That last one is where the Underworld 1 comparison ends
+up: a declared plan would be the XML's descendant, a statement of what a step
+should contain, checked against the transcript rather than executed from it.

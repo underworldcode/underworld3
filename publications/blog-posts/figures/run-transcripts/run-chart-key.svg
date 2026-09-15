@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="595" height="483" viewBox="0 0 595 483">
-<rect x="0" y="0" width="595.0" height="483.0" fill="#fdfcfa"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="595" height="710" viewBox="0 0 595 710">
+<rect x="0" y="0" width="595.0" height="710.0" fill="#fdfcfa"/>
 <text x="40.0" y="52.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" fill="#1c1c1f" text-anchor="start" font-weight="600">Annulus convection — transcript</text>
 <text x="40.0" y="68.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#6b7380" text-anchor="start" font-weight="normal">started 2026-09-15T13:18:44+10:00  ·  no terminator: still running, or interrupted  ·  3 parts</text>
 <text x="112.0" y="90.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#6b7380" text-anchor="end" font-weight="normal">step</text>
@@ -108,4 +108,24 @@
 <line x1="44.0" y1="422.0" x2="44.0" y2="428.8" stroke="#6b7380" stroke-width="0.7"/>
 <path d="M 44.0 431.0 l -2.0 -3.2 l 4.0 0 z" fill="#6b7380"/>
 <text x="56.0" y="430.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8" fill="#1c1c1f" text-anchor="start" font-weight="normal">the steps between did exactly this, unchanged; first and last values are shown where they differ</text>
+<text x="40.0" y="457.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="9.5" fill="#1c1c1f" text-anchor="start" font-weight="600">Key — the parts, and what is in their residuals</text>
+<text x="40.0" y="475.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="start" font-weight="600">AdvDiffusion(T)</text>
+<text x="555.0" y="475.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7" fill="#6b7380" text-anchor="end" font-weight="normal">recorded at step 0</text>
+<text x="52.0" y="488.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">Δ t₁₈ = 1.147e-06  — DDt timestep</text>
+<text x="52.0" y="499.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">a^AM₀,18 = 0.5  — a^{\mathrm{AM}} coefficient 0 (DDt instance 18)</text>
+<text x="52.0" y="510.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">a^AM₁,18 = 0.5  — a^{\mathrm{AM}} coefficient 1 (DDt instance 18)</text>
+<text x="52.0" y="521.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">C^τ_κ,18 = 4  — tau diffusive weight</text>
+<text x="52.0" y="532.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">C^τ_t,18 = 2  — tau transient weight</text>
+<text x="52.0" y="543.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">C^τ_u,18 = 2  — tau advective weight</text>
+<text x="52.0" y="554.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">κ = 1e-06 m²/s  — Diffusivity</text>
+<text x="52.0" y="565.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">w^SUPG₁₈ = 1  — SUPG term weight (0 = Galerkin)</text>
+<text x="52.0" y="576.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#6b7380" text-anchor="start" font-weight="normal">essential on Lower: 1</text>
+<text x="52.0" y="587.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#6b7380" text-anchor="start" font-weight="normal">essential on Upper: 0</text>
+<text x="40.0" y="604.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="8.5" fill="#1c1c1f" text-anchor="start" font-weight="600">Stokes(v)</text>
+<text x="555.0" y="604.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7" fill="#6b7380" text-anchor="end" font-weight="normal">recorded at step 0</text>
+<text x="52.0" y="617.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">ρ₀ α g = 0.9712 kg/K/m²/s²  — buoyancy coefficient: reference density x thermal expansivity x gravity</text>
+<text x="52.0" y="628.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">η = 1e+22 Pa·s  — Shear viscosity</text>
+<text x="52.0" y="639.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#1c1c1f" text-anchor="start" font-weight="normal">λ = 0  — Numerical Penalty</text>
+<text x="52.0" y="650.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#6b7380" text-anchor="start" font-weight="normal">rotated free-slip on Upper: u . n = 0</text>
+<text x="52.0" y="661.0" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="7.5" fill="#6b7380" text-anchor="start" font-weight="normal">rotated free-slip on Lower: u . n = 0</text>
 </svg>

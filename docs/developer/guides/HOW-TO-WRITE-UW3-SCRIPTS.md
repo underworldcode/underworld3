@@ -507,9 +507,9 @@ recorded:
 ```python
 >>> for entry in model.transcript[-3:]:
 ...     print(entry)
-<step 0 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
-<step 1 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
-<step 2 'convect' dt=0.01 solve:SNES_AdvectionDiffusion(T) -> solve:SNES_Stokes(V)>
+<step 0 'convect' dt=0.01 AdvDiffusionSLCN(T) -> Stokes(V)>
+<step 1 'convect' dt=0.01 AdvDiffusionSLCN(T) -> Stokes(V)>
+<step 2 'convect' dt=0.01 AdvDiffusionSLCN(T) -> Stokes(V)>
 ```
 
 That record is worth having on its own. It answers what a run actually did,
@@ -612,14 +612,14 @@ closes, so `tail -f` follows a running job:
 # underworld3 step log · model 'default' · started 2026-09-10T21:22:40+00:00
 # scales: length 2.2e+06 m | time 4.84e+18 s | mass 1.065e+47 kg | temperature 2500 K
 # step           t/Myr          dt/Myr    wall/s  outcome    operators, in order
-      0        0.175907        0.175907      0.44  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
-      1        0.501546        0.325639      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
-      2        0.990939        0.489393      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
-      3         1.51459        0.523655      0.09  ok         [convect] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
-      4         30.5663         29.0517      0.09  ABANDONED  [too big] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      0        0.175907        0.175907      0.44  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+      1        0.501546        0.325639      0.09  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+      2        0.990939        0.489393      0.09  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+      3         1.51459        0.523655      0.09  ok         [convect] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
+      4         30.5663         29.0517      0.09  ABANDONED  [too big] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
   -- restore from a snapshot; the clock now reads 1.51459 Myr
   -- rewind to the start of step 3 (t = 0.990939 Myr); 1 step(s) undone
-      3         1.51459        0.523655      0.42  ok         [replay] solve:SNES_AdvectionDiffusion_Composed(T) > history_shift:EulerianSUPG(T) > solve:SNES_Stokes(v)
+      3         1.51459        0.523655      0.42  ok         [replay] AdvDiffusion(T) > shift EulerianSUPG(T) > Stokes(v)
 ```
 
 `wall/s` is how long the block took. It is not physics, but it is the number
@@ -631,7 +631,7 @@ whose solves all converged reads `ok`; one where a solve did not reads
 `DIVERGED`, and the solve is named underneath with its reason and its work:
 
 ```
-      7         2.63841        0.523655      4.81  DIVERGED   [convect] solve:SNES_Stokes(v) > ...
+      7         2.63841        0.523655      4.81  DIVERGED   [convect] Stokes(v) > ...
   !! SNES_Stokes(v): DIVERGED_LINEAR_SOLVE after 6 its (1200 ksp), |F| 3.11e-04
   ~~ RuntimeWarning: Stokes: the velocity block fell back to 'gamg' — no mesh hierarchy was available...
 ```

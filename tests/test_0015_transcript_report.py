@@ -81,7 +81,7 @@ def test_nothing_is_drawn_outside_the_canvas(tmp_path):
 def test_a_shared_sequence_is_written_once(tmp_path):
     text = _svg(tmp_path, _run([_step(i) for i in range(12)]))
     assert "Operator sequences" in text
-    assert text.count("AdvectionDiffusion(T)") == 1, (
+    assert text.count("AdvDiffusion(T)") == 1, (
         "an identical sequence must not be spelled out per step"
     )
     assert ">12 steps<" in text.replace(" ", " ") or "12 steps" in text
@@ -496,3 +496,92 @@ def test_a_transcript_without_outcomes_still_renders(tmp_path):
     xml.dom.minidom.parseString(text)
     # once, in the legend — the chart itself marks nothing.
     assert text.count("✅") == 1, text.count("✅")
+
+
+# ---------------------------------------------------------------------------
+# The key: what each part solved, rendered
+# ---------------------------------------------------------------------------
+
+def _part(label="SNES_Stokes(v)", part="SNES_Stokes#1", at_step=0, fingerprint="f"):
+    return {
+        "kind": "part", "part": part, "label": label, "at_step": at_step,
+        "fingerprint": fingerprint, "solver": "SNES_Stokes", "unknown": "v",
+        "dim": 2, "cdim": 2, "terms_declared": True,
+        "forms": {
+            "F0": {"symbol": r"\mathbf{f}_0", "description": "body force term",
+                   "latex": r"\rho_0 \alpha g {T}", "text": "rho0 alpha g T",
+                   "where": [{"symbol": r"\rho_0 \alpha g", "latex": "300",
+                              "value": "300", "units": "kg/K/m^2/s^2",
+                              "description": "buoyancy coefficient", "where": []}]},
+            "F1": {"symbol": r"\mathbf{F}_1", "description": "stress",
+                   "latex": r"2 \eta \dot\varepsilon - p I", "text": "2 eta E - p I",
+                   "where": [{"symbol": r"\eta", "latex": "10^{22}", "value": "1e22",
+                              "units": "Pa s", "description": "shear viscosity", "where": []}]},
+        },
+        "boundary_conditions": [{"mechanism": "rotated_freeslip", "type": "rotated free-slip",
+                                 "boundary": "Upper", "latex": r"u\cdot n = 0", "text": "u . n = 0"}],
+        "terms": [{"name": "penalty", "description": "grad-div penalty", "latex": "0", "text": "0"}],
+    }
+
+
+def test_the_key_renders_each_part_with_its_quantities_and_conditions():
+    import underworld3 as uw
+
+    runs = _run([_step(0)])
+    runs[0]["parts"] = [_part()]
+    md = uw.transcript_key(runs)
+    assert "### Stokes(v)" in md
+    assert r"\rho_0 \alpha g" in md and "buoyancy coefficient" in md and "kg/K/m^2/s^2" in md
+    assert "rotated free-slip on Upper" in md
+    assert "`penalty`" in md
+    text = uw.transcript_key(runs, format="text")
+    assert "Stokes(v)" in text and "shear viscosity" in text and "$" not in text
+
+
+def test_the_key_says_when_a_form_changed_mid_run():
+    import underworld3 as uw
+
+    runs = _run([_step(0), _step(1)])
+    runs[0]["parts"] = [_part(at_step=0, fingerprint="a"), _part(at_step=1, fingerprint="b")]
+    md = uw.transcript_key(runs)
+    assert "changed at step 1" in md
+
+
+def test_the_figure_carries_a_key_when_asked(tmp_path):
+    import underworld3 as uw
+
+    runs = _run([_step(0)])
+    runs[0]["parts"] = [_part()]
+    out = str(tmp_path / "keyed.svg")
+    uw.transcript_figure(runs, out=out, key=True)
+    text = open(out, encoding="utf-8").read()
+    xml.dom.minidom.parseString(text)
+    assert "Key" in text and "shear viscosity" in text and "rotated free-slip on Upper" in text
+    plain = open(str(uw.transcript_figure(runs, out=str(tmp_path / "plain.svg"))), encoding="utf-8").read()
+    assert "shear viscosity" not in plain
+
+
+def test_the_key_of_a_real_run_reaches_the_constitutive_model():
+    """A Poisson solve inside a step records its form; the key shows the
+    diffusivity under the name the user gave it, with its description."""
+    import underworld3 as uw
+
+    uw.reset_default_model()
+    model = uw.get_default_model()
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    T = uw.discretisation.MeshVariable("T_key", mesh, 1, degree=2)
+    kappa = uw.expression(r"\kappa_{rock}", 3.0, "thermal diffusivity of the rock")
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = kappa
+    poisson.f = 1.0
+    poisson.add_dirichlet_bc(0.0, "Top")
+    poisson.petsc_options.delValue("ksp_monitor")
+    model.transcript_file = None
+    model.tracker.time, model.tracker.step = 0.0, 0
+    with model.step(0.1):
+        poisson.solve()
+    md = uw.transcript_key(model)
+    assert "### Poisson(T_key)" in md
+    assert r"\kappa_{rock}" in md and "thermal diffusivity of the rock" in md
+    assert "on Top" in md

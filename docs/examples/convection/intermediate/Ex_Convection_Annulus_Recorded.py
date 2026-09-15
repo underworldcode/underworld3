@@ -505,8 +505,8 @@ if params.uw_demos:
     say("--- 6. the figure " + "-" * 56)
 
     stem = model.transcript_file.rsplit(".", 1)[0]   # beside the transcript
-    say(f"  {uw.transcript_diagram(model, out=stem + '.pdf', title='Annulus convection - run log')}")
-    say(f"  {uw.transcript_diagram(model, out=stem + '.svg', title='Annulus convection - run log')}")
+    say(f"  {uw.transcript_diagram(model, out=stem + '.pdf', title='Annulus convection — run log')}")
+    say(f"  {uw.transcript_diagram(model, out=stem + '.svg', title='Annulus convection — run log')}")
     say("")
     for line in uw.transcript_flowchart(model).splitlines():
         say("  " + line)

@@ -25,10 +25,11 @@ from __future__ import annotations
 import html
 import math
 import os
+import re
 import zlib
 
 __all__ = ["transcript_diagram", "transcript_flowchart",
-           "transcript_table", "transcript_figure"]
+           "transcript_table", "transcript_figure", "transcript_key"]
 
 
 # --- palette ---------------------------------------------------------------
@@ -70,8 +71,24 @@ def _as_runs(source):
     if hasattr(source, "transcript") and hasattr(source, "tracker"):
         # A live model: the run has not ended, and saying so is different from
         # a file that stops without a terminator, which may have been killed.
+        path = None
+        getter = getattr(source, "transcript_record_path", None)
+        if callable(getter):
+            path = getter()
+        if path and os.path.exists(path):
+            # The on-disk record is the complete one — an abandoned step and
+            # a rewound one are in the file and not in model.transcript, and
+            # a figure that leaves out the step that was rejected is not the
+            # figure of that run.
+            import underworld3 as uw
+
+            runs = uw.read_transcript(path)
+            if runs and runs[-1].get("ended") is None:
+                runs[-1]["live"] = True
+            return runs
         return [{"run": source._run_header(),
                  "steps": [entry.as_dict() for entry in source.transcript],
+                 "parts": list(getattr(source, "_parts", {}).values()),
                  "notes": [], "ended": None, "live": True}]
     if isinstance(source, list):
         if source and isinstance(source[0], dict) and "steps" in source[0]:
@@ -81,6 +98,320 @@ def _as_runs(source):
         f"expected a transcript path, the list read_transcript returns, or a Model; "
         f"got {type(source).__name__}"
     )
+
+
+_GREEK = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "Delta": "Δ", "epsilon": "ε",
+    "varepsilon": "ε", "eta": "η", "theta": "θ", "kappa": "κ", "upkappa": "κ", "lambda": "λ",
+    "uplambda": "λ", "mu": "μ", "nu": "ν", "rho": "ρ", "sigma": "σ", "tau": "τ", "phi": "φ",
+    "omega": "ω", "Omega": "Ω", "psi": "ψ", "Psi": "Ψ", "pi": "π", "nabla": "∇", "cdot": "·",
+    "times": "×", "partial": "∂", "infty": "∞",
+}
+_SUBSCRIPT_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+_SUPERSCRIPT_DIGITS = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+_FROM_SUBSCRIPT = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+_FROM_SUPERSCRIPT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻", "0123456789-")
+
+
+def _plain_symbol(latex):
+    """A LaTeX symbol as readable plain text: ``\\rho_0 \\alpha g`` -> ``ρ₀ α g``,
+    ``\\Delta t_{18}`` -> ``Δt₁₈``, ``C^{\\tau}_{u,18}`` -> ``C^τ_u,18``. For a
+    page that has no maths renderer; the Markdown key keeps the LaTeX."""
+    text = str(latex)
+    text = re.sub(r"\\(?:mathrm|mathbf|text|mathtt|left|right)\b", "", text)
+    text = re.sub(r"\\([A-Za-z]+)", lambda m: _GREEK.get(m.group(1), m.group(1)), text)
+    def sub(m):
+        inner = m.group(1)
+        return inner.translate(_SUBSCRIPT_DIGITS) if inner.isdigit() else "_" + inner
+    def sup(m):
+        inner = m.group(1)
+        return inner.translate(_SUPERSCRIPT_DIGITS) if inner.isdigit() else "^" + inner
+    text = re.sub(r"_\{([^{}]*)\}", sub, text)
+    text = re.sub(r"\^\{([^{}]*)\}", sup, text)
+    text = re.sub(r"_(\d)", lambda m: m.group(1).translate(_SUBSCRIPT_DIGITS), text)
+    text = re.sub(r"\^(\d)", lambda m: m.group(1).translate(_SUPERSCRIPT_DIGITS), text)
+    text = text.replace("{", "").replace("}", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _plain_unit(units):
+    """``meter ** 2 / second`` -> ``m²/s``; ``pascal * second`` -> ``Pa·s``."""
+    if not units:
+        return ""
+    text = str(units)
+    for long, short in (("kilogram", "kg"), ("meter", "m"), ("second", "s"),
+                        ("kelvin", "K"), ("pascal", "Pa"), ("newton", "N"),
+                        ("joule", "J"), ("watt", "W"), ("year", "yr"),
+                        ("megayear", "Myr"), ("millimeter", "mm"),
+                        ("kilometer", "km"), ("centimeter", "cm")):
+        text = re.sub(r"\b" + long + r"\b", short, text)
+    text = re.sub(r" \*\* (-?\d+)", lambda m: m.group(1).translate(_SUPERSCRIPT_DIGITS), text)
+    return text.replace(" * ", "·").replace(" / ", "/").replace(" ", "")
+
+
+def _magnitude_and_unit(value_text, units):
+    """Split ``'1e-06 [meter ** 2 / second]'`` into ``('1e-06', 'm²/s')``, and
+    format a bare number compactly. The recorded value of a quantity prints
+    its unit inside the text, so a renderer that appended the unit again
+    said it twice."""
+    text = "" if value_text is None else str(value_text)
+    m = re.match(r"^\s*([-+0-9.eE]+)\s*\[(.*)\]\s*$", text)
+    if m:
+        number, unit = m.group(1), m.group(2)
+        return _compact_number(number), _plain_unit(unit)
+    m = re.match(r"^\s*Matrix\(\[\[([-+0-9.eE]+)\]\]\)\s*$", text)
+    if m:
+        return _compact_number(m.group(1)), _plain_unit(units)
+    if re.match(r"^\s*[-+0-9.eE]+\s*$", text):
+        return _compact_number(text), _plain_unit(units)
+    return text, _plain_unit(units)
+
+
+def _compact_number(text):
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return str(text)
+    if value == 0:
+        return "0"
+    return f"{value:.4g}"
+
+
+def _latex_value(value_latex, value_text, units):
+    """The value for the Markdown key: a quantity's magnitude as LaTeX with
+    its unit set upright beside it, a matrix left as it is."""
+    number, unit = _magnitude_and_unit(value_text, units)
+    if re.match(r"^[-+0-9.eE]+$", number or ""):
+        latex = _number_latex(number)
+        return latex + (rf"\ \mathrm{{{_plain_unit_latex(unit)}}}" if unit else "")
+    return str(value_latex) if value_latex not in (None, "") else str(value_text)
+
+
+def _number_latex(number):
+    text = str(number)
+    if "e" in text or "E" in text:
+        mant, exp = re.split(r"[eE]", text)
+        exp = int(exp)
+        mant = mant.rstrip("0").rstrip(".") if "." in mant else mant
+        if mant in ("1", "1.0"):
+            return f"10^{{{exp}}}"
+        return f"{mant} \\times 10^{{{exp}}}"
+    return text
+
+
+def _plain_unit_latex(unit):
+    r"""``m²/s`` -> ``m^{2}/s``; ``Pa·s`` -> ``Pa\cdot s``."""
+    text = unit.replace("·", r"\cdot ")
+    supers = "⁰¹²³⁴⁵⁶⁷⁸⁹⁻"
+    digits = "0123456789-"
+    out, run = "", ""
+    for ch in text + " ":
+        if ch in supers:
+            run += digits[supers.index(ch)]
+            continue
+        if run:
+            out += "^{" + run + "}"
+            run = ""
+        out += ch
+    return out.rstrip()
+
+
+
+def _flatten_where(where):
+    out = []
+    for w in where:
+        out.append(w)
+        out.extend(_flatten_where(w.get("where", [])))
+    return out
+
+
+def _parts_recorded(entry):
+    """The ``part`` records of a run, in order, with repeats kept.
+
+    A part is recorded once per run and again whenever its form changes, so
+    two records for one part with different fingerprints say the equation
+    changed mid-run — which a key must show rather than collapse.
+    """
+    return [r for r in entry.get("parts", []) if r.get("kind") == "part"]
+
+
+def _where_lines(where, level, mode):
+    """The named expressions inside a form, as ``symbol = value units — what``,
+    nested to the depth the record followed them."""
+    lines = []
+    for w in where:
+        symbol = w.get("symbol", "?")
+        units = w.get("units")
+        what = w.get("description") or ""
+        indent = "  " * level
+        if mode == "markdown":
+            value = _latex_value(w.get("latex"), w.get("value"), units)
+            head = f"{indent}- ${symbol}$"
+            if value not in (None, ""):
+                head += f" $= {value}$"
+        else:
+            number, unit = _magnitude_and_unit(w.get("value"), units)
+            head = f"{indent}  {_plain_symbol(symbol)}"
+            if number not in (None, ""):
+                head += f" = {number}" + (f" {unit}" if unit else "")
+        if what:
+            head += f" — {what}"
+        lines.append(head)
+        lines.extend(_where_lines(w.get("where", []), level + 1, mode))
+    return lines
+
+
+def _key_for_part(record, mode):
+    label = _short_operator(record.get("label", record.get("part", "?")))
+    solver = record.get("solver", "?")
+    unknown = record.get("unknown")
+    dim = record.get("dim")
+    step = record.get("at_step")
+    out = []
+    if mode == "markdown":
+        out.append(f"### {label}")
+        meta = f"`{solver}`"
+        if unknown:
+            meta += f", unknown `{unknown}`"
+        if dim:
+            meta += f", {dim}-D"
+        if step is not None:
+            meta += f"; recorded at step {step}"
+        out.append(meta)
+        out.append("")
+        out.append("Residual $\\int F_0\\,\\phi + F_1 \\cdot \\nabla\\phi = 0$ with")
+        for name in ("F0", "F1", "PF0"):
+            form = record.get("forms", {}).get(name)
+            if not form:
+                continue
+            sym = form.get("symbol") or name
+            what = form.get("description") or ""
+            out.append("")
+            out.append(f"$${sym} = {form.get('latex', '')}$$")
+            if what:
+                out.append(f"*{what}*")
+            where = _where_lines(form.get("where", []), 0, mode)
+            if where:
+                out.append("")
+                out.append("where")
+                out.extend(where)
+    else:
+        out.append(f"{label}  ({solver}" + (f", unknown {unknown}" if unknown else "")
+                   + (f", {dim}-D" if dim else "") + (f"; recorded at step {step}" if step is not None else "") + ")")
+        for name in ("F0", "F1", "PF0"):
+            form = record.get("forms", {}).get(name)
+            if not form:
+                continue
+            what = form.get("description") or ""
+            out.append(f"  {name}: {form.get('text', '')}")
+            if what:
+                out.append(f"      {what}")
+            out.extend(_where_lines(form.get("where", []), 1, mode))
+    bcs = record.get("boundary_conditions") or []
+    if bcs:
+        out.append("")
+        out.append("Boundary conditions:" if mode == "markdown" else "  boundary conditions:")
+        for bc in bcs:
+            kind = bc.get("type", bc.get("mechanism", "?"))
+            where = bc.get("boundary", "?")
+            number, _u = _magnitude_and_unit(bc.get("text"), None)
+            scalar = re.match(r"^[-+0-9.eE]+$", number or "")
+            if mode == "markdown":
+                value = _number_latex(number) if scalar else bc.get("latex")
+            else:
+                value = number if scalar else bc.get("text")
+            line = f"{kind} on {where}"
+            if value:
+                line += (f": ${value}$" if mode == "markdown" else f": {value}")
+            out.append(("- " if mode == "markdown" else "    ") + line)
+    terms = record.get("terms")
+    if terms:
+        out.append("")
+        out.append("Given:" if mode == "markdown" else "  given:")
+        for term in terms:
+            if mode == "markdown":
+                value = _latex_value(term.get("latex"), term.get("text"), None)
+            else:
+                number, unit = _magnitude_and_unit(term.get("text"), None)
+                value = number + (f" {unit}" if unit else "")
+            what = term.get("description") or ""
+            line = f"`{term.get('name')}`" if mode == "markdown" else f"    {term.get('name')}"
+            if value not in (None, ""):
+                line += (f" $= {value}$" if mode == "markdown" else f" = {value}")
+            if what:
+                line += f" — {what}"
+            out.append(("- " + line) if mode == "markdown" else line)
+    elif record.get("terms_declared") is False:
+        out.append("")
+        out.append(("*" if mode == "markdown" else "  ") + "this solver does not declare the terms it was given" + ("*" if mode == "markdown" else ""))
+    return out
+
+
+def transcript_key(source, run=-1, out=None, format="markdown"):
+    """The key to a run: what each part solved, as it was implemented.
+
+    A run records each solver's residual once, and again if it changes. This
+    renders those records as the legend a figure or a note needs: the weak
+    form with its templates, the named expressions inside them expanded down
+    to the constitutive model — with values, units and descriptions — the
+    boundary conditions, and the terms the solver was given.
+
+    Parameters
+    ----------
+    source : str, list or Model
+        A ``.jsonl`` transcript, the list :func:`underworld3.read_transcript`
+        returns, or a live model.
+    run : int, default -1
+        Which run in the file.
+    out : str, optional
+        Write the key here (``.md`` or ``.txt``) as well as returning it.
+    format : {"markdown", "text"}
+        Markdown with LaTeX for a note or a notebook; plain text, with the
+        forms as SymPy prints them, for a terminal.
+
+    Returns
+    -------
+    str
+    """
+    if format not in ("markdown", "text"):
+        raise ValueError(f"format must be 'markdown' or 'text', not {format!r}")
+    runs = _as_runs(source)
+    entry = _pick_run(runs, run)
+    header = entry.get("run") or {}
+    parts = _parts_recorded(entry)
+    lines = []
+    title = _run_title(header, fallback="")
+    if format == "markdown":
+        lines.append(f"## Key — what each part solved" + (f" in {title}" if title else ""))
+        if header.get("started"):
+            lines.append(f"*run started {header['started']}*")
+        lines.append("")
+    else:
+        lines.append("key — what each part solved" + (f" in {title}" if title else ""))
+        if header.get("started"):
+            lines.append(f"run started {header['started']}")
+        lines.append("")
+    if not parts:
+        lines.append("no solver recorded its form in this run" if format == "text"
+                     else "*No solver recorded its form in this run.*")
+    seen = {}
+    for record in parts:
+        key = record.get("part")
+        if key in seen and seen[key] != record.get("fingerprint"):
+            note = f"the form of {_short_operator(record.get('label', key))} changed at step {record.get('at_step')}"
+            lines.append(("> " if format == "markdown" else "! ") + note)
+            lines.append("")
+        seen[key] = record.get("fingerprint")
+        lines.extend(_key_for_part(record, format))
+        lines.append("")
+    text = "\n".join(lines).rstrip() + "\n"
+    if out:
+        directory = os.path.dirname(out)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(out, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    return text
 
 
 def _pick_run(runs, index):
@@ -129,16 +460,63 @@ def _converted(value, unit):
         return _magnitude(value)
 
 
-def _short_operator(name):
-    """``SNES_AdvectionDiffusion_Composed(T)`` -> ``AdvectionDiffusion(T)``.
+_ALIASES = None
 
-    The prefix says which base class implemented it, which is never the thing
-    the reader is checking."""
+
+def _public_aliases():
+    """``{"SNES_AdvectionDiffusion_Composed": "AdvDiffusion", ...}`` — the
+    name each solver class is exported under in ``uw.systems``, which is the
+    name the user wrote. Built once."""
+    global _ALIASES
+    if _ALIASES is None:
+        aliases = {}
+        try:
+            import underworld3 as uw
+
+            for attr, obj in vars(uw.systems).items():
+                if not isinstance(obj, type) or attr == obj.__name__:
+                    continue
+                # only a name SHORTER than the class's own, stripped of its
+                # base-class prefix — EulerianSUPG is exported as
+                # EulerianSUPG_DDt too, and that is not what anyone wrote
+                own = re.sub(r"^(SNES_|uw_)", "", obj.__name__).replace("_Composed", "")
+                current = aliases.get(obj.__name__)
+                if len(attr) < len(own) and (current is None or len(attr) < len(current)):
+                    aliases[obj.__name__] = attr
+        except Exception:
+            pass
+        _ALIASES = aliases
+    return _ALIASES
+
+
+def _short_operator(name):
+    """``SNES_AdvectionDiffusion_Composed(T)`` -> ``AdvDiffusion(T)``.
+
+    An operator is named in the record by its class, which says which base
+    implemented it and is never the thing the reader is checking. The views
+    call it what the user called it: the name it is exported under. A class
+    with no public alias loses its ``SNES_`` prefix and nothing else.
+    """
     text = str(name)
+    head, sep, tail = text.partition("(")
+    alias = _public_aliases().get(head)
+    if alias:
+        return alias + sep + tail
     for prefix in ("SNES_", "uw_"):
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-    return text.replace("_Composed", "")
+        if head.startswith(prefix):
+            head = head[len(prefix):]
+    return head.replace("_Composed", "") + sep + tail
+
+
+def _run_title(header, fallback="model"):
+    """The run's name for a heading: the model's, unless it is the default
+    one, in which case the script that ran it — which the launch record
+    kept for exactly this."""
+    name = (header or {}).get("model")
+    script = (header or {}).get("script")
+    if (not name or name == "default") and script:
+        return str(script).rsplit(".", 1)[0]
+    return repr(name) if name else fallback
 
 
 def _signature(step):
@@ -309,7 +687,7 @@ def _layout(header, steps, notes, title=None, width=PAGE_W, page_height=None):
     def draw_header(y, first):
         if first:
             canvas.text(_MARGIN, y + 12,
-                        title or f"Run log — {header.get('model', 'model')!r}",
+                        title or f"Run log — {_run_title(header)}",
                         size=14, bold=True)
             y += 20
             bits = []
@@ -597,9 +975,21 @@ _PDF_SUBSTITUTIONS = {
 
 
 def _pdf_text(content):
-    """WinAnsi-safe, with the escapes PDF strings need."""
+    """WinAnsi-safe, with the escapes PDF strings need.
+
+    The base-14 fonts have no Greek and no sub- or superscript digits, so
+    the key's symbols are spelled out here — ``κ`` as ``kappa``, ``ρ₀`` as
+    ``rho_0`` — rather than printed as ``?``.
+    """
     for source, target in _PDF_SUBSTITUTIONS.items():
         content = content.replace(source, target)
+    for name, glyph in _GREEK.items():
+        if glyph in content and not glyph.isascii():
+            content = content.replace(glyph, _PDF_SUBSTITUTIONS.get(glyph, name))
+    content = re.sub("[₀₁₂₃₄₅₆₇₈₉]+",
+                     lambda m: "_" + m.group(0).translate(_FROM_SUBSCRIPT), content)
+    content = re.sub("[⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+",
+                     lambda m: "^" + m.group(0).translate(_FROM_SUPERSCRIPT), content)
     content = content.encode("latin-1", "replace").decode("latin-1")
     return content.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
 
@@ -912,19 +1302,12 @@ def _parts_of(steps):
                 labels[key] = _short_operator(event.get("name", key))
             elif event.get("kind") == "history_shift":
                 labels[key] = _short_operator(event.get("name", key))
-    # Actors first, then the state they carry: laid out by family rather than
-    # by order of first entry, so a part sits in the same place every run.
-    actors = [k for k in order if "#" not in str(k) or not _is_history(k, steps)]
-    histories = [k for k in order if k not in actors]
-    return [(k, labels[k]) for k in actors + histories]
-
-
-def _is_history(key, steps):
-    for step in steps:
-        for event in step.get("events", []):
-            if (event.get("part") or event.get("name")) == key:
-                return event.get("kind") == "history_shift"
-    return False
+    # In the order they first ran. A step is drawn as a bar whose events
+    # descend in the order they ran, so with the columns in that same order
+    # the usual step reads as a staircase down and to the right, and any step
+    # that departs from it — a part run twice, a solve out of turn — breaks
+    # the shape.
+    return [(k, labels[k]) for k in order]
 
 
 def _outcome(event):
@@ -998,13 +1381,15 @@ def _transcript_rows(steps, parts, note_at, anchors=()):
 
 
 def transcript_figure(source, out=None, run=-1, title=None,
-                            width=PAGE_W, format=None, collapse=True):
+                            width=PAGE_W, format=None, collapse=True, key=False):
     """Draw the transcript: a column per part, a row per step.
 
     The same reading as :func:`transcript_table`, drawn rather than set in
-    text. A mark is a part that ran, carrying the order it ran in and how the
-    solve went; a dash is a part that did nothing; a run of identical steps
-    collapses to one band with a count and a downward arrow.
+    text. Each step is a bar: what ran sits one line lower than what ran
+    before it, in its own column, joined by a path, so the sequence is the
+    shape. A solve's mark says how it went; a dash is a part that did
+    nothing; a run of identical steps collapses to one band with a count and
+    a downward arrow.
 
     Parameters
     ----------
@@ -1016,6 +1401,11 @@ def transcript_figure(source, out=None, run=-1, title=None,
         the format's suffix.
     format : {"pdf", "svg"}, optional
         Inferred from ``out``'s suffix; PDF by default.
+    key : bool, default False
+        Append a key: for each part, the named quantities inside its residual
+        with their values and units, and its boundary conditions — what a
+        reader needs to know which model this is. The full forms are in
+        :func:`transcript_key`.
     collapse : bool, default True
         Group consecutive steps that did the same thing into one band. The
         band carries the first and last value of anything that changed across
@@ -1043,7 +1433,7 @@ def transcript_figure(source, out=None, run=-1, title=None,
 
     canvas, page_w, height = _transcript_layout(
         header, steps, notes, entry, title=title, width=width,
-        collapse=collapse)
+        collapse=collapse, key_records=_parts_recorded(entry) if key else None)
 
     directory = os.path.dirname(out)
     if directory:
@@ -1067,7 +1457,7 @@ def _down_arrow(canvas, x, y_from, y_to, colour, width=0.7):
 
 
 def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
-                  collapse=True):
+                       collapse=True, *, key_records=None):
     canvas = _Canvas()
     right = width - _MARGIN
 
@@ -1093,7 +1483,7 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                 for i, step in enumerate(steps)]
 
     y = _MARGIN
-    canvas.text(_MARGIN, y + 12, title or f"Transcript — {header.get('model', 'model')!r}",
+    canvas.text(_MARGIN, y + 12, title or f"Transcript — {_run_title(header)}",
                 size=14, bold=True)
     y += 20
     bits = []
@@ -1133,25 +1523,40 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
     top = y + 3
 
     # --- rows ---
-    row_h, band_h = 16.0, 30.0
+    # A step is a bar. Inside it, time runs down: the first thing that ran
+    # sits on the top line, the next one line below, each in its own
+    # column, joined by a path. The shape of the path is the sequence — an
+    # extra line in a bar is a part that ran twice, and a path that doubles
+    # back is a solve out of its usual turn. Nothing has to be read off a
+    # digit.
+    pad, pitch, band_h = 3.5, 9.0, 30.0
+    row_h = 2 * pad + pitch
+
+    def bar_height(cells):
+        n = max((order for cell in cells if cell for order, _ in cell),
+                default=1)
+        return 2 * pad + pitch * n
+
     row_y, row_page = {}, {}
     y = top
     for kind, first, last, cells, count in rows:
-        h = row_h if kind == "step" else band_h
+        h = bar_height(cells) if kind == "step" else band_h
         mid = y + h / 2
         if kind == "step":
             step = steps[first]
             row_y[first] = mid
             completed = bool(step.get("completed"))
             colour = _ACCEPTED if completed else _ABANDONED
-            canvas.text(x_step, mid + 3, step.get("index", first), size=8.5,
+            line1 = y + pad + pitch / 2   # the bar's first line
+            canvas.text(x_step, line1 + 3, step.get("index", first), size=8.5,
                         fill=_INK if completed else _ABANDONED, anchor="end")
             t1 = _converted(step.get("t1"), unit)
             dt = _converted(step.get("dt"), unit)
-            canvas.text(x_time, mid + 3, f"{t1:.6g}", size=8.5,
+            canvas.text(x_time, line1 + 3, f"{t1:.6g}", size=8.5,
                         fill=_INK if completed else _ABANDONED, anchor="end")
-            canvas.text(x_dt, mid + 3, f"{dt:.6g}", size=8.5,
+            canvas.text(x_dt, line1 + 3, f"{dt:.6g}", size=8.5,
                         fill=_INK if completed else _ABANDONED, anchor="end")
+            played = []
             for i, cell in enumerate(cells):
                 cx = lane_x(i)
                 if cell is None:
@@ -1159,23 +1564,26 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                     # different from a part nobody was watching.
                     canvas.rect(cx - 4.5, mid - 1.0, 9.0, 2.0, fill=_MUTED)
                     continue
-                span = 11.0 * (len(cell) - 1)
-                for k, (order, outcome) in enumerate(cell):
-                    nx = cx - span / 2 + 11.0 * k
-                    if outcome is None:
-                        # A history shift, or a transcript from before
-                        # outcomes were recorded: the note head says it ran.
-                        canvas.note(nx, mid, 4.2, colour, hollow=not completed)
-                        canvas.text(nx, mid + 2.6, order, size=6.5,
-                                    fill=_PAPER if completed else _ABANDONED,
-                                    anchor="middle", bold=True)
-                    else:
-                        canvas.mark(nx, mid, 4.2, outcome, hollow=not completed)
-                        canvas.text(nx + 5.8, mid - 2.4, order, size=6.0,
-                                    fill=_MUTED, anchor="middle")
+                for order, outcome in cell:
+                    played.append((order, cx, y + pad + pitch * (order - 0.5),
+                                   outcome))
+            played.sort()
+            # the path first, so the marks sit on it
+            for (_, x0, y0, _), (_, x1, y1, _) in zip(played, played[1:]):
+                canvas.line(x0, y0, x1, y1,
+                            _ACCEPTED if completed else _ABANDONED, 0.7)
+            for _, nx, ny, outcome in played:
+                if outcome is None:
+                    # A history shift, or a transcript from before outcomes
+                    # were recorded: the plain mark says it ran.
+                    canvas.note(nx, ny, 3.4, colour, hollow=not completed)
+                else:
+                    canvas.mark(nx, ny, 4.2, outcome, hollow=not completed)
             if not completed:
-                canvas.text(right, mid + 3, "abandoned", size=7.5,
+                canvas.text(right, line1 + 3, "abandoned", size=7.5,
                             fill=_ABANDONED, anchor="end")
+            # a bar line under each step
+            canvas.line(x_step - 30, y + h, right, y + h, _RULE, 0.4)
         else:
             # A run of steps that did the same thing. The band shows the first
             # and last value of anything that CHANGED across it, because a
@@ -1242,10 +1650,10 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
 
     # --- legend ---
     y += 14
-    canvas.note(_MARGIN + 4, y, 4.2, _ACCEPTED)
+    canvas.note(_MARGIN + 4, y, 3.4, _ACCEPTED)
     canvas.text(_MARGIN + 16, y + 3,
-                "ran; the digit is the order it ran within the step",
-                size=8, fill=_INK)
+                "ran; a step reads down, the path joining what ran in the "
+                "order it ran", size=8, fill=_INK)
     y += 14
     canvas.mark(_MARGIN + 4, y, 4.2, "ok")
     canvas.text(_MARGIN + 16, y + 3, "solved, and converged", size=8, fill=_INK)
@@ -1273,6 +1681,43 @@ def _transcript_layout(header, steps, notes, entry, title=None, width=PAGE_W,
                 "the steps between did exactly this, unchanged; first and last "
                 "values are shown where they differ", size=8, fill=_INK)
     y += 16
+
+    if key_records:
+        # The key: which model this is, by the quantities in its residuals.
+        y += 6
+        canvas.text(_MARGIN, y + 8, "Key — the parts, and what is in their residuals",
+                    size=9.5, bold=True)
+        y += 18
+        for record in key_records:
+            label = _short_operator(record.get("label", record.get("part", "?")))
+            canvas.text(_MARGIN, y + 8, label, size=8.5, bold=True)
+            step = record.get("at_step")
+            if step is not None:
+                canvas.text(right, y + 8, f"recorded at step {step}", size=7,
+                            fill=_MUTED, anchor="end")
+            y += 13
+            seen = set()
+            for form in record.get("forms", {}).values():
+                for w in _flatten_where(form.get("where", [])):
+                    if w["symbol"] in seen:
+                        continue
+                    seen.add(w["symbol"])
+                    number, unit = _magnitude_and_unit(w.get("value"), w.get("units"))
+                    line = _plain_symbol(w["symbol"])
+                    if number not in (None, ""):
+                        line += f" = {number}" + (f" {unit}" if unit else "")
+                    if w.get("description"):
+                        line += f"  — {w['description']}"
+                    canvas.text(_MARGIN + 12, y + 8, line[:110], size=7.5)
+                    y += 11
+            for bc in record.get("boundary_conditions") or []:
+                line = f"{bc.get('type', bc.get('mechanism', '?'))} on {bc.get('boundary', '?')}"
+                number, _u = _magnitude_and_unit(bc.get("text"), None)
+                if number:
+                    line += f": {number}"
+                canvas.text(_MARGIN + 12, y + 8, line[:110], size=7.5, fill=_MUTED)
+                y += 11
+            y += 6
 
     return canvas, width, y + _MARGIN
 
@@ -1328,8 +1773,7 @@ def transcript_table(source, run=-1, width=11, collapse=True):
         note_at.setdefault(note.get("after_position"), []).append(note)
 
     out = []
-    title = header.get("model")
-    out.append(f"transcript · model {title!r}" if title else "transcript")
+    out.append(f"transcript · {_run_title(header, fallback='')}".rstrip(" ·"))
     if header.get("started"):
         out.append(f"started {header['started']}")
     if ended:
@@ -1342,6 +1786,7 @@ def transcript_table(source, run=-1, width=11, collapse=True):
     out.append("")
 
     step_w, t_w = 5, 10
+    width = max(width, max((len(label) for _, label in parts), default=width))
     head = (f"{'step':>{step_w}} {('t/' + short) if short else 't':>{t_w}} "
             f"{('dt/' + short) if short else 'dt':>{t_w}} │ "
             + " │ ".join(f"{label[:width]:^{width}}" for _, label in parts) + " │")
@@ -1408,7 +1853,10 @@ def transcript_table(source, run=-1, width=11, collapse=True):
     out.append("↓  the steps between did exactly this, unchanged")
     out.append("·  this part did nothing in that step")
     out.append("digits are the order the parts ran within the step")
-    out.append("!  converged, but a fieldsplit block ended at its iteration "
-               "cap — that block did not solve")
-    out.append("x  did not converge")
+    outcomes = {o for s in steps for e in s.get("events", []) for o in [_outcome(e)] if o}
+    if "capped" in outcomes:
+        out.append("!  converged, but a fieldsplit block ended at its iteration "
+                   "cap — that block did not solve")
+    if "diverged" in outcomes:
+        out.append("x  did not converge")
     return "\n".join(out)

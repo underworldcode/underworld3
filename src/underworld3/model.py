@@ -109,7 +109,7 @@ def _launch_manifest():
     import underworld3 as uw
 
     manifest = {
-        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "started": datetime.now().astimezone().isoformat(timespec="seconds"),
         "argv": list(sys.argv),
         "executable": sys.executable,
         "cwd": os.getcwd(),
@@ -227,9 +227,23 @@ class ModelStep:
 
     def __repr__(self):
         state = "" if self.completed else " ABANDONED"
-        seq = " -> ".join(f"{e['kind']}:{e['name']}" for e in self.events) or "(nothing)"
+        seq = " -> ".join(_operator_text(e) for e in self.events) or "(nothing)"
         tag = f" {self.label!r}" if self.label else ""
         return f"<step {self.index}{tag} dt={self.dt} {seq}{state}>"
+
+
+def _operator_text(event):
+    """One operator as a reader sees it, in every view: ``Stokes(v)`` — the
+    name the user wrote, not ``solve:SNES_Stokes(v)`` — and a history shift
+    as ``shift EulerianSUPG(T)``. Anything else keeps its kind as a prefix."""
+    from underworld3.utilities.transcript_report import _short_operator
+
+    kind, name = event.get("kind"), _short_operator(event.get("name", "?"))
+    if kind == "solve":
+        return name
+    if kind == "history_shift":
+        return f"shift {name}"
+    return f"{kind}:{name}"
 
 
 def _quantity_parts(value):
@@ -1057,7 +1071,7 @@ class Model(PintNativeModelMixin, BaseModel):
             self._write_transcript_line({
                 "kind": "run_end",
                 "message": f"run ended after {len(self._transcript)} recorded step(s)",
-                "ended": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "ended": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "steps": len(self._transcript),
             })
         for attr in ("_transcript_fh", "_transcript_jsonl_fh"):
@@ -1245,10 +1259,18 @@ class Model(PintNativeModelMixin, BaseModel):
                 scales[str(name)] = _jsonable_quantity(scale)
         except Exception:
             scales = {}
+        script = None
+        try:
+            entry = sys.argv[0] if sys.argv else ""
+            if entry and not entry.startswith("-"):
+                script = os.path.basename(entry)
+        except Exception:
+            script = None
         return {
             "kind": "run",
             "model": getattr(self, "name", None),
-            "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "script": script,
+            "started": datetime.now().astimezone().isoformat(timespec="seconds"),
             "scales": scales,
         }
 
@@ -1268,9 +1290,11 @@ class Model(PintNativeModelMixin, BaseModel):
                 for name, value in scales.items()
                 if isinstance(value, dict)
             )
+            from underworld3.utilities.transcript_report import _run_title
+
             lines = [
                 "",
-                f"# underworld3 run transcript · model {payload.get('model')!r} "
+                f"# underworld3 run transcript · {_run_title(payload, fallback='')} "
                 f"· started {payload.get('started')}",
             ]
             if summary:
@@ -1323,7 +1347,7 @@ class Model(PintNativeModelMixin, BaseModel):
             # Only what the step APPLIED goes in the sequence. Anything else an
             # older transcript may carry is not an operator and is left out.
             operators = " > ".join(
-                f"{e['kind']}:{e['name']}" for e in events
+                _operator_text(e) for e in events
                 if e.get("kind") in ("solve", "history_shift")
             ) or "(nothing)"
 
@@ -1365,9 +1389,11 @@ class Model(PintNativeModelMixin, BaseModel):
             ] + notes)
 
         if kind == "part":
+            from underworld3.utilities.transcript_report import _short_operator
+
             forms = ", ".join(sorted(payload.get("forms", {})))
-            return (f"  -- solves: {payload.get('label')}  [{forms}]  "
-                    f"(the form is in the transcript record)")
+            return (f"  -- solves: {_short_operator(payload.get('label'))}  [{forms}]  "
+                    f"(the form is in the record; uw.transcript_key renders it)")
 
         if kind == "run_end":
             return f"# {payload.get('message', 'run ended')} · {payload.get('ended', '')}"
@@ -1375,6 +1401,18 @@ class Model(PintNativeModelMixin, BaseModel):
         # Everything else — rewind, restore — is a note about the run rather
         # than a row of the table, so it breaks the columns deliberately.
         return f"  -- {payload.get('message', kind)}"
+
+    def transcript_record_path(self):
+        """The path of this run's JSON Lines record, if one is being written.
+
+        The complete record: abandoned and rewound steps are in it and not in
+        ``model.transcript``. The renderers read it in preference to memory.
+        """
+        for handle in (self._transcript_jsonl_fh, self._transcript_fh):
+            name = getattr(handle, "name", None)
+            if name and str(name).endswith(".jsonl"):
+                return str(name)
+        return None
 
     def _write_transcript_line(self, payload):
         """Append one record and flush, so a killed run keeps its log."""

@@ -15,6 +15,8 @@ It writes, beside itself:
     transcript.log         the text transcript the run wrote
     transcript.jsonl       the machine-readable transcript
     chart.txt              the same chart, in text
+    key.md                 what each part solved, as implemented (Markdown + LaTeX)
+    run-chart-key.svg/pdf  the chart with that key on the page
 
 Everything here is Underworld3's own machinery: the transcript is written
 without being asked, and the figure is rendered from it afterwards.
@@ -181,9 +183,15 @@ chart_title = "Annulus convection — transcript"
 uw.transcript_figure(record, out=os.path.join(HERE, "run-chart.svg"), title=chart_title)
 uw.transcript_figure(record, out=os.path.join(HERE, "run-chart.pdf"), title=chart_title)
 
-chart = uw.transcript_table(record, width=15)
+chart = uw.transcript_table(record)
 with open(os.path.join(HERE, "chart.txt"), "w", encoding="utf-8") as handle:
     handle.write(chart + "\n")
+
+# The key: what each part solved, as implemented — Markdown with LaTeX for the
+# post, and the chart with the key on the page.
+uw.transcript_key(record, out=os.path.join(HERE, "key.md"))
+uw.transcript_figure(record, out=os.path.join(HERE, "run-chart-key.svg"), title=chart_title, key=True)
+uw.transcript_figure(record, out=os.path.join(HERE, "run-chart-key.pdf"), title=chart_title, key=True)
 
 uw.pprint(chart, clean_display=False)
 uw.pprint(f"figures and transcript written to {HERE}", clean_display=False)

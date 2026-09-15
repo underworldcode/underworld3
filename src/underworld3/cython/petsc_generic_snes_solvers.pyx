@@ -1503,9 +1503,16 @@ class SolverBaseClass(uw_object):
             if level > depth:
                 return out
             try:
-                found = uw.function.fn_extract_expressions(expression)
+                found = list(uw.function.fn_extract_expressions(expression))
             except Exception:
                 return out
+            # A value that IS a named expression — Parameters.diffusivity set
+            # to the user's own uw.expression — contains no sub-expressions,
+            # so extraction returns nothing and the user's name, units and
+            # description would never appear. It is the child.
+            if (hasattr(expression, "symbol") and hasattr(expression, "sym")
+                    and not any(e is expression for e in found)):
+                found.append(expression)
             for named in sorted(found, key=lambda e: str(getattr(e, "symbol", e))):
                 symbol = str(getattr(named, "symbol", named))
                 if symbol in seen:

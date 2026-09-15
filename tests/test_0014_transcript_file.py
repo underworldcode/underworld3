@@ -240,7 +240,7 @@ def test_text_log_is_one_aligned_line_per_step(tmp_path):
     assert len(rows) == 3
     for index, row in enumerate(rows):
         assert row.split()[0] == str(index)
-        assert "solve:SNES_Stokes(v)" in row
+        assert "Stokes(v)" in row and "solve:" not in row
         assert "ok" in row
 
 
@@ -460,7 +460,7 @@ def test_the_default_lands_in_a_stamped_directory(monkeypatch, tmp_path):
 
     text = (run_dir / "transcript.log").read_text()
     assert "underworld3 run transcript" in text
-    assert "SNES_Stokes(v)" in text
+    assert "Stokes(v)" in text
 
 
 def test_nothing_is_created_for_a_run_that_takes_no_step(monkeypatch, tmp_path):
