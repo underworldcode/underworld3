@@ -1,0 +1,20 @@
+transcript · model 'default'
+started 2026-09-12T22:24:49+00:00
+no terminator: this run is still going, or it was interrupted. What follows is the transcript of a prefix.
+
+ step      t/Myr     dt/Myr │ AdvectionDiffus │    Stokes(v)    │ EulerianSUPG(T) │
+───────────────────────────────────────────────────────────────────────────────────
+    0   0.175907   0.175907 │        1        │        3        │        2        │
+  …13    16.8708    4.31057 │        ↓        │        ↓        │        ↓        │   ×13 unchanged, dt 0.1759 → 4.311
+   14    446.031    429.161 │        1        │        3        │        2        │   ABANDONED
+                            │ restore from a snapshot; the clock now reads 16.8708 Myr
+                            │ rewind to the start of step 13 (t = 12.5602 Myr); 1 step(s) undone
+   13    16.8708    4.31057 │        1        │        3        │        2        │
+   14     25.454    8.58321 │       1,4       │       3,6       │       2,5       │
+
+17 step(s), 3 part(s): AdvectionDiffusion(T), Stokes(v), EulerianSUPG(T)
+↓  the steps between did exactly this, unchanged
+·  this part did nothing in that step
+digits are the order the parts ran within the step
+!  converged, but a fieldsplit block ended at its iteration cap — that block did not solve
+x  did not converge

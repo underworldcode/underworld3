@@ -1,4 +1,4 @@
-# The run score and the run transcript
+# The run plan and the run transcript
 
 *Status: design note. Vocabulary and the model it implies. No implementation.*
 
@@ -26,43 +26,53 @@ cycles.
 
 ## Two documents, not one
 
-**The score** is what the run is *supposed* to do: which parts play, in what
-order, with what meter. It is the same for every cycle of a well-behaved run.
+**The plan** is what the run is *supposed* to do: which parts run, in what
+order, on what alignment. It is the same for every cycle of a well-behaved
+run.
 
 **The transcript** is what the run *actually did*, including the things that
-are not in the piece — a cycle abandoned, a jump back to an earlier cycle, a
+were never planned — a cycle abandoned, a jump back to an earlier cycle, a
 re-take.
 
 Both already exist in the current implementation without those names. The
-figure's operator-sequence legend (`A`, `B`, ...) is an **inferred score**; the
-rows are the **transcript**. A run in which every bar is `A` played the score.
-A `B` is a bar played differently.
+figure's operator-sequence legend (`A`, `B`, ...) is an **inferred plan**; the
+rows are the **transcript**. A run in which every step is `A` followed the
+plan. A `B` is a step that did something else.
 
 That naming makes the original motivating question mechanical: *is the model
 doing the scientific task you say it is* becomes **a diff of the transcript
-against the score**.
+against the plan**.
 
 ## Vocabulary
 
+The terms below are where the ideas came from, and they are deliberately NOT
+the words the code and the figures use. "Score", "bar", "note", "rest" and
+"simile" were useful for getting the model right and are forced as public
+vocabulary: what ships says **transcript**, **step**, **part**, **did
+nothing**, and **unchanged**. The mapping is kept here because the reasoning
+depends on it — each musical term carries a convention that is the reason the
+corresponding decision was made.
+
+
 | term | meaning here |
 |---|---|
-| **bar** | one turn of the orchestrating loop. Numbered monotonically, never reused, and the thing you refer to. NOT necessarily a physical time interval — it may be a task. |
-| **beat** | a position inside a bar at which alignment is required. **Barriers** sit on beats: a mesh deform, an adapt, a migration, a remesh. |
-| **part** | a participant with its own stave. Two kinds: *actors* (solvers, swarm pushes, mesh movers) and *state-holders* (DDt histories, fields, particle coordinates). |
-| **note** | what a part did in a bar, carrying its own duration — its `dt`, which need not be the bar's. |
-| **rest** | notated absence. Distinguishes *did nothing this bar* from *was not being watched*. |
+| **bar** → *step* | one turn of the orchestrating loop. Numbered monotonically, never reused, and the thing you refer to. NOT necessarily a physical time interval — it may be a task. |
+| **beat** | a position inside a step at which alignment is required. **Barriers** sit on beats: a mesh deform, an adapt, a migration, a remesh. |
+| **part** (kept) | a participant with its own column. Two kinds: *actors* (solvers, swarm pushes, mesh movers) and *state-holders* (DDt histories, fields, particle coordinates). |
+| **note** → *a mark* | what a part did in a step, carrying its own duration — its `dt`, which need not be the bar's. |
+| **rest** → *did nothing* | notated absence. Distinguishes *did nothing this bar* from *was not being watched*. |
 | **tuplet** | n notes in the space of the bar, bracketed with the ratio. Sub-cycling, notated as ordinary rather than flagged as anomalous. |
-| **tie** | a value written in one bar and read in the next, drawn as an arc across the barline. |
-| **tempo** | how bar numbers map to real time. Deliberately separate from the meter: `dt` varies, wall clock varies more, and the vertical axis is ordinal. |
+| **tie** | a value written in one step and read in the next, drawn as an arc across the barline. |
+| **tempo** | how step numbers map to real time. Deliberately separate from the meter: `dt` varies, wall clock varies more, and the vertical axis is ordinal. |
 | **performance event** | not part of the piece: a bar abandoned, a jump back, a re-take. Transcript only. |
 
 Two conventions borrowed with the vocabulary and worth keeping:
 
-- **Score order.** Parts appear in a stable, conventional order (actors, then
+- **Stable part order.** Parts appear in a fixed order (actors, then
   histories, then swarms, then mesh), not order of first appearance, so a
   reader finds the same part in the same place in every run's transcript.
-- **Rests are compulsory.** In a score every part accounts for every beat. A
-  part that does nothing is written as a rest, never left blank.
+- **Absence is written down.** Every part accounts for every step. A part
+  that did nothing is marked as having done nothing, never left blank.
 
 ## Why two dimensions
 
@@ -85,7 +95,7 @@ Each check is a reading of the notation rather than a separate assertion:
 | two notes tied into one read | the physical step taken twice |
 | a tuplet whose ratio does not fill its bar | sub-cycling that fails to tile the interval |
 | a tie crossing a beat that carries a barrier, with nothing re-expressing it | the `old_frame_traceback` class (#423) |
-| transcript ≠ score | the model is not doing what the script says |
+| transcript ≠ plan | the model is not doing what the script says |
 
 **None of these belong in the loop.** An earlier version asserted one of them
 there — "a history must advance exactly once per bar" — and it was wrong twice
@@ -136,13 +146,13 @@ insists that it is.** The signature requires a `dt`, so there is no container
 for "the next task". If the event clock is the general thing, the timestep is
 the common case rather than the definition.
 
-## Inferred score, then declared score
+## Inferred plan, then declared plan
 
-The score is **inferred** today — the figure takes the most common bar as the
-norm. That costs nothing and can only ever say *this bar differs from its
+The plan is **inferred** today — the figure takes the most common step as the
+norm. That costs nothing and can only ever say *this step differs from its
 neighbours*.
 
-A **declared** score — the script stating what a bar is supposed to contain —
+A **declared** plan — the script stating what a step is supposed to contain —
 turns the diff into *this run disagrees with its own description*, which is the
 stronger claim and the one that motivated the work. The path is to work
 towards the declarative model from the inferred one rather than to require it
@@ -152,12 +162,13 @@ up front; nothing in the vocabulary above depends on which we have.
 
 "Transcript" rather than tape or record: a transcript is what was actually
 played, including the false starts and the re-takes, which is precisely the
-thing being kept. The word also carries its own contrast with the score, so
-the pair names itself.
+thing being kept.
 
 The API followed: what was `model.journal` is `model.transcript`, and the
-renderers follow from the pair — `transcript_diagram` draws the transcript,
-`transcript_flowchart` draws the score it implies.
+renderers are named for it — `transcript_table` sets it in text,
+`transcript_figure` draws it, `transcript_flowchart` draws the sequence it
+implies. Nothing user-facing is called a score: the word belongs to the
+derivation above, not to the shipped vocabulary.
 
 "Record" is kept as a **verb**. A step records what it did; the thing it
 produces is the transcript.

@@ -141,6 +141,13 @@ This keeps feature branches independent and makes cross-pollination of fixes str
 - Cherry-pick to `main` if critical → tag patch release
 - Cherry-pick to active feature branches (underworld-claude handles this)
 
+### Adversarial Review Before the PR Opens
+**Every branch gets an adversarial review before it becomes a PR**, and again
+after any substantial post-review commit. The checklist — parallel rank
+asymmetry, frame/unit boundaries, determinism, tests that cannot fail, CI
+reach, and the solver/transcript contracts — is in
+`docs/developer/guides/adversarial-review.md`. Post the findings on the PR.
+
 ### Git Worktrees for Session Isolation
 **Use a worktree for any multi-file change** (docs cleanup, refactoring, features).
 Multiple Claude sessions sharing one working directory will overwrite each other's work.
