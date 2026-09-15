@@ -159,8 +159,8 @@ class ModelStep:
 
     Ordered, so ``[e.name for e in step.events]`` is the sequence of operators
     the step actually applied. That sequence is what makes a step auditable
-    (did this run do what the write-up says?) and what a replay or an adjoint
-    needs in order to walk the run backwards.
+    (did this run do what the write-up says?) and what a replay needs in
+    order to reproduce it.
     """
 
     __slots__ = ("index", "t0", "dt", "label", "events", "completed", "snapshot",
@@ -933,7 +933,7 @@ class Model(PintNativeModelMixin, BaseModel):
         An ordered account of what each timestep did — which solvers ran, in
         what order, over which time interval. Answers "is this model doing the
         thing I said it does" without instrumenting the script, and is the
-        record an adjoint or a replay needs.
+        record a replay needs.
 
         Bounded by ``model.transcript_limit`` (default 512 steps); set it to
         ``None`` to keep everything.
@@ -1436,7 +1436,7 @@ class Model(PintNativeModelMixin, BaseModel):
     def record_every(self):
         """Keep a restorable snapshot every N steps (None keeps none).
 
-        ``1`` records every step, which is what replay and an adjoint want.
+        ``1`` records every step, which is what replay and debugging want.
         Snapshots cost roughly 13 bytes per primary degree of freedom each, so
         a long run on a large mesh should either raise :attr:`record_limit`
         with care or record less often and recompute between.
