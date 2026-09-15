@@ -6647,8 +6647,16 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             adaptation-tracking) rather than the single **global** minimum
             cell size (:meth:`Mesh.get_min_radius`). On a non-uniform or
             adaptive mesh the local size scales the stabilisation correctly
-            on every facet; on a uniform mesh the two coincide. Set ``False``
-            to restore the legacy global-h behaviour exactly.
+            on every facet. Set ``False`` to restore the legacy global-h
+            behaviour exactly.
+
+            The two coincide on **tensor** cells only. On a uniform **simplex**
+            mesh they differ by exactly :math:`\sqrt{2}` — for congruent
+            right-isosceles cells of legs :math:`h`, :meth:`Mesh.cell_size` is
+            :math:`2h/3` while :meth:`Mesh.get_min_radius` is
+            :math:`\sqrt{2}h/3` — so the penalty :math:`\gamma\mu/h` differs
+            between the two settings on the simplex meshes the free-slip and
+            fault models use. See ``tests/test_0010_cell_size_geometry.py``.
         g : sympy expression or float, optional
             Deprecated keyword alias for ``conds`` (one DeprecationWarning).
 
@@ -6745,7 +6753,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # or adaptively-refined mesh — the boundary kernel sees the adjacent
         # cell's size. The field tracks mesh deformation/adaptation. Set
         # local_h=False to restore the legacy single global-minimum scalar
-        # (mesh.get_min_radius()); on a uniform mesh the two coincide.
+        # (mesh.get_min_radius()).
+        #
+        # The two coincide on TENSOR cells only. On a uniform SIMPLEX mesh --
+        # which is what the free-slip and fault models are built on -- they
+        # differ by exactly sqrt(2): on congruent right-isosceles cells of legs
+        # h, cell_size is 2h/3 and get_min_radius is sqrt(2)h/3. The penalty
+        # gamma*mu/h moves with that, so the two settings are NOT interchangeable
+        # there (see #734 and tests/test_0010_cell_size_geometry.py).
         if local_h:
             h_sym = mesh.cell_size()
         else:

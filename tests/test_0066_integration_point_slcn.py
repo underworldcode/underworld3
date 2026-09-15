@@ -122,43 +122,6 @@ def test_rotating_gaussian_ip_accuracy():
     assert l2_ip < 0.02, f"integration-point trace L2 error {l2_ip:.3e}"
 
 
-# tier_c overrides the module-level tier_a for this test alone: it compares two
-# transport managers, so it can fail because one of them got better.
-@pytest.mark.level_2
-@pytest.mark.tier_c
-def test_rotating_gaussian_ip_against_nodal_characterisation():
-    """Characterisation: the integration-point trace is not worse than nodal.
-
-    This compares two METHODS, so it can fail because the code improved — a
-    better nodal SLCN would break it, and that is good news. Tier C: a failure
-    demands an explanation, not a revert. It is NOT the justification for the
-    integration-point path; `test_rotating_gaussian_ip_accuracy` asserts that
-    against the known solution.
-
-    Measured 2026-09-12 on this fixture (cellSize=0.08, dt=0.1, 16 steps):
-    L2 ip 1.70e-3 against nodal 3.96e-3; peak ip 0.9909 against nodal 0.9696.
-    The relationship is sensitive to the Courant number, the quadrature degree
-    and the element size, so those numbers characterise this fixture rather than
-    making a general claim. Compare
-    `project_integration_point_proxy_pic_lip`, where the bulk diagnostics were
-    identical while the interface answer was not.
-    """
-    mesh = uw.meshing.UnstructuredSimplexBox(
-        minCoords=(-1, -1), maxCoords=(1, 1), cellSize=0.08, qdegree=3
-    )
-    dt, nsteps = 0.1, 16
-    l2_nodal, peak_nodal = _rotating_gaussian(mesh, "nodal", dt, nsteps)
-    l2_ip, peak_ip = _rotating_gaussian(mesh, "ip", dt, nsteps)
-
-    print(f"L2: ip={l2_ip:.4e} nodal={l2_nodal:.4e}; "
-          f"peak: ip={peak_ip:.4f} nodal={peak_nodal:.4f}")
-    explain = ("If the nodal path improved, explain it and re-characterise; "
-               "do not revert to make this pass.")
-    assert l2_ip <= l2_nodal, f"ip {l2_ip:.3e} > nodal {l2_nodal:.3e}. {explain}"
-    assert peak_ip >= peak_nodal, (
-        f"ip peak {peak_ip:.4f} < nodal {peak_nodal:.4f}. {explain}")
-
-
 def _unsteady_uniform_flow_check(kind, vform="var"):
     """Uniform velocity that changes linearly in time, v(t) = a + b t. The
     exact foot for the interval [t1, t1 + dt] is x - dt (a + b (t1 + dt/2)).

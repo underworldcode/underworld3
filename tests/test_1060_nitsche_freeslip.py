@@ -147,27 +147,21 @@ class TestNitscheFreeslip:
                 "scale — the free-slip constraint is not being applied"
             )
 
-    @pytest.mark.tier_c
-    def test_constraint_strength_ordering_characterisation(self, solutions):
-        """Characterisation: strong is exact, both weak paths leak; tier C.
+    @pytest.mark.tier_b
+    def test_essential_bc_holds_the_wall_normal_velocity_exactly(self, solutions):
+        """Contract: an essential BC holds v.n to machine precision.
 
-        This test CAN fail because the code got better, and that is why it is
-        tier C: a failure here demands an explanation, not a revert. It is not
-        a contract, and nothing should be reverted to make it pass.
+        Exactness is a hard baseline — a strong Dirichlet constraint eliminates
+        the degree of freedom, so the wall-normal velocity is zero to round-off
+        and any departure names a specific defect in how the BC is applied.
 
-        It exists because the ordering is what the free-slip rulings rest on —
-        an essential BC (and a rotated strong free-slip) holds v.n to machine
-        precision, while Nitsche and penalty are weak constraints that leave a
-        finite leak. If a weak path starts coming out exact, or the strong path
-        stops being exact, the documented reasoning in
-        docs/developer/subsystems/rotated-freeslip.md needs revisiting and
-        somebody should say why.
-
-        The numbers are a characterisation of THIS fixture, measured
-        2026-09-12 at res=8: essential 0.0, penalty 1.5e-3, nitsche 5.7e-3
-        relative to the velocity scale. They are deliberately not a ranking —
-        which of the two weak methods leaks less is problem-dependent, moves
-        with gamma and the penalty coefficient, and is not asserted here.
+        This is the half of the free-slip reasoning that can be asserted. The
+        other half — that the WEAK paths leave a finite leak — used to be
+        asserted alongside it as `leaks[method] > 1e-5`, i.e. that Nitsche and
+        penalty must STAY inaccurate. That assertion would fail if either method
+        improved, and a failure could not say which of the fixture, the gamma,
+        the penalty coefficient or the method had moved. The measured leaks are
+        printed instead: read them, do not gate on them.
         """
         leaks = {}
         for method in ("essential", "penalty", "nitsche"):
@@ -181,13 +175,6 @@ class TestNitscheFreeslip:
               + ", ".join(f"{k}={v:.3e}" for k, v in leaks.items()))
 
         assert leaks["essential"] < 1.0e-12, (
-            f"an essential BC is expected to hold v.n to machine precision; got "
-            f"{leaks['essential']:.3e}. This is the contract half of this test."
+            f"an essential BC must hold v.n to machine precision; got "
+            f"{leaks['essential']:.3e}"
         )
-        for method in ("penalty", "nitsche"):
-            assert leaks[method] > 1.0e-5, (
-                f"{method} leaked only {leaks[method]:.3e} — a weak constraint "
-                "reaching machine precision is GOOD NEWS and a change in "
-                "behaviour. Explain it and re-characterise; do not revert to "
-                "make this pass."
-            )

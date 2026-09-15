@@ -85,10 +85,19 @@ information, not a regression.
 - Do NOT change library code to make one pass. Re-characterise it and say why.
 - If an assertion would break when the code gets better, this is its home.
 
-Examples in the tree: `test_1060_nitsche_freeslip.py`
-(`test_constraint_strength_ordering_characterisation`),
-`test_0773_surface_smoother.py`, `test_0066_integration_point_slcn.py`,
-`test_1070_free_surface_plume.py`.
+Prefer a hard baseline wherever one exists — Charter §8 requires it, and a
+characterisation is the fallback for when none does, not a place to park an
+assertion that was easier to write. Four method-comparison tests were moved here
+in 2026-09 and then removed again, because in every case the baseline was already
+available: the comparisons were less informative than the numbers they were
+computed from. That included the last one: `test_1060_nitsche_freeslip.py` asserted that the
+weak constraints must STAY inaccurate (`leak > 1e-5`), which would have failed if
+Nitsche improved. Its exact half — an essential BC holds `v.n` to machine
+precision — is a hard baseline and is now a tier B contract; the weak-path leaks
+are printed for a reader instead of gated on.
+
+C1 is therefore rare by design. Reach for it only when you have measured
+something worth recording and can show that no baseline exists.
 
 **C2 — Experimental.** Test or code (or both) may be incorrect: written for a
 feature that is not finished, exploring what the behaviour should be, or

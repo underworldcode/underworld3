@@ -59,44 +59,6 @@ def test_constant_field_preserved_exactly():
     assert np.abs(h.data[:, 0] - 0.37).max() < 1.0e-12
 
 
-# tier_c overrides the module-level tier_a for this test alone: it compares two
-# smoothers, so it can fail because one of them got better.
-@pytest.mark.tier_c
-def test_taubin_against_plain_laplacian_characterisation():
-    """Characterisation: Taubin keeps the passband that plain Laplacian damps.
-
-    This compares two METHODS, so it can fail because the code improved — if
-    plain Laplacian gains a passband, this breaks and that is good news. It is
-    tier C for that reason: a failure demands an explanation, not a revert.
-
-    The contract this rests on is asserted separately and unconditionally in
-    `test_taubin_preserves_low_attenuates_high`: Taubin must preserve the low
-    mode and kill the high one, against fixed bounds and no rival method.
-
-    The absolute contract is asserted separately and unconditionally in
-    `test_taubin_preserves_low_attenuates_high`, against fixed bounds and no
-    rival method. Nothing absolute is asserted here, so nothing gating is lost
-    by this test being tier C.
-
-    Measured 2026-09-12 at n_iters=40, alpha=0.6: Taubin keeps 0.996 of the low
-    mode, plain Laplacian 0.917. The 0.03 margin characterises this fixture and
-    is not a specification.
-    """
-    surf_t, h_t, th = _surface_with_modes()
-    b_low = _amp(h_t.data[:, 0], th, 2)
-    uw.meshing.smooth_surface_field(h_t, n_iters=40, alpha=0.6, taubin=True)
-    taubin_low_kept = _amp(h_t.data[:, 0], th, 2) / b_low
-
-    surf_l, h_l, _ = _surface_with_modes()
-    uw.meshing.smooth_surface_field(h_l, n_iters=40, alpha=0.6, taubin=False)
-    laplacian_low_kept = _amp(h_l.data[:, 0], th, 2) / b_low
-
-    print(f"low mode kept: taubin={taubin_low_kept:.3f} "
-          f"laplacian={laplacian_low_kept:.3f}")
-    assert taubin_low_kept > laplacian_low_kept + 0.03, (
-        f"the passband gap closed: taubin={taubin_low_kept:.3f} vs "
-        f"laplacian={laplacian_low_kept:.3f}. If plain Laplacian improved, "
-        "explain it and re-characterise; do not revert to make this pass.")
 @pytest.mark.tier_a
 
 
