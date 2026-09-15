@@ -14,9 +14,10 @@ This guide captures critical lessons learned from writing and debugging Underwor
 3. [Units System Integration](#units-system-integration)
 4. [Mesh and Variable Creation](#mesh-and-variable-creation)
 5. [Solver Setup and Execution](#solver-setup-and-execution)
-6. [Common Pitfalls and Anti-Patterns](#common-pitfalls-and-anti-patterns)
-7. [Testing Best Practices](#testing-best-practices)
-8. [Debugging Techniques](#debugging-techniques)
+6. [The Timestepping Pattern](#the-timestepping-pattern)
+7. [Common Pitfalls and Anti-Patterns](#common-pitfalls-and-anti-patterns)
+8. [Testing Best Practices](#testing-best-practices)
+9. [Debugging Techniques](#debugging-techniques)
 
 ---
 
@@ -414,6 +415,135 @@ model = stokes.constitutive_model  # Confusing with uw.Model
 
 ---
 
+## The Timestepping Pattern
+
+### ⚠️ RULE: the clock lives on `model.tracker`, never in a loose variable
+
+Every time-dependent script needs a clock. Declare the model and its reference
+quantities first (see [RULE #2](#rule-2-reference-quantities-before-mesh-creation)
+— they must precede mesh creation), then keep the clock on the tracker:
+
+```python
+uw.reset_default_model()
+model = uw.get_default_model()
+model.set_reference_quantities(
+    domain_depth=uw.quantity(500, "km"),
+    material_density=uw.quantity(3300, "kg/m**3"),
+    material_viscosity=uw.quantity(1e21, "Pa*s"),
+)
+
+mesh = uw.meshing.UnstructuredSimplexBox(...)      # inherits the reference quantities
+# ... variables, solvers ...
+
+model.tracker.time = uw.quantity(0.0, "Myr")
+model.tracker.step = 0
+model.tracker.dt = None
+
+while model.tracker.time < end_time:
+    dt = adv_diff.estimate_dt()        # a dimensional quantity when units are active
+
+    adv_diff.solve(timestep=dt)
+    stokes.solve(zero_init_guess=False)
+
+    model.tracker.time = model.tracker.time + dt
+    model.tracker.step += 1
+    model.tracker.dt = dt
+```
+
+**Start from the model, not from the mesh.** A default model is created for you
+if you never ask for one, so it is easy to write a whole script without noticing
+it exists — and then reference quantities, which must be set before the mesh, are
+already too late. Declaring the model on the first line makes the units decision
+explicit at the only point where it can still be made. `estimate_dt()` then
+returns a dimensional quantity and the clock carries units with no extra work.
+
+Neither the model nor the units are enforced today; both arrived after much of
+the surrounding code. Treat this ordering as the pattern regardless, because
+retrofitting units to a script written without them means rebuilding the mesh.
+
+**Why this and not `t = 0.0; t += dt`.** The tracker is captured by
+`model.save_state()` and reverted by `model.load_state()`. A loose Python
+variable is not — the tracker's own docstring says so:
+
+> Everything on the tracker is captured by `snapshot` and reverted by
+> `restore`; loose Python variables are not.
+
+So a script that keeps its clock in a local and then backsteps gets its
+**fields** restored and its **time** left in the future. Nothing raises; the
+run simply carries a clock that disagrees with the state it is describing, and
+every output written from that point is mislabelled. Measured on a real
+five-step run: after restoring a snapshot taken at t = 1140, a loose `t` still
+read 2280 while the fields were correctly back at 1140.
+
+This holds for both snapshot flavours — the in-memory token and the on-disk
+snapshot used for restart.
+
+`time`, `step` and `dt` are pre-seeded on the tracker as a convention. Anything
+else you assign to it (`model.tracker.rms_velocity = ...`) is captured and
+restored the same way, so a diagnostic you want to survive a backstep belongs
+there too.
+
+### Backstepping
+
+The pattern above is what makes speculative stepping safe:
+
+```python
+snap = model.save_state()          # before the step, not after
+
+dt = big_dt
+adv_diff.solve(timestep=dt)
+stokes.solve(zero_init_guess=False)
+
+if courant_number() > courant_limit:
+    model.load_state(snap)         # fields AND clock go back together
+    for _ in range(n_substeps):
+        ...                        # replay with smaller steps
+else:
+    model.tracker.time += dt
+    model.tracker.step += 1
+```
+
+Take the snapshot **before** the operator, not after. A `DDt` history plugin
+shifts its history in its post-solve hook, so a snapshot taken after a solve
+holds the shifted history, which is not the state that step ran from.
+
+Restoring a snapshot is bit-exact and repeatable. Re-running the same script is
+not: warm starts and preconditioner reuse are solver history that is not part
+of model state, so two independent runs of the same problem on the same solver
+objects diverge at the 1e-13 level from the first step. If you need to look at a
+step twice, restore it rather than re-run it.
+
+### Known gap: a dimensional clock does not survive a restart
+
+An in-memory snapshot round-trips a units-carrying tracker entry correctly. The
+**on-disk** snapshot does not: a `pint` quantity falls through to the
+"unserialisable type" branch, is recorded in the file as
+`<name>__skipped` and is simply **absent** after `load_state`, so reading
+`model.tracker.time` afterwards raises. Nothing warns at save time. Plain
+floats, ints and numpy arrays are unaffected.
+
+Until that is fixed, a script that needs to restart from disk should keep the
+clock non-dimensional, or re-establish it explicitly after loading:
+
+```python
+model.load_state(path)
+model.tracker.time = uw.quantity(model.tracker.time_Myr, "Myr")   # stored as a float
+```
+
+### Known gap: `mesh.t` is not this clock
+
+`mesh.t` is a separate, symbolic time atom bound to PETSc's `petsc_t`. The
+high-level `solve()` wrappers never set it, so **an expression containing
+`mesh.t` evaluates to zero inside a solve**, silently. A time-dependent
+boundary condition written as `sympy.sin(omega * mesh.t)` is identically zero
+and nothing warns. `solve(time=...)` is accepted and ignored.
+
+Until `mesh.t` is wired to the model clock, build time dependence from a
+`uw.function.expression` you update yourself each step, and drive it from
+`model.tracker.time`.
+
+---
+
 ## Common Pitfalls and Anti-Patterns
 
 ### ❌ Swarm Variable Creation After Population
@@ -694,6 +824,13 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - [ ] If using units: Set reference quantities BEFORE mesh creation
 - [ ] If using units with [M]: Provide material_density or equivalent
 
+### Writing a Timestepping Loop
+
+- [ ] Declare the model and its reference quantities BEFORE creating the mesh
+- [ ] Keep `time`, `step` and `dt` on `model.tracker`, not in local variables
+- [ ] Take snapshots BEFORE the operator you might want to undo
+- [ ] Do not use `mesh.t` for time dependence — it is not the model clock
+
 ### Creating a Swarm
 
 - [ ] Create mesh first
@@ -727,6 +864,12 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 
 ## Version History
 
+- **2026-09-09**: The timestepping pattern
+  - Start from the model and its reference quantities, not from the mesh
+  - Clock on `model.tracker`, not loose variables (snapshot consistency)
+  - A dimensional clock is dropped by the on-disk snapshot
+  - Backstepping recipe; snapshot before the operator
+  - `mesh.t` is not the model clock and is silently zero in a solve
 - **2025-11-15**: Initial version
   - Swarm ordering rules from test_0850/0851 debugging
   - Units everywhere-or-nowhere principle
@@ -744,3 +887,5 @@ TypeError: unsupported operand type(s) for *: 'UnitAwareDerivativeMatrix' and 'N
 - `docs/developer/COORDINATE-UNITS-TECHNICAL-NOTE.md`: Coordinate units implementation
 - `docs/beginner/tutorials/12-Units_System.ipynb`: Units system tutorial
 - `docs/beginner/tutorials/13-Non_Dimensional_Scaling.ipynb`: Dimensional analysis
+- `docs/advanced/snapshot-restore.md`: Snapshot and restore semantics
+- `tests/test_0009_model_tracker.py`: The pattern, enforced

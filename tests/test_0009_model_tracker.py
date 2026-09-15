@@ -175,3 +175,89 @@ def test_tracker_continuation_with_solver_loop():
         do_step(0.05)
     assert model.tracker.step == s_snap + 2
     assert abs(model.tracker.time - (t_snap + 0.10)) < 1e-12
+
+
+@pytest.mark.xfail(
+    reason="mesh.t is a symbolic atom bound to PETSc's petsc_t, which the "
+    "high-level solve() wrappers never set, so an expression containing it is "
+    "silently ZERO inside a solve and solve(time=...) is accepted and ignored. "
+    "Remove this xfail when mesh.t resolves to the model clock (#410 ruling: "
+    "time is model-owned, mesh.t becomes a back-compat accessor onto it).",
+    strict=False,
+)
+def test_mesh_t_resolves_to_the_model_clock():
+    """The other clock. `mesh.t` is what users reach for in a time-dependent
+    boundary condition, and it is NOT `model.tracker.time` — so a source term
+    proportional to it should scale with the clock, and today does not.
+
+    The constant-source control is what makes the assertion meaningful: it
+    proves the Poisson problem produces a non-trivial solution at all, so a
+    zero answer with `mesh.t` is the clock's fault and not the setup's.
+    """
+    uw, model = _fresh_model()
+    import sympy
+
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+    T = uw.discretisation.MeshVariable("T_clock", mesh, 1, degree=2)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    for boundary in ("Top", "Bottom", "Left", "Right"):
+        poisson.add_dirichlet_bc(0.0, boundary)
+    poisson.petsc_options.delValue("ksp_monitor")
+
+    poisson.f = sympy.sympify(1.0)
+    poisson.solve()
+    control = np.abs(np.asarray(T.array)).max()
+    assert control > 1.0e-3, "control failed: the Poisson setup itself is trivial"
+
+    poisson.f = mesh.t
+    model.tracker.time = 5.0
+    poisson.solve()
+    assert np.abs(np.asarray(T.array)).max() > 0.1 * control
+
+
+@pytest.mark.xfail(
+    reason="A pint Quantity on the tracker falls through disk_snapshot's "
+    "'unserialisable type' branch: it is recorded as <name>__skipped and is "
+    "ABSENT after load_state, with no warning at save time. A Quantity is "
+    "(magnitude, units) and is trivially serialisable. Remove this xfail when "
+    "the disk snapshot carries units.",
+    strict=False,
+)
+def test_a_dimensional_clock_survives_a_disk_snapshot(tmp_path):
+    """The pattern asks scripts to define units, which makes the clock
+    dimensional. That clock must survive a restart, and today it does not.
+
+    The plain-float control is what makes this specific: it shows the disk
+    path works for ordinary values, so a dropped quantity is about units and
+    not about the tracker or the file.
+    """
+    uw, model = _fresh_model()
+
+    model.set_reference_quantities(
+        domain_depth=uw.quantity(500, "km"),
+        material_density=uw.quantity(3300, "kg/m**3"),
+        material_viscosity=uw.quantity(1e21, "Pa*s"),
+    )
+    uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 8.0, qdegree=2
+    )
+
+    model.tracker.plain_control = 3.25
+    model.tracker.time = uw.quantity(4.5, "Myr")
+
+    path = str(tmp_path / "units.snap.h5")
+    model.save_state(file=path)
+
+    model.tracker.plain_control = -1.0
+    model.tracker.time = uw.quantity(-1.0, "Myr")
+    model.load_state(path)
+
+    assert model.tracker.plain_control == pytest.approx(3.25), (
+        "control failed: the disk snapshot lost an ordinary float too"
+    )
+    assert model.tracker.time.magnitude == pytest.approx(4.5)
+    assert str(model.tracker.time.units) == "megayear"
