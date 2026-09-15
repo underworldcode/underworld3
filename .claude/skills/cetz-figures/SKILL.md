@@ -120,6 +120,12 @@ holds `mesh-demo.*` and `domain-demo.*` for the post
 The JSON intermediate is the forward bridge to underworld3 — see
 `underworld-bridge.md`.
 
+## House style
+
+Line weights, dash patterns, arrow classes and colours for every drawn
+figure are fixed by the `uw-line-diagrams` skill; import its `uwfig.typ`
+(`#import "uwfig.typ": *`) rather than choosing strokes per figure.
+
 ## Reference files
 
 - `cetz-cheatsheet.md` — what worked from memory vs. needed lookup.
