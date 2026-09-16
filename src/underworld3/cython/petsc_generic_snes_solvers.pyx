@@ -3786,12 +3786,44 @@ class SNES_Scalar(SolverBaseClass):
         f0_jac = self._jacobian_source(f0)
         F1_jac = self._jacobian_source(F1, self._newton_flux(F1))
 
-        G0 = sympy.derive_by_array(f0_jac, U)
-        G1 = sympy.derive_by_array(f0_jac, L)
-        G2 = sympy.derive_by_array(F1_jac, U)
-        G3 = sympy.derive_by_array(F1_jac, L)
+        # Explicit-index Jacobian construction. `sympy.derive_by_array` is
+        # dx-FIRST (the derivative indices lead), so `derive_by_array(F1, L)`
+        # yields [dg][df] = dF1[dg]/dL[df] — the TRANSPOSE of the g3 PETSc
+        # wants. For a scalar unknown that is invisible whenever the flux
+        # tensor is symmetric (every shipped model: scalar kappa, and
+        # AnisotropicDiffusionModel's diagonal kappa), and wrong as soon as it
+        # is not. Same defect as issue #457 in the Stokes/vector tangents,
+        # fixed there by PR #493; this is the solver that conversion missed
+        # (#747). Layout contract:
+        # docs/developer/subsystems/petsc-jacobian-layout.md
+        #
+        # derive_by_array carries a second hazard these loops avoid: handed a
+        # flux built from a matrix-valued symbol it returns an array whose
+        # .shape disagrees with its backing store, which surfaces later as a
+        # bare IndexError from sympy internals naming nothing useful.
+        #
+        # Shapes are unchanged from the previous form, so the JIT sees the same
+        # flat sequences: G0 (1,1), G1 (cdim,1), G2 (1,cdim), G3 (cdim,cdim).
+        # Only G3's index order moves.
+        Uc = U[0]
+        G0 = sympy.zeros(1, 1)
+        G0[0, 0] = sympy.diff(f0_jac[0], Uc)
 
-        # Re-organise if needed / make hashable
+        # G1[df, 0] = d f0 / d L[df]
+        G1 = sympy.zeros(cdim, 1)
+        for df in range(cdim):
+            G1[df, 0] = sympy.diff(f0_jac[0], L[df])
+
+        # G2[0, df] = d F1[df] / d U
+        G2 = sympy.zeros(1, cdim)
+        for df in range(cdim):
+            G2[0, df] = sympy.diff(F1_jac[df], Uc)
+
+        # G3[df, dg] = d F1[df] / d L[dg]
+        G3 = sympy.zeros(cdim, cdim)
+        for df in range(cdim):
+            for dg in range(cdim):
+                G3[df, dg] = sympy.diff(F1_jac[df], L[dg])
 
         self._G0 = sympy.ImmutableMatrix(G0)
         self._G1 = sympy.ImmutableMatrix(G1)
