@@ -370,16 +370,29 @@ because each one is a place the wiring could be wrong and still look plausible:
   wall-normal component is *set* to zero, not iterated towards it — the dual of
   a strong constraint is a strong homogeneous constraint on the same degrees of
   freedom.
-* **The block structure survives.** Transposing `[[A, Bᵀ], [B, 0]]` gives
-  `[[Aᵀ, Bᵀ], [B, 0]]`, so the fieldsplit-Schur setup, the 1/μ pressure-mass
-  block and the custom-FMG prolongation all apply to `Âᵀ` unchanged.
+* **The block structure survives.** UW3 assembles the velocity flux as `τ − pI`
+  against `+div u`, so the operator is `[[A, −Bᵀ], [B, 0]]` and its transpose is
+  `[[Aᵀ, Bᵀ], [−B, 0]]` — the off-diagonal **signs swap**, the blocks do not
+  move, and the two swapped signs cancel in `B A⁻ᵀ Bᵀ` so the Schur complement
+  keeps its sign as well as its sparsity. The fieldsplit-Schur setup, the 1/μ
+  pressure-mass block and the custom-FMG prolongation all apply to `Âᵀ`
+  unchanged. (That `−Bᵀ` is also why a symmetry check on the COMPOSITE matrix
+  says nothing: it reads ~2.5e-2 for constant isotropic viscosity. The velocity
+  block is the one to measure — 5.3e-17 there, against 5.7e-2 for a power-law
+  TI tangent.)
 * **The null space is shared.** A rigid rotation has zero strain rate, so
   `∫C:ε(·):ε(·)` annihilates it read from either side whatever the symmetry of
   `C`; the constant-pressure mode couples only through `Bᵀ`, which both
   operators carry in the same block. `_rotated_nullspace` therefore serves the
-  adjoint as it does the forward.
+  adjoint as it does the forward — measured, not argued: on a free-slip annulus
+  with a power-law TI tangent the admitted modes give `‖Â v‖` = 4.8e-17 / 2.3e-10
+  and `‖Âᵀ v‖` = 4.8e-17 / 2.4e-10.
 
-**The multiplier is returned modulo that null space.** An enclosed free-slip
+**Where there is a null space, the multiplier is returned modulo it.** Pinning
+one boundary with an essential condition removes it — `_rotated_nullspace` then
+returns `None`, and the gradient is unambiguous. That is the configuration to
+prefer when a sensitivity is the point, and it is what
+`test_0022_rotated_adjoint`'s gradient fixture uses. An enclosed free-slip
 domain has an undetermined pressure level and, on an annulus or shell, an
 undetermined rigid rotation. The forward fixes the gauge after the fact; the
 adjoint has no rest state to fix it against, so the component of `b` along
@@ -404,6 +417,18 @@ assembles `Qt` explicitly for that reason, and the adjoint uses `Q` for the dual
 and `Qᵀ` for the answer because that is what the duality says, not because a 2-D
 test forced it. **A 3-D rotated adjoint test would be the one that pins this
 axis down; there isn't one.**
+
+### Cost, and what is not cached
+
+The adjoint builds a fresh KSP/PC every call (`ctx=None`), so each one pays a
+full fieldsplit plus GAMG/FMG `PCSetUp` — the cost the #417 cross-solve cache
+exists to avoid, on the one path an inversion calls in a loop. The prolongation
+IS reused from that cache when the forward built one (it depends only on `Q` and
+the hierarchy), which matters for more than speed: `_build_rotated_custom_Pl`
+leaks the velocity submatrix and the rotated fine prolongation on every call —
+nothing owns them, and `_destroy_rotated_linear_cache` only dereferences the
+list. An adjoint workspace cache keyed the same way as the forward's would fix
+both; it is not built.
 
 `J` must be assembled with the **consistent** tangent. A forward that ran
 Picard leaves the frozen-viscosity operator on the SNES, which is not `∂R/∂u`;

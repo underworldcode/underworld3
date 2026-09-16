@@ -1621,7 +1621,12 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
     leaves the frozen-viscosity operator on the SNES, which is not ``∂R/∂u``, and
     transposing it would be silently wrong.
 
-    **The null space is projected out of the right-hand side.** A free-slip
+    **Where there IS a null space, it is projected out of the right-hand side**
+    (iterative path; the direct-LU path fixes the pressure gauge with the same
+    naive pin the forward solve uses and builds none). A boundary with an
+    essential condition removes it altogether — `_rotated_nullspace` then returns
+    None and the gradient is unambiguous, which is the configuration to prefer
+    when a sensitivity is what you are after. A free-slip
     enclosed domain has an undetermined pressure level and, on an annulus or
     shell, an undetermined rigid rotation. The forward solve fixes the gauge
     afterwards; the adjoint cannot, because the multiplier has no rest state to
@@ -1647,9 +1652,10 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
     Returns
     -------
     (petsc4py.PETSc.Vec, int)
-        ``μ`` in the physical frame, exactly zero at the constrained wall-normal
-        rows, and the KSP converged reason (positive means converged). The caller
-        owns the vector.
+        ``μ`` in the physical frame and the KSP converged reason (positive means
+        converged). The caller owns the vector. What is exactly zero is the
+        wall-normal COMPONENT — ``(Q μ)`` at ``normal_rows`` — not the rows of
+        ``μ`` itself, which carry the tangential multiplier once rotated back.
     """
     info = getattr(solver, "_rotated_freeslip_info", None)
     if info is None:
@@ -1670,16 +1676,35 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
             "been released — the solver was reset or reconfigured since (see "
             "_reset_rotated_solver_cache), and Q is shared with the workspace that "
             "reset destroys. Re-run solve() and take the adjoint about that state.")
+    # Q covers the boundaries of the LAST solve. add_rotated_freeslip_bc appends
+    # and sets is_setup False, but the gate that would catch that in adjoint_solve
+    # is bypassed once the adjoint kernel is installed — so a boundary registered
+    # between two adjoints would silently run on a rotation that does not cover
+    # it. Compare the sets rather than trust the ordering.
+    registered = list(getattr(solver, "_rotated_freeslip_bcs", None) or [])
+    if list(info.get("boundaries") or []) != registered:
+        raise RuntimeError(
+            f"solve_rotated_adjoint: the rotated boundaries changed since the "
+            f"forward solve — the rotation covers {info.get('boundaries')}, the "
+            f"solver now carries {registered}. Re-run solve() so Q and the "
+            f"constrained rows describe the problem being differentiated.")
     normal_rows = info["normal_rows"]
     dm = solver.dm
     use_lu = bool(getattr(solver, "_rotated_use_lu", False))
 
-    # Âᵀ, formed as the forward's own ptap and then transposed rather than from
-    # Jᵀ.ptap(Qt). The two are equal, and going through the SAME expression means
-    # a symmetric J (the linear isoviscous case) reproduces the forward operator
-    # bit-for-bit, which is what makes the symmetric case a usable check on the
-    # non-symmetric one.
+    # Build the operator the forward solve ACTUALLY INVERTED — ptap, then the
+    # constraint elimination, then (direct path only) the gauge pin — and
+    # transpose that whole thing ONCE. Transposing at the end rather than
+    # reproducing each step in transposed form is what makes this exactly Mᵀ:
+    # ``zeroRowsColumns`` commutes with transposition, but ``zeroRows`` does NOT
+    # (its transpose is zeroCols), so a pinned operator assembled the other way
+    # round would be the transpose of a different matrix.
     Ahat = J.ptap(Qt)
+    diag_scale = _velocity_diag_scale(Ahat, solver)
+    Ahat.zeroRowsColumns(normal_rows, diag=diag_scale)
+    pin = _naive_pressure_pin(dm) if use_lu else None
+    if pin is not None:
+        Ahat.zeroRows([pin], diag=1.0)
     AhatT = Ahat.transpose(PETSc.Mat())
     Ahat.destroy()
 
@@ -1690,17 +1715,7 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
     # than merely converged.
     _zero_rows_local(bhat, normal_rows)
 
-    diag_scale = _velocity_diag_scale(AhatT, solver)
-    AhatT.zeroRowsColumns(normal_rows, diag=diag_scale)
-
     if use_lu:
-        # Mirrors the forward direct path, pin included: the adjoint operator has
-        # the same constant-pressure null mode, so it needs the same gauge fixed
-        # the same way.
-        pin = _naive_pressure_pin(dm)
-        if pin is not None:
-            AhatT.zeroRows([pin], diag=1.0)
-            _zero_rows_local(bhat, [pin])
         ksp = PETSc.KSP().create(comm=dm.comm)
         ksp.setType("preonly")
         pc = ksp.getPC()
@@ -1715,22 +1730,47 @@ def solve_rotated_adjoint(solver, J, b, verbose=False):
         _zero_rows_local(muhat, normal_rows)
         ksp.destroy()
     else:
-        # Âᵀ has the block structure of Â — transposing [[A, Bᵀ], [B, 0]] gives
-        # [[Aᵀ, Bᵀ], [B, 0]] — so the fieldsplit-Schur setup, the 1/mu pressure
-        # mass and the custom-FMG prolongation all apply unchanged.
+        # The saddle structure survives transposition. UW3 assembles the velocity
+        # flux as τ − p·I against +div u, so the operator is [[A, −Bᵀ], [B, 0]]
+        # and its transpose is [[Aᵀ, Bᵀ], [−B, 0]] — the OFF-DIAGONAL SIGNS SWAP,
+        # the blocks do not move. The Schur complement keeps both its sparsity and
+        # its sign (the two swapped signs cancel in B A⁻ᵀ Bᵀ), so the 1/mu pressure
+        # mass, the fieldsplit and the custom-FMG prolongation all still apply.
         Mp = _pressure_mass_schur_pmat(solver)
         # The rigid-body modes are null modes of Âᵀ as well as Â: a rotation has
         # zero strain rate, so it is annihilated by ∫C:ε(·):ε(·) read from either
         # side, whatever the symmetry of C. The same is true of the constant
-        # pressure mode, whose only coupling is through Bᵀ, which both operators
-        # carry in the same block.
+        # pressure mode, whose only coupling is through the off-diagonal block,
+        # which transposition moves but does not remove. `_mode_satisfies_constraints`
+        # verifies admission against J, not Jᵀ; the argument above is why that is
+        # the same test, and `test_0022_rotated_adjoint` measures it on a tangent
+        # with no major symmetry rather than leaving it as an argument.
+        #
+        # _rotated_nullspace records its mode count on the SOLVER, where the
+        # forward path reads it to choose a coarse solve. An adjoint must not
+        # change what the next forward solve does, so put it back below.
+        null_modes_before = getattr(solver, "_rotated_velocity_null_modes", None)
         nsp = _rotated_nullspace(solver, Q, normal_rows)
-        custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
+        # The prolongation depends only on Q and the mesh hierarchy, so the
+        # forward's is reusable — and MUST be reused where it exists:
+        # `_build_rotated_custom_Pl` leaks the velocity submatrix and the rotated
+        # fine prolongation on every call (nothing owns them; the cache only
+        # DEREFERENCES the list), which an inversion loop would pay per adjoint.
+        cache = getattr(solver, "_rotated_linear_cache", None)
+        if cache is not None and cache.get("Q") is Q and cache.get("custom_Pl"):
+            custom_Pl = cache["custom_Pl"]
+        else:
+            custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
         muhat, reason, ctx = _solve_rotated_iterative(
             solver, AhatT, bhat, Q, Qt, normal_rows, verbose=verbose,
             custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, ctx=None)
         reason = int(reason)
         _destroy_rotated_ksp_ctx(ctx)
+        if null_modes_before is None:
+            if hasattr(solver, "_rotated_velocity_null_modes"):
+                del solver._rotated_velocity_null_modes
+        else:
+            solver._rotated_velocity_null_modes = null_modes_before
 
     mu = dm.createGlobalVec()
     Qt.mult(muhat, mu)

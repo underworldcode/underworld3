@@ -10136,7 +10136,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             one from a velocity-space expression.
         target : (MeshVariable, MeshVariable), optional
             ``(u_adj, p_adj)`` on the velocity and pressure spaces, to receive
-            the multipliers as fields. Constrained nodes are set to zero.
+            the multipliers as fields. Essential (Dirichlet) nodes are set to
+            zero. A rotated free-slip node is NOT one of those: it is
+            constrained in one component only, and comes back carrying its
+            tangential multiplier.
 
         Returns
         -------
@@ -10191,22 +10194,30 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         x = gvec.duplicate()
         x.set(0.0)
 
-        if getattr(self, "_rotated_freeslip_bcs", None):
-            # The forward solve never ran self.snes: it inverted the ROTATED,
-            # constraint-eliminated operator in its own Krylov loop. The adjoint
-            # is the transpose of that operator, not of J, and rotated_bc owns
-            # the whole rotate / eliminate / solve / rotate-back sequence here as
-            # it does forward — one place where the constraint is expressed.
-            from underworld3.utilities.rotated_bc import solve_rotated_adjoint
-            mu, reason = solve_rotated_adjoint(self, J, b, verbose=False)
-            mu.copy(x)
-            mu.destroy()
-        else:
-            ksp = self.snes.getKSP()
-            ksp.setOperators(J, P)
-            ksp.solveTranspose(b, x)
-            reason = int(ksp.getConvergedReason())
-        self._restore_tangent(tangent)
+        try:
+            if getattr(self, "_rotated_freeslip_bcs", None):
+                # The forward solve never ran self.snes: it inverted the ROTATED,
+                # constraint-eliminated operator in its own Krylov loop. The
+                # adjoint is the transpose of that operator, not of J, and
+                # rotated_bc owns the whole rotate / eliminate / solve /
+                # rotate-back sequence here as it does forward — one place where
+                # the constraint is expressed.
+                from underworld3.utilities.rotated_bc import solve_rotated_adjoint
+                mu, reason = solve_rotated_adjoint(self, J, b, verbose=False)
+                mu.copy(x)
+                mu.destroy()
+            else:
+                ksp = self.snes.getKSP()
+                ksp.setOperators(J, P)
+                ksp.solveTranspose(b, x)
+                reason = int(ksp.getConvergedReason())
+        finally:
+            # _consistent_tangent_for_adjoint SWITCHED the solver to the Newton
+            # tangent. The rotated path refuses by design — a released rotation,
+            # a changed boundary set — and a refusal that left the switch in place
+            # would make the next FORWARD solve run Newton on a solver configured
+            # for Picard, silently and far from here.
+            self._restore_tangent(tangent)
 
         if target is not None:
             u_adj, p_adj = target

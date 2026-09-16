@@ -12,8 +12,8 @@ things in the setup are there to stop a wrong answer hiding, and both are
 guarded rather than asserted in a comment:
 
   * an ANNULUS, so ``Q`` is a genuine per-node frame rather than the signed
-    permutation an axis-aligned wall would give. Rotating the dual the wrong
-    way (``Qᵀ b`` where ``Q b`` is meant) then breaks the gradient.
+    permutation an axis-aligned wall would give, and so the geometry is the one
+    the free-slip adjoint is wanted for.
   * a POWER-LAW transversely isotropic viscosity under the CONSISTENT (Newton)
     tangent, so the tangent has no major symmetry and ``K ≠ Kᵀ``. A symmetric
     operator cannot tell a transpose from itself, and every isotropic Stokes
@@ -21,6 +21,27 @@ guarded rather than asserted in a comment:
     minor and major symmetry. ``test_the_tangent_is_not_symmetric`` measures
     the asymmetry rather than trusting the setup to have produced it: without
     that guard, omitting the transpose entirely still passes (measured).
+
+What this file does NOT check, so nobody reads it as covered: in 2-D with one
+normal per node ``Q`` is EXACTLY symmetric — the frame ``numpy.linalg.svd``
+returns for a single normal is the Householder reflection
+``[[nx, ny], [ny, -nx]]``, and ``‖Q - Qᵀ‖`` measures zero on this mesh. So
+rotating the dual the wrong way (``Qᵀ b`` where ``Q b`` is meant) is invisible
+here; substituting it changes the gradient in the eighth digit. The direction is
+right on the mathematics — ``Q`` is orthogonal, so ``μ̂ = Q μ`` and ``μ = Qᵀ μ̂``
+— but it takes a 3-D boundary or a multi-normal corner, where the frame is no
+longer a reflection, to make a test say so.
+
+Serial. Under ``mpirun -n 2`` this file aborts about half the time in
+``_jitextension`` with "JIT C-source hash differs across MPI ranks" — the
+deliberate hard error for non-deterministic ``generate_c_source``. It is NOT an
+adjoint failure: the abort lands in the fixture's FIRST FORWARD solve, before
+any adjoint runs. Nor is it this file's expression — the pre-existing TI adjoint
+test (``test_0021``) is stable at np=2, and building the fixture's expression
+variants outside pytest never diverges (3/3). Fixing ``PYTHONHASHSEED`` does not
+settle it. The CI parallel pass collects only ``tests/parallel/test_*.py``, so
+this is not in the gate; the cause is a latent non-determinism in JIT source
+generation, filed separately.
 """
 
 import math
@@ -33,6 +54,8 @@ from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3.adjoint import misfit_duals
+from underworld3.utilities.rotated_bc import (_rotated_nullspace,
+                                              _velocity_diag_scale)
 
 
 R_I, R_O = 0.5, 1.0
@@ -112,7 +135,22 @@ def rotated_gradient():
     K = stokes.snes.getJacobian()[0]
     Kt = K.transpose(PETSc.Mat())
     Kt.axpy(-1.0, K, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
-    asymmetry = Kt.norm(PETSc.NormType.FROBENIUS) / K.norm(PETSc.NormType.FROBENIUS)
+    # The VELOCITY BLOCK, not the composite. UW3 assembles the velocity flux as
+    # τ − p·I against +div u, so the operator is [[A, −Bᵀ], [B, 0]] and the
+    # composite is structurally non-symmetric for EVERY rheology — measured
+    # 2.5e-2 for constant isotropic viscosity, which would sail past any floor
+    # set here and prove nothing. It is the A block whose symmetry decides
+    # whether a transpose is detectable, and there it is 5.3e-17 isotropic,
+    # 6.0e-17 for a CONSTANT TI viscosity (the frozen tangent keeps major
+    # symmetry) and 5.7e-2 for the power-law TI below.
+    vel_is = stokes._subdict["velocity"][0]
+    A = K.createSubMatrix(vel_is, vel_is)
+    dA = Kt.createSubMatrix(vel_is, vel_is)
+    asymmetry = (dA.norm(PETSc.NormType.FROBENIUS)
+                 / A.norm(PETSc.NormType.FROBENIUS))
+    A.destroy()
+    dA.destroy()
+
     Kt.destroy()
 
     dual = misfit_duals(misfit, [v])[v]
@@ -180,7 +218,12 @@ def test_the_multiplier_has_no_wall_normal_component(rotated_gradient):
     of the adjoint operator exactly as it does the forward one, so the
     multiplier's wall-normal component is set rather than iterated towards —
     a Krylov tolerance must not appear in this number."""
-    assert rotated_gradient["leak"] < 1.0e-12, rotated_gradient["leak"]
+    # 1e-14, not 1e-12: the forward tolerance is 1e-11, so a bound of 1e-12 is
+    # only one decade below a number that a DELETED `_zero_rows_local` would
+    # leave at ~tolerance x ‖b̂‖ — which clears 1e-12 whenever that scale is
+    # below 0.1, and the fixture does not measure it. What is genuinely left
+    # here is round-off on the Q(Qᵀμ̂) round trip (measured 4.8e-18).
+    assert rotated_gradient["leak"] < 1.0e-14, rotated_gradient["leak"]
 
 
 @pytest.mark.level_2
@@ -196,6 +239,10 @@ def test_the_verdict_says_the_operator_is_the_rotated_one(rotated_gradient):
     a different solve — the one that transposes K."""
     assert rotated_gradient["supported"] is True
     assert "rotated free-slip" in rotated_gradient["reason"]
+    # The verdict warns about the null space unconditionally, because it is a
+    # property of the problem the caller poses, not of this solve. This fixture
+    # pins the inner boundary and HAS no null space (`_rotated_nullspace`
+    # returns None) — which is exactly why its gradient is unambiguous.
     assert "null space" in rotated_gradient["reason"]
 
 
@@ -228,3 +275,74 @@ def test_a_released_rotation_is_refused_rather_than_read():
     stokes._reset_rotated_solver_cache()
     with pytest.raises(RuntimeError, match="released"):
         stokes.adjoint_solve((dual, None))
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_a
+def test_the_null_space_serves_the_transposed_operator_too():
+    """``_rotated_nullspace`` admits a mode by measuring ``‖Â·w‖``, and the
+    adjoint attaches the result to ``Âᵀ`` as BOTH its null space and its
+    transpose null space. Sound only if the modes are null from the left as well.
+
+    The argument is that a rigid rotation has zero strain rate, so ``∫C:ε:ε``
+    annihilates it read from either side whatever the symmetry of ``C``, and the
+    constant-pressure mode couples only through an off-diagonal block that
+    transposition moves but does not remove. On a tangent with no major symmetry
+    that deserves measuring.
+
+    Free slip on BOTH boundaries, because that is what admits a rigid rotation:
+    the gradient fixture pins the inner boundary and has no null space at all."""
+    mesh = uw.meshing.Annulus(radiusInner=R_I, radiusOuter=R_O,
+                              cellSize=0.25, qdegree=3)
+    x, y = mesh.X
+    r = sympy.sqrt(x**2 + y**2)
+    unit_r = sympy.Matrix([[x / r, y / r]])
+    th = sympy.atan2(y, x)
+    v = uw.discretisation.MeshVariable("v_nsp", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("p_nsp", mesh, 1, degree=1)
+
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    edot = mesh.vector.strain_tensor(v.sym)
+    eII = sympy.sqrt(sympy.Rational(1, 2) * (edot[0, 0] ** 2 + edot[1, 1] ** 2)
+                     + edot[0, 1] ** 2)
+    eta_0 = (sympy.Float(0.01) + eII) ** sympy.Rational(-1, 3)
+    stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
+    stokes.constitutive_model.Parameters.shear_viscosity_1 = ETA_1 * eta_0
+    stokes.constitutive_model.Parameters.director = unit_r
+    stokes.bodyforce = 1.0e2 * sympy.cos(3 * th) * (r - R_I) / (R_O - R_I) * unit_r
+    stokes.add_rotated_freeslip_bc(0.0, "Lower")
+    stokes.add_rotated_freeslip_bc(0.0, "Upper")
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.consistent_jacobian = True
+    stokes.tolerance = 1.0e-10
+    stokes.solve(zero_init_guess=True)
+
+    info = stokes._rotated_freeslip_info
+    Q, Qt, rows = info["Q"], info["Qt"], info["normal_rows"]
+    nsp = _rotated_nullspace(stokes, Q, rows)
+    assert nsp is not None, "no null space here — the test would prove nothing"
+    assert getattr(stokes, "_rotated_velocity_null_modes", 0) >= 1, (
+        "no RIGID ROTATION was admitted; only the pressure mode is being "
+        "measured, and that one is symmetric for a trivial reason")
+
+    K = stokes.snes.getJacobian()[0]
+    Ahat = K.ptap(Qt)
+    Ahat.zeroRowsColumns(rows, diag=_velocity_diag_scale(Ahat, stokes))
+    AhatT = Ahat.transpose(PETSc.Mat())
+    try:
+        for w in nsp.getVecs():
+            out = w.duplicate()
+            Ahat.mult(w, out)
+            forward = out.norm() / w.norm()
+            AhatT.mult(w, out)
+            adjoint = out.norm() / w.norm()
+            out.destroy()
+            # Absolute, and then the identity: the same mode read from the two
+            # sides must give the SAME residual, not merely a small one.
+            assert adjoint < 1.0e-8, (forward, adjoint)
+            assert abs(adjoint - forward) <= 0.01 * max(forward, 1.0e-16), (
+                forward, adjoint)
+    finally:
+        Ahat.destroy()
+        AhatT.destroy()
