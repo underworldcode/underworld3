@@ -430,6 +430,10 @@ nothing owns them, and `_destroy_rotated_linear_cache` only dereferences the
 list. An adjoint workspace cache keyed the same way as the forward's would fix
 both; it is not built.
 
+`tests/test_0022_rotated_adjoint.py` is serial: at np>1 it trips the JIT
+rank-divergence guard about half the time (#752), in the forward solve rather
+than the adjoint.
+
 `J` must be assembled with the **consistent** tangent. A forward that ran
 Picard leaves the frozen-viscosity operator on the SNES, which is not `∂R/∂u`;
 `adjoint_solve` rebuilds it, and `adjoint_support()` says so in its reason.

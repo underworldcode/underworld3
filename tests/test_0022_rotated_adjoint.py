@@ -41,7 +41,7 @@ test (``test_0021``) is stable at np=2, and building the fixture's expression
 variants outside pytest never diverges (3/3). Fixing ``PYTHONHASHSEED`` does not
 settle it. The CI parallel pass collects only ``tests/parallel/test_*.py``, so
 this is not in the gate; the cause is a latent non-determinism in JIT source
-generation, filed separately.
+generation — issue #752.
 """
 
 import math
