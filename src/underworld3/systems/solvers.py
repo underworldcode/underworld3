@@ -2318,6 +2318,30 @@ class SNES_Stokes(_ConstitutiveModelStateMixin, SNES_Stokes_SaddlePt):
         # Assigned through the expression, so the latch is untouched and the
         # value stays automatic.
 
+    def _record_pc_fallback(self, site, *, requested, installed, reason, detail=""):
+        """Record one preconditioner fallback / degrade / guard-skip decision.
+
+        This mirrors the generic SNES fallback recorder for Python-side Stokes
+        preconditioner checks. The record is written explicitly rather than
+        inferred from PETSc options or timings.
+        """
+        if not hasattr(self, "_pc_fallbacks"):
+            self._pc_fallbacks = {}
+
+        self._pc_fallbacks[site] = dict(
+            requested=requested,
+            installed=installed,
+            reason=reason,
+            detail=detail,
+        )
+
+    @property
+    def pc_fallbacks(self):
+        """Preconditioner fallback records for the current solver state."""
+        if not hasattr(self, "_pc_fallbacks"):
+            self._pc_fallbacks = {}
+        return self._pc_fallbacks
+
     def _check_velocity_preconditioner(self):
         """After setup: did the velocity block fall back off the multigrid?
 
