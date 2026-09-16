@@ -40,6 +40,10 @@ params = uw.Params(
     cohesion=uw.Param(0.05, "cohesion C in tau_y = C + mu p"),
     rho_g=uw.Param(10.0, "body force, so the pressure grows with depth"),
     check_only=uw.Param(0, "1: gradient check against finite differences, no inversion"),
+    observations=uw.Param("uplift+stress",
+                          "uplift+stress | orientation (principal-stress orientation at the "
+                          "points and along the surface) | orientation_surface (along the "
+                          "surface only)"),
 )
 
 # --- the model ---------------------------------------------------------------
@@ -127,8 +131,23 @@ def shear_stress(field):
     e = mesh.vector.strain_tensor(field.sym)
     return 2 * eta_0 * e[0, 1]
 
-misfit = (w_top * (v.sym[1] - v_obs.sym[1]) ** 2
-          + w_points * (shear_stress(v) - shear_stress(v_obs)) ** 2) / 2
+def orientation(field):
+    """The principal-stress orientation as the unit vector (cos 2theta, sin 2theta)
+    of the deviatoric strain rate, which is the stress orientation in the
+    isotropic bulk. A unit vector rather than an angle, so there is no wrap."""
+    e = mesh.vector.strain_tensor(field.sym)
+    a, b = e[0, 0] - e[1, 1], 2 * e[0, 1]
+    norm = sympy.sqrt(a ** 2 + b ** 2 + uw.maths.functions.vanishing)
+    return sympy.Matrix([[a / norm, b / norm]])
+
+what = str(params.observations)
+if what == "uplift+stress":
+    misfit = (w_top * (v.sym[1] - v_obs.sym[1]) ** 2
+              + w_points * (shear_stress(v) - shear_stress(v_obs)) ** 2) / 2
+else:
+    dq = orientation(v) - orientation(v_obs)
+    weight = w_top if what == "orientation_surface" else w_top + w_points
+    misfit = weight * (dq[0] ** 2 + dq[1] ** 2) / 2
 
 def set_strengths(values):
     for expr, value in zip(strengths, values):
@@ -210,7 +229,7 @@ stokes.solve(zero_init_guess=True)          # the field on the grid is the truth
 gx, gy = np.meshgrid(np.linspace(0, 2, 201), np.linspace(0, 1, 101))
 grid = np.column_stack([gx.ravel(), gy.ravel()])
 eta_1_grid = np.asarray(uw.function.evaluate(eta_1, grid)).reshape(gx.shape)
-np.savez("fault_friction_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
+np.savez(f"fault_friction_{what}_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
          points=np.array(points), true=np.array(true_values),
          history=np.array([[J, *vals] for J, vals in history]),
          **{f"uplift_{k}": val for k, val in profiles.items()})
