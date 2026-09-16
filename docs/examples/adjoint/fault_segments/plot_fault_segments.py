@@ -19,12 +19,15 @@ n_seg = len(true)
 fig, axes = plt.subplots(1, 3, figsize=(11, 3.2), gridspec_kw={"width_ratios": [2.2, 1.6, 1.4]})
 
 ax = axes[0]
-ax.contourf(d["gx"], d["gy"], np.log10(d["eta_1"]), levels=np.linspace(-2.4, 0, 13), cmap="viridis")
+# The bulk sits at log10(eta_1) = 0 to round-off, so the top level is set a
+# little below it and "extend" gives the bulk one flat colour.
+ax.contourf(d["gx"], d["gy"], np.log10(d["eta_1"]), levels=np.linspace(-2.4, -0.1, 12),
+            cmap="viridis", extend="both")
 ax.plot(d["points"][:, 0], d["points"][:, 1], "wx", ms=7, mew=1.5)
 ax.set_aspect("equal")
 ax.set_xlim(0, 2); ax.set_ylim(0, 1)
 ax.set_xlabel("$x$"); ax.set_ylabel("$y$")
-ax.set_title(r"$\log_{10}\eta_1$ at the true strengths; $\times$ stress points", fontsize=10)
+ax.set_title(r"$\log_{10}\eta_1$ at the truth; $\times$ stress points", fontsize=10)
 
 ax = axes[1]
 for label, style in (("true", "k-"), ("initial", "C3--"), ("recovered", "C0:")):

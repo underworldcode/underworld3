@@ -97,7 +97,9 @@ E = mesh.vector.strain_tensor(v.sym)
 t_hat = sympy.Matrix([[-n_hat[1], n_hat[0]]])
 e_s = sympy.sqrt((t_hat * E * n_hat.T)[0] ** 2 + uw.maths.functions.vanishing)
 friction = sum(strengths[k] * segment(k) for k in range(n_seg))
-tau_y = params.cohesion + friction * p.sym[0]
+# Compression is positive; where the dynamic pressure is tensile the plane
+# keeps its cohesion and no more.
+tau_y = params.cohesion + friction * sympy.Max(p.sym[0], 0)
 eta_plane = eta_0 * tau_y / (tau_y + 2 * eta_0 * e_s)
 eta_1 = eta_0 - band * (eta_0 - eta_plane)
 
