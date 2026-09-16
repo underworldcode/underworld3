@@ -345,9 +345,82 @@ vertex error does not. **If you sample only midpoints, pass
 `mass="consistent"`.** See also #404 (the vertex-integral checkerboard) and
 #637 (only P1/P2 triangular traces are supported in 3-D at all).
 
+## The adjoint transposes the rotated operator, not the Jacobian
+
+`solver.adjoint_solve(b)` under rotated free-slip does not transpose `K`. The
+forward solve never inverted `K` — it inverted `Â = Q K Qᵀ` with the wall-normal
+rows struck out — so the adjoint is the transpose of that, taken in the same
+frame and rotated back. `rotated_bc.solve_rotated_adjoint` owns the sequence,
+and the solver dispatches to it whenever `_rotated_freeslip_bcs` is non-empty.
+
+Everything follows from `Q` being orthogonal. Writing `μ̂ = Q μ` and `b̂ = Q b`,
+
+```
+⟨μ̂, Â δ̂⟩ = ⟨Qμ, Q K Qᵀ Q δ⟩ = ⟨μ, K δ⟩        ⟨b̂, δ̂⟩ = ⟨Q b, Q δ⟩ = ⟨b, δ⟩
+```
+
+so the rotated adjoint system is the physical one written in the boundary
+frame, and `μ = Qᵀ μ̂` takes the answer back. Three consequences worth stating
+because each one is a place the wiring could be wrong and still look plausible:
+
+* **The constraint is part of the adjoint.** `zeroRowsColumns` zeroes the row
+  *and* the column and puts a scalar on the diagonal, so it commutes with
+  transposition: eliminating the constrained rows from `Âᵀ` gives exactly the
+  transpose of the operator the forward solve ran on. The multiplier's
+  wall-normal component is *set* to zero, not iterated towards it — the dual of
+  a strong constraint is a strong homogeneous constraint on the same degrees of
+  freedom.
+* **The block structure survives.** Transposing `[[A, Bᵀ], [B, 0]]` gives
+  `[[Aᵀ, Bᵀ], [B, 0]]`, so the fieldsplit-Schur setup, the 1/μ pressure-mass
+  block and the custom-FMG prolongation all apply to `Âᵀ` unchanged.
+* **The null space is shared.** A rigid rotation has zero strain rate, so
+  `∫C:ε(·):ε(·)` annihilates it read from either side whatever the symmetry of
+  `C`; the constant-pressure mode couples only through `Bᵀ`, which both
+  operators carry in the same block. `_rotated_nullspace` therefore serves the
+  adjoint as it does the forward.
+
+**The multiplier is returned modulo that null space.** An enclosed free-slip
+domain has an undetermined pressure level and, on an annulus or shell, an
+undetermined rigid rotation. The forward fixes the gauge after the fact; the
+adjoint has no rest state to fix it against, so the component of `b` along
+those modes is projected out (`nsp.remove`). A misfit that is itself invariant
+under rigid rotation loses nothing to this. One that is not is asking for the
+sensitivity of a quantity the forward problem does not determine, and the
+projection is what says so — so pin the gauge in the forward problem (a
+Dirichlet boundary) rather than reading a rotation-sensitive gradient.
+
+### What the test cannot see, and why `Qt` is still built
+
+In 2-D with one normal per node **`Q` is exactly symmetric**: the frame
+`numpy.linalg.svd` returns for a single normal is the Householder reflection
+`[[nx, ny], [ny, -nx]]`, and `‖Q - Qᵀ‖` measures **zero** on an annulus. So
+swapping `Q` for `Qᵀ` anywhere in either the forward or the adjoint path is
+numerically invisible there — substituting one for the other in the adjoint's
+dual rotation moves the gradient in the eighth digit (measured). That is an
+accident of the 2-D single-normal case, not a licence to alias the two: a 3-D
+boundary frame is a 3×3 orthogonal matrix whose two tangent rows are not pinned,
+and a multi-normal corner block is not a reflection either. `build_rotation`
+assembles `Qt` explicitly for that reason, and the adjoint uses `Q` for the dual
+and `Qᵀ` for the answer because that is what the duality says, not because a 2-D
+test forced it. **A 3-D rotated adjoint test would be the one that pins this
+axis down; there isn't one.**
+
+`J` must be assembled with the **consistent** tangent. A forward that ran
+Picard leaves the frozen-viscosity operator on the SNES, which is not `∂R/∂u`;
+`adjoint_solve` rebuilds it, and `adjoint_support()` says so in its reason.
+
+**Fault contact still refuses.** Its rotated operator carries an additive
+interface tangent, reassembled at every iterate, and that term's transpose is
+not routed into the adjoint.
+
+
 ## Tests
 
 `tests/test_1018_rotated_freeslip.py` (serial: essential-equivalence, FMG,
 tangent policies, datum linear + nonlinear),
 `tests/parallel/test_1066_rotated_datum_parallel.py` (np≥2: partition
-independence of the linear datum and the nonlinear Newton datum path).
+independence of the linear datum and the nonlinear Newton datum path),
+`tests/test_0022_rotated_adjoint.py` (the adjoint gradient against a central
+finite difference on an annulus with a transversely isotropic viscosity — a
+curved boundary so the rotation is a real per-node frame, and a tangent with no
+major symmetry so a wrong transpose cannot hide behind a symmetric operator).

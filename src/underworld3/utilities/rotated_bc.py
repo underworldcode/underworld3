@@ -1596,6 +1596,151 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "workspace_reused": workspace_reused}
 
 
+
+def solve_rotated_adjoint(solver, J, b, verbose=False):
+    r"""The discrete adjoint of the last rotated free-slip solve: ``Âᵀ μ̂ = b̂``.
+
+    The forward solve never runs ``snes.solve``. It rotates the Jacobian into the
+    per-node boundary frame, eliminates the wall-normal rows, and inverts
+    ``Â = Q J Qᵀ`` in its own Krylov loop (:func:`solve_rotated_freeslip`). The
+    adjoint is the transpose of THAT operator, not of ``J``: the constraint is part
+    of the system the forward solve inverted, so the adjoint carries it too.
+
+    Everything follows from ``Q`` being orthogonal. Writing ``μ̂ = Q μ`` and
+    ``b̂ = Q b``, ``⟨μ̂, Â δ̂⟩ = ⟨μ, J δ⟩`` and ``⟨b̂, δ̂⟩ = ⟨b, δ⟩``, so the rotated
+    adjoint system IS the physical one expressed in the boundary frame, and
+    ``μ = Qᵀ μ̂`` takes the answer back. ``zeroRowsColumns`` commutes with
+    transposition — it zeroes the row AND the column and puts a scalar on the
+    diagonal — so eliminating the constrained rows from ``Âᵀ`` gives exactly the
+    transpose of the operator the forward solve ran on. That is the discrete
+    statement that the dual of a strong constraint is a strong homogeneous
+    constraint on the same degrees of freedom: ``μ·n̂ = 0`` on the wall.
+
+    ``J`` must already be assembled at the state the forward solve ended in, with
+    the CONSISTENT tangent. The caller owns that choice: a forward that ran Picard
+    leaves the frozen-viscosity operator on the SNES, which is not ``∂R/∂u``, and
+    transposing it would be silently wrong.
+
+    **The null space is projected out of the right-hand side.** A free-slip
+    enclosed domain has an undetermined pressure level and, on an annulus or
+    shell, an undetermined rigid rotation. The forward solve fixes the gauge
+    afterwards; the adjoint cannot, because the multiplier has no rest state to
+    be fixed against. So the component of ``b`` along those modes is removed
+    (``nsp.remove``) and ``μ`` is returned modulo them. A misfit that is itself
+    invariant under a rigid rotation loses nothing to this; one that is not is
+    asking for the sensitivity of a quantity the forward problem does not
+    determine, and the projection is what says so.
+
+    Parameters
+    ----------
+    solver
+        The solver that did the forward solve, still holding
+        ``_rotated_freeslip_info`` from it.
+    J : petsc4py.PETSc.Mat
+        The Jacobian, assembled at the converged state with the consistent
+        tangent. The pressure-mass Schur block is read from the solver's Pmat, so
+        assemble both (``snes.computeJacobian(x, J, Jp)``).
+    b : petsc4py.PETSc.Vec
+        The dual right-hand side on the composite global vector, in the PHYSICAL
+        frame — the same thing ``dual_of`` builds for the unrotated path.
+
+    Returns
+    -------
+    (petsc4py.PETSc.Vec, int)
+        ``μ`` in the physical frame, exactly zero at the constrained wall-normal
+        rows, and the KSP converged reason (positive means converged). The caller
+        owns the vector.
+    """
+    info = getattr(solver, "_rotated_freeslip_info", None)
+    if info is None:
+        raise RuntimeError(
+            "solve_rotated_adjoint: no rotated forward solve to take the adjoint "
+            "of. The rotation Q is built by solve_rotated_freeslip — call solve() "
+            "first, and take the adjoint about the state it ended in.")
+    Q, Qt = info.get("Q"), info.get("Qt")
+    # The result dict SHARES Q/Qt with the cross-solve cache, and
+    # _reset_rotated_solver_cache destroys that cache while deliberately keeping
+    # the result dict alive (its reaction vector outlives the workspace, which is
+    # what boundary_normal_traction needs). The rotation does NOT outlive it, so
+    # reading Q here after a reset would be a use-after-free rather than a wrong
+    # answer. Say what happened instead.
+    if Q is None or Qt is None or Q.handle == 0 or Qt.handle == 0:
+        raise RuntimeError(
+            "solve_rotated_adjoint: the rotation from the last rotated solve has "
+            "been released — the solver was reset or reconfigured since (see "
+            "_reset_rotated_solver_cache), and Q is shared with the workspace that "
+            "reset destroys. Re-run solve() and take the adjoint about that state.")
+    normal_rows = info["normal_rows"]
+    dm = solver.dm
+    use_lu = bool(getattr(solver, "_rotated_use_lu", False))
+
+    # Âᵀ, formed as the forward's own ptap and then transposed rather than from
+    # Jᵀ.ptap(Qt). The two are equal, and going through the SAME expression means
+    # a symmetric J (the linear isoviscous case) reproduces the forward operator
+    # bit-for-bit, which is what makes the symmetric case a usable check on the
+    # non-symmetric one.
+    Ahat = J.ptap(Qt)
+    AhatT = Ahat.transpose(PETSc.Mat())
+    Ahat.destroy()
+
+    bhat = AhatT.createVecRight()
+    Q.mult(b, bhat)
+    # The constrained rows carry no equation in the forward system, so they carry
+    # no adjoint equation either; zeroing here is what makes μ·n̂ = 0 exact rather
+    # than merely converged.
+    _zero_rows_local(bhat, normal_rows)
+
+    diag_scale = _velocity_diag_scale(AhatT, solver)
+    AhatT.zeroRowsColumns(normal_rows, diag=diag_scale)
+
+    if use_lu:
+        # Mirrors the forward direct path, pin included: the adjoint operator has
+        # the same constant-pressure null mode, so it needs the same gauge fixed
+        # the same way.
+        pin = _naive_pressure_pin(dm)
+        if pin is not None:
+            AhatT.zeroRows([pin], diag=1.0)
+            _zero_rows_local(bhat, [pin])
+        ksp = PETSc.KSP().create(comm=dm.comm)
+        ksp.setType("preonly")
+        pc = ksp.getPC()
+        pc.setType("lu")
+        pc.setFactorSolverType("mumps")
+        ksp.setOperators(AhatT)
+        muhat = AhatT.createVecRight()
+        muhat.set(0.0)
+        ksp.solve(bhat, muhat)
+        reason = int(ksp.getConvergedReason())
+        _warn_if_ksp_diverged(ksp, kind="rotated adjoint direct-LU")
+        _zero_rows_local(muhat, normal_rows)
+        ksp.destroy()
+    else:
+        # Âᵀ has the block structure of Â — transposing [[A, Bᵀ], [B, 0]] gives
+        # [[Aᵀ, Bᵀ], [B, 0]] — so the fieldsplit-Schur setup, the 1/mu pressure
+        # mass and the custom-FMG prolongation all apply unchanged.
+        Mp = _pressure_mass_schur_pmat(solver)
+        # The rigid-body modes are null modes of Âᵀ as well as Â: a rotation has
+        # zero strain rate, so it is annihilated by ∫C:ε(·):ε(·) read from either
+        # side, whatever the symmetry of C. The same is true of the constant
+        # pressure mode, whose only coupling is through Bᵀ, which both operators
+        # carry in the same block.
+        nsp = _rotated_nullspace(solver, Q, normal_rows)
+        custom_Pl = _build_rotated_custom_Pl(solver, Q, normal_rows)
+        muhat, reason, ctx = _solve_rotated_iterative(
+            solver, AhatT, bhat, Q, Qt, normal_rows, verbose=verbose,
+            custom_Pl=custom_Pl, nsp=nsp, Mp=Mp, ctx=None)
+        reason = int(reason)
+        _destroy_rotated_ksp_ctx(ctx)
+
+    mu = dm.createGlobalVec()
+    Qt.mult(muhat, mu)
+
+    muhat.destroy()
+    bhat.destroy()
+    AhatT.destroy()
+    return mu, reason
+
+
 def _build_rotated_custom_Pl(solver, Q, normal_rows):
     """The rotated custom-FMG prolongation list [*coarse, Q_v·P_fine] for the
     velocity block, or None if this solver has no hierarchy. Depends only on Q and
