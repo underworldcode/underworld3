@@ -1,23 +1,24 @@
-"""Strength of a listric fault, segment by segment, from surface uplift and stress.
+"""Friction on a listric fault, segment by segment, from surface uplift and stress.
 
-A listric fault under horizontal shortening: a ramp that steepens from a flat
-decollement at depth to a dip of sixty degrees at the surface, represented as
-a weak plane in a transversely isotropic viscosity (no cut in the mesh). Its
-weak-plane viscosity is different on the flat, on the lower and upper parts
-of the ramp, and near the surface, and those four strengths are the unknowns.
-The observations are the uplift rate along the top surface and the shear
-stress in the bulk near a handful of points, taken from a run at the true
-strengths.
+A listric fault under horizontal shortening and gravity: a ramp that steepens
+from a flat decollement at depth to a dip of sixty degrees at the surface,
+represented as a weak plane in a transversely isotropic viscosity (no cut in
+the mesh). The plane yields at the Coulomb stress tau_y = C + mu p, where p
+is the pressure, and the friction coefficient mu is different on the flat,
+on the lower and upper parts of the ramp, and near the surface. Those four
+coefficients are the unknowns. The observations are the uplift rate along
+the top surface and the shear stress in the bulk near a handful of points,
+taken from a run at the true coefficients.
 
-The gradient of the misfit with respect to each segment's strength comes
-from the solver's own discrete adjoint: a transpose against the Jacobian it
-assembled, and the symbolic derivative of its residual with respect to the
-named strength. Nothing here is differenced.
+The residual is nonlinear in the velocity and the pressure, so the forward
+solve is Newton, and the adjoint is a transpose of the consistent tangent
+the solver assembled. The gradient with respect to each coefficient is the
+symbolic derivative of that residual. Nothing here is differenced.
 
 Run it:
 
-    python fault_segments.py                 # twin experiment: gradient check, then the inversion
-    python fault_segments.py -uw_check_only 1
+    python fault_friction.py                 # twin experiment: gradient check, then the inversion
+    python fault_friction.py -uw_check_only 1
 """
 import math
 
@@ -33,9 +34,11 @@ params = uw.Params(
     flat_depth=uw.Param(0.3, "height of the decollement above the base"),
     surface_x=uw.Param(1.9, "where the fault reaches the surface"),
     band=uw.Param(0.08, "half-width of the weak band, in box units"),
-    true_strengths=uw.Param("0.005,0.05,0.02,0.2",
-                            "weak-plane viscosity: flat, lower ramp, upper ramp, near surface"),
-    initial_strength=uw.Param(0.1, "starting guess, every segment"),
+    true_strengths=uw.Param("0.05,0.15,0.25,0.4",
+                            "friction coefficient: flat, lower ramp, upper ramp, near surface"),
+    initial_strength=uw.Param(0.2, "starting guess, every segment"),
+    cohesion=uw.Param(0.05, "cohesion C in tau_y = C + mu p"),
+    rho_g=uw.Param(10.0, "body force, so the pressure grows with depth"),
     check_only=uw.Param(0, "1: gradient check against finite differences, no inversion"),
 )
 
@@ -73,8 +76,8 @@ band = sympy.exp(-(d / params.band) ** 2)
 edges = [0.0, xc, xc + ramp / 3, xc + 2 * ramp / 3, length]
 names = ["flat", "lower ramp", "upper ramp", "near surface"]
 n_seg = len(names)
-strengths = [uw.expression(rf"\eta_{{{k + 1}}}", params.initial_strength,
-                           f"weak-plane viscosity, {names[k]}")
+strengths = [uw.expression(rf"\mu_{{{k + 1}}}", params.initial_strength,
+                           f"friction coefficient, {names[k]}")
              for k in range(n_seg)]
 
 def segment(k):
@@ -85,7 +88,18 @@ def segment(k):
     return on * off
 
 eta_0 = 1
-eta_1 = eta_0 - band * sum((eta_0 - strengths[k]) * segment(k) for k in range(n_seg))
+
+# Coulomb yield on the plane. The shear strain rate resolved on the plane is
+# t.E.n; the plane's viscosity is the harmonic combination of the bulk
+# viscosity and the yield stress over that rate, which is smooth everywhere
+# and tends to tau_y / (2 e_s) where the plane slips.
+E = mesh.vector.strain_tensor(v.sym)
+t_hat = sympy.Matrix([[-n_hat[1], n_hat[0]]])
+e_s = sympy.sqrt((t_hat * E * n_hat.T)[0] ** 2 + uw.maths.functions.vanishing)
+friction = sum(strengths[k] * segment(k) for k in range(n_seg))
+tau_y = params.cohesion + friction * p.sym[0]
+eta_plane = eta_0 * tau_y / (tau_y + 2 * eta_0 * e_s)
+eta_1 = eta_0 - band * (eta_0 - eta_plane)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
@@ -93,6 +107,7 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
 stokes.constitutive_model.Parameters.shear_viscosity_1 = eta_1
 stokes.constitutive_model.Parameters.director = n_hat
 stokes.tolerance = 1e-8
+stokes.bodyforce = sympy.Matrix([0, -params.rho_g])
 
 # Shortening from both sides, a no-slip base, and a free top: the surface
 # velocity is the uplift rate.
@@ -193,7 +208,7 @@ stokes.solve(zero_init_guess=True)          # the field on the grid is the truth
 gx, gy = np.meshgrid(np.linspace(0, 2, 201), np.linspace(0, 1, 101))
 grid = np.column_stack([gx.ravel(), gy.ravel()])
 eta_1_grid = np.asarray(uw.function.evaluate(eta_1, grid)).reshape(gx.shape)
-np.savez("fault_segments_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
+np.savez("fault_friction_data.npz", xs=xs, gx=gx, gy=gy, eta_1=eta_1_grid,
          points=np.array(points), true=np.array(true_values),
          history=np.array([[J, *vals] for J, vals in history]),
          **{f"uplift_{k}": val for k, val in profiles.items()})

@@ -1,10 +1,17 @@
-"""The figure for the fault-segments example, from fault_segments_data.npz."""
+"""The figure for the fault-segments examples.
+
+    python plot_fault_segments.py fault_segments_data.npz   # weak-plane viscosity
+    python plot_fault_segments.py fault_friction_data.npz   # friction coefficient
+"""
+import sys
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-d = np.load("fault_segments_data.npz")
+source = sys.argv[1] if len(sys.argv) > 1 else "fault_segments_data.npz"
+friction = "friction" in source
+d = np.load(source)
 history, true = d["history"], d["true"]
 names = ["flat", "lower ramp", "upper ramp", "near surface"]
 n_seg = len(true)
@@ -31,11 +38,12 @@ its = np.arange(len(history))
 for k in range(n_seg):
     ax.semilogy(its, history[:, 1 + k], "o-", ms=3, lw=1, color=f"C{k}", label=names[k])
     ax.axhline(true[k], color=f"C{k}", lw=0.8, ls="--")
-ax.set_xlabel("misfit evaluation"); ax.set_ylabel("weak-plane viscosity")
-ax.set_title("strengths (dashed: true)", fontsize=10)
+ax.set_xlabel("misfit evaluation"); ax.set_ylabel("friction coefficient" if friction else "weak-plane viscosity")
+ax.set_title(("friction" if friction else "strengths") + " (dashed: true)", fontsize=10)
 ax.legend(fontsize=8, frameon=False)
 
 fig.tight_layout()
-fig.savefig("fault_segments.png", dpi=180)
-fig.savefig("fault_segments.pdf")
-print("wrote fault_segments.png / .pdf")
+stem = source.replace("_data.npz", "")
+fig.savefig(stem + ".png", dpi=180)
+fig.savefig(stem + ".pdf")
+print(f"wrote {stem}.png / .pdf")
