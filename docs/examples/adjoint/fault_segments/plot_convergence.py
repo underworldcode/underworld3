@@ -4,7 +4,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-cases = [("uplift + stress", "fault_friction_data.npz"),
+cases = [("uplift + stress", "fault_friction_uplift+stress_data.npz"),
          ("orientation, points + surface", "fault_friction_orientation_data.npz"),
          ("orientation, surface only", "fault_friction_orientation_surface_data.npz")]
 names = ["flat", "lower ramp", "upper ramp", "near surface"]
