@@ -502,7 +502,8 @@ def _peel_except(expression, wrt, depth=8):
     the derivative of a number is zero."""
     for _ in range(depth):
         named = [e for e in uw.function.fn_extract_expressions(expression)
-                 if e is not wrt and e != wrt]
+                 if e is not wrt and e != wrt
+                 and not getattr(getattr(e, "sym", None), "is_Number", False)]
         if not named:
             break
         expression = expression.subs({e: e.sym for e in named})

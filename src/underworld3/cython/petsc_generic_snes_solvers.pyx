@@ -1837,9 +1837,15 @@ class SolverBaseClass(uw_object):
         definition, one level at a time, and stops at ``wrt`` so the chain
         rule has something to hold on to.
         """
+        # A named expression whose value is a bare number is left as it is:
+        # the JIT passes it as a run-time constant, so the kernel compiled
+        # for the integrand survives a change of its value. Substituting the
+        # number recompiled every sensitivity at every evaluation of an
+        # inversion (four compiles per evaluation on the fault example).
         for _ in range(depth):
             named = [e for e in uw.function.fn_extract_expressions(expression)
-                     if e is not wrt and e != wrt]
+                     if e is not wrt and e != wrt
+                     and not getattr(getattr(e, "sym", None), "is_Number", False)]
             if not named:
                 break
             expression = expression.subs({e: e.sym for e in named})
